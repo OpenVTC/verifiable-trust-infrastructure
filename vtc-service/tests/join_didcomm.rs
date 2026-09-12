@@ -99,8 +99,8 @@ use vtc_service::test_support::{MockVtcDidcomm, ReplyOutcome};
 use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody};
 use vta_sdk::protocols::join_requests::{
     JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE, JOIN_REQUEST_SUBMIT_TYPE,
-    JoinRequestManifestResponseBody, JoinRequestStatusBody, JoinRequestStatusResponseBody,
-    JoinRequestSubmitBody, VerdictEffect, VerdictResponse,
+    JoinRequestStatusBody, JoinRequestStatusResponseBody, JoinRequestSubmitBody, VerdictEffect,
+    VerdictResponse, manifest,
 };
 
 /// The `payload` of a Trust Task `#response` document (where every verb's
@@ -251,18 +251,18 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     let request_id = verdict.request_id;
 
     // 2. Discover the community's join evidence over DIDComm (real
-    //    `manifest_inner`) — the seeded DCQL Accepts criterion.
-    let manifest: JoinRequestManifestResponseBody = serde_json::from_value(response_payload(
+    //    manifest read) — the seeded DCQL Accepts criterion.
+    let manifest: manifest::v0_1::Response = serde_json::from_value(response_payload(
         mock.client
             .request(&vtc_did, JOIN_REQUEST_MANIFEST_TYPE, json!({}))
             .await,
     ))
     .expect("manifest response");
-    assert_eq!(manifest.community_did, vtc_did);
+    assert_eq!(manifest.community_did.as_str(), vtc_did);
     let criterion = manifest
         .criteria
         .iter()
-        .find(|c| c.id == "membership")
+        .find(|c| c.id.as_str() == "membership")
         .expect("manifest advertises the membership criterion");
 
     // 3. OpenVTC D4: select a held credential against the manifest's DCQL and
@@ -282,7 +282,9 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
             "credentialSubject": subject,
         }),
     };
-    let candidates = select_credentials(&criterion.presentation_definition, &[held])
+    let presentation_definition =
+        serde_json::Value::Object(criterion.presentation_definition.clone());
+    let candidates = select_credentials(&presentation_definition, &[held])
         .expect("held credential satisfies the manifest DCQL");
     let vp_token = build_vp_token(
         &candidates,

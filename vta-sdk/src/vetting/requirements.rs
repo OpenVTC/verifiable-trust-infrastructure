@@ -11,6 +11,10 @@
 //!
 //! Keeping the counting in one place means the checklist and the verdict cannot
 //! drift apart on what "two distinct vetters" means.
+//!
+//! The requirements are the published [`VettingRequirements`] of
+//! `vtc/join-requests/manifest/0.2`, and statements are counted in its
+//! vocabulary.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,7 +22,9 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use super::{VettingError, digest};
-use crate::protocols::vetting::{DeclaredRelationship, VettingMethod, VettingRequirements};
+use crate::protocols::vetting::{
+    VettingMethod, VettingRelationship, VettingRequirements, max_statement_age,
+};
 
 /// The member a criterion's `requirementsDigest` sits in, excluded from its own
 /// digest.
@@ -27,6 +33,9 @@ pub const REQUIREMENTS_DIGEST_MEMBER: &str = "requirementsDigest";
 /// `digestMultibase` over a manifest criterion without its own
 /// `requirementsDigest`. An applicant records it when it starts gathering; a
 /// changed digest means the requirements changed.
+///
+/// Pass the criterion as received: a parsed criterion re-serialised drops any
+/// member its generated type does not name, and so digests to something else.
 ///
 /// # Errors
 ///
@@ -55,7 +64,7 @@ pub struct StatementFacts {
     /// Documentation the vetter relied on.
     pub document_classes: Vec<String>,
     /// Declared relationship.
-    pub declared_relationship: DeclaredRelationship,
+    pub declared_relationship: VettingRelationship,
     /// Identity commitment.
     pub identity_commitment: String,
     /// `validFrom`.
@@ -126,7 +135,7 @@ impl Need {
     pub fn to_wire(self) -> String {
         match self {
             Self::Statements(n) => format!("vetting:statements:{n}"),
-            Self::Method(method, n) => format!("vetting:method:{}:{n}", method.as_str()),
+            Self::Method(method, n) => format!("vetting:method:{method}:{n}"),
         }
     }
 
@@ -139,7 +148,7 @@ impl Need {
             return n.parse().ok().map(Self::Statements);
         }
         let (method, n) = rest.strip_prefix("method:")?.rsplit_once(':')?;
-        Some(Self::Method(VettingMethod::parse(method)?, n.parse().ok()?))
+        Some(Self::Method(method.parse().ok()?, n.parse().ok()?))
     }
 }
 
@@ -153,13 +162,14 @@ pub struct Evaluation {
     /// Counted statements by method.
     pub by_method: BTreeMap<VettingMethod, u32>,
     /// Counted statements by declared relationship.
-    pub by_relationship: BTreeMap<DeclaredRelationship, u32>,
+    pub by_relationship: BTreeMap<VettingRelationship, u32>,
     /// All presented statements carry one identity commitment (or the
     /// requirements do not ask for consistency).
     pub commitments_consistent: bool,
     /// No relationship cap is exceeded.
     pub independence_ok: bool,
-    /// What is still missing. Empty when the count and method floors are met.
+    /// What is still missing, methods in their declared order. Empty when the
+    /// count and method floors are met.
     pub needs: Vec<Need>,
 }
 
@@ -179,13 +189,17 @@ impl Evaluation {
     }
 }
 
+fn saturating_u32(n: u64) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
 /// Count `statements` against `requirements` at `now`.
 ///
 /// Statements from the same vetter count once; the most recent eligible one is
-/// the one kept. Requirements are assumed valid
-/// ([`VettingRequirements::validate`]); an unparseable `maxStatementAge` is
-/// read as the most restrictive interpretation, so nothing counts as young
-/// enough.
+/// the one kept. Requirements are assumed to pass their
+/// [`CheckShape`](crate::protocols::vetting::CheckShape); a `maxStatementAge`
+/// too large to represent is read as the most restrictive interpretation, so
+/// nothing counts as young enough.
 #[must_use]
 pub fn evaluate(
     requirements: &VettingRequirements,
@@ -193,7 +207,9 @@ pub fn evaluate(
     now: DateTime<Utc>,
 ) -> Evaluation {
     let max_age_declared = requirements.max_statement_age.is_some();
-    let max_age = requirements.max_statement_age();
+    let max_age = max_statement_age(requirements);
+    let required_claims = requirements.required_claims.iter().flatten();
+    let independence = requirements.independence.clone().unwrap_or_default();
 
     let mut ordered: Vec<&StatementFacts> = statements.iter().collect();
     ordered.sort_by_key(|s| std::cmp::Reverse(s.valid_from));
@@ -202,7 +218,7 @@ pub fn evaluate(
     let mut not_counted = Vec::new();
     let mut vetters = BTreeSet::new();
     let mut by_method: BTreeMap<VettingMethod, u32> = BTreeMap::new();
-    let mut by_relationship: BTreeMap<DeclaredRelationship, u32> = BTreeMap::new();
+    let mut by_relationship: BTreeMap<VettingRelationship, u32> = BTreeMap::new();
 
     for s in ordered {
         let mut reasons = Vec::new();
@@ -219,16 +235,23 @@ pub fn evaluate(
             reasons.push(NotCounted::MethodNotAccepted);
         }
         if let Some(floor) = &requirements.accepted_document_classes {
-            let documented = s.document_classes.iter().any(|d| floor.contains(d));
+            let documented = s
+                .document_classes
+                .iter()
+                .any(|d| floor.iter().any(|f| f.as_str() == d.as_str()));
             let exempt =
                 s.method == VettingMethod::PriorAcquaintance && s.document_classes.is_empty();
             if !documented && !exempt {
                 reasons.push(NotCounted::DocumentationNotAccepted);
             }
         }
-        for claim in &requirements.required_claims {
-            if !s.claims_verified.contains(claim) {
-                reasons.push(NotCounted::ClaimNotVerified(claim.clone()));
+        for claim in required_claims.clone() {
+            if !s
+                .claims_verified
+                .iter()
+                .any(|c| c.as_str() == claim.as_str())
+            {
+                reasons.push(NotCounted::ClaimNotVerified(claim.to_string()));
             }
         }
         let too_old = match max_age {
@@ -252,9 +275,9 @@ pub fn evaluate(
         }
     }
 
-    let commitments_consistent = !requirements
-        .independence
+    let commitments_consistent = !independence
         .require_consistent_identity_commitment
+        .unwrap_or(false)
         || statements
             .iter()
             .map(|s| s.identity_commitment.as_str())
@@ -262,21 +285,27 @@ pub fn evaluate(
             .len()
             <= 1;
 
-    let independence_ok = requirements
-        .independence
+    let independence_ok = independence
         .max_by_declared_relationship
         .iter()
-        .all(|(rel, max)| by_relationship.get(rel).copied().unwrap_or(0) <= *max);
+        .all(|(rel, max)| u64::from(by_relationship.get(rel).copied().unwrap_or(0)) <= *max);
 
     let mut needs = Vec::new();
-    let have = u32::try_from(counted.len()).unwrap_or(u32::MAX);
-    if have < requirements.min_statements {
-        needs.push(Need::Statements(requirements.min_statements - have));
+    let have = u64::try_from(counted.len()).unwrap_or(u64::MAX);
+    let wanted = requirements.min_statements.get();
+    if have < wanted {
+        needs.push(Need::Statements(saturating_u32(wanted - have)));
     }
-    for (method, floor) in &requirements.min_by_method {
-        let got = by_method.get(method).copied().unwrap_or(0);
-        if got < *floor {
-            needs.push(Need::Method(*method, floor - got));
+    // The floors arrive as a map; report them in a stable order.
+    let floors: BTreeMap<VettingMethod, u64> = requirements
+        .min_by_method
+        .iter()
+        .map(|(m, n)| (*m, *n))
+        .collect();
+    for (method, floor) in floors {
+        let got = u64::from(by_method.get(&method).copied().unwrap_or(0));
+        if got < floor {
+            needs.push(Need::Method(method, saturating_u32(floor - got)));
         }
     }
 
@@ -323,7 +352,7 @@ mod tests {
             method,
             claims_verified: vec!["name.legal".into()],
             document_classes: vec!["passport".into()],
-            declared_relationship: DeclaredRelationship::None,
+            declared_relationship: VettingRelationship::None,
             identity_commitment: "zSame".into(),
             valid_from: Utc::now() - Duration::days(age_days),
             community_matches: true,
@@ -380,6 +409,35 @@ mod tests {
     }
 
     #[test]
+    fn method_floors_are_reported_in_a_stable_order() {
+        let mut req = requirements();
+        req.accepted_methods = vec![
+            VettingMethod::InPerson,
+            VettingMethod::Video,
+            VettingMethod::PriorAcquaintance,
+        ];
+        req.min_by_method = [
+            (VettingMethod::PriorAcquaintance, 1),
+            (VettingMethod::Video, 1),
+            (VettingMethod::InPerson, 1),
+        ]
+        .into_iter()
+        .collect();
+        for _ in 0..8 {
+            let e = evaluate(&req, &[], Utc::now());
+            assert_eq!(
+                e.needs,
+                vec![
+                    Need::Statements(2),
+                    Need::Method(VettingMethod::InPerson, 1),
+                    Need::Method(VettingMethod::Video, 1),
+                    Need::Method(VettingMethod::PriorAcquaintance, 1),
+                ]
+            );
+        }
+    }
+
+    #[test]
     fn ineligible_revoked_stale_and_foreign_statements_do_not_count() {
         let mut ineligible = fact("s1", "a", VettingMethod::InPerson, 1);
         ineligible.eligible = false;
@@ -416,7 +474,7 @@ mod tests {
     #[test]
     fn relationship_caps_are_independence_not_count() {
         let mut family = fact("s2", "dave", VettingMethod::InPerson, 1);
-        family.declared_relationship = DeclaredRelationship::Family;
+        family.declared_relationship = VettingRelationship::Family;
         let e = evaluate(
             &requirements(),
             &[fact("s1", "carol", VettingMethod::Video, 1), family],
@@ -445,13 +503,13 @@ mod tests {
         let mut known = fact("s1", "carol", VettingMethod::PriorAcquaintance, 1);
         known.document_classes.clear();
         let mut odd = fact("s2", "dave", VettingMethod::InPerson, 1);
-        odd.document_classes = vec!["library-card".into()];
+        odd.document_classes = vec!["libraryCard".into()];
 
         let e = evaluate(&requirements(), &[known.clone(), odd.clone()], Utc::now());
         assert!(e.satisfied(), "each vetter decides (D16): {e:?}");
 
         let mut floored = requirements();
-        floored.accepted_document_classes = Some(vec!["passport".into()]);
+        floored.accepted_document_classes = Some(vec!["passport".try_into().unwrap()]);
         let e = evaluate(&floored, &[known, odd], Utc::now());
         assert_eq!(
             e.counted,
@@ -461,9 +519,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_age_limit_counts_nothing() {
+    fn an_age_limit_too_large_to_represent_counts_nothing() {
         let mut req = requirements();
-        req.max_statement_age = Some("P1Y".into());
+        req.max_statement_age = Some("P9999999999999999999W".try_into().unwrap());
         let e = evaluate(
             &req,
             &[fact("s1", "carol", VettingMethod::InPerson, 0)],

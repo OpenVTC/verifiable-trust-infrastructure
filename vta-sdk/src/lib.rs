@@ -167,6 +167,10 @@ pub mod resolver;
 // just to import `protocol::services::validate_service_url`.
 pub mod protocol;
 pub mod protocols;
+// OpenAPI schemas for the published Trust Task types a service serves over
+// REST, rendered from the schemas the generated types embed.
+#[cfg(feature = "openapi")]
+pub mod openapi;
 #[cfg(feature = "provision-client")]
 pub mod provision_client;
 #[cfg(feature = "provision-integration")]

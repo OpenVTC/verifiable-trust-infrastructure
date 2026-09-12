@@ -2042,8 +2042,8 @@ async fn vetting_statement_from(
     valid_from: chrono::DateTime<chrono::Utc>,
 ) -> Value {
     use vta_sdk::protocols::vetting::{
-        DeclaredRelationship, IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement,
-        VettingMethod,
+        IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement, VettingMethod,
+        VettingRelationship,
     };
     use vta_sdk::vetting::statement::{StatementDraft, sign_statement};
     let now = valid_from;
@@ -2056,12 +2056,12 @@ async fn vetting_statement_from(
                 endorsement_type: IDENTITY_VETTING_ENDORSEMENT_TYPE.into(),
                 community: vtc_service::test_support::TEST_VTC_DID.into(),
                 method: VettingMethod::Video,
-                document_classes: vec!["passport".into()],
-                claims_verified: vec!["name.legal".into()],
+                document_classes: vec!["passport".try_into().unwrap()],
+                claims_verified: vec!["name.legal".try_into().unwrap()],
                 liveness_confirmed: true,
                 identity_commitment: "zSameIdentity".into(),
                 card_digest_multibase: format!("zCard{n}"),
-                declared_relationship: DeclaredRelationship::None,
+                declared_relationship: VettingRelationship::None,
                 attestation_text_digest: None,
             },
             valid_from: now,
@@ -2346,7 +2346,7 @@ async fn only_an_admin_can_name_a_vetter() {
 /// `vta_sdk::vetting::eligibility`.
 #[tokio::test]
 async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant() {
-    use vta_sdk::protocols::vetting::VetterGrantBody;
+    use vta_sdk::protocols::vetting::vetters::grant::v0_1 as grant_wire;
     use vta_sdk::trust_task_proof::TrustTaskVmResolver;
     use vta_sdk::vetting::eligibility::{
         EligibilityExpectations, build_eligibility_vp, verify_eligibility_vp,
@@ -2399,11 +2399,10 @@ async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant()
     let grant = vtc_service::vetting::vetters::grant(
         &vtc.state,
         ADMIN_DID,
-        &VetterGrantBody {
-            member_did: vetter.clone(),
-            validity_seconds: Some(30 * 86_400),
-            ext: None,
-        },
+        &serde_json::from_value::<grant_wire::Payload>(
+            json!({ "memberDid": vetter, "validitySeconds": 30 * 86_400 }),
+        )
+        .unwrap(),
     )
     .await
     .expect("grant");
@@ -2807,6 +2806,26 @@ async fn only_a_member_holding_a_live_grant_may_publish_a_profile() {
 }
 
 #[tokio::test]
+async fn a_profile_whose_event_url_is_not_an_absolute_https_uri_is_malformed() {
+    // An event `url` is `format: uri`, which the schema validator does not
+    // assert: the community refuses one by hand.
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    seed_vetter(&fix, &carol).await;
+    for url in [
+        "https://kernel.example/maintainers meetup",
+        "https://kernel.example/meetup\u{7}",
+        "http://kernel.example/meetup",
+    ] {
+        let mut profile = carols_profile(true);
+        profile["events"][1]["url"] = json!(url);
+        let (status, body) = publish_profile(&fix, [0x11; 32], profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url:?}: {body}");
+        assert_eq!(tt_error_code(&body), "malformedRequest", "{url:?}");
+    }
+}
+
+#[tokio::test]
 async fn unlisting_hides_a_profile_and_revoking_the_grant_deletes_it() {
     use vtc_service::vetting::profiles::get_profile;
     let fix = build_fixture().await;
@@ -2848,12 +2867,12 @@ async fn unlisting_hides_a_profile_and_revoking_the_grant_deletes_it() {
 
 #[tokio::test]
 async fn an_older_profile_document_does_not_replace_a_newer_one() {
-    use vta_sdk::protocols::vetting::VetterProfileBody;
+    use vta_sdk::protocols::vetting::vetters::profile::v0_1::Payload as VetterProfile;
     use vtc_service::vetting::profiles::publish;
     let fix = build_fixture().await;
     let (carol, _) = did_key_secret([0x11; 32]);
     seed_vetter(&fix, &carol).await;
-    let body: VetterProfileBody = serde_json::from_value(carols_profile(true)).unwrap();
+    let body: VetterProfile = serde_json::from_value(carols_profile(true)).unwrap();
     let now = chrono::Utc::now();
 
     publish(&fix.state, &carol, &body, Some(now)).await.unwrap();
@@ -2953,14 +2972,22 @@ async fn branding_is_published_on_manifest_0_2_only() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["accentColor"], "#1a2b3c", "stored in lower case");
 
-    let (status, body) = admin_rest(
-        &fix,
-        "PUT",
-        "/v1/community/branding",
-        Some(json!({ "logoUrl": "http://kernel.example/logo.svg" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // `logoUrl` is `format: uri`: an absolute https URI, which the schema
+    // validator does not assert and the community checks by hand.
+    for logo in [
+        "http://kernel.example/logo.svg",
+        "https://kernel.example/my logo.svg",
+        "https://kernel.example/logo\u{7}.svg",
+    ] {
+        let (status, body) = admin_rest(
+            &fix,
+            "PUT",
+            "/v1/community/branding",
+            Some(json!({ "logoUrl": logo })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{logo:?}: {body}");
+    }
 
     let (_did, doc) = signed_trust_task(JOIN_REQUEST_MANIFEST_0_2_TYPE, json!({})).await;
     let (status, body) = post_tt(&fix.router, doc).await;

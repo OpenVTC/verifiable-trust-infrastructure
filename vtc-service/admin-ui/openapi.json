@@ -1445,7 +1445,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommunityBranding"
+                  "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2CommunityBranding"
                 }
               }
             }
@@ -1470,7 +1470,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CommunityBranding"
+                "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2CommunityBranding"
               }
             }
           },
@@ -1482,7 +1482,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommunityBranding"
+                  "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2CommunityBranding"
                 }
               }
             }
@@ -2282,7 +2282,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JoinRequestManifestResponseBody"
+                  "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Response"
                 }
               }
             }
@@ -4578,7 +4578,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VetterGrantBody"
+                "$ref": "#/components/schemas/VtcVettingVettersGrantV0_1Payload"
               }
             }
           },
@@ -4590,7 +4590,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VetterGrantResponseBody"
+                  "$ref": "#/components/schemas/VtcVettingVettersGrantV0_1Response"
                 }
               }
             }
@@ -4600,7 +4600,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VetterGrantResponseBody"
+                  "$ref": "#/components/schemas/VtcVettingVettersGrantV0_1Response"
                 }
               }
             }
@@ -4634,7 +4634,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VetterListBody"
+                "$ref": "#/components/schemas/VtcVettingVettersListV0_1Payload"
               }
             }
           },
@@ -4646,7 +4646,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VetterListResponseBody"
+                  "$ref": "#/components/schemas/VtcVettingVettersListV0_1Response"
                 }
               }
             }
@@ -4692,7 +4692,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VetterResendResponseBody"
+                  "$ref": "#/components/schemas/VtcVettingVettersResendV0_1Response"
                 }
               }
             }
@@ -4753,11 +4753,15 @@
             "description": "The DCQL query, stored as JSON. Structurally validated and every\nreferenced type checked against the registry when stored (see\n[`validate_accepts_query`])."
           },
           "vetting": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Peer identity vetting this criterion requires, advertised to applicants\nin the join manifest (0.2). Every number in it is this community's\npolicy. Checked by [`VettingRequirements::validate`] when stored; the\nadmin route additionally requires its `statementType` to be a registered\nendorsement type."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2VettingRequirements",
+                "description": "Peer identity vetting this criterion requires, advertised to applicants\nin the join manifest (0.2): the manifest's own `VettingRequirements`.\nEvery number in it is this community's policy. Checked against the\nmanifest schema when stored; the admin route additionally requires its\n`statementType` to be a registered endorsement type."
+              }
+            ]
           }
         }
       },
@@ -5437,45 +5441,6 @@
             "description": "Echoes the install token's `jti`. Consumer must pass this\nback to `claim/finish` so the server can index the stored\nregistration state."
           }
         }
-      },
-      "CommunityBranding": {
-        "type": "object",
-        "description": "A community's presentation — `join-requests/manifest/0.2`'s `branding`, and\nthe body of the VTC's `GET`/`PUT /v1/community/branding`. Every member is\noptional. Presentation only: a client never trusts a community because of\nhow it is branded.",
-        "properties": {
-          "accentColor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "`#rrggbb`."
-          },
-          "displayName": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The name to show; 1–128 characters."
-          },
-          "ext": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Value",
-                "description": "Ecosystem-defined extension members (SPEC §4.5.1)."
-              }
-            ]
-          },
-          "logoUrl": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "An `https` URL of at most 2048 characters."
-          }
-        },
-        "additionalProperties": false
       },
       "CommunityProfile": {
         "type": "object",
@@ -7066,36 +7031,6 @@
           }
         }
       },
-      "JoinRequestManifestResponseBody": {
-        "type": "object",
-        "description": "Manifest response: the community's join evidence requirements.",
-        "required": [
-          "communityDid",
-          "criteria"
-        ],
-        "properties": {
-          "branding": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/CommunityBranding",
-                "description": "How the community presents itself to an applicant's client (manifest\n0.2). Absent when the community has set none, and always absent from a\n0.1 answer."
-              }
-            ]
-          },
-          "communityDid": {
-            "type": "string"
-          },
-          "criteria": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ManifestCriterion"
-            }
-          }
-        }
-      },
       "JoinRequestVetting": {
         "type": "object",
         "description": "The vetting facts a join request was decided on — the policy's\n`input.evidence.vetting`, in lowerCamelCase.",
@@ -7467,132 +7402,6 @@
               "$ref": "#/components/schemas/RegisteredCredential"
             },
             "description": "`credentials`, the name `auth/passkey/list/0.1` publishes. It was\n`passkeys` until #1112 — the same object under a name the schema does\nnot define, so no conforming client could find it."
-          }
-        }
-      },
-      "ListedVetter": {
-        "type": "object",
-        "description": "One vetter in a listing: the published profile, the DID and the grant's\nexpiry — nothing else about the member.",
-        "required": [
-          "vetterDid",
-          "languages",
-          "methods",
-          "acceptsDocumentation",
-          "events",
-          "grantValidUntil",
-          "updatedAt"
-        ],
-        "properties": {
-          "acceptsDocumentation": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "See [`VetterProfileBody::accepts_documentation`]."
-          },
-          "availability": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "See [`VetterProfileBody::availability`]."
-          },
-          "contactHint": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "See [`VetterProfileBody::contact_hint`]."
-          },
-          "displayName": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "See [`VetterProfileBody::display_name`]."
-          },
-          "events": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/VetterEvent"
-            },
-            "description": "The profile's events that have not ended (`endDate` ≥ today, UTC)."
-          },
-          "grantValidUntil": {
-            "type": "string",
-            "format": "date-time",
-            "description": "When the vetter's grant expires."
-          },
-          "languages": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "See [`VetterProfileBody::languages`]."
-          },
-          "location": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/VetterLocation",
-                "description": "See [`VetterProfileBody::location`]."
-              }
-            ]
-          },
-          "methods": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/VettingMethod"
-            },
-            "description": "See [`VetterProfileBody::methods`]."
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "When the profile was last published."
-          },
-          "vetterDid": {
-            "type": "string",
-            "description": "The vetter's DID — where a `vetting/request` goes."
-          }
-        },
-        "additionalProperties": false
-      },
-      "ManifestCriterion": {
-        "type": "object",
-        "description": "One community evidence requirement — a named DCQL Presentation\nDefinition the applicant may present against.",
-        "required": [
-          "id",
-          "presentationDefinition"
-        ],
-        "properties": {
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "presentationDefinition": {
-            "$ref": "#/components/schemas/Value"
-          },
-          "requirementsDigest": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "`digestMultibase` over this criterion without this member (manifest\n0.2). An applicant records it when it starts gathering, so a change to\nthe requirements mid-application is detectable."
-          },
-          "vetting": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Peer identity vetting this criterion requires (manifest 0.2). Absent on\na criterion that needs none."
           }
         }
       },
@@ -8673,11 +8482,15 @@
             "$ref": "#/components/schemas/Value"
           },
           "vetting": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Peer identity vetting this criterion requires, advertised in the join\nmanifest (0.2). Its `statementType` must be a registered endorsement type."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2VettingRequirements",
+                "description": "Peer identity vetting this criterion requires, advertised in the join\nmanifest (0.2). Its `statementType` must be a registered endorsement type."
+              }
+            ]
           }
         }
       },
@@ -9955,76 +9768,6 @@
           }
         }
       },
-      "VetterEvent": {
-        "type": "object",
-        "description": "An event a vetter will attend and vet at — a conference, a summit.",
-        "required": [
-          "name",
-          "startDate",
-          "endDate"
-        ],
-        "properties": {
-          "endDate": {
-            "type": "string",
-            "format": "date",
-            "description": "Last day, `YYYY-MM-DD`; not before `startDate`, at most 31 days after it."
-          },
-          "location": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/VetterLocation",
-                "description": "Where it is held."
-              }
-            ]
-          },
-          "name": {
-            "type": "string",
-            "description": "The event's name; 1–200 characters."
-          },
-          "startDate": {
-            "type": "string",
-            "format": "date",
-            "description": "First day, `YYYY-MM-DD`."
-          },
-          "url": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The event's page; `https`, at most 2048 characters."
-          }
-        },
-        "additionalProperties": false
-      },
-      "VetterGrantBody": {
-        "type": "object",
-        "description": "`vtc/vetting/vetters/grant/0.1` payload.",
-        "required": [
-          "memberDid"
-        ],
-        "properties": {
-          "ext": {
-            "description": "Ecosystem-defined extension members (SPEC §4.5.1)."
-          },
-          "memberDid": {
-            "type": "string",
-            "description": "The member to name as a vetter."
-          },
-          "validitySeconds": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "How long the grant is valid, from one day to two years; one year when\nabsent.",
-            "minimum": 0
-          }
-        },
-        "additionalProperties": false
-      },
       "VetterGrantListResponse": {
         "type": "object",
         "description": "`GET /v1/vetting/vetters` response: every grant, newest first.",
@@ -10040,40 +9783,6 @@
             "description": "The grants."
           }
         }
-      },
-      "VetterGrantResponseBody": {
-        "type": "object",
-        "description": "`vtc/vetting/vetters/grant/0.1#response` payload.\n\nGranting converges: while a grant is live and unexpired, asking again\nreturns it rather than issuing a second.",
-        "required": [
-          "endorsementId",
-          "credentialId",
-          "validFrom",
-          "validUntil"
-        ],
-        "properties": {
-          "credentialId": {
-            "type": "string",
-            "description": "The vetter role credential's `id`."
-          },
-          "endorsementId": {
-            "type": "string",
-            "description": "The community's record of the grant — the id its revocation names."
-          },
-          "ext": {
-            "description": "Ecosystem-defined extension members (SPEC §4.5.1)."
-          },
-          "validFrom": {
-            "type": "string",
-            "format": "date-time",
-            "description": "The credential's `validFrom`."
-          },
-          "validUntil": {
-            "type": "string",
-            "format": "date-time",
-            "description": "The credential's `validUntil`."
-          }
-        },
-        "additionalProperties": false
       },
       "VetterGrantRow": {
         "type": "object",
@@ -10146,146 +9855,6 @@
           }
         }
       },
-      "VetterListBody": {
-        "type": "object",
-        "description": "`vtc/vetting/vetters/list/0.1` payload. Every filter is optional; filters\ncombine with AND.",
-        "properties": {
-          "city": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Case-insensitive exact match on `location.city`."
-          },
-          "country": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "ISO 3166-1 alpha-2, uppercase."
-          },
-          "cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The `nextCursor` of the previous page; at most 512 characters."
-          },
-          "eventFrom": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date",
-            "description": "With `eventTo`, a date range a listed event must overlap; an open end is\nunbounded."
-          },
-          "eventName": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Case-insensitive substring of a listed event's name; at most 200\ncharacters."
-          },
-          "eventTo": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date",
-            "description": "See [`Self::event_from`]."
-          },
-          "ext": {
-            "description": "Ecosystem-defined extension members (SPEC §4.5.1)."
-          },
-          "language": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "A BCP 47 tag. Matches a listed tag equal to it, or one it is a prefix of\nat a subtag boundary (`de` matches `de-AT`). Compared case-insensitively."
-          },
-          "limit": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int32",
-            "description": "Page size, 1–100; 50 when absent.",
-            "minimum": 0
-          },
-          "method": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/VettingMethod",
-                "description": "A method the vetter offers."
-              }
-            ]
-          },
-          "region": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Case-insensitive exact match on `location.region`."
-          }
-        },
-        "additionalProperties": false
-      },
-      "VetterListResponseBody": {
-        "type": "object",
-        "description": "`vtc/vetting/vetters/list/0.1#response` payload.",
-        "required": [
-          "vetters"
-        ],
-        "properties": {
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Pass as `cursor`, with the same filters, for the next page; absent on\nthe last."
-          },
-          "vetters": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ListedVetter"
-            },
-            "description": "This page, in the listing's order."
-          }
-        },
-        "additionalProperties": false
-      },
-      "VetterLocation": {
-        "type": "object",
-        "description": "Where a vetter is, or where an event is held.",
-        "required": [
-          "country"
-        ],
-        "properties": {
-          "city": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "City; 1–128 characters."
-          },
-          "country": {
-            "type": "string",
-            "description": "ISO 3166-1 alpha-2, uppercase."
-          },
-          "region": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Region, state or province; 1–128 characters."
-          }
-        },
-        "additionalProperties": false
-      },
       "VetterProfileSummary": {
         "type": "object",
         "description": "What an admin sees of a vetter's published profile.",
@@ -10329,7 +9898,7 @@
           "methods": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VettingMethod"
+              "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1VettingMethod"
             },
             "description": "The profile's `methods`."
           },
@@ -10339,35 +9908,6 @@
             "description": "When the profile was last published."
           }
         }
-      },
-      "VetterResendResponseBody": {
-        "type": "object",
-        "description": "`vtc/vetting/vetters/resend/0.1#response` payload — also the answer to the\nadmin `POST /v1/vetting/vetters/{memberDid}/resend`.",
-        "required": [
-          "credentialId",
-          "validUntil"
-        ],
-        "properties": {
-          "credentialId": {
-            "type": "string",
-            "description": "The re-delivered credential's `id`."
-          },
-          "validUntil": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Its `validUntil`."
-          }
-        },
-        "additionalProperties": false
-      },
-      "VettingMethod": {
-        "type": "string",
-        "description": "How a vetter established who the applicant is.",
-        "enum": [
-          "inPerson",
-          "video",
-          "priorAcquaintance"
-        ]
       },
       "VettingRevocationListResponse": {
         "type": "object",
@@ -10443,12 +9983,810 @@
           }
         }
       },
+      "VtcJoinRequestsManifestV0_2ClaimType": {
+        "type": "string",
+        "description": "The vocabulary token naming what a value IS — `name.legal`, `phone.mobile`, `address.postal`, `person.birthDate`. Dotted, most-general segment first, so that a consumer with no knowledge of the specific token can still group by its prefix.\n\nThe token is the maintainer's own; no external vocabulary is primary. External vocabularies (vCard/jCard, OIDC standard claims, schema.org) are mappings applied at PRESENTATION by a renderer, not at rest, so that a query written in any of them can be matched without the store having to live inside any one of them.\n\nThe `x:` prefix is an open extension namespace and is not decoration. The closest prior art — Windows CardSpace's self-issued card — supported exactly fifteen predefined claim types with no extensibility, and that is the specific way it failed the requirement a holder actually has. An `x:` attribute stores, composes, binds and discloses exactly like a known one; it renders generically and matches only an explicit query.",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^(x:)?[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)*$"
+      },
+      "VtcJoinRequestsManifestV0_2CommunityBranding": {
+        "type": "object",
+        "description": "OPTIONAL. How the community asks to be shown to a prospective applicant: a name, an accent colour and a logo. Presentation only, self-asserted and unverified — `communityDid` identifies the community, never `branding`. Not part of any criterion, so not covered by a `requirementsDigest`. Every member is optional.",
+        "properties": {
+          "accentColor": {
+            "type": "string",
+            "description": "An sRGB colour as `#rrggbb`, compared case-insensitively. A community SHOULD write it in lower case.",
+            "pattern": "^#[0-9a-fA-F]{6}$"
+          },
+          "displayName": {
+            "type": "string",
+            "description": "The community's name as it asks to be shown.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Ext"
+          },
+          "logoUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "An https URL of the community's logo. Fetched by the client, so an untrusted image from wherever it points.",
+            "maxLength": 2048,
+            "pattern": "^https://"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcJoinRequestsManifestV0_2Criterion": {
+        "type": "object",
+        "required": [
+          "id",
+          "presentationDefinition"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Plain-language summary of the criterion, authored by the community and shown to prospective applicants. Informative: where it and `vetting` disagree, `vetting` governs.",
+            "maxLength": 1024
+          },
+          "id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "presentationDefinition": {
+            "type": "object",
+            "description": "The presentation-definition an applicant must satisfy for this criterion (opaque here)."
+          },
+          "requirementsDigest": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2DigestMultibase"
+          },
+          "vetting": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2VettingRequirements"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcJoinRequestsManifestV0_2DigestMultibase": {
+        "type": "string",
+        "description": "A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.\n\nMultihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.\n\nThis definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.\n\nRestricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that \"interoperability is not guaranteed between implementations using such values\", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.",
+        "minLength": 16,
+        "pattern": "^(z[1-9A-HJ-NP-Za-km-z]+|u[A-Za-z0-9_-]+)$"
+      },
+      "VtcJoinRequestsManifestV0_2Duration": {
+        "type": "string",
+        "description": "An ISO 8601 duration in weeks, days, hours, minutes and seconds only (e.g. `P120D`, `P2W`, `P1DT12H`, `PT15M`). Years and months are refused: their length depends on the calendar, and an age limit that means different things on different days is not a limit.",
+        "maxLength": 32,
+        "pattern": "^P(([0-9]+W)?([0-9]+D)?T([0-9]+H([0-9]+M)?([0-9]+S)?|[0-9]+M([0-9]+S)?|[0-9]+S)|[0-9]+W([0-9]+D)?|[0-9]+D)$"
+      },
+      "VtcJoinRequestsManifestV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcJoinRequestsManifestV0_2Response": {
+        "type": "object",
+        "required": [
+          "communityDid",
+          "criteria"
+        ],
+        "properties": {
+          "branding": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2CommunityBranding"
+          },
+          "communityDid": {
+            "type": "string",
+            "pattern": "^did:"
+          },
+          "criteria": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Criterion"
+            }
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Ext"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcJoinRequestsManifestV0_2VettingDocumentation": {
+        "type": "string",
+        "description": "A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z][a-zA-Z0-9]*$"
+      },
+      "VtcJoinRequestsManifestV0_2VettingMethod": {
+        "type": "string",
+        "description": "How the vetter established that the person they checked is the person controlling the applicant's DID. `inPerson` — both people were physically together. `video` — a live, two-way video call. `priorAcquaintance` — the vetter has known or worked with this person over a period, and attests from that knowledge rather than from a document. A method is a description of what happened, not an assurance level: which methods count, and how many of each, is community policy.",
+        "enum": [
+          "inPerson",
+          "video",
+          "priorAcquaintance"
+        ]
+      },
+      "VtcJoinRequestsManifestV0_2VettingRelationship": {
+        "type": "string",
+        "description": "The vetter's own declaration of how they relate to the applicant. Declared, not verified: it exists so community policy can cap how much evidence comes from people close to the applicant, and a false declaration is the vetter's attributable act.",
+        "enum": [
+          "none",
+          "communityColleague",
+          "sameEmployer",
+          "family",
+          "otherPersonal"
+        ]
+      },
+      "VtcJoinRequestsManifestV0_2VettingRequirements": {
+        "type": "object",
+        "description": "What identity-vetting evidence a criterion needs, beyond what a presentation-definition can express: distinct eligible vetters, per-method floors, independence caps. Every number is the community's own policy. This schema supplies no defaults — an absent optional member means the community imposes no constraint of that kind, never that some protocol value applies. Deliberately open: a consumer MUST ignore members it does not recognise, so a community publishing a newer shape does not make an older client unable to read the rest. Durations: `maxStatementAge` — a statement older than this at decision time does not count (absent: no limit beyond the statement's own validity); `decisionSla` — how long after submission the community undertakes to decide, including on a referred application; `requirementsGrace` — how long an application started under an earlier `requirementsDigest` is still evaluated under that version.",
+        "required": [
+          "version",
+          "statementType",
+          "minStatements",
+          "acceptedMethods",
+          "eligibleVetters"
+        ],
+        "properties": {
+          "acceptedDocumentClasses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2VettingDocumentation"
+            },
+            "description": "Documentation a statement must have relied on in order to count. Absent — the expected case — means each vetter decides what documentation they accept, including none for prior acquaintance, and the community counts what they attest.",
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "acceptedMethods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2VettingMethod"
+            },
+            "description": "Methods whose statements count at all.",
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "decisionSla": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Duration"
+          },
+          "eligibleVetters": {
+            "type": "object",
+            "description": "How a vetter's eligibility is established.",
+            "required": [
+              "role"
+            ],
+            "properties": {
+              "role": {
+                "type": "string",
+                "description": "The role named in a community-issued `CommunityRole` endorsement credential (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds that credential.",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+              }
+            },
+            "additionalProperties": false
+          },
+          "governanceFrameworkUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the community's vetting governance — including the attestation text vetters sign — is published.",
+            "maxLength": 2048,
+            "pattern": "^https://"
+          },
+          "independence": {
+            "type": "object",
+            "description": "Caps on how much evidence may come from people close to the applicant. Absent: no caps.",
+            "properties": {
+              "maxByDeclaredRelationship": {
+                "type": "object",
+                "description": "The most counted statements that may come from vetters declaring each relationship — e.g. `{ \"family\": 0 }`.",
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "requireConsistentIdentityCommitment": {
+                "type": "boolean",
+                "description": "When true, every counted statement must carry the same identity commitment — all vetters verified the same claimed identity. Absent: false."
+              }
+            },
+            "additionalProperties": false
+          },
+          "invitation": {
+            "type": "string",
+            "description": "Whether an invitation credential must accompany the statements at submission (`required`), may (`optional`), or plays no part (`none`). Absent: the presentation-definition alone governs.",
+            "enum": [
+              "required",
+              "optional",
+              "none"
+            ]
+          },
+          "maxStatementAge": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Duration"
+          },
+          "minByMethod": {
+            "type": "object",
+            "description": "Per-method floors within `minStatements` — e.g. `{ \"inPerson\": 1 }`. Every method named MUST also be in `acceptedMethods`. Absent: no method floor.",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "minStatements": {
+            "type": "integer",
+            "description": "How many counted statements are needed, counting each vetter once however many DIDs they hold.",
+            "minimum": 1
+          },
+          "optionalClaims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2ClaimType"
+            },
+            "description": "Claim types an applicant MAY add to the card and a vetter MAY verify. They never affect whether a statement counts.",
+            "uniqueItems": true
+          },
+          "requiredClaims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2ClaimType"
+            },
+            "description": "Claim types the applicant's Vetting Card must carry, which the identity commitment is computed over, and which a counted statement must list as verified. Absent: none.",
+            "uniqueItems": true
+          },
+          "requirementsGrace": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Duration"
+          },
+          "statementType": {
+            "type": "string",
+            "format": "uri",
+            "description": "The endorsement type URI a counted vetting statement carries as `credentialSubject.endorsement.type`, as registered with the community via vtc/endorsement-types/register.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "version": {
+            "type": "string",
+            "description": "Version of this requirements object's shape. `0.1` for the members defined here.",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+          }
+        },
+        "additionalProperties": true
+      },
       "VtcRole": {
         "type": "string",
         "description": "One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.",
         "examples": [
           "admin"
         ]
+      },
+      "VtcVettingVettersGrantV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcVettingVettersGrantV0_1Payload": {
+        "type": "object",
+        "description": "A community administrator makes a member a vetter. The community issues the member a revocable `CommunityRole` endorsement credential for the `vetter` role, delivers it over credential-exchange/issue, and returns the identifiers and validity of the grant. A member who already holds a live grant gets that grant back unchanged.",
+        "required": [
+          "memberDid"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcVettingVettersGrantV0_1Ext"
+          },
+          "memberDid": {
+            "type": "string",
+            "description": "The member DID to grant the vetter role to — the subject of the role credential, and the DID the vetter signs statements with.",
+            "pattern": "^did:"
+          },
+          "validitySeconds": {
+            "type": "integer",
+            "description": "OPTIONAL. How long the role credential is valid, from issuance: at least one day, at most two years. Absent: 31536000 (365 days). Ignored when the member already holds a live grant.",
+            "maximum": 63072000,
+            "minimum": 86400
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersGrantV0_1Response": {
+        "type": "object",
+        "description": "The grant — newly issued, or the member's existing live grant.",
+        "required": [
+          "endorsementId",
+          "credentialId",
+          "validFrom",
+          "validUntil"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string",
+            "description": "The `id` of the role credential, a URI.",
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z][a-zA-Z0-9+.-]*:\\S+$"
+          },
+          "endorsementId": {
+            "type": "string",
+            "description": "The community's endorsement record for this grant — the identifier vtc/endorsements/revoke takes.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcVettingVettersGrantV0_1Ext"
+          },
+          "validFrom": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The role credential's `validFrom`."
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The role credential's `validUntil`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersListV0_1CalendarDate": {
+        "type": "string",
+        "format": "date",
+        "description": "A calendar date, `YYYY-MM-DD` (RFC 3339 full-date), with no time or zone. Compared as a UTC date.",
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      },
+      "VtcVettingVettersListV0_1CountryCode": {
+        "type": "string",
+        "description": "An ISO 3166-1 alpha-2 country code, upper case, e.g. `DE`.",
+        "pattern": "^[A-Z]{2}$"
+      },
+      "VtcVettingVettersListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcVettingVettersListV0_1LanguageTag": {
+        "type": "string",
+        "description": "A BCP 47 language tag, e.g. `en`, `de-AT`. Compared case-insensitively.",
+        "maxLength": 35,
+        "minLength": 2,
+        "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$"
+      },
+      "VtcVettingVettersListV0_1ListedVetter": {
+        "type": "object",
+        "description": "One listed vetter: the published profile without `listed` and `ext`, the vetter's DID, the expiry of their live grant, and when the profile was stored. Nothing else about the member is disclosed.",
+        "required": [
+          "vetterDid",
+          "languages",
+          "methods",
+          "acceptsDocumentation",
+          "events",
+          "grantValidUntil",
+          "updatedAt"
+        ],
+        "properties": {
+          "acceptsDocumentation": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1VetterAcceptsDocumentation"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1VetterAvailability"
+          },
+          "contactHint": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1VetterContactHint"
+          },
+          "displayName": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1VetterDisplayName"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcVettingVettersListV0_1VetterEvent"
+            },
+            "description": "The profile's events whose `endDate` is today (UTC) or later. Ended events are never returned.",
+            "maxItems": 32
+          },
+          "grantValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The `validUntil` of the vetter's live vetter role credential."
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcVettingVettersListV0_1LanguageTag"
+            },
+            "maxItems": 16,
+            "uniqueItems": true
+          },
+          "location": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1VetterLocation"
+          },
+          "methods": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1VetterMethods"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community stored this profile, as returned by vtc/vetting/vetters/profile."
+          },
+          "vetterDid": {
+            "type": "string",
+            "description": "The vetter's member DID — the subject of their vetter role credential, and the DID a vetting/request is addressed to.",
+            "pattern": "^did:"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersListV0_1Payload": {
+        "type": "object",
+        "description": "An authenticated applicant or member asks a community for its listed vetters, optionally filtered by language, location, method or event. Only active members with a live vetter grant and a profile stored with `listed: true` appear, and each entry carries only what the vetter published, their DID and their grant's expiry. Every filter is optional; filters combine with AND.",
+        "properties": {
+          "city": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1PlaceName"
+          },
+          "country": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1CountryCode"
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Opaque continuation token from a previous page's `nextCursor`, sent with the same filters.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "eventFrom": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1CalendarDate"
+          },
+          "eventName": {
+            "type": "string",
+            "description": "Matches an event whose `name` contains this text, case-insensitively.",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "eventTo": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1CalendarDate"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1Ext"
+          },
+          "language": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1LanguageTag"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Most entries to return. Absent: 50.",
+            "maximum": 100,
+            "minimum": 1
+          },
+          "method": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1VettingMethod"
+          },
+          "region": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1PlaceName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersListV0_1PlaceName": {
+        "type": "string",
+        "description": "A region or city name as the vetter writes it. Compared case-insensitively and otherwise exactly.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcVettingVettersListV0_1Response": {
+        "type": "object",
+        "description": "One page of listed vetters matching every filter sent.",
+        "required": [
+          "vetters"
+        ],
+        "properties": {
+          "nextCursor": {
+            "type": "string",
+            "description": "Present when more entries match; send it as `cursor`, with the same filters, for the next page. Absent on the last page.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "vetters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcVettingVettersListV0_1ListedVetter"
+            },
+            "description": "The page, in the order Conformance defines. May be empty.",
+            "maxItems": 100
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersListV0_1VetterAcceptsDocumentation": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcVettingVettersListV0_1VettingDocumentation"
+        },
+        "description": "What documentation the vetter relies on, in the same tokens as vetting/request's `acceptsDocumentation` — `passport`, `nationalId`, `driverLicence`, `none`, or another lowerCamelCase class. The vetter's own choice; empty says nothing either way.",
+        "maxItems": 16,
+        "uniqueItems": true
+      },
+      "VtcVettingVettersListV0_1VetterAvailability": {
+        "type": "string",
+        "description": "Vetter-authored free text on when they are available to vet. Attributed to the vetter.",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcVettingVettersListV0_1VetterContactHint": {
+        "type": "string",
+        "description": "Vetter-authored free text on how to obtain a ticket from them, e.g. `Find me at the OpenVTC booth`. A hint, not an address a request can be sent to: vetting/request still needs a ticket or an introduction the vetter accepts.",
+        "maxLength": 300,
+        "minLength": 1
+      },
+      "VtcVettingVettersListV0_1VetterDisplayName": {
+        "type": "string",
+        "description": "The name the vetter chooses to be listed under. Self-asserted and unverified: it is not the name on any document, and a client MUST attribute it to the vetter.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcVettingVettersListV0_1VetterEvent": {
+        "type": "object",
+        "description": "An event the vetter will attend and vet at. `endDate` is on or after `startDate` and no more than 31 days after it; JSON Schema cannot compare two members, so the community checks both and refuses a violation with `malformedRequest`.",
+        "required": [
+          "name",
+          "startDate",
+          "endDate"
+        ],
+        "properties": {
+          "endDate": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1CalendarDate"
+          },
+          "location": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1VetterLocation"
+          },
+          "name": {
+            "type": "string",
+            "description": "The event's name, e.g. `Linux Plumbers Conference 2026`.",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "startDate": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1CalendarDate"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "OPTIONAL. The event's own https page.",
+            "maxLength": 2048,
+            "pattern": "^https://"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersListV0_1VetterLocation": {
+        "type": "object",
+        "description": "Where a vetter can meet people, as coarse as the vetter chooses: a country, optionally a region, optionally a city. Never a street address.",
+        "required": [
+          "country"
+        ],
+        "properties": {
+          "city": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1PlaceName"
+          },
+          "country": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1CountryCode"
+          },
+          "region": {
+            "$ref": "#/components/schemas/VtcVettingVettersListV0_1PlaceName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersListV0_1VetterMethods": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcVettingVettersListV0_1VettingMethod"
+        },
+        "description": "The methods the vetter offers, from `inPerson`, `video`, `priorAcquaintance`.",
+        "maxItems": 3,
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "VtcVettingVettersListV0_1VettingDocumentation": {
+        "type": "string",
+        "description": "A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z][a-zA-Z0-9]*$"
+      },
+      "VtcVettingVettersListV0_1VettingMethod": {
+        "type": "string",
+        "description": "How the vetter established that the person they checked is the person controlling the applicant's DID. `inPerson` — both people were physically together. `video` — a live, two-way video call. `priorAcquaintance` — the vetter has known or worked with this person over a period, and attests from that knowledge rather than from a document. A method is a description of what happened, not an assurance level: which methods count, and how many of each, is community policy.",
+        "enum": [
+          "inPerson",
+          "video",
+          "priorAcquaintance"
+        ]
+      },
+      "VtcVettingVettersProfileV0_1CalendarDate": {
+        "type": "string",
+        "format": "date",
+        "description": "A calendar date, `YYYY-MM-DD` (RFC 3339 full-date), with no time or zone. Compared as a UTC date.",
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      },
+      "VtcVettingVettersProfileV0_1CountryCode": {
+        "type": "string",
+        "description": "An ISO 3166-1 alpha-2 country code, upper case, e.g. `DE`.",
+        "pattern": "^[A-Z]{2}$"
+      },
+      "VtcVettingVettersProfileV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcVettingVettersProfileV0_1LanguageTag": {
+        "type": "string",
+        "description": "A BCP 47 language tag, e.g. `en`, `de-AT`. Compared case-insensitively.",
+        "maxLength": 35,
+        "minLength": 2,
+        "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$"
+      },
+      "VtcVettingVettersProfileV0_1PlaceName": {
+        "type": "string",
+        "description": "A region or city name as the vetter writes it. Compared case-insensitively and otherwise exactly.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcVettingVettersProfileV0_1Response": {
+        "type": "object",
+        "description": "The community stored the profile.",
+        "required": [
+          "listed",
+          "updatedAt"
+        ],
+        "properties": {
+          "listed": {
+            "type": "boolean",
+            "description": "The stored profile's `listed` value."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community stored this profile. vtc/vetting/vetters/list returns the same value."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersProfileV0_1VetterAcceptsDocumentation": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1VettingDocumentation"
+        },
+        "description": "What documentation the vetter relies on, in the same tokens as vetting/request's `acceptsDocumentation` — `passport`, `nationalId`, `driverLicence`, `none`, or another lowerCamelCase class. The vetter's own choice; empty says nothing either way.",
+        "maxItems": 16,
+        "uniqueItems": true
+      },
+      "VtcVettingVettersProfileV0_1VetterAvailability": {
+        "type": "string",
+        "description": "Vetter-authored free text on when they are available to vet. Attributed to the vetter.",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcVettingVettersProfileV0_1VetterContactHint": {
+        "type": "string",
+        "description": "Vetter-authored free text on how to obtain a ticket from them, e.g. `Find me at the OpenVTC booth`. A hint, not an address a request can be sent to: vetting/request still needs a ticket or an introduction the vetter accepts.",
+        "maxLength": 300,
+        "minLength": 1
+      },
+      "VtcVettingVettersProfileV0_1VetterDisplayName": {
+        "type": "string",
+        "description": "The name the vetter chooses to be listed under. Self-asserted and unverified: it is not the name on any document, and a client MUST attribute it to the vetter.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcVettingVettersProfileV0_1VetterEvent": {
+        "type": "object",
+        "description": "An event the vetter will attend and vet at. `endDate` is on or after `startDate` and no more than 31 days after it; JSON Schema cannot compare two members, so the community checks both and refuses a violation with `malformedRequest`.",
+        "required": [
+          "name",
+          "startDate",
+          "endDate"
+        ],
+        "properties": {
+          "endDate": {
+            "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1CalendarDate"
+          },
+          "location": {
+            "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1VetterLocation"
+          },
+          "name": {
+            "type": "string",
+            "description": "The event's name, e.g. `Linux Plumbers Conference 2026`.",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "startDate": {
+            "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1CalendarDate"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "OPTIONAL. The event's own https page.",
+            "maxLength": 2048,
+            "pattern": "^https://"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersProfileV0_1VetterLocation": {
+        "type": "object",
+        "description": "Where a vetter can meet people, as coarse as the vetter chooses: a country, optionally a region, optionally a city. Never a street address.",
+        "required": [
+          "country"
+        ],
+        "properties": {
+          "city": {
+            "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1PlaceName"
+          },
+          "country": {
+            "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1CountryCode"
+          },
+          "region": {
+            "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1PlaceName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersProfileV0_1VetterMethods": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcVettingVettersProfileV0_1VettingMethod"
+        },
+        "description": "The methods the vetter offers, from `inPerson`, `video`, `priorAcquaintance`.",
+        "maxItems": 3,
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "VtcVettingVettersProfileV0_1VettingDocumentation": {
+        "type": "string",
+        "description": "A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z][a-zA-Z0-9]*$"
+      },
+      "VtcVettingVettersProfileV0_1VettingMethod": {
+        "type": "string",
+        "description": "How the vetter established that the person they checked is the person controlling the applicant's DID. `inPerson` — both people were physically together. `video` — a live, two-way video call. `priorAcquaintance` — the vetter has known or worked with this person over a period, and attests from that knowledge rather than from a document. A method is a description of what happened, not an assurance level: which methods count, and how many of each, is community policy.",
+        "enum": [
+          "inPerson",
+          "video",
+          "priorAcquaintance"
+        ]
+      },
+      "VtcVettingVettersResendV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcVettingVettersResendV0_1Response": {
+        "type": "object",
+        "description": "The credential the community delivered again.",
+        "required": [
+          "credentialId",
+          "validUntil"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string",
+            "description": "The `id` of the vetter role credential delivered — the same `credentialId` vtc/vetting/vetters/grant returned.",
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z][a-zA-Z0-9+.-]*:\\S+$"
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "That credential's `validUntil`."
+          }
+        },
+        "additionalProperties": false
       },
       "WhoamiResponse": {
         "type": "object",

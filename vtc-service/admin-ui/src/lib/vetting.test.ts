@@ -10,6 +10,7 @@ import {
   factsHeadline,
   filterGrants,
   grantState,
+  httpsUriProblem,
   isLanguageTag,
   parseIsoDuration,
   statementVerdict,
@@ -387,5 +388,59 @@ describe("branding mirrors CommunityBranding::check_shape", () => {
         logoUrl: "https://kernel.example.org/my logo.svg",
       }).logoUrl,
     ).toMatch(/spaces/);
+    expect(
+      validateBranding({
+        displayName: "",
+        accentColor: "",
+        logoUrl: "https://kernel.example.org/logo\u0007.svg",
+      }).logoUrl,
+    ).toMatch(/control characters/);
+    expect(
+      validateBranding({
+        displayName: "",
+        accentColor: "",
+        logoUrl: "https:///logo.svg",
+      }).logoUrl,
+    ).toMatch(/complete address/);
+  });
+});
+
+describe("httpsUriProblem mirrors shape::https_uri", () => {
+  it.each([
+    "https://events.example.org",
+    "https://events.example.org/kms?day=1#hall-b",
+    "https://example.org/caf%C3%A9",
+    "https://[2001:db8::1]:8443/logo.svg",
+  ])("accepts %s", (url) => {
+    expect(httpsUriProblem(url)).toBeNull();
+  });
+
+  it.each([
+    ["https://events.example.org/kernel meetup", "whitespace"],
+    ["https://events.example.org/\u0007", "whitespace"],
+    ["https://events.example.org/\tx", "whitespace"],
+    ["http://events.example.org", "notHttpsUri"],
+    ["events.example.org", "notHttpsUri"],
+    ["https://", "notHttpsUri"],
+    ["https:///path", "notHttpsUri"],
+    ["https://?q=1", "notHttpsUri"],
+    ["https://example.org/%zz", "notHttpsUri"],
+    ["https://example.org/café", "notHttpsUri"],
+    ["https://example.org/<logo>", "notHttpsUri"],
+    [`https://example.org/${"a".repeat(2048)}`, "length"],
+  ])("refuses %j as %s", (url, problem) => {
+    expect(httpsUriProblem(url)).toBe(problem);
+  });
+
+  it("holds the governance framework address to the same rule", () => {
+    for (const governanceFrameworkUrl of [
+      "https://gov.example/frame work",
+      "https://gov.example/\u001b",
+      "http://gov.example/gf",
+    ]) {
+      expect(
+        validateRequirements({ ...REQUIREMENTS, governanceFrameworkUrl }),
+      ).toHaveLength(1);
+    }
   });
 });

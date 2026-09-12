@@ -48,7 +48,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use vta_sdk::protocols::vetting::{
-    AutoGrantConfig, AutoGrantStatus, AutoGrantSweep, DEFAULT_AUTO_GRANT_SWEEP_MINUTES,
+    AutoGrantConfig, AutoGrantStatus, AutoGrantSweep, CheckShape, DEFAULT_AUTO_GRANT_SWEEP_MINUTES,
     DEFAULT_VETTER_GRANT_VALIDITY_SECONDS, GrantOrigin,
 };
 use vti_common::audit::{AuditEvent, VetterAutoGrantConfiguredData, VetterAutoGrantSweptData};

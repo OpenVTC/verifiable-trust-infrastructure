@@ -6,8 +6,26 @@ before joining: each vetter checks who the applicant is and signs a
 presentation. This replaces a web of trust with evidence the community can
 count, without publishing who vouched for whom.
 
-Design: OpenVTC `docs/design/vetting-process.md`. Wire types and verification:
-`vta_sdk::protocols::vetting` and `vta_sdk::vetting`.
+Design: OpenVTC `docs/design/vetting-process.md`.
+
+**Wire types.** Every vetting Trust Task payload and response — `vetting/request`,
+`vetting/session` (with the Vetting Card), `vetting/decline`,
+`vtc/vetting/revoke-statement`, `vtc/vetting/vetters/{grant,profile,list,resend}`
+and `vtc/join-requests/manifest/0.2` (with `VettingRequirements` and
+`CommunityBranding`) — is the type generated from its published specification
+in dtgwg-trust-tasks-tf, shipped in `trust-tasks-rs` and re-exported from
+`vta_sdk::protocols::vetting` (the manifest from
+`vta_sdk::protocols::join_requests::manifest`). Nothing restates them; a change to
+a vetting wire shape is made in the specification and arrives with a
+`trust-tasks-rs` release. The community checks what it receives against the
+published schema before parsing it (`vta_sdk::protocols::vetting::read_checked`),
+then applies the rules a schema cannot state, such as an event's `endDate`
+against its `startDate`.
+
+What is not a Trust Task stays in `vta_sdk::protocols::vetting` as its own type:
+the Vetting Statement's endorsement body (`IdentityVettingEndorsement`, in the
+specification's vocabulary) and the admin REST bodies for grant rows and
+automatic grants. Signing, verification and counting are in `vta_sdk::vetting`.
 
 ## Setting it up
 

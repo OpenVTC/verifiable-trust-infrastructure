@@ -19,7 +19,9 @@ use serde_json::Value;
 
 use super::card::{CLOCK_SKEW, VerifiedVettingCard};
 use super::{VettingError, did_of, digest, verify_attached_proof};
-use crate::protocols::vetting::{IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement};
+use crate::protocols::vetting::{
+    CheckShape, IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement,
+};
 use crate::trust_task_proof::TrustTaskVmResolver;
 
 const WHAT: &str = "vetting statement";
@@ -203,13 +205,13 @@ impl VerifiedVettingStatement {
     /// [`VettingError::Binding`] naming the member that differs.
     pub fn check_against_card(&self, card: &VerifiedVettingCard) -> Result<(), VettingError> {
         let c = card.card();
-        if self.subject != c.publisher {
+        if self.subject != c.publisher.as_str() {
             return Err(VettingError::Binding("subject"));
         }
-        if self.endorsement.community != c.community {
+        if self.endorsement.community != c.community.as_str() {
             return Err(VettingError::Binding("community"));
         }
-        if self.endorsement.identity_commitment != c.identity_commitment {
+        if self.endorsement.identity_commitment != c.identity_commitment.as_str() {
             return Err(VettingError::Binding("identityCommitment"));
         }
         if self.endorsement.card_digest_multibase != card.digest_multibase() {
@@ -295,7 +297,7 @@ pub async fn verify_statement(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::protocols::vetting::{DeclaredRelationship, VettingMethod};
+    use crate::protocols::vetting::{VettingMethod, VettingRelationship};
     use crate::vetting::card::{
         CardExpectations, sign_card,
         tests::{CHALLENGE, COMMUNITY, draft},
@@ -310,12 +312,12 @@ pub(crate) mod tests {
             endorsement_type: IDENTITY_VETTING_ENDORSEMENT_TYPE.into(),
             community: COMMUNITY.into(),
             method: VettingMethod::Video,
-            document_classes: vec!["passport".into()],
-            claims_verified: vec!["name.legal".into()],
+            document_classes: vec!["passport".try_into().unwrap()],
+            claims_verified: vec!["name.legal".try_into().unwrap()],
             liveness_confirmed: true,
             identity_commitment: commitment.into(),
             card_digest_multibase: card_digest.into(),
-            declared_relationship: DeclaredRelationship::CommunityColleague,
+            declared_relationship: VettingRelationship::CommunityColleague,
             attestation_text_digest: None,
         }
     }

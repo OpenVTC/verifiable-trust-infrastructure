@@ -214,15 +214,19 @@ pub(super) async fn run(
             outcomes.push(None);
             continue;
         };
-        let outcome = match vtc.grant_vetter(did, validity).await {
-            Ok(g) if g.created => GrantOutcome::Granted {
-                endorsement_id: g.grant.endorsement_id,
-            },
-            Ok(g) => GrantOutcome::AlreadyGranted {
-                endorsement_id: g.grant.endorsement_id,
-            },
-            Err(e) => GrantOutcome::Failed {
-                error: guidance(e, Op::Grant { member_did: did }).to_string(),
+        let payload = super::grant_payload(did, validity).map_err(|e| e.to_string());
+        let outcome = match payload {
+            Err(error) => GrantOutcome::Failed { error },
+            Ok(payload) => match vtc.grant_vetter(&payload).await {
+                Ok(g) if g.created => GrantOutcome::Granted {
+                    endorsement_id: g.grant.endorsement_id.into(),
+                },
+                Ok(g) => GrantOutcome::AlreadyGranted {
+                    endorsement_id: g.grant.endorsement_id.into(),
+                },
+                Err(e) => GrantOutcome::Failed {
+                    error: guidance(e, Op::Grant { member_did: did }).to_string(),
+                },
             },
         };
         outcomes.push(Some(outcome));

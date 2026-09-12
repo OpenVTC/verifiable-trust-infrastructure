@@ -30,9 +30,12 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
+use vta_sdk::openapi::{
+    VetterGrant01Payload, VetterGrant01Response, VetterList01Payload, VetterList01Response,
+    VetterResend01Response,
+};
 use vta_sdk::protocols::vetting::{
-    AutoGrantConfig, AutoGrantStatus, VetterGrantBody, VetterGrantListResponse,
-    VetterGrantResponseBody, VetterListBody, VetterListResponseBody, VetterResendResponseBody,
+    AutoGrantConfig, AutoGrantStatus, VetterGrantListResponse, read_checked,
 };
 use vti_common::auth::{AdminAuth, AuthClaims};
 use vti_common::error::AppError;
@@ -46,10 +49,10 @@ use crate::vetting::{auto_grant, revocation, vetters};
     post, path = "/vetting/vetters",
     operation_id = "vettingVetterGrant", tag = "vetting",
     security(("bearer_jwt" = [])),
-    request_body = VetterGrantBody,
+    request_body = VetterGrant01Payload,
     responses(
-        (status = 201, description = "Vetter role granted", body = VetterGrantResponseBody),
-        (status = 200, description = "The member already holds a live vetter grant, which is returned", body = VetterGrantResponseBody),
+        (status = 201, description = "Vetter role granted", body = VetterGrant01Response),
+        (status = 200, description = "The member already holds a live vetter grant, which is returned", body = VetterGrant01Response),
         (status = 400, description = "Malformed body, or the member is not a current member"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a community admin"),
@@ -58,15 +61,20 @@ use crate::vetting::{auto_grant, revocation, vetters};
 pub async fn grant_vetter(
     auth: AuthClaims,
     State(state): State<AppState>,
-    Json(body): Json<VetterGrantBody>,
-) -> Result<(StatusCode, Json<VetterGrantResponseBody>), AppError> {
+    // Read as JSON, then checked against the published schema before parsing:
+    // the body is `vtc/vetting/vetters/grant/0.1`'s payload, as documented above.
+    Json(body): Json<serde_json::Value>,
+) -> Result<(StatusCode, Json<VetterGrant01Response>), AppError> {
+    let body: VetterGrant01Payload = read_checked(&body)
+        .map(VetterGrant01Payload)
+        .map_err(|e| AppError::Validation(e.to_string()))?;
     let grant = vetters::grant(&state, &auth.did, &body).await?;
     let status = if grant.created() {
         StatusCode::CREATED
     } else {
         StatusCode::OK
     };
-    Ok((status, Json(grant.response)))
+    Ok((status, Json(grant.response.into())))
 }
 
 /// Every vetter grant, newest first.
@@ -96,7 +104,7 @@ pub async fn list_vetters(
     security(("bearer_jwt" = [])),
     params(("memberDid" = String, Path, description = "The vetter's member DID")),
     responses(
-        (status = 200, description = "The credential was handed to the transport for delivery", body = VetterResendResponseBody),
+        (status = 200, description = "The credential was handed to the transport for delivery", body = VetterResend01Response),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a community admin"),
         (status = 404, description = "The member holds no live vetter grant whose credential the community kept"),
@@ -107,9 +115,11 @@ pub async fn resend_vetter(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(member_did): Path<String>,
-) -> Result<Json<VetterResendResponseBody>, AppError> {
+) -> Result<Json<VetterResend01Response>, AppError> {
     Ok(Json(
-        vetters::resend_as_admin(&state, &auth.did, &member_did).await?,
+        vetters::resend_as_admin(&state, &auth.did, &member_did)
+            .await?
+            .into(),
     ))
 }
 
@@ -122,9 +132,9 @@ pub async fn resend_vetter(
     post, path = "/vetting/vetters/list",
     operation_id = "vettingVetterListing", tag = "vetting",
     security(("bearer_jwt" = [])),
-    request_body = VetterListBody,
+    request_body = VetterList01Payload,
     responses(
-        (status = 200, description = "A page of listed vetters", body = VetterListResponseBody),
+        (status = 200, description = "A page of listed vetters", body = VetterList01Response),
         (status = 400, description = "A filter breaks its bounds, or the cursor was issued for other filters"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
@@ -133,9 +143,16 @@ pub async fn resend_vetter(
 pub async fn list_listed_vetters(
     _admin: AdminAuth,
     State(state): State<AppState>,
-    Json(body): Json<VetterListBody>,
-) -> Result<Json<VetterListResponseBody>, AppError> {
-    Ok(Json(crate::vetting::profiles::list(&state, &body).await?))
+    // Read as JSON, then checked against the published schema before parsing:
+    // the body is `vtc/vetting/vetters/list/0.1`'s payload, as documented above.
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<VetterList01Response>, AppError> {
+    let body: VetterList01Payload = read_checked(&body)
+        .map(VetterList01Payload)
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+    Ok(Json(
+        crate::vetting::profiles::list(&state, &body).await?.into(),
+    ))
 }
 
 /// The automatic vetter-grant configuration and the last sweep.
@@ -285,10 +302,7 @@ pub async fn list_revocations(
             },
             affected_join_requests: affected.iter().map(|(id, _)| *id).collect(),
             affected_members: members.into_iter().collect(),
-            reason: notice
-                .reason
-                .and_then(|r| serde_json::to_value(r).ok())
-                .and_then(|v| v.as_str().map(str::to_string)),
+            reason: notice.reason.map(|r| r.to_string()),
             issuer: notice.issuer,
             statement_id: notice.statement_id,
             statement_digest_multibase: notice.statement_digest_multibase,

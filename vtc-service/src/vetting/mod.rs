@@ -39,10 +39,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::warn;
 
-use vta_sdk::protocols::join_requests::ManifestCriterion;
+use vta_sdk::protocols::join_requests::manifest::v0_2::Criterion as ManifestCriterion;
 use vta_sdk::protocols::vetting::{
-    COMMUNITY_ROLE_ENDORSEMENT_TYPE, IDENTITY_VETTING_ENDORSEMENT_TYPE, InvitationRequirement,
-    VettingRequirements,
+    COMMUNITY_ROLE_ENDORSEMENT_TYPE, IDENTITY_VETTING_ENDORSEMENT_TYPE, VettingRequirements,
+    VettingRequirementsInvitation,
 };
 use vta_sdk::vetting::requirements::{REQUIREMENTS_DIGEST_MEMBER, StatementFacts, evaluate};
 use vta_sdk::vetting::statement::verify_statement;
@@ -50,7 +50,7 @@ use vti_common::error::AppError;
 
 use crate::endorsements::endorsements_for_subject;
 use crate::members::storage::get_member;
-use crate::routes::join_requests::manifest::{ManifestVersion, manifest_criterion};
+use crate::routes::join_requests::manifest::manifest_criterion;
 use crate::schemas::accepts::list_accepts;
 use crate::server::AppState;
 
@@ -133,7 +133,7 @@ pub async fn vetting_facts(
     let mut projected = Vec::new();
     for stored in list_accepts(&state.schemas_ks).await? {
         if stored.vetting.is_some() {
-            projected.push(manifest_criterion(stored, ManifestVersion::V0_2)?);
+            projected.push(manifest_criterion(stored)?);
         }
     }
     let applicant_digest = extensions
@@ -215,10 +215,8 @@ pub async fn vetting_facts(
             verified: true,
             eligible,
             revoked,
-            method: Some(endorsement.method.as_str().to_string()),
-            declared_relationship: serde_json::to_value(endorsement.declared_relationship)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string)),
+            method: Some(endorsement.method.to_string()),
+            declared_relationship: Some(endorsement.declared_relationship.to_string()),
             counted: false,
             failures,
         };
@@ -230,8 +228,16 @@ pub async fn vetting_facts(
                 statement_id: verified.id().to_string(),
                 vetter: verified.issuer().to_string(),
                 method: endorsement.method,
-                claims_verified: endorsement.claims_verified.clone(),
-                document_classes: endorsement.document_classes.clone(),
+                claims_verified: endorsement
+                    .claims_verified
+                    .iter()
+                    .map(|c| c.as_str().to_owned())
+                    .collect(),
+                document_classes: endorsement
+                    .document_classes
+                    .iter()
+                    .map(|d| d.as_str().to_owned())
+                    .collect(),
                 declared_relationship: endorsement.declared_relationship,
                 identity_commitment: endorsement.identity_commitment.clone(),
                 valid_from: verified.valid_from(),
@@ -265,13 +271,13 @@ pub async fn vetting_facts(
         by_method: evaluation
             .by_method
             .iter()
-            .map(|(m, n)| (m.as_str().to_string(), *n))
+            .map(|(m, n)| (m.to_string(), *n))
             .collect(),
         commitments_consistent: evaluation.commitments_consistent,
         independence_ok: evaluation.independence_ok,
         invitation_required: matches!(
             requirements.invitation,
-            Some(InvitationRequirement::Required)
+            Some(VettingRequirementsInvitation::Required)
         ),
         satisfied: evaluation.satisfied(),
         needs: evaluation.needs.iter().map(|n| n.to_wire()).collect(),
@@ -296,7 +302,7 @@ pub fn expand_needs(needs: &mut Vec<String>, facts: Option<&VettingFacts>) {
 }
 
 /// The criterion a submission is evaluated under.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 struct Selected {
     criterion_id: String,
     requirements: VettingRequirements,
@@ -314,7 +320,7 @@ fn select_criterion(
     let named = applicant_digest.and_then(|d| {
         projected
             .iter()
-            .position(|c| c.requirements_digest.as_deref() == Some(d))
+            .position(|c| c.requirements_digest.as_ref().map(|r| r.as_str()) == Some(d))
     });
     let (index, matches) = match named {
         Some(i) => (i, true),
@@ -322,9 +328,12 @@ fn select_criterion(
     };
     let chosen = projected.into_iter().nth(index)?;
     Some(Selected {
-        criterion_id: chosen.id,
+        criterion_id: chosen.id.as_str().to_owned(),
         requirements: chosen.vetting?,
-        digest: chosen.requirements_digest.unwrap_or_default(),
+        digest: chosen
+            .requirements_digest
+            .map(String::from)
+            .unwrap_or_default(),
         applicant_digest_matches: matches,
     })
 }
@@ -389,39 +398,49 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A digest-shaped value per criterion id.
+    fn digest(id: &str) -> String {
+        format!("zQm{}", id.repeat(20))
+    }
+
     fn criterion(id: &str, min: u32) -> ManifestCriterion {
-        ManifestCriterion {
-            id: id.into(),
-            description: None,
-            presentation_definition: json!({}),
-            vetting: Some(
-                serde_json::from_value(json!({
-                    "version": "0.1",
-                    "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
-                    "minStatements": min,
-                    "acceptedMethods": ["inPerson"],
-                    "eligibleVetters": { "role": "vetter" }
-                }))
-                .unwrap(),
-            ),
-            requirements_digest: Some(format!("z{id}")),
-        }
+        serde_json::from_value(json!({
+            "id": id,
+            "presentationDefinition": {},
+            "vetting": {
+                "version": "0.1",
+                "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
+                "minStatements": min,
+                "acceptedMethods": ["inPerson"],
+                "eligibleVetters": { "role": "vetter" }
+            },
+            "requirementsDigest": digest(id),
+        }))
+        .unwrap()
     }
 
     #[test]
     fn the_criterion_the_applicant_named_is_the_one_applied() {
-        let s = select_criterion(vec![criterion("a", 1), criterion("b", 2)], Some("zb")).unwrap();
+        let s = select_criterion(
+            vec![criterion("a", 1), criterion("b", 2)],
+            Some(&digest("b")),
+        )
+        .unwrap();
         assert_eq!(s.criterion_id, "b");
         assert!(s.applicant_digest_matches);
-        assert_eq!(s.requirements.min_statements, 2);
+        assert_eq!(s.requirements.min_statements.get(), 2);
     }
 
     #[test]
     fn an_unknown_or_absent_digest_falls_back_to_the_first_and_says_so() {
-        let s = select_criterion(vec![criterion("a", 1), criterion("b", 2)], Some("zold")).unwrap();
+        let s = select_criterion(
+            vec![criterion("a", 1), criterion("b", 2)],
+            Some(&digest("c")),
+        )
+        .unwrap();
         assert_eq!(s.criterion_id, "a");
         assert!(!s.applicant_digest_matches);
-        assert!(select_criterion(vec![], Some("za")).is_none());
+        assert!(select_criterion(vec![], Some(&digest("a"))).is_none());
     }
 
     fn facts_with_needs(needs: &[&str]) -> VettingFacts {

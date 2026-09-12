@@ -204,7 +204,7 @@ pub struct RegisterAcceptsBody {
     /// Peer identity vetting this criterion requires, advertised in the join
     /// manifest (0.2). Its `statementType` must be a registered endorsement type.
     #[serde(default)]
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Option<vta_sdk::openapi::JoinManifest02VettingRequirements>)]
     pub vetting: Option<VettingRequirements>,
 }
 

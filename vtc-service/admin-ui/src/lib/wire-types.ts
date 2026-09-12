@@ -56,27 +56,34 @@ export type RemovedMemberRow = Schemas["RemovedMember"];
 export type RemovedMembersResponse = Schemas["RemovedMembersResponse"];
 export type EndorsementRow = Schemas["EndorsementRow"];
 export type EndorsementsPage = Schemas["Paginated_EndorsementRow"];
-export type VetterGrantResponse = Schemas["VetterGrantResponseBody"];
+export type VetterGrantResponse = Schemas["VtcVettingVettersGrantV0_1Response"];
 
 // ── Vetter registry (admin) ─────────────────────────────────────────────
+//
+// The Trust Task bodies below are the published specifications' own: their
+// schemas are named `<slug><version><definition>` and rendered from the schema
+// each generated type embeds, not described by hand.
 export type VetterGrantList = Schemas["VetterGrantListResponse"];
 export type VetterGrantRow = Schemas["VetterGrantRow"];
 export type VetterProfileSummary = Schemas["VetterProfileSummary"];
 export type VetterGrantOrigin = Schemas["GrantOrigin"];
-export type VetterResendResponse = Schemas["VetterResendResponseBody"];
+export type VetterResendResponse = Schemas["VtcVettingVettersResendV0_1Response"];
 export type AutoGrantStatus = Schemas["AutoGrantStatus"];
 export type AutoGrantConfig = Schemas["AutoGrantConfig"];
 export type AutoGrantSweep = Schemas["AutoGrantSweep"];
 export type VettingRevocationList = Schemas["VettingRevocationListResponse"];
 export type VettingRevocationRow = Schemas["VettingRevocationRow"];
 export type RevocationReviewState = Schemas["RevocationReviewState"];
-export type VettingMethod = Schemas["VettingMethod"];
-export type VetterListBody = Schemas["VetterListBody"];
-export type VetterListResponse = Schemas["VetterListResponseBody"];
-export type ListedVetter = Schemas["ListedVetter"];
-export type VetterEvent = Schemas["VetterEvent"];
-export type VetterLocation = Schemas["VetterLocation"];
-export type CommunityBranding = Schemas["CommunityBranding"];
+/** The vetting vocabulary, as `vtc/join-requests/manifest/0.2` defines it. */
+export type VettingMethod = Schemas["VtcJoinRequestsManifestV0_2VettingMethod"];
+export type VettingRelationship = Schemas["VtcJoinRequestsManifestV0_2VettingRelationship"];
+export type VetterListBody = Schemas["VtcVettingVettersListV0_1Payload"];
+export type VetterListResponse = Schemas["VtcVettingVettersListV0_1Response"];
+export type ListedVetter = Schemas["VtcVettingVettersListV0_1ListedVetter"];
+export type VetterEvent = Schemas["VtcVettingVettersListV0_1VetterEvent"];
+export type VetterLocation = Schemas["VtcVettingVettersListV0_1VetterLocation"];
+/** `vtc/join-requests/manifest/0.2`'s branding — also the body of `/v1/community/branding`. */
+export type CommunityBranding = Schemas["VtcJoinRequestsManifestV0_2CommunityBranding"];
 export type RequestVmcResponse = Schemas["RequestVmcResponse"];
 
 // ── Join requests ───────────────────────────────────────────────────────
@@ -86,8 +93,9 @@ export type JoinRequestsPage = Schemas["Paginated_JoinRequest"];
 export type JoinRequestVettingResponse = Schemas["JoinRequestVettingResponse"];
 export type JoinRequestVetting = Schemas["JoinRequestVetting"];
 export type JoinRequestVettingStatement = Schemas["JoinRequestVettingStatement"];
-export type JoinManifest = Schemas["JoinRequestManifestResponseBody"];
-export type ManifestCriterion = Schemas["ManifestCriterion"];
+export type JoinManifest = Schemas["VtcJoinRequestsManifestV0_2Response"];
+export type ManifestCriterion = Schemas["VtcJoinRequestsManifestV0_2Criterion"];
+export type VettingRequirements = Schemas["VtcJoinRequestsManifestV0_2VettingRequirements"];
 export type DecideResponse = Schemas["DecideResponse"];
 
 // ── Audit ───────────────────────────────────────────────────────────────

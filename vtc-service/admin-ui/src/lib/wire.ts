@@ -1787,14 +1787,7 @@ export interface components {
              *     [`validate_accepts_query`]).
              */
             query: unknown;
-            /**
-             * @description Peer identity vetting this criterion requires, advertised to applicants
-             *     in the join manifest (0.2). Every number in it is this community's
-             *     policy. Checked by [`VettingRequirements::validate`] when stored; the
-             *     admin route additionally requires its `statementType` to be a registered
-             *     endorsement type.
-             */
-            vetting?: Record<string, never> | null;
+            vetting?: null | components["schemas"]["VtcJoinRequestsManifestV0_2VettingRequirements"];
         };
         /**
          * @description `{ entry: … }` — the shape `acl/{grant,show,change-role}/0.1` publish.
@@ -2172,21 +2165,6 @@ export interface components {
              *     registration state.
              */
             registrationId: string;
-        };
-        /**
-         * @description A community's presentation — `join-requests/manifest/0.2`'s `branding`, and
-         *     the body of the VTC's `GET`/`PUT /v1/community/branding`. Every member is
-         *     optional. Presentation only: a client never trusts a community because of
-         *     how it is branded.
-         */
-        CommunityBranding: {
-            /** @description `#rrggbb`. */
-            accentColor?: string | null;
-            /** @description The name to show; 1–128 characters. */
-            displayName?: string | null;
-            ext?: null | components["schemas"]["Value"];
-            /** @description An `https` URL of at most 2048 characters. */
-            logoUrl?: string | null;
         };
         /**
          * @description The singleton record. Field names are wire contract — operators
@@ -3175,12 +3153,6 @@ export interface components {
         JoinRequestEnvelope: {
             request: components["schemas"]["JoinRequest"];
         };
-        /** @description Manifest response: the community's join evidence requirements. */
-        JoinRequestManifestResponseBody: {
-            branding?: null | components["schemas"]["CommunityBranding"];
-            communityDid: string;
-            criteria: components["schemas"]["ManifestCriterion"][];
-        };
         /**
          * @description The vetting facts a join request was decided on — the policy's
          *     `input.evidence.vetting`, in lowerCamelCase.
@@ -3341,59 +3313,6 @@ export interface components {
              *     not define, so no conforming client could find it.
              */
             credentials: components["schemas"]["RegisteredCredential"][];
-        };
-        /**
-         * @description One vetter in a listing: the published profile, the DID and the grant's
-         *     expiry — nothing else about the member.
-         */
-        ListedVetter: {
-            /** @description See [`VetterProfileBody::accepts_documentation`]. */
-            acceptsDocumentation: string[];
-            /** @description See [`VetterProfileBody::availability`]. */
-            availability?: string | null;
-            /** @description See [`VetterProfileBody::contact_hint`]. */
-            contactHint?: string | null;
-            /** @description See [`VetterProfileBody::display_name`]. */
-            displayName?: string | null;
-            /** @description The profile's events that have not ended (`endDate` ≥ today, UTC). */
-            events: components["schemas"]["VetterEvent"][];
-            /**
-             * Format: date-time
-             * @description When the vetter's grant expires.
-             */
-            grantValidUntil: string;
-            /** @description See [`VetterProfileBody::languages`]. */
-            languages: string[];
-            location?: null | components["schemas"]["VetterLocation"];
-            /** @description See [`VetterProfileBody::methods`]. */
-            methods: components["schemas"]["VettingMethod"][];
-            /**
-             * Format: date-time
-             * @description When the profile was last published.
-             */
-            updatedAt: string;
-            /** @description The vetter's DID — where a `vetting/request` goes. */
-            vetterDid: string;
-        };
-        /**
-         * @description One community evidence requirement — a named DCQL Presentation
-         *     Definition the applicant may present against.
-         */
-        ManifestCriterion: {
-            description?: string | null;
-            id: string;
-            presentationDefinition: components["schemas"]["Value"];
-            /**
-             * @description `digestMultibase` over this criterion without this member (manifest
-             *     0.2). An applicant records it when it starts gathering, so a change to
-             *     the requirements mid-application is detectable.
-             */
-            requirementsDigest?: string | null;
-            /**
-             * @description Peer identity vetting this criterion requires (manifest 0.2). Absent on
-             *     a criterion that needs none.
-             */
-            vetting?: Record<string, never> | null;
         };
         /**
          * @description `{ member: … }` — the shape `vtc/members/show/0.1` publishes. The row was
@@ -4220,11 +4139,7 @@ export interface components {
             description?: string | null;
             id: string;
             query: components["schemas"]["Value"];
-            /**
-             * @description Peer identity vetting this criterion requires, advertised in the join
-             *     manifest (0.2). Its `statementType` must be a registered endorsement type.
-             */
-            vetting?: Record<string, never> | null;
+            vetting?: null | components["schemas"]["VtcJoinRequestsManifestV0_2VettingRequirements"];
         };
         RegisterBody: {
             claimSchema?: null | components["schemas"]["Value"];
@@ -4980,65 +4895,10 @@ export interface components {
             /** @description Whether every chainable envelope verified. */
             verified: boolean;
         };
-        /** @description An event a vetter will attend and vet at — a conference, a summit. */
-        VetterEvent: {
-            /**
-             * Format: date
-             * @description Last day, `YYYY-MM-DD`; not before `startDate`, at most 31 days after it.
-             */
-            endDate: string;
-            location?: null | components["schemas"]["VetterLocation"];
-            /** @description The event's name; 1–200 characters. */
-            name: string;
-            /**
-             * Format: date
-             * @description First day, `YYYY-MM-DD`.
-             */
-            startDate: string;
-            /** @description The event's page; `https`, at most 2048 characters. */
-            url?: string | null;
-        };
-        /** @description `vtc/vetting/vetters/grant/0.1` payload. */
-        VetterGrantBody: {
-            /** @description Ecosystem-defined extension members (SPEC §4.5.1). */
-            ext?: unknown;
-            /** @description The member to name as a vetter. */
-            memberDid: string;
-            /**
-             * Format: int64
-             * @description How long the grant is valid, from one day to two years; one year when
-             *     absent.
-             */
-            validitySeconds?: number | null;
-        };
         /** @description `GET /v1/vetting/vetters` response: every grant, newest first. */
         VetterGrantListResponse: {
             /** @description The grants. */
             vetters: components["schemas"]["VetterGrantRow"][];
-        };
-        /**
-         * @description `vtc/vetting/vetters/grant/0.1#response` payload.
-         *
-         *     Granting converges: while a grant is live and unexpired, asking again
-         *     returns it rather than issuing a second.
-         */
-        VetterGrantResponseBody: {
-            /** @description The vetter role credential's `id`. */
-            credentialId: string;
-            /** @description The community's record of the grant — the id its revocation names. */
-            endorsementId: string;
-            /** @description Ecosystem-defined extension members (SPEC §4.5.1). */
-            ext?: unknown;
-            /**
-             * Format: date-time
-             * @description The credential's `validFrom`.
-             */
-            validFrom: string;
-            /**
-             * Format: date-time
-             * @description The credential's `validUntil`.
-             */
-            validUntil: string;
         };
         /** @description One vetter grant, as `GET /v1/vetting/vetters` reports it. */
         VetterGrantRow: {
@@ -5074,68 +4934,6 @@ export interface components {
              */
             validUntil?: string | null;
         };
-        /**
-         * @description `vtc/vetting/vetters/list/0.1` payload. Every filter is optional; filters
-         *     combine with AND.
-         */
-        VetterListBody: {
-            /** @description Case-insensitive exact match on `location.city`. */
-            city?: string | null;
-            /** @description ISO 3166-1 alpha-2, uppercase. */
-            country?: string | null;
-            /** @description The `nextCursor` of the previous page; at most 512 characters. */
-            cursor?: string | null;
-            /**
-             * Format: date
-             * @description With `eventTo`, a date range a listed event must overlap; an open end is
-             *     unbounded.
-             */
-            eventFrom?: string | null;
-            /**
-             * @description Case-insensitive substring of a listed event's name; at most 200
-             *     characters.
-             */
-            eventName?: string | null;
-            /**
-             * Format: date
-             * @description See [`Self::event_from`].
-             */
-            eventTo?: string | null;
-            /** @description Ecosystem-defined extension members (SPEC §4.5.1). */
-            ext?: unknown;
-            /**
-             * @description A BCP 47 tag. Matches a listed tag equal to it, or one it is a prefix of
-             *     at a subtag boundary (`de` matches `de-AT`). Compared case-insensitively.
-             */
-            language?: string | null;
-            /**
-             * Format: int32
-             * @description Page size, 1–100; 50 when absent.
-             */
-            limit?: number | null;
-            method?: null | components["schemas"]["VettingMethod"];
-            /** @description Case-insensitive exact match on `location.region`. */
-            region?: string | null;
-        };
-        /** @description `vtc/vetting/vetters/list/0.1#response` payload. */
-        VetterListResponseBody: {
-            /**
-             * @description Pass as `cursor`, with the same filters, for the next page; absent on
-             *     the last.
-             */
-            nextCursor?: string | null;
-            /** @description This page, in the listing's order. */
-            vetters: components["schemas"]["ListedVetter"][];
-        };
-        /** @description Where a vetter is, or where an event is held. */
-        VetterLocation: {
-            /** @description City; 1–128 characters. */
-            city?: string | null;
-            /** @description ISO 3166-1 alpha-2, uppercase. */
-            country: string;
-            /** @description Region, state or province; 1–128 characters. */
-            region?: string | null;
-        };
         /** @description What an admin sees of a vetter's published profile. */
         VetterProfileSummary: {
             /** @description The profile's `location.country`. */
@@ -5152,31 +4950,13 @@ export interface components {
             /** @description Whether the profile appears in listings. */
             listed: boolean;
             /** @description The profile's `methods`. */
-            methods?: components["schemas"]["VettingMethod"][];
+            methods?: components["schemas"]["VtcVettingVettersProfileV0_1VettingMethod"][];
             /**
              * Format: date-time
              * @description When the profile was last published.
              */
             updatedAt: string;
         };
-        /**
-         * @description `vtc/vetting/vetters/resend/0.1#response` payload — also the answer to the
-         *     admin `POST /v1/vetting/vetters/{memberDid}/resend`.
-         */
-        VetterResendResponseBody: {
-            /** @description The re-delivered credential's `id`. */
-            credentialId: string;
-            /**
-             * Format: date-time
-             * @description Its `validUntil`.
-             */
-            validUntil: string;
-        };
-        /**
-         * @description How a vetter established who the applicant is.
-         * @enum {string}
-         */
-        VettingMethod: "inPerson" | "video" | "priorAcquaintance";
         /** @description `GET /v1/vetting/revocations` response: every notice, newest first. */
         VettingRevocationListResponse: {
             /** @description The notices. */
@@ -5208,10 +4988,331 @@ export interface components {
             statementId: string;
         };
         /**
+         * @description The vocabulary token naming what a value IS — `name.legal`, `phone.mobile`, `address.postal`, `person.birthDate`. Dotted, most-general segment first, so that a consumer with no knowledge of the specific token can still group by its prefix.
+         *
+         *     The token is the maintainer's own; no external vocabulary is primary. External vocabularies (vCard/jCard, OIDC standard claims, schema.org) are mappings applied at PRESENTATION by a renderer, not at rest, so that a query written in any of them can be matched without the store having to live inside any one of them.
+         *
+         *     The `x:` prefix is an open extension namespace and is not decoration. The closest prior art — Windows CardSpace's self-issued card — supported exactly fifteen predefined claim types with no extensibility, and that is the specific way it failed the requirement a holder actually has. An `x:` attribute stores, composes, binds and discloses exactly like a known one; it renders generically and matches only an explicit query.
+         */
+        VtcJoinRequestsManifestV0_2ClaimType: string;
+        /** @description OPTIONAL. How the community asks to be shown to a prospective applicant: a name, an accent colour and a logo. Presentation only, self-asserted and unverified — `communityDid` identifies the community, never `branding`. Not part of any criterion, so not covered by a `requirementsDigest`. Every member is optional. */
+        VtcJoinRequestsManifestV0_2CommunityBranding: {
+            /** @description An sRGB colour as `#rrggbb`, compared case-insensitively. A community SHOULD write it in lower case. */
+            accentColor?: string;
+            /** @description The community's name as it asks to be shown. */
+            displayName?: string;
+            ext?: components["schemas"]["VtcJoinRequestsManifestV0_2Ext"];
+            /**
+             * Format: uri
+             * @description An https URL of the community's logo. Fetched by the client, so an untrusted image from wherever it points.
+             */
+            logoUrl?: string;
+        };
+        VtcJoinRequestsManifestV0_2Criterion: {
+            /** @description Plain-language summary of the criterion, authored by the community and shown to prospective applicants. Informative: where it and `vetting` disagree, `vetting` governs. */
+            description?: string;
+            id: string;
+            /** @description The presentation-definition an applicant must satisfy for this criterion (opaque here). */
+            presentationDefinition: Record<string, never>;
+            requirementsDigest?: components["schemas"]["VtcJoinRequestsManifestV0_2DigestMultibase"];
+            vetting?: components["schemas"]["VtcJoinRequestsManifestV0_2VettingRequirements"];
+        };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcJoinRequestsManifestV0_2DigestMultibase: string;
+        /** @description An ISO 8601 duration in weeks, days, hours, minutes and seconds only (e.g. `P120D`, `P2W`, `P1DT12H`, `PT15M`). Years and months are refused: their length depends on the calendar, and an age limit that means different things on different days is not a limit. */
+        VtcJoinRequestsManifestV0_2Duration: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcJoinRequestsManifestV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcJoinRequestsManifestV0_2Response: {
+            branding?: components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
+            communityDid: string;
+            criteria: components["schemas"]["VtcJoinRequestsManifestV0_2Criterion"][];
+            ext?: components["schemas"]["VtcJoinRequestsManifestV0_2Ext"];
+        };
+        /** @description A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead. */
+        VtcJoinRequestsManifestV0_2VettingDocumentation: string;
+        /**
+         * @description How the vetter established that the person they checked is the person controlling the applicant's DID. `inPerson` — both people were physically together. `video` — a live, two-way video call. `priorAcquaintance` — the vetter has known or worked with this person over a period, and attests from that knowledge rather than from a document. A method is a description of what happened, not an assurance level: which methods count, and how many of each, is community policy.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_2VettingMethod: "inPerson" | "video" | "priorAcquaintance";
+        /**
+         * @description The vetter's own declaration of how they relate to the applicant. Declared, not verified: it exists so community policy can cap how much evidence comes from people close to the applicant, and a false declaration is the vetter's attributable act.
+         * @enum {string}
+         */
+        VtcJoinRequestsManifestV0_2VettingRelationship: "none" | "communityColleague" | "sameEmployer" | "family" | "otherPersonal";
+        /** @description What identity-vetting evidence a criterion needs, beyond what a presentation-definition can express: distinct eligible vetters, per-method floors, independence caps. Every number is the community's own policy. This schema supplies no defaults — an absent optional member means the community imposes no constraint of that kind, never that some protocol value applies. Deliberately open: a consumer MUST ignore members it does not recognise, so a community publishing a newer shape does not make an older client unable to read the rest. Durations: `maxStatementAge` — a statement older than this at decision time does not count (absent: no limit beyond the statement's own validity); `decisionSla` — how long after submission the community undertakes to decide, including on a referred application; `requirementsGrace` — how long an application started under an earlier `requirementsDigest` is still evaluated under that version. */
+        VtcJoinRequestsManifestV0_2VettingRequirements: {
+            /** @description Documentation a statement must have relied on in order to count. Absent — the expected case — means each vetter decides what documentation they accept, including none for prior acquaintance, and the community counts what they attest. */
+            acceptedDocumentClasses?: components["schemas"]["VtcJoinRequestsManifestV0_2VettingDocumentation"][];
+            /** @description Methods whose statements count at all. */
+            acceptedMethods: components["schemas"]["VtcJoinRequestsManifestV0_2VettingMethod"][];
+            decisionSla?: components["schemas"]["VtcJoinRequestsManifestV0_2Duration"];
+            /** @description How a vetter's eligibility is established. */
+            eligibleVetters: {
+                /** @description The role named in a community-issued `CommunityRole` endorsement credential (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds that credential. */
+                role: string;
+            };
+            /**
+             * Format: uri
+             * @description Where the community's vetting governance — including the attestation text vetters sign — is published.
+             */
+            governanceFrameworkUrl?: string;
+            /** @description Caps on how much evidence may come from people close to the applicant. Absent: no caps. */
+            independence?: {
+                /** @description The most counted statements that may come from vetters declaring each relationship — e.g. `{ "family": 0 }`. */
+                maxByDeclaredRelationship?: {
+                    [key: string]: number;
+                };
+                /** @description When true, every counted statement must carry the same identity commitment — all vetters verified the same claimed identity. Absent: false. */
+                requireConsistentIdentityCommitment?: boolean;
+            };
+            /**
+             * @description Whether an invitation credential must accompany the statements at submission (`required`), may (`optional`), or plays no part (`none`). Absent: the presentation-definition alone governs.
+             * @enum {string}
+             */
+            invitation?: "required" | "optional" | "none";
+            maxStatementAge?: components["schemas"]["VtcJoinRequestsManifestV0_2Duration"];
+            /** @description Per-method floors within `minStatements` — e.g. `{ "inPerson": 1 }`. Every method named MUST also be in `acceptedMethods`. Absent: no method floor. */
+            minByMethod?: {
+                [key: string]: number;
+            };
+            /** @description How many counted statements are needed, counting each vetter once however many DIDs they hold. */
+            minStatements: number;
+            /** @description Claim types an applicant MAY add to the card and a vetter MAY verify. They never affect whether a statement counts. */
+            optionalClaims?: components["schemas"]["VtcJoinRequestsManifestV0_2ClaimType"][];
+            /** @description Claim types the applicant's Vetting Card must carry, which the identity commitment is computed over, and which a counted statement must list as verified. Absent: none. */
+            requiredClaims?: components["schemas"]["VtcJoinRequestsManifestV0_2ClaimType"][];
+            requirementsGrace?: components["schemas"]["VtcJoinRequestsManifestV0_2Duration"];
+            /**
+             * Format: uri
+             * @description The endorsement type URI a counted vetting statement carries as `credentialSubject.endorsement.type`, as registered with the community via vtc/endorsement-types/register.
+             */
+            statementType: string;
+            /** @description Version of this requirements object's shape. `0.1` for the members defined here. */
+            version: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * @description One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.
          * @example admin
          */
         VtcRole: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcVettingVettersGrantV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A community administrator makes a member a vetter. The community issues the member a revocable `CommunityRole` endorsement credential for the `vetter` role, delivers it over credential-exchange/issue, and returns the identifiers and validity of the grant. A member who already holds a live grant gets that grant back unchanged. */
+        VtcVettingVettersGrantV0_1Payload: {
+            ext?: components["schemas"]["VtcVettingVettersGrantV0_1Ext"];
+            /** @description The member DID to grant the vetter role to — the subject of the role credential, and the DID the vetter signs statements with. */
+            memberDid: string;
+            /** @description OPTIONAL. How long the role credential is valid, from issuance: at least one day, at most two years. Absent: 31536000 (365 days). Ignored when the member already holds a live grant. */
+            validitySeconds?: number;
+        };
+        /** @description The grant — newly issued, or the member's existing live grant. */
+        VtcVettingVettersGrantV0_1Response: {
+            /** @description The `id` of the role credential, a URI. */
+            credentialId: string;
+            /** @description The community's endorsement record for this grant — the identifier vtc/endorsements/revoke takes. */
+            endorsementId: string;
+            ext?: components["schemas"]["VtcVettingVettersGrantV0_1Ext"];
+            /**
+             * Format: date-time
+             * @description The role credential's `validFrom`.
+             */
+            validFrom: string;
+            /**
+             * Format: date-time
+             * @description The role credential's `validUntil`.
+             */
+            validUntil: string;
+        };
+        /**
+         * Format: date
+         * @description A calendar date, `YYYY-MM-DD` (RFC 3339 full-date), with no time or zone. Compared as a UTC date.
+         */
+        VtcVettingVettersListV0_1CalendarDate: string;
+        /** @description An ISO 3166-1 alpha-2 country code, upper case, e.g. `DE`. */
+        VtcVettingVettersListV0_1CountryCode: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcVettingVettersListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A BCP 47 language tag, e.g. `en`, `de-AT`. Compared case-insensitively. */
+        VtcVettingVettersListV0_1LanguageTag: string;
+        /** @description One listed vetter: the published profile without `listed` and `ext`, the vetter's DID, the expiry of their live grant, and when the profile was stored. Nothing else about the member is disclosed. */
+        VtcVettingVettersListV0_1ListedVetter: {
+            acceptsDocumentation: components["schemas"]["VtcVettingVettersListV0_1VetterAcceptsDocumentation"];
+            availability?: components["schemas"]["VtcVettingVettersListV0_1VetterAvailability"];
+            contactHint?: components["schemas"]["VtcVettingVettersListV0_1VetterContactHint"];
+            displayName?: components["schemas"]["VtcVettingVettersListV0_1VetterDisplayName"];
+            /** @description The profile's events whose `endDate` is today (UTC) or later. Ended events are never returned. */
+            events: components["schemas"]["VtcVettingVettersListV0_1VetterEvent"][];
+            /**
+             * Format: date-time
+             * @description The `validUntil` of the vetter's live vetter role credential.
+             */
+            grantValidUntil: string;
+            languages: components["schemas"]["VtcVettingVettersListV0_1LanguageTag"][];
+            location?: components["schemas"]["VtcVettingVettersListV0_1VetterLocation"];
+            methods: components["schemas"]["VtcVettingVettersListV0_1VetterMethods"];
+            /**
+             * Format: date-time
+             * @description When the community stored this profile, as returned by vtc/vetting/vetters/profile.
+             */
+            updatedAt: string;
+            /** @description The vetter's member DID — the subject of their vetter role credential, and the DID a vetting/request is addressed to. */
+            vetterDid: string;
+        };
+        /** @description An authenticated applicant or member asks a community for its listed vetters, optionally filtered by language, location, method or event. Only active members with a live vetter grant and a profile stored with `listed: true` appear, and each entry carries only what the vetter published, their DID and their grant's expiry. Every filter is optional; filters combine with AND. */
+        VtcVettingVettersListV0_1Payload: {
+            city?: components["schemas"]["VtcVettingVettersListV0_1PlaceName"];
+            country?: components["schemas"]["VtcVettingVettersListV0_1CountryCode"];
+            /** @description Opaque continuation token from a previous page's `nextCursor`, sent with the same filters. */
+            cursor?: string;
+            eventFrom?: components["schemas"]["VtcVettingVettersListV0_1CalendarDate"];
+            /** @description Matches an event whose `name` contains this text, case-insensitively. */
+            eventName?: string;
+            eventTo?: components["schemas"]["VtcVettingVettersListV0_1CalendarDate"];
+            ext?: components["schemas"]["VtcVettingVettersListV0_1Ext"];
+            language?: components["schemas"]["VtcVettingVettersListV0_1LanguageTag"];
+            /** @description Most entries to return. Absent: 50. */
+            limit?: number;
+            method?: components["schemas"]["VtcVettingVettersListV0_1VettingMethod"];
+            region?: components["schemas"]["VtcVettingVettersListV0_1PlaceName"];
+        };
+        /** @description A region or city name as the vetter writes it. Compared case-insensitively and otherwise exactly. */
+        VtcVettingVettersListV0_1PlaceName: string;
+        /** @description One page of listed vetters matching every filter sent. */
+        VtcVettingVettersListV0_1Response: {
+            /** @description Present when more entries match; send it as `cursor`, with the same filters, for the next page. Absent on the last page. */
+            nextCursor?: string;
+            /** @description The page, in the order Conformance defines. May be empty. */
+            vetters: components["schemas"]["VtcVettingVettersListV0_1ListedVetter"][];
+        };
+        /** @description What documentation the vetter relies on, in the same tokens as vetting/request's `acceptsDocumentation` — `passport`, `nationalId`, `driverLicence`, `none`, or another lowerCamelCase class. The vetter's own choice; empty says nothing either way. */
+        VtcVettingVettersListV0_1VetterAcceptsDocumentation: components["schemas"]["VtcVettingVettersListV0_1VettingDocumentation"][];
+        /** @description Vetter-authored free text on when they are available to vet. Attributed to the vetter. */
+        VtcVettingVettersListV0_1VetterAvailability: string;
+        /** @description Vetter-authored free text on how to obtain a ticket from them, e.g. `Find me at the OpenVTC booth`. A hint, not an address a request can be sent to: vetting/request still needs a ticket or an introduction the vetter accepts. */
+        VtcVettingVettersListV0_1VetterContactHint: string;
+        /** @description The name the vetter chooses to be listed under. Self-asserted and unverified: it is not the name on any document, and a client MUST attribute it to the vetter. */
+        VtcVettingVettersListV0_1VetterDisplayName: string;
+        /** @description An event the vetter will attend and vet at. `endDate` is on or after `startDate` and no more than 31 days after it; JSON Schema cannot compare two members, so the community checks both and refuses a violation with `malformedRequest`. */
+        VtcVettingVettersListV0_1VetterEvent: {
+            endDate: components["schemas"]["VtcVettingVettersListV0_1CalendarDate"];
+            location?: components["schemas"]["VtcVettingVettersListV0_1VetterLocation"];
+            /** @description The event's name, e.g. `Linux Plumbers Conference 2026`. */
+            name: string;
+            startDate: components["schemas"]["VtcVettingVettersListV0_1CalendarDate"];
+            /**
+             * Format: uri
+             * @description OPTIONAL. The event's own https page.
+             */
+            url?: string;
+        };
+        /** @description Where a vetter can meet people, as coarse as the vetter chooses: a country, optionally a region, optionally a city. Never a street address. */
+        VtcVettingVettersListV0_1VetterLocation: {
+            city?: components["schemas"]["VtcVettingVettersListV0_1PlaceName"];
+            country: components["schemas"]["VtcVettingVettersListV0_1CountryCode"];
+            region?: components["schemas"]["VtcVettingVettersListV0_1PlaceName"];
+        };
+        /** @description The methods the vetter offers, from `inPerson`, `video`, `priorAcquaintance`. */
+        VtcVettingVettersListV0_1VetterMethods: components["schemas"]["VtcVettingVettersListV0_1VettingMethod"][];
+        /** @description A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead. */
+        VtcVettingVettersListV0_1VettingDocumentation: string;
+        /**
+         * @description How the vetter established that the person they checked is the person controlling the applicant's DID. `inPerson` — both people were physically together. `video` — a live, two-way video call. `priorAcquaintance` — the vetter has known or worked with this person over a period, and attests from that knowledge rather than from a document. A method is a description of what happened, not an assurance level: which methods count, and how many of each, is community policy.
+         * @enum {string}
+         */
+        VtcVettingVettersListV0_1VettingMethod: "inPerson" | "video" | "priorAcquaintance";
+        /**
+         * Format: date
+         * @description A calendar date, `YYYY-MM-DD` (RFC 3339 full-date), with no time or zone. Compared as a UTC date.
+         */
+        VtcVettingVettersProfileV0_1CalendarDate: string;
+        /** @description An ISO 3166-1 alpha-2 country code, upper case, e.g. `DE`. */
+        VtcVettingVettersProfileV0_1CountryCode: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcVettingVettersProfileV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A BCP 47 language tag, e.g. `en`, `de-AT`. Compared case-insensitively. */
+        VtcVettingVettersProfileV0_1LanguageTag: string;
+        /** @description A region or city name as the vetter writes it. Compared case-insensitively and otherwise exactly. */
+        VtcVettingVettersProfileV0_1PlaceName: string;
+        /** @description The community stored the profile. */
+        VtcVettingVettersProfileV0_1Response: {
+            /** @description The stored profile's `listed` value. */
+            listed: boolean;
+            /**
+             * Format: date-time
+             * @description When the community stored this profile. vtc/vetting/vetters/list returns the same value.
+             */
+            updatedAt: string;
+        };
+        /** @description What documentation the vetter relies on, in the same tokens as vetting/request's `acceptsDocumentation` — `passport`, `nationalId`, `driverLicence`, `none`, or another lowerCamelCase class. The vetter's own choice; empty says nothing either way. */
+        VtcVettingVettersProfileV0_1VetterAcceptsDocumentation: components["schemas"]["VtcVettingVettersProfileV0_1VettingDocumentation"][];
+        /** @description Vetter-authored free text on when they are available to vet. Attributed to the vetter. */
+        VtcVettingVettersProfileV0_1VetterAvailability: string;
+        /** @description Vetter-authored free text on how to obtain a ticket from them, e.g. `Find me at the OpenVTC booth`. A hint, not an address a request can be sent to: vetting/request still needs a ticket or an introduction the vetter accepts. */
+        VtcVettingVettersProfileV0_1VetterContactHint: string;
+        /** @description The name the vetter chooses to be listed under. Self-asserted and unverified: it is not the name on any document, and a client MUST attribute it to the vetter. */
+        VtcVettingVettersProfileV0_1VetterDisplayName: string;
+        /** @description An event the vetter will attend and vet at. `endDate` is on or after `startDate` and no more than 31 days after it; JSON Schema cannot compare two members, so the community checks both and refuses a violation with `malformedRequest`. */
+        VtcVettingVettersProfileV0_1VetterEvent: {
+            endDate: components["schemas"]["VtcVettingVettersProfileV0_1CalendarDate"];
+            location?: components["schemas"]["VtcVettingVettersProfileV0_1VetterLocation"];
+            /** @description The event's name, e.g. `Linux Plumbers Conference 2026`. */
+            name: string;
+            startDate: components["schemas"]["VtcVettingVettersProfileV0_1CalendarDate"];
+            /**
+             * Format: uri
+             * @description OPTIONAL. The event's own https page.
+             */
+            url?: string;
+        };
+        /** @description Where a vetter can meet people, as coarse as the vetter chooses: a country, optionally a region, optionally a city. Never a street address. */
+        VtcVettingVettersProfileV0_1VetterLocation: {
+            city?: components["schemas"]["VtcVettingVettersProfileV0_1PlaceName"];
+            country: components["schemas"]["VtcVettingVettersProfileV0_1CountryCode"];
+            region?: components["schemas"]["VtcVettingVettersProfileV0_1PlaceName"];
+        };
+        /** @description The methods the vetter offers, from `inPerson`, `video`, `priorAcquaintance`. */
+        VtcVettingVettersProfileV0_1VetterMethods: components["schemas"]["VtcVettingVettersProfileV0_1VettingMethod"][];
+        /** @description A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead. */
+        VtcVettingVettersProfileV0_1VettingDocumentation: string;
+        /**
+         * @description How the vetter established that the person they checked is the person controlling the applicant's DID. `inPerson` — both people were physically together. `video` — a live, two-way video call. `priorAcquaintance` — the vetter has known or worked with this person over a period, and attests from that knowledge rather than from a document. A method is a description of what happened, not an assurance level: which methods count, and how many of each, is community policy.
+         * @enum {string}
+         */
+        VtcVettingVettersProfileV0_1VettingMethod: "inPerson" | "video" | "priorAcquaintance";
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcVettingVettersResendV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The credential the community delivered again. */
+        VtcVettingVettersResendV0_1Response: {
+            /** @description The `id` of the vetter role credential delivered — the same `credentialId` vtc/vetting/vetters/grant returned. */
+            credentialId: string;
+            /**
+             * Format: date-time
+             * @description That credential's `validUntil`.
+             */
+            validUntil: string;
+        };
         /**
          * @description Wire shape returned by `whoami`. Minimal: enough for the admin
          *     SPA's nav header to show "Signed in as …" with a role badge,
@@ -6595,7 +6696,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CommunityBranding"];
+                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -6616,7 +6717,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CommunityBranding"];
+                "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
             };
         };
         responses: {
@@ -6626,7 +6727,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CommunityBranding"];
+                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
                 };
             };
             /** @description A member breaks its bounds */
@@ -7355,7 +7456,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JoinRequestManifestResponseBody"];
+                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2Response"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -9419,7 +9520,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["VetterGrantBody"];
+                "application/json": components["schemas"]["VtcVettingVettersGrantV0_1Payload"];
             };
         };
         responses: {
@@ -9429,7 +9530,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VetterGrantResponseBody"];
+                    "application/json": components["schemas"]["VtcVettingVettersGrantV0_1Response"];
                 };
             };
             /** @description Vetter role granted */
@@ -9438,7 +9539,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VetterGrantResponseBody"];
+                    "application/json": components["schemas"]["VtcVettingVettersGrantV0_1Response"];
                 };
             };
             /** @description Malformed body, or the member is not a current member */
@@ -9473,7 +9574,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["VetterListBody"];
+                "application/json": components["schemas"]["VtcVettingVettersListV0_1Payload"];
             };
         };
         responses: {
@@ -9483,7 +9584,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VetterListResponseBody"];
+                    "application/json": components["schemas"]["VtcVettingVettersListV0_1Response"];
                 };
             };
             /** @description A filter breaks its bounds, or the cursor was issued for other filters */
@@ -9527,7 +9628,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VetterResendResponseBody"];
+                    "application/json": components["schemas"]["VtcVettingVettersResendV0_1Response"];
                 };
             };
             /** @description Missing or invalid bearer token */

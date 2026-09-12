@@ -260,14 +260,14 @@ pub struct RemoveResult {
 /// returns that grant rather than issuing a second. `created` says which
 /// happened, so an operator is not told "granted" about a grant that already
 /// stood.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct VetterGrant {
     /// `true` when this call issued the grant (HTTP 201), `false` when the
     /// member already held a live one (HTTP 200).
     pub created: bool,
-    /// The grant.
-    pub grant: vetting::VetterGrantResponseBody,
+    /// The grant: the `vtc/vetting/vetters/grant/0.1#response` payload.
+    pub grant: vetting::vetters::grant::v0_1::Response,
 }
 
 /// Outcome of revoking an endorsement (`DELETE /credentials/endorsements/{id}`)
@@ -961,23 +961,18 @@ impl VtcClient {
     /// Name a current member a vetter (`vtc/vetting/vetters/grant/0.1`, over
     /// `POST /vetting/vetters`). Admin token.
     ///
-    /// `validity_seconds` is one day to two years; `None` takes the community's
-    /// default of one year. A member already holding a live grant gets that
-    /// grant back with [`VetterGrant::created`] `false`.
+    /// `grant` is the task's payload: `validitySeconds` is one day to two
+    /// years, and absent takes the community's default of one year. A member
+    /// already holding a live grant gets that grant back with
+    /// [`VetterGrant::created`] `false`.
     pub async fn grant_vetter(
         &self,
-        member_did: &str,
-        validity_seconds: Option<u64>,
+        grant: &vetting::vetters::grant::v0_1::Payload,
     ) -> Result<VetterGrant, VtcError> {
         let url = self.api_url(&["vetting", "vetters"])?;
-        let body = vetting::VetterGrantBody {
-            member_did: member_did.to_string(),
-            validity_seconds,
-            ext: None,
-        };
         let resp = self
             .tt(reqwest::Method::POST, url, task::VETTING_VETTERS_GRANT)?
-            .json(&body)
+            .json(grant)
             .send()
             .await?;
         let resp = expect_success(resp).await?;
@@ -1014,7 +1009,7 @@ impl VtcClient {
     pub async fn resend_vetter_grant(
         &self,
         member_did: &str,
-    ) -> Result<vetting::VetterResendResponseBody, VtcError> {
+    ) -> Result<vetting::vetters::resend::v0_1::Response, VtcError> {
         let url = self.api_url(&["vetting", "vetters", member_did, "resend"])?;
         let resp = self
             .tt(reqwest::Method::POST, url, task::VETTING_VETTERS_RESEND)?
@@ -1048,8 +1043,11 @@ impl VtcClient {
     }
 
     /// How the community presents itself to an applicant's client
-    /// (`GET /community/branding`). Admin token.
-    pub async fn branding(&self) -> Result<join_requests::CommunityBranding, VtcError> {
+    /// (`GET /community/branding`) — the join manifest 0.2 `branding`. Admin
+    /// token.
+    pub async fn branding(
+        &self,
+    ) -> Result<join_requests::manifest::v0_2::CommunityBranding, VtcError> {
         let url = self.api_url(&["community", "branding"])?;
         let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
         Ok(expect_success(resp).await?.json().await?)
@@ -1060,8 +1058,8 @@ impl VtcClient {
     /// is cleared.
     pub async fn set_branding(
         &self,
-        branding: &join_requests::CommunityBranding,
-    ) -> Result<join_requests::CommunityBranding, VtcError> {
+        branding: &join_requests::manifest::v0_2::CommunityBranding,
+    ) -> Result<join_requests::manifest::v0_2::CommunityBranding, VtcError> {
         let url = self.api_url(&["community", "branding"])?;
         let resp = self
             .untasked(reqwest::Method::PUT, url)?
@@ -1209,7 +1207,12 @@ mod tests {
             Err(VtcError::NotAuthenticated)
         ));
         assert!(matches!(
-            client.grant_vetter("did:key:z", None).await,
+            client
+                .grant_vetter(
+                    &serde_json::from_value(serde_json::json!({ "memberDid": "did:key:z" }))
+                        .unwrap()
+                )
+                .await,
             Err(VtcError::NotAuthenticated)
         ));
         assert!(matches!(

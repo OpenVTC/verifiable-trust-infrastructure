@@ -55,12 +55,8 @@ function CriterionCard({ criterion }: { criterion: ManifestCriterion }) {
   const titleId = `criterion-${criterion.id}`;
   const hasVetting = criterion.vetting !== undefined && criterion.vetting !== null;
   const problems = hasVetting ? validateRequirements(criterion.vetting) : [];
-  const requirements =
-    hasVetting && problems.length === 0
-      ? // The OpenAPI document types `vetting` as an opaque object; the
-        // validator above is what establishes this shape.
-        (criterion.vetting as unknown as VettingRequirements)
-      : null;
+  const requirements: VettingRequirements | null =
+    hasVetting && problems.length === 0 ? (criterion.vetting ?? null) : null;
 
   return (
     <section className="card" aria-labelledby={titleId}>

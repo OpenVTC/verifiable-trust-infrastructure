@@ -106,126 +106,38 @@ pub struct JoinRequestSubmitBody {
 // Manifest — pre-submit discovery (join-requests/manifest/1.0)
 // ---------------------------------------------------------------------------
 
+/// The published `vtc/join-requests/manifest` types, generated from the
+/// specification: [`manifest::v0_1`] (criteria) and [`manifest::v0_2`]
+/// (criteria with their vetting requirements and `requirementsDigest`, and the
+/// community's branding). Their `Payload` and `Response` are the manifest's wire
+/// types; nothing in this crate restates them.
+///
+/// `manifest::v0_2::CommunityBranding` is also the body of the VTC's admin
+/// `GET`/`PUT /v1/community/branding`: what an admin stores is exactly what the
+/// manifest publishes.
+pub use trust_tasks_rs::specs::vtc::join_requests::manifest;
+
 /// Trust Task `type` for a join-request manifest request: discover the
 /// community's join evidence requirements. Public read; empty payload.
 pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.1";
+    <manifest::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `#response` variant of [`JOIN_REQUEST_MANIFEST_TYPE`] — carries a
-/// [`JoinRequestManifestResponseBody`].
+/// [`manifest::v0_1::Response`].
 pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.1#response";
+    <manifest::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Manifest 0.2: 0.1 plus an optional `vetting` requirements object and a
-/// `requirementsDigest` on each criterion. A community answers both versions;
-/// a 0.1 reader simply does not see the new members.
+/// `requirementsDigest` on each criterion, and the community's `branding`. A
+/// community answers both versions; a 0.1 reader simply does not see the new
+/// members.
 pub const JOIN_REQUEST_MANIFEST_0_2_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
+    <manifest::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `#response` variant of [`JOIN_REQUEST_MANIFEST_0_2_TYPE`].
+/// `#response` variant of [`JOIN_REQUEST_MANIFEST_0_2_TYPE`] — carries a
+/// [`manifest::v0_2::Response`].
 pub const JOIN_REQUEST_MANIFEST_0_2_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2#response";
-
-/// One community evidence requirement — a named DCQL Presentation
-/// Definition the applicant may present against.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct ManifestCriterion {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub presentation_definition: JsonValue,
-    /// Peer identity vetting this criterion requires (manifest 0.2). Absent on
-    /// a criterion that needs none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "openapi", schema(value_type = Option<Object>))]
-    pub vetting: Option<super::vetting::VettingRequirements>,
-    /// `digestMultibase` over this criterion without this member (manifest
-    /// 0.2). An applicant records it when it starts gathering, so a change to
-    /// the requirements mid-application is detectable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requirements_digest: Option<String>,
-}
-
-/// Manifest response: the community's join evidence requirements.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct JoinRequestManifestResponseBody {
-    pub community_did: String,
-    pub criteria: Vec<ManifestCriterion>,
-    /// How the community presents itself to an applicant's client (manifest
-    /// 0.2). Absent when the community has set none, and always absent from a
-    /// 0.1 answer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branding: Option<CommunityBranding>,
-}
-
-/// Longest branding `displayName`.
-pub const MAX_BRANDING_DISPLAY_NAME_CHARS: usize = 128;
-/// Longest branding `logoUrl`.
-pub const MAX_BRANDING_LOGO_URL_CHARS: usize = 2048;
-
-/// A community's presentation — `join-requests/manifest/0.2`'s `branding`, and
-/// the body of the VTC's `GET`/`PUT /v1/community/branding`. Every member is
-/// optional. Presentation only: a client never trusts a community because of
-/// how it is branded.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct CommunityBranding {
-    /// The name to show; 1–128 characters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    /// `#rrggbb`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent_color: Option<String>,
-    /// An `https` URL of at most 2048 characters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logo_url: Option<String>,
-    /// Ecosystem-defined extension members (SPEC §4.5.1).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
-impl CommunityBranding {
-    /// Nothing set: a community with this branding publishes none.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.display_name.is_none()
-            && self.accent_color.is_none()
-            && self.logo_url.is_none()
-            && self.ext.is_none()
-    }
-
-    /// Check the bounds and patterns.
-    ///
-    /// # Errors
-    ///
-    /// [`ShapeError`](super::vetting::ShapeError) for the first rule broken.
-    pub fn check_shape(&self) -> Result<(), super::vetting::ShapeError> {
-        use super::vetting::{ShapeError, shape};
-        shape::optional_length(
-            "displayName",
-            self.display_name.as_deref(),
-            MAX_BRANDING_DISPLAY_NAME_CHARS,
-        )?;
-        if let Some(color) = &self.accent_color {
-            let b = color.as_bytes();
-            if b.len() != 7 || b[0] != b'#' || !b[1..].iter().all(u8::is_ascii_hexdigit) {
-                return Err(ShapeError::Field {
-                    field: "accentColor",
-                    rule: "must be #rrggbb",
-                });
-            }
-        }
-        match &self.logo_url {
-            Some(url) => shape::https_url("logoUrl", url, MAX_BRANDING_LOGO_URL_CHARS),
-            None => Ok(()),
-        }
-    }
-}
+    <manifest::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ---------------------------------------------------------------------------
 // Status — applicant poll (join-requests/status/1.0)

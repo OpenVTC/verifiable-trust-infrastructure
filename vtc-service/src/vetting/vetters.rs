@@ -40,10 +40,12 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use vta_sdk::protocols::members::ENDORSEMENT_CREDENTIAL_TYPE;
+use vta_sdk::protocols::vetting::vetters::{
+    grant::v0_1 as grant_wire, resend::v0_1 as resend_wire,
+};
 use vta_sdk::protocols::vetting::{
-    COMMUNITY_ROLE_ENDORSEMENT_TYPE, DEFAULT_VETTER_GRANT_VALIDITY_SECONDS, GrantOrigin,
-    VETTER_ROLE, VetterGrantBody, VetterGrantResponseBody, VetterGrantRow,
-    VetterResendResponseBody, role_matches,
+    COMMUNITY_ROLE_ENDORSEMENT_TYPE, CheckShape, DEFAULT_VETTER_GRANT_VALIDITY_SECONDS,
+    GrantOrigin, VETTER_ROLE, VetterGrantRow, role_matches,
 };
 use vti_common::audit::{
     AuditEvent, AuditWriter, CredentialIssuedData, CustomEndorsementRevokedData,
@@ -72,7 +74,7 @@ pub(crate) static GRANT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(
 #[derive(Debug)]
 pub struct VetterGrant {
     /// The wire answer.
-    pub response: VetterGrantResponseBody,
+    pub response: grant_wire::Response,
     /// The credential this call minted, or `None` when an existing live grant
     /// was returned instead.
     pub credential: Option<JsonValue>,
@@ -260,10 +262,16 @@ async fn require_admin(state: &AppState, actor_did: &str) -> Result<(), AppError
 pub async fn grant(
     state: &AppState,
     actor_did: &str,
-    body: &VetterGrantBody,
+    body: &grant_wire::Payload,
 ) -> Result<VetterGrant, AppError> {
     body.check_shape()
         .map_err(|e| AppError::Validation(e.to_string()))?;
+    // The schema's `minimum` has already refused a negative validity.
+    let validity_seconds = body
+        .validity_seconds
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| AppError::Validation("validitySeconds must not be negative".into()))?;
     require_admin(state, actor_did).await?;
     let grant = {
         let _guard = GRANT_LOCK.lock().await;
@@ -271,7 +279,7 @@ pub async fn grant(
             state,
             actor_did,
             &body.member_did,
-            body.validity_seconds,
+            validity_seconds,
             GrantOrigin::Manual,
         )
         .await?
@@ -465,7 +473,7 @@ pub async fn resend(
     state: &AppState,
     actor_did: &str,
     member_did: &str,
-) -> Result<VetterResendResponseBody, AppError> {
+) -> Result<resend_wire::Response, AppError> {
     let row = live_grant(state, member_did, Utc::now())
         .await?
         .ok_or_else(|| AppError::NotFound(format!("{member_did} holds no live vetter grant")))?;
@@ -500,10 +508,12 @@ pub async fn resend(
             .await?;
     }
     info!(member = %member_did, endorsement_id = %row.id, "vetter grant credential delivered again");
-    Ok(VetterResendResponseBody {
-        credential_id: row.vec_id,
-        valid_until,
-    })
+    resend_wire::Response::try_from(
+        resend_wire::Response::builder()
+            .credential_id(row.vec_id)
+            .valid_until(valid_until),
+    )
+    .map_err(|e| AppError::Internal(format!("vetter resend response: {e}")))
 }
 
 /// [`resend`] for `POST /v1/vetting/vetters/{memberDid}/resend`: admins only.
@@ -511,7 +521,7 @@ pub async fn resend_as_admin(
     state: &AppState,
     actor_did: &str,
     member_did: &str,
-) -> Result<VetterResendResponseBody, AppError> {
+) -> Result<resend_wire::Response, AppError> {
     require_admin(state, actor_did).await?;
     resend(state, actor_did, member_did).await
 }
@@ -678,16 +688,18 @@ pub(crate) async fn audit_revoked_grant(
     Ok(())
 }
 
-fn response_for(row: &Endorsement) -> Result<VetterGrantResponseBody, AppError> {
-    Ok(VetterGrantResponseBody {
-        endorsement_id: row.id.to_string(),
-        credential_id: row.vec_id.clone(),
-        valid_from: row.created_at,
-        valid_until: row
-            .valid_until
-            .ok_or_else(|| AppError::Internal("vetter grant row has no validUntil".into()))?,
-        ext: None,
-    })
+fn response_for(row: &Endorsement) -> Result<grant_wire::Response, AppError> {
+    let valid_until = row
+        .valid_until
+        .ok_or_else(|| AppError::Internal("vetter grant row has no validUntil".into()))?;
+    grant_wire::Response::try_from(
+        grant_wire::Response::builder()
+            .endorsement_id(row.id.to_string())
+            .credential_id(row.vec_id.clone())
+            .valid_from(row.created_at)
+            .valid_until(valid_until),
+    )
+    .map_err(|e| AppError::Internal(format!("vetter grant response: {e}")))
 }
 
 fn timestamp(credential: &JsonValue, member: &str) -> Result<DateTime<Utc>, AppError> {

@@ -8,15 +8,19 @@
 // trail, or to write a policy — can still find it.
 //
 // It also mirrors the checks the daemon runs on what the console sends, so a
-// form can say what is wrong before a request is refused:
+// form can say what is wrong before a request is refused. The shapes are the
+// published specifications' (`wire-types.ts`); the daemon checks each against
+// its schema, plus the rules a schema cannot state
+// (`vta_sdk::protocols::vetting::CheckShape`):
 //
-//   - `validateRequirements` is `VettingRequirements::validate` plus the serde
-//     rules on its members (`vta-sdk/src/protocols/vetting.rs`).
-//   - `validateBranding` is `CommunityBranding::check_shape`
-//     (`vta-sdk/src/protocols/join_requests.rs`).
-//   - `buildListBody` is `VetterListBody::check_shape`.
+//   - `validateRequirements` is the `VettingRequirements` definition of
+//     `vtc/join-requests/manifest/0.2`, plus its rule that every `minByMethod`
+//     method is accepted.
+//   - `validateBranding` is that manifest's `CommunityBranding` definition.
+//   - `buildListBody` is `vtc/vetting/vetters/list/0.1`'s payload, plus its
+//     rule that `eventTo` is not before `eventFrom`.
 //   - the grant and sweep bounds are `MIN_/MAX_VETTER_GRANT_VALIDITY_SECONDS`
-//     and `MIN_/MAX_AUTO_GRANT_SWEEP_MINUTES`.
+//     (the grant schema's own) and `MIN_/MAX_AUTO_GRANT_SWEEP_MINUTES`.
 //
 // The daemon stays the authority: it runs every one of these again, and makes
 // the one check this module cannot — that a `statementType` is a registered
@@ -29,8 +33,12 @@ import type {
   VetterGrantRow,
   VetterListBody,
   VettingMethod,
+  VettingRelationship,
+  VettingRequirements,
   VettingRevocationRow,
 } from "@/lib/wire-types";
+
+export type { VettingRequirements };
 
 // ── Methods and relationships ───────────────────────────────────────────
 
@@ -65,14 +73,16 @@ export function methodLabel(method: string): string {
   return isVettingMethod(method) ? METHOD_LABELS[method] : method;
 }
 
-export const DECLARED_RELATIONSHIPS = [
+/** A vetter's declared relationship to the applicant. */
+export type DeclaredRelationship = VettingRelationship;
+
+export const DECLARED_RELATIONSHIPS: readonly DeclaredRelationship[] = [
   "none",
   "communityColleague",
   "sameEmployer",
   "family",
   "otherPersonal",
-] as const;
-export type DeclaredRelationship = (typeof DECLARED_RELATIONSHIPS)[number];
+];
 
 const RELATIONSHIP_LABELS: Record<DeclaredRelationship, string> = {
   none: "No prior relationship",
@@ -334,37 +344,42 @@ export function describeSeconds(total: number): string {
 }
 
 // ── Vetting requirements (manifest 0.2) ─────────────────────────────────
-
-/**
- * A criterion's `vetting` object. The daemon publishes this member as an
- * opaque object in its OpenAPI document (`value_type = Object`), so there is no
- * generated type to alias: it is read as `unknown`, and `validateRequirements`
- * is what makes it this shape.
- */
-export interface VettingRequirements {
-  version: string;
-  statementType: string;
-  minStatements: number;
-  minByMethod?: Partial<Record<VettingMethod, number>>;
-  acceptedMethods: VettingMethod[];
-  acceptedDocumentClasses?: string[];
-  requiredClaims?: string[];
-  optionalClaims?: string[];
-  maxStatementAge?: string;
-  eligibleVetters: { role: string };
-  independence?: {
-    maxByDeclaredRelationship?: Partial<Record<DeclaredRelationship, number>>;
-    requireConsistentIdentityCommitment?: boolean;
-  };
-  invitation?: "required" | "optional" | "none";
-  decisionSla?: string;
-  requirementsGrace?: string;
-  governanceFrameworkUrl?: string;
-}
+//
+// `VettingRequirements` is the manifest specification's own definition,
+// aliased in `wire-types.ts`. `validateRequirements` still takes `unknown`: it
+// reports on a criterion stored before a rule existed, which need not match.
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 const chars = (s: string) => [...s].length;
+
+/** Characters RFC 3986 allows in a URI. */
+const URI_CHARACTERS = /^[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]*$/;
+
+export type HttpsUriProblem = "whitespace" | "length" | "notHttpsUri";
+
+/**
+ * What stops `value` being a member the manifest and vetter schemas give
+ * `format: uri`, `^https://` and `maxLength: 2048` — an absolute https URI with
+ * a host — or `null`. Mirrors `shape::https_uri`: the schema validator does not
+ * assert `format`, so the daemon checks it by hand and so does the console.
+ */
+export function httpsUriProblem(value: string): HttpsUriProblem | null {
+  if (/[\s\u0000-\u001f\u007f-\u009f]/.test(value)) return "whitespace";
+  if (chars(value) > 2048) return "length";
+  const rest = value.startsWith("https://") ? value.slice("https://".length) : null;
+  if (rest === null || rest === "" || /^[/?#]/.test(rest)) return "notHttpsUri";
+  if (!URI_CHARACTERS.test(value) || /%(?![0-9A-Fa-f]{2})/.test(value)) {
+    return "notHttpsUri";
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.hostname ? null : "notHttpsUri";
+  } catch {
+    return "notHttpsUri";
+  }
+}
+
 const isCount = (v: unknown): v is number =>
   typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 4_294_967_295;
 const isStringArray = (v: unknown): v is string[] =>
@@ -475,13 +490,9 @@ export function validateRequirements(value: unknown): string[] {
 
   if (v.governanceFrameworkUrl !== undefined) {
     const url = v.governanceFrameworkUrl;
-    if (
-      typeof url !== "string" ||
-      !url.startsWith("https://") ||
-      chars(url) > 2048
-    ) {
+    if (typeof url !== "string" || httpsUriProblem(url) !== null) {
       problems.push(
-        "The governance framework address must be an https:// URL of at most 2048 characters.",
+        "The governance framework address must be a complete https:// URL of at most 2048 characters, with no spaces.",
       );
     }
   }
@@ -813,15 +824,19 @@ export function validateBranding(draft: BrandingDraft): BrandingErrors {
   }
   const url = draft.logoUrl.trim();
   if (url) {
+    const problem = httpsUriProblem(url);
     if (!url.startsWith("https://")) {
       errors.logoUrl =
         "Use an https:// address. Clients refuse to fetch a logo over plain http.";
     } else if (url.length <= "https://".length) {
       errors.logoUrl = "Add the rest of the address after https://.";
-    } else if (/[\s\u0000-\u001f\u007f-\u009f]/.test(url)) {
-      errors.logoUrl = "Remove the spaces from the logo address.";
-    } else if (chars(url) > 2048) {
+    } else if (problem === "whitespace") {
+      errors.logoUrl = "Remove the spaces and control characters from the logo address.";
+    } else if (problem === "length") {
       errors.logoUrl = `The address is ${chars(url)} characters. Use one of 2048 or fewer.`;
+    } else if (problem === "notHttpsUri") {
+      errors.logoUrl =
+        "Enter a complete address, like https://example.org/logo.svg, with other characters percent-encoded.";
     }
   }
   return errors;

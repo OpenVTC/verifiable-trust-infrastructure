@@ -109,12 +109,21 @@ async fn vetting_admin_verbs_round_trip() {
     .expect("connect");
 
     // Grant converges: the second call returns the first grant.
+    let grant = |payload: serde_json::Value| {
+        serde_json::from_value::<vtc_client::vetting::vetters::grant::v0_1::Payload>(payload)
+            .expect("a grant payload of the published shape")
+    };
     let first = client
-        .grant_vetter(&vetter, Some(30 * 86_400))
+        .grant_vetter(&grant(
+            serde_json::json!({ "memberDid": vetter, "validitySeconds": 30 * 86_400 }),
+        ))
         .await
         .unwrap();
     assert!(first.created);
-    let second = client.grant_vetter(&vetter, None).await.unwrap();
+    let second = client
+        .grant_vetter(&grant(serde_json::json!({ "memberDid": vetter })))
+        .await
+        .unwrap();
     assert!(!second.created);
     assert_eq!(second.grant.endorsement_id, first.grant.endorsement_id);
 
@@ -150,16 +159,23 @@ async fn vetting_admin_verbs_round_trip() {
         Err(vtc_client::VtcError::Http { status: 400, .. })
     ));
 
-    assert_eq!(client.branding().await.unwrap(), Default::default());
+    assert_eq!(
+        serde_json::to_value(client.branding().await.unwrap()).unwrap(),
+        serde_json::json!({})
+    );
     let branding = client
-        .set_branding(&vtc_client::join_requests::CommunityBranding {
-            display_name: Some("Kernel".into()),
-            accent_color: Some("#1A2B3C".into()),
-            ..Default::default()
-        })
+        .set_branding(
+            &serde_json::from_value(
+                serde_json::json!({ "displayName": "Kernel", "accentColor": "#1A2B3C" }),
+            )
+            .unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(branding.accent_color.as_deref(), Some("#1a2b3c"));
+    assert_eq!(
+        branding.accent_color.as_deref().map(String::as_str),
+        Some("#1a2b3c")
+    );
 
     assert!(client.vetting_revocations().await.unwrap().is_empty());
 
@@ -167,8 +183,11 @@ async fn vetting_admin_verbs_round_trip() {
         .revoke_endorsement(&first.grant.endorsement_id)
         .await
         .unwrap();
-    assert_eq!(revoked.endorsement_id, first.grant.endorsement_id);
-    assert_eq!(revoked.revocation.credential_id, first.grant.credential_id);
+    assert_eq!(revoked.endorsement_id, first.grant.endorsement_id.as_str());
+    assert_eq!(
+        revoked.revocation.credential_id,
+        first.grant.credential_id.as_str()
+    );
     assert!(matches!(
         client.resend_vetter_grant(&vetter).await,
         Err(vtc_client::VtcError::Http { status: 404, .. })
