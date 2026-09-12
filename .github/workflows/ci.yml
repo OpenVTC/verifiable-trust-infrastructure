@@ -715,6 +715,14 @@ jobs:
             echo "::error::scratch or log files are tracked at the repo root"
             exit 1
           fi
+      # Third cheap whole-tree invariant sharing this job, and the one with the
+      # sharpest consequence if it slips: an unpinned `uses:` lets a third-party
+      # action change under a job that holds this repo's crates.io publishing
+      # identity. It lives here, beside the other two, so that pinning does not
+      # depend on a new required status check being configured before it is
+      # enforced. See the script header.
+      - name: Workflow actions are pinned to commit SHAs
+        run: bash scripts/check-workflow-action-pins.sh
 
   lockfile-resolves:
     # The sibling of the job above, and the same misattribution failure it
