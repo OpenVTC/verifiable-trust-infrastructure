@@ -470,6 +470,7 @@ didcomm_handler!(
             &s.contexts_ks,
             &s.acl_ks,
             &s.seed_store,
+            &s.audit_sink,
             &auth,
             &body.key_id,
             &payload,

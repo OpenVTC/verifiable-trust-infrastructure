@@ -303,6 +303,7 @@ pub(super) async fn handle_sign(
         &state.contexts_ks,
         &state.acl_ks,
         &state.seed_store,
+        &state.audit_sink,
         auth,
         &req.key_id,
         &payload_bytes,

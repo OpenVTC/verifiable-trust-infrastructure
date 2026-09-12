@@ -407,6 +407,7 @@ fn signing_context<'a>(
         contexts_ks: &state.contexts_ks,
         acl_ks: &state.acl_ks,
         seed_store: &state.seed_store,
+        audit: &state.audit_sink,
         auth,
     }
 }

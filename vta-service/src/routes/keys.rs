@@ -329,6 +329,7 @@ pub async fn sign_with_key(
         &state.contexts_ks,
         &state.acl_ks,
         &state.seed_store,
+        &state.audit_sink,
         &auth,
         &key_id,
         &payload,

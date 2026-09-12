@@ -68,7 +68,7 @@ pub async fn create_global(
     };
 
     store::store_global_template(templates_ks, &record).await?;
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "did_template.created",
         &auth.did,
@@ -123,7 +123,7 @@ pub async fn update_global(
     };
 
     store::store_global_template(templates_ks, &record).await?;
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "did_template.updated",
         &auth.did,
@@ -182,7 +182,7 @@ pub async fn delete_global(
     }
 
     store::delete_global_template(templates_ks, name).await?;
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "did_template.deleted",
         &auth.did,
@@ -328,7 +328,7 @@ pub async fn create_context(
     };
 
     store::store_context_template(templates_ks, context_id, &record).await?;
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "did_template.created",
         &auth.did,
@@ -392,7 +392,7 @@ pub async fn update_context(
     };
 
     store::store_context_template(templates_ks, context_id, &record).await?;
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "did_template.updated",
         &auth.did,
@@ -462,7 +462,7 @@ pub async fn delete_context(
     }
 
     store::delete_context_template(templates_ks, context_id, name).await?;
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "did_template.deleted",
         &auth.did,
