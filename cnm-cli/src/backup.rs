@@ -26,6 +26,10 @@ use crate::auth;
 const TRUST_TASK_HEADER: &str = "Trust-Task";
 const EXPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
 const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
+/// Largest VTC backup response read into memory. Matches the VTC's cap on a
+/// backup import request body, so an export larger than this could not be
+/// restored anyway.
+const MAX_BACKUP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Authenticated REST POST to a VTC `/v1/backup/*` route. `client.rest_url()`
 /// already carries the `/v1` mount, so the path here is relative to it.
@@ -41,7 +45,8 @@ async fn authed_post(
         .ok_or("VTC backup requires a REST connection to the VTC")?;
     // Refresh / mint a REST bearer token for the VTC (aud = "VTC").
     let token = auth::ensure_authenticated(base, keyring_key).await?;
-    let resp = reqwest::Client::new()
+    // The SDK client: finite timeouts, and no redirect off the VTC's origin.
+    let resp = vta_sdk::http::rest_client()
         .post(format!("{base}{path}"))
         .bearer_auth(&token)
         .header(TRUST_TASK_HEADER, task)
@@ -49,7 +54,10 @@ async fn authed_post(
         .send()
         .await?;
     let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
+    let bytes = vta_sdk::http::read_body_capped(resp, MAX_BACKUP_RESPONSE_BYTES)
+        .await
+        .map_err(|e| format!("VTC backup request ({status}): {e}"))?;
+    let text = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
         // Surface the server's error body verbatim — it carries the
         // actionable message (short password, vtc_did mismatch, …).

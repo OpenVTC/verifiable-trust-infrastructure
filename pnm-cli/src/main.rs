@@ -57,6 +57,9 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // DID-advertised VTA endpoints are public-only unless the operator opts in.
+    vta_sdk::http::set_allow_private_endpoints(cli.allow_private_endpoints);
+
     // Propagate --full-display to the shared render module so any list
     // command — including ones reached via the shared vta-cli-common
     // handlers — picks up the setting without threading a bool through

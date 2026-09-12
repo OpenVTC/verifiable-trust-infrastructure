@@ -26,6 +26,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 #[cfg(not(any(
@@ -36,9 +37,12 @@ use serde_json::json;
 use tempfile::tempdir;
 use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
+use vta_sdk::http::EndpointPolicy;
 use vta_sdk::session::testing::InMemorySessionBackend;
 use vta_sdk::session::{
-    SessionStore, TokenStatus, VtaEndpoint, resolve_vta_endpoint, resolve_vta_url,
+    SessionStore, TokenStatus, VtaEndpoint, resolve_vta_endpoint,
+    resolve_vta_endpoint_with_resolver, resolve_vta_endpoint_with_resolver_and_policy,
+    resolve_vta_url,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -295,29 +299,61 @@ async fn login_propagates_challenge_failure() {
 
 #[tokio::test]
 async fn ensure_authenticated_returns_cached_token_if_valid() {
-    // Pre-populate a session with a token expiring far in the future.
-    // ensure_authenticated should NOT touch the network — wiremock has
-    // no /auth mocks mounted, so any HTTP attempt would fail.
+    // Pre-populate a session with a token expiring far in the future, then
+    // remove every mock. ensure_authenticated for the same origin should NOT
+    // touch the network: any HTTP attempt would now 404 and fail the call.
     let server = MockServer::start().await;
     let s = store();
     let (did, pk) = did_key_from_seed(0x10);
     let (vta_did, _) = did_key_from_seed(0x20);
 
-    // Use login to populate a valid token via wiremock, then call
-    // ensure_authenticated against a *different* (un-mocked) URL — the
-    // cache should make that a no-op.
     mount_challenge(&server).await;
     let future = now_secs() + 3600;
     mount_authenticate(&server, future).await;
     let bundle = CredentialBundle::new(&did, &pk, &vta_did);
     s.login(&bundle, &server.uri(), "k").await.unwrap();
+    server.reset().await;
 
-    // Different URL — would 404 if hit. Cached token means it isn't.
+    let token = s.ensure_authenticated(&server.uri(), "k").await.unwrap();
+    assert_eq!(token, "access-jwt");
+
+    // The binding is to the origin, not the full URL: a path on the same server
+    // (the VTC mounts its API under `/v1`) reuses the token.
     let token = s
-        .ensure_authenticated("http://127.0.0.1:1", "k")
+        .ensure_authenticated(&format!("{}/v1", server.uri()), "k")
         .await
         .unwrap();
     assert_eq!(token, "access-jwt");
+}
+
+#[tokio::test]
+async fn ensure_authenticated_does_not_reuse_a_token_for_another_origin() {
+    let issuer = MockServer::start().await;
+    mount_challenge(&issuer).await;
+    mount_authenticate(&issuer, now_secs() + 3600).await;
+
+    let s = store();
+    let (did, pk) = did_key_from_seed(0x10);
+    let (vta_did, _) = did_key_from_seed(0x20);
+    let bundle = CredentialBundle::new(&did, &pk, &vta_did);
+    s.login(&bundle, &issuer.uri(), "k").await.unwrap();
+
+    // A different origin (same host, different port) that refuses to
+    // authenticate. Returning the cached token would succeed without ever
+    // contacting it; re-authenticating reaches it and fails.
+    let other = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/challenge"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .expect(1)
+        .mount(&other)
+        .await;
+
+    let result = s.ensure_authenticated(&other.uri(), "k").await;
+    assert!(
+        result.is_err(),
+        "a token issued for one origin must not be returned for another"
+    );
 }
 
 #[tokio::test]
@@ -706,6 +742,120 @@ async fn resolve_vta_endpoint_unparseable_did_errors() {
         Err(e) => e,
     };
     assert!(err.to_string().contains("Could not determine VTA URL"));
+}
+
+// ── Endpoint policy on DID-advertised REST URLs ─────────────────────
+
+const SEEDED_VTA: &str = "did:web:vta.example";
+
+/// A resolver holding one document for [`SEEDED_VTA`], offline.
+async fn resolver_serving(services: serde_json::Value) -> DIDCacheClient {
+    let doc = json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": SEEDED_VTA,
+        "service": services,
+    });
+    let mut client = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+        .await
+        .expect("local DID cache");
+    client
+        .add_did_document(
+            SEEDED_VTA,
+            serde_json::from_value(doc).expect("fixture document"),
+        )
+        .await;
+    client
+}
+
+async fn rest_only(rest: &str) -> DIDCacheClient {
+    resolver_serving(json!([
+        { "id": format!("{SEEDED_VTA}#vta-rest"), "type": "VTARest", "serviceEndpoint": rest }
+    ]))
+    .await
+}
+
+fn refusal(result: Result<VtaEndpoint, Box<dyn std::error::Error>>) -> String {
+    match result {
+        Ok(_) => panic!("expected the endpoint to be refused"),
+        Err(e) => e.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn resolve_vta_endpoint_refuses_a_metadata_rest_url() {
+    let r = rest_only("http://169.254.169.254/latest/meta-data/").await;
+    refusal(resolve_vta_endpoint_with_resolver(SEEDED_VTA, &r).await);
+    // Not even with private endpoints allowed.
+    refusal(
+        resolve_vta_endpoint_with_resolver_and_policy(
+            SEEDED_VTA,
+            &r,
+            EndpointPolicy::private_allowed(),
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn resolve_vta_endpoint_refuses_a_userinfo_rest_url() {
+    let r = rest_only("https://user:pw@vta.example").await;
+    let msg = refusal(resolve_vta_endpoint_with_resolver(SEEDED_VTA, &r).await);
+    assert!(
+        !msg.contains("pw@"),
+        "credentials must not be echoed: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn resolve_vta_endpoint_private_rest_url_needs_the_opt_in() {
+    let r = rest_only("https://10.0.0.5").await;
+    let msg = refusal(
+        resolve_vta_endpoint_with_resolver_and_policy(
+            SEEDED_VTA,
+            &r,
+            EndpointPolicy::public_only(),
+        )
+        .await,
+    );
+    assert!(msg.contains("VTA_ALLOW_PRIVATE_ENDPOINTS"), "{msg}");
+
+    match resolve_vta_endpoint_with_resolver_and_policy(
+        SEEDED_VTA,
+        &r,
+        EndpointPolicy::private_allowed(),
+    )
+    .await
+    .expect("accepted with the opt-in")
+    {
+        VtaEndpoint::Rest { url } => assert_eq!(url, "https://10.0.0.5"),
+        _ => panic!("expected a REST endpoint"),
+    }
+}
+
+#[tokio::test]
+async fn resolve_vta_endpoint_accepts_loopback_http() {
+    let r = rest_only("http://127.0.0.1:8100").await;
+    match resolve_vta_endpoint_with_resolver(SEEDED_VTA, &r)
+        .await
+        .expect("loopback http is accepted for local development")
+    {
+        VtaEndpoint::Rest { url } => assert_eq!(url, "http://127.0.0.1:8100"),
+        _ => panic!("expected a REST endpoint"),
+    }
+}
+
+/// The REST URL rides along in the mediator variants, so a refused one fails
+/// the whole resolution rather than being carried onward.
+#[tokio::test]
+async fn resolve_vta_endpoint_refuses_a_bad_rest_url_beside_a_mediator() {
+    let r = resolver_serving(json!([
+        { "id": format!("{SEEDED_VTA}#vta-didcomm"), "type": "DIDCommMessaging",
+          "serviceEndpoint": "did:web:mediator.example" },
+        { "id": format!("{SEEDED_VTA}#vta-rest"), "type": "VTARest",
+          "serviceEndpoint": "http://169.254.169.254/" },
+    ]))
+    .await;
+    refusal(resolve_vta_endpoint_with_resolver(SEEDED_VTA, &r).await);
 }
 
 #[tokio::test]

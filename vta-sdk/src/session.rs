@@ -32,6 +32,14 @@ struct Session {
     vta_did: Option<String>,
     access_token: Option<String>,
     access_expires_at: Option<u64>,
+    /// Origin (`scheme://host[:port]`) of the base URL `access_token` was
+    /// issued for. A cached token is reused only for a request to that same
+    /// origin; anything else re-authenticates, so a changed `#vta-rest`
+    /// endpoint never receives a token minted for a different server. `None`
+    /// on sessions written before this field existed, which therefore
+    /// re-authenticate once.
+    #[serde(default)]
+    token_origin: Option<String>,
     /// Marks a session whose `client_did` was minted locally with no live
     /// VTA to register it against — the user has been told to ask their
     /// admin to run `vta acl create --did <did>`. On the first successful
@@ -242,6 +250,7 @@ impl SessionStore {
             vta_did: Some(bundle.vta_did.clone()),
             access_token: None,
             access_expires_at: None,
+            token_origin: None,
             needs_rotation: false,
         };
         self.save_session(key, &session)?;
@@ -258,6 +267,7 @@ impl SessionStore {
 
         session.access_token = Some(token.access_token);
         session.access_expires_at = Some(token.access_expires_at);
+        session.token_origin = url_origin(base_url);
         self.save_session(key, &session)?;
 
         Ok(LoginResult {
@@ -285,6 +295,7 @@ impl SessionStore {
             vta_did: Some(vta_did.to_string()),
             access_token: None,
             access_expires_at: None,
+            token_origin: None,
             needs_rotation: false,
         };
         self.save_session(key, &session)
@@ -310,6 +321,7 @@ impl SessionStore {
             vta_did: Some(vta_did.to_string()),
             access_token: None,
             access_expires_at: None,
+            token_origin: None,
             needs_rotation: true,
         };
         self.save_session(key, &session)
@@ -349,6 +361,7 @@ impl SessionStore {
             vta_did: None,
             access_token: None,
             access_expires_at: None,
+            token_origin: None,
             needs_rotation: false,
         };
         self.save_session(key, &session)
@@ -438,7 +451,8 @@ impl SessionStore {
     /// Ensure we have a valid access token. Returns the token string.
     ///
     /// If no credentials are stored, returns an error.
-    /// If a cached token is still valid (>30s remaining), returns it.
+    /// If a cached token is still valid (>30s remaining) and was issued for the
+    /// same origin as `base_url`, returns it.
     /// Otherwise, performs a full challenge-response authentication.
     ///
     /// When the loaded session is flagged `needs_rotation`, the first
@@ -469,13 +483,26 @@ impl SessionStore {
         // Check cached token — but only if we're not pending rotation.
         // A cached token on a pending-rotation session means we rotated in
         // a previous call already, which `rotate_key` handled atomically.
+        //
+        // It must also have been issued for the origin being called. A token is
+        // a bearer credential: if `base_url` now points somewhere else (a
+        // changed `#vta-rest` advertisement, a different `--url`), returning it
+        // would hand that server a live token for this VTA.
+        let requested_origin = url_origin(base_url);
         if !session.needs_rotation
             && let (Some(token), Some(expires_at)) =
                 (&session.access_token, session.access_expires_at)
             && now_epoch() + 30 < expires_at
         {
-            debug!(expires_in = expires_at - now_epoch(), "using cached token");
-            return Ok(token.clone());
+            if requested_origin.is_some() && session.token_origin == requested_origin {
+                debug!(expires_in = expires_at - now_epoch(), "using cached token");
+                return Ok(token.clone());
+            }
+            debug!(
+                cached_origin = ?session.token_origin,
+                requested_origin = ?requested_origin,
+                "cached token belongs to a different origin; re-authenticating"
+            );
         }
 
         debug!("cached token expired or missing, performing challenge-response");
@@ -538,6 +565,7 @@ impl SessionStore {
             .map_err(|e| format!("rotate: new DID failed challenge-response after swap: {e}"))?;
             session.access_token = Some(new_token_result.access_token.clone());
             session.access_expires_at = Some(new_token_result.access_expires_at);
+            session.token_origin = requested_origin.clone();
             self.save_session(key, &session)?;
 
             return Ok(new_token_result.access_token);
@@ -546,6 +574,7 @@ impl SessionStore {
         let token = result.access_token.clone();
         session.access_token = Some(result.access_token);
         session.access_expires_at = Some(result.access_expires_at);
+        session.token_origin = requested_origin;
         self.save_session(key, &session)?;
         debug!("new token cached");
 
@@ -844,7 +873,7 @@ impl SessionStore {
                 // diagnose, so demand a real advertisement or an explicit
                 // `--url`.
                 None => rest_url_from_did_doc(&session_vta_did)
-                    .await
+                    .await?
                     .ok_or_else(|| no_rest_endpoint_error(&session_vta_did))?,
             };
             debug!(url = %url, "connecting via REST (forced --transport rest)");
@@ -1595,8 +1624,20 @@ async fn rotate_key_over_client(
         vta_did: session.vta_did.clone(),
         access_token: None,
         access_expires_at: None,
+        token_origin: None,
         needs_rotation: false,
     })
+}
+
+/// The origin (`scheme://host[:port]`) of `base_url`, used to bind a cached
+/// token to the server it was issued for. `None` for anything unparseable or
+/// without a tuple origin; `None` never matches, so such a URL always
+/// re-authenticates.
+fn url_origin(base_url: &str) -> Option<String> {
+    match url::Url::parse(base_url).ok()?.origin() {
+        origin @ url::Origin::Tuple(..) => Some(origin.ascii_serialization()),
+        url::Origin::Opaque(_) => None,
+    }
 }
 
 // ── Challenge-response auth ─────────────────────────────────────────
@@ -2182,9 +2223,35 @@ pub async fn resolve_vta_endpoint(
 ///   deployment. With a resolver parameter a test seeds a document via
 ///   `DIDCacheClient::add_did_document` and asserts what discovery makes of it,
 ///   in-process and with no network.
+///
+/// # Endpoint policy
+///
+/// Every REST URL this returns, whether advertised in `#vta-rest` or
+/// synthesized from the DID's domain, has passed
+/// [`guard_vta_endpoint`](crate::http::guard_vta_endpoint) under
+/// [`EndpointPolicy::process_default`](crate::http::EndpointPolicy::process_default).
+/// A refused URL is an error that names the opt-in. That holds even when the
+/// document also advertises a mediator transport: the REST URL travels onward
+/// in every variant, so it is refused rather than silently dropped.
 pub async fn resolve_vta_endpoint_with_resolver(
     vta_did: &str,
     did_resolver: &DIDCacheClient,
+) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
+    resolve_vta_endpoint_with_resolver_and_policy(
+        vta_did,
+        did_resolver,
+        crate::http::EndpointPolicy::process_default(),
+    )
+    .await
+}
+
+/// [`resolve_vta_endpoint_with_resolver`] under an explicit
+/// [`EndpointPolicy`](crate::http::EndpointPolicy) instead of the process
+/// default.
+pub async fn resolve_vta_endpoint_with_resolver_and_policy(
+    vta_did: &str,
+    did_resolver: &DIDCacheClient,
+    policy: crate::http::EndpointPolicy,
 ) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
     use crate::protocol::matching::ServiceCapabilities;
 
@@ -2196,6 +2263,7 @@ pub async fn resolve_vta_endpoint_with_resolver(
             debug!(error = %e, "DID resolution failed, falling back to URL parsing");
             let url = url_from_did(vta_did)
                 .ok_or_else(|| format!("Could not determine VTA URL from DID: {vta_did}"))?;
+            let url = vet_vta_rest_url(vta_did, &url, policy)?;
             return Ok(VtaEndpoint::Rest { url });
         }
     };
@@ -2212,7 +2280,9 @@ pub async fn resolve_vta_endpoint_with_resolver(
     let rest_url = caps
         .rest
         .as_deref()
-        .map(|u| u.trim_matches('"').trim_end_matches('/').to_string());
+        .map(|u| u.trim_matches('"').trim_end_matches('/').to_string())
+        .map(|u| vet_vta_rest_url(vta_did, &u, policy))
+        .transpose()?;
 
     // TSP and DIDComm both advertise a *mediator DID*, not a transport URL —
     // the real endpoint lives in the mediator's own document. Anything that
@@ -2253,6 +2323,7 @@ pub async fn resolve_vta_endpoint_with_resolver(
         // Last resort: parse URL from DID string
         let url = url_from_did(vta_did)
             .ok_or_else(|| format!("Could not determine VTA URL from DID: {vta_did}"))?;
+        let url = vet_vta_rest_url(vta_did, &url, policy)?;
         debug!(url = %url, "falling back to URL from DID string");
         Ok(VtaEndpoint::Rest { url })
     }
@@ -2283,53 +2354,98 @@ async fn discover_mediator_via_status(client: &crate::client::VtaClient) -> Opti
 }
 
 /// The `#vta-rest` service endpoint from the VTA's DID document, if it
-/// advertises one. `None` covers both "resolution failed" and "no REST service"
-/// — neither yields a REST URL we can stand behind.
+/// advertises one. `Ok(None)` covers both "resolution failed" and "no REST
+/// service" — neither yields a REST URL we can stand behind. An advertised URL
+/// that fails [`guard_vta_endpoint`](crate::http::guard_vta_endpoint) is an
+/// `Err`, so a caller never falls back past a refusal.
 ///
 /// Strict counterpart of [`resolve_vta_url`], which additionally guesses a URL
 /// from the DID's own domain. That guess is right for a self-hosted `did:web`
 /// VTA and wrong for a `did:webvh` whose DID lives on a hosting server, so the
 /// force-REST path uses this instead.
-async fn rest_url_from_did_doc(vta_did: &str) -> Option<String> {
-    let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
+async fn rest_url_from_did_doc(
+    vta_did: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let Ok(did_resolver) = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
         .await
         .inspect_err(|e| debug!(error = %e, "DID resolver init failed"))
-        .ok()?;
+    else {
+        return Ok(None);
+    };
+    rest_url_from_did_doc_with_resolver(
+        vta_did,
+        &did_resolver,
+        crate::http::EndpointPolicy::process_default(),
+    )
+    .await
+}
 
-    let resolved = did_resolver
+/// [`rest_url_from_did_doc`] over an existing resolver and an explicit policy.
+async fn rest_url_from_did_doc_with_resolver(
+    vta_did: &str,
+    did_resolver: &DIDCacheClient,
+    policy: crate::http::EndpointPolicy,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let Ok(resolved) = did_resolver
         .resolve(vta_did)
         .await
         .inspect_err(|e| debug!(error = %e, "DID resolution failed"))
-        .ok()?;
+    else {
+        return Ok(None);
+    };
 
-    let url = resolved
+    let Some(uri) = resolved
         .doc
-        .find_service("vta-rest")?
-        .service_endpoint
-        .get_uri()?
-        .trim_matches('"')
-        .trim_end_matches('/')
-        .to_string();
+        .find_service("vta-rest")
+        .and_then(|s| s.service_endpoint.get_uri())
+    else {
+        return Ok(None);
+    };
+    let url = uri.trim_matches('"').trim_end_matches('/');
+    let url = vet_vta_rest_url(vta_did, url, policy)?;
 
     debug!(url = %url, "found VTA URL from #vta-rest service endpoint");
-    Some(url)
+    Ok(Some(url))
+}
+
+/// Run a VTA REST URL through
+/// [`guard_vta_endpoint`](crate::http::guard_vta_endpoint). Returns the URL
+/// string unchanged, so callers keep joining paths onto the same text, or an
+/// error naming the DID that advertised it.
+fn vet_vta_rest_url(
+    vta_did: &str,
+    url: &str,
+    policy: crate::http::EndpointPolicy,
+) -> Result<String, Box<dyn std::error::Error>> {
+    crate::http::guard_vta_endpoint(url, policy)
+        .map_err(|e| format!("refusing the REST endpoint for VTA {vta_did}: {e}"))?;
+    Ok(url.to_string())
 }
 
 /// Resolve a VTA DID to discover its service URL.
 ///
 /// Resolves the DID document and looks for the `#vta-rest` service endpoint.
 /// Falls back to parsing the domain from `did:web:` or `did:webvh:` DID strings.
+///
+/// Either URL must pass [`guard_vta_endpoint`](crate::http::guard_vta_endpoint)
+/// under [`EndpointPolicy::process_default`](crate::http::EndpointPolicy::process_default);
+/// a refused URL is an error that names the opt-in.
 pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error::Error>> {
     debug!(vta_did, "resolving VTA DID to discover service URL");
 
-    if let Some(url) = rest_url_from_did_doc(vta_did).await {
+    if let Some(url) = rest_url_from_did_doc(vta_did).await? {
         return Ok(url);
     }
     debug!("no #vta-rest service resolved, falling back to DID parsing");
 
     // Fallback: parse domain from did:web or did:webvh DID strings
-    url_from_did(vta_did)
-        .ok_or_else(|| format!("Could not determine VTA URL from DID: {vta_did}").into())
+    let url = url_from_did(vta_did)
+        .ok_or_else(|| format!("Could not determine VTA URL from DID: {vta_did}"))?;
+    vet_vta_rest_url(
+        vta_did,
+        &url,
+        crate::http::EndpointPolicy::process_default(),
+    )
 }
 
 /// Extract the base URL from a `did:web:` or `did:webvh:` DID string.
@@ -3489,6 +3605,7 @@ mod tests {
             vta_did: Some("did:key:z6MkVTA".into()),
             access_token: Some("tok123".into()),
             access_expires_at: Some(1700000000),
+            token_origin: Some("https://vta.example".into()),
             needs_rotation: false,
         };
         let json = serde_json::to_string(&session).unwrap();
@@ -3498,6 +3615,114 @@ mod tests {
         assert_eq!(restored.vta_did, session.vta_did);
         assert_eq!(restored.access_token, session.access_token);
         assert_eq!(restored.access_expires_at, session.access_expires_at);
+        assert_eq!(restored.token_origin, session.token_origin);
+    }
+
+    /// A session saved before tokens were origin-bound still loads; with no
+    /// origin recorded, its cached token is never reused.
+    #[test]
+    fn test_session_without_token_origin_loads() {
+        let json = r#"{
+            "client_did": "did:key:z6Mk1",
+            "private_key": "z_seed",
+            "vta_did": "did:key:z6MkVTA",
+            "access_token": "tok",
+            "access_expires_at": 4102444800
+        }"#;
+        let session: Session = serde_json::from_str(json).unwrap();
+        assert_eq!(session.access_token.as_deref(), Some("tok"));
+        assert!(session.token_origin.is_none());
+    }
+
+    #[test]
+    fn url_origin_ignores_path_and_default_port() {
+        assert_eq!(
+            url_origin("https://vta.example/v1").as_deref(),
+            Some("https://vta.example")
+        );
+        assert_eq!(
+            url_origin("https://vta.example:443"),
+            url_origin("https://vta.example")
+        );
+        assert_ne!(
+            url_origin("https://vta.example:8443"),
+            url_origin("https://vta.example")
+        );
+        assert_ne!(
+            url_origin("http://vta.example"),
+            url_origin("https://vta.example")
+        );
+        assert_eq!(url_origin("not a url"), None);
+    }
+
+    /// A resolver holding one document for `did` that advertises `#vta-rest`
+    /// at `rest` (or no service at all when `rest` is `None`).
+    async fn resolver_with_rest(did: &str, rest: Option<&str>) -> DIDCacheClient {
+        use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
+        let services = match rest {
+            Some(rest) => serde_json::json!([
+                { "id": format!("{did}#vta-rest"), "type": "VTARest", "serviceEndpoint": rest }
+            ]),
+            None => serde_json::json!([]),
+        };
+        let doc = serde_json::json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": did,
+            "service": services,
+        });
+        let mut client = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+        client
+            .add_did_document(did, serde_json::from_value(doc).expect("fixture document"))
+            .await;
+        client
+    }
+
+    /// The forced-REST path vets the advertised URL too.
+    #[tokio::test]
+    async fn forced_rest_url_from_did_doc_is_vetted() {
+        use crate::http::EndpointPolicy;
+        let did = "did:web:vta.example";
+
+        let r = resolver_with_rest(did, Some("http://169.254.169.254/latest/meta-data/")).await;
+        let err = rest_url_from_did_doc_with_resolver(did, &r, EndpointPolicy::private_allowed())
+            .await
+            .expect_err("a metadata endpoint is refused even with the opt-in");
+        assert!(err.to_string().contains(did), "{err}");
+
+        let r = resolver_with_rest(did, Some("https://10.0.0.5")).await;
+        let err = rest_url_from_did_doc_with_resolver(did, &r, EndpointPolicy::public_only())
+            .await
+            .expect_err("a private endpoint needs the opt-in");
+        assert!(
+            err.to_string().contains("VTA_ALLOW_PRIVATE_ENDPOINTS"),
+            "{err}"
+        );
+        assert_eq!(
+            rest_url_from_did_doc_with_resolver(did, &r, EndpointPolicy::private_allowed())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("https://10.0.0.5")
+        );
+
+        let r = resolver_with_rest(did, Some("http://127.0.0.1:8100/")).await;
+        assert_eq!(
+            rest_url_from_did_doc_with_resolver(did, &r, EndpointPolicy::public_only())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("http://127.0.0.1:8100")
+        );
+
+        let r = resolver_with_rest(did, None).await;
+        assert!(
+            rest_url_from_did_doc_with_resolver(did, &r, EndpointPolicy::public_only())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// Older session blobs include a `vta_url` field. Serde silently drops
@@ -3541,6 +3766,7 @@ mod tests {
             vta_did: None,
             access_token: None,
             access_expires_at: None,
+            token_origin: None,
             needs_rotation: false,
         };
         let json = serde_json::to_string(&session).unwrap();
@@ -3740,6 +3966,7 @@ mod tests {
             vta_did: None,
             access_token: None,
             access_expires_at: None,
+            token_origin: None,
             needs_rotation: false,
         };
         let err = require_vta_did(&pending).unwrap_err();

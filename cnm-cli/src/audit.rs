@@ -19,6 +19,9 @@ use crate::auth;
 /// `vti_common::trust_task::HEADER_NAME`).
 const TRUST_TASK_HEADER: &str = "Trust-Task";
 const VERIFY_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
+/// Largest verification report read into memory. The report is a handful of
+/// counters and identifiers; this is generous headroom.
+const MAX_VERIFY_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// `cnm audit verify` — walk the community's audit chain and report.
 ///
@@ -33,14 +36,18 @@ pub async fn cmd_verify(
         .ok_or("VTC audit verify requires a REST connection to the VTC")?;
     let token = auth::ensure_authenticated(base, keyring_key).await?;
 
-    let resp = reqwest::Client::new()
+    // The SDK client: finite timeouts, and no redirect off the VTC's origin.
+    let resp = vta_sdk::http::rest_client()
         .get(format!("{base}/audit/verify"))
         .bearer_auth(&token)
         .header(TRUST_TASK_HEADER, VERIFY_TASK)
         .send()
         .await?;
     let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
+    let bytes = vta_sdk::http::read_body_capped(resp, MAX_VERIFY_RESPONSE_BYTES)
+        .await
+        .map_err(|e| format!("VTC audit verify ({status}): {e}"))?;
+    let text = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
         return Err(format!("VTC audit verify failed ({status}): {text}").into());
     }
