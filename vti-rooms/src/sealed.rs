@@ -238,13 +238,13 @@ impl SealedRoom {
         let storage_key = self.group.storage_key()?;
         let aad = associated_data(&self.room_id, key, version, epoch);
 
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&storage_key));
+        let cipher = ChaCha20Poly1305::new(&Key::from(storage_key));
         let mut nonce_bytes = [0u8; 12];
         getrandom::fill(&mut nonce_bytes).expect("OS randomness unavailable");
 
         let ciphertext = cipher
             .encrypt(
-                Nonce::from_slice(&nonce_bytes),
+                &Nonce::from(nonce_bytes),
                 Payload {
                     msg: plaintext,
                     aad: &aad,
@@ -297,10 +297,11 @@ impl SealedRoom {
             )));
         }
 
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&storage_key));
+        let cipher = ChaCha20Poly1305::new(&Key::from(storage_key));
         cipher
             .decrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::try_from(&nonce[..])
+                    .map_err(|e| RoomKeyError::Seal(format!("nonce: {e}")))?,
                 Payload {
                     msg: &ciphertext,
                     aad: &aad,

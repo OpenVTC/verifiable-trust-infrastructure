@@ -97,13 +97,13 @@ pub fn seal_link(
         )));
     }
 
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(current));
+    let cipher = ChaCha20Poly1305::new(&Key::from(*current));
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes).expect("OS randomness unavailable");
 
     let wrapped = cipher
         .encrypt(
-            Nonce::from_slice(&nonce_bytes),
+            &Nonce::from(nonce_bytes),
             Payload {
                 msg: predecessor.as_slice(),
                 aad: &link_aad(room_id, epoch),
@@ -137,10 +137,11 @@ pub fn open_link(
         )));
     }
 
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(current));
+    let cipher = ChaCha20Poly1305::new(&Key::from(*current));
     let plain = cipher
         .decrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::try_from(&nonce[..])
+                .map_err(|e| RoomKeyError::Seal(format!("epoch link nonce: {e}")))?,
             Payload {
                 msg: &wrapped,
                 aad: &link_aad(room_id, link.epoch),
