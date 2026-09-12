@@ -510,6 +510,16 @@ button.primary:focus-visible {
   stroke-width: 1.75;
 }
 
+/* A third-party plugin's SVG icon arrives as an `<img>` rather than as inline
+   markup (see `PluginIcon` — nothing inside an `<img>` can execute), so the
+   `svg` rule above never sees it and cannot size it. */
+.nav-icon img,
+.plugin-icon-raw {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
 .nav-label {
   flex: 1 1 auto;
   overflow: hidden;
