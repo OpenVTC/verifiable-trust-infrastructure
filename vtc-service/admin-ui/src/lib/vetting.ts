@@ -25,11 +25,17 @@
 // The daemon stays the authority: it runs every one of these again, and makes
 // the one check this module cannot — that a `statementType` is a registered
 // endorsement type.
+//
+// The last section turns those same rules around: a criterion the console edits
+// is a draft of text, and `criterionProblems` answers it with the sentences
+// above rather than a second set of rules.
 
 import type {
+  AcceptsCriterion,
   CommunityBranding,
   JoinRequestVetting,
   JoinRequestVettingStatement,
+  RegisterAcceptsBody,
   VetterGrantRow,
   VetterListBody,
   VettingMethod,
@@ -607,6 +613,348 @@ export function summarizeRequirements(r: VettingRequirements): string[] {
     );
   }
   return lines;
+}
+
+// ── Editing an admission criterion ──────────────────────────────────────
+//
+// A form holds text; the daemon stores numbers, lists and absent members. These
+// convert between the two, and deliberately do **no** policy checking of their
+// own: a draft becomes a requirements object, and `validateRequirements` above
+// — the daemon's rules, written once — says whether it may be saved. A number
+// that does not parse becomes `NaN`, which `isCount` refuses and the existing
+// sentence explains, rather than a second wording of the same rule here.
+//
+// The distinction the form has to carry that the wire does not: an **absent**
+// member and an empty one mean different things. No `acceptedDocumentClasses`
+// means each vetter decides what they accept (D16); an empty list means they
+// may rely on nothing. So the draft keeps `documentFloor` beside the list.
+
+/**
+ * The endorsement type a Vetting Statement carries
+ * (`vta_sdk::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE`).
+ *
+ * A URI, not a schema, so it has no generated type to alias — but the console
+ * offers to register it, and a criterion that counts anything else is not peer
+ * identity vetting. The daemon is still the authority on what is registered.
+ */
+export const IDENTITY_VETTING_STATEMENT_TYPE =
+  "https://firstperson.network/endorsements/identity-vetting/0.1";
+
+/** An admission criterion's vetting requirements, as a form holds them. */
+export interface RequirementsDraft {
+  version: string;
+  statementType: string;
+  minStatements: string;
+  acceptedMethods: Record<VettingMethod, boolean>;
+  minByMethod: Record<VettingMethod, string>;
+  role: string;
+  requiredClaims: string;
+  optionalClaims: string;
+  maxStatementAge: string;
+  /** Whether the community sets a floor on documentation at all. */
+  documentFloor: boolean;
+  acceptedDocumentClasses: string;
+  requireConsistentIdentityCommitment: boolean;
+  relationshipCaps: Record<DeclaredRelationship, string>;
+  invitation: "" | "required" | "optional" | "none";
+  decisionSla: string;
+  requirementsGrace: string;
+  governanceFrameworkUrl: string;
+}
+
+/** The whole criterion: what it is called, what it asks, and its DCQL query. */
+export interface CriterionDraft {
+  id: string;
+  description: string;
+  /** Whether this criterion asks for vetting at all. */
+  vets: boolean;
+  requirements: RequirementsDraft;
+  /** The DCQL query, as JSON text. Kept verbatim unless the admin edits it. */
+  query: string;
+}
+
+/**
+ * The query a new vetting criterion starts from: statements are
+ * `EndorsementCredential`s, and the criterion may count more than one.
+ *
+ * It is a starting point, not a rule. The daemon validates the query
+ * structurally and checks every type it references, so an edited one is still
+ * checked; this is only what an admin who has no opinion about DCQL should not
+ * have to write.
+ */
+export const DEFAULT_ACCEPTS_QUERY = {
+  credentials: [
+    {
+      id: "vetting",
+      format: "ldp_vc",
+      multiple: true,
+      meta: { type_values: ["EndorsementCredential"] },
+    },
+  ],
+};
+
+const EMPTY_METHODS: Record<VettingMethod, boolean> = {
+  inPerson: false,
+  video: false,
+  priorAcquaintance: false,
+};
+
+const EMPTY_METHOD_COUNTS: Record<VettingMethod, string> = {
+  inPerson: "",
+  video: "",
+  priorAcquaintance: "",
+};
+
+const EMPTY_RELATIONSHIP_CAPS: Record<DeclaredRelationship, string> = {
+  none: "",
+  communityColleague: "",
+  sameEmployer: "",
+  family: "",
+  otherPersonal: "",
+};
+
+/**
+ * What a community that has not vetted before should be shown: one vetter, in
+ * person or on video, verifying a legal name. Every number is the community's
+ * to change — these are the values that make the form legible, not a default
+ * the protocol has (D15).
+ */
+export const NEW_REQUIREMENTS_DRAFT: RequirementsDraft = {
+  version: "0.1",
+  statementType: "",
+  minStatements: "1",
+  acceptedMethods: { ...EMPTY_METHODS, inPerson: true, video: true },
+  minByMethod: { ...EMPTY_METHOD_COUNTS },
+  role: "vetter",
+  requiredClaims: "name.legal",
+  optionalClaims: "",
+  maxStatementAge: "P120D",
+  documentFloor: false,
+  acceptedDocumentClasses: "",
+  requireConsistentIdentityCommitment: true,
+  relationshipCaps: { ...EMPTY_RELATIONSHIP_CAPS },
+  invitation: "",
+  decisionSla: "",
+  requirementsGrace: "",
+  governanceFrameworkUrl: "",
+};
+
+const joinList = (values: readonly string[] | null | undefined): string =>
+  values ? values.join(", ") : "";
+
+/** A comma- or newline-separated list, without the empties. */
+export function splitList(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+const countText = (n: number | null | undefined): string =>
+  typeof n === "number" ? String(n) : "";
+
+/** `NaN` for anything that is not a whole number, which `validateRequirements` refuses. */
+const countValue = (text: string): number => {
+  const trimmed = text.trim();
+  return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+};
+
+/** Stored requirements, as the form holds them. */
+export function requirementsDraft(
+  r: VettingRequirements | null | undefined,
+): RequirementsDraft {
+  if (!r) return { ...NEW_REQUIREMENTS_DRAFT };
+  const methods = { ...EMPTY_METHODS };
+  for (const m of r.acceptedMethods ?? []) {
+    if (isVettingMethod(m)) methods[m] = true;
+  }
+  const minByMethod = { ...EMPTY_METHOD_COUNTS };
+  for (const m of VETTING_METHODS) {
+    minByMethod[m] = countText(r.minByMethod?.[m]);
+  }
+  const relationshipCaps = { ...EMPTY_RELATIONSHIP_CAPS };
+  for (const rel of DECLARED_RELATIONSHIPS) {
+    relationshipCaps[rel] = countText(
+      r.independence?.maxByDeclaredRelationship?.[rel],
+    );
+  }
+  return {
+    version: r.version ?? "0.1",
+    statementType: r.statementType ?? "",
+    minStatements: countText(r.minStatements),
+    acceptedMethods: methods,
+    minByMethod,
+    role: r.eligibleVetters?.role ?? "",
+    requiredClaims: joinList(r.requiredClaims),
+    optionalClaims: joinList(r.optionalClaims),
+    maxStatementAge: r.maxStatementAge ?? "",
+    documentFloor: r.acceptedDocumentClasses !== undefined &&
+      r.acceptedDocumentClasses !== null,
+    acceptedDocumentClasses: joinList(r.acceptedDocumentClasses),
+    requireConsistentIdentityCommitment: Boolean(
+      r.independence?.requireConsistentIdentityCommitment,
+    ),
+    relationshipCaps,
+    invitation: r.invitation ?? "",
+    decisionSla: r.decisionSla ?? "",
+    requirementsGrace: r.requirementsGrace ?? "",
+    governanceFrameworkUrl: r.governanceFrameworkUrl ?? "",
+  };
+}
+
+/**
+ * The requirements a draft would publish. Empty optional fields are left out
+ * rather than sent empty, so the manifest carries only what the community
+ * decided; `validateRequirements` is what says whether the result may be saved.
+ */
+export function draftToRequirements(draft: RequirementsDraft): VettingRequirements {
+  const acceptedMethods = VETTING_METHODS.filter((m) => draft.acceptedMethods[m]);
+
+  const minByMethod: Partial<Record<VettingMethod, number>> = {};
+  for (const m of VETTING_METHODS) {
+    if (draft.minByMethod[m].trim() !== "") {
+      minByMethod[m] = countValue(draft.minByMethod[m]);
+    }
+  }
+
+  const caps: Partial<Record<DeclaredRelationship, number>> = {};
+  for (const rel of DECLARED_RELATIONSHIPS) {
+    if (draft.relationshipCaps[rel].trim() !== "") {
+      caps[rel] = countValue(draft.relationshipCaps[rel]);
+    }
+  }
+
+  const independence: Record<string, unknown> = {};
+  if (Object.keys(caps).length > 0) independence.maxByDeclaredRelationship = caps;
+  if (draft.requireConsistentIdentityCommitment) {
+    independence.requireConsistentIdentityCommitment = true;
+  }
+
+  const requirements: Record<string, unknown> = {
+    version: draft.version.trim(),
+    statementType: draft.statementType.trim(),
+    minStatements: countValue(draft.minStatements),
+    acceptedMethods,
+    eligibleVetters: { role: draft.role.trim() },
+  };
+  if (Object.keys(minByMethod).length > 0) requirements.minByMethod = minByMethod;
+  const required = splitList(draft.requiredClaims);
+  if (required.length > 0) requirements.requiredClaims = required;
+  const optional = splitList(draft.optionalClaims);
+  if (optional.length > 0) requirements.optionalClaims = optional;
+  if (draft.maxStatementAge.trim()) {
+    requirements.maxStatementAge = draft.maxStatementAge.trim();
+  }
+  if (draft.documentFloor) {
+    requirements.acceptedDocumentClasses = splitList(draft.acceptedDocumentClasses);
+  }
+  if (Object.keys(independence).length > 0) requirements.independence = independence;
+  if (draft.invitation) requirements.invitation = draft.invitation;
+  if (draft.decisionSla.trim()) requirements.decisionSla = draft.decisionSla.trim();
+  if (draft.requirementsGrace.trim()) {
+    requirements.requirementsGrace = draft.requirementsGrace.trim();
+  }
+  if (draft.governanceFrameworkUrl.trim()) {
+    requirements.governanceFrameworkUrl = draft.governanceFrameworkUrl.trim();
+  }
+  return requirements as unknown as VettingRequirements;
+}
+
+/** A stored criterion, as the form holds it. */
+export function criterionDraft(
+  criterion: AcceptsCriterion | null | undefined,
+): CriterionDraft {
+  return {
+    id: criterion?.id ?? "",
+    description: criterion?.description ?? "",
+    // A stored criterion is opened as it is; a new one starts out vetting,
+    // because this form is reached from the vetting pages and a criterion that
+    // asks for no vetting is the thing already being replaced.
+    vets: criterion ? Boolean(criterion.vetting) : true,
+    requirements: requirementsDraft(criterion?.vetting),
+    query: JSON.stringify(
+      criterion ? (criterion.query ?? {}) : DEFAULT_ACCEPTS_QUERY,
+      null,
+      2,
+    ),
+  };
+}
+
+/** A criterion id: what the daemon's own key allows, and what a URL can carry. */
+const CRITERION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export interface CriterionProblems {
+  id?: string;
+  query?: string;
+  /** Every problem `validateRequirements` found, when the criterion vets. */
+  requirements: string[];
+}
+
+/**
+ * What stops this draft being saved. The id and the query are the form's own
+ * (the daemon refuses an empty id, and a query it cannot parse); the
+ * requirements list is `validateRequirements`, unchanged.
+ */
+export function criterionProblems(
+  draft: CriterionDraft,
+  existingIds: readonly string[] = [],
+): CriterionProblems {
+  const problems: CriterionProblems = { requirements: [] };
+  const id = draft.id.trim();
+  if (!id) {
+    problems.id = "Name the criterion, so the manifest and the decision can cite it.";
+  } else if (!CRITERION_ID.test(id) || id.length > 128) {
+    problems.id =
+      "Use letters, digits, dots, dashes or underscores, starting with a letter or digit, up to 128 characters.";
+  } else if (existingIds.includes(id)) {
+    problems.id = `A criterion called "${id}" already exists. Edit that one, or choose another name.`;
+  }
+
+  const query = draft.query.trim();
+  if (!query) {
+    problems.query = "A criterion needs a DCQL query saying which credentials it asks for.";
+  } else {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(query);
+    } catch (err) {
+      problems.query = `That is not JSON the community can read: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+    }
+    if (
+      problems.query === undefined &&
+      (!isObject(parsed) || !Array.isArray((parsed as { credentials?: unknown }).credentials))
+    ) {
+      problems.query =
+        "A DCQL query is an object with a `credentials` list. The community checks the rest when it stores the criterion.";
+    }
+  }
+
+  if (draft.vets) {
+    problems.requirements = validateRequirements(draftToRequirements(draft.requirements));
+  }
+  return problems;
+}
+
+/** True when nothing stops the draft being saved. */
+export function criterionSavable(problems: CriterionProblems): boolean {
+  return (
+    problems.id === undefined &&
+    problems.query === undefined &&
+    problems.requirements.length === 0
+  );
+}
+
+/** The body `POST /v1/schemas/accepts` stores. */
+export function criterionBody(draft: CriterionDraft): RegisterAcceptsBody {
+  const description = draft.description.trim();
+  return {
+    id: draft.id.trim(),
+    query: JSON.parse(draft.query) as unknown,
+    ...(description ? { description } : {}),
+    ...(draft.vets ? { vetting: draftToRequirements(draft.requirements) } : {}),
+  } as RegisterAcceptsBody;
 }
 
 // ── Vetter grants ───────────────────────────────────────────────────────

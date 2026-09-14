@@ -98,6 +98,19 @@ export type ManifestCriterion = Schemas["VtcJoinRequestsManifestV0_2Criterion"];
 export type VettingRequirements = Schemas["VtcJoinRequestsManifestV0_2VettingRequirements"];
 export type DecideResponse = Schemas["DecideResponse"];
 
+// ── Admission criteria + endorsement types ──────────────────────────────
+//
+// What the manifest publishes, the community stores as an Accepts criterion:
+// the manifest criterion is the applicant's view (with its `requirementsDigest`)
+// and `AcceptsCriterion` is the editable record behind it.
+export type AcceptsCriterion = Schemas["AcceptsCriterion"];
+export type RegisterAcceptsBody = Schemas["RegisterAcceptsBody"];
+export type EndorsementType = Schemas["EndorsementType"];
+export type EndorsementTypesPage = Schemas["Paginated_EndorsementType"];
+/** `{ endorsementType: … }`, what `endorsement-types/register/0.1` publishes. */
+export type EndorsementTypeRegistered = Schemas["RegisterResponse"];
+export type RegisterEndorsementTypeBody = Schemas["RegisterBody"];
+
 // ── Audit ───────────────────────────────────────────────────────────────
 export type AuditEntry = Schemas["AuditEntry"];
 export type AuditListResponse = Schemas["AuditListResponse"];

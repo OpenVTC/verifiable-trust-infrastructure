@@ -29,11 +29,16 @@ automatic grants. Signing, verification and counting are in `vta_sdk::vetting`.
 
 ## Setting it up
 
+Steps 1 and 2 are the admin console's **Vetting → Requirements** page: it
+registers the statement type, writes the criterion, and shows what applicants
+will be told before anything is saved. The requests below are what it sends, and
+remain the way to script a community's setup.
+
 ### 1. Register the statement type
 
 Statements are DTG `EndorsementCredential`s whose `endorsement.type` is
 `https://firstperson.network/endorsements/identity-vetting/0.1`. Register it so
-criteria may count it:
+criteria may count it — "Register it" on the Requirements page, or:
 
 ```json
 {
@@ -47,8 +52,9 @@ criteria may count it:
 
 ### 2. Say what you require
 
-Add a `vetting` object to an Accepts criterion (`POST /v1/schemas/accepts`).
-Every number is **your** policy — there are no defaults:
+Add a `vetting` object to an Accepts criterion — "Add a criterion" on the
+Requirements page, or `POST /v1/schemas/accepts`. Every number is **your**
+policy — there are no defaults:
 
 ```json
 {
@@ -402,11 +408,14 @@ key revoked later does not revoke the grant — revoke it with
   to the `vetterEligibility` policy under **Ceremonies → Other policies**.
 - **Vetting → Withdrawals** lists withdrawal notices with their review state,
   linking to the join requests and members they touch.
-- **Vetting → Requirements** shows each criterion's vetting requirements and
-  `requirementsDigest` as the join manifest publishes them, read from
-  `GET /v1/join-requests/manifest` — the manifest 0.2 answer for an admin
-  session, under the same task. It is read-only: criteria are registered with
-  `POST /v1/schemas/accepts`.
+- **Vetting → Requirements** is where admission criteria are written: it adds,
+  edits and removes them (`/v1/schemas/accepts`), registers the endorsement
+  types a criterion may count (`/v1/endorsement-types`), and reads each
+  criterion's `requirementsDigest` from `GET /v1/join-requests/manifest` — the
+  manifest 0.2 answer for an admin session, under the same task — so a change
+  is visible as applicants will see it. Every requirement is checked in the
+  browser against the same rules the daemon applies before it can be saved, and
+  the page says in sentences what applicants will be told.
 - A join request's page shows the vetting facts it was decided on, statement
   by statement; the **Community profile** page edits the branding; the
   dashboard counts pending requests with vetting facts and withdrawals to

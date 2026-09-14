@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   brandingBody,
   buildListBody,
+  criterionBody,
+  criterionDraft,
+  criterionProblems,
+  criterionSavable,
+  DEFAULT_ACCEPTS_QUERY,
   describeSeconds,
   EMPTY_LIST_DRAFT,
   explainFailure,
@@ -17,11 +22,14 @@ import {
   summarizeRequirements,
   sweepMinutesError,
   validateBranding,
+  draftToRequirements,
+  requirementsDraft,
   validateRequirements,
   validityDaysError,
   type VettingRequirements,
 } from "@/lib/vetting";
 import type {
+  AcceptsCriterion,
   JoinRequestVetting,
   JoinRequestVettingStatement,
   VetterGrantRow,
@@ -442,5 +450,93 @@ describe("httpsUriProblem mirrors shape::https_uri", () => {
         validateRequirements({ ...REQUIREMENTS, governanceFrameworkUrl }),
       ).toHaveLength(1);
     }
+  });
+});
+
+describe("editing a criterion", () => {
+  const criterion = (vetting: unknown): AcceptsCriterion =>
+    ({
+      id: "kernel-developer",
+      query: DEFAULT_ACCEPTS_QUERY,
+      vetting,
+      createdAt: "2026-01-01T00:00:00Z",
+      createdByDid: "did:key:zAdmin",
+    }) as unknown as AcceptsCriterion;
+
+  it("carries stored requirements through the form unchanged", () => {
+    const round = draftToRequirements(requirementsDraft(REQUIREMENTS));
+    expect(round).toEqual(REQUIREMENTS);
+    expect(validateRequirements(round)).toEqual([]);
+  });
+
+  it("leaves out what was not set, rather than sending it empty", () => {
+    const draft = requirementsDraft({
+      version: "0.1",
+      statementType: "https://example.org/e/1",
+      minStatements: 1,
+      acceptedMethods: ["video"],
+      eligibleVetters: { role: "vetter" },
+    } as VettingRequirements);
+    expect(draftToRequirements(draft)).toEqual({
+      version: "0.1",
+      statementType: "https://example.org/e/1",
+      minStatements: 1,
+      acceptedMethods: ["video"],
+      eligibleVetters: { role: "vetter" },
+    });
+  });
+
+  it("keeps an empty documentation floor apart from no floor at all", () => {
+    const none = requirementsDraft(REQUIREMENTS);
+    expect(draftToRequirements(none).acceptedDocumentClasses).toBeUndefined();
+    expect(
+      draftToRequirements({ ...none, documentFloor: true }).acceptedDocumentClasses,
+    ).toEqual([]);
+    expect(
+      draftToRequirements({
+        ...none,
+        documentFloor: true,
+        acceptedDocumentClasses: "passport, nationalId",
+      }).acceptedDocumentClasses,
+    ).toEqual(["passport", "nationalId"]);
+  });
+
+  it("answers a count that is not a number with the daemon's own sentence", () => {
+    const draft = requirementsDraft(REQUIREMENTS);
+    const problems = validateRequirements(
+      draftToRequirements({ ...draft, minStatements: "some" }),
+    );
+    expect(problems).toEqual(["Set minStatements to a whole number of at least 1."]);
+  });
+
+  it("refuses an id that is taken, empty, or not a name a URL can carry", () => {
+    const base = criterionDraft(criterion(REQUIREMENTS));
+    expect(criterionProblems({ ...base, id: "" }, []).id).toMatch(/Name the criterion/);
+    expect(criterionProblems({ ...base, id: "has space" }, []).id).toMatch(/Use letters/);
+    expect(criterionProblems(base, ["kernel-developer"]).id).toMatch(/already exists/);
+    // Editing a stored criterion passes no existing ids, so its own name is fine.
+    expect(criterionSavable(criterionProblems(base, []))).toBe(true);
+  });
+
+  it("refuses a query that is not a DCQL object", () => {
+    const base = criterionDraft(criterion(REQUIREMENTS));
+    expect(criterionProblems({ ...base, query: "{" }, []).query).toMatch(/not JSON/);
+    expect(criterionProblems({ ...base, query: "{}" }, []).query).toMatch(
+      /`credentials` list/,
+    );
+  });
+
+  it("stores a criterion that asks for no vetting without a vetting member", () => {
+    const draft = criterionDraft(criterion(REQUIREMENTS));
+    const body = criterionBody({ ...draft, vets: false });
+    expect(body.vetting).toBeUndefined();
+    expect(body.query).toEqual(DEFAULT_ACCEPTS_QUERY);
+  });
+
+  it("starts a new criterion on one vetter, and an existing one as it stands", () => {
+    const fresh = criterionDraft(null);
+    expect(fresh.vets).toBe(true);
+    expect(fresh.requirements.minStatements).toBe("1");
+    expect(criterionDraft(criterion(undefined)).vets).toBe(false);
   });
 });

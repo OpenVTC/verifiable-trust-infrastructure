@@ -2932,6 +2932,70 @@ select[aria-invalid="true"] {
   font-family: var(--font-mono);
 }
 
+/* Admission criterion editor — groups of related requirements, the methods a
+   criterion accepts, and the per-method and per-relationship counts beside
+   them. The counts wrap into a row of narrow fields rather than a column, so a
+   floor reads next to the method it applies to. */
+
+.vet-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.vet-fieldset legend {
+  padding: 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+.vet-method-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+.vet-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.vet-counts .field.inline {
+  flex: 0 1 9rem;
+}
+.vet-counts > .field-label {
+  flex: 1 0 100%;
+}
+.vet-details {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+.vet-details > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.vet-details > * + * {
+  margin-top: var(--space-3);
+}
+.code-input {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  resize: vertical;
+}
+
 .branding-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
