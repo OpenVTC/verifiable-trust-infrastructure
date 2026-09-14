@@ -329,7 +329,10 @@ async fn anchor_inner(
         signing_context(state, auth),
         &state.room_groups_ks,
         &req.room_id,
-        &resolver,
+        &crate::operations::outbound::Outbound {
+            resolver: &resolver,
+            bridge: state.didcomm_bridge.as_ref(),
+        },
         &req.host,
         &key,
         &vta_did,
@@ -491,7 +494,10 @@ pub(super) async fn handle_register(
         signing_context(state, auth),
         &state.room_groups_ks,
         &req.room_id,
-        &resolver,
+        &crate::operations::outbound::Outbound {
+            resolver: &resolver,
+            bridge: state.didcomm_bridge.as_ref(),
+        },
         &req.host,
         &key,
         &vta_did,
