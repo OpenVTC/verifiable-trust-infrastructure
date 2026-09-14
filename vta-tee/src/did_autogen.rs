@@ -364,6 +364,28 @@ fn build_vta_did_document(
         }));
     }
 
+    // Match setup's REST advertisement policy. The public API may have a
+    // different host, port, or path from the DID log — never infer it from
+    // vta_did_template.
+    if config.services.rest
+        && let Some(url) = config
+            .public_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+    {
+        let services = did_document
+            .as_object_mut()
+            .unwrap()
+            .entry("service")
+            .or_insert_with(|| json!([]));
+        services.as_array_mut().unwrap().push(json!({
+            "id": "{DID}#vta-rest",
+            "type": "VTARest",
+            "serviceEndpoint": url,
+        }));
+    }
+
     // Add TeeAttestation service if configured
     if config.tee.embed_in_did
         && let Some(ref public_url) = config.public_url

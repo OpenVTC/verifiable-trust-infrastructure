@@ -930,12 +930,23 @@ async fn run_update(
     let signing_secret = derive_secret_for_handle(keys_ks, seed_store, &signing_handle).await?;
 
     // 9. Build the library config.
+    // TEE/imported logs need not use our backdated genesis convention. Never
+    // append a timestamp before their latest signed entry. Cap the index-based
+    // schedule at now (large logs can exhaust its one-day headroom).
+    let now = Utc::now().fixed_offset();
+    let version_time = super::super::backdated_version_time(new_entry_index)
+        .min(now)
+        .max(last_state.log_entry.get_version_time() + chrono::Duration::seconds(1));
+    // The chain was validated above, so its head is not in the future. A
+    // same-second update needs at most one second before it can be signed
+    // without either colliding with that head or publishing a future entry.
+    if let Ok(delay) = (version_time - Utc::now().fixed_offset()).to_std() {
+        tokio::time::sleep(delay).await;
+    }
     let mut builder = UpdateDIDConfig::<Secret, Secret>::builder_generic()
         .state(state)
         .signing_key(signing_secret)
-        // Backdated, index-spaced timestamp so a back-to-back update doesn't
-        // collide with the previous entry's second — see `backdated_version_time`.
-        .version_time(super::super::backdated_version_time(new_entry_index));
+        .version_time(version_time);
     // The update_keys this entry sets, or `None` to leave the previous entry's
     // in force — webvh parameters are a delta, so "not restated" means
     // "unchanged", NOT "removed".
