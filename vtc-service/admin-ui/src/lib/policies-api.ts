@@ -160,3 +160,76 @@ export async function activatePolicy(id: string): Promise<unknown> {
     trustTask: TRUST_TASK_ACTIVATE,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Evaluating a policy — the dry-run, and the probes the Flow view is built
+// from. Both go through `POST /v1/policies/{id}/test`, which recompiles and
+// evaluates the stored module without touching the active pointer.
+// ---------------------------------------------------------------------------
+
+const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
+
+/** What the pipeline's four-valued `decision` rule returns. */
+export interface Verdict {
+  effect: string;
+  with?: Record<string, unknown>;
+}
+
+interface PolicyTestResult {
+  result?: { result?: { expressions?: { value?: unknown }[] }[] };
+}
+
+/**
+ * The decision inside regorus' `QueryResults`, or null when the module yields
+ * none — which is what a pre-pipeline boolean `allow` policy looks like from
+ * here, and worth telling an operator rather than drawing as an empty chart.
+ */
+export function pluckDecision(resp: PolicyTestResult): Verdict | null {
+  const value = resp.result?.result?.[0]?.expressions?.[0]?.value;
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.effect !== "string") return null;
+  return { effect: v.effect, with: v.with as Record<string, unknown> | undefined };
+}
+
+/** Evaluate one input against a stored policy revision. */
+export async function evaluatePolicy(
+  policyId: string,
+  pkg: string,
+  input: unknown,
+): Promise<Verdict | null> {
+  const resp = await postJson<PolicyTestResult>(
+    `/v1/policies/${encodeURIComponent(policyId)}/test`,
+    { query: `data.${pkg}.decision`, input },
+    { trustTask: TRUST_TASK_TEST },
+  );
+  return pluckDecision(resp);
+}
+
+/**
+ * Evaluate many inputs, a few at a time.
+ *
+ * The daemon recompiles per call, so these are independent and cheap
+ * individually; the cap is about not opening thirty connections at once from a
+ * console page, not about the daemon's cost.
+ */
+export async function evaluateMany(
+  policyId: string,
+  pkg: string,
+  inputs: unknown[],
+  concurrency = 6,
+): Promise<(Verdict | null)[]> {
+  const out: (Verdict | null)[] = new Array(inputs.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= inputs.length) return;
+      out[i] = await evaluatePolicy(policyId, pkg, inputs[i]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, inputs.length) }, worker),
+  );
+  return out;
+}

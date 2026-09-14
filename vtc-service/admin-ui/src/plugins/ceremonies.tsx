@@ -26,9 +26,11 @@ import {
   CEREMONY_PURPOSES,
   OTHER_PURPOSES,
   activatePolicy,
+  evaluateMany,
   fetchActivePolicy,
   fetchPolicies,
   pkgFor,
+  pluckDecision,
   uploadPolicy,
 } from "@/lib/policies-api";
 import {
@@ -42,6 +44,8 @@ import {
   parseRego,
 } from "@/lib/rule-ir";
 import { EnglishView, RuleEditor } from "@/plugins/RuleEditor";
+import { PolicyFlow } from "@/plugins/PolicyFlow";
+import { PROBE_LIMIT, probeSpace, type ProbeRow } from "@/lib/policy-flow";
 import {
   type CeremonyManifest,
   type FieldDef,
@@ -107,17 +111,11 @@ interface TestResponse {
   };
 }
 
+/** The verdict shape this page renders — the shared one, narrowed to the
+ * four effects the ceremony pipeline defines. */
 interface Verdict {
   effect: Effect;
   with?: Record<string, unknown>;
-}
-
-function pluckDecision(resp: TestResponse): Verdict | null {
-  const value = resp.result?.result?.[0]?.expressions?.[0]?.value;
-  if (!value || typeof value !== "object") return null;
-  const v = value as Record<string, unknown>;
-  if (typeof v.effect !== "string") return null;
-  return { effect: v.effect as Effect, with: v.with as Record<string, unknown> };
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +352,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
         { query: `data.${ceremony.pkg}.decision`, input: facts },
         { trustTask: TRUST_TASK_TEST },
       );
-      const v = pluckDecision(resp);
+      const v = pluckDecision(resp) as Verdict | null;
       // Land the verdict as the token reaches the Verdict stage.
       window.setTimeout(
         () => {
@@ -541,6 +539,8 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
             key={ceremony.purpose}
             purpose={ceremony.purpose as Purpose}
             onEditingChange={setAuthoring}
+            ceremony={ceremony}
+            values={form}
           />
         </div>
       </div>
@@ -557,24 +557,51 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
 // Active policy source — a plain-English summary when it was authored
 // visually (carries the IR header), with a toggle to the raw Rego. A
 // hand-written policy shows only the Rego.
-function ActivePolicyView({ source }: { source: string }) {
+function ActivePolicyView({
+  source,
+  ceremony,
+  policyId,
+  values,
+}: {
+  source: string;
+  ceremony?: CeremonyManifest;
+  policyId?: string;
+  values?: FieldValues;
+}) {
   const ir = parseRego(source);
-  const [view, setView] = useState<"english" | "rego">(
-    ir ? "english" : "rego",
+  // The chart is built by evaluating the policy, so it renders whether or not
+  // the module was authored here — it is the only view a hand-written policy
+  // has ever had beside its own source.
+  const canFlow = Boolean(ceremony && policyId);
+  const [view, setView] = useState<"english" | "flow" | "rego">(
+    ir ? "english" : canFlow ? "flow" : "rego",
   );
-  if (!ir) return <pre className="cer-policy">{source}</pre>;
+  if (!ir && !canFlow) return <pre className="cer-policy">{source}</pre>;
   return (
     <>
       <div className="rule-view-tabs" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view === "english"}
-          className={view === "english" ? "on" : ""}
-          onClick={() => setView("english")}
-        >
-          Plain English
-        </button>
+        {ir && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "english"}
+            className={view === "english" ? "on" : ""}
+            onClick={() => setView("english")}
+          >
+            Plain English
+          </button>
+        )}
+        {canFlow && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "flow"}
+            className={view === "flow" ? "on" : ""}
+            onClick={() => setView("flow")}
+          >
+            Flow
+          </button>
+        )}
         <button
           type="button"
           role="tab"
@@ -585,11 +612,87 @@ function ActivePolicyView({ source }: { source: string }) {
           Rego
         </button>
       </div>
-      {view === "english" ? (
-        <EnglishView lines={irToEnglish(ir)} />
-      ) : (
-        <pre className="cer-policy">{source}</pre>
+      {view === "english" && ir && <EnglishView lines={irToEnglish(ir)} />}
+      {view === "flow" && ceremony && policyId && (
+        <FlowView ceremony={ceremony} policyId={policyId} values={values} />
       )}
+      {view === "rego" && <pre className="cer-policy">{source}</pre>}
+    </>
+  );
+}
+
+/**
+ * The Flow tab: probe the active policy across the ceremony's declared inputs,
+ * then draw what it decides.
+ *
+ * The bounds are stated on the face of it. A chart drawn from a subset of the
+ * input space would be wrong about the states it never saw, so `probeSpace`
+ * refuses a space it cannot cover and this says so rather than drawing a
+ * partial picture.
+ */
+function FlowView({
+  ceremony,
+  policyId,
+  values,
+}: {
+  ceremony: CeremonyManifest;
+  policyId: string;
+  values?: FieldValues;
+}) {
+  const space = probeSpace(ceremony);
+  const probes = useQuery({
+    queryKey: ["policy-flow", policyId],
+    enabled: space !== null,
+    queryFn: async (): Promise<ProbeRow[]> => {
+      const inputs = space!.map((v) => materializeFacts(ceremony.factsTemplate, v));
+      const verdicts = await evaluateMany(policyId, ceremony.pkg, inputs);
+      return space!.map((v, i) => ({ values: v, verdict: verdicts[i] ?? null }));
+    },
+  });
+
+  if (space === null) {
+    return (
+      <p className="cer-sub">
+        This ceremony declares more input combinations than the chart will
+        evaluate ({PROBE_LIMIT}). Narrow the dry-run's inputs, or read the Rego.
+      </p>
+    );
+  }
+  if (probes.isPending) {
+    return <p className="cer-sub">Evaluating the policy across {space.length} inputs…</p>;
+  }
+  if (probes.error) {
+    return (
+      <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
+        Could not evaluate the policy: {(probes.error as Error).message}
+      </p>
+    );
+  }
+  const rows = probes.data ?? [];
+  if (rows.every((r) => r.verdict === null)) {
+    return (
+      <p className="cer-sub">
+        The active policy produced no decision for any input — it may still be
+        the legacy boolean shape rather than a decision spine.
+      </p>
+    );
+  }
+  return (
+    <>
+      <div className="pf-provenance">
+        <span className="cer-chip">
+          built from <b>{rows.length}</b> evaluations
+        </span>
+        <span className="cer-chip">
+          inputs <b>{ceremony.fields.map((f) => f.label.toLowerCase()).join(" · ")}</b>
+        </span>
+      </div>
+      <PolicyFlow ceremony={ceremony} probes={rows} values={values} />
+      <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+        Drawn by evaluating the active policy, not by reading it — so a
+        hand-written module charts the same way. A fact no control varies cannot
+        appear here.
+      </p>
     </>
   );
 }
@@ -597,10 +700,17 @@ function ActivePolicyView({ source }: { source: string }) {
 function PolicyManager({
   purpose,
   onEditingChange,
+  ceremony,
+  values,
 }: {
   purpose: Purpose;
   /** Notifies the parent so it can widen the layout for the editor. */
   onEditingChange?: (editing: boolean) => void;
+  /** The ceremony whose declared inputs bound the Flow view's probes. A
+   * purpose with no ceremony has no input space, so it has no Flow tab. */
+  ceremony?: CeremonyManifest;
+  /** The simulator's current inputs, so the chart can light their path. */
+  values?: FieldValues;
 }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
@@ -704,7 +814,12 @@ function PolicyManager({
               </span>
             )}
           </div>
-          <ActivePolicyView source={active.module} />
+          <ActivePolicyView
+            source={active.module}
+            ceremony={ceremony}
+            policyId={active.id}
+            values={values}
+          />
         </>
       )}
       {!query.isLoading && !active && (
