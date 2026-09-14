@@ -10,21 +10,29 @@
 
 import {
   deleteJson,
+  deleteJsonExempt,
   getJson,
   getJsonExempt,
   postJson,
+  postJsonExempt,
   putJsonExempt,
 } from "@/lib/api";
 import type {
+  AcceptsCriterion,
   AutoGrantConfig,
   AutoGrantStatus,
   CommunityBranding,
+  EndorsementType,
+  EndorsementTypeRegistered,
+  EndorsementTypesPage,
   JoinManifest,
   JoinRequestsPage,
   ManifestCriterion,
   JoinRequestVettingResponse,
   MemberRow,
   MembersPage,
+  RegisterAcceptsBody,
+  RegisterEndorsementTypeBody,
   VetterGrantList,
   VetterGrantResponse,
   VetterGrantRow,
@@ -44,6 +52,10 @@ const TASK_VETTER_LIST =
 const TASK_ENDORSEMENT_REVOKE =
   "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const TASK_ENDORSEMENT_TYPE_REGISTER =
+  "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
+const TASK_ENDORSEMENT_TYPE_LIST =
+  "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1";
 const TASK_JOIN_REQUESTS_LIST =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
 export const TASK_MANIFEST_V0_2 =
@@ -55,6 +67,8 @@ export const vettingKeys = {
   autoGrant: ["vetting", "auto-grant"] as const,
   revocations: ["vetting", "revocations"] as const,
   manifest: ["vetting", "manifest"] as const,
+  criteria: ["vetting", "criteria"] as const,
+  endorsementTypes: ["vetting", "endorsement-types"] as const,
   activeMembers: ["vetting", "active-members"] as const,
   pendingWithVetting: ["vetting", "pending-with-vetting"] as const,
   listing: (body: VetterListBody, cursor: string | null) =>
@@ -192,4 +206,57 @@ export const fetchManifest = (): Promise<JoinManifest> =>
   getJson<JoinManifest>("/v1/join-requests/manifest", {
     trustTask: TASK_MANIFEST_V0_2,
     requires: ["criteria"],
+  });
+
+// ── Admission criteria ──────────────────────────────────────────────────
+//
+// The manifest above is what an applicant receives; these are the records
+// behind it. The schema store is one of the admin REST surfaces the daemon
+// mounts outside the Trust-Task router (`routes::mod`: "plain admin-gated CRUD
+// … exempt from the Trust-Task soft-gate"), so the exempt helpers are correct
+// here rather than a shortcut.
+
+export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
+  getJsonExempt<AcceptsCriterion[]>("/v1/schemas/accepts");
+
+/**
+ * Store a criterion. The route registers **or replaces** by id, so this is both
+ * "add" and "save"; the daemon checks the DCQL query, every credential type it
+ * references, the vetting requirements against the manifest schema, and that
+ * the `statementType` is registered.
+ */
+export const saveCriterion = (body: RegisterAcceptsBody): Promise<AcceptsCriterion> =>
+  postJsonExempt<AcceptsCriterion>("/v1/schemas/accepts", body);
+
+export const deleteCriterion = (id: string): Promise<unknown> =>
+  deleteJsonExempt<unknown>(`/v1/schemas/accepts/${encodeURIComponent(id)}`);
+
+// ── Endorsement types ───────────────────────────────────────────────────
+
+const MAX_TYPE_PAGES = 10;
+
+/** Every registered endorsement type, for choosing what a criterion counts. */
+export async function fetchEndorsementTypes(): Promise<EndorsementType[]> {
+  const types: EndorsementType[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_TYPE_PAGES; page++) {
+    const q = new URLSearchParams({ limit: "200" });
+    if (cursor) q.set("cursor", cursor);
+    const body: EndorsementTypesPage = await getJson<EndorsementTypesPage>(
+      `/v1/endorsement-types?${q.toString()}`,
+      { trustTask: TASK_ENDORSEMENT_TYPE_LIST, requires: ["items"] },
+    );
+    types.push(...body.items);
+    cursor = body.nextCursor ?? null;
+    if (!cursor) break;
+  }
+  return types;
+}
+
+export const registerEndorsementType = (
+  body: RegisterEndorsementTypeBody,
+): Promise<EndorsementTypeRegistered> =>
+  postJson<EndorsementTypeRegistered>("/v1/endorsement-types", body, {
+    trustTask: TASK_ENDORSEMENT_TYPE_REGISTER,
+    requires: ["endorsementType.typeUri"],
   });
