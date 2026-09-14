@@ -1163,6 +1163,26 @@ pub(crate) enum WebvhCommands {
         /// The DID to delete
         did: String,
     },
+    /// Rename this DID's key records to the verification-method ids its
+    /// published document carries.
+    ///
+    /// The repair for a DID minted before the agent read its own document when
+    /// naming them — `room` and `room-host` number their methods from `#key-1`
+    /// while create stored records from `#key-0`, so the document's `#key-1`
+    /// named the signing key and the keystore's named the x25519 one.
+    ///
+    /// `keys rename` cannot do this: its identifier gate refuses `:` and `#` so
+    /// that a rename is not a back door into verification-method-shaped names.
+    /// Here every target comes from the DID's own log and records are matched
+    /// to methods by public key, so a key already renamed away from its method
+    /// id is still found.
+    RealignDidKeys {
+        /// The DID whose key records to realign.
+        did: String,
+        /// Show what would move, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Print the raw `did.jsonl` log for a webvh DID the VTA knows.
     ///
     /// Snapshot from provisioning time — not a live resolver. Use for
@@ -1467,6 +1487,20 @@ pub(crate) enum DidMgmtDidCommands {
         /// The DID to delete.
         did: String,
     },
+    /// Rename this DID's key records to the verification-method ids its
+    /// published document carries.
+    ///
+    /// The repair for a DID whose records were named before the agent read its
+    /// own document. Matches records to methods by public key, so a key already
+    /// renamed away from its method id is still found — which `keys rename`
+    /// cannot undo, its gate refusing `:` and `#` by design.
+    RealignKeys {
+        /// The DID whose key records to realign.
+        did: String,
+        /// Show what would move, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Print the raw `did.jsonl` log for a DID the VTA knows.
     ///
     /// Snapshot from provisioning time — not a live resolver. Use
@@ -1611,6 +1645,9 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 }
                 DidMgmtDidCommands::Get { did } => WebvhCommands::GetDid { did },
                 DidMgmtDidCommands::Delete { did } => WebvhCommands::DeleteDid { did },
+                DidMgmtDidCommands::RealignKeys { did, dry_run } => {
+                    WebvhCommands::RealignDidKeys { did, dry_run }
+                }
                 DidMgmtDidCommands::GetLog { did, out } => WebvhCommands::DidLog { did, out },
                 DidMgmtDidCommands::ListDomains { server } => WebvhCommands::ListDomains { server },
                 DidMgmtDidCommands::Reconcile { server } => WebvhCommands::Reconcile { server },
