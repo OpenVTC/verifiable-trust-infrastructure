@@ -110,8 +110,17 @@ function materialize(node: unknown, values: FieldValues, now: string): unknown {
   if (node && typeof node === "object") {
     const obj = node as Record<string, unknown>;
     if ("$if" in obj) {
-      const cond = Boolean(values[obj.$if as string]);
-      return materialize(cond ? obj.then : obj.else, values, now);
+      // `eq` compares a value — a select's option — where bare truthiness
+      // cannot: every non-empty option string is truthy, so a five-way choice
+      // needs the comparison `showWhen` already speaks.
+      const v = values[obj.$if as string];
+      const cond = "eq" in obj ? v === obj.eq : Boolean(v);
+      const branch = cond ? obj.then : obj.else;
+      // A branch that names nothing drops the key, rather than writing `null`
+      // into the facts: absent and null are different questions to a policy
+      // (`not input.evidence.vetting` is how "this criterion does not vet" is
+      // asked).
+      return branch === undefined ? OMIT : materialize(branch, values, now);
     }
     const out: Record<string, unknown> = {};
     for (const [k, val] of Object.entries(obj)) {

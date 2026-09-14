@@ -176,16 +176,76 @@ fn manifests() -> Vec<CeremonyManifest> {
             nature: "constructive",
             label: "Join",
             wired: "live",
-            blurb: "A DID joins the community. A trusted presented credential auto-admits (allow → issue the membership credential); everything else is referred to the moderator queue for review.",
-            fields: vec![FieldDef {
-                key: "joinTrusted",
-                label: "Presented credential is trusted",
-                hint: Some("evidence.presentation.credentials[].issuer_trusted"),
-                field_type: "toggle",
-                options: None,
-                default: json!(false),
-                show_when: None,
-            }],
+            blurb: "A DID joins the community. Where the criterion vets, the host counts the statements and the policy decides on that count; otherwise a valid invitation or a trusted credential auto-admits, and the rest is referred to moderators.",
+            fields: vec![
+                FieldDef {
+                    key: "joinTrusted",
+                    label: "Presented credential is trusted",
+                    hint: Some("evidence.presentation.credentials[].issuer_trusted"),
+                    field_type: "toggle",
+                    options: None,
+                    default: json!(false),
+                    show_when: None,
+                },
+                FieldDef {
+                    key: "invitationHeld",
+                    label: "Presents a valid invitation",
+                    hint: Some("evidence.invitation — verified, from a trusted issuer, unconsumed"),
+                    field_type: "toggle",
+                    options: None,
+                    default: json!(false),
+                    show_when: None,
+                },
+                // One control, not five toggles: the host derives `satisfied`
+                // from the other three, so separate switches would let an
+                // operator build a fact set the host can never produce and
+                // draw a conclusion from it.
+                FieldDef {
+                    key: "vettingOutcome",
+                    label: "Peer identity vetting",
+                    hint: Some(
+                        "evidence.vetting — what the host counted, before the policy decides",
+                    ),
+                    field_type: "select",
+                    options: Some(vec![
+                        FieldOption {
+                            value: "none",
+                            label: "not required by the criterion",
+                        },
+                        FieldOption {
+                            value: "incomplete",
+                            label: "not enough statements yet",
+                        },
+                        FieldOption {
+                            value: "inconsistent",
+                            label: "vetters verified different identities",
+                        },
+                        FieldOption {
+                            value: "notIndependent",
+                            label: "vetters not independent enough",
+                        },
+                        FieldOption {
+                            value: "satisfied",
+                            label: "requirements met",
+                        },
+                    ]),
+                    default: json!("none"),
+                    show_when: None,
+                },
+                FieldDef {
+                    key: "vettingInvitationRequired",
+                    label: "…and the requirements also demand an invitation",
+                    hint: Some("evidence.vetting.invitation_required"),
+                    field_type: "toggle",
+                    options: None,
+                    default: json!(false),
+                    show_when: Some(ShowWhen {
+                        field: "vettingOutcome",
+                        eq: Some(json!("satisfied")),
+                        truthy: None,
+                    }),
+                },
+            ],
             facts_template: json!({
                 "purpose": "join",
                 "now": "$now",
@@ -203,6 +263,46 @@ fn manifests() -> Vec<CeremonyManifest> {
                             "status": "valid",
                             "claims": {}
                         }]
+                    },
+                    // Absent unless the applicant presents one: the policy asks
+                    // whether an invitation is held, and a present-but-false
+                    // invitation is a different fact from no invitation.
+                    "invitation": {
+                        "$if": "invitationHeld",
+                        "then": {
+                            "verified": true,
+                            "issuer": "did:example:this-community",
+                            "issuer_trusted": true,
+                            "scopes": [],
+                            "consumed": false
+                        }
+                    },
+                    // Present only when the criterion vets (`vetting_ok` reads
+                    // exactly that absence), and then each member is derived
+                    // from the chosen outcome, so the set is always one the
+                    // host could have produced.
+                    "vetting": {
+                        "$if": "vettingOutcome",
+                        "eq": "none",
+                        "else": {
+                            "commitments_consistent": {
+                                "$if": "vettingOutcome", "eq": "inconsistent",
+                                "then": false, "else": true
+                            },
+                            "needs": {
+                                "$if": "vettingOutcome", "eq": "incomplete",
+                                "then": ["vetting:statements:1"], "else": []
+                            },
+                            "independence_ok": {
+                                "$if": "vettingOutcome", "eq": "notIndependent",
+                                "then": false, "else": true
+                            },
+                            "satisfied": {
+                                "$if": "vettingOutcome", "eq": "satisfied",
+                                "then": true, "else": false
+                            },
+                            "invitation_required": "$field:vettingInvitationRequired"
+                        }
                     }
                 },
                 "state": { "subject_member": null }
@@ -337,6 +437,7 @@ pub struct CeremonyListResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::model::PolicyPurpose;
 
     #[test]
     fn four_ceremonies_with_stable_purposes() {
@@ -368,5 +469,102 @@ mod tests {
             let p = c.facts_template.get("purpose").and_then(|v| v.as_str());
             assert!(p.is_some(), "{} facts_template purpose", c.purpose);
         }
+    }
+
+    /// The published `ceremonies/list/0.1` schema caps a blurb at 256
+    /// characters, and the response validator turns an over-long one into a
+    /// 500 for the whole listing — so every ceremony page goes blank, not just
+    /// the one whose text grew. Cheap to check here; expensive to meet as an
+    /// integration failure, which is how it was found.
+    #[test]
+    fn no_blurb_outgrows_the_published_schema() {
+        for c in manifests() {
+            assert!(
+                c.blurb.chars().count() <= 256,
+                "{} blurb is {} characters",
+                c.purpose,
+                c.blurb.chars().count()
+            );
+        }
+    }
+
+    fn join() -> CeremonyManifest {
+        manifests()
+            .into_iter()
+            .find(|c| c.purpose == "join")
+            .expect("join ceremony")
+    }
+
+    #[test]
+    fn join_offers_every_vetting_outcome_the_host_can_reach() {
+        let join = join();
+        let outcome = join
+            .fields
+            .iter()
+            .find(|f| f.key == "vettingOutcome")
+            .expect("vettingOutcome field");
+        let values: Vec<_> = outcome
+            .options
+            .as_ref()
+            .expect("options")
+            .iter()
+            .map(|o| o.value)
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                "none",
+                "incomplete",
+                "inconsistent",
+                "notIndependent",
+                "satisfied"
+            ]
+        );
+        // The invitation demand only exists once the statements are in.
+        let gate = join
+            .fields
+            .iter()
+            .find(|f| f.key == "vettingInvitationRequired")
+            .and_then(|f| f.show_when.as_ref())
+            .expect("show_when");
+        assert_eq!(gate.field, "vettingOutcome");
+        assert_eq!(gate.eq, Some(json!("satisfied")));
+    }
+
+    /// The simulator is only worth anything if it produces the facts the live
+    /// policy reads. Both sides are checked against each other here, so a
+    /// rename on either one fails rather than silently making a route
+    /// unreachable in the dry-run — which is how the vetting routes came to
+    /// be untestable in the first place.
+    #[test]
+    fn join_facts_carry_every_path_the_shipped_policy_reads() {
+        let template = join().facts_template.to_string();
+        let policy = crate::policy::default::default_source(PolicyPurpose::Join);
+        for member in [
+            "commitments_consistent",
+            "needs",
+            "independence_ok",
+            "satisfied",
+            "invitation_required",
+        ] {
+            assert!(
+                policy.contains(&format!("input.evidence.vetting.{member}")),
+                "join.rego no longer reads vetting.{member}"
+            );
+            assert!(
+                template.contains(&format!("\"{member}\"")),
+                "the join simulator cannot set vetting.{member}"
+            );
+        }
+        for member in ["verified", "issuer_trusted", "consumed"] {
+            assert!(
+                policy.contains(&format!("input.evidence.invitation.{member}")),
+                "join.rego no longer reads invitation.{member}"
+            );
+        }
+        assert!(
+            template.contains("\"invitation\""),
+            "the join simulator cannot present an invitation"
+        );
     }
 }
