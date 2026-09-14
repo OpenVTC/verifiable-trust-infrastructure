@@ -2628,7 +2628,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "chrono",
@@ -7516,7 +7516,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.16.3"
+version = "0.16.4"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -10856,7 +10856,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.15.3"
+version = "0.15.4"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -10915,7 +10915,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keys"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -11038,7 +11038,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.38.0"
+version = "0.38.1"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -11106,7 +11106,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-bbs",
@@ -11213,7 +11213,7 @@ dependencies = [
 
 [[package]]
 name = "vta-support"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "chrono",
  "ed25519-dalek 3.0.0",
@@ -11249,7 +11249,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm 0.11.1",

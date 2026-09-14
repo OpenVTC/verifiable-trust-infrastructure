@@ -2,6 +2,70 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.27.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.27.0...vta-service-v0.27.1) — 2026-09-14
+
+
+### Fixed
+
+- **webvh**: Key records follow the document's verification-method ids, and a repair for the ones that don't ([#1466](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1466))
+
+* fix(webvh): name a created DID's key records after the document it published
+
+  A key record's id **is** a verification-method id. `save_entity_key_records`
+  says so in its own name, and `vta_sdk::did_secrets::select_secret_kid` rule 1
+  depends on it: the kid a mediator matches inbound JWE recipients against is the
+  record id, on the reasoning that "the DID document decided what the key is
+  called".
+
+  Create never read the document to find out. It named the records `{did}#key-0`
+  and `{did}#key-1` while the document was whatever the caller or the template
+  said — and the `room` and `room-host` built-in templates number their methods
+  from `#key-1`. So on every room and every room host this VTA has ever minted:
+
+  - the document's `#key-1` is the **signing** key and the keystore's `#key-1` is
+    the **x25519** one. One name, two keys, no error anywhere. Hand the id the
+    document publishes to `keys/sign` — the natural thing to do, having read it
+    off the document — and the oracle fetches an x25519 record for an EdDSA
+    signature;
+  - the document's `keyAgreement` (`#key-2`) matches no record at all, so an
+    authcrypt message addressed to it finds no local secret. That is the storm.ws
+    outage of #337 reached from the other side: there a decorative label
+    overwrote the right kid, here the right kid was never stored;
+  - `next_fragment_id` was stored as the constant 2, so the DID's first rotation
+    allocates `#key-2` — over the id its key-agreement method is already
+    published under.
+
+  Room credentials still verify, which is why this stayed quiet: `RoomKeySigner`
+  hardcodes `{room_did}#key-1` to match the template, and the public keys line up
+  positionally, so the proof names a method that resolves to the key that signed
+  it. Everything that addresses a key *by name* is what breaks.
+
+  ## The fix reads the document rather than renumbering the templates
+
+- **pnm-cli**: Anchor TEE bootstrap connect by DID and PCR0 ([#1454](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1454))
+
+* fix(pnm-cli): anchor TEE bootstrap connect by DID and PCR0
+
+  Add mutually exclusive --vta-did and --vta-url targets. Resolve WebVH locally without guessing a URL on failure, preserve the advertised REST endpoint, and reject credentials for a different VTA DID.
+
+  Accept a pinned PCR0 as the online connect trust anchor without requiring the server-generated digest or an opt-out warning. Preserve explicit digest opt-out warnings, conflicting-flag errors, and mandatory offline digest verification.
+
+  Add regression tests for target selection, strict endpoint resolution, credential identity checks, and anchor combinations. Update the PNM quick start and TEE bootstrap guide.
+
+- **webvh**: Clamp versionTime against the previous log entry ([#1456](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1456))
+
+* fix(tee): backdate WebVH genesis versionTime
+
+  The TEE genesis path used the library's current-time default while
+  runtime updates used PR #600's backdated timestamps. This caused the
+  first update to have a lower versionTime than genesis, making the DID
+  unresolvable.
+
+  Apply the shared PR #600 backdating policy to TEE genesis and move the
+  helper into vta-support so both TEE and service paths use one implementation.
+
+
+
 ## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.26.0...vta-service-v0.27.0) — 2026-09-12
 
 
