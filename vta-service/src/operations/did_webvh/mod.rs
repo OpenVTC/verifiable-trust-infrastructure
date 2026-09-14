@@ -10,6 +10,7 @@ pub(crate) mod auth_cache;
 mod concurrency;
 mod document;
 mod lifecycle;
+mod realign;
 mod register_server;
 mod servers;
 mod transport;
@@ -27,6 +28,7 @@ pub(crate) use concurrency::{RaceDetected, RecordSnapshot};
 pub use document::{build_did_document, build_vta_did_document_with_sealed_transfer};
 pub(crate) use document::{build_did_document_with_options, with_tsp_service};
 pub use lifecycle::{get_did_webvh, list_dids_webvh};
+pub use realign::{RealignDidKeysResultBody, RealignedKey, realign_did_key_records};
 pub use register_server::{
     RegisterDidWithServerError, RegisterDidWithServerParams, RegisterDidWithServerResult,
     register_did_with_server,
@@ -1208,11 +1210,36 @@ pub async fn create_did_webvh(
     let log_content = serde_json::to_string(result.log_entry())
         .map_err(|e| AppError::Internal(format!("failed to serialize DID log: {e}")))?;
 
+    // ── The names the records take come from the document, not from here ──
+    //
+    // A key record's id is a verification-method id (`save_entity_key_records`,
+    // and `select_secret_kid` rule 1, which publishes it as the JWE kid). This
+    // block used to *assert* `#key-0` / `#key-1` instead of reading what was
+    // just published, so every DID minted from a template numbering its methods
+    // differently — `room` and `room-host` number from `#key-1` — stored records
+    // under names its own document does not carry. See `document::minted_vm_ids`
+    // for what that costs.
+    let vm_ids = document::minted_vm_ids(
+        &did_document,
+        &final_did,
+        &derived.signing_pub,
+        if has_ka {
+            Some(derived.ka_pub.as_str())
+        } else {
+            None
+        },
+    );
+    let ka_vm_id = vm_ids
+        .key_agreement
+        .clone()
+        .unwrap_or_else(|| format!("{final_did}#key-1"));
+
     // Save key records
     if !user_specified_keys {
         // VTA-derived: save both signing and KA key records
-        keys::save_entity_key_records(
-            &final_did,
+        keys::save_entity_key_records_with_ids(
+            &vm_ids.signing,
+            &ka_vm_id,
             &derived,
             keys_ks,
             Some(&params.context_id),
@@ -1239,7 +1266,7 @@ pub async fn create_did_webvh(
         // User-specified: save key records referencing the user's keys
         keys::save_key_record(
             keys_ks,
-            &format!("{final_did}#key-0"),
+            &vm_ids.signing,
             &derived.signing_path,
             SdkKeyType::Ed25519,
             &derived.signing_pub,
@@ -1253,7 +1280,7 @@ pub async fn create_did_webvh(
         if has_ka {
             keys::save_key_record(
                 keys_ks,
-                &format!("{final_did}#key-1"),
+                &ka_vm_id,
                 &derived.ka_path,
                 SdkKeyType::X25519,
                 &derived.ka_pub,
@@ -1356,8 +1383,10 @@ pub async fn create_did_webvh(
 
     if serverless {
         // Serverless: skip publish but DO store the DID record and log locally.
-        // Create mints exactly two verificationMethods (#key-0 = signing,
-        // #key-1 = key-agreement). Next rotation allocates from `#key-2`.
+        // Create mints two verificationMethods, and `next_fragment_id` is one
+        // past the highest `#key-N` the document published — read rather than
+        // assumed, because a rotation allocating over a method id that is
+        // already live republishes that name under different key material.
         let did_record = WebvhDidRecord {
             did: final_did.clone(),
             server_id: "serverless".to_string(),
@@ -1367,7 +1396,7 @@ pub async fn create_did_webvh(
             portable: params.portable,
             log_entry_count: 1,
             pre_rotation_count: pre_rotation_keys.len() as u32,
-            next_fragment_id: 2,
+            next_fragment_id: vm_ids.next_fragment_id,
             created_at: now,
             updated_at: now,
         };
@@ -1389,8 +1418,8 @@ pub async fn create_did_webvh(
             mnemonic: None,
             scid,
             portable: params.portable,
-            signing_key_id: format!("{final_did}#key-0"),
-            ka_key_id: format!("{final_did}#key-1"),
+            signing_key_id: vm_ids.signing.clone(),
+            ka_key_id: ka_vm_id.clone(),
             pre_rotation_key_count: pre_rotation_keys.len() as u32,
             created_at: now,
             did_document: Some(final_did_document),
@@ -1437,7 +1466,7 @@ pub async fn create_did_webvh(
             portable: params.portable,
             log_entry_count: 1,
             pre_rotation_count: pre_rotation_keys.len() as u32,
-            next_fragment_id: 2,
+            next_fragment_id: vm_ids.next_fragment_id,
             created_at: now,
             updated_at: now,
         };
@@ -1470,8 +1499,8 @@ pub async fn create_did_webvh(
             mnemonic: Some(mnemonic.clone()),
             scid,
             portable: params.portable,
-            signing_key_id: format!("{final_did}#key-0"),
-            ka_key_id: format!("{final_did}#key-1"),
+            signing_key_id: vm_ids.signing.clone(),
+            ka_key_id: ka_vm_id.clone(),
             pre_rotation_key_count: pre_rotation_keys.len() as u32,
             created_at: now,
             did_document: Some(final_did_document),
@@ -1590,9 +1619,20 @@ pub async fn delete_did_webvh(
     // Remove local DID record and log
     webvh_store::delete_did(deps.webvh_ks, did).await?;
 
-    // Clean up associated key records (best-effort)
-    for key_id in &[format!("{did}#key-0"), format!("{did}#key-1")] {
-        let _ = deps.keys_ks.remove(keys::store_key(key_id)).await;
+    // Clean up associated key records (best-effort).
+    //
+    // Over every `#key-N` the record says this DID ever allocated, not the two
+    // create used to assume: a template names its methods where it likes, and a
+    // rotation allocates further ones, so `#key-0` / `#key-1` left the records
+    // of a room, a room host, and every rotated DID behind — orphaned material
+    // for an identifier that no longer resolves. No early break, because the
+    // ids a rotation leaves behind are not contiguous with the live ones.
+    let key_bound = record.next_fragment_id.clamp(2, 1024);
+    for i in 0..key_bound {
+        let _ = deps
+            .keys_ks
+            .remove(keys::store_key(&format!("{did}#key-{i}")))
+            .await;
     }
     // Clean up pre-rotation key records (M4: bound to the record's
     // declared count so a DID created with a high pre_rotation_count

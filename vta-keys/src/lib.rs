@@ -307,9 +307,13 @@ pub async fn derive_entity_keys(
     })
 }
 
-/// Store entity key records using DID verification method IDs as key_ids.
+/// Store entity key records under the default verification-method ids.
 ///
-/// Signing key → `{did}#key-0`, key-agreement key → `{did}#key-1`. The
+/// Signing key → `{did}#key-0`, key-agreement key → `{did}#key-1` — which is
+/// only correct for a document this crate's builder produced. A DID minted from
+/// a template publishes whatever the template says, so
+/// [`save_entity_key_records_with_ids`] takes the ids the document actually
+/// carries and this is the convenience over it. The
 /// `label` field is also stored as the VM id rather than the freeform
 /// description carried in `derived.{signing,ka}_label`: belt-and-braces
 /// for downstream code that historically adopted the label as the kid
@@ -323,26 +327,52 @@ pub async fn save_entity_key_records(
     context_id: Option<&str>,
     seed_id: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let signing_vm_id = format!("{did}#key-0");
-    let ka_vm_id = format!("{did}#key-1");
+    save_entity_key_records_with_ids(
+        &format!("{did}#key-0"),
+        &format!("{did}#key-1"),
+        derived,
+        keys_ks,
+        context_id,
+        seed_id,
+    )
+    .await
+}
+
+/// As [`save_entity_key_records`], under verification-method ids the caller
+/// read off the document it just published.
+///
+/// The ids are the caller's because only the caller knows what the document
+/// says: a template decides its own method ids, and a record stored under a
+/// name the document does not publish is a key nothing can address —
+/// [`vta_sdk::did_secrets::select_secret_kid`] publishes the record id as the
+/// JWE kid, so a mismatch surfaces at a mediator as `No local secret matches
+/// any JWE recipient` and nowhere earlier.
+pub async fn save_entity_key_records_with_ids(
+    signing_vm_id: &str,
+    ka_vm_id: &str,
+    derived: &DerivedEntityKeys,
+    keys_ks: &KeyspaceHandle,
+    context_id: Option<&str>,
+    seed_id: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
     save_key_record(
         keys_ks,
-        &signing_vm_id,
+        signing_vm_id,
         &derived.signing_path,
         KeyType::Ed25519,
         &derived.signing_pub,
-        &signing_vm_id,
+        signing_vm_id,
         context_id,
         seed_id,
     )
     .await?;
     save_key_record(
         keys_ks,
-        &ka_vm_id,
+        ka_vm_id,
         &derived.ka_path,
         KeyType::X25519,
         &derived.ka_pub,
-        &ka_vm_id,
+        ka_vm_id,
         context_id,
         seed_id,
     )
