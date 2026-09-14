@@ -368,7 +368,7 @@ utoipa-axum = "0.2"
 
 # Used by every CLI (operator config) and both services (config-from-toml).
 toml = "1"
-dirs = "6"
+dirs = "7"
 
 # Hex encode/decode — sealed-transfer producer keys, key fingerprints, etc.
 hex = "0.4"
