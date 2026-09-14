@@ -75,7 +75,7 @@ use crate::webvh_client::{RequestUriResponse, WebvhClient};
 use crate::webvh_didcomm::WebvhDIDCommClient;
 use crate::webvh_store;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
-use vta_support::version_time::backdated_version_time;
+use vta_support::version_time::next_version_time;
 use zeroize::Zeroize;
 
 use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
@@ -1189,9 +1189,9 @@ pub async fn create_did_webvh(
         .authorization_key(derived.signing_secret.clone())
         .did_document(did_document.clone())
         .parameters(parameters)
-        // Backdated genesis timestamp (entry index 0) so a follow-on update in
-        // the same second doesn't collide — see `backdated_version_time`.
-        .version_time(backdated_version_time(0))
+        // Backdated genesis timestamp (no previous entry) so a follow-on update
+        // in the same second doesn't collide — see `next_version_time`.
+        .version_time(next_version_time(0, None))
         .build()
         .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))?;
 
