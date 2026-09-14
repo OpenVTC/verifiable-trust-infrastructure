@@ -14,6 +14,9 @@
 //   "$now"            → current ISO timestamp
 //   "$field:<key>"    → the field value ("" / undefined ⇒ key omitted)
 //   {"$if": <key>, "then": …, "else": …} → branch on the field's truthiness
+//   {"$if": <key>, "eq": <value>, …}     → branch on the field's value, for a
+//                                          select whose options are all truthy
+//   a branch that names nothing          → the key is dropped, not set to null
 
 import { getJson } from "@/lib/api";
 
