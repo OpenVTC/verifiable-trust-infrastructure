@@ -1524,6 +1524,19 @@ pub const TASK_WEBVH_DIDS_UPDATE_1_0: &str =
 pub const TASK_WEBVH_DIDS_ROTATE_KEYS_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0";
 
+/// `spec/vta/webvh/dids/realign-keys/1.0` — rename a DID's key
+/// records onto the verification-method ids its published document
+/// declares. The repair for records named without reading that
+/// document. Payload:
+/// [`crate::protocols::did_management::realign::RealignDidKeysBody`].
+/// Auth: Admin role on the DID's context.
+///
+/// The payload carries no identifier but the DID: every target name is
+/// derived by the agent from the DID's own log, which is what makes this
+/// safe where `keys/rename` deliberately is not.
+pub const TASK_WEBVH_DIDS_REALIGN_KEYS_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/realign-keys/1.0";
+
 /// `spec/vta/webvh/dids/register-with-server/1.0` — promote a
 /// serverless DID to a server-managed one, atomically pushing the
 /// existing local `did.jsonl` to the host and flipping the local
@@ -2005,6 +2018,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_DELETE_1_0,
     TASK_WEBVH_DIDS_UPDATE_1_0,
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+    TASK_WEBVH_DIDS_REALIGN_KEYS_1_0,
     TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     TASK_WEBVH_AGENT_NAME_LIST_1_0,
     TASK_WEBVH_AGENT_NAME_CHECK_1_0,

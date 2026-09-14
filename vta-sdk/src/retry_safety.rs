@@ -367,6 +367,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Each update appends a log entry; two updates append two.
     (trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0, Keyed),
+    // `RetrySafe` where its two neighbours above are `Keyed`, and the difference
+    // is convergence rather than caution. `update` and `rotate-keys` append a
+    // log entry, so a second execution leaves a second durable artefact. A
+    // realign appends nothing: it re-derives its plan from the document current
+    // at execution time and renames records to match, so a repeat finds every
+    // record already aligned and moves none. `a_second_run_has_nothing_left_to_do`
+    // in `operations::did_webvh::realign` is that property, pinned.
+    (trust_tasks::TASK_WEBVH_DIDS_REALIGN_KEYS_1_0, RetrySafe),
     (trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0, Keyed),
     (trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0, ReadOnly),
     (trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0, ReadOnly),
