@@ -10,6 +10,7 @@ use chrono::Utc;
 use didwebvh_rs::log_entry::LogEntryMethods;
 use didwebvh_rs::multibase_type::Multibase;
 use didwebvh_rs::update::{UpdateDIDConfig, update_did};
+use vta_support::version_time::next_version_time;
 
 use super::errors::UpdateDidWebvhError;
 use super::keys::{
@@ -729,6 +730,13 @@ async fn run_update(
     // plan needs the before-picture after that point.
     let prior_version_id = last_state.get_version_id().to_string();
     let prior_document = last_state.log_entry.get_state().clone();
+    // Snapshotted for the same reason, and needed for the same invariant the
+    // other two serve: the new entry's `versionTime` must be strictly later
+    // than this one. `next_version_time` cannot derive that from the entry
+    // index alone — the index assumes every earlier entry was stamped by the
+    // same policy, which is false for any chain whose genesis predates it
+    // (a TEE VTA provisioned before PR #1456, say).
+    let prior_version_time = last_state.log_entry.get_version_time();
     // Pre-rotation is "active" when the previous entry committed
     // `next_key_hashes`. The library's `check_signing_key` consults
     // `previous.next_key_hashes` (not `previous.update_keys`) for the
@@ -930,23 +938,14 @@ async fn run_update(
     let signing_secret = derive_secret_for_handle(keys_ks, seed_store, &signing_handle).await?;
 
     // 9. Build the library config.
-    // TEE/imported logs need not use our backdated genesis convention. Never
-    // append a timestamp before their latest signed entry. Cap the index-based
-    // schedule at now (large logs can exhaust its one-day headroom).
-    let now = Utc::now().fixed_offset();
-    let version_time = super::super::backdated_version_time(new_entry_index)
-        .min(now)
-        .max(last_state.log_entry.get_version_time() + chrono::Duration::seconds(1));
-    // The chain was validated above, so its head is not in the future. A
-    // same-second update needs at most one second before it can be signed
-    // without either colliding with that head or publishing a future entry.
-    if let Ok(delay) = (version_time - Utc::now().fixed_offset()).to_std() {
-        tokio::time::sleep(delay).await;
-    }
     let mut builder = UpdateDIDConfig::<Secret, Secret>::builder_generic()
         .state(state)
         .signing_key(signing_secret)
-        .version_time(version_time);
+        // Backdated, index-spaced timestamp, clamped to stay strictly after the
+        // previous entry — see `next_version_time`. `didwebvh-rs` checks neither
+        // property at write time, so getting this wrong signs and publishes an
+        // entry that no resolver will accept and no later entry can repair.
+        .version_time(next_version_time(new_entry_index, Some(prior_version_time)));
     // The update_keys this entry sets, or `None` to leave the previous entry's
     // in force — webvh parameters are a delta, so "not restated" means
     // "unchanged", NOT "removed".

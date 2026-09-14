@@ -12,10 +12,10 @@ that makes them coexist safely is shared.
 ```mermaid
 graph TB
     subgraph DAEMON["vtc daemon — single process, single port"]
-        HEALTH[/health<br/>Trust-Task exempt]
-        API[/v1/*<br/>JSON API]
-        ADMIN[/admin/*<br/>SPA + build-info]
-        WEB[/<br/>filesystem or default]
+        HEALTH["/health<br/>Trust-Task exempt"]
+        API["/v1/*<br/>JSON API"]
+        ADMIN["/admin/*<br/>SPA + build-info"]
+        WEB["/<br/>filesystem or default"]
     end
 
     OPSCLI[cnm-cli<br/>bearer JWT]
@@ -135,9 +135,9 @@ flowchart TD
     ctrl{NUL or<br/>control chars?}
     nfc{NFC-normalised?}
     hidden{Any segment<br/>starts with .?}
-    block{Extension in<br/>blocklist?<br/>(.cgi/.php/.exe)}
+    block{"Extension in<br/>blocklist?<br/>(.cgi/.php/.exe)"}
     canon{Canonicalises<br/>within root_dir?}
-    exec{Exec bit set?<br/>(Unix only)}
+    exec{"Exec bit set?<br/>(Unix only)"}
     serve[Serve file]
     rej_400[400 / 403 / 404]
 
@@ -250,8 +250,8 @@ graph LR
     src[vtc-service/admin-ui/<br/>React + TS + Vite source]
     dist["$OUT_DIR/admin-ui-dist/<br/>index.html · hashed JS · hashed CSS · Inter & JetBrains Mono fonts"]
     binary[vtc binary]
-    routes[/admin/* handler]
-    info[/admin/build-info.json]
+    routes["/admin/* handler"]
+    info["/admin/build-info.json"]
 
     src -- "build.rs runs<br/>npm run build --outDir $OUT_DIR" --> dist
     dist -- "include_dir!<br/>at compile time" --> binary
@@ -319,7 +319,7 @@ running build against the audit record.
 
 ```mermaid
 graph LR
-    cli[cnm-cli] -->|Authorization: Bearer| api[/v1/*]
+    cli[cnm-cli] -->|Authorization: Bearer| api["/v1/*"]
     dc[DIDComm bridge] -->|authcrypt| api
     spa[Admin SPA<br/>browser] -->|Cookie: vtc_admin_session<br/>+ X-CSRF-Token| api
 ```
@@ -374,9 +374,9 @@ authenticate for no wire-visible gain.
 graph TB
     subgraph PathMode["Path mode (default)"]
         host_p[example.com]
-        v1[/v1/*]
-        admin_p[/admin/*]
-        web_p[/<br/>catch-all]
+        v1["/v1/*"]
+        admin_p["/admin/*"]
+        web_p["/<br/>catch-all"]
         host_p --> v1
         host_p --> admin_p
         host_p --> web_p
@@ -386,9 +386,9 @@ graph TB
         api_h[api.example.com]
         admin_h[admin.example.com]
         web_h[example.com]
-        api_h --> v1b[/v1/*]
-        admin_h --> admin_b[/admin/*]
-        web_h --> web_b[/]
+        api_h --> v1b["/v1/*"]
+        admin_h --> admin_b["/admin/*"]
+        web_h --> web_b["/"]
     end
 ```
 

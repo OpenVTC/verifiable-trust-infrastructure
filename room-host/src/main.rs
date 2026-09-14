@@ -113,6 +113,21 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // The keyring is a process-wide default that the *consuming binary* installs — a
+    // library cannot, because the choice of platform store is the binary's. Without this,
+    // `--features session-keyring` compiles and then fails at the first session read with
+    // `No default store has been set, so cannot search or create entries`, which names the
+    // keyring crate's internals rather than the missing call. `vti-secrets`' own feature
+    // comment says to do this; nothing here did.
+    #[cfg(feature = "session-keyring")]
+    if let Err(e) = vta_sdk::keyring_init::install_default_store() {
+        anyhow::bail!(
+            "could not open the OS keyring for session storage: {e}. Build with \
+             `--features config-session` instead to keep sessions in a file under \
+             --data-dir, which is what a container or a headless server wants anyway."
+        );
+    }
+
     let args = Args::parse();
     let resolver = if args.resolve_dids {
         use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
@@ -252,7 +267,17 @@ async fn main() -> anyhow::Result<()> {
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = room_host::didcomm::serve(state, identity, mediator_did).await {
-                tracing::error!(error = %e, "the mediator connection ended");
+                // Said in full because of what does *not* happen next: this task ends, the
+                // HTTP listener does not, and nothing retries. So the process stays up and
+                // a health check on `--listen` keeps passing while every member addressing
+                // this host by DID times out. An operator reading one line needs to know
+                // the host is half-dead rather than merely noisy.
+                tracing::error!(
+                    error = %e,
+                    "the mediator connection ended — this host is NO LONGER REACHABLE by DID, \
+                     and does not retry. HTTP on --listen is unaffected, so a health check \
+                     against that port will still pass. Restart the host."
+                );
             }
         });
     }

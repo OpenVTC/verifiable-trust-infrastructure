@@ -130,12 +130,21 @@ pub async fn fetch_identity(
                     // this is the one misconfiguration an operator can actually fix.
                     // Doing it eagerly would cost every boot a round trip to answer a
                     // question that is almost always "no".
-                    if let Some(help) = diagnose_contextless_did(&client, context, vta_did).await {
+                    let help = diagnose_contextless_did(&client, context, vta_did).await;
+                    // Before returning, and on *this* path too: the client owns a live,
+                    // auto-reconnecting mediator session, and dropping it leaves that
+                    // socket fighting the one `didcomm::serve` is about to open for the
+                    // host's own DID. The SDK's leak guard is a `debug_assert`, so a debug
+                    // build panics here and a release build only warns — which is how this
+                    // survived: the panic reads as a crash, not as a missing shutdown.
+                    client.shutdown().await;
+                    if let Some(help) = help {
                         anyhow::bail!(help);
                     }
                     anyhow::bail!("fetch this host's secrets from {vta_did}: {e}");
                 }
             };
+            client.shutdown().await;
 
             // Cached before it is used, so a host that starts, fetches, and then finds the
             // VTA gone on its next boot still comes up. Caching afterwards would leave the
@@ -152,17 +161,35 @@ pub async fn fetch_identity(
             })
         }
         Err(e) => {
-            let Some(cached) = cache
-                .get()
-                .await
-                .map_err(|c| anyhow::anyhow!("read the cached VTA bundle: {c}"))?
-            else {
+            // Every arm below carries `e` — the reason the VTA could not be reached — because
+            // the cache is the *fallback*, and a fallback that fails must not be allowed to
+            // become the whole report. Without this an unreadable cache answered a question
+            // nobody asked: an operator debugging "why will my host not start" was shown an
+            // IAM denial or a hex-decode error from the secret store, while the actual
+            // failure — a transport the build could not speak — was dropped on the floor by
+            // the `?`. Two different secret-store errors on consecutive runs looked like two
+            // different problems and were the same one.
+            let cached = match cache.get().await {
+                Ok(c) => c,
+                Err(c) => anyhow::bail!(
+                    "could not reach {vta_did} ({e}), and the cached identity could not be \
+                     read either ({c}) — so this host has no identity to serve as. The first \
+                     error is the one to fix; the cache is only a fallback for a VTA outage."
+                ),
+            };
+            let Some(cached) = cached else {
                 anyhow::bail!(
                     "could not reach {vta_did} ({e}), and this host has no cached identity — \
                      it has never successfully fetched one. Enrol it first."
                 );
             };
-            let bundle: vta_sdk::did_secrets::DidSecretsBundle = serde_json::from_slice(&cached)?;
+            let bundle: vta_sdk::did_secrets::DidSecretsBundle = serde_json::from_slice(&cached)
+                .map_err(|c| {
+                    anyhow::anyhow!(
+                        "could not reach {vta_did} ({e}), and the cached identity is not a \
+                         bundle this host can read ({c}). The first error is the one to fix."
+                    )
+                })?;
             tracing::warn!(
                 vta = %vta_did,
                 error = %e,

@@ -16,3 +16,4 @@ pub mod contexts;
 pub mod did_templates;
 pub mod seal;
 pub mod sealed_nonce_store;
+pub mod version_time;

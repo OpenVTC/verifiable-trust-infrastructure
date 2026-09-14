@@ -933,7 +933,12 @@ pub(crate) enum VtaCommands {
     /// Set the default VTA
     Use { slug: String },
     /// Remove a VTA connection
-    Remove { slug: String },
+    Remove {
+        slug: String,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        force: bool,
+    },
     /// Show current VTA details
     Info,
     /// Restart the VTA service (soft restart — reloads config and reconnects)
@@ -3738,4 +3743,37 @@ pub(crate) enum PersonaLocalBindingCommands {
         #[arg(long = "expected-version")]
         expected_version: Option<u64>,
     },
+}
+
+#[cfg(test)]
+mod vta_remove_flag_tests {
+    use super::*;
+    use clap::Parser;
+
+    /// Removal drops the stored credential too, so the confirmation is
+    /// the default and `--force` is the explicit opt-out.
+    #[test]
+    fn remove_defaults_to_confirming() {
+        let cli = Cli::try_parse_from(["pnm", "vta", "remove", "my-vta"]).unwrap();
+        let Commands::Vta {
+            command: VtaCommands::Remove { slug, force },
+        } = cli.command
+        else {
+            panic!("expected `vta remove`");
+        };
+        assert_eq!(slug, "my-vta");
+        assert!(!force);
+    }
+
+    #[test]
+    fn remove_force_parses() {
+        let cli = Cli::try_parse_from(["pnm", "vta", "remove", "my-vta", "--force"]).unwrap();
+        let Commands::Vta {
+            command: VtaCommands::Remove { force, .. },
+        } = cli.command
+        else {
+            panic!("expected `vta remove`");
+        };
+        assert!(force);
+    }
 }
