@@ -3078,11 +3078,12 @@ select[aria-invalid="true"] {
 
 .pf-scroll { overflow-x: auto; }
 
+/* The chart grows downwards, so its width is fixed and it never needs to
+   scroll sideways in this panel — which is the narrow half of the layout. */
 svg.pf {
   display: block;
   width: 100%;
   height: auto;
-  min-width: 620px;
 }
 
 .pf-q {

@@ -4,6 +4,19 @@
 // than out of the module's text, so a hand-written policy renders like an
 // authored one. See `lib/policy-flow.ts` for why that is the design.
 //
+// ## Why it grows downwards
+//
+// The first cut gave each depth its own column. That reads well on a wide
+// page and not at all here: this panel is the narrow half of a two-column
+// layout, a four-deep chart wanted about a thousand pixels, and the endings
+// fell off the right-hand side. Depth now costs an indent rather than a
+// column, so the chart's width is fixed and its depth is what grows — which is
+// the direction a panel can give.
+//
+// Every node owns one row. That is what makes overlap impossible rather than
+// unlikely: nothing is positioned relative to anything else's text, and
+// `layout` is asserted against that in the tests.
+//
 // The drawing is inline SVG in the console's own tokens, like the pipeline
 // strip above it. A diagramming library would add a dependency, a second
 // visual language, and a picture the dry-run could not point at — and the
@@ -13,13 +26,7 @@
 import { useMemo } from "react";
 
 import type { CeremonyManifest, FieldValues } from "@/lib/ceremony-manifest";
-import {
-  countEndings,
-  induceFlow,
-  tracePath,
-  type FlowNode,
-  type ProbeRow,
-} from "@/lib/policy-flow";
+import { induceFlow, tracePath, type FlowNode } from "@/lib/policy-flow";
 
 const EFFECT_WORD: Record<string, string> = {
   allow: "admit",
@@ -30,7 +37,7 @@ const EFFECT_WORD: Record<string, string> = {
 };
 
 /** What an ending carries beside its effect — the part an operator acts on. */
-function endingDetail(node: Extract<FlowNode, { kind: "verdict" }>): string {
+export function endingDetail(node: Extract<FlowNode, { kind: "verdict" }>): string {
   const w = node.with ?? {};
   if (typeof w.queue === "string") return `to the ${w.queue} queue`;
   if (typeof w.role === "string") return `as ${w.role}`;
@@ -39,37 +46,54 @@ function endingDetail(node: Extract<FlowNode, { kind: "verdict" }>): string {
   return "";
 }
 
-// Geometry. One row per ending, one column per question depth.
-const COL = 250;
-const ROW = 62;
-const QW = 210;
-const QH = 44;
-const TW = 210;
-const TH = 40;
-const PAD = 16;
+// Geometry. One row per node; depth is an indent, not a column.
+export const WIDTH = 620;
+const ROW = 58;
+const BOX = 40;
+const PAD = 12;
+const INDENT = 26;
+/** Where a parent's connector runs down, relative to its own left edge. */
+const GUIDE = 11;
 
-interface Placed {
+/** Rough advance width of the label faces at their drawn sizes, in px. */
+const CHAR_SANS = 6.7;
+const CHAR_MONO = 5.6;
+
+/** Cut `text` to what fits in `px`, keeping a full word where it can. */
+export function fit(text: string, px: number, charWidth = CHAR_SANS): string {
+  const max = Math.floor(px / charWidth);
+  if (max <= 1) return "";
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${space > max * 0.6 ? cut.slice(0, space) : cut.trimEnd()}…`;
+}
+
+export interface FlowRow {
   node: FlowNode;
   depth: number;
-  /** Row centre, in ending-slots. */
-  y: number;
-  /** Index of the branch taken to get here, for the trace. */
+  /** The branch taken to reach this node, as its option reads. */
+  label?: string;
+  /** Branch indexes from the root, so the trace can light a path. */
   path: number[];
+  /** Row index, top to bottom. */
+  index: number;
 }
 
-/** Lay the tree out: endings stack, questions centre over what they lead to. */
-function place(node: FlowNode, depth: number, next: { row: number }, path: number[]): Placed[] {
-  if (node.kind !== "ask") {
-    const y = next.row;
-    next.row += 1;
-    return [{ node, depth, y, path }];
-  }
-  const kids = node.branches.flatMap((b, i) => place(b.node, depth + 1, next, [...path, i]));
-  const own = kids.filter((k) => k.depth === depth + 1);
-  const first = own[0]?.y ?? next.row;
-  const last = own[own.length - 1]?.y ?? first;
-  return [{ node, depth, y: (first + last) / 2, path }, ...kids];
+/** Flatten the tree depth-first: one row per node, in reading order. */
+export function layout(node: FlowNode): FlowRow[] {
+  const rows: FlowRow[] = [];
+  const walk = (n: FlowNode, depth: number, path: number[], label?: string) => {
+    rows.push({ node: n, depth, label, path, index: rows.length });
+    if (n.kind !== "ask") return;
+    n.branches.forEach((b, i) => walk(b.node, depth + 1, [...path, i], b.label));
+  };
+  walk(node, 0, []);
+  return rows;
 }
+
+const rowY = (index: number) => PAD + index * ROW + ROW / 2;
+const rowX = (depth: number) => PAD + depth * INDENT;
 
 export function PolicyFlow({
   ceremony,
@@ -77,115 +101,135 @@ export function PolicyFlow({
   values,
 }: {
   ceremony: CeremonyManifest;
-  probes: ProbeRow[];
+  probes: Parameters<typeof induceFlow>[1];
   /** The simulator's current inputs, so the chart can light their path. */
   values?: FieldValues;
 }) {
   const flow = useMemo(() => induceFlow(ceremony, probes), [ceremony, probes]);
-  const placed = useMemo(() => place(flow, 0, { row: 0 }, []), [flow]);
+  const rows = useMemo(() => layout(flow), [flow]);
   const taken = useMemo(
     () => (values ? tracePath(flow, values) : null),
     [flow, values],
   );
 
-  const rows = countEndings(flow);
-  const depth = Math.max(...placed.map((p) => p.depth));
-  const width = PAD * 2 + depth * COL + TW;
-  const height = PAD * 2 + rows * ROW;
+  const height = PAD * 2 + rows.length * ROW;
 
-  const xOf = (d: number) => PAD + d * COL;
-  const yOf = (y: number) => PAD + y * ROW + ROW / 2;
-
-  /** A node is on the traced path when every branch above it was taken. */
+  /** On the path when every branch above it was the one taken. */
   const onPath = (path: number[]) =>
-    taken !== null && path.every((b, i) => taken[i] === b) && path.length <= taken.length;
+    taken !== null && path.length <= taken.length && path.every((b, i) => taken[i] === b);
 
-  const edges: React.ReactNode[] = [];
+  const connectors: React.ReactNode[] = [];
   const nodes: React.ReactNode[] = [];
 
-  for (const p of placed) {
-    const x = xOf(p.depth);
-    const y = yOf(p.y);
-    const lit = onPath(p.path);
+  for (const row of rows) {
+    const x = rowX(row.depth);
+    const y = rowY(row.index);
+    const boxWidth = WIDTH - PAD - x;
+    const lit = onPath(row.path);
+    const tone = lit ? "pf-lit" : "pf-dim";
+    const key = row.path.join("-") || "root";
 
-    if (p.node.kind === "ask") {
-      const ask = p.node;
-      nodes.push(
-        <g key={`q-${p.path.join("-")}`} className={lit ? "pf-lit" : "pf-dim"}>
-          <rect className="pf-q" x={x} y={y - QH / 2} width={QW} height={QH} rx={8} />
-          <text className="pf-q-label" x={x + 12} y={y + 4}>
-            {ask.label}
-          </text>
-        </g>,
+    // The connector from this node down to each of its children.
+    if (row.node.kind === "ask") {
+      const kids = rows.filter(
+        (r) =>
+          r.depth === row.depth + 1 &&
+          r.path.length === row.path.length + 1 &&
+          row.path.every((v, i) => r.path[i] === v),
       );
-      ask.branches.forEach((b, i) => {
-        const child = placed.find(
-          (c) => c.depth === p.depth + 1 && c.path.length === p.path.length + 1 &&
-            c.path.every((v, j) => v === [...p.path, i][j]),
+      const last = kids[kids.length - 1];
+      if (last) {
+        const guideX = x + GUIDE;
+        connectors.push(
+          <path
+            key={`guide-${key}`}
+            className={`pf-edge ${onPath([...row.path, 0]) || lit ? "" : "pf-dim"}`}
+            d={`M ${guideX} ${y + BOX / 2} V ${rowY(last.index)}`}
+          />,
         );
-        if (!child) return;
-        const cy = yOf(child.y);
-        const mid = x + QW + (COL - QW) / 2;
-        const branchLit = onPath([...p.path, i]);
-        edges.push(
-          <g key={`e-${p.path.join("-")}-${i}`} className={branchLit ? "pf-lit" : "pf-dim"}>
+        for (const kid of kids) {
+          connectors.push(
             <path
-              className="pf-edge"
-              d={`M ${x + QW} ${y} H ${mid} V ${cy} H ${xOf(p.depth + 1)}`}
-            />
-            <text className="pf-edge-label" x={x + QW + 8} y={y === cy ? y - 7 : (y + cy) / 2 - 6}>
-              {b.label}
-            </text>
-          </g>,
-        );
-      });
-    } else if (p.node.kind === "verdict") {
-      const v = p.node;
-      const detail = endingDetail(v);
+              key={`stub-${kid.path.join("-")}`}
+              className={`pf-edge ${onPath(kid.path) ? "pf-lit" : "pf-dim"}`}
+              d={`M ${guideX} ${rowY(kid.index)} H ${rowX(kid.depth)}`}
+            />,
+          );
+        }
+      }
+    }
+
+    const label = row.label
+      ? fit(row.label, boxWidth - GUIDE - 8, CHAR_MONO)
+      : undefined;
+
+    if (row.node.kind === "ask") {
+      const text = row.node.label;
       nodes.push(
-        <g key={`t-${p.path.join("-")}`} className={lit ? "pf-lit" : "pf-dim"}>
-          <rect
-            className={`pf-term pf-eff-${v.effect}`}
-            x={x}
-            y={y - TH / 2}
-            width={TW}
-            height={TH}
-            rx={8}
-          />
-          <text className={`pf-term-label pf-fg-${v.effect}`} x={x + 12} y={y - 2}>
-            {(EFFECT_WORD[v.effect] ?? v.effect).toUpperCase()}
-          </text>
-          {detail && (
-            <text className="pf-term-detail" x={x + 12} y={y + 13}>
-              {detail}
+        <g key={`q-${key}`} className={tone}>
+          {label && (
+            <text className="pf-edge-label" x={x + 6} y={y - BOX / 2 - 6}>
+              {label}
             </text>
           )}
-        </g>,
-      );
-    } else {
-      nodes.push(
-        <g key={`v-${p.path.join("-")}`} className={lit ? "pf-lit" : "pf-dim"}>
-          <rect className="pf-term pf-varies" x={x} y={y - TH / 2} width={TW} height={TH} rx={8} />
-          <text className="pf-term-label pf-fg-varies" x={x + 12} y={y - 2}>
-            VARIES
-          </text>
-          <text className="pf-term-detail" x={x + 12} y={y + 13}>
-            {p.node.effects.join(" / ")} — on a fact no control varies
+          <rect className="pf-q" x={x} y={y - BOX / 2} width={boxWidth} height={BOX} rx={7} />
+          <text className="pf-q-label" x={x + 12} y={y + 4}>
+            {fit(text, boxWidth - 24)}
+            <title>{text}</title>
           </text>
         </g>,
       );
+      continue;
     }
+
+    const effect = row.node.kind === "verdict" ? row.node.effect : "varies";
+    const detail =
+      row.node.kind === "verdict"
+        ? endingDetail(row.node)
+        : `${row.node.effects.join(" / ")} — on a fact no control varies`;
+    const word = row.node.kind === "verdict" ? (EFFECT_WORD[effect] ?? effect) : "varies";
+
+    nodes.push(
+      <g key={`t-${key}`} className={tone}>
+        {label && (
+          <text className="pf-edge-label" x={x + 6} y={y - BOX / 2 - 6}>
+            {label}
+          </text>
+        )}
+        <rect
+          className={`pf-term ${row.node.kind === "verdict" ? `pf-eff-${effect}` : "pf-varies"}`}
+          x={x}
+          y={y - BOX / 2}
+          width={boxWidth}
+          height={BOX}
+          rx={7}
+        />
+        <text
+          className={`pf-term-label ${row.node.kind === "verdict" ? `pf-fg-${effect}` : "pf-fg-varies"}`}
+          x={x + 12}
+          y={y - 2}
+        >
+          {word.toUpperCase()}
+        </text>
+        {detail && (
+          <text className="pf-term-detail" x={x + 12} y={y + 13}>
+            {fit(detail, boxWidth - 24, CHAR_MONO)}
+            <title>{detail}</title>
+          </text>
+        )}
+      </g>,
+    );
   }
 
   return (
     <div className="pf-scroll">
       <svg
         className={`pf${taken ? " pf-traced" : ""}`}
-        viewBox={`0 0 ${width} ${height}`}
+        viewBox={`0 0 ${WIDTH} ${height}`}
         role="img"
         aria-label={`Flow chart of the active ${ceremony.label} policy`}
       >
-        {edges}
+        {connectors}
         {nodes}
       </svg>
     </div>
