@@ -215,6 +215,14 @@ mod tests {
                 false,
                 Some("https://api.example.com:8443/vta/"),
             ),
+            // Same padded value with the attestation service on: both
+            // endpoints must read the trimmed URL, not one each way.
+            (
+                true,
+                Some("  https://api.example.com:8443/vta/  "),
+                true,
+                Some("https://api.example.com:8443/vta/"),
+            ),
             (false, Some(PUBLIC_URL), true, None),
             (true, None, false, None),
             (true, Some("  "), false, None),
@@ -233,6 +241,12 @@ mod tests {
                     vta_sdk::http::EndpointPolicy::public_only(),
                 )
                 .unwrap();
+            }
+            // Whatever else it advertises must be callable too — a service
+            // built from an untrimmed `public_url` is not.
+            for svc in doc["service"].as_array().into_iter().flatten() {
+                let advertised = svc["serviceEndpoint"].as_str().unwrap_or_default();
+                assert_eq!(advertised.trim(), advertised, "{svc}");
             }
             for ks in [
                 fx.keyspace(crate::keyspaces::KEYS),

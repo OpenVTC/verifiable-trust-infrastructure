@@ -365,15 +365,22 @@ fn build_vta_did_document(
         }));
     }
 
+    // One reading of `public_url` for both services below. Trimming in only
+    // one of them would let `public_url = "  https://host/  "` advertise a
+    // usable REST endpoint and, beside it, a TeeAttestation endpoint of
+    // "  https://host/  /attestation/report" — `trim_end_matches('/')` strips
+    // nothing from a string that ends in whitespace.
+    let public_url = config
+        .public_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty());
+
     // Match setup's REST advertisement policy. The public API may have a
     // different host, port, or path from the DID log — never infer it from
     // vta_did_template.
     if config.services.rest
-        && let Some(url) = config
-            .public_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|u| !u.is_empty())
+        && let Some(url) = public_url
     {
         let services = did_document
             .as_object_mut()
@@ -389,7 +396,7 @@ fn build_vta_did_document(
 
     // Add TeeAttestation service if configured
     if config.tee.embed_in_did
-        && let Some(ref public_url) = config.public_url
+        && let Some(url) = public_url
     {
         let services = did_document
             .as_object_mut()
@@ -399,7 +406,7 @@ fn build_vta_did_document(
         services.as_array_mut().unwrap().push(json!({
             "id": "{DID}#tee-attestation",
             "type": "TeeAttestation",
-            "serviceEndpoint": format!("{}/attestation/report", public_url.trim_end_matches('/'))
+            "serviceEndpoint": format!("{}/attestation/report", url.trim_end_matches('/'))
         }));
     }
 
