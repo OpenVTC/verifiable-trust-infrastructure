@@ -601,6 +601,59 @@ pub async fn cmd_webvh_did_delete(
     Ok(())
 }
 
+/// `pnm did-mgmt dids realign-keys <did> [--dry-run]` — rename this DID's key
+/// records onto the verification-method ids its published document carries.
+///
+/// Prints the plan either way. A realign moves key custody records, so the
+/// operator should read `--dry-run` first — and the output names the public key
+/// behind every move so they can check it against the document themselves.
+pub async fn cmd_webvh_did_realign_keys(
+    client: &VtaClient,
+    did: &str,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = client.realign_did_webvh_keys(did, dry_run).await?;
+
+    if result.moved.is_empty() {
+        println!("Nothing to move — every key record already matches a verification method.");
+    } else {
+        println!(
+            "{} key record(s) {}:",
+            result.moved.len(),
+            if result.dry_run {
+                "would move"
+            } else {
+                "moved"
+            }
+        );
+        for key in &result.moved {
+            println!(
+                "  {}\n    → {}\n    key {}",
+                key.from, key.to, key.public_key
+            );
+        }
+    }
+    if !result.already_aligned.is_empty() {
+        println!("Already correct: {}", result.already_aligned.join(", "));
+    }
+    // Said out loud rather than omitted: a method with no record here is not
+    // "nothing to do", it is a key this agent does not hold.
+    if !result.unmatched.is_empty() {
+        println!(
+            "No key held for: {} — realign cannot name these.",
+            result.unmatched.join(", ")
+        );
+    }
+    println!(
+        "Next rotation allocates from #key-{}",
+        result.next_fragment_id
+    );
+    if result.dry_run {
+        println!("\nNothing was written. Re-run without --dry-run to apply.");
+    }
+    Ok(())
+}
+
 /// `pnm did-mgmt dids get-log <did> [--out <path>]` — fetch the raw
 /// `did.jsonl` log for a DID the VTA knows.
 ///

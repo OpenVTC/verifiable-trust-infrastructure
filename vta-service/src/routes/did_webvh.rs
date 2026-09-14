@@ -18,8 +18,8 @@ use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::operations::did_webvh::{
-    RegisterDidWithServerError, RegisterDidWithServerParams, RotateDidWebvhKeysOptions,
-    UpdateDidWebvhResult, register_did_with_server,
+    RealignDidKeysResultBody, RegisterDidWithServerError, RegisterDidWithServerParams,
+    RotateDidWebvhKeysOptions, UpdateDidWebvhResult, register_did_with_server,
 };
 use crate::server::AppState;
 
@@ -28,6 +28,14 @@ pub struct AddServerRequest {
     pub id: String,
     pub did: String,
     pub label: Option<String>,
+}
+
+/// `?dry_run=true` returns the plan without writing — what an operator should
+/// read before anything touches key records.
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RealignQuery {
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
@@ -526,6 +534,47 @@ pub async fn rotate_did_keys_handler(
         &scid,
         body,
         vta_did.as_deref(),
+        "rest",
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+/// `POST /webvh/dids/{did}/realign-keys` — rewrite this DID's key records onto
+/// the verification-method ids its published document carries. Auth: admin,
+/// scoped to the DID's context.
+///
+/// The repair for DIDs minted before create read its own document: no name here
+/// is caller-supplied, which is what makes it safe where `keys/rename` is
+/// deliberately not (see `operations::did_webvh::realign`).
+#[utoipa::path(
+    post, path = "/webvh/dids/{did}/realign-keys", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(
+        ("did" = String, Path, description = "DID identifier"),
+        ("dry_run" = Option<bool>, Query, description = "Return the plan without writing"),
+    ),
+    responses(
+        (status = 200, description = "Key records realigned", body = RealignDidKeysResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin of this DID's context"),
+        (status = 404, description = "DID, or its local log, not found"),
+        (status = 409, description = "A verification method is already held by a different key"),
+    ),
+)]
+pub async fn realign_did_keys_handler(
+    auth: AdminAuth,
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+    Query(query): Query<RealignQuery>,
+) -> Result<Json<RealignDidKeysResultBody>, AppError> {
+    let result = operations::did_webvh::realign_did_key_records(
+        &state.keys_ks,
+        &state.webvh_ks,
+        &state.audit_sink,
+        &auth.0,
+        &did,
+        query.dry_run.unwrap_or(false),
         "rest",
     )
     .await?;

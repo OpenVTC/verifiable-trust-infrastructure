@@ -4,6 +4,7 @@ pub mod delete;
 pub mod get;
 pub mod list;
 pub mod passkey_vms;
+pub mod realign;
 pub mod servers;
 pub mod update;
 

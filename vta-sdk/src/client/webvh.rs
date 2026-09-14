@@ -375,6 +375,41 @@ impl VtaClient {
         .await
     }
 
+    /// Realign a DID's key records with the verification methods its published
+    /// document carries — the repair for a DID minted before create read its
+    /// own document.
+    ///
+    /// `dry_run` returns the plan without writing, which is what an operator
+    /// should read first: this moves key records.
+    ///
+    /// **REST-only, deliberately.** The agent computes every target name from
+    /// the DID's own log, so there is nothing for a caller to supply and
+    /// nothing a wire format would carry beyond the DID — and a repair of local
+    /// key custody is an operator standing at their own agent, not a party
+    /// addressing it over DIDComm. `POST /webvh/dids/{did}/realign-keys`.
+    pub async fn realign_did_webvh_keys(
+        &self,
+        did: &str,
+        dry_run: bool,
+    ) -> Result<did_management::realign::RealignDidKeysResultBody, VtaError> {
+        let super::Transport::Rest {
+            client,
+            base_url,
+            auth,
+        } = &self.transport
+        else {
+            return Err(VtaError::Validation(
+                "realigning key records is REST-only; point the CLI at the agent's REST URL".into(),
+            ));
+        };
+        let req = client.post(format!(
+            "{base_url}/webvh/dids/{}/realign-keys?dry_run={dry_run}",
+            encode_path_segment(did)
+        ));
+        let resp = Self::send_authed(client, base_url, auth, req).await?;
+        Self::handle_response(resp).await
+    }
+
     // ── Agent names ───────────────────────────────────────────────────
     //
     // An agent name is a human-memorable `domain/@name` that resolves to a

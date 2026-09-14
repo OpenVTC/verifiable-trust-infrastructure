@@ -123,6 +123,9 @@ pub(crate) async fn run(
         }
         WebvhCommands::GetDid { did } => webvh::cmd_webvh_did_get(client, &did).await,
         WebvhCommands::DeleteDid { did } => webvh::cmd_webvh_did_delete(client, &did).await,
+        WebvhCommands::RealignDidKeys { did, dry_run } => {
+            webvh::cmd_webvh_did_realign_keys(client, &did, dry_run).await
+        }
         WebvhCommands::DidLog { did, out } => webvh::cmd_webvh_did_log(client, &did, out).await,
         WebvhCommands::ListDomains { server } => cmd_list_domains(client, &server).await,
         WebvhCommands::Reconcile { server } => cmd_reconcile(client, &server).await,

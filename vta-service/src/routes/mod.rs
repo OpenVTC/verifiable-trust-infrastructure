@@ -567,6 +567,7 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
         .routes(routes!(did_webvh::register_did_with_server_handler))
         .routes(routes!(did_webvh::update_did_handler))
         .routes(routes!(did_webvh::rotate_did_keys_handler))
+        .routes(routes!(did_webvh::realign_did_keys_handler))
         // Passkey-as-verificationMethod enrolment. See
         // `docs/02-vta/passkey-verification-methods.md` (forthcoming).
         // First-time enrolment expects a short-lived enrolment-scope

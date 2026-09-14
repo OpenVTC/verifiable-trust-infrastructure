@@ -351,6 +351,108 @@ fn build_did_document_inner(
     did_document
 }
 
+/// The highest `#key-N` any of a document's verification methods publishes.
+///
+/// Its own function because a rotation allocates from one past it, and create
+/// and the realign repair must agree on what "one past" means — a rotation that
+/// reuses a live method id republishes that name under different key material.
+/// `None` for a document that numbers its methods some other way (`vta-admin`
+/// names one after its own key), where there is no numbering to collide with.
+pub(crate) fn highest_key_fragment(document: &serde_json::Value) -> Option<u32> {
+    document
+        .get("verificationMethod")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|vm| vm.get("id").and_then(serde_json::Value::as_str))
+        .filter_map(|id| id.rsplit_once("#key-"))
+        .filter_map(|(_, n)| n.parse::<u32>().ok())
+        .max()
+}
+
+/// The verification-method ids a created document actually publishes, for the
+/// two keys the DID was minted with.
+///
+/// ## Why this is read back rather than assumed
+///
+/// A key record's id **is** a verification-method id — `save_entity_key_records`
+/// says so, and [`vta_sdk::did_secrets::select_secret_kid`] rule 1 depends on
+/// it: the kid a mediator matches inbound JWE recipients against is the record
+/// id, on the reasoning that "the DID document decided what the key is called".
+///
+/// Create did not read the document to find out. It named the records
+/// `{did}#key-0` and `{did}#key-1` while the document was whatever the caller
+/// or the template said — and the `room` and `room-host` built-in templates
+/// number their methods from `#key-1`. So on every room and room host:
+///
+/// - the document's `#key-1` is the **signing** key and the keystore's `#key-1`
+///   is the **x25519** one. One name, two keys, and no error anywhere;
+/// - the document's `keyAgreement` (`#key-2`) matches no record, so an authcrypt
+///   message addressed to it unpacks to `No local secret matches any JWE
+///   recipient` — the storm.ws outage of PR #337, reached from the other side;
+/// - `next_fragment_id` was stored as 2, so the first rotation allocates
+///   `#key-2` over the id the key-agreement key already published under.
+///
+/// Matching on `publicKeyMultibase` rather than on position or on a `#key-N`
+/// shape is what makes this total: it is right for a template that numbers from
+/// 1, for `vta-admin` (whose method id is `{DID}#{SIGNING_KEY_MB}`), and for a
+/// document an operator wrote by hand. Anything the document does not name
+/// falls back to the historical `#key-0` / `#key-1`, which is the best available
+/// answer for a document that does not carry the key at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MintedVmIds {
+    /// The id the signing key is published under.
+    pub signing: String,
+    /// The id the key-agreement key is published under, when there is one.
+    pub key_agreement: Option<String>,
+    /// One past the highest `#key-N` the document declares — what a rotation
+    /// may allocate from without colliding with a published method.
+    pub next_fragment_id: u32,
+}
+
+/// Read [`MintedVmIds`] out of a document, substituting `{DID}` for `did`.
+///
+/// `signing_pub` / `ka_pub` are the multibase public halves this DID was minted
+/// with; a method carrying one of them is that key, whatever it is called.
+pub(crate) fn minted_vm_ids(
+    document: &serde_json::Value,
+    did: &str,
+    signing_pub: &str,
+    ka_pub: Option<&str>,
+) -> MintedVmIds {
+    let methods = document
+        .get("verificationMethod")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+
+    let id_carrying = |public_key: &str| -> Option<String> {
+        methods
+            .iter()
+            .find(|vm| {
+                vm.get("publicKeyMultibase")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(public_key)
+            })
+            .and_then(|vm| vm.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(|id| id.replace("{DID}", did))
+    };
+
+    let highest = highest_key_fragment(document);
+
+    MintedVmIds {
+        signing: id_carrying(signing_pub).unwrap_or_else(|| format!("{did}#key-0")),
+        key_agreement: ka_pub.and_then(id_carrying),
+        // No numeric fragment anywhere is a document naming its methods some
+        // other way, and 2 is what create has always stored — there is nothing
+        // to collide with, so this stays as it was rather than inventing a
+        // number from the method count.
+        next_fragment_id: highest.map_or(2, |n| n + 1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use affinidi_tdk::secrets_resolver::secrets::Secret;
@@ -625,5 +727,145 @@ mod tests {
         }
         let url = json!({ "type": "DIDCommMessaging", "serviceEndpoint": "https://m.example.com" });
         assert_eq!(didcomm_mediator(&url), None);
+    }
+
+    // ── The names a created DID's key records take ──────────────────────────
+    //
+    // Every one of these is driven through the **real** built-in templates
+    // rather than a hand-written document. The defect was not a bug in reading
+    // a document — it was never reading one, so a test against a fixture of my
+    // own choosing would have agreed with the broken code.
+
+    const DID: &str = "did:webvh:QmScid:example.com:rooms:northwind";
+
+    fn rendered(template: &str, derived: &keys::DerivedEntityKeys) -> serde_json::Value {
+        let tpl = vta_sdk::did_templates::load_embedded(template)
+            .unwrap_or_else(|e| panic!("built-in `{template}` failed to load: {e}"));
+        let mut vars = vta_sdk::did_templates::TemplateVars::new();
+        vars.insert_string("DID", "{DID}");
+        vars.insert_string("SIGNING_KEY_MB", derived.signing_pub.clone());
+        vars.insert_string("KA_KEY_MB", derived.ka_pub.clone());
+        vars.insert_string("WEBVH_SERVER", "https://webvh.example.com");
+        vars.insert_string("URL", "https://rooms.example.com/");
+        vars.insert_string("MEDIATOR_DID", "did:webvh:QmMed:example.com:mediator");
+        vars.insert_string("VTA_DID", "did:webvh:QmVta:example.com");
+        vars.insert_string("VTA_URL", "https://vta.example.com");
+        vars.insert_string("CONTEXT_ID", "rooms");
+        vars.insert_string("NOW", "2026-09-14T00:00:00Z");
+        tpl.render(&vars)
+            .unwrap_or_else(|e| panic!("built-in `{template}` failed to render: {e}"))
+    }
+
+    /// The floor: nothing about a document this crate builds changes.
+    #[test]
+    fn the_builders_own_document_still_names_key_0_and_key_1() {
+        let derived = fake_keys();
+        let config = crate::test_support::test_app_config(std::path::PathBuf::from("/tmp/x"));
+        let doc = build_did_document(&derived, &config, false, &None);
+
+        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub));
+        assert_eq!(ids.signing, format!("{DID}#key-0"));
+        assert_eq!(ids.key_agreement.as_deref(), Some(&*format!("{DID}#key-1")));
+        assert_eq!(ids.next_fragment_id, 2);
+    }
+
+    /// The bug, at the two templates that carry it. A room's records were
+    /// stored as `#key-0` / `#key-1` while its published document said `#key-1`
+    /// / `#key-2` — so one name, `#key-1`, meant the signing key to every
+    /// resolver and the x25519 key to the agent holding it.
+    #[test]
+    fn a_template_numbering_its_methods_from_one_is_followed() {
+        let derived = fake_keys();
+        for template in ["room", "room-host"] {
+            let doc = rendered(template, &derived);
+            let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub));
+
+            // Read off the document rather than asserted as `#key-1`: the point
+            // is that the records follow whatever it says, so renumbering the
+            // template later must not make this test lie.
+            let published = |public_key: &str| -> String {
+                doc["verificationMethod"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|vm| vm["publicKeyMultibase"] == public_key)
+                    .map(|vm| vm["id"].as_str().unwrap().replace("{DID}", DID))
+                    .unwrap_or_else(|| panic!("`{template}` publishes no method for that key"))
+            };
+            assert_eq!(ids.signing, published(&derived.signing_pub), "{template}");
+            assert_eq!(
+                ids.key_agreement.as_deref(),
+                Some(&*published(&derived.ka_pub)),
+                "{template}",
+            );
+
+            // And the two are never the same record, which is what the old
+            // pairing produced the moment the document's signing method landed
+            // on the id the keystore had given the x25519 key.
+            assert_ne!(
+                ids.signing,
+                ids.key_agreement.clone().unwrap(),
+                "{template}"
+            );
+        }
+    }
+
+    /// A rotation allocates from `next_fragment_id`. Stored as a constant 2, a
+    /// room's first rotation would have minted `#key-2` — the id its own
+    /// key-agreement method was already published under.
+    #[test]
+    fn next_fragment_id_clears_every_method_the_document_published() {
+        let derived = fake_keys();
+        let doc = rendered("room-host", &derived);
+        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub));
+
+        let highest = doc["verificationMethod"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|vm| vm["id"].as_str())
+            .filter_map(|id| id.rsplit_once("#key-"))
+            .filter_map(|(_, n)| n.parse::<u32>().ok())
+            .max()
+            .expect("room-host numbers its methods");
+        assert!(
+            ids.next_fragment_id > highest,
+            "a rotation would allocate #key-{} over a published method",
+            ids.next_fragment_id,
+        );
+    }
+
+    /// `vta-admin` names its method `{DID}#{SIGNING_KEY_MB}`. Matching on the
+    /// public key rather than on a `#key-N` shape is what makes that work — and
+    /// is why there is no fragment-numbering rule anywhere in this function.
+    #[test]
+    fn a_method_named_by_its_own_key_is_still_found() {
+        let derived = fake_keys();
+        let doc = rendered("vta-admin", &derived);
+        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, None);
+
+        assert_eq!(ids.signing, format!("{DID}#{}", derived.signing_pub));
+        assert_eq!(
+            ids.key_agreement, None,
+            "vta-admin publishes no keyAgreement"
+        );
+        assert!(
+            !ids.signing.contains("{DID}"),
+            "the sentinel was not stamped"
+        );
+    }
+
+    /// A document that does not carry the key says nothing about what it is
+    /// called, so the historical name is the best answer there is — and is
+    /// still better than storing nothing.
+    #[test]
+    fn a_document_that_names_neither_key_falls_back_to_the_old_pair() {
+        let derived = fake_keys();
+        let doc = json!({ "id": "{DID}", "verificationMethod": [] });
+        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub));
+
+        assert_eq!(ids.signing, format!("{DID}#key-0"));
+        assert_eq!(ids.key_agreement, None);
+        assert_eq!(ids.next_fragment_id, 2);
     }
 }
