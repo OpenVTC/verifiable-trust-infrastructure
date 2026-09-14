@@ -66,6 +66,15 @@ export interface ExplainFacts {
       step_up?: boolean;
     };
   };
+  // The automatic vetter-grant sweep decides on a member record rather than a
+  // request, so its facts sit at the top level and it has no actor, subject or
+  // evidence at all (`EligibilityFacts`, vtc-service/src/vetting/auto_grant.rs).
+  status?: string;
+  roles?: string[];
+  tenureDays?: number;
+  admittedVia?: string;
+  underReview?: boolean;
+  depth?: number | null;
 }
 
 const creds = (f: ExplainFacts) => f.evidence?.presentation?.credentials ?? [];
@@ -73,12 +82,26 @@ const creds = (f: ExplainFacts) => f.evidence?.presentation?.credentials ?? [];
 export interface ConditionDef {
   id: string;
   label: string;
-  /** Argument spec, when the condition is parametrized. */
-  arg?: { label: string; placeholder: string };
+  /**
+   * Argument spec, when the condition is parametrized.
+   *
+   * `options` makes the argument a choice rather than free text — for a value
+   * the daemon compares exactly, where a typo compiles cleanly and then matches
+   * nobody. `kind: "number"` is compiled unquoted, so the editor holds the
+   * operator to a whole number.
+   */
+  arg?: {
+    label: string;
+    placeholder: string;
+    options?: readonly string[];
+    kind?: "number";
+  };
   /** Rego body expression for a (possibly arg'd) use. */
   expr: (arg?: string) => string;
   /** Helper-rule id pulled in when this condition is used. */
   helper?: string;
+  /** How the condition reads in English, when `label arg` does not. */
+  phrase?: (arg?: string) => string;
   /** Local mirror of `expr` for the decision trace — evaluates the
    * condition against the facts client-side. Kept in lock-step with
    * `expr` (both describe the same predicate). */
@@ -117,10 +140,38 @@ const HELPERS: Record<string, string> = {
   vetting_ok:
     "vetting_ok if not input.evidence.vetting\n\nvetting_ok if {\n\tinput.evidence.vetting.satisfied == true\n\tnot vetting_invitation_missing\n}\n\n" +
     VETTING_INVITATION_HELPERS,
+  member_holds_role:
+    "member_holds_role(r) if {\n\tsome role in input.roles\n\trole == r\n}",
+  // `depth` is null when the community cannot tell how far a member is from a
+  // founding one, and an unknown depth must not read as a shallow one.
+  vetting_depth_within:
+    "vetting_depth_within(n) if {\n\tis_number(input.depth)\n\tinput.depth <= n\n}",
+};
+
+/**
+ * A whole number for an unquoted Rego operand.
+ *
+ * The editor only offers whole numbers for a `kind: "number"` argument, so this
+ * is the compiler staying total rather than a second gate: anything else is
+ * emitted as a string, which Rego compares across types and finds false, rather
+ * than as text that would not compile at all.
+ */
+function whole(arg?: string): string {
+  return /^[0-9]+$/.test((arg ?? "").trim())
+    ? (arg ?? "").trim()
+    : JSON.stringify(arg ?? "");
+}
+
+/** The catch-all, the one condition every policy's facts can satisfy. */
+const ALWAYS: ConditionDef = {
+  id: "always",
+  label: "always",
+  expr: () => "true",
+  test: () => true,
 };
 
 const SHARED: ConditionDef[] = [
-  { id: "always", label: "always", expr: () => "true", test: () => true },
+  ALWAYS,
   {
     id: "actor_is_admin",
     label: "actor is admin",
@@ -303,15 +354,99 @@ const ROLE_CHANGE: ConditionDef[] = [
   },
 ];
 
+/** How a member came into the community, as `admittedVia` spells it. */
+const ADMITTED_VIA = ["genesis", "vetting", "invitation", "open"] as const;
+
+// Which members the automatic sweep names vetters (docs/03-vtc/vetting.md).
+// Whom to trust as a vetter, and after how long, is each community's decision —
+// the shipped default names only its founding members, deliberately.
+const VETTER_ELIGIBILITY: ConditionDef[] = [
+  {
+    id: "member_active",
+    label: "membership is active",
+    expr: () => 'input.status == "active"',
+    test: (f) => f.status === "active",
+  },
+  {
+    id: "not_under_review",
+    label: "their own admission is not under review",
+    expr: () => "input.underReview == false",
+    test: (f) => f.underReview === false,
+  },
+  {
+    id: "under_review",
+    label: "their own admission is under review",
+    expr: () => "input.underReview == true",
+    test: (f) => f.underReview === true,
+  },
+  {
+    id: "admitted_via",
+    label: "was admitted",
+    arg: { label: "how", placeholder: "vetting", options: ADMITTED_VIA },
+    expr: (a) => `input.admittedVia == ${JSON.stringify(a ?? "")}`,
+    phrase: (a) =>
+      a === "genesis"
+        ? "is a founding member"
+        : `was admitted by ${a ?? "?"}`,
+    test: (f, a) => f.admittedVia === a,
+  },
+  {
+    id: "tenure_at_least",
+    label: "has been a member for at least",
+    arg: { label: "days", placeholder: "180", kind: "number" },
+    expr: (a) => `input.tenureDays >= ${whole(a)}`,
+    phrase: (a) => `has been a member for at least ${a ?? "?"} days`,
+    test: (f, a) => (f.tenureDays ?? -1) >= Number(a),
+  },
+  {
+    id: "vetting_depth_at_most",
+    label: "is within vetting hops of a founding member",
+    arg: { label: "hops", placeholder: "2", kind: "number" },
+    expr: (a) => `vetting_depth_within(${whole(a)})`,
+    helper: "vetting_depth_within",
+    phrase: (a) =>
+      `is at most ${a ?? "?"} vetting hops from a founding member`,
+    test: (f, a) =>
+      typeof f.depth === "number" && f.depth <= Number(a),
+  },
+  {
+    id: "holds_role",
+    label: "holds the community role",
+    arg: { label: "role", placeholder: "maintainer" },
+    expr: (a) => `member_holds_role(${JSON.stringify(a ?? "")})`,
+    helper: "member_holds_role",
+    phrase: (a) => `holds the "${a ?? "?"}" role`,
+    test: (f, a) => (f.roles ?? []).includes(a ?? ""),
+  },
+];
+
+/** The vocabulary each policy purpose is authored in. */
+const CONDITIONS_BY_PURPOSE: Record<string, ConditionDef[]> = {
+  join: JOIN,
+  removal: LEAVE,
+  directory: DIRECTORY,
+  roleChange: ROLE_CHANGE,
+  vetterEligibility: VETTER_ELIGIBILITY,
+};
+
 /// Conditions available when authoring a given policy purpose.
 export function conditionsFor(purpose: string): ConditionDef[] {
-  const byPurpose: Record<string, ConditionDef[]> = {
-    join: JOIN,
-    removal: LEAVE,
-    directory: DIRECTORY,
-    roleChange: ROLE_CHANGE,
-  };
-  return [...SHARED, ...(byPurpose[purpose] ?? [])];
+  // The sweep decides about a member, not about somebody's request: there is no
+  // actor, no subject and no state in its input, so the shared conditions would
+  // every one of them be false. Offering them would be offering a trap.
+  const base = purpose === "vetterEligibility" ? [ALWAYS] : SHARED;
+  return [...base, ...(CONDITIONS_BY_PURPOSE[purpose] ?? [])];
+}
+
+/**
+ * Whether a purpose can be authored visually — that is, whether there is a
+ * condition vocabulary for the facts its policy decides on. A purpose without
+ * one is still uploadable as Rego; it just has nothing to click, and offering
+ * an editor stocked only with conditions its facts cannot satisfy would be
+ * worse than offering none.
+ */
+export function canAuthorVisually(purpose: string): boolean {
+  return CONDITIONS_BY_PURPOSE[purpose] !== undefined;
 }
 
 /// The effects an operator can choose, and the `with` field each
@@ -324,6 +459,17 @@ export interface EffectDef {
 }
 
 export function effectsFor(purpose: string): EffectDef[] {
+  // The sweep understands `allow` (name them a vetter) and `deny` (withdraw a
+  // grant the sweep itself issued) and nothing else: any other effect is logged
+  // as undecided and acts on no one. Offering the other two would be offering a
+  // policy that quietly does nothing. Neither carries a `with` field, because
+  // the sweep reads none.
+  if (purpose === "vetterEligibility") {
+    return [
+      { effect: "allow", label: "Name a vetter" },
+      { effect: "deny", label: "Do not name a vetter" },
+    ];
+  }
   const allowField: EffectDef["field"] =
     purpose === "removal"
       ? { key: "disposition", label: "disposition", placeholder: "tombstone" }
@@ -452,7 +598,10 @@ export function blankIR(purpose: string): RuleIR {
   const fallback: Effect =
     purpose === "directory"
       ? { effect: "deny", with: { code: "not-a-member" } }
-      : { effect: "refer", with: { queue: "moderator" } };
+      : purpose === "vetterEligibility"
+        ? // The shipped posture, and the only backstop the sweep acts on.
+          { effect: "deny", with: {} }
+        : { effect: "refer", with: { queue: "moderator" } };
   return {
     purpose,
     routes: [{ name: "Catch-all", when: { all: ["always"] }, then: fallback }],
@@ -483,14 +632,21 @@ export function conditionToEnglish(cond: Condition, purpose: string): string {
   const defs = conditionsFor(purpose);
   const id = condId(cond);
   const arg = condArg(cond);
-  const label = defs.find((x) => x.id === id)?.label ?? id;
+  const def = defs.find((x) => x.id === id);
+  if (def?.phrase) return def.phrase(arg);
+  const label = def?.label ?? id;
   return arg ? `${label} ${arg}` : label;
 }
 
 /** A human phrase for an effect, e.g. "admit as member" / "refer to the
  * moderator queue". */
-export function effectToEnglish(effect: Effect): string {
+export function effectToEnglish(effect: Effect, purpose?: string): string {
   const w = effect.with ?? {};
+  // The sweep grants or withholds one thing, so name it rather than saying
+  // "allow" about a decision no applicant is waiting on.
+  if (purpose === "vetterEligibility") {
+    return effect.effect === "allow" ? "name them a vetter" : "do not name them";
+  }
   switch (effect.effect) {
     case "allow":
       if (w.role === "$target") return "admit — set the requested role";
@@ -573,7 +729,7 @@ export function diffIR(prev: RuleIR, next: RuleIR): RouteDiff[] {
         changes.push(`when: − ${conditionToEnglish(c, prev.purpose)}`);
     if (JSON.stringify(a.then) !== JSON.stringify(b.then))
       changes.push(
-        `then: ${effectToEnglish(a.then)} → ${effectToEnglish(b.then)}`,
+        `then: ${effectToEnglish(a.then, next.purpose)} → ${effectToEnglish(b.then, next.purpose)}`,
       );
     diffs.push({
       name,
@@ -592,7 +748,7 @@ export function irToEnglish(ir: RuleIR): EnglishLine[] {
     const when = route.when.all
       .map((c) => conditionToEnglish(c, ir.purpose))
       .join(" and ");
-    const then = effectToEnglish(route.then);
+    const then = effectToEnglish(route.then, ir.purpose);
     const text = catchAll
       ? `Otherwise, ${then}.`
       : `${lead} ${when}, then ${then}.`;

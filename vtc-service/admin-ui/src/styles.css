@@ -2602,6 +2602,13 @@ dd .copy-icon-btn {
 .rule-arg {
   max-width: 160px;
 }
+/* Why the condition cannot be added yet — an argument the daemon would compare
+   against nothing. Sits on the row it belongs to, not in a dialog. */
+.rule-arg-problem {
+  flex: 1 1 100%;
+  color: var(--danger);
+  font-size: var(--text-xs);
+}
 .rule-add-cond button,
 .rule-add-route {
   font-family: var(--font-mono);

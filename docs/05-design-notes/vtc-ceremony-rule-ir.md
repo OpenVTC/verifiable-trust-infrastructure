@@ -98,6 +98,31 @@ host resolved that in *Verify*. Each row gives the IR leaf, its argument, and th
 **Unlike join, role-change MAY grant `admin`** — it is the sanctioned promotion path, gated by `step_up_done`
 (or M-of-N). No-last-admin on demotion stays host-enforced.
 
+### 2.6 Vetter eligibility (no evidence: a member record)
+
+The only purpose whose policy decides about a member rather than about somebody's request. The automatic
+vetter-grant sweep evaluates it once per active member, so its `input` is an `EligibilityFacts` document
+(`vtc-service/src/vetting/auto_grant.rs`) with no `actor`, `subject`, `state` or `evidence` at all — **the shared
+conditions in §2.1 do not apply**, and the console does not offer them here.
+
+| IR leaf | Arg | Compiles to |
+|---|---|---|
+| `always` | — | *(shared)* |
+| `member_active` | — | `input.status == "active"` |
+| `not_under_review` | — | `input.underReview == false` |
+| `under_review` | — | `input.underReview == true` |
+| `admitted_via` | `genesis` \| `vetting` \| `invitation` \| `open` | `input.admittedVia == "<how>"` |
+| `tenure_at_least` | int (days) | `input.tenureDays >= <n>` |
+| `vetting_depth_at_most` | int (hops) | `vetting_depth_within(<n>)` *(helper)* |
+| `holds_role` | role str | `member_holds_role("<role>")` *(helper)* |
+
+`vetting_depth_within` tests `is_number(input.depth)` first: `depth` is null when the community cannot tell how
+far a member stands from a founding one, and an unknown depth must not read as a shallow one.
+
+Only `allow` (name them a vetter) and `deny` (withdraw a grant the sweep itself issued) are acted on — any other
+effect is logged as undecided and changes nothing — so this purpose offers those two alone, neither carrying a
+`with` payload.
+
 Adding a purpose = adding a vocabulary block here + an effect handler (§5 of the pipeline doc). The compiler and
 combinator logic are unchanged.
 

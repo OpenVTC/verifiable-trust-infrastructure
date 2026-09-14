@@ -399,7 +399,9 @@ key revoked later does not revoke the grant — revoke it with
 - **Vetting → Registry preview** shows the listing as applicants see it, with
   the same filters.
 - **Vetting → Automatic grants** sets the sweep, shows the last one, and links
-  to the `vetterEligibility` policy under **Ceremonies → Other policies**.
+  to the `vetterEligibility` policy under **Ceremonies → Other policies**, where
+  it can be authored as ordered rules — active, under review, how they were
+  admitted, tenure, vetting depth, roles held — rather than written as Rego.
 - **Vetting → Withdrawals** lists withdrawal notices with their review state,
   linking to the join requests and members they touch.
 - **Vetting → Requirements** shows each criterion's vetting requirements and

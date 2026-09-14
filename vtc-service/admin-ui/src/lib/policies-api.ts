@@ -55,6 +55,21 @@ const PURPOSE_ORDER: Record<Purpose, true> = {
 
 export const ALL_PURPOSES = Object.keys(PURPOSE_ORDER) as Purpose[];
 
+/**
+ * The Rego package a purpose's policy must be compiled into — this console's
+ * mirror of `PolicyPurpose::expected_package`, which the daemon checks at
+ * upload *and* at activation, because a module in the wrong package compiles
+ * cleanly and then silently denies every request for that purpose.
+ *
+ * Every shipped policy in `vtc-service/policies/default/` is the snake_case of
+ * its camelCase purpose, so that is the rule rather than a list of exceptions:
+ * `roleChange` → `vtc.role_change`, `vetterEligibility` →
+ * `vtc.vetter_eligibility`.
+ */
+export function pkgFor(purpose: Purpose): string {
+  return `vtc.${purpose.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)}`;
+}
+
 /// Purposes that are first-class ceremonies (have a flow + simulator).
 export const CEREMONY_PURPOSES: Purpose[] = [
   "directory",

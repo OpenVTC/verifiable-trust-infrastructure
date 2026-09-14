@@ -28,12 +28,14 @@ import {
   activatePolicy,
   fetchActivePolicy,
   fetchPolicies,
+  pkgFor,
   uploadPolicy,
 } from "@/lib/policies-api";
 import {
   type ExplainFacts,
   type RuleIR,
   blankIR,
+  canAuthorVisually,
   diffIR,
   explainDecision,
   irToEnglish,
@@ -552,10 +554,6 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
 // ---------------------------------------------------------------------------
 
 /** Rego package for a ceremony purpose (role-change → role_change). */
-function pkgFor(purpose: Purpose): string {
-  return `vtc.${purpose === "roleChange" ? "role_change" : purpose}`;
-}
-
 // Active policy source — a plain-English summary when it was authored
 // visually (carries the IR header), with a toggle to the raw Rego. A
 // hand-written policy shows only the Rego.
@@ -662,7 +660,10 @@ function PolicyManager({
   // Activeness is no longer a flag on the module: the active binding
   // comes from its own query (policy/active).
   const active = activeQuery.data ?? null;
-  const canAuthor = CEREMONY_PURPOSES.includes(purpose);
+  // Authoring needs a condition vocabulary for the facts this policy decides
+  // on, which is not the same thing as being a ceremony: `vetterEligibility`
+  // has one and no ceremony, and `rooms` is the other way round.
+  const canAuthor = canAuthorVisually(purpose);
 
   if (editing) {
     return (
@@ -935,7 +936,7 @@ function UploadPolicyForm({
         rows={10}
         spellCheck={false}
         className="cer-rego-input"
-        placeholder={`package vtc.${purpose}\n\nimport rego.v1\n\ndefault decision := {"effect": "deny", "with": {"code": "no-matching-route"}}`}
+        placeholder={`package ${pkgFor(purpose)}\n\nimport rego.v1\n\ndefault decision := {"effect": "deny", "with": {"code": "no-matching-route"}}`}
         value={source}
         onChange={(e) => setSource(e.target.value)}
       />
