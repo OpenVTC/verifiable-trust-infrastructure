@@ -337,6 +337,14 @@ PCR0 only if supplying `--expect-digest` or explicitly opting out with
 `--no-verify-digest` (which warns). PCR8 is an optional additional pin,
 not a standalone image anchor.
 
+Get both hashes right the first time. The carve-out closes server-side
+*before* the bundle is returned, so a pin that only fails at comparison time
+fails after this VTA's one and only bootstrap has been spent — there is no
+second attempt, and `PcrMismatch` is then a permanent condition rather than a
+retryable one. `pnm` checks both pins for well-formedness before it sends
+anything, which catches a truncated or mistyped hash; it cannot catch a
+well-formed hash from the wrong build.
+
 Set `VTA_DID` to the deployed VTA's DID and `EXPECTED_PCR0` to the trusted
 build's full 96-character hex measurement. The DID must already resolve:
 bootstrap verifies the WebVH log locally and uses its advertised REST URL,

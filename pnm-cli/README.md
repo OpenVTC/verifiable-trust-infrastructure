@@ -104,10 +104,27 @@ log verification for `did:webvh`); bootstrap uses the advertised REST
 endpoint, including its port and path, and rejects a credential for a
 different VTA DID.
 
+Resolution here is **local only**: unlike every other PNM command, bootstrap
+ignores `PNM_RESOLVER_URL` / `[resolver_url]`. The resolved document chooses
+the endpoint that mints a super-admin credential, against a carve-out that
+can only be spent once, so that choice is not delegated to a remote resolver.
+A reachable resolver sidecar therefore does not make `--vta-did` work in a
+restricted-egress deployment — use `--vta-url` there.
+
 If the DID is not yet resolvable, explicitly replace `--vta-did "$VTA_DID"`
 with `--vta-url https://enclave.example.com`. Exactly one target is required;
 the URL fallback does not pin the VTA identity. Resolution failure never
-silently falls back to a URL guessed from the DID.
+silently falls back to a URL guessed from the DID. If the DID *does* resolve
+but advertises an endpoint the client refuses to call (a private or
+link-local address, cloud metadata, a non-HTTP scheme), that is an endpoint
+guard rejection, not a resolution failure — the remedy is
+`--allow-private-endpoints` / `VTA_ALLOW_PRIVATE_ENDPOINTS` where the address
+is legitimately private, not `--vta-url`, which skips the guard entirely.
+
+Both `--expect-pcr0` and `--expect-pcr8` are checked for well-formedness
+before anything is sent, because the VTA closes its first-boot carve-out
+before it hands back the bundle: a typo caught after the request would leave
+that VTA with no remaining bootstrap.
 
 PCR0 anchors online connect without a digest flag or TOFU warning, since
 the digest is generated during that call. `--expect-digest` remains an
