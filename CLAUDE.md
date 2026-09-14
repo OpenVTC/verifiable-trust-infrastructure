@@ -365,7 +365,16 @@ Invariants (do not relax):
   new variants are **additive**. Never reshape an existing variant — you
   break every existing opener. Add a new variant and let consumers migrate.
 - Digest pinning is mandatory at the CLI (`--expect-digest`). `--no-verify-digest`
-  exists only as an explicit opt-out with a warning.
+  exists only as an explicit opt-out with a warning. **One exception, and it is
+  not a loophole**: `pnm bootstrap connect` mints its bundle *during* the call,
+  so no out-of-band digest can exist beforehand and the rule was in practice
+  forcing every operator onto `--no-verify-digest`. There, `--expect-pcr0` is an
+  accepted anchor instead — a pre-computable pin on the enclave image,
+  enforced by `check_pcrs` against the attestation quote, which already binds
+  `SHA256(client_ed25519 || bundle_id || producer_ed25519)`. Every other path
+  (offline `bootstrap open`, provision flows) still requires a digest or the
+  warning-bearing opt-out. An anchor is only substitutable when the substitute
+  is checked; do not read this as permission to drop one.
 - `DID_SIGNED_DOMAIN_TAG = b"vta-sealed-transfer/v1\0"` prefixes the bytes
   that Ed25519 signs. Don't reuse this tag elsewhere.
 
@@ -483,12 +492,26 @@ new flow, update both this section and the relevant `docs/*.md`.
 
 ### TEE Mode B bootstrap (attested first-boot)
 - **What**: One-command admin provisioning against a fresh Nitro-Enclave VTA.
-- **Entry point**: `pnm bootstrap connect --vta-url <url>`.
+- **Entry point**: `pnm bootstrap connect --vta-did <did> --expect-pcr0 <hex>`.
+  `--vta-did` and `--vta-url` are mutually exclusive and exactly one is
+  required. The DID is resolved **locally** (SCID + signed log verified on the
+  operator's machine, deliberately ignoring `PNM_RESOLVER_URL`), and bootstrap
+  uses the `VTARest` endpoint that document advertises — never a URL guessed
+  from the DID's host, and never a fallback on resolution failure. `--vta-url`
+  is the explicit alternative when the log is not yet resolvable; it gives up
+  identity pinning.
 - **Transport**: REST `POST /bootstrap/request` (unauth, rate-limited).
 - **Trust anchor**: Nitro attestation quote committing to the client's
   Ed25519 pubkey + bundle_id + producer's Ed25519 pubkey via SHA-256.
+  `--expect-pcr0` pins the enclave image on top of it and is the anchor this
+  path requires (see the sealed-transfer exception above); `--expect-pcr8` is
+  an additional pin, never an anchor on its own — it measures the signing
+  certificate, not the image.
 - **Carve-out**: Single-use. `BOOTSTRAP_CARVEOUT_CLOSED_KEY` flips on
-  first success; subsequent calls return 410.
+  first success; subsequent calls return 410. It closes server-side **before
+  the bundle is returned**, so every client-side pin must be syntax-checked
+  before the POST — a malformed `--expect-pcr0/8` caught at `check_pcrs` is
+  caught after the VTA's one and only first boot has been spent.
 - **Code**: `vta-service/src/routes/bootstrap.rs`, `vta-tee/src/`.
 - **Docs**: `sealed-bootstrap.md`, `docs/02-vta/tee-architecture.md`.
 

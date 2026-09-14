@@ -8,8 +8,9 @@
 //! the online TEE attest/connect flow, and the authed REST bridge for
 //! `provision-integration`.
 //!
-//! `--expect-digest <hex>` is required by default. `--no-verify-digest` is
-//! available but prints a warning — there is no silent TOFU.
+//! Offline opening requires `--expect-digest` or an explicit warning-bearing
+//! `--no-verify-digest`. Online connect also accepts `--expect-pcr0` as its
+//! anchor: the fresh server-generated digest cannot be known before the call.
 
 use std::fs;
 use std::io::Write;
@@ -165,8 +166,12 @@ pub async fn run_open(
                 println!("Nothing was written. To install this credential either:");
                 println!("  - re-open with --out <path> for a file-based consumer, or");
                 println!(
-                    "  - use the online flow: pnm bootstrap connect --vta-url <url> \
-                     [--expect-digest <sha256>] [--expect-pcr0 <hex>] [--expect-pcr8 <hex>]"
+                    "  - use the online flow: pnm bootstrap connect --vta-did <did> \
+                     --expect-pcr0 <hex> [--expect-pcr8 <hex>]"
+                );
+                println!(
+                    "    (--vta-url <url> is the fallback when the DID log is not yet \
+                     resolvable; it does not pin the VTA's identity)"
                 );
             }
         }
@@ -333,7 +338,128 @@ struct BootstrapResponseWire {
     digest: String,
 }
 
-/// `pnm bootstrap connect --vta-url <URL> [--expect-digest <HEX>]
+/// Resolve without the session helper's URL-guessing fallback. Bootstrap must
+/// fail closed on an invalid WebVH log, not silently trust the DID's DNS host.
+/// Use a local resolver so SCID/log verification happens on the operator's
+/// machine rather than trusting a remote resolver's returned document.
+async fn resolve_connect_url(
+    vta_did: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) -> Result<String, Box<dyn std::error::Error>> {
+    resolve_connect_url_with_policy(
+        vta_did,
+        resolver,
+        vta_sdk::http::EndpointPolicy::process_default(),
+    )
+    .await
+}
+
+/// Deliberately ignores `PNM_RESOLVER_URL` / `[resolver_url]`, which every
+/// other `DIDCacheClient` in PNM honours (see `main.rs`). The document
+/// resolved here selects the endpoint that mints a super-admin credential,
+/// and the VTA's first-boot carve-out is single-use — a remote resolver
+/// returning a document of its choosing would pick that endpoint on the
+/// operator's behalf, once, irreversibly. Local mode verifies the SCID and
+/// the signed log chain on this machine instead. The resolution error names
+/// the exception, because an operator whose egress only reaches a resolver
+/// sidecar would otherwise be told to wait for a DID log that is already
+/// published.
+async fn resolve_connect_url_with_policy(
+    vta_did: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    policy: vta_sdk::http::EndpointPolicy,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let url = async {
+        let resolved = resolver.resolve(vta_did).await?;
+        let doc = serde_json::to_value(&resolved.doc)?;
+        if doc["id"].as_str() != Some(vta_did) {
+            return Err("resolved DID document does not match requested VTA DID".into());
+        }
+        vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(&doc)
+            .rest
+            .ok_or_else(|| "VTA DID document does not advertise a REST endpoint".into())
+    }
+    .await
+    .map_err(|e: Box<dyn std::error::Error>| {
+        format!(
+            "Could not resolve bootstrap endpoint for VTA DID {vta_did}: {e}. \
+             Resolution is always local here — a configured PNM_RESOLVER_URL / \
+             [resolver_url] is not used for bootstrap, so a reachable resolver \
+             sidecar does not satisfy this. Retry once its DID log is published \
+             and reachable from this machine, or explicitly use --vta-url <URL> \
+             instead of --vta-did (without DID identity pinning)."
+        )
+    })?;
+    // An authentic DID document can still advertise an unsafe destination. The
+    // guard's own message carries the remedy (`--allow-private-endpoints` /
+    // `VTA_ALLOW_PRIVATE_ENDPOINTS`); do NOT append a `--vta-url` suggestion
+    // to it. That flag is not guarded, so offering it as the fix for a guard
+    // failure teaches operators to route around the control instead of making
+    // a decision about it.
+    vta_sdk::http::guard_vta_endpoint(&url, policy).map_err(|e| {
+        format!("VTA DID {vta_did} advertises a REST endpoint that is not safe to call: {e}")
+    })?;
+    Ok(url.trim_end_matches('/').to_string())
+}
+
+fn check_connect_vta_did(
+    expected: Option<&str>,
+    actual: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(expected) = expected
+        && expected != actual
+    {
+        return Err(format!(
+            "bootstrap credential VTA DID {actual} does not match requested VTA DID {expected}; \
+             refusing to install credentials"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The online digest is generated during connect; a pre-computable PCR0 pin
+/// also satisfies its anchor requirement. PCR8 alone is not an image pin.
+///
+/// Every pin is syntax-checked here, before any network I/O, because
+/// `/bootstrap/request` closes `BOOTSTRAP_CARVEOUT_CLOSED_KEY` server-side
+/// *before* it returns the bundle (`routes/bootstrap.rs`). A pin that is only
+/// rejected later, at `VerifiedAttestation::check_pcrs`, is rejected after
+/// the VTA's one-shot first boot has already been spent — so a typo in
+/// `--expect-pcr8` would leave the operator with no way to bootstrap that VTA
+/// at all. Malformed in, nothing sent.
+fn validate_connect_anchor(
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
+    expect_pcr0: Option<&str>,
+    expect_pcr8: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(pcr0) = expect_pcr0 {
+        vta_sdk::attestation::validate_expected_pcr(0, pcr0)?;
+    }
+    if let Some(pcr8) = expect_pcr8 {
+        vta_sdk::attestation::validate_expected_pcr(8, pcr8)?;
+    }
+    if expect_digest.is_some() || no_verify_digest {
+        // Preserve the shared conflict error and explicit opt-out warning.
+        return vta_cli_common::sealed_consumer::validate_digest_flags(
+            expect_digest,
+            no_verify_digest,
+        );
+    }
+    if expect_pcr0.is_some() {
+        return Ok(());
+    }
+    Err(
+        "connect requires --expect-pcr0 <hex>, --expect-digest <hex>, or \
+         --no-verify-digest (explicit opt-out with a warning). The connect digest is \
+         generated server-side during this call and cannot be pre-shared; pin \
+         --expect-pcr0 to the expected enclave image measurement."
+            .into(),
+    )
+}
+
+/// `pnm bootstrap connect --vta-did <DID> [--expect-digest <HEX>]
 ///   [--expect-pcr0 <HEX>] [--expect-pcr8 <HEX>]`
 ///
 /// Online TEE first-boot bootstrap. Generates an ephemeral Ed25519 keypair,
@@ -347,7 +473,8 @@ struct BootstrapResponseWire {
 /// `vta acl create` + auto-rotate on first authenticated connect).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_connect(
-    vta_url: String,
+    vta_did: Option<String>,
+    vta_url: Option<String>,
     expect_digest: Option<String>,
     no_verify_digest: bool,
     expect_pcr0: Option<String>,
@@ -355,12 +482,24 @@ pub async fn run_connect(
     vta_slug: Option<String>,
     pnm_config: &mut crate::config::PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Digest pinning is mandatory at the CLI; --no-verify-digest is the only
-    // explicit opt-out and prints a warning. There is no silent TOFU.
-    vta_cli_common::sealed_consumer::validate_digest_flags(
+    validate_connect_anchor(
         expect_digest.as_deref(),
         no_verify_digest,
+        expect_pcr0.as_deref(),
+        expect_pcr8.as_deref(),
     )?;
+
+    let vta_url = match (vta_did.as_deref(), vta_url) {
+        (Some(did), None) => {
+            let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+                vta_sdk::resolver::build_did_cache_config(None),
+            )
+            .await?;
+            resolve_connect_url(did, &resolver).await?
+        }
+        (None, Some(url)) => url,
+        _ => return Err("provide exactly one of --vta-did or --vta-url".into()),
+    };
 
     let (ed_seed, ed_pub) = generate_ed25519_keypair();
     let nonce: [u8; 16] = rand::random();
@@ -464,6 +603,8 @@ pub async fn run_connect(
             .into());
         }
     };
+
+    check_connect_vta_did(vta_did.as_deref(), &credential.vta_did)?;
 
     let slug = vta_slug.unwrap_or_else(|| default_slug(&credential.vta_did));
     pnm_config.vtas.insert(
@@ -718,6 +859,261 @@ fn default_slug(vta_did: &str) -> String {
 mod tests {
     use super::parse_var;
     use serde_json::Value;
+
+    const VTA_DID: &str =
+        "did:webvh:Qmd1FCL9Vj2vJ433UDfC9MBstK6W6QWSQvYyeNn8va2fai:identity.example.com";
+
+    async fn fixture_resolver(doc: Value) -> affinidi_did_resolver_cache_sdk::DIDCacheClient {
+        let mut resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            vta_sdk::resolver::build_did_cache_config(None),
+        )
+        .await
+        .unwrap();
+        // These fixtures exercise endpoint selection, not log verification.
+        resolver
+            .add_did_document(VTA_DID, serde_json::from_value(doc).unwrap())
+            .await;
+        resolver
+    }
+
+    #[tokio::test]
+    async fn connect_resolves_advertised_rest_host_port_and_path() {
+        let resolver = fixture_resolver(serde_json::json!({
+            "id": VTA_DID,
+            "service": [
+                {"id": format!("{VTA_DID}#tsp"), "type": "TSPTransport", "serviceEndpoint": "did:example:mediator"},
+                {"id": format!("{VTA_DID}#custom-rest"), "type": "VTARest", "serviceEndpoint": "https://api.example.com:8443/vta/"}
+            ]
+        })).await;
+        assert_eq!(
+            super::resolve_connect_url(VTA_DID, &resolver)
+                .await
+                .unwrap(),
+            "https://api.example.com:8443/vta"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_guards_did_advertised_rest_endpoints() {
+        use vta_sdk::http::EndpointPolicy;
+
+        for (url, public_allowed, private_allowed) in [
+            ("https://api.example.com:8443/vta/", true, true),
+            ("http://localhost:8100/vta/", true, true),
+            ("http://127.0.0.1:8100/", true, true),
+            ("http://[::1]:8100/", true, true),
+            ("http://api.example.com/", false, false),
+            ("http://10.0.0.5/", false, false),
+            ("https://169.254.169.254/latest/meta-data/", false, false),
+            ("https://[fe80::1]/", false, false),
+            ("https://[fd00:ec2::254]/", false, false),
+            ("https://metadata.google.internal/", false, false),
+            (
+                "https://operator:fixture-secret@api.example.com/",
+                false,
+                false,
+            ),
+            ("https://[::ffff:10.0.0.5]/", false, false),
+            ("https://[::ffff:169.254.169.254]/", false, false),
+            ("https://0.0.0.0/", false, false),
+            ("https://192.0.2.1/", false, false),
+            ("https://10.0.0.5:8443/vta/", false, true),
+            ("https://192.168.1.10/", false, true),
+            ("https://[fd00::1]/", false, true),
+            ("https://100.64.0.1/", false, true),
+            ("https://vta.internal/", false, true),
+            ("file:///tmp/vta", false, false),
+        ] {
+            let resolver = fixture_resolver(serde_json::json!({
+                "id": VTA_DID,
+                "service": [{
+                    "id": format!("{VTA_DID}#custom-rest"),
+                    "type": "VTARest",
+                    "serviceEndpoint": url,
+                }],
+            }))
+            .await;
+            for (policy, allowed) in [
+                (EndpointPolicy::public_only(), public_allowed),
+                (EndpointPolicy::private_allowed(), private_allowed),
+            ] {
+                let result =
+                    super::resolve_connect_url_with_policy(VTA_DID, &resolver, policy).await;
+                if allowed {
+                    assert_eq!(result.unwrap(), url.trim_end_matches('/'));
+                } else {
+                    let error = result
+                        .expect_err("unsafe DID endpoint must not fall back to its host")
+                        .to_string();
+                    assert!(error.contains(VTA_DID), "{error}");
+                    assert!(!error.contains("fixture-secret"), "{error}");
+                    // A guard rejection must not advertise --vta-url as its
+                    // remedy: that flag skips this guard entirely, so
+                    // suggesting it here would teach operators to route
+                    // around the control rather than decide about it.
+                    assert!(!error.contains("--vta-url"), "{error}");
+                    if private_allowed {
+                        assert!(error.contains("VTA_ALLOW_PRIVATE_ENDPOINTS"), "{error}");
+                        assert!(error.contains("--allow-private-endpoints"), "{error}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_refuses_missing_rest_or_wrong_document_instead_of_guessing_url() {
+        for doc in [
+            serde_json::json!({"id": VTA_DID}),
+            serde_json::json!({"id": "did:web:other.example.com", "service": [
+                {"id": "did:web:other.example.com#rest", "type": "VTARest", "serviceEndpoint": "https://api.example.com"}
+            ]}),
+        ] {
+            let resolver = fixture_resolver(doc).await;
+            let error = super::resolve_connect_url(VTA_DID, &resolver)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(VTA_DID));
+            // Bootstrap resolution is local-only by design; say so, or an
+            // operator whose egress reaches only a resolver sidecar reads
+            // this as "the DID log is not published yet".
+            assert!(error.contains("PNM_RESOLVER_URL"), "{error}");
+            assert!(error.contains("--vta-url"));
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_resolution_failure_names_did_and_explicit_fallback() {
+        let resolver = fixture_resolver(serde_json::json!({"id": VTA_DID})).await;
+        let did = "did:unsupported:bootstrap-target";
+        let error = super::resolve_connect_url(did, &resolver)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(did));
+        assert!(error.contains("--vta-url"));
+    }
+
+    #[test]
+    fn connect_pins_credential_identity_but_preserves_url_fallback() {
+        assert!(super::check_connect_vta_did(Some(VTA_DID), VTA_DID).is_ok());
+        assert!(super::check_connect_vta_did(None, VTA_DID).is_ok());
+        assert!(super::check_connect_vta_did(Some(VTA_DID), "did:web:other.example.com").is_err());
+    }
+
+    #[test]
+    fn connect_anchor_flag_matrix() {
+        let valid = "ab12".repeat(24);
+        for digest in [None, Some("digest")] {
+            for opt_out in [false, true] {
+                for pcr0 in [None, Some(valid.as_str())] {
+                    // PCR8 is an additional pin, never an anchor on its own:
+                    // it measures the signing certificate, not the image.
+                    for pcr8 in [None, Some(valid.as_str())] {
+                        let expected = !(digest.is_some() && opt_out)
+                            && (digest.is_some() || opt_out || pcr0.is_some());
+                        assert_eq!(
+                            super::validate_connect_anchor(digest, opt_out, pcr0, pcr8).is_ok(),
+                            expected,
+                            "digest={digest:?}, opt_out={opt_out}, pcr0={pcr0:?}, pcr8={pcr8:?}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn connect_accepts_valid_normalized_pcr0_as_sole_anchor() {
+        let pcr0 = "ab12".repeat(24);
+        for value in [
+            pcr0.clone(),
+            pcr0.to_uppercase(),
+            format!("0x{pcr0}"),
+            format!(" \t0X{}\n ", "AB12 \t".repeat(24)),
+        ] {
+            super::validate_connect_anchor(None, false, Some(&value), None).unwrap();
+            super::validate_connect_anchor(None, false, Some(&value), Some(&value)).unwrap();
+        }
+    }
+
+    /// Both pins, not just PCR0. `/bootstrap/request` closes the first-boot
+    /// carve-out server-side before it returns the bundle, so a pin rejected
+    /// only at `check_pcrs` — after the POST — is rejected once the VTA's
+    /// one-shot bootstrap has already been spent. A typo'd `--expect-pcr8`
+    /// must therefore fail here, with nothing sent.
+    #[tokio::test]
+    async fn connect_rejects_malformed_pcrs_before_resolving_or_posting() {
+        let valid = "ab12".repeat(24);
+        for value in [
+            "".to_string(),
+            " ".to_string(),
+            "0x".to_string(),
+            " \t0X\n".to_string(),
+            "abcd".to_string(),
+            "a".repeat(95),
+            "a".repeat(97),
+            format!("{}g", "a".repeat(95)),
+        ] {
+            // `which` names the malformed pin; the other is well-formed, so a
+            // failure can only come from the one under test.
+            for (which, pcr0, pcr8) in [
+                (0u8, Some(value.clone()), None),
+                (0, Some(value.clone()), Some(valid.clone())),
+                (8, Some(valid.clone()), Some(value.clone())),
+                // A malformed PCR8 alongside another valid anchor still fails:
+                // the pin is checked, not merely consulted when it is load-bearing.
+                (8, None, Some(value.clone())),
+            ] {
+                for (digest, opt_out) in [(None, false), (Some("digest"), false), (None, true)] {
+                    for by_did in [true, false] {
+                        let mut config = crate::config::PnmConfig::default();
+                        // Invalid targets fail differently if preflight is skipped.
+                        // Neither target can contact an external service in a regression.
+                        let error = super::run_connect(
+                            by_did.then(|| "did:unsupported:bootstrap-target".into()),
+                            (!by_did).then(|| "not-a-url".into()),
+                            digest.map(str::to_string),
+                            opt_out,
+                            pcr0.clone(),
+                            pcr8.clone(),
+                            None,
+                            &mut config,
+                        )
+                        .await
+                        .unwrap_err();
+                        assert!(
+                            matches!(
+                                error.downcast_ref::<vta_sdk::attestation::ConfigAttestationVerifyError>(),
+                                Some(vta_sdk::attestation::ConfigAttestationVerifyError::InvalidExpectedPcr { which: actual, .. })
+                                    if *actual == which
+                            ),
+                            "which={which}, value={value:?}, error={error}"
+                        );
+                        assert!(config.vtas.is_empty());
+                        assert!(config.default_vta.is_none());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn connect_missing_anchor_explains_all_routes() {
+        // PCR8 alone leaves the image unpinned, so it must land on the same
+        // error rather than reading as a satisfied anchor.
+        for pcr8 in [None, Some("ab12".repeat(24))] {
+            let error = super::validate_connect_anchor(None, false, None, pcr8.as_deref())
+                .unwrap_err()
+                .to_string();
+            for route in ["--expect-pcr0", "--expect-digest", "--no-verify-digest"] {
+                assert!(error.contains(route), "{error}");
+            }
+            assert!(error.contains("generated server-side"), "{error}");
+        }
+        assert!(vta_cli_common::sealed_consumer::validate_digest_flags(None, false).is_err());
+    }
 
     #[test]
     fn parse_var_plain_string() {
