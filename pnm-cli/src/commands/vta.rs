@@ -7,6 +7,7 @@
 
 use vta_sdk::client::VtaClient;
 
+use vta_cli_common::commands::contexts;
 use vta_cli_common::render::{GREEN, RED, RESET};
 
 use crate::auth;
@@ -61,11 +62,37 @@ pub(crate) async fn run_offline(
             println!("Default VTA set to '{slug}'.");
             true
         }
-        VtaCommands::Remove { slug } => {
-            if !pnm_config.vtas.contains_key(slug) {
+        VtaCommands::Remove { slug, force } => {
+            let Some(vta) = pnm_config.vtas.get(slug) else {
                 eprintln!("Error: VTA '{slug}' not found.");
                 std::process::exit(1);
+            };
+
+            // Removal drops the stored connection *and* the cached
+            // credential — it is not recoverable from the config file,
+            // so show what goes and ask before doing it.
+            if !force {
+                println!("About to remove VTA '{slug}':");
+                println!("  Name: {}", vta.name);
+                if let Some(ref did) = vta.vta_did {
+                    println!("  DID:  {did}");
+                }
+                println!("  The stored credential for this VTA will be deleted.");
+                if pnm_config.default_vta.as_deref() == Some(slug.as_str()) {
+                    println!("  This is the default VTA — the default will move.");
+                }
+                println!();
+                let proceed = contexts::confirm_destructive("Proceed with removal?")
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error reading confirmation: {e}");
+                        std::process::exit(1);
+                    });
+                if !proceed {
+                    println!("Aborted.");
+                    return true;
+                }
             }
+
             pnm_config.vtas.remove(slug);
             // Clear default if it was the removed VTA
             if pnm_config.default_vta.as_deref() == Some(slug.as_str()) {
