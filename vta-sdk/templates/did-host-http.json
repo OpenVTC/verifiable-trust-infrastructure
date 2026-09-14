@@ -2,9 +2,14 @@
   "schemaVersion": 1,
   "name": "did-host-http",
   "kind": "did-host-http",
-  "description": "DID-hosting node whose DID advertises an HTTP resolution endpoint (WebVHHosting) only — no DIDComm. Use this for a node whose only role is hosting DID logs for self-managed DIDs. If the node also needs to accept DIDComm (admin RPC, witness coordination, control-plane traffic), use 'did-host-http-didcomm' instead.",
-  "methods": ["webvh", "web"],
-  "requiredVars": ["URL"],
+  "description": "DID-hosting node whose DID advertises an HTTP resolution endpoint (WebVHHosting) only \u2014 no DIDComm. Use this for a node whose only role is hosting DID logs for self-managed DIDs. If the node also needs to accept DIDComm (admin RPC, witness coordination, control-plane traffic), use 'did-host-http-didcomm' instead. Advertises `TrustTaskHTTPS` at `{URL}/api`: the control plane nests its whole API under `/api` off the origin root (did-hosting-control `routes/mod.rs`), so that is the Trust-Task base and `<base>/trust-tasks` is the endpoint (HTTPS binding 0.2 \u00a76). `WebVHHosting` is NOT that endpoint \u2014 it says where DID documents are served, which is a different claim, and a consumer that posts Trust Tasks to it is posting to an endpoint that never agreed to accept them. A deployment that serves the control plane on a different origin from the hosting URL must edit this entry.",
+  "methods": [
+    "webvh",
+    "web"
+  ],
+  "requiredVars": [
+    "URL"
+  ],
   "optionalVars": {
     "WEBVH_SERVER": null
   },
@@ -33,9 +38,15 @@
         "publicKeyMultibase": "{KA_KEY_MB}"
       }
     ],
-    "assertionMethod": ["{DID}#key-0"],
-    "authentication": ["{DID}#key-0"],
-    "keyAgreement": ["{DID}#key-1"],
+    "assertionMethod": [
+      "{DID}#key-0"
+    ],
+    "authentication": [
+      "{DID}#key-0"
+    ],
+    "keyAgreement": [
+      "{DID}#key-1"
+    ],
     "service": [
       {
         "id": "{DID}#webvh-hosting",
@@ -43,6 +54,11 @@
         "serviceEndpoint": {
           "uri": "{URL}"
         }
+      },
+      {
+        "id": "{DID}#trust-tasks",
+        "type": "TrustTaskHTTPS",
+        "serviceEndpoint": "{URL}/api"
       }
     ]
   }
