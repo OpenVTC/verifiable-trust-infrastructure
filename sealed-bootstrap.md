@@ -275,7 +275,8 @@ The `Bootstrap` role exists only inside the single `POST /bootstrap/request` tra
 ### Online (Modes A + B, identical command)
 
 ```
-pnm-cli bootstrap connect --vta-url https://vta.example.com [--token ABCD-...] [--expect-digest <hex>]
+pnm-cli bootstrap connect --vta-did <did> --expect-pcr0 <hex> [--token ABCD-...]
+pnm-cli bootstrap connect --vta-url https://vta.example.com --expect-pcr0 <hex>   # DID not yet resolvable
 cnm-cli bootstrap connect ...                              # mirrors pnm-cli
 openvtc-cli2                                               # setup wizard → same flow under the hood
 ```
