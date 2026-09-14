@@ -244,11 +244,19 @@ const NITRO_PCR_HEX_LEN: usize = 96;
 ///
 /// This is what makes `expected_pcr0: &str` (rather than `Option<&str>`) mean
 /// what it says. Without it an empty string is a *valid pin that matches a debug
-/// enclave*, because [`pcr_hex`] renders the all-zero PCRs of a debug-mode
+/// enclave*, because `pcr_hex` renders the all-zero PCRs of a debug-mode
 /// enclave as `""` — so `"" == ""` passes and the mandatory image gate is
 /// silently off. Anything that is not exactly 96 hex characters (after the same
 /// `0x`/whitespace/case normalization the comparison uses) fails closed here.
-fn validate_expected_pcr(which: u8, value: &str) -> Result<(), ConfigAttestationVerifyError> {
+///
+/// Call this before sending a request when a supplied pin is a required trust
+/// anchor. `which` identifies the PCR (e.g. 0 or 8) in the error. This checks
+/// syntax only; the verified quote must still be checked with
+/// [`VerifiedAttestation::check_pcrs`].
+///
+/// # Errors
+/// Returns [`ConfigAttestationVerifyError::InvalidExpectedPcr`] for a malformed pin.
+pub fn validate_expected_pcr(which: u8, value: &str) -> Result<(), ConfigAttestationVerifyError> {
     let normalized = normalize_pcr_hex(value);
     if normalized.len() == NITRO_PCR_HEX_LEN && normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(());
@@ -961,6 +969,49 @@ mod tests {
             module_id: "i-abc".into(),
             pcr0_hex: pcr0.into(),
             pcr8_hex: pcr8.into(),
+        }
+    }
+
+    #[test]
+    fn validate_expected_pcr_rejects_malformed_pins() {
+        for value in [
+            "".to_string(),
+            " \t\n".to_string(),
+            "0x".to_string(),
+            " 0X \t".to_string(),
+            "abcd".to_string(),
+            "a".repeat(95),
+            "a".repeat(97),
+            format!("{}g", "a".repeat(95)),
+        ] {
+            for which in [0, 8] {
+                let error = validate_expected_pcr(which, &value).unwrap_err();
+                assert!(
+                    matches!(
+                        error,
+                        ConfigAttestationVerifyError::InvalidExpectedPcr { which: actual, .. }
+                            if actual == which
+                    ),
+                    "value={value:?}, error={error:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validate_expected_pcr_accepts_normalization_used_by_comparison() {
+        let pcr = "ab12".repeat(24);
+        for value in [
+            pcr.clone(),
+            pcr.to_uppercase(),
+            format!("0x{pcr}"),
+            format!(" \t0X{}\n ", "AB12 \t".repeat(24)),
+        ] {
+            validate_expected_pcr(0, &value).unwrap();
+            validate_expected_pcr(8, &value).unwrap();
+            attest(&pcr, &pcr)
+                .check_pcrs(Some(&value), Some(&value))
+                .unwrap();
         }
     }
 

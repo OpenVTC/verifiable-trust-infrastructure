@@ -391,6 +391,12 @@ fn validate_connect_anchor(
     no_verify_digest: bool,
     expect_pcr0: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // A supplied but empty/malformed pin is not an image anchor. Validate
+    // before DID resolution or the single-use bootstrap POST, including when
+    // a digest or explicit opt-out is also supplied.
+    if let Some(pcr0) = expect_pcr0 {
+        vta_sdk::attestation::validate_expected_pcr(0, pcr0)?;
+    }
     if expect_digest.is_some() || no_verify_digest {
         // Preserve the shared conflict error and explicit opt-out warning.
         return vta_cli_common::sealed_consumer::validate_digest_flags(
@@ -885,9 +891,10 @@ mod tests {
 
     #[test]
     fn connect_anchor_flag_matrix() {
+        let valid_pcr0 = "ab12".repeat(24);
         for digest in [None, Some("digest")] {
             for opt_out in [false, true] {
-                for pcr0 in [None, Some("pcr0")] {
+                for pcr0 in [None, Some(valid_pcr0.as_str())] {
                     let expected = !(digest.is_some() && opt_out)
                         && (digest.is_some() || opt_out || pcr0.is_some());
                     assert_eq!(
@@ -895,6 +902,59 @@ mod tests {
                         expected,
                         "digest={digest:?}, opt_out={opt_out}, pcr0={pcr0:?}",
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn connect_accepts_valid_normalized_pcr0_as_sole_anchor() {
+        let pcr0 = "ab12".repeat(24);
+        for value in [
+            pcr0.clone(),
+            pcr0.to_uppercase(),
+            format!("0x{pcr0}"),
+            format!(" \t0X{}\n ", "AB12 \t".repeat(24)),
+        ] {
+            super::validate_connect_anchor(None, false, Some(&value)).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_malformed_pcr0_before_resolving_or_posting() {
+        for value in [
+            "".to_string(),
+            " ".to_string(),
+            "0x".to_string(),
+            " \t0X\n".to_string(),
+            "abcd".to_string(),
+            "a".repeat(95),
+            "a".repeat(97),
+            format!("{}g", "a".repeat(95)),
+        ] {
+            for (digest, opt_out) in [(None, false), (Some("digest"), false), (None, true)] {
+                for by_did in [true, false] {
+                    let mut config = crate::config::PnmConfig::default();
+                    // Invalid targets fail differently if preflight is skipped.
+                    // Neither target can contact an external service in a regression.
+                    let error = super::run_connect(
+                        by_did.then(|| "did:unsupported:bootstrap-target".into()),
+                        (!by_did).then(|| "not-a-url".into()),
+                        digest.map(str::to_string),
+                        opt_out,
+                        Some(value.clone()),
+                        None,
+                        None,
+                        &mut config,
+                    )
+                    .await
+                    .unwrap_err();
+                    assert!(matches!(
+                        error.downcast_ref::<vta_sdk::attestation::ConfigAttestationVerifyError>(),
+                        Some(vta_sdk::attestation::ConfigAttestationVerifyError::InvalidExpectedPcr { which: 0, .. })
+                    ), "value={value:?}, error={error}");
+                    assert!(config.vtas.is_empty());
+                    assert!(config.default_vta.is_none());
                 }
             }
         }
