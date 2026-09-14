@@ -90,14 +90,11 @@ dependencies = [
 
 [[package]]
 name = "affinidi-bbs"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7b538d0d00a984f3eff5c994553df5a0c8bb93b30305b964fd380d6d1e64554"
+checksum = "29053ce7b4c683dcdf0cfadb2adc3e062d21d95eeb887ba1a83cf41690af2d22"
 dependencies = [
  "bls12_381_plus",
- "elliptic-curve 0.13.8",
- "ff 0.13.1",
- "group 0.13.0",
  "hex",
  "rand 0.9.5",
  "sha2 0.10.9",
@@ -117,18 +114,18 @@ dependencies = [
 
 [[package]]
 name = "affinidi-crypto"
-version = "0.2.8"
+version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c5420ba310200f4caaa72efb95898a1202636ee40c3baeb6555be88a7dde423"
+checksum = "5b1ad69d57c11963b06e015366e0d628dad720123516bd2dc7bf6d4adc6bf2e9"
 dependencies = [
- "aes 0.8.4",
+ "aes 0.9.3",
  "affinidi-encoding",
  "base58",
  "base64 0.23.1",
- "cbc 0.1.2",
+ "cbc 0.2.1",
  "ed25519-dalek 3.0.0",
  "getrandom 0.2.17",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "k256 0.14.0",
  "multibase",
  "p256 0.14.0",
@@ -138,7 +135,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "subtle",
  "thiserror 2.0.20",
  "x25519-dalek 3.0.0",
@@ -147,9 +144,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-data-integrity"
-version = "0.7.10"
+version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "837d0913b02cccd98439abed758329bb568f5bea1edab9e719525a65ef80552b"
+checksum = "b8fb570864d6902ae4eab7e9fa440b7fd510950819058f8592a01cafc02276a5"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -160,12 +157,12 @@ dependencies = [
  "chrono",
  "ciborium",
  "ed25519-dalek 3.0.0",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "multibase",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "tracing",
  "zeroize",
@@ -285,23 +282,23 @@ dependencies = [
 
 [[package]]
 name = "affinidi-mdoc"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d69ac8bedce32dcf6798e480166e3601b73b0408e2d51ae40964d09de3457ebc"
+checksum = "f5f7477efe2234b653a5c44f3c204b84053d13296dae2b47c1da8d6ca8484ee2"
 dependencies = [
- "aes-gcm 0.10.3",
+ "aes-gcm 0.11.1",
  "ciborium",
  "ciborium-io",
  "coset 0.4.2",
  "hex",
- "hkdf 0.12.4",
- "hmac 0.12.1",
+ "hkdf 0.13.0",
+ "hmac 0.13.0",
  "p256 0.14.0",
  "rand 0.9.5",
  "serde",
  "serde_bytes",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "time",
  "tracing",
@@ -668,9 +665,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-secrets-resolver"
-version = "0.5.10"
+version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7a913e027583fb282b22370a35562221240ee4923d1d1b0900b84512bf2961c"
+checksum = "ff9c7363b25897b1b7080caab1ab36f95a833d84aca905b5b6d6e3a3a2b384bb"
 dependencies = [
  "affinidi-crypto",
  "affinidi-encoding",
@@ -682,7 +679,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -3244,7 +3241,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -9573,7 +9570,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
