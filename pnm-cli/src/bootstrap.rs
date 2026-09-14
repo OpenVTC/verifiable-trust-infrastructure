@@ -342,6 +342,19 @@ async fn resolve_connect_url(
     vta_did: &str,
     resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    resolve_connect_url_with_policy(
+        vta_did,
+        resolver,
+        vta_sdk::http::EndpointPolicy::process_default(),
+    )
+    .await
+}
+
+async fn resolve_connect_url_with_policy(
+    vta_did: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    policy: vta_sdk::http::EndpointPolicy,
+) -> Result<String, Box<dyn std::error::Error>> {
     let result = async {
         let resolved = resolver.resolve(vta_did).await?;
         let doc = serde_json::to_value(&resolved.doc)?;
@@ -351,10 +364,8 @@ async fn resolve_connect_url(
         let url = vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(&doc)
             .rest
             .ok_or("VTA DID document does not advertise a REST endpoint")?;
-        let parsed = reqwest::Url::parse(&url)?;
-        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-            return Err("VTA REST endpoint must be an HTTP(S) URL".into());
-        }
+        // An authentic DID document can still advertise an unsafe destination.
+        vta_sdk::http::guard_vta_endpoint(&url, policy)?;
         Ok::<_, Box<dyn std::error::Error>>(url.trim_end_matches('/').to_string())
     }
     .await;
@@ -391,9 +402,6 @@ fn validate_connect_anchor(
     no_verify_digest: bool,
     expect_pcr0: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // A supplied but empty/malformed pin is not an image anchor. Validate
-    // before DID resolution or the single-use bootstrap POST, including when
-    // a digest or explicit opt-out is also supplied.
     if let Some(pcr0) = expect_pcr0 {
         vta_sdk::attestation::validate_expected_pcr(0, pcr0)?;
     }
@@ -847,6 +855,68 @@ mod tests {
                 .unwrap(),
             "https://api.example.com:8443/vta"
         );
+    }
+
+    #[tokio::test]
+    async fn connect_guards_did_advertised_rest_endpoints() {
+        use vta_sdk::http::EndpointPolicy;
+
+        for (url, public_allowed, private_allowed) in [
+            ("https://api.example.com:8443/vta/", true, true),
+            ("http://localhost:8100/vta/", true, true),
+            ("http://127.0.0.1:8100/", true, true),
+            ("http://[::1]:8100/", true, true),
+            ("http://api.example.com/", false, false),
+            ("http://10.0.0.5/", false, false),
+            ("https://169.254.169.254/latest/meta-data/", false, false),
+            ("https://[fe80::1]/", false, false),
+            ("https://[fd00:ec2::254]/", false, false),
+            ("https://metadata.google.internal/", false, false),
+            (
+                "https://operator:fixture-secret@api.example.com/",
+                false,
+                false,
+            ),
+            ("https://[::ffff:10.0.0.5]/", false, false),
+            ("https://[::ffff:169.254.169.254]/", false, false),
+            ("https://0.0.0.0/", false, false),
+            ("https://192.0.2.1/", false, false),
+            ("https://10.0.0.5:8443/vta/", false, true),
+            ("https://192.168.1.10/", false, true),
+            ("https://[fd00::1]/", false, true),
+            ("https://100.64.0.1/", false, true),
+            ("https://vta.internal/", false, true),
+        ] {
+            let resolver = fixture_resolver(serde_json::json!({
+                "id": VTA_DID,
+                "service": [{
+                    "id": format!("{VTA_DID}#custom-rest"),
+                    "type": "VTARest",
+                    "serviceEndpoint": url,
+                }],
+            }))
+            .await;
+            for (policy, allowed) in [
+                (EndpointPolicy::public_only(), public_allowed),
+                (EndpointPolicy::private_allowed(), private_allowed),
+            ] {
+                let result =
+                    super::resolve_connect_url_with_policy(VTA_DID, &resolver, policy).await;
+                if allowed {
+                    assert_eq!(result.unwrap(), url.trim_end_matches('/'));
+                } else {
+                    let error = result
+                        .expect_err("unsafe DID endpoint must not fall back to its host")
+                        .to_string();
+                    assert!(error.contains(VTA_DID), "{error}");
+                    assert!(!error.contains("fixture-secret"), "{error}");
+                    if private_allowed {
+                        assert!(error.contains("VTA_ALLOW_PRIVATE_ENDPOINTS"), "{error}");
+                        assert!(error.contains("--allow-private-endpoints"), "{error}");
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
