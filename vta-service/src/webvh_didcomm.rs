@@ -38,7 +38,6 @@ use crate::error::{AppError, bad_gateway_error};
 use crate::webvh_client::RequestUriResponse;
 // The one DIDComm message type this module names, taken from the binding crate
 // rather than copied (#900). Every task URI below travels *inside* the envelope.
-use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 
 // did-management Trust-Task URIs (v0.1, hosted-DID category).
 //
@@ -238,6 +237,7 @@ fn parse_check_name_response(body: serde_json::Value) -> Result<RequestUriRespon
 /// avoiding duplicate WebSocket connections to the mediator.
 pub struct WebvhDIDCommClient<'a> {
     bridge: &'a DIDCommBridge,
+    resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
     server_did: &'a str,
 }
 
@@ -246,27 +246,6 @@ pub struct WebvhDIDCommClient<'a> {
 /// because the version floats — did-hosting emits `0.1` for a body-parse failure
 /// and `0.2` from the typed §7.2 pipeline, in the same conversation.
 const TRUST_TASK_ERROR_PREFIX: &str = "https://trusttasks.org/spec/trust-task-error/";
-
-/// Build the complete outbound pair: the DIDComm **message type** and the
-/// `TrustTask` document that rides in its body.
-///
-/// The message type is returned from here rather than written at the send site
-/// on purpose. It is the value this entire change exists to get right, and a
-/// wrong one fails *silently* — so it must come from somewhere a test can look
-/// at. `send_task` destructures this and passes both through verbatim; putting
-/// the literal back at the send site means bypassing this function, which is a
-/// visible edit rather than a one-word slip.
-fn build_outbound(
-    task: &str,
-    recipient: &str,
-    issuer: Option<String>,
-    payload: serde_json::Value,
-) -> (&'static str, serde_json::Value) {
-    (
-        TRUST_TASK_ENVELOPE_TYPE,
-        build_envelope_document(task, recipient, issuer, payload),
-    )
-}
 
 /// Build the `TrustTask` document that rides inside the envelope.
 ///
@@ -305,9 +284,11 @@ fn build_envelope_document(
 
 /// Unwrap a reply document from a trust-task envelope into its `payload`.
 ///
-/// On the envelope binding every reply arrives with the *same* DIDComm `type`
-/// (`ENVELOPE_TYPE`), so `send_and_wait`'s type check can no longer tell success
-/// from rejection — that decision moves in here, onto the document's own `type`.
+/// On the envelope binding every reply arrives with the *same* DIDComm `type`,
+/// so no transport-level type check can tell success from rejection — which is
+/// why `operations::outbound` hands back the reply document rather than
+/// interpreting it, and why that decision is made here, on the document's own
+/// `type`.
 /// Three outcomes, and the caller must not be able to confuse them:
 ///
 /// - the expected `<task>#response` → its `payload`,
@@ -367,17 +348,28 @@ fn unwrap_envelope_reply(
 }
 
 impl<'a> WebvhDIDCommClient<'a> {
-    pub fn new(bridge: &'a DIDCommBridge, server_did: &'a str) -> Self {
-        Self { bridge, server_did }
+    pub fn new(
+        bridge: &'a DIDCommBridge,
+        resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+        server_did: &'a str,
+    ) -> Self {
+        Self {
+            bridge,
+            resolver,
+            server_did,
+        }
     }
 
-    /// Send one DID-management task over the **DIDComm envelope binding** and
-    /// return the response document's `payload`.
+    /// Send one DID-management task and return the response document's
+    /// `payload`.
     ///
-    /// The single place this client names a DIDComm message type, and it names
-    /// `ENVELOPE_TYPE` both ways. Every verb below passes only its task URI, so
-    /// no call site can put a task type on the wire — which is the mistake this
-    /// whole change exists to make unrepresentable (#900, #903).
+    /// **This client no longer names a transport or a message type at all.** It
+    /// builds the document and hands it to `operations::outbound`, which reads
+    /// what the server advertises, applies that binding and returns the reply.
+    /// Putting a task type on the wire — the mistake #900 and #903 were about —
+    /// is now unrepresentable for a different and better reason than before: not
+    /// because this function is careful, but because there is no argument here
+    /// that could carry one.
     ///
     /// The task type moves *into* the document, where the binding requires it.
     /// did-hosting reads it back out via `bridge_did_management` and dispatches
@@ -390,32 +382,34 @@ impl<'a> WebvhDIDCommClient<'a> {
         response_task: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, AppError> {
-        // Both halves come from `build_outbound` — see its note on why the
-        // message type is not written here.
-        let (message_type, doc) =
-            build_outbound(task, self.server_did, self.bridge.vta_did(), payload);
+        let doc = build_envelope_document(task, self.server_did, self.bridge.vta_did(), payload);
 
-        let reply = self
-            .bridge
-            .send_and_wait(
-                self.server_did,
-                message_type,
-                doc,
-                // Expected *outer* type: the binding replies in the same
-                // envelope, so the reply's type is the one we sent. The real
-                // discrimination happens on the inner document, in
-                // `unwrap_envelope_reply`.
-                message_type,
-                // A DIDComm-level problem report is still possible ahead of the
-                // envelope (an unroutable message never reaches the dispatcher),
-                // so keep mapping it; task-level rejections now arrive *inside*
-                // the envelope instead.
-                TASK_DID_PROBLEM_REPORT,
-                30,
-            )
-            .await?;
+        // Carriage is `operations::outbound`'s, not this client's: choosing the
+        // transport, applying its binding and awaiting the reply are the same
+        // three steps for every peer, and this module used to be one of three
+        // places doing them. What is still this module's is the document above
+        // and the reply reading below — those are did-management's, not any
+        // transport's.
+        //
+        // `TransportAuthenticated`, and this is the call being made explicit
+        // rather than changed: this client has never verified a reply's proof.
+        // Over the DIDComm binding the peer is authenticated end to end by the
+        // authcrypt envelope, and these replies confer nothing — a reserved
+        // path, an availability answer, an acknowledgement. Raising it to
+        // `SignedByRecipient` is a real question, and one to ask of did-hosting
+        // (whether it signs these replies at all) rather than to assume here.
+        let reply = crate::operations::outbound::Outbound {
+            resolver: self.resolver,
+            bridge: self.bridge,
+        }
+        .send(
+            self.server_did,
+            doc,
+            crate::operations::outbound::ReplyTrust::TransportAuthenticated,
+        )
+        .await?;
 
-        unwrap_envelope_reply(reply.body, response_task)
+        unwrap_envelope_reply(reply, response_task)
     }
 
     /// Reserve a path on the remote DID-hosting server (v0.1
@@ -910,8 +904,8 @@ mod tests {
 #[cfg(test)]
 mod envelope_binding_tests {
     use super::{
-        TASK_DID_CHECK_NAME, TASK_DID_CHECK_NAME_RESPONSE, TASK_DID_PROBLEM_REPORT, build_outbound,
-        unwrap_envelope_reply,
+        TASK_DID_CHECK_NAME, TASK_DID_CHECK_NAME_RESPONSE, TASK_DID_PROBLEM_REPORT,
+        build_envelope_document, unwrap_envelope_reply,
     };
     use crate::error::AppError;
     use serde_json::json;
@@ -919,32 +913,19 @@ mod envelope_binding_tests {
     const SERVER: &str = "did:webvh:example.com:control";
     const VTA: &str = "did:webvh:example.com:vta";
 
-    /// The whole point, in one assertion pair: the **envelope** type goes on the
-    /// DIDComm message, the **task** type goes in the document.
-    ///
-    /// Both halves come from `build_outbound`, which is what makes this
-    /// meaningful rather than circular — `send_task` destructures that function's
-    /// return and passes both through, so putting a task type back on the wire
-    /// means bypassing it, not editing one argument.
+    /// The task type goes **in the document**. Where the envelope type goes is
+    /// no longer this module's business: `operations::outbound` names the
+    /// DIDComm message type once for every caller, and asserts it there. What
+    /// stays here is the half this module still decides.
     #[test]
-    fn the_envelope_is_on_the_message_and_the_task_is_in_the_document() {
-        let (message_type, doc) = build_outbound(
+    fn the_task_type_is_in_the_document() {
+        let doc = build_envelope_document(
             TASK_DID_CHECK_NAME,
             SERVER,
             Some(VTA.to_string()),
             json!({ "path": "bob", "reserve": true }),
         );
 
-        assert_eq!(
-            message_type,
-            trust_tasks_didcomm::ENVELOPE_TYPE,
-            "the DIDComm message must carry the binding's envelope type — a task \
-             type here is rejected silently by a conformant host"
-        );
-        assert_ne!(
-            message_type, TASK_DID_CHECK_NAME,
-            "the task type must never be the message type"
-        );
         assert_eq!(doc["type"], TASK_DID_CHECK_NAME);
         assert_eq!(doc["recipient"], SERVER);
         assert_eq!(doc["issuer"], VTA);
@@ -966,7 +947,7 @@ mod envelope_binding_tests {
     /// the bridge has no DID yet is the safe half of the choice.
     #[test]
     fn an_unknown_issuer_is_omitted_not_guessed() {
-        let (_, doc) = build_outbound(TASK_DID_CHECK_NAME, SERVER, None, json!({}));
+        let doc = build_envelope_document(TASK_DID_CHECK_NAME, SERVER, None, json!({}));
         assert!(
             doc.get("issuer").is_none(),
             "an unknown issuer must be absent, not empty or invented: {doc}"

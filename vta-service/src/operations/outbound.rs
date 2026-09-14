@@ -64,6 +64,16 @@ use crate::didcomm_bridge::DIDCommBridge;
 #[cfg(feature = "didcomm")]
 const DIDCOMM_REPLY_TIMEOUT_SECS: u64 = 30;
 
+/// The DIDComm message `type` every Trust Task rides under.
+///
+/// Named once, here, for every caller. It used to be produced per client — and
+/// the one that did it took care to return it from a single function precisely
+/// because getting it wrong fails *silently*: a conformant host rejects a
+/// message typed with the task URI without telling you why. That care is now
+/// structural instead of local; a caller has no way to supply a message type,
+/// so there is nothing to get wrong.
+const DIDCOMM_MESSAGE_TYPE: &str = trust_tasks_didcomm::ENVELOPE_TYPE;
+
 /// The protocols this VTA can **initiate** a Trust-Task request on.
 ///
 /// Order here is not the preference order — [`Protocol::PREFERENCE_ORDER`] is,
@@ -192,6 +202,35 @@ impl Outbound<'_> {
         document: Value,
         trust: ReplyTrust,
     ) -> Result<Value, AppError> {
+        // Boxed, and this is load bearing rather than tidiness.
+        //
+        // This future is large: a DID resolution, a transport round trip and a
+        // proof verification, each with its own awaited sub-futures. In a debug
+        // build the compiler inlines all of that into the *caller's* frame, so
+        // every caller pays the whole thing in stack whether or not it is deep
+        // already.
+        //
+        // `webvh_didcomm` is deep already — it sits under `create_did_webvh`,
+        // which is itself several awaits down — and calling this inline
+        // overflowed the 2MB stack a `#[tokio::test]` worker gets. It surfaced
+        // as `mock_vta` aborting with SIGABRT during a full-workspace run, on a
+        // *different* test each time and never when that binary ran alone,
+        // which reads exactly like resource-pressure flakiness and was not:
+        // the same suite on the parent commit passes with zero overflows.
+        //
+        // Boxing here rather than at each call site because the size is this
+        // function's, not its callers'. A caller cannot know it has become too
+        // large to inline, and the next one added would rediscover this the
+        // same expensive way.
+        Box::pin(self.send_inner(recipient, document, trust)).await
+    }
+
+    async fn send_inner(
+        &self,
+        recipient: &str,
+        document: Value,
+        trust: ReplyTrust,
+    ) -> Result<Value, AppError> {
         let resolved = self.resolver.resolve(recipient).await.map_err(|e| {
             AppError::Validation(format!(
                 "`{recipient}` does not resolve, so there is nothing to send to: {e}"
@@ -270,13 +309,13 @@ impl Outbound<'_> {
             .bridge
             .send_and_wait(
                 recipient,
-                trust_tasks_didcomm::ENVELOPE_TYPE,
+                DIDCOMM_MESSAGE_TYPE,
                 document,
                 // The expected *outer* type is the envelope we sent: on this
                 // binding a reply rides the same envelope, so success and
                 // refusal are indistinguishable out here. Both are told apart on
                 // the inner document, by the caller.
-                trust_tasks_didcomm::ENVELOPE_TYPE,
+                DIDCOMM_MESSAGE_TYPE,
                 // A DIDComm problem report can still arrive *ahead* of the
                 // envelope — an unroutable message never reaches the far side's
                 // dispatcher — so it stays mapped to a typed error.
@@ -525,5 +564,18 @@ mod tests {
         )
         .await
         .expect("this level asks nothing of the document");
+    }
+
+    /// The envelope type goes on the message; a task type never does. This
+    /// fails silently on the wire — a conformant host rejects a message typed
+    /// with the task URI and the sender learns nothing — so it is asserted here,
+    /// at the one place that now decides it for every caller.
+    #[test]
+    fn the_didcomm_message_carries_the_binding_envelope_type() {
+        assert_eq!(DIDCOMM_MESSAGE_TYPE, trust_tasks_didcomm::ENVELOPE_TYPE);
+        assert!(
+            !DIDCOMM_MESSAGE_TYPE.starts_with("https://trusttasks.org/spec/"),
+            "a `spec/` URI here is a task type on the wire: {DIDCOMM_MESSAGE_TYPE}"
+        );
     }
 }
