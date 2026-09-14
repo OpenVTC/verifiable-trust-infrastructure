@@ -160,7 +160,7 @@ sequenceDiagram
 
     M->>US: POST /v1/auth/recognise/challenge
     US-->>M: { nonce, expires_at }<br/>(single-use, TTL'd, bound to our DID)
-    M->>US: POST /v1/auth/recognise<br/>(VP: holder proof over nonce + our DID;<br/>embeds VEC + VMC)
+    M->>US: POST /v1/auth/recognise<br/>(VP: holder proof over nonce + our DID,<br/>embeds VEC + VMC)
     US->>US: Consume nonce (single-use)
     US->>US: Verify holder proof + each embedded issuer proof
     US->>US: Require VP holder == VEC subject == VMC subject

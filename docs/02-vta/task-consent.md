@@ -64,7 +64,7 @@ sequenceDiagram
     participant A as Approver device
 
     R->>V: submit task
-    V->>V: PDP → requireConsent; compute payload_digest
+    V->>V: PDP → requireConsent, then compute payload_digest
     V-->>R: rejected — auth:consent_required (+ challenge, digest, set, threshold)
     V->>A: task-consent/request/0.1 (VTA-signed, pushed)
     A->>A: human compares match code, reads effects
@@ -73,7 +73,7 @@ sequenceDiagram
     V->>V: mint single-use grant
     V-->>R: task-consent/granted/0.1 (notice)
     R->>V: re-submit the identical task
-    V->>V: consume grant; re-check enrolment, state pin, guards
+    V->>V: consume grant, re-check enrolment, state pin, guards
     V->>R: executed
 ```
 
@@ -241,8 +241,9 @@ error. Use a DIDComm- or TSP-transport client.
 ### 3. Enrol an approver device
 
 The decision signer lives in `vta-mobile-core/src/consent.rs`
-(`build_task_consent_decision_did_signed`). **No Rust client crate can sign a
-decision**, so `pnm` shows the code and waits for a device to answer.
+(`build_task_consent_decision_did_signed`) — a UniFFI crate built for the
+mobile bindings. **No CLI links it**, so `pnm` shows the code and waits for a
+device to answer.
 
 For a single-operator posture, set `exclude_requester = false` and put the
 CLI's own DID in the set.
@@ -315,7 +316,9 @@ top-level `code` (which is `taskFailed` for every gated task).
 
 ## Known gaps
 
-- **No CLI-side decision signer.** Remote approval only.
+- **No CLI-side decision signer.** The signer exists in Rust
+  (`vta-mobile-core`), but no CLI depends on that crate — approval is
+  remote-only.
 - **No read-only pending-status task.** "Approved yet?" is a re-submit.
 - **`policy/evaluate/0.3` is not served** — its `PolicyInput.site` is required
   with no honest value for "would this task need approval". `pnm approvals
