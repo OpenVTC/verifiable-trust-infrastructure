@@ -20,6 +20,7 @@ use vta_keys as keys;
 use vta_keys::seed_store::SeedStore;
 use vta_keys::seeds::{get_active_seed_id, load_seed_bytes};
 use vta_support::contexts;
+use vta_support::version_time::backdated_version_time;
 use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
 
@@ -210,6 +211,9 @@ pub async fn maybe_generate_vta_did(
         .authorization_key(derived.signing_secret.clone())
         .did_document(did_document)
         .parameters(parameters)
+        // Backdated genesis timestamp (entry index 0) so a follow-on update in
+        // the same second doesn't collide — see `backdated_version_time`.
+        .version_time(backdated_version_time(0))
         .build()
         .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))?;
 
