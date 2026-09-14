@@ -12,6 +12,7 @@ use std::sync::Arc;
 use didwebvh_rs::create::{CreateDIDConfig, create_did};
 use didwebvh_rs::log_entry::LogEntryMethods;
 use didwebvh_rs::parameters::Parameters as WebVHParameters;
+use didwebvh_rs::prelude::Secret;
 use serde_json::json;
 use tracing::{info, warn};
 
@@ -20,6 +21,7 @@ use vta_keys as keys;
 use vta_keys::seed_store::SeedStore;
 use vta_keys::seeds::{get_active_seed_id, load_seed_bytes};
 use vta_support::contexts;
+use vta_support::version_time::next_version_time;
 use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
 
@@ -205,13 +207,12 @@ pub async fn maybe_generate_vta_did(
     };
 
     // Create the DID
-    let create_config = CreateDIDConfig::builder()
-        .address(&url_str)
-        .authorization_key(derived.signing_secret.clone())
-        .did_document(did_document)
-        .parameters(parameters)
-        .build()
-        .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))?;
+    let create_config = build_genesis_create_config(
+        &url_str,
+        derived.signing_secret.clone(),
+        did_document,
+        parameters,
+    )?;
 
     let result = create_did(create_config)
         .await
@@ -411,6 +412,38 @@ fn template_to_url(template: &str) -> Result<String, AppError> {
     Ok(format!("https://{url_path}"))
 }
 
+/// Build the genesis `CreateDIDConfig` for the VTA's own did:webvh identity.
+///
+/// Extracted from [`maybe_generate_vta_did`] so that the one property here
+/// which cannot be observed until far too late is testable without a seed
+/// store, a KMS or an enclave: the genesis entry MUST carry a backdated
+/// `versionTime`.
+///
+/// Leave it to the builder's default (`Utc::now()`) and nothing fails. The
+/// VTA's *first runtime update* is backdated a day by
+/// [`next_version_time`], so it lands earlier than genesis; `didwebvh-rs`
+/// checks monotonicity only at resolve time, so it signs, appends and
+/// publishes that entry anyway; and because the log is append-only, no later
+/// update can repair it. The DID is then permanently unresolvable — which took
+/// down mediator connection, DIDComm and backup export on TEE VTAs until
+/// PR #1456. See `vta_support::version_time`.
+fn build_genesis_create_config(
+    url: &str,
+    authorization_key: Secret,
+    did_document: serde_json::Value,
+    parameters: WebVHParameters,
+) -> Result<CreateDIDConfig, AppError> {
+    CreateDIDConfig::builder()
+        .address(url)
+        .authorization_key(authorization_key)
+        .did_document(did_document)
+        .parameters(parameters)
+        // Genesis: no previous entry to clamp against.
+        .version_time(next_version_time(0, None))
+        .build()
+        .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,5 +488,107 @@ mod tests {
     #[test]
     fn test_template_to_url_empty_domain() {
         assert!(template_to_url("did:webvh:{SCID}:").is_err());
+    }
+
+    /// Build the inputs `maybe_generate_vta_did` hands to
+    /// [`build_genesis_create_config`]. Only the `versionTime` matters here,
+    /// so the document and parameters are the minimum `create_did` accepts.
+    fn genesis_inputs() -> (Secret, serde_json::Value, WebVHParameters) {
+        let mut signing = Secret::generate_ed25519(None, Some(&[7u8; 32]));
+        let signing_pub = signing.get_public_keymultibase().unwrap();
+        // Same `did:key` id shape `maybe_generate_vta_did` sets before handing
+        // the secret to didwebvh-rs; the library rejects any other form.
+        signing.id = format!("did:key:{signing_pub}#{signing_pub}");
+
+        let document = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": "did:webvh:{SCID}:example.com:vta",
+        });
+        let parameters = WebVHParameters {
+            update_keys: Some(Arc::new(vec![signing_pub.clone().into()])),
+            portable: Some(true),
+            ..Default::default()
+        };
+
+        (signing, document, parameters)
+    }
+
+    /// The TEE genesis entry must be stamped with a **backdated**
+    /// `versionTime`, not the builder's `Utc::now()` default.
+    ///
+    /// This is the defect PR #1456 fixed, and it is invisible at the point it
+    /// is made: a wall-clock genesis is a perfectly valid log entry. It only
+    /// surfaces one update later, when the backdated update lands *earlier*
+    /// than genesis, `didwebvh-rs` appends it regardless (it checks
+    /// monotonicity at resolve time, not write time), and the DID becomes
+    /// permanently unresolvable — mediator connection, DIDComm and backup
+    /// export all fail on a VTA that reports itself healthy.
+    ///
+    /// Asserting on the built config rather than the helper alone is the
+    /// point: deleting the `.version_time(...)` call reintroduces the bug and
+    /// must fail here.
+    #[tokio::test]
+    async fn genesis_version_time_is_backdated() {
+        let (signing, document, parameters) = genesis_inputs();
+
+        let config =
+            build_genesis_create_config("https://example.com/vta", signing, document, parameters)
+                .expect("genesis config builds");
+
+        let stamped = config
+            .version_time
+            .expect("genesis must set an explicit versionTime, not inherit Utc::now()");
+
+        let result = create_did(config).await.expect("genesis entry is created");
+        let entry_time = result.log_entry().get_version_time();
+
+        assert_eq!(
+            entry_time, stamped,
+            "the log entry must carry the versionTime the config set"
+        );
+
+        // A day back, less a minute of slack for the index offset and clock
+        // movement between building and asserting.
+        let now = chrono::Utc::now().fixed_offset();
+        assert!(
+            entry_time < now - chrono::Duration::hours(23),
+            "genesis must be backdated roughly a day, got {entry_time} against now={now}"
+        );
+    }
+
+    /// The genesis timestamp must also leave room *above* it, so the VTA's
+    /// first runtime update — `next_version_time(1, Some(genesis))`, the
+    /// sequence a TEE VTA runs when `services didcomm enable` follows first
+    /// boot — is strictly later. This is the two-entry chain that was broken,
+    /// asserted end to end rather than one half at a time.
+    #[tokio::test]
+    async fn first_update_after_genesis_is_strictly_later() {
+        let (signing, document, parameters) = genesis_inputs();
+
+        let config =
+            build_genesis_create_config("https://example.com/vta", signing, document, parameters)
+                .expect("genesis config builds");
+        let genesis_time = create_did(config)
+            .await
+            .expect("genesis entry is created")
+            .log_entry()
+            .get_version_time();
+
+        let update_time = next_version_time(1, Some(genesis_time));
+
+        assert!(
+            update_time > genesis_time,
+            "first update must be strictly after genesis: \
+             update={update_time}, genesis={genesis_time}"
+        );
+        assert_ne!(
+            update_time.timestamp(),
+            genesis_time.timestamp(),
+            "must differ after did:webvh's second-granularity truncation"
+        );
+        assert!(
+            update_time < chrono::Utc::now().fixed_offset(),
+            "first update must not be future-dated"
+        );
     }
 }
