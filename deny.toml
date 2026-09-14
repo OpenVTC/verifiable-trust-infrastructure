@@ -47,62 +47,6 @@ ignore = [
   (0.10), or if `cnm` stops reading PGP keyrings.
   """ },
 
-  { id = "RUSTSEC-2026-0258", reason = """
-  h2 accepts and queues empty DATA frames without limit, so a stream
-  that is not actively drained can grow memory without bound (or panic
-  on a length overflow). Low severity.
-
-  The fix is 0.4.16 and the lockfile takes it — that is the h2 our own
-  servers speak HTTP/2 over, and the only side of this that faces
-  untrusted peers. The remaining hit is h2 **0.3.27**, which has no
-  patched release: 0.3.27 is the newest 0.3 and the advisory names
-  >=0.4.16 as the only fix. Our sole 0.3 path is AWS SDK's
-  aws-smithy-http-client -> hyper 0.14, used as a *client* against AWS
-  API endpoints (KMS, DynamoDB, STS, SSO), so the frames it queues come
-  from AWS's own endpoints over TLS we verify — the same narrow surface
-  as the rustls 0.21 entries above.
-
-  Drop when AWS SDK moves off hyper 0.14, or if h2 backports the fix
-  to 0.3.
-  """ },
-
-  { id = "RUSTSEC-2026-0099", reason = """
-  rustls-webpki 0.101.x accepts name constraints for certificates
-  asserting a wildcard name (formerly tracked as GHSA-xgp8-3hg3-c2mh).
-  Exploitable only during TLS cert verification against a CA that
-  issues such a cert; our only 0.101.x path is through AWS SDK's
-  aws-smithy-http-client → rustls 0.21 used for calls to AWS API
-  endpoints (KMS, Secrets Manager, STS, etc.) — AWS's own CAs do
-  not issue wildcard-name-constrained intermediates.
-
-  Drop when AWS SDK retires the rustls 0.21 code path (several crates
-  already have rustls 0.23 support).
-  """ },
-
-  { id = "RUSTSEC-2026-0098", reason = """
-  rustls-webpki 0.101.x incorrectly accepts name constraints on URI
-  names (formerly tracked as GHSA-965h-392x-2mh5). Same transitive
-  path as RUSTSEC-2026-0099 (AWS SDK rustls 0.21) with the same
-  narrow attack surface: AWS API endpoints are certificated by AWS
-  CAs that do not issue URI-constraint certs.
-
-  Drop when AWS SDK retires the rustls 0.21 code path.
-  """ },
-
-  { id = "RUSTSEC-2026-0104", reason = """
-  rustls-webpki 0.101.x panics when parsing a malformed certificate
-  revocation list. Reachable only when a CRL is fetched and parsed,
-  which our build does not do — `rustls-webpki` 0.101 is pulled
-  transitively through the AWS SDK rustls 0.21 path (same as the two
-  name-constraint advisories above), and AWS SDK request paths do
-  not enable CRL fetching.
-
-  Drop when AWS SDK retires the rustls 0.21 code path, or when
-  rustls-webpki 0.101 ships a fix.
-  """ },
-
-
-
   { id = "RUSTSEC-2021-0127", reason = """
   serde_cbor 0.11.x is unmaintained. Used only by
   aws-nitro-enclaves-nsm-api for parsing Nitro attestation
@@ -115,15 +59,6 @@ ignore = [
   a maintained CBOR library).
   """ },
 
-  { id = "RUSTSEC-2025-0141", reason = """
-  bincode 1.3.x is unmaintained. Build-time only: pulled solely by
-  uniffi_macros (the proc-macro behind vta-mobile-core's #[uniffi::export]
-  scaffolding) to serialise binding metadata at compile time. No runtime
-  presence in any shipped binary; it never touches attacker-influenced
-  input.
-
-  Drop when uniffi (0.28.x) updates to bincode 2.x or drops it.
-  """ },
 
   { id = "RUSTSEC-2024-0436", reason = """
   paste 1.0.x is unmaintained. Build-time only: a proc-macro for token
