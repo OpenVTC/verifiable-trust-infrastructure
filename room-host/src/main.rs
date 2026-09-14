@@ -21,9 +21,18 @@ struct Args {
     /// Where the record store lives.
     #[arg(long, default_value = "./room-host-data")]
     data_dir: std::path::PathBuf,
-    /// Address to listen on.
-    #[arg(long, default_value = "127.0.0.1:8300")]
-    listen: String,
+    /// Serve Trust Tasks over HTTP at this address.
+    ///
+    /// **Opt-in**, and deliberately: a host reached through a mediator needs no HTTP surface
+    /// at all, and this used to default to `127.0.0.1:8300` — so a deployment that had
+    /// carefully arranged to need no ingress bound a port anyway, and announced it in a log
+    /// line naming an address nobody passed. The same rule the `didcomm` feature already
+    /// follows: a host not asked to be reachable somewhere does not open a socket there.
+    ///
+    /// Pass it for the HTTP mode, where the owner registers rooms over REST, or when
+    /// something local needs `/health`. A member reached by DID needs none of it.
+    #[arg(long)]
+    listen: Option<String>,
     /// Resolve credential issuers over the network as well as locally.
     ///
     /// Off by default. A room's credentials are normally issued by a `did:webvh` room, so a
@@ -240,6 +249,8 @@ async fn main() -> anyhow::Result<()> {
     // an identity that will not load is a startup failure rather than something discovered
     // by the first member who cannot reach it.
     #[cfg(feature = "didcomm")]
+    let mut mediator_task: Option<tokio::task::JoinHandle<()>> = None;
+    #[cfg(feature = "didcomm")]
     if let Some(mediator_did) = args.mediator_did.clone() {
         // Governed by a VTA: serve as the DID it holds for this context.
         #[cfg(feature = "onboarding")]
@@ -265,7 +276,7 @@ async fn main() -> anyhow::Result<()> {
         // after `?at=` — and an operator has to be able to copy it out of a terminal.
         println!("host DID: {}", identity.did);
         let state = state.clone();
-        tokio::spawn(async move {
+        mediator_task = Some(tokio::spawn(async move {
             if let Err(e) = room_host::didcomm::serve(state, identity, mediator_did).await {
                 // Said in full because of what does *not* happen next: this task ends, the
                 // HTTP listener does not, and nothing retries. So the process stays up and
@@ -279,12 +290,44 @@ async fn main() -> anyhow::Result<()> {
                      against that port will still pass. Restart the host."
                 );
             }
-        });
+        }));
     }
 
-    let listener = tokio::net::TcpListener::bind(&args.listen).await?;
+    let Some(listen) = args.listen.clone() else {
+        // No HTTP surface at all. This is the arrangement the design is about — the host
+        // dials the mediator and nothing dials in — so it is a normal way to run rather
+        // than a misconfiguration. What it is *not* is a way to run with nothing serving
+        // anything, which is why the mediator task has to exist for this to be allowed.
+        #[cfg(feature = "didcomm")]
+        if let Some(task) = mediator_task {
+            if !args.allow_origin.is_empty() {
+                tracing::warn!(
+                    "--allow-origin was given without --listen, so there is no HTTP surface \
+                     for it to apply to and it has no effect"
+                );
+            }
+            tracing::info!(
+                data_dir = %args.data_dir.display(),
+                network_resolution = args.resolve_dids,
+                "room host ready — reachable by DID only, with no HTTP listener"
+            );
+            // Awaiting the mediator task means this exits when the connection ends, rather
+            // than idling as a process nothing can reach. With a listener the two are
+            // independent and that asymmetry is deliberate: there, something is still being
+            // served; here there would be nothing at all.
+            task.await?;
+            return Ok(());
+        }
+        anyhow::bail!(
+            "this host was asked to serve nobody: pass --listen <addr> to serve Trust Tasks \
+             over HTTP, or --mediator-did <did> to be reachable by DID (which needs \
+             `--features didcomm`)."
+        );
+    };
+
+    let listener = tokio::net::TcpListener::bind(&listen).await?;
     tracing::info!(
-        listen = %args.listen,
+        listen = %listen,
         data_dir = %args.data_dir.display(),
         network_resolution = args.resolve_dids,
         "room host ready — storing records for rooms it does not govern"
