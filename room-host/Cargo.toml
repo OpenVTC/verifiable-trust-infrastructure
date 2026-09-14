@@ -100,6 +100,20 @@ onboarding = [
 ## which one is an operator's decision — the same shape as `[secrets]`.
 config-session = ["vta-sdk/config-session"]
 session-keyring = ["vta-sdk/keyring"]
+## Speak TSP to the **VTA**, as `vtc-service`, `vta-service`, `vtc-client` and
+## `pnm-cli` already do. Distinct from the `didcomm` feature, which is about
+## serving members: this is the control leg that fetches this host's identity.
+##
+## Not optional in practice against a VTA that advertises TSP, and the reason is
+## the *first* connect specifically. A pending-rotation session picks its
+## transport in `vta_sdk::session::rotation_endpoint`, whose TSP arm is matched
+## first and taken unconditionally; `connect_tsp_bounded` then fails a build
+## without this feature outright, with no fallback. Every *later* connect takes
+## the steady-state path, which falls back to DIDComm with a warning. So without
+## this, enrolment against a dual-transport VTA fails at the one step that
+## cannot retry, while a host that somehow got past it keeps working — which is
+## why this reads as intermittent rather than as a missing feature.
+tsp = ["onboarding", "vta-sdk/tsp"]
 ## Serve Trust Tasks over DIDComm and TSP at a mediator, as well as over HTTP.
 ##
 ## Secret backends are opt-in on top, exactly as they are for the VTA and VTC —
