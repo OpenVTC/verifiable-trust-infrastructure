@@ -199,10 +199,29 @@ function RouteCard({
     ? formatWithValue(route.then.with[effField.key])
     : "";
 
+  // A condition whose argument the daemon compares exactly is worse than no
+  // condition when the argument is wrong: it compiles, and then matches nobody.
+  // So a numeric argument has to be a whole number and a choice has to be one
+  // of the choices before the condition can be added.
+  const argProblem = (): string | null => {
+    const spec = pendingDef?.arg;
+    if (!spec) return null;
+    const value = pendingArg.trim();
+    if (!value) return `Give a ${spec.label}.`;
+    if (spec.kind === "number" && !/^[0-9]+$/.test(value)) {
+      return `The ${spec.label} must be a whole number.`;
+    }
+    if (spec.options && !spec.options.includes(value)) {
+      return `Choose one of ${spec.options.join(", ")}.`;
+    }
+    return null;
+  };
+  const pendingProblem = argProblem();
+
   const addCond = () => {
-    if (!pendingDef) return;
+    if (!pendingDef || pendingProblem) return;
     const cond: Condition = pendingDef.arg
-      ? { [pendingDef.id]: pendingArg }
+      ? { [pendingDef.id]: pendingArg.trim() }
       : pendingDef.id;
     onChange({ when: { all: [...route.when.all, cond] } });
     setPendingArg("");
@@ -260,10 +279,18 @@ function RouteCard({
         {route.when.all.map((c, i) => {
           const def = vocab.find((v) => v.id === condId(c));
           const arg = condArg(c);
+          // A condition that reads as a phrase reads the same here as it does
+          // in the plain-English view; the rest keep label + bold argument.
           return (
             <span className="rule-cond" key={i}>
-              {def?.label ?? condId(c)}
-              {arg ? <b> {arg}</b> : null}
+              {def?.phrase ? (
+                def.phrase(arg)
+              ) : (
+                <>
+                  {def?.label ?? condId(c)}
+                  {arg ? <b> {arg}</b> : null}
+                </>
+              )}
               <span className="rule-x" onClick={() => removeCond(i)}>
                 ×
               </span>
@@ -274,6 +301,7 @@ function RouteCard({
 
       <div className="rule-add-cond">
         <select
+          aria-label="Condition"
           value={pendingCond}
           onChange={(e) => setPendingCond(e.target.value)}
         >
@@ -283,22 +311,49 @@ function RouteCard({
             </option>
           ))}
         </select>
-        {pendingDef?.arg && (
-          <input
+        {pendingDef?.arg?.options ? (
+          <select
             className="rule-arg"
-            placeholder={pendingDef.arg.placeholder}
+            aria-label={pendingDef.arg.label}
             value={pendingArg}
             onChange={(e) => setPendingArg(e.target.value)}
-          />
+          >
+            <option value="">{pendingDef.arg.label}…</option>
+            {pendingDef.arg.options.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        ) : (
+          pendingDef?.arg && (
+            <input
+              className="rule-arg"
+              aria-label={pendingDef.arg.label}
+              inputMode={pendingDef.arg.kind === "number" ? "numeric" : undefined}
+              placeholder={pendingDef.arg.placeholder}
+              value={pendingArg}
+              onChange={(e) => setPendingArg(e.target.value)}
+            />
+          )
         )}
-        <button type="button" onClick={addCond}>
+        <button
+          type="button"
+          onClick={addCond}
+          disabled={Boolean(pendingProblem)}
+          title={pendingProblem ?? undefined}
+        >
           + condition
         </button>
+        {pendingProblem && pendingArg.trim() !== "" && (
+          <span className="rule-arg-problem">{pendingProblem}</span>
+        )}
       </div>
 
       <div className="rule-then">
         <span className="rule-kw">then</span>
         <select
+          aria-label="Effect"
           value={route.then.effect}
           onChange={(e) => setEffect(e.target.value as Effect["effect"])}
         >
