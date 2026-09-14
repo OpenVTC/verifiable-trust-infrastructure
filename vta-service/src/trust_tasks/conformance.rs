@@ -3802,6 +3802,27 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            uris::TASK_WEBVH_DIDS_REALIGN_KEYS_1_0,
+            (
+                json!({ "did": did }),
+                parses::<wv::dids::realign_keys::v1_0::Payload>,
+                validates::<wv::dids::realign_keys::v1_0::Payload>,
+            ),
+            // The interleaved case rather than a tidy one: the first record's
+            // destination is the second's current name, which is the shape the
+            // specification exists for and the one an implementation is most
+            // likely to get wrong.
+            (
+                json!({ "did": did,
+                  "moved": [
+                    { "from": format!("{did}#key-0"), "to": format!("{did}#key-1"), "publicKey": "z6MkSigning" },
+                    { "from": format!("{did}#key-1"), "to": format!("{did}#key-2"), "publicKey": "z6LSKeyAgreement" },
+                  ],
+                  "alreadyAligned": [], "unmatched": [], "nextFragmentId": 3, "dryRun": false }),
+                parses::<wv::dids::realign_keys::v1_0::Response>,
+            ),
+        ),
+        (
             uris::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
             (
                 json!({ "did": did, "serverId": "prod" }),

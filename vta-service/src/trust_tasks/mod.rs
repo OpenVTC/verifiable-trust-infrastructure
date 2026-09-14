@@ -2088,6 +2088,11 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0 => webvh::handle_dids_rotate_keys
         [ Destructive None false ],
+    // Mutating rather than Destructive, unlike its two neighbours above: a
+    // realign renames records, and the key material behind them is untouched.
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REALIGN_KEYS_1_0 => webvh::handle_dids_realign_keys
+        [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0
         => webvh::handle_dids_register_with_server

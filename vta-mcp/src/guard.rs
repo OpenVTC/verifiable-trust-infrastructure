@@ -628,6 +628,23 @@ mod tests {
         "initiate-export",
         "complete-export",
         "rename",
+        // Renames a DID's key records onto the verification-method ids its
+        // published document declares. Beside `rename`, which is the same act
+        // one record at a time — and deliberately NOT `Sensitive`, despite
+        // touching key custody, which is the call worth explaining.
+        //
+        // `keys/set-exportability` is `Sensitive` because a caller chooses the
+        // direction and one of them lets a protected key out. Here the caller
+        // chooses nothing: the payload carries a DID and a boolean, and every
+        // target name is derived by the agent from that DID's own log. There is
+        // no argument that points it anywhere, so the worst a blanket
+        // `vta_call` approval can do is move records into agreement with the
+        // document they were always supposed to match.
+        //
+        // No secret is emitted either — the response carries verification-method
+        // ids and the *public* halves behind them, both already world-readable
+        // in the DID document.
+        "realign-keys",
     ];
 
     #[test]

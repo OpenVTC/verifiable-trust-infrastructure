@@ -17,6 +17,22 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Ask an agent to realign one DID's key records.
+///
+/// The DID and a boolean, and deliberately nothing else: a member naming a
+/// target identifier would make this a way to write chosen names into a key
+/// store, which is exactly what `keys/rename`'s identifier gate exists to
+/// prevent. Every name in the outcome comes from the DID's own published log.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RealignDidKeysBody {
+    pub did: String,
+    /// Compute and report the realignment without performing it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
+}
+
 /// One record whose id did not match the method carrying its public key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

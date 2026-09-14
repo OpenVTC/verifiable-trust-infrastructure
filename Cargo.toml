@@ -306,7 +306,14 @@ aws-lc-rs = "1.16"
 # members are emitted and the schema has never heard of them. Same failure
 # shape as `adminScope` above, which is why the floor moves rather than the
 # feature being guarded.
-trust-tasks-rs = { version = "0.20.4", default-features = false, features = [
+#
+# 0.20.5 raises it again, and this one is a floor on *serving at all* rather
+# than on a response member: it is the first release carrying the
+# `vta/webvh/dids/realign-keys/1.0` schema, and
+# `every_served_uri_has_a_published_spec_or_is_tracked_debt` fails on a
+# dispatched URI the registry has no schema for. Below it the task is not a
+# degraded feature, it is a build that does not pass.
+trust-tasks-rs = { version = "0.20.5", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

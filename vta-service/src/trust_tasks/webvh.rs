@@ -45,6 +45,7 @@ use vta_sdk::protocols::did_management::{
     delete::DeleteDidWebvhBody,
     get::GetDidWebvhBody,
     list::ListDidsWebvhBody,
+    realign::RealignDidKeysBody,
     servers::{
         ListWebvhServerDomainsBody, ListWebvhServersBody, ReconcileWebvhServerDidsBody,
         RegisterDidWithServerBody, RegisterDidWithServerResultBody, RegisterWebvhServerBody,
@@ -598,6 +599,46 @@ pub(super) async fn handle_dids_rotate_keys(
     {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, AppError::from(e)),
+    }
+}
+
+/// `webvh/dids/realign-keys/1.0` — rename this DID's key records onto the
+/// verification-method ids its published document declares.
+///
+/// `Mutating`, not `Destructive`, and the distinction is the point: no key
+/// material is created, destroyed or exported. The same private halves remain,
+/// reachable under the names the document publishes for them — which is the
+/// state they were always supposed to be in.
+///
+/// The payload names no key. `did` and `dryRun` are the whole request, and the
+/// operation derives every target from that DID's own log; see
+/// `operations::did_webvh::realign` for why that is what makes this safe to
+/// expose at all.
+pub(super) async fn handle_dids_realign_keys(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: RealignDidKeysBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
+        return reject;
+    }
+    match operations::did_webvh::realign_did_key_records(
+        &state.keys_ks,
+        &state.webvh_ks,
+        &state.audit_sink,
+        auth,
+        &req.did,
+        req.dry_run,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
     }
 }
 
