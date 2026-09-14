@@ -626,16 +626,21 @@ pub(crate) enum BootstrapCommands {
     /// For non-TEE VTAs use `pnm setup` (temp did:key + ACL grant +
     /// auto-rotate on first connect).
     Connect {
-        /// Base URL of the target VTA.
-        #[arg(long)]
-        vta_url: String,
+        /// VTA DID to resolve locally (did:webvh verifies the SCID and log).
+        /// Bootstrap uses the REST endpoint advertised in its DID document.
+        #[arg(long, required_unless_present = "vta_url", conflicts_with = "vta_url")]
+        vta_did: Option<String>,
+        /// Explicit base URL fallback when the VTA DID is not yet resolvable.
+        /// Unlike --vta-did, this does not pin the VTA's identity.
+        #[arg(long, required_unless_present = "vta_did", conflicts_with = "vta_did")]
+        vta_url: Option<String>,
         /// Out-of-band digest anchor. Compared against the server's
-        /// reported digest and the locally computed one. Required unless
-        /// `--no-verify-digest` is passed.
+        /// reported digest and the locally computed one. Not needed with
+        /// --expect-pcr0: connect generates the digest server-side during the call.
         #[arg(long)]
         expect_digest: Option<String>,
         /// Skip out-of-band digest verification (testing only — prints a warning).
-        /// Required when `--expect-digest` is not provided; there is no silent TOFU.
+        /// Only needed when neither --expect-digest nor --expect-pcr0 is provided.
         #[arg(long)]
         no_verify_digest: bool,
         /// Pin the enclave image measurement (PCR0, hex). When set, refuse to
@@ -3018,6 +3023,55 @@ pub(crate) fn install_force_exit_handler() {
             eprintln!("\nShutting down — press Ctrl-C again to force exit.");
         }
     });
+}
+
+#[cfg(test)]
+mod bootstrap_connect_flag_tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_connect_accepts_either_target() {
+        for (flag, value) in [
+            ("--vta-did", "did:webvh:scid:vta.example.com"),
+            ("--vta-url", "https://vta.example.com:8443"),
+        ] {
+            assert!(
+                Cli::try_parse_from([
+                    "pnm",
+                    "bootstrap",
+                    "connect",
+                    flag,
+                    value,
+                    "--expect-pcr0",
+                    "abcd",
+                ])
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_connect_requires_exactly_one_target() {
+        let missing = Cli::try_parse_from(["pnm", "bootstrap", "connect"])
+            .err()
+            .unwrap();
+        assert_eq!(
+            missing.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let conflicting = Cli::try_parse_from([
+            "pnm",
+            "bootstrap",
+            "connect",
+            "--vta-did",
+            "did:webvh:scid:vta.example.com",
+            "--vta-url",
+            "https://vta.example.com",
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(conflicting.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
 }
 
 #[cfg(test)]

@@ -324,8 +324,8 @@ with the new PCR0 value from `nitro-cli build-enclave` output.
 it *client-side* at first-boot bootstrap:
 
 ```bash
-pnm bootstrap connect --vta-url https://vta.example.com \
-    --expect-pcr0 <hash> --expect-pcr8 <hash>
+pnm bootstrap connect --vta-did "$VTA_DID" \
+    --expect-pcr0 "$EXPECTED_PCR0"
 ```
 
 The attestation is always cryptographically verified; `--expect-pcr0/--expect-pcr8`
@@ -333,7 +333,22 @@ add defense-in-depth — a genuine-but-*wrong* enclave build produces a valid qu
 with a different PCR0, and the pin makes `pnm` refuse to install the admin
 credential (typed `PcrMismatch`). Use the **same** `nitro-cli build-enclave` hashes
 you put in the KMS policy; when PCR0 rotates on a rebuild, update both. Omit the
-flags to accept any genuine Nitro enclave (the pre-P3.4 behaviour).
+PCR0 only if supplying `--expect-digest` or explicitly opting out with
+`--no-verify-digest` (which warns). PCR8 is an optional additional pin,
+not a standalone image anchor.
+
+Set `VTA_DID` to the deployed VTA's DID and `EXPECTED_PCR0` to the trusted
+build's full 96-character hex measurement. The DID must already resolve:
+bootstrap verifies the WebVH log locally and uses its advertised REST URL,
+not a URL guessed from the DID host. The returned credential must name the
+same VTA DID. If the log is not yet available, `--vta-url <base-url>` is an
+explicit alternative to `--vta-did`, not an additional flag; it gives up DID
+identity pinning.
+
+With PCR0 pinned, online connect requires no digest flag and emits no TOFU
+warning. Its digest is generated server-side during the call. Offline
+`bootstrap open` and provision flows still require the out-of-band digest
+or the explicit warning-bearing opt-out.
 
 ### Component 4: Config Changes
 

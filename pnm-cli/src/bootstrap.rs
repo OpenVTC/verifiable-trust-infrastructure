@@ -8,8 +8,9 @@
 //! the online TEE attest/connect flow, and the authed REST bridge for
 //! `provision-integration`.
 //!
-//! `--expect-digest <hex>` is required by default. `--no-verify-digest` is
-//! available but prints a warning — there is no silent TOFU.
+//! Offline opening requires `--expect-digest` or an explicit warning-bearing
+//! `--no-verify-digest`. Online connect also accepts `--expect-pcr0` as its
+//! anchor: the fresh server-generated digest cannot be known before the call.
 
 use std::fs;
 use std::io::Write;
@@ -333,7 +334,83 @@ struct BootstrapResponseWire {
     digest: String,
 }
 
-/// `pnm bootstrap connect --vta-url <URL> [--expect-digest <HEX>]
+/// Resolve without the session helper's URL-guessing fallback. Bootstrap must
+/// fail closed on an invalid WebVH log, not silently trust the DID's DNS host.
+/// Use a local resolver so SCID/log verification happens on the operator's
+/// machine rather than trusting a remote resolver's returned document.
+async fn resolve_connect_url(
+    vta_did: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let result = async {
+        let resolved = resolver.resolve(vta_did).await?;
+        let doc = serde_json::to_value(&resolved.doc)?;
+        if doc["id"].as_str() != Some(vta_did) {
+            return Err("resolved DID document does not match requested VTA DID".into());
+        }
+        let url = vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(&doc)
+            .rest
+            .ok_or("VTA DID document does not advertise a REST endpoint")?;
+        let parsed = reqwest::Url::parse(&url)?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return Err("VTA REST endpoint must be an HTTP(S) URL".into());
+        }
+        Ok::<_, Box<dyn std::error::Error>>(url.trim_end_matches('/').to_string())
+    }
+    .await;
+    result.map_err(|e| {
+        format!(
+            "Could not resolve bootstrap endpoint for VTA DID {vta_did}: {e}. \
+             Retry once its DID log is published, or explicitly use --vta-url <URL> \
+             instead of --vta-did (without DID identity pinning)."
+        )
+        .into()
+    })
+}
+
+fn check_connect_vta_did(
+    expected: Option<&str>,
+    actual: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(expected) = expected
+        && expected != actual
+    {
+        return Err(format!(
+            "bootstrap credential VTA DID {actual} does not match requested VTA DID {expected}; \
+             refusing to install credentials"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The online digest is generated during connect; a pre-computable PCR0 pin
+/// also satisfies its anchor requirement. PCR8 alone is not an image pin.
+fn validate_connect_anchor(
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
+    expect_pcr0: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if expect_digest.is_some() || no_verify_digest {
+        // Preserve the shared conflict error and explicit opt-out warning.
+        return vta_cli_common::sealed_consumer::validate_digest_flags(
+            expect_digest,
+            no_verify_digest,
+        );
+    }
+    if expect_pcr0.is_some() {
+        return Ok(());
+    }
+    Err(
+        "connect requires --expect-pcr0 <hex>, --expect-digest <hex>, or \
+         --no-verify-digest (explicit opt-out with a warning). The connect digest is \
+         generated server-side during this call and cannot be pre-shared; pin \
+         --expect-pcr0 to the expected enclave image measurement."
+            .into(),
+    )
+}
+
+/// `pnm bootstrap connect --vta-did <DID> [--expect-digest <HEX>]
 ///   [--expect-pcr0 <HEX>] [--expect-pcr8 <HEX>]`
 ///
 /// Online TEE first-boot bootstrap. Generates an ephemeral Ed25519 keypair,
@@ -347,7 +424,8 @@ struct BootstrapResponseWire {
 /// `vta acl create` + auto-rotate on first authenticated connect).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_connect(
-    vta_url: String,
+    vta_did: Option<String>,
+    vta_url: Option<String>,
     expect_digest: Option<String>,
     no_verify_digest: bool,
     expect_pcr0: Option<String>,
@@ -355,12 +433,23 @@ pub async fn run_connect(
     vta_slug: Option<String>,
     pnm_config: &mut crate::config::PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Digest pinning is mandatory at the CLI; --no-verify-digest is the only
-    // explicit opt-out and prints a warning. There is no silent TOFU.
-    vta_cli_common::sealed_consumer::validate_digest_flags(
+    validate_connect_anchor(
         expect_digest.as_deref(),
         no_verify_digest,
+        expect_pcr0.as_deref(),
     )?;
+
+    let vta_url = match (vta_did.as_deref(), vta_url) {
+        (Some(did), None) => {
+            let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+                vta_sdk::resolver::build_did_cache_config(None),
+            )
+            .await?;
+            resolve_connect_url(did, &resolver).await?
+        }
+        (None, Some(url)) => url,
+        _ => return Err("provide exactly one of --vta-did or --vta-url".into()),
+    };
 
     let (ed_seed, ed_pub) = generate_ed25519_keypair();
     let nonce: [u8; 16] = rand::random();
@@ -464,6 +553,8 @@ pub async fn run_connect(
             .into());
         }
     };
+
+    check_connect_vta_did(vta_did.as_deref(), &credential.vta_did)?;
 
     let slug = vta_slug.unwrap_or_else(|| default_slug(&credential.vta_did));
     pnm_config.vtas.insert(
@@ -718,6 +809,108 @@ fn default_slug(vta_did: &str) -> String {
 mod tests {
     use super::parse_var;
     use serde_json::Value;
+
+    const VTA_DID: &str =
+        "did:webvh:Qmd1FCL9Vj2vJ433UDfC9MBstK6W6QWSQvYyeNn8va2fai:identity.example.com";
+
+    async fn fixture_resolver(doc: Value) -> affinidi_did_resolver_cache_sdk::DIDCacheClient {
+        let mut resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            vta_sdk::resolver::build_did_cache_config(None),
+        )
+        .await
+        .unwrap();
+        // These fixtures exercise endpoint selection, not log verification.
+        resolver
+            .add_did_document(VTA_DID, serde_json::from_value(doc).unwrap())
+            .await;
+        resolver
+    }
+
+    #[tokio::test]
+    async fn connect_resolves_advertised_rest_host_port_and_path() {
+        let resolver = fixture_resolver(serde_json::json!({
+            "id": VTA_DID,
+            "service": [
+                {"id": format!("{VTA_DID}#tsp"), "type": "TSPTransport", "serviceEndpoint": "did:example:mediator"},
+                {"id": format!("{VTA_DID}#custom-rest"), "type": "VTARest", "serviceEndpoint": "https://api.example.com:8443/vta/"}
+            ]
+        })).await;
+        assert_eq!(
+            super::resolve_connect_url(VTA_DID, &resolver)
+                .await
+                .unwrap(),
+            "https://api.example.com:8443/vta"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_refuses_missing_rest_or_wrong_document_instead_of_guessing_url() {
+        for doc in [
+            serde_json::json!({"id": VTA_DID}),
+            serde_json::json!({"id": "did:web:other.example.com", "service": [
+                {"id": "did:web:other.example.com#rest", "type": "VTARest", "serviceEndpoint": "https://api.example.com"}
+            ]}),
+            serde_json::json!({"id": VTA_DID, "service": [
+                {"id": format!("{VTA_DID}#rest"), "type": "VTARest", "serviceEndpoint": "file:///tmp/vta"}
+            ]}),
+        ] {
+            let resolver = fixture_resolver(doc).await;
+            let error = super::resolve_connect_url(VTA_DID, &resolver)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(VTA_DID));
+            assert!(error.contains("--vta-url"));
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_resolution_failure_names_did_and_explicit_fallback() {
+        let resolver = fixture_resolver(serde_json::json!({"id": VTA_DID})).await;
+        let did = "did:unsupported:bootstrap-target";
+        let error = super::resolve_connect_url(did, &resolver)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(did));
+        assert!(error.contains("--vta-url"));
+    }
+
+    #[test]
+    fn connect_pins_credential_identity_but_preserves_url_fallback() {
+        assert!(super::check_connect_vta_did(Some(VTA_DID), VTA_DID).is_ok());
+        assert!(super::check_connect_vta_did(None, VTA_DID).is_ok());
+        assert!(super::check_connect_vta_did(Some(VTA_DID), "did:web:other.example.com").is_err());
+    }
+
+    #[test]
+    fn connect_anchor_flag_matrix() {
+        for digest in [None, Some("digest")] {
+            for opt_out in [false, true] {
+                for pcr0 in [None, Some("pcr0")] {
+                    let expected = !(digest.is_some() && opt_out)
+                        && (digest.is_some() || opt_out || pcr0.is_some());
+                    assert_eq!(
+                        super::validate_connect_anchor(digest, opt_out, pcr0).is_ok(),
+                        expected,
+                        "digest={digest:?}, opt_out={opt_out}, pcr0={pcr0:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn connect_missing_anchor_explains_all_routes() {
+        let error = super::validate_connect_anchor(None, false, None)
+            .unwrap_err()
+            .to_string();
+        for route in ["--expect-pcr0", "--expect-digest", "--no-verify-digest"] {
+            assert!(error.contains(route));
+        }
+        assert!(error.contains("generated server-side"));
+        assert!(vta_cli_common::sealed_consumer::validate_digest_flags(None, false).is_err());
+    }
 
     #[test]
     fn parse_var_plain_string() {

@@ -82,7 +82,6 @@ pnm setup --name "my-vta"
 # Phase 2 (after the VTA operator adds your did:key to their ACL):
 #   bind the VTA's DID to the local entry, then connect
 pnm setup continue my-vta --vta-did did:webvh:abc:vta.example.com:primary
-pnm bootstrap connect --vta-url https://vta.example.com
 ```
 
 Cold-start operators (running `vta` themselves) pair this with
@@ -93,11 +92,29 @@ For a TEE-attested first-boot against a fresh Nitro Enclave VTA, the
 single-step path is:
 
 ```sh
-pnm bootstrap connect --vta-url https://enclave.example.com
+pnm bootstrap connect --vta-did "$VTA_DID" --expect-pcr0 "$EXPECTED_PCR0"
 ```
 
 This drives `POST /bootstrap/request`, opens the sealed admin bundle, and
-imports the resulting credential into the keyring.
+imports the resulting credential into the keyring. Set `VTA_DID` to the
+deployed VTA's DID and `EXPECTED_PCR0` to the 96-character hex image
+measurement from your trusted EIF build. Wait until the VTA's DID log is
+published and resolvable. The DID is resolved locally (including SCID and
+log verification for `did:webvh`); bootstrap uses the advertised REST
+endpoint, including its port and path, and rejects a credential for a
+different VTA DID.
+
+If the DID is not yet resolvable, explicitly replace `--vta-did "$VTA_DID"`
+with `--vta-url https://enclave.example.com`. Exactly one target is required;
+the URL fallback does not pin the VTA identity. Resolution failure never
+silently falls back to a URL guessed from the DID.
+
+PCR0 anchors online connect without a digest flag or TOFU warning, since
+the digest is generated during that call. `--expect-digest` remains an
+optional additional check; `--no-verify-digest` remains an explicit opt-out
+that warns, and cannot be combined with `--expect-digest`. A DID alone or
+`--expect-pcr8` alone does not replace the required anchor. Offline
+`bootstrap open` still requires `--expect-digest` or `--no-verify-digest`.
 
 ### 2. Verify connectivity
 
@@ -192,7 +209,7 @@ url = "http://localhost:8100"
 | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `setup --name <slug> [--overwrite]`                      | Phase 1: mint an ephemeral `did:key`, park it in the keyring as a pending VTA binding under `<slug>`. |
 | `setup continue <slug> --vta-did <did>`                  | Phase 2: bind the VTA's DID to the entry from phase 1 and mark it ready to authenticate.                  |
-| `bootstrap connect --vta-url <url>`                      | One-step TEE-attested first-boot against a Nitro Enclave VTA. Drives `POST /bootstrap/request`.           |
+| `bootstrap connect --vta-did <did> --expect-pcr0 <hex>`   | DID-first TEE-attested first-boot; explicit `--vta-url` fallback. Drives `POST /bootstrap/request`.        |
 | `auth login --credential-bundle <file>`                  | Apply a sealed admin credential bundle delivered out-of-band (e.g. a backup-restore handoff or a sealed transfer from another operator). |
 
 ### Authentication
