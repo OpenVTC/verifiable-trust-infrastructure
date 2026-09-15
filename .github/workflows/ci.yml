@@ -541,6 +541,24 @@ jobs:
         with:
           command: check advisories bans sources licenses
 
+      # `deploy/nitro/enclave-proxy` has its own `[workspace]` and its own
+      # lock, so the scan above — which walks the root workspace — has never
+      # seen it. It went unscanned for as long as it has existed, and the first
+      # run of this step found two live advisories in it (RUSTSEC-2026-0258 in
+      # `h2`, RUSTSEC-2026-0204 in `crossbeam-epoch`) plus two yanked crates,
+      # all of them already patched in the root lock. That crate terminates TLS
+      # on the parent instance, so it is the last one that should be the
+      # unscanned one.
+      #
+      # `--config deny.toml` is required: cargo-deny would otherwise look for a
+      # config beside the manifest, find none, and fall back to defaults —
+      # which enforce none of the justified ignores above.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: deploy/nitro/enclave-proxy/Cargo.toml
+          command: check
+          command-arguments: --config deny.toml advisories bans sources licenses
+
   semver-checks:
     # Compare each published crate's public API against the version on
     # crates.io. release-plz runs this too when it builds the Release PR, but
@@ -1194,13 +1212,43 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-enclave-proxy-${{ hashFiles('deploy/nitro/enclave-proxy/Cargo.lock') }}
+          # `encproxy`, not `enclave-proxy`: restore-keys are PREFIX matches,
+          # so `Linux-cargo-enclave-proxy-<hash>` is a hit for the `enclave`
+          # job's `Linux-cargo-enclave-` restore-key above. That job hashes
+          # `**/Cargo.lock`, which now includes this crate's lock, so it falls
+          # through to its restore-key routinely — and would get this job's
+          # ~400-package registry instead of the root workspace's, then
+          # silently re-download the difference. Same shape as #891
+          # (`Cache restored from key: Linux-cargo-features-`), documented at
+          # the top of this file.
+          key: ${{ runner.os }}-cargo-encproxy-${{ hashFiles('deploy/nitro/enclave-proxy/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-enclave-proxy-
+            ${{ runner.os }}-cargo-encproxy-
+
+      # Neither `fmt --all` nor `clippy --workspace` reaches an excluded crate,
+      # so this job is the only place either can run for it.
+      - run: cargo fmt --all -- --check
+
+      # Everything below is `--release` on purpose. `target/` is not cached
+      # (see the `enclave` job for why), so each profile means compiling all
+      # 399 locked packages from scratch — `aws-lc-sys` among them, which is a
+      # cmake/C build and the single slowest item. One profile for the whole
+      # job keeps that to once, inside `timeout-minutes: 20` on a cold runner,
+      # and release is the profile the downstream image ships anyway.
+      # `clippy` builds dependencies with plain rustc (the clippy driver
+      # applies to workspace members only), so the two steps after it reuse
+      # what it compiled.
+      - run: cargo clippy --release --all-targets --locked -- -D warnings
 
       # Matches the downstream Dockerfile's RELEASE_FROZEN=true path exactly.
       - run: cargo build --release --locked
-      - run: cargo test --locked
+
+      # Single-threaded: `detect.rs` mutates `PATH` / `NITRO_CLI` with
+      # `unsafe { set_var }`, and a `setenv` racing any other thread's `getenv`
+      # — including libc's own, via `temp_dir()` or the tokio tests — is the
+      # unsoundness edition 2024 made that call unsafe for. 23 tests, so
+      # serialising them costs nothing.
+      - run: cargo test --release --locked -- --test-threads=1
 
   mobile:
     # Cross-compile vta-mobile-core for the iOS + Android targets the app repos
