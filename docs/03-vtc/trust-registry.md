@@ -399,6 +399,29 @@ the failure is stated alongside them. A registry that was briefly
 unreachable is not evidence that drift went away, and clearing a real
 finding on a transient error would silently cancel an operator's alarm.
 
+### Browsing the records themselves
+
+Recognition's **Trust records** card enumerates the graph, from either side
+of the comparison above: **Registry** asks the trust registry what it holds,
+**Ours** asks this community what it believes it published.
+
+A registry read is a live round trip every time. It is never served from the
+local mirror — a stale local answer presented as the registry's is the exact
+fault the drift check exists to detect — so an unreachable registry is an
+error on this card rather than a quietly substituted list, and the card is
+not polled. Refresh is deliberate.
+
+The assertion column has **three** states, not two. `recognized` and
+`authorized` each appear only on the record type that carries them, and an
+absent one means the record makes no such assertion. It is not `false`:
+showing "not authorised" against a recognition record would invent a refusal
+the registry never made.
+
+`vtc/registry/records/list/0.1`, admin-gated. The API takes the full filter
+set (`entityId`, `authorityId`, `action`, `resource`) and a cursor; the card
+shows the first page unfiltered, which is the whole graph for any community
+that has not outgrown one page.
+
 ### Triaging a failed job
 
 Below the counters, every failed job is listed in full: the member
