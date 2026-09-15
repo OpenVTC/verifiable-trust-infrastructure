@@ -84,7 +84,7 @@ pub(crate) fn parse_payload<T: serde::de::DeserializeOwned>(
 ///   `InvalidCursor` → `malformed_request`
 /// - `NotFound` / `Conflict` / `IdempotencyKeyConflict` → `task_failed`
 /// - everything else → `internal_error`
-pub(crate) fn app_error_to_reject(doc: &TrustTask<Value>, err: &AppError) -> TrustTaskOutcome {
+pub(crate) fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> TrustTaskOutcome {
     let message = err.to_string();
     let reason = match err {
         AppError::Authentication(_)
@@ -148,7 +148,7 @@ fn bound_details(details: Option<Value>) -> Option<Value> {
 
 /// Build a routed rejection document for the given reason. The framework
 /// computes the status code from the reject's standard code.
-pub(crate) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> TrustTaskOutcome {
+pub(crate) fn reject_with<P>(doc: &TrustTask<P>, reason: RejectReason) -> TrustTaskOutcome {
     // Bound `details` here rather than at each construction site: this is the
     // funnel every `RejectReason`-shaped rejection passes through, so a new
     // site cannot be added that skips the check.
@@ -174,8 +174,8 @@ pub(crate) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> Trust
 ///
 /// `details` passes through [`bound_details`] exactly as in [`reject_with`], so
 /// this cannot become the construction site that skips the framework's bound.
-pub(crate) fn reject_with_code(
-    doc: &TrustTask<Value>,
+pub(crate) fn reject_with_code<P>(
+    doc: &TrustTask<P>,
     code: TrustTaskCode,
     message: impl Into<String>,
     details: Option<Value>,
@@ -190,8 +190,8 @@ pub(crate) fn reject_with_code(
 
 /// Build a routed `#response` document with the given payload and wrap it in
 /// an HTTP 200 response.
-pub(crate) fn success_response<R: Serialize>(
-    doc: &TrustTask<Value>,
+pub(crate) fn success_response<P, R: Serialize>(
+    doc: &TrustTask<P>,
     payload: R,
 ) -> TrustTaskOutcome {
     let response_doc = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
