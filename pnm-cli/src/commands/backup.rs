@@ -105,9 +105,14 @@ async fn cmd_backup_import(
     println!("  Version:     {}", envelope.source_version);
     println!("  Audit:       {}", envelope.includes_audit);
 
+    // The floor binds on the way in too, so check it here rather than let the
+    // refusal arrive as a schema-conformance error naming a task URI.
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password")
+        .with_prompt(format!(
+            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
+        ))
         .interact()?;
+    validate_backup_password(&password)?;
 
     // Preview first
     let preview = client.backup_import(&envelope, &password, false).await?;
@@ -222,9 +227,14 @@ async fn cmd_backup_import_descriptor(
     println!("  Version:     {}", envelope.source_version);
     println!("  Audit:       {}", envelope.includes_audit);
 
+    // The floor binds on the way in too, so check it here rather than let the
+    // refusal arrive as a schema-conformance error naming a task URI.
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password")
+        .with_prompt(format!(
+            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
+        ))
         .interact()?;
+    validate_backup_password(&password)?;
 
     // Preview run: confirm=false. The descriptor-pattern import
     // ceremony uploads the bytes once and then re-runs finalize

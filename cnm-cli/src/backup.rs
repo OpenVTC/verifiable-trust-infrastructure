@@ -152,9 +152,14 @@ pub(crate) async fn cmd_import(
             .unwrap_or(false)
     );
 
+    // The floor binds on the way in too, so check it here rather than let the
+    // refusal arrive as a schema-conformance error naming a task URI.
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password")
+        .with_prompt(format!(
+            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
+        ))
         .interact()?;
+    validate_backup_password(&password)?;
 
     // Preview first (confirm=false) — no mutation, just row counts.
     println!("Validating backup...");
