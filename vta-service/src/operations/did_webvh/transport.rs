@@ -1,30 +1,55 @@
 //! Pure transport-resolution logic for WebVH hosting servers.
 //!
-//! Walks a server DID's service array and decides whether the VTA
-//! should talk to it via DIDComm or REST, and — for REST — which URL
-//! to dial. Kept pure (no resolver, no async, no I/O) so it can be
-//! unit-tested with stub service entries instead of a live
-//! `DIDCacheClient`.
+//! Walks a server DID's service array and decides whether the VTA can
+//! reach it through the **outbound Trust-Task seam** or must fall back
+//! to the legacy WebVH REST API — and, for REST, which URL to dial.
+//! Kept pure (no resolver, no async, no I/O) so it can be unit-tested
+//! with stub service entries instead of a live `DIDCacheClient`.
+//!
+//! ## This decides *whether* the seam applies, never *which* transport
+//!
+//! There used to be two transport selectors in this service, and this
+//! was the second one: it answered "DIDComm or REST" from its own copy
+//! of the service-type constants, in its own precedence order, with no
+//! knowledge of TSP. So a did-host advertising TSP was answered over
+//! DIDComm — the seam's `PREFERENCE_ORDER` (TSP > DIDComm > REST) never
+//! got to speak, because the choice had already been made here.
+//!
+//! Now this answers one narrower question: *can the seam carry a Trust
+//! Task to this server at all?* If the server advertises any transport
+//! the seam can use, the answer is [`ResolvedTransport::TrustTask`] and
+//! `operations::outbound` picks between them. Only a server advertising
+//! none of them falls back to the legacy REST client.
+//!
+//! The service-type constants come from `vta_sdk::protocol::matching`,
+//! the same module the seam reads, so the two cannot drift apart again.
 //!
 //! ## Accepted service types
 //!
-//! - `DIDCommMessaging` — preferred when present, regardless of
-//!   position in the service array.
+//! - `TSPTransport`, `DIDCommMessaging` — either one means the seam can
+//!   reach this server; it decides which to use.
 //! - `WebVHHosting` — the canonical type emitted by current
 //!   `did-hosting-daemon` / `did-hosting-server` builds.
 //! - `WebVHHostingService` — legacy alias accepted on **read only**.
 //!   We never emit it; existing daemon DIDs stamped before the
 //!   unification keep working.
 //!
-//! ## DIDComm precedence
+//! ## Seam precedence
 //!
-//! Workspace-wide invariant: when a DID advertises both transports,
-//! Service[] is canonically ordered DIDComm-first (see
+//! Workspace-wide invariant: when a DID advertises several transports,
+//! Service[] is canonically ordered (see
 //! `protocol::document::sort_services_canonical`). We don't rely on
-//! that ordering for *reading* foreign DIDs though — any DIDComm
-//! entry, wherever it sits, wins over every REST entry. This keeps
-//! third-party DIDs that emit non-canonical orderings working
+//! that ordering for *reading* foreign DIDs though — a seam-capable
+//! entry, wherever it sits, wins over every legacy-REST entry. This
+//! keeps third-party DIDs that emit non-canonical orderings working
 //! without surprising the operator.
+//!
+//! Note what this does **not** cover: `TrustTaskHTTPS`. A server
+//! advertising only that is reachable by the seam over its REST
+//! binding, but routing there would swap the legacy WebVH REST API for
+//! the Trust-Task one on the publish path — a live-data change this
+//! selector has no business making on its own. It stays on the legacy
+//! client until that retirement is taken deliberately.
 //!
 //! ## `hostingPath` is not the REST base
 //!
@@ -46,8 +71,15 @@
 //! `serviceEndpoint.uri` alone. `hostingPath` is ignored on read, and
 //! the templates no longer emit it (#759).
 
+/// Service types that mean "the outbound seam can carry a Trust Task here".
+///
+/// Re-exported from `vta_sdk::protocol::matching` rather than spelled again:
+/// a local copy is how this module came to not know about TSP in the first
+/// place, and the seam reads that module to decide what it can actually send.
+pub(crate) const SVC_TSP: &str = vta_sdk::protocol::matching::TSP_SERVICE_TYPE;
+
 /// Service-type string emitted on DIDComm endpoints (per DIDComm v2).
-pub(crate) const SVC_DIDCOMM: &str = "DIDCommMessaging";
+pub(crate) const SVC_DIDCOMM: &str = vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE;
 
 /// Service-type string emitted on current WebVH-host endpoints.
 pub(crate) const SVC_WEBVH_HOSTING: &str = "WebVHHosting";
@@ -68,7 +100,10 @@ pub(crate) trait ServiceEntry {
 /// Outcome of walking a server's service array.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedTransport {
-    DIDComm,
+    /// Reachable through `operations::outbound`, which picks the actual
+    /// transport from the peer's advertisement (TSP > DIDComm > REST).
+    TrustTask,
+    /// Legacy WebVH REST API — not the Trust-Task HTTPS binding.
     Rest { url: String },
 }
 
@@ -86,8 +121,11 @@ pub(crate) enum ResolvedTransport {
 pub(crate) fn resolve_server_transport<S: ServiceEntry>(
     services: &[S],
 ) -> Option<ResolvedTransport> {
-    if services.iter().any(|s| s.types().iter().any(is_didcomm)) {
-        return Some(ResolvedTransport::DIDComm);
+    if services
+        .iter()
+        .any(|s| s.types().iter().any(is_seam_capable))
+    {
+        return Some(ResolvedTransport::TrustTask);
     }
     for svc in services {
         if svc.types().iter().any(is_webvh_rest)
@@ -104,8 +142,8 @@ pub(crate) fn resolve_server_transport<S: ServiceEntry>(
 }
 
 #[inline]
-fn is_didcomm(t: &String) -> bool {
-    t == SVC_DIDCOMM
+fn is_seam_capable(t: &String) -> bool {
+    t == SVC_TSP || t == SVC_DIDCOMM
 }
 
 #[inline]
@@ -117,7 +155,7 @@ fn is_webvh_rest(t: &String) -> bool {
 /// the `validate_server_did` failure message so operators see the
 /// full accepted set at the point of rejection.
 pub(crate) const SUPPORTED_TYPES_HUMAN: &str =
-    "DIDCommMessaging, WebVHHosting, or WebVHHostingService (legacy)";
+    "TSPTransport, DIDCommMessaging, WebVHHosting, or WebVHHostingService (legacy)";
 
 // ── ServiceEntry impl for the resolver's concrete Service type ─────
 //
@@ -206,12 +244,88 @@ mod tests {
         assert_eq!(resolve_server_transport(&services), None);
     }
 
+    /// **The regression this change exists to end.** A did-host advertising
+    /// TSP — and nothing else the seam can use — used to fall through to the
+    /// legacy REST client, because this selector had never heard of TSP. The
+    /// host was reachable over its highest-preference transport the whole time
+    /// and the VTA dialled its REST API instead.
     #[test]
-    fn didcomm_only_resolves_to_didcomm() {
+    fn tsp_only_reaches_the_seam() {
+        let services = vec![TestService::new(&[SVC_TSP], None)];
+        assert_eq!(
+            resolve_server_transport(&services),
+            Some(ResolvedTransport::TrustTask)
+        );
+    }
+
+    /// TSP beside legacy REST: the seam is chosen, and `operations::outbound`
+    /// decides from there. This selector deliberately does **not** rank TSP
+    /// against DIDComm — that is `PREFERENCE_ORDER`'s job, and having two
+    /// rankings is what put a TSP host on DIDComm.
+    #[test]
+    fn tsp_beside_legacy_rest_still_reaches_the_seam() {
+        let services = vec![
+            TestService::new(&[SVC_WEBVH_HOSTING], Some("https://host.example")),
+            TestService::new(&[SVC_TSP], None),
+        ];
+        assert_eq!(
+            resolve_server_transport(&services),
+            Some(ResolvedTransport::TrustTask)
+        );
+    }
+
+    /// Both seam transports advertised: one answer, not a choice made here.
+    #[test]
+    fn tsp_and_didcomm_together_yield_one_answer() {
+        let services = vec![
+            TestService::new(&[SVC_DIDCOMM], None),
+            TestService::new(&[SVC_TSP], None),
+        ];
+        assert_eq!(
+            resolve_server_transport(&services),
+            Some(ResolvedTransport::TrustTask)
+        );
+    }
+
+    /// `TrustTaskHTTPS` is deliberately **not** a seam trigger here — see the
+    /// module header. A host advertising only it stays on the legacy WebVH
+    /// REST client, because routing it through the seam would swap the publish
+    /// path's API on live data.
+    #[test]
+    fn trust_task_https_alone_does_not_divert_the_publish_path() {
+        let services = vec![
+            TestService::new(
+                &[vta_sdk::protocol::matching::TRUST_TASK_HTTPS_SERVICE_TYPE],
+                Some("https://host.example/api"),
+            ),
+            TestService::new(&[SVC_WEBVH_HOSTING], Some("https://host.example")),
+        ];
+        assert_eq!(
+            resolve_server_transport(&services),
+            Some(ResolvedTransport::Rest {
+                url: "https://host.example".to_string()
+            })
+        );
+    }
+
+    /// The constants are the SDK's, not a second copy. A local copy is how this
+    /// module came to not know about TSP, so the equality is asserted rather
+    /// than trusted to review.
+    #[test]
+    fn the_service_types_are_the_sdk_ones() {
+        assert_eq!(SVC_TSP, vta_sdk::protocol::matching::TSP_SERVICE_TYPE);
+        assert_eq!(
+            SVC_DIDCOMM,
+            vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE
+        );
+    }
+
+    #[test]
+    fn didcomm_only_reaches_the_seam() {
         let services = vec![TestService::new(&[SVC_DIDCOMM], None)];
         assert_eq!(
             resolve_server_transport(&services),
-            Some(ResolvedTransport::DIDComm)
+            Some(ResolvedTransport::TrustTask)
         );
     }
 
@@ -248,19 +362,19 @@ mod tests {
     }
 
     #[test]
-    fn didcomm_wins_when_listed_first() {
+    fn a_seam_transport_wins_when_listed_first() {
         let services = vec![
             TestService::new(&[SVC_DIDCOMM], None),
             TestService::new(&[SVC_WEBVH_HOSTING], Some("https://x")),
         ];
         assert_eq!(
             resolve_server_transport(&services),
-            Some(ResolvedTransport::DIDComm)
+            Some(ResolvedTransport::TrustTask)
         );
     }
 
     #[test]
-    fn didcomm_wins_when_listed_after_rest() {
+    fn a_seam_transport_wins_when_listed_after_rest() {
         // The canonical ordering puts DIDComm first, but third-party
         // DIDs may not honour that. Walk the array twice rather than
         // trust the order.
@@ -270,7 +384,7 @@ mod tests {
         ];
         assert_eq!(
             resolve_server_transport(&services),
-            Some(ResolvedTransport::DIDComm)
+            Some(ResolvedTransport::TrustTask)
         );
     }
 

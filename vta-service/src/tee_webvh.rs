@@ -310,6 +310,10 @@ mod tests {
             did_resolver: &resolver,
             didcomm_bridge: &bridge,
             auth_locks: &locks,
+            // Offline: no mediator socket to lend, so the seam cannot choose
+            // TSP. Same reason as the `auth_locks` note above.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         };
         // The same document patch + signed update engine as services rest enable.
         let patched =

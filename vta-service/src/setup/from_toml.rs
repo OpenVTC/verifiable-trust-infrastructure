@@ -1822,6 +1822,10 @@ async fn create_simple_webvh_did(
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
         auth_locks: &auth_locks,
+        // Offline: no mediator socket to lend, so the seam cannot choose
+        // TSP. Same reason as the `auth_locks` note above.
+        #[cfg(feature = "tsp")]
+        tsp: None,
     };
     let result = operations::did_webvh::create_did_webvh(&deps, &auth, params, "setup")
         .await

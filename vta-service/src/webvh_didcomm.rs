@@ -1,16 +1,25 @@
-//! DIDComm transport for webvh server operations.
+//! Trust-Task client for webvh server operations.
 //!
-//! ## Why this is *not* a mirror of `webvh_client.rs`
+//! ## The name said DIDComm; the transport is no longer this module's business
 //!
-//! The REST sibling (`crate::webvh_client::WebvhClient`) carries:
-//! - explicit signing identity for the daemon challenge/response flow,
-//! - typed errors with operator-facing hints (401 vs 403 split),
-//! - HTTPS enforcement on the dialed URL,
-//! - audience binding via the DIDComm `to:` field.
+//! This was the DIDComm sibling of `webvh_client.rs`, and it argued at length
+//! that it needed none of the REST client's signing identity, audience binding
+//! or typed-error machinery because DIDComm authcrypt supplied each one at the
+//! envelope layer. That argument was sound and is now the wrong shape: since
+//! the outbound refactor every document here goes to `operations::outbound`,
+//! which reads the peer's advertisement and picks TSP > DIDComm > REST. The
+//! guarantees quoted below hold for the DIDComm binding specifically; the other
+//! bindings carry their own.
 //!
-//! This module deliberately carries none of those. It's not an
-//! oversight — DIDComm authcrypt already gives us the equivalents
-//! at the envelope layer:
+//! What is still this module's: **the did-management documents** it composes
+//! and the replies it reads. What is not: choosing a transport, applying its
+//! binding, or awaiting an answer — the same three steps for every peer, done
+//! once in the seam.
+//!
+//! **Do not "add parity" with `webvh_client.rs` by porting the JWS-flow
+//! primitives in here.** They would duplicate what the transport layer already
+//! provides, and the duplicate would drift out of sync with it. The original
+//! reasoning, still accurate for the DIDComm leg:
 //!
 //! - **Signing identity** — the `DIDCommBridge` packs every outbound
 //!   message with the VTA's existing DIDComm sender key; the daemon
@@ -27,11 +36,6 @@
 //! - **Transport security** — DIDComm over the mediator is
 //!   end-to-end encrypted regardless of the underlying socket; there
 //!   is no plaintext-leak surface to defend at this layer.
-//!
-//! **Do not "add parity" by porting the JWS-flow primitives into
-//! this module.** They would duplicate what authcrypt already
-//! provides, and the duplicate would drift out of sync with the
-//! envelope-layer guarantees.
 
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::{AppError, bad_gateway_error};
@@ -238,7 +242,15 @@ fn parse_check_name_response(body: serde_json::Value) -> Result<RequestUriRespon
 pub struct WebvhDIDCommClient<'a> {
     bridge: &'a DIDCommBridge,
     resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
-    server_did: &'a str,
+    /// Owned rather than borrowed so `WebvhTransport` can hold the whole client
+    /// in its arm instead of the parts to rebuild one. Nine call sites used to
+    /// destructure those parts and re-run `new`; storing the client is what
+    /// lets a field be added here — like `tsp` — without touching any of them.
+    server_did: String,
+    /// What lets the seam choose TSP. `None` on a caller with no `AppState` to
+    /// borrow a socket from, where DIDComm is the honest answer.
+    #[cfg(feature = "tsp")]
+    tsp: Option<crate::operations::outbound::TspSender<'a>>,
 }
 
 /// The `trust-task-error/0.x` family the framework emits for transport-level
@@ -351,12 +363,15 @@ impl<'a> WebvhDIDCommClient<'a> {
     pub fn new(
         bridge: &'a DIDCommBridge,
         resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
-        server_did: &'a str,
+        server_did: impl Into<String>,
+        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender<'a>>,
     ) -> Self {
         Self {
             bridge,
             resolver,
-            server_did,
+            server_did: server_did.into(),
+            #[cfg(feature = "tsp")]
+            tsp,
         }
     }
 
@@ -382,7 +397,7 @@ impl<'a> WebvhDIDCommClient<'a> {
         response_task: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, AppError> {
-        let doc = build_envelope_document(task, self.server_did, self.bridge.vta_did(), payload);
+        let doc = build_envelope_document(task, &self.server_did, self.bridge.vta_did(), payload);
 
         // Carriage is `operations::outbound`'s, not this client's: choosing the
         // transport, applying its binding and awaiting the reply are the same
@@ -393,19 +408,31 @@ impl<'a> WebvhDIDCommClient<'a> {
         //
         // `TransportAuthenticated`, and this is the call being made explicit
         // rather than changed: this client has never verified a reply's proof.
-        // Over the DIDComm binding the peer is authenticated end to end by the
-        // authcrypt envelope, and these replies confer nothing — a reserved
-        // path, an availability answer, an acknowledgement. Raising it to
-        // `SignedByRecipient` is a real question, and one to ask of did-hosting
-        // (whether it signs these replies at all) rather than to assume here.
-        let reply =
-            crate::operations::outbound::Outbound::didcomm_or_rest(self.resolver, self.bridge)
-                .send(
-                    self.server_did,
-                    doc,
-                    crate::operations::outbound::ReplyTrust::TransportAuthenticated,
-                )
-                .await?;
+        // The two sealing bindings both authenticate the peer end to end — the
+        // authcrypt envelope over DIDComm, the sender VID over TSP — and these
+        // replies confer nothing anyway: a reserved path, an availability
+        // answer, an acknowledgement. Raising it to `SignedByRecipient` is a
+        // real question, and one to ask of did-hosting (whether it signs these
+        // replies at all) rather than to assume here.
+        //
+        // Worth re-reading if the seam ever selects the Trust-Task HTTPS
+        // binding for this caller: TLS authenticates a *host*, not the DID that
+        // composed the reply, so `TransportAuthenticated` would then be a
+        // weaker claim than it is today. `transport.rs` deliberately keeps
+        // `TrustTaskHTTPS` out of the seam's reach here, which is what makes
+        // the sentence above true rather than merely usually true.
+        let reply = crate::operations::outbound::Outbound::from_parts(
+            self.resolver,
+            self.bridge,
+            #[cfg(feature = "tsp")]
+            self.tsp.clone(),
+        )
+        .send(
+            &self.server_did,
+            doc,
+            crate::operations::outbound::ReplyTrust::TransportAuthenticated,
+        )
+        .await?;
 
         unwrap_envelope_reply(reply, response_task)
     }

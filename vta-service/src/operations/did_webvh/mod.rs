@@ -74,7 +74,6 @@ use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::keys::{self, KeyType as SdkKeyType, encode_private_multibase};
 use crate::store::KeyspaceHandle;
 use crate::webvh_client::{RequestUriResponse, WebvhClient};
-use crate::webvh_didcomm::WebvhDIDCommClient;
 use crate::webvh_store;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use vta_support::version_time::next_version_time;
@@ -135,6 +134,16 @@ pub struct WebvhDeps<'a> {
     pub did_resolver: &'a DIDCacheClient,
     pub didcomm_bridge: &'a Arc<DIDCommBridge>,
     pub auth_locks: &'a WebvhAuthLocks,
+    /// What lets the outbound seam choose TSP when talking to a webvh host.
+    ///
+    /// `None` is a real answer, not a gap: a CLI, a setup wizard or a DIDComm
+    /// handler holds no mediator socket of its own, and the seam correctly
+    /// falls to DIDComm there. It is carried on the dep bundle rather than
+    /// rebuilt further down because `AppState` is the only thing that can
+    /// produce one, and the webvh ops layer deliberately does not take an
+    /// `AppState`.
+    #[cfg(feature = "tsp")]
+    pub tsp: Option<crate::operations::outbound::TspSender<'a>>,
 }
 
 impl<'a> WebvhDeps<'a> {
@@ -169,6 +178,8 @@ impl<'a> WebvhDeps<'a> {
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
+            #[cfg(feature = "tsp")]
+            tsp: crate::operations::outbound::TspSender::from_app_state(s),
         }
     }
 
@@ -197,6 +208,13 @@ impl<'a> WebvhDeps<'a> {
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
+            // `VtaState` is the DIDComm handler's state and holds no TSP
+            // socket, profile or reply registry. Reaching a webvh host over TSP
+            // from inside a DIDComm handler would need those threaded onto
+            // `VtaState` first; until then the seam falls to DIDComm, which is
+            // the transport this caller arrived on anyway.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         }
     }
 }
@@ -229,6 +247,10 @@ pub struct CreateDidWebvhDeps<'a> {
     /// refresh/reauth against a hosting daemon. Only used when
     /// publishing to a registered server (not serverless / did:key).
     pub auth_locks: &'a WebvhAuthLocks,
+    /// What lets the outbound seam choose TSP when publishing to a webvh host.
+    /// See the note on [`WebvhDeps::tsp`] — `None` is a real answer.
+    #[cfg(feature = "tsp")]
+    pub tsp: Option<crate::operations::outbound::TspSender<'a>>,
 }
 
 impl<'a> CreateDidWebvhDeps<'a> {
@@ -260,6 +282,8 @@ impl<'a> CreateDidWebvhDeps<'a> {
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
+            #[cfg(feature = "tsp")]
+            tsp: crate::operations::outbound::TspSender::from_app_state(s),
         }
     }
 
@@ -286,6 +310,10 @@ impl<'a> CreateDidWebvhDeps<'a> {
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
+            // See the same field on `WebvhDeps::from_vta_state`: a DIDComm
+            // handler's state holds no TSP socket to lend.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         }
     }
 }
@@ -661,6 +689,7 @@ async fn authenticated_server_transport<'a>(
     auth_locks: &WebvhAuthLocks,
     vta_did: Option<&str>,
     server: &WebvhServerRecord,
+    #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender<'a>>,
 ) -> Result<WebvhTransport<'a>, AppError> {
     let vta_did = vta_did.ok_or_else(|| {
         AppError::Validation(
@@ -682,7 +711,15 @@ async fn authenticated_server_transport<'a>(
         identity: &identity,
         locks: auth_locks,
     };
-    WebvhTransport::from_server_authenticated(server, did_resolver, didcomm_bridge, &auth_ctx).await
+    WebvhTransport::from_server_authenticated(
+        server,
+        did_resolver,
+        didcomm_bridge,
+        &auth_ctx,
+        #[cfg(feature = "tsp")]
+        tsp,
+    )
+    .await
 }
 
 pub async fn create_did_webvh(
@@ -706,6 +743,10 @@ pub async fn create_did_webvh(
         did_resolver,
         didcomm_bridge,
         auth_locks,
+        // `tsp` is deliberately not destructured here: every other field is a
+        // shared reference and so `Copy`, while a `TspSender` is not. Cloning
+        // it at the one place it is used keeps `*deps` a copy.
+        ..
     } = *deps;
 
     auth.require_admin()?;
@@ -1028,6 +1069,8 @@ pub async fn create_did_webvh(
             auth_locks,
             config.vta_did.as_deref(),
             &server,
+            #[cfg(feature = "tsp")]
+            deps.tsp.clone(),
         )
         .await?;
         // Domain selection: `params.domain` is the explicit caller-
@@ -1445,6 +1488,8 @@ pub async fn create_did_webvh(
             auth_locks,
             config.vta_did.as_deref(),
             &server,
+            #[cfg(feature = "tsp")]
+            deps.tsp.clone(),
         )
         .await?;
         // Reuse the same `params.domain` selection the request_uri
@@ -1869,47 +1914,61 @@ async fn revoke_sessions_for_did(
 // WebVH transport abstraction
 // ---------------------------------------------------------------------------
 
-/// Unified transport for communicating with a WebVH server via REST or DIDComm.
+/// How this VTA reaches a WebVH hosting server: through the outbound
+/// Trust-Task seam, or over the legacy WebVH REST API.
 ///
 /// Owns all necessary state so callers don't need to branch on transport type.
+/// Note the two arms are no longer peers: `Rest` names one concrete protocol,
+/// while `TrustTask` names *the seam*, which picks among TSP, DIDComm and the
+/// Trust-Task HTTPS binding for itself.
 pub(super) enum WebvhTransport<'a> {
     Rest(WebvhClient),
-    DIDComm {
-        bridge: &'a DIDCommBridge,
-        /// Needed because the DIDComm leg now goes through
-        /// `operations::outbound`, which reads the peer's advertisement to
-        /// choose a transport rather than assuming one.
-        resolver: &'a DIDCacheClient,
-        server_did: String,
-    },
+    /// Reachable through `operations::outbound`, which reads the peer's
+    /// advertisement and picks TSP > DIDComm > REST.
+    ///
+    /// This arm was called `DIDComm` and named the wrong thing: the leg has
+    /// gone through the seam since the outbound refactor, and the seam chooses.
+    /// The old name is why a did-host advertising TSP was answered over
+    /// DIDComm — not because anything decided to, but because the name said
+    /// so and nobody re-read it.
+    TrustTask(crate::webvh_didcomm::WebvhDIDCommClient<'a>),
 }
 
 impl<'a> WebvhTransport<'a> {
     /// Resolve the server DID and construct the appropriate transport.
     ///
     /// Transport selection is delegated to the pure
-    /// [`transport::resolve_server_transport`] helper — DIDComm wins
-    /// over REST regardless of service[] ordering, and both
-    /// `WebVHHosting` (current) and `WebVHHostingService` (legacy
-    /// alias) are accepted on read. See [`transport`] for the
+    /// [`transport::resolve_server_transport`] helper, which answers only
+    /// whether the outbound seam can reach this server at all — the seam then
+    /// picks TSP > DIDComm > REST from the peer's advertisement. Both
+    /// `WebVHHosting` (current) and `WebVHHostingService` (legacy alias) are
+    /// accepted on read as the legacy-REST fallback. See [`transport`] for the
     /// canonical set of types we emit vs. accept.
+    ///
+    /// `tsp` is what lets the seam choose TSP; see [`WebvhDeps::tsp`] for why
+    /// `None` is a real answer rather than a gap.
     pub(super) async fn from_server(
         server: &WebvhServerRecord,
         did_resolver: &'a DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
+        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender<'a>>,
     ) -> Result<Self, AppError> {
         let resolved = did_resolver.resolve(&server.did).await.map_err(|e| {
             AppError::Internal(format!("failed to resolve server DID {}: {e}", server.did))
         })?;
 
         match transport::resolve_server_transport(&resolved.doc.service) {
-            Some(transport::ResolvedTransport::DIDComm) => {
-                info!(server_did = %server.did, transport = "didcomm", "resolved webvh server endpoint");
-                Ok(Self::DIDComm {
-                    bridge: didcomm_bridge,
-                    resolver: did_resolver,
-                    server_did: server.did.clone(),
-                })
+            Some(transport::ResolvedTransport::TrustTask) => {
+                info!(server_did = %server.did, transport = "trust-task", "resolved webvh server endpoint");
+                Ok(Self::TrustTask(
+                    crate::webvh_didcomm::WebvhDIDCommClient::new(
+                        didcomm_bridge,
+                        did_resolver,
+                        server.did.clone(),
+                        #[cfg(feature = "tsp")]
+                        tsp,
+                    ),
+                ))
             }
             Some(transport::ResolvedTransport::Rest { url }) => {
                 info!(server_did = %server.did, transport = "rest", %url, "resolved webvh server endpoint");
@@ -1937,16 +1996,7 @@ impl<'a> WebvhTransport<'a> {
     ) -> Result<RequestUriResponse, AppError> {
         match self {
             Self::Rest(c) => c.request_uri(path, domain).await,
-            Self::DIDComm {
-                bridge,
-                resolver,
-                server_did,
-                ..
-            } => {
-                WebvhDIDCommClient::new(bridge, resolver, server_did)
-                    .request_uri(path, domain)
-                    .await
-            }
+            Self::TrustTask(c) => c.request_uri(path, domain).await,
         }
     }
 
@@ -1958,16 +2008,7 @@ impl<'a> WebvhTransport<'a> {
     ) -> Result<(), AppError> {
         match self {
             Self::Rest(c) => c.publish_did(mnemonic, log_content, domain).await,
-            Self::DIDComm {
-                bridge,
-                resolver,
-                server_did,
-                ..
-            } => {
-                WebvhDIDCommClient::new(bridge, resolver, server_did)
-                    .publish_did(mnemonic, log_content, domain)
-                    .await
-            }
+            Self::TrustTask(c) => c.publish_did(mnemonic, log_content, domain).await,
         }
     }
 
@@ -2005,8 +2046,16 @@ impl<'a> WebvhTransport<'a> {
         did_resolver: &'a DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
         auth_ctx: &auth_cache::AuthContext<'_>,
+        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender<'a>>,
     ) -> Result<Self, AppError> {
-        let mut transport = Self::from_server(server, did_resolver, didcomm_bridge).await?;
+        let mut transport = Self::from_server(
+            server,
+            did_resolver,
+            didcomm_bridge,
+            #[cfg(feature = "tsp")]
+            tsp,
+        )
+        .await?;
         if let Self::Rest(ref mut client) = transport {
             auth_cache::ensure_fresh_access_token(auth_ctx, server, client).await?;
         }
@@ -2038,16 +2087,7 @@ impl<'a> WebvhTransport<'a> {
                 }
                 Err(e) => Err(e),
             },
-            Self::DIDComm {
-                bridge,
-                resolver,
-                server_did,
-                ..
-            } => {
-                WebvhDIDCommClient::new(bridge, resolver, server_did)
-                    .publish_did(mnemonic, log_content, domain)
-                    .await
-            }
+            Self::TrustTask(c) => c.publish_did(mnemonic, log_content, domain).await,
         }
     }
 
@@ -2073,16 +2113,7 @@ impl<'a> WebvhTransport<'a> {
                 }
                 Err(e) => Err(e),
             },
-            Self::DIDComm {
-                bridge,
-                resolver,
-                server_did,
-                ..
-            } => {
-                WebvhDIDCommClient::new(bridge, resolver, server_did)
-                    .delete_did(mnemonic, domain)
-                    .await
-            }
+            Self::TrustTask(c) => c.delete_did(mnemonic, domain).await,
         }
     }
 
@@ -2110,16 +2141,7 @@ impl<'a> WebvhTransport<'a> {
                 }
                 Err(e) => Err(e),
             },
-            Self::DIDComm {
-                bridge,
-                resolver,
-                server_did,
-                ..
-            } => {
-                WebvhDIDCommClient::new(bridge, resolver, server_did)
-                    .register_did_atomic(path, did_log, force, domain)
-                    .await
-            }
+            Self::TrustTask(c) => c.register_did_atomic(path, did_log, force, domain).await,
         }
     }
 
@@ -2141,15 +2163,8 @@ impl<'a> WebvhTransport<'a> {
         // to reach sideways to REST for. Auth is the transport's own — no
         // bearer token, hence no 401 retry on this arm.
         let c = match self {
-            Self::DIDComm {
-                bridge,
-                resolver,
-                server_did,
-                ..
-            } => {
-                return WebvhDIDCommClient::new(bridge, resolver, server_did)
-                    .list_agent_names(mnemonic, domain)
-                    .await;
+            Self::TrustTask(c) => {
+                return c.list_agent_names(mnemonic, domain).await;
             }
             Self::Rest(c) => c,
         };
@@ -2177,15 +2192,8 @@ impl<'a> WebvhTransport<'a> {
         server: &WebvhServerRecord,
     ) -> Result<crate::webvh_client::AgentNameAvailabilityWire, AppError> {
         let c = match self {
-            Self::DIDComm {
-                bridge,
-                resolver,
-                server_did,
-                ..
-            } => {
-                return WebvhDIDCommClient::new(bridge, resolver, server_did)
-                    .check_agent_name(name, domain)
-                    .await;
+            Self::TrustTask(c) => {
+                return c.check_agent_name(name, domain).await;
             }
             Self::Rest(c) => c,
         };
@@ -2215,13 +2223,7 @@ impl<'a> WebvhTransport<'a> {
         server: &WebvhServerRecord,
     ) -> Result<(), AppError> {
         let c = match self {
-            Self::DIDComm {
-                bridge,
-                resolver,
-                server_did,
-                ..
-            } => {
-                let client = WebvhDIDCommClient::new(bridge, resolver, server_did);
+            Self::TrustTask(client) => {
                 // `host_state()` is `Some` for exactly the three verbs the
                 // host serves via `update` and `None` for `remove`, so this
                 // match is the verb→task mapping — no second place for the

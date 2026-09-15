@@ -488,6 +488,12 @@ pub async fn provision_integration(
             did_resolver,
             didcomm_bridge: &state.didcomm_bridge,
             auth_locks: &state.webvh_auth_locks,
+            // `ProvisionIntegrationDeps` carries no mediator socket, so the
+            // seam falls to DIDComm here. Provisioning is also the one moment
+            // the VTA has not yet learned anything about the host, so there is
+            // nothing this could be built from opportunistically.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         };
         let create_result = super::did_webvh::create_did_webvh(
             &create_deps,

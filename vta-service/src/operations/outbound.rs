@@ -175,7 +175,7 @@ impl<'a> TspSender<'a> {
     /// mediator configured. Absence here removes TSP from selection rather than
     /// failing at send time, which is the difference between a peer being
     /// reached over its next-preferred transport and a request that errors.
-    fn from_app_state(state: &'a crate::server::AppState) -> Option<Self> {
+    pub(crate) fn from_app_state(state: &'a crate::server::AppState) -> Option<Self> {
         let mediator_did = state
             .config
             .try_read()
@@ -218,23 +218,28 @@ pub struct Outbound<'a> {
 }
 
 impl<'a> Outbound<'a> {
-    /// A seam that can only reach a peer over DIDComm or REST.
+    /// A seam assembled from borrowed parts rather than from an `AppState`.
     ///
-    /// For a caller that holds a bridge and a resolver but no `AppState` —
-    /// today that is `webvh_didcomm`, whose client is constructed deep inside
-    /// the webvh transport enum. It is a **limitation, not a decision**: a
-    /// did-host advertises TSP and now serves the full Trust-Task surface on it
-    /// (affinidi-webvh-service#183), so this caller is passing up its
-    /// highest-preference transport for want of plumbing. Threading `AppState`
-    /// through `WebvhTransport` removes the constructor.
-    pub fn didcomm_or_rest(
+    /// For a caller whose own dependencies were threaded to it — today that is
+    /// the webvh layer, whose client is constructed deep inside
+    /// `WebvhTransport` and which carries a [`TspSender`] down from its
+    /// `WebvhDeps`. Passing `tsp: None` is a real answer, not a shortcut: a
+    /// CLI or a setup wizard holds no mediator socket, and the seam correctly
+    /// falls to DIDComm there.
+    ///
+    /// This replaced a `didcomm_or_rest` constructor that hardcoded `None` and
+    /// so silently removed TSP from selection for every webvh call. The name is
+    /// the difference: a caller now has to pass *something* for TSP, and
+    /// passing `None` is visible at the call site.
+    pub fn from_parts(
         resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
         #[cfg(feature = "didcomm")] bridge: &'a DIDCommBridge,
+        #[cfg(feature = "tsp")] tsp: Option<TspSender<'a>>,
     ) -> Self {
         Self {
             resolver,
             #[cfg(feature = "tsp")]
-            tsp: None,
+            tsp,
             #[cfg(feature = "didcomm")]
             bridge,
         }

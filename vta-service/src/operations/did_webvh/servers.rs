@@ -112,9 +112,10 @@ pub async fn list_webvh_servers(
 ///
 /// Only the REST transport is supported today — the v0.8
 /// `did-management/me/domains/...` task is REST-only on the
-/// hosting server side. For DIDComm-only servers we return an
-/// empty list and a `None` default so the CLI falls back to the
-/// server-side resolution chain rather than blocking the user.
+/// hosting server side. For a server reached through the outbound
+/// seam we return an empty list and a `None` default so the CLI falls
+/// back to the server-side resolution chain rather than blocking the
+/// user.
 pub async fn list_webvh_server_domains(
     deps: &crate::operations::did_webvh::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -158,6 +159,8 @@ pub async fn list_webvh_server_domains(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
     let entries = match transport {
@@ -185,10 +188,10 @@ pub async fn list_webvh_server_domains(
                 default: resp.default,
             }
         }
-        crate::operations::did_webvh::WebvhTransport::DIDComm { .. } => {
-            // DIDComm-only servers don't have a `me/domains` op
-            // in the v0.8 surface; the CLI falls back to the
-            // server's resolution chain.
+        crate::operations::did_webvh::WebvhTransport::TrustTask { .. } => {
+            // A server reached through the seam has no `me/domains` op in the
+            // v0.8 surface — that is a legacy WebVH REST verb, not a Trust
+            // Task — so the CLI falls back to the server's resolution chain.
             ListWebvhServerDomainsResultBody {
                 domains: vec![],
                 default: None,
@@ -270,6 +273,8 @@ pub async fn reconcile_webvh_server_dids(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
 
@@ -277,15 +282,15 @@ pub async fn reconcile_webvh_server_dids(
         crate::operations::did_webvh::WebvhTransport::Rest(c) => {
             c.list_dids_for_owner(vta_did_value).await?
         }
-        crate::operations::did_webvh::WebvhTransport::DIDComm { .. } => {
+        crate::operations::did_webvh::WebvhTransport::TrustTask { .. } => {
             // Refuse rather than answer "nothing to report". `/api/dids` is
             // REST-only on the host, and an empty diff here would read as
             // "checked, all clean" — the one wrong answer this operation can
             // give, because it is the answer an operator stops looking after.
             return Err(AppError::Validation(format!(
-                "server `{server_id}` is reachable over DIDComm only, and the host's DID \
-                 listing is REST-only — this VTA cannot reconcile against it. Register a \
-                 REST endpoint for the server to use this command."
+                "server `{server_id}` advertises no legacy WebVH REST endpoint, and the \
+                 host's DID listing is REST-only — this VTA cannot reconcile against it. \
+                 Register a REST endpoint for the server to use this command."
             )));
         }
     };
@@ -739,18 +744,20 @@ pub async fn retire_orphan_slot(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
 
     let client = match transport {
         crate::operations::did_webvh::WebvhTransport::Rest(c) => c,
-        crate::operations::did_webvh::WebvhTransport::DIDComm { .. } => {
+        crate::operations::did_webvh::WebvhTransport::TrustTask { .. } => {
             // Same refusal reconcile gives, and for the same reason: the
             // listing is REST-only, and without it orphanhood is unproven.
             return Ok(Err(RetireOrphanRefusal::ListingUnavailable {
                 server_id: body.server_id.clone(),
-                detail: "the host's DID listing is REST-only and this server is \
-                         registered over DIDComm"
+                detail: "the host's DID listing is REST-only and this server \
+                         advertises no legacy WebVH REST endpoint"
                     .to_string(),
             }));
         }

@@ -135,6 +135,12 @@ pub async fn strip_all_passkey_vms(
             did_resolver,
             didcomm_bridge,
             auth_locks: webvh_auth_locks,
+            // No `AppState` here — this cleanup runs from a passkey
+            // context that holds keyspaces and a bridge, not a mediator
+            // socket. The seam falls to DIDComm, which is what this path
+            // used before TSP was selectable at all.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         };
         let result = update_did_webvh(
             &deps,
