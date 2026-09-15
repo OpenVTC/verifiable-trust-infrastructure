@@ -182,6 +182,16 @@ How to operate and integrate against a VTC.
 In-flight or historical design documents kept for context. These
 are implementer-facing rather than operator-facing.
 
+- **[TSP Rev 3 migration](05-design-notes/tsp-rev3-migration.md)** — the
+  inventory of what this repository has to change for Trust Spanning Protocol
+  Rev 3, which is a flag day rather than a migration: nothing a Rev 2 peer packs
+  can be unpacked by a Rev 3 one, in either direction. The functional change is
+  one arm — answering a relationship invite — and the reason it matters is that
+  §7.2.2 makes a missing relationship a *silent* drop, so an unmigrated VTA
+  looks like a transport that accepts connections and never replies. Blocked on
+  an `affinidi-tdk` release; names the authorization decision that has to be
+  taken rather than arrived at.
+
 - **[Task version negotiation](05-design-notes/task-version-negotiation.md)** —
   how two peers on different Trust Task versions find a common one, and the
   versioning contract that has to exist first for "negotiate" to mean anything
