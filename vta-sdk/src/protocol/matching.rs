@@ -48,13 +48,45 @@ pub const REST_SERVICE_TYPE: &str = "VTARest";
 /// `affinidi-trust-registry-rs`.
 pub const TRQP_REST_SERVICE_TYPE: &str = "TRQPRest";
 
-/// Every service `type` that denotes a REST endpoint, in match order.
+/// DID-document service `type` for a Trust-Task HTTPS endpoint
+/// (HTTPS binding 0.2 §6.2).
 ///
-/// Matching a set rather than one string is what lets a consumer discover a
-/// VTA and a Trust Registry without either claiming the other's identity.
-/// Adding a REST-speaking service type here is the only change needed for it
-/// to become discoverable.
-pub const REST_SERVICE_TYPES: [&str; 2] = [REST_SERVICE_TYPE, TRQP_REST_SERVICE_TYPE];
+/// **The one that states an interface rather than a product**: "this party
+/// accepts Trust Task documents over the HTTPS binding". Deliberately not
+/// [`REST_SERVICE_TYPE`] — "is a VTA's REST API" and "accepts Trust Tasks" are
+/// different claims that merely coincide while every Trust-Task server we run
+/// happens to be a VTA. A consumer that conflates them posts Trust Tasks to an
+/// endpoint that never agreed to accept them, which is not hypothetical: this
+/// VTA posts them to `WebVHHosting`, a type whose endpoint advertises where DID
+/// *documents* are served.
+///
+/// Its `serviceEndpoint` is the **Trust-Task base**, and the request URL is
+/// `base + "/trust-tasks"`. That is what binding 0.2 §6 settles and why it had
+/// to: before it, the path was fixed but what it was relative to was not, so two
+/// conformant implementations composed `/api/trust-tasks` and `/trust-tasks`
+/// and both were right.
+///
+/// Kept in sync with `TRUST_TASK_HTTPS_SERVICE_TYPE` in the browser plugin's
+/// `vta/endpoint.ts`, which has implemented this since #125.
+pub const TRUST_TASK_HTTPS_SERVICE_TYPE: &str = "TrustTaskHTTPS";
+
+/// Every service `type` that denotes an endpoint accepting Trust Tasks over
+/// HTTPS, in match order.
+///
+/// [`TRUST_TASK_HTTPS_SERVICE_TYPE`] is first because it is the only one that
+/// *says so*. The two product types after it are accepted because every VTA and
+/// Trust Registry in this workspace advertises one of them today and their
+/// endpoint is, in practice, the Trust-Task base — but they are a compatibility
+/// reading of a claim that was never quite the one being made, and a party that
+/// wants to be found should advertise the binding type.
+///
+/// Adding a type here is the only change needed for a service to become
+/// discoverable.
+pub const REST_SERVICE_TYPES: [&str; 3] = [
+    TRUST_TASK_HTTPS_SERVICE_TYPE,
+    REST_SERVICE_TYPE,
+    TRQP_REST_SERVICE_TYPE,
+];
 
 /// A transport protocol, in workspace preference order: TSP, then DIDComm,
 /// then REST. `Ord` follows that order — `Tsp` is the smallest (most
@@ -117,6 +149,14 @@ impl ServiceCapabilities {
         let Some(services) = doc.get("service").and_then(Value::as_array) else {
             return caps;
         };
+        // The REST winner is chosen by *which type it is*, never by where it
+        // sits: `REST_SERVICE_TYPES` is in match order and the best rank wins,
+        // ties going to document order. Position-dependence would mean a party
+        // advertising both `TrustTaskHTTPS` and a product type got whichever it
+        // happened to list first — and only one of those actually claims to
+        // accept Trust Tasks. The same reasoning the DIDComm-wherever-it-sits
+        // rule already follows elsewhere.
+        let mut rest_rank = usize::MAX;
         for svc in services {
             let Some(uri) = svc.get("serviceEndpoint").and_then(endpoint_uri) else {
                 continue;
@@ -128,8 +168,13 @@ impl ServiceCapabilities {
                 caps.tsp.get_or_insert(uri);
             } else if service_has_type(svc, DIDCOMM_SERVICE_TYPE) {
                 caps.didcomm.get_or_insert(uri);
-            } else if REST_SERVICE_TYPES.iter().any(|t| service_has_type(svc, t)) {
-                caps.rest.get_or_insert(uri);
+            } else if let Some(rank) = REST_SERVICE_TYPES
+                .iter()
+                .position(|t| service_has_type(svc, t))
+                && rank < rest_rank
+            {
+                rest_rank = rank;
+                caps.rest = Some(uri);
             }
         }
         caps
@@ -397,5 +442,33 @@ mod tests {
             }
             other => panic!("expected NoMatchingProtocol, got {other:?}"),
         }
+    }
+
+    /// The binding type is the only one that claims to accept Trust Tasks, so
+    /// it wins over a product type wherever it sits in the array. Listed last
+    /// here deliberately: position must not decide this.
+    #[test]
+    fn the_binding_type_beats_a_product_type_wherever_it_sits() {
+        let doc = serde_json::json!({ "service": [
+            { "id": "#rest", "type": "VTARest", "serviceEndpoint": "https://vta.example" },
+            { "id": "#tt", "type": "TrustTaskHTTPS", "serviceEndpoint": "https://vta.example/api" },
+        ]});
+        let caps = ServiceCapabilities::from_did_document(&doc);
+        assert_eq!(
+            caps.endpoint(Protocol::Rest),
+            Some("https://vta.example/api"),
+            "the product type won because it was listed first"
+        );
+    }
+
+    /// And a party advertising only a product type is still reachable — every
+    /// VTA in this workspace advertises `VTARest` today.
+    #[test]
+    fn a_product_type_alone_is_still_discoverable() {
+        let doc = serde_json::json!({ "service": [
+            { "id": "#rest", "type": "VTARest", "serviceEndpoint": "https://vta.example" },
+        ]});
+        let caps = ServiceCapabilities::from_did_document(&doc);
+        assert_eq!(caps.endpoint(Protocol::Rest), Some("https://vta.example"));
     }
 }
