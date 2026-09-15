@@ -1226,27 +1226,40 @@ fn did_host_http_tsp_builtin_loads_and_validates() {
 }
 
 #[test]
-fn did_host_http_tsp_advertises_hosting_then_tsp_only() {
+fn did_host_http_tsp_advertises_hosting_trust_tasks_then_tsp_only() {
     let tpl = load_embedded("did-host-http-tsp").unwrap();
     let doc = tpl.render(&did_host_http_tsp_fixture_vars()).unwrap();
     let services = doc["service"].as_array().expect("service is array");
     assert_eq!(
         services.len(),
-        2,
-        "expected exactly two service entries (hosting + tsp), got {}: {services:?}",
+        3,
+        "expected hosting + trust-tasks + tsp, got {}: {services:?}",
         services.len()
     );
-    // HTTP resolution endpoint first, then TSP; no DIDComm entry.
+    // Where DID *documents* are served.
     assert_eq!(services[0]["type"], "WebVHHosting");
     assert!(
         services[0]["serviceEndpoint"].get("hostingPath").is_none(),
         "hostingPath must not be emitted (#759): {}",
         services[0]["serviceEndpoint"]
     );
-    assert_eq!(services[1]["id"], "did:webvh:QmTEST:example.com#tsp");
-    assert_eq!(services[1]["type"], "TSPTransport");
+
+    // Where Trust Tasks are accepted — a different claim from the one above,
+    // and the reason this entry exists at all. Without it a consumer either
+    // cannot find the endpoint or, as this VTA did, posts to `WebVHHosting`
+    // and relies on the same host happening to serve both.
+    assert_eq!(services[1]["type"], "TrustTaskHTTPS");
     assert_eq!(
-        services[1]["serviceEndpoint"],
+        services[1]["serviceEndpoint"], "https://host.example.com/api",
+        "the Trust-Task base is the control plane's `/api`, not the hosting origin: \
+         binding 0.2 §6 makes the advertised endpoint the base and the request \
+         `<base>/trust-tasks`"
+    );
+
+    assert_eq!(services[2]["id"], "did:webvh:QmTEST:example.com#tsp");
+    assert_eq!(services[2]["type"], "TSPTransport");
+    assert_eq!(
+        services[2]["serviceEndpoint"],
         "did:webvh:QmMED:mediator.example.com:mediator"
     );
     assert!(
@@ -1255,6 +1268,31 @@ fn did_host_http_tsp_advertises_hosting_then_tsp_only() {
             .any(|s| s["type"] == "DIDCommMessaging" || s["type"] == json!(["DIDCommMessaging"])),
         "did-host-http-tsp must not advertise DIDComm"
     );
+}
+
+/// The endpoint a Trust-Task consumer resolves to, through the real matcher
+/// rather than by reading the array. This is the property the template exists
+/// to give: `ServiceCapabilities` must pick the binding entry, not the hosting
+/// one it sits beside.
+#[test]
+fn a_rendered_did_host_resolves_to_its_trust_task_base() {
+    use crate::protocol::matching::{Protocol, ServiceCapabilities};
+    for name in [
+        "did-host-http",
+        "did-host-http-tsp",
+        "did-host-http-didcomm",
+    ] {
+        let tpl = load_embedded(name).unwrap();
+        let mut vars = did_host_http_tsp_fixture_vars();
+        vars.insert_string("ACCEPT", "didcomm/v2");
+        let doc = tpl.render(&vars).unwrap();
+        let caps = ServiceCapabilities::from_did_document(&doc);
+        assert_eq!(
+            caps.endpoint(Protocol::Rest),
+            Some("https://host.example.com/api"),
+            "`{name}` did not resolve to its Trust-Task base",
+        );
+    }
 }
 
 #[test]

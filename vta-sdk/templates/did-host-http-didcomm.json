@@ -2,11 +2,19 @@
   "schemaVersion": 1,
   "name": "did-host-http-didcomm",
   "kind": "did-host-http-didcomm",
-  "description": "DID-hosting node whose DID advertises both an HTTP resolution endpoint (WebVHHosting) AND a DIDComm endpoint (DIDCommMessaging via a shared mediator). Use this for any node that both publishes DID logs over HTTP and accepts DIDComm (admin RPC, witness coordination, control-plane traffic). A node with an HTTP endpoint but no DIDComm should use 'did-host-http' instead; a DIDComm-only node with no public URL should use 'did-host-didcomm'.",
-  "methods": ["webvh", "web"],
-  "requiredVars": ["URL", "MEDIATOR_DID"],
+  "description": "DID-hosting node whose DID advertises both an HTTP resolution endpoint (WebVHHosting) AND a DIDComm endpoint (DIDCommMessaging via a shared mediator). Use this for any node that both publishes DID logs over HTTP and accepts DIDComm (admin RPC, witness coordination, control-plane traffic). A node with an HTTP endpoint but no DIDComm should use 'did-host-http' instead; a DIDComm-only node with no public URL should use 'did-host-didcomm'. Advertises `TrustTaskHTTPS` at `{URL}/api`: the control plane nests its whole API under `/api` off the origin root (did-hosting-control `routes/mod.rs`), so that is the Trust-Task base and `<base>/trust-tasks` is the endpoint (HTTPS binding 0.2 \u00a76). `WebVHHosting` is NOT that endpoint \u2014 it says where DID documents are served, which is a different claim, and a consumer that posts Trust Tasks to it is posting to an endpoint that never agreed to accept them. A deployment that serves the control plane on a different origin from the hosting URL must edit this entry.",
+  "methods": [
+    "webvh",
+    "web"
+  ],
+  "requiredVars": [
+    "URL",
+    "MEDIATOR_DID"
+  ],
   "optionalVars": {
-    "ACCEPT": ["didcomm/v2"],
+    "ACCEPT": [
+      "didcomm/v2"
+    ],
     "WEBVH_SERVER": null
   },
   "defaults": {
@@ -35,9 +43,15 @@
         "publicKeyMultibase": "{KA_KEY_MB}"
       }
     ],
-    "assertionMethod": ["{DID}#key-0"],
-    "authentication": ["{DID}#key-0"],
-    "keyAgreement": ["{DID}#key-1"],
+    "assertionMethod": [
+      "{DID}#key-0"
+    ],
+    "authentication": [
+      "{DID}#key-0"
+    ],
+    "keyAgreement": [
+      "{DID}#key-1"
+    ],
     "service": [
       {
         "id": "{DID}#webvh-hosting",
@@ -45,6 +59,11 @@
         "serviceEndpoint": {
           "uri": "{URL}"
         }
+      },
+      {
+        "id": "{DID}#trust-tasks",
+        "type": "TrustTaskHTTPS",
+        "serviceEndpoint": "{URL}/api"
       },
       {
         "id": "{DID}#tsp",
@@ -55,7 +74,10 @@
         "id": "{DID}#vta-didcomm",
         "type": "DIDCommMessaging",
         "serviceEndpoint": [
-          { "accept": "{ACCEPT}", "uri": "{MEDIATOR_DID}" }
+          {
+            "accept": "{ACCEPT}",
+            "uri": "{MEDIATOR_DID}"
+          }
         ]
       }
     ]
