@@ -266,7 +266,7 @@ Features accumulate — `storage-fjall` must be carried forward
 alongside `vta`:
 
 ```bash
-cargo build --release --bin trust-registry \
+cargo build --release --locked --bin trust-registry \
   --features "vta,storage-fjall"
 ```
 

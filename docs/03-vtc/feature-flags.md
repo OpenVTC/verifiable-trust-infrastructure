@@ -23,14 +23,14 @@ side.
 
 ### Standard self-hosted
 
-`cargo build --release --package vtc-service`
+`cargo build --release --locked --package vtc-service`
 
 Default features. Operator manages a local OS-keyring-backed master
 secret. Public website + admin UX are baked in.
 
 ### API-only (no public website)
 
-`cargo build --release --package vtc-service --no-default-features --features setup,keyring`
+`cargo build --release --locked --package vtc-service --no-default-features --features setup,keyring`
 
 Removes the public website surface (404 on `/`) and the admin UX
 (404 on `/admin/*`). Useful when the community fronts its public
@@ -39,7 +39,7 @@ identity through a separate static host + CDN and only exposes
 
 ### Cloud-secret-managed
 
-`cargo build --release --package vtc-service --features aws-secrets`
+`cargo build --release --locked --package vtc-service --features aws-secrets`
 (or `gcp-secrets` / `azure-secrets`)
 
 Use a cloud secret manager instead of the OS keyring. See the
@@ -48,7 +48,7 @@ backend selection logic — it applies identically to the VTC.
 
 ### In-cluster Kubernetes `Secret`
 
-`cargo build --release --package vtc-service --features k8s-secrets`
+`cargo build --release --locked --package vtc-service --features k8s-secrets`
 
 Store the VTC key bundle in a native Kubernetes `Secret` instead of
 a cloud secret manager — no extra infrastructure beyond a `Secret` +

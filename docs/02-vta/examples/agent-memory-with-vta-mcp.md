@@ -135,7 +135,7 @@ pnm acl create --did did:key:zMcp… --role application \
 Build it and check it starts:
 
 ```bash
-cargo build --release -p vta-mcp     # in the VTI workspace
+cargo build --release --locked -p vta-mcp   # in the VTI workspace
 ```
 
 ### 3.3 Wire both into the host

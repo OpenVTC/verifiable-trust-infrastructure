@@ -55,7 +55,7 @@ mkdir -p "$STAGE/headers" "$OUT/Sources"
 echo "── Building static libs (deployment target $IPHONEOS_DEPLOYMENT_TARGET, $PROFILE) ──"
 for target in "$DEVICE_TARGET" "${SIM_TARGETS[@]}"; do
   echo "  • $target"
-  cargo build -p vta-mobile-core --lib --target "$target" $CARGO_PROFILE_FLAG
+  cargo build --locked -p vta-mobile-core --lib --target "$target" $CARGO_PROFILE_FLAG
 done
 
 # A static-library xcframework needs one slice per platform. The device slice
@@ -74,7 +74,7 @@ lipo -create \
 # the header + modulemap travel *inside* the xcframework so the static lib's
 # C symbols are importable.
 echo "── Generating Swift bindings ──"
-cargo build -p vta-mobile-core --lib $CARGO_PROFILE_FLAG
+cargo build --locked -p vta-mobile-core --lib $CARGO_PROFILE_FLAG
 HOST_LIB=""
 for cand in "$TARGET_DIR/$PROFILE_DIR/libvta_mobile_core.dylib" \
             "$TARGET_DIR/$PROFILE_DIR/libvta_mobile_core.so"; do

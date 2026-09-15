@@ -61,7 +61,7 @@ build_ios() {
   echo "── iOS (deployment target $IPHONEOS_DEPLOYMENT_TARGET, $PROFILE) ──"
   for target in "${IOS_TARGETS[@]}"; do
     echo "  • $target"
-    cargo build -p vta-mobile-core --lib --target "$target" $CARGO_PROFILE_FLAG
+    cargo build --locked -p vta-mobile-core --lib --target "$target" $CARGO_PROFILE_FLAG
   done
 }
 
@@ -85,7 +85,7 @@ build_android() {
 # no longer generates (e.g. an unsupported type slipped into an exported fn).
 check_bindings() {
   echo "── UniFFI bindings (kotlin + swift) ──"
-  cargo build -p vta-mobile-core --lib $CARGO_PROFILE_FLAG
+  cargo build --locked -p vta-mobile-core --lib $CARGO_PROFILE_FLAG
   local lib=""
   for cand in "$TARGET_DIR/$PROFILE_DIR/libvta_mobile_core.dylib" \
               "$TARGET_DIR/$PROFILE_DIR/libvta_mobile_core.so"; do
