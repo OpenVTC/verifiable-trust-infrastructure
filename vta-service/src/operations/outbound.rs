@@ -25,6 +25,28 @@
 //! [`crate::operations::keys::sign_payload`]. So the caller builds and signs its
 //! own document, and only the bytes travel here.
 //!
+//! # What this is deliberately not: pushing to a device
+//!
+//! `trust_tasks::step_up::try_push_over_tsp` and the DIDComm fallback beside it
+//! also put Trust Tasks on a wire, and they are **not** folded in here. Three
+//! reasons, and the first is the one that decides it:
+//!
+//! - **Selection cannot be by advertisement.** A device is a wallet behind a
+//!   mediator; its DID often advertises nothing a sender could dial. The push
+//!   path chooses by *learned reachability* — `tsp_reach`, a fact recorded from
+//!   inbound frames — which is a different question from "what does this peer
+//!   say it accepts", and the right one for a device.
+//! - **There is no reply to correlate.** A push is delivered, not asked.
+//! - **Delivery is durable and has a doorbell**: a buffered `PendingResponse`
+//!   and a gateway wake, neither of which means anything for a request whose
+//!   answer the caller is waiting on.
+//!
+//! Giving this function a no-reply mode and a pluggable selection strategy to
+//! absorb that would make it less clear about what it does, not more. What the
+//! two paths **do** share is the thing that matters for adding a transport: the
+//! binding. Both go through `messaging::tsp_binding` for TSP, and both would go
+//! through the next one the same way.
+//!
 //! # Transport: an intersection, not a downgrade
 //!
 //! The protocol used is the highest-preference one present in **both** parties'
