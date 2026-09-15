@@ -1020,6 +1020,38 @@ mod didcomm_harness {
             self.send(&msg.finalize(), to).await;
         }
 
+        /// Send a Trust Task **in the DIDComm binding envelope** and return the
+        /// threaded outcome.
+        ///
+        /// The difference from [`try_request`](Self::try_request) is one field:
+        /// the DIDComm message `type` is the binding's, not the task's, which is
+        /// what a peer built on `trust-tasks-didcomm` emits. Everything else —
+        /// the document, the addressing, the threading — is identical.
+        ///
+        /// That one field is the whole of what this repo's DIDComm router keys
+        /// on, so a harness that can only send the task-typed shape cannot
+        /// observe the enveloped one at all.
+        pub async fn try_request_enveloped(
+            &self,
+            vtc_did: &str,
+            typ: &str,
+            body: Value,
+            timeout: Duration,
+        ) -> ReplyOutcome {
+            let req_id = Uuid::new_v4().to_string();
+            let doc = wrap_trust_task(typ, &self.did, vtc_did, body);
+            let msg = Message::build(
+                req_id.clone(),
+                vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
+                doc,
+            )
+            .from(self.did.clone())
+            .to(vtc_did.to_string())
+            .finalize();
+            self.send(&msg, vtc_did).await;
+            self.await_outcome(&req_id, timeout).await
+        }
+
         /// Send `body` as a `typ` DIDComm message to `vtc_did` (authcrypt,
         /// forwarded via the mediator) and return the threaded reply body.
         /// Panics on timeout *or* a problem-report — this is the happy-path
@@ -1068,13 +1100,22 @@ mod didcomm_harness {
                 .finalize();
             self.send(&msg, vtc_did).await;
 
+            self.await_outcome(&req_id, timeout).await
+        }
+
+        /// Await the reply threaded to `req_id` and classify it into the three
+        /// buckets. Shared by the task-typed and enveloped senders: the wire
+        /// shape differs on the way out, never on the way back, and a second
+        /// copy of this would be free to disagree about what counts as a
+        /// problem-report.
+        async fn await_outcome(&self, req_id: &str, timeout: Duration) -> ReplyOutcome {
             // Suppress recv_matching's happy-path panic for this round trip so a
             // problem-report is buffered/matched like any reply and classified
             // below, then restore the prior setting for any later happy-path call
             // on this client.
             let prev = self.panic_on_problem_report.swap(false, Ordering::SeqCst);
             let received = self
-                .recv_matching(|r| r.thid.as_deref() == Some(req_id.as_str()), timeout)
+                .recv_matching(|r| r.thid.as_deref() == Some(req_id), timeout)
                 .await;
             self.panic_on_problem_report.store(prev, Ordering::SeqCst);
 

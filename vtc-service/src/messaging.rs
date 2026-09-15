@@ -694,16 +694,27 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
         return None;
     }
 
-    // Capability write replies (git-trust/*, governance/capability/*): the
-    // hook relay's writer registered a waiter keyed by the request document
-    // id; complete it and reply nothing. A reply we don't recognise (no
-    // matching waiter) is dropped here rather than problem-reported.
-    if msg.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE {
-        if let Some((_thid, doc)) =
+    // A Trust Task in the DIDComm **binding envelope** is one of two things,
+    // and the type cannot tell them apart because both carry it: a *reply* to
+    // something this service sent, or a *request* addressed to it.
+    //
+    // The waiter decides. `complete` returns `true` only when a registered
+    // waiter took the document — i.e. it answers a request of ours — so a
+    // capability write reply (git-trust/*, governance/capability/*) is
+    // absorbed here and answered with nothing. Anything else falls through to
+    // routing as an ordinary inbound request.
+    //
+    // Until now the fall-through did not exist: the arm returned `None`
+    // unconditionally, so **every enveloped request over DIDComm was silently
+    // dropped** — accepted by the transport, matched against no waiter, and
+    // discarded without a reply. A conformant peer that speaks the binding
+    // (which is what `trust-tasks-didcomm` produces) could not reach this
+    // service over DIDComm at all.
+    if msg.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE
+        && let Some((_thid, doc)) =
             vti_common::capability_client::parse_envelope_document(&msg.body)
-        {
-            state.pending_replies.complete(doc);
-        }
+        && state.pending_replies.complete(doc)
+    {
         return None;
     }
 
@@ -742,6 +753,18 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
 async fn route(msg: &Message, auth_sender: Option<String>, state: &AppState) -> Option<Reply> {
     match msg.typ.as_str() {
         TRUST_PING_TYPE => trust_ping_reply(msg, auth_sender.as_deref()),
+        // The binding envelope: carriage, not a verb. The document inside names
+        // the task, and the spine routes on that — so this one arm reaches
+        // **every** dispatched URI, including the thirteen that have no arm of
+        // their own below (all of `rooms/*`, both `members/personhood/*`).
+        // Those dispatch over REST and TSP and answered "unsupported message
+        // type" over DIDComm, because this router is keyed on task URIs and
+        // nobody added them to it. That is the failure mode this arm removes:
+        // a verb is reachable because it is dispatched, not because someone
+        // remembered to write it down twice.
+        vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE => {
+            envelope_task_handler(msg, auth_sender, state).await
+        }
         JOIN_REQUEST_SUBMIT_TYPE => join_request_submit_handler(msg, auth_sender, state).await,
         // Both versions go through the document dispatcher, which answers in
         // the shape the document's own `type` names.
@@ -1045,6 +1068,41 @@ async fn join_request_submit_handler(
 // (`join-requests/accept` over DIDComm is gone — retired upstream, superseded
 // by `members/vmc` with an optional `requestId`. The member closes an approved
 // join by delivering their reciprocal VMC through `member_vmc_handler`.)
+
+/// Any Trust Task carried in the DIDComm binding envelope.
+///
+/// The transport-neutral path: open carriage, name the proven sender, hand the
+/// bytes to the spine, re-wrap the reply. It is the DIDComm twin of
+/// [`handle_tsp`], and between them they are the whole of what a binding
+/// adapter should be — the per-verb handlers below predate it and exist because
+/// this one did not.
+///
+/// # Only the *authenticated* sender
+///
+/// `auth_sender` is the authcrypt-proven DID; the plaintext `msg.from` is not
+/// consulted. Some per-verb handlers below do consult it, deliberately, for
+/// public reads (`join_request_manifest_handler`) — but a *generic* arm cannot
+/// make that judgement per task, and defaulting to the unproven value would
+/// hand every authenticated verb a spoofable caller. So the context carries
+/// `None` when nothing was proven, and authorization fails closed inside the
+/// handler that cares. A public read is unaffected: it never looks.
+async fn envelope_task_handler(
+    msg: &Message,
+    auth_sender: Option<String>,
+    state: &AppState,
+) -> Option<Reply> {
+    let thid = msg.id.clone();
+    let body = match inbound_doc_bytes(msg) {
+        Ok(b) => b,
+        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
+    };
+    let ctx = JoinAuthCtx {
+        transport: JoinTransport::DIDComm,
+        sender_did: auth_sender,
+    };
+    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
+    tt_didcomm_reply(outcome, thid)
+}
 
 /// `join-requests/manifest/1.0` over DIDComm — pre-submit discovery. A
 /// public read; no sender authentication required (uses the plaintext `from`).
