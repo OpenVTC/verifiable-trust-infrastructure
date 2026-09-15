@@ -2,6 +2,65 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.2.4...vti-rooms-v0.2.5) — 2026-09-15
+
+
+### Added
+
+- **rooms**: The wire types name the task they are the payload of ([#1498](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1498))
+
+Groundwork for keying dispatch on the **type** rather than on a URI written out
+  at the registration site. `trust_tasks_rs::Payload` is the framework's statement
+  that a Rust type *is* the payload of a task URI; with it, a dispatcher derives
+  routing, `unsupportedType`-vs-`unsupportedVersion`, and its own served-URI list
+  from the registrations themselves.
+
+  The URI stops being an argument someone has to supply correctly. That matters
+  here because this repo has already shipped the bug that a string-keyed router
+  invites: `rooms/records/curate` was dispatched and named in neither URI list, so
+  every version hint the service emitted was wrong about it. The list and the
+  router were two descriptions of one fact, and they disagreed.
+
+  ## This does not adopt the generated types
+
+  `wire.rs`'s header argues at length for keeping these hand-written — the
+  generated bindings use newtypes, `NonZeroU64`, `#[non_exhaustive]` and builders,
+  which are right for a client constructing a request and friction for a crate
+  whose types are also its storage records. Nothing here reverses that.
+
+  `Payload` is a trait, not a type. Implementing it says what a type is *for* on
+  the wire and leaves its Rust shape exactly as the storage layer needs it. The
+  generated bindings stay the authority on the schema, which is what the new flags
+  test reads them for.
+
+  ## The flags test failed on its first run, against this commit's own impls
+
+  `Payload`'s policy consts all default to `false`, so an omission is silent
+  **and permissive**. Writing the impls with only `TYPE_URI` gave:
+
+      rooms/create/0.1:  left: (false, false, false, false)
+                        right: (false, true,  true,  true)
+
+  Every `rooms/*` request declares `proof`, `recipient` and `issuedAt` REQUIRED in
+  its published schema. A missing `IS_PROOF_REQUIRED` would mean unsigned requests
+  accepted for a task whose specification demands a proof — and no round-trip test
+  could see it, because both ends of the round trip are this same struct. That is
+  the same shape as the defect `tests/schema_conformance.rs` exists to prevent, in
+  a dimension that file does not cover: it checks what these types *serialise to*,
+  not what the framework is told to *require* of them.
+
+  So the flags are read from `schema_index::spec_policy_for` — the same published
+  schemas — and pinned per type. A task with no published schema yet is skipped
+  rather than failed, and becomes a check the moment one publishes.
+
+  ## trust-tasks-rs becomes a normal dependency
+
+  It was a dev-dependency. The impls are production API, and the orphan rule
+  leaves no choice about where they live: `Payload` is foreign and these types are
+  this crate's, so the impls belong here or nowhere — a consumer cannot add them.
+
+
+
 ## [0.2.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.2.3...vti-rooms-v0.2.4) — 2026-09-15
 
 

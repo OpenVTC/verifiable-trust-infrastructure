@@ -2,6 +2,89 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.38.2...vta-sdk-v0.39.0) — 2026-09-15
+
+
+### Added
+
+- **vtc**: Verify a Trust Task's proof in the spine, where the bytes still exist ([#1501](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1501))
+
+* feat(vtc): verify a Trust Task's proof in the spine, where the bytes still exist
+
+  A proof covers the document as it was **sent**. `rooms/*` handlers verified it
+  themselves, from the `TrustTask<Value>` they were handed — which works only
+  while they are handed the document verbatim.
+
+  They cannot keep doing that. Keying dispatch on the payload type hands a handler
+  `TrustTask<P>`, and re-deriving the signed bytes from a parsed payload is sound
+  only if `P` round-trips losslessly. None does: parse a document into a type that
+  does not know one of its members and the member is gone, so the canonicalisation
+  differs and a valid proof is refused. Pinned by
+  `vta-sdk/tests/typed_proof_verify.rs`.
+
+  So verification moves to `dispatch_trust_task_core`, which is the last point at
+  which the received bytes exist, and the verified signer travels on
+  `JoinAuthCtx`.
+
+  ## Gated on the specification, so nothing existing moves
+
+  The spine verifies when — and only when — `Payload::IS_PROOF_REQUIRED` says to,
+  read through `schema_index::spec_policy_for` from the same generated bindings
+  the schemas come from. That is framework §7.2 item 8 rather than a new rule, and
+  it is a no-op for every task whose specification does not require a proof, so no
+  request this service accepts today starts being refused.
+
+  Two tests hold both halves: every `rooms/*` URI must declare the requirement
+  (otherwise the handlers below would receive an empty presenter), and at least
+  one dispatched task must *not*, or the condition would be indistinguishable from
+  verifying unconditionally and the change would stop being additive.
+
+  ## The rooms handlers keep invariant I5
+
+  They take the verified signer and no context. That is not a weakening: a signer
+  is a cryptographic fact about the request, not an authority this service
+  confers. A room operation is still authorized by the authority chain the room
+  itself issued — never by this service's ACL, roster or session.
+
+  Ten call sites of `presenter_and_verifier` collapse to a synchronous, infallible
+  call, and `handle_create`'s own verification block goes with them.
+
+  ## The tests still prove what they proved
+
+  A test that called a handler with a presenter of its own choosing would assert
+  nothing about the signature — only that the handler uses the argument it was
+  given. So the test module shadows each handler with a shim that verifies the
+  document exactly as the spine does and passes the resulting signer. The call
+  sites are untouched, and what they demonstrate is unchanged: the identity a room
+  operation is authorized against is the one that signed the request.
+
+  Rebased onto `main` after #1500 merged; `verify.rs` is identical to what landed
+  there, so only this change remains.
+
+- **sdk**: Verify a Trust Task proof against the typed document ([#1500](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1500))
+
+`verify_trust_task_proof_with` took `&TrustTask<Value>`. That constrained
+  nothing cryptographically — `eddsa-jcs-2022` canonicalises whatever serialises,
+  and the payload's Rust shape is not part of the proof — while forcing every
+  typed caller to convert first.
+
+  The conversion is the hazard, not the cost. Re-serialising a document *before*
+  checking its signature is the one step in the path that can change what was
+  signed; `vta_sdk::tsp_binding::wrap_envelope` hand-rolls its JSON rather than
+  reparse-and-reserialise for exactly this reason, on the carriage side.
+
+  ## Why now
+
+  Keying dispatch on the type (`trust_tasks_rs::AsyncDispatcher`, the mechanism
+  chosen for the VTC/openvtc carriage work) hands a handler `TrustTask<P>`. Every
+  proof-checking handler would then have had to round-trip back to `Value` purely
+  to satisfy this signature — a mandatory reserialise, immediately before the
+  signature check, in the part of the system where that is least acceptable.
+
+  ## Scope
+
+
+
 ## [0.38.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.38.1...vta-sdk-v0.38.2) — 2026-09-15
 
 
