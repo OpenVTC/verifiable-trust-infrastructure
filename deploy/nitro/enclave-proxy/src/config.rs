@@ -159,11 +159,11 @@ impl ProxyConfig {
         // Auto-add DID hosting servers from the mediator DID.
         // The enclave's TDK resolves the mediator DID via HTTPS, so
         // the hosting server must be in the allowlist.
-        if let Some(ref did) = self.mediator_did {
-            if let Some(host) = extract_host_from_did(did) {
-                tracing::info!(did = %did, host = %host, "auto-allowlisting DID host from mediator DID");
-                hosts.push((host, 443));
-            }
+        if let Some(ref did) = self.mediator_did
+            && let Some(host) = extract_host_from_did(did)
+        {
+            tracing::info!(did = %did, host = %host, "auto-allowlisting DID host from mediator DID");
+            hosts.push((host, 443));
         }
 
         hosts.extend(self.allowlist_hosts.clone());
@@ -198,10 +198,10 @@ fn extract_host_from_did(did: &str) -> Option<String> {
 }
 
 fn parse_host_port(s: &str) -> (String, u16) {
-    if let Some((host, port)) = s.rsplit_once(':') {
-        if let Ok(port) = port.parse::<u16>() {
-            return (host.to_string(), port);
-        }
+    if let Some((host, port)) = s.rsplit_once(':')
+        && let Ok(port) = port.parse::<u16>()
+    {
+        return (host.to_string(), port);
     }
     (s.to_string(), 443)
 }

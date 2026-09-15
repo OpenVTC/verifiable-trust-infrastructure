@@ -7,7 +7,7 @@
 //! reaches this server — the parent only stores opaque blobs.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
@@ -50,10 +50,10 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
     // The key is spelled out rather than imported: this proxy runs on the
     // *parent* and deliberately does not link enclave code. Canonical
     // definition is `vta_tee::did_autogen::DID_LOG_STORE_KEY` — keep in sync.
-    if let Ok(ks) = db.keyspace("bootstrap", KeyspaceCreateOptions::default) {
-        if let Ok(Some(value)) = ks.get("tee:did_log") {
-            write_did_log_file(&data_dir, &value);
-        }
+    if let Ok(ks) = db.keyspace("bootstrap", KeyspaceCreateOptions::default)
+        && let Ok(Some(value)) = ks.get("tee:did_log")
+    {
+        write_did_log_file(&data_dir, &value);
     }
 
     let state = Arc::new(StorageState {
@@ -188,12 +188,9 @@ async fn handle_get(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 /// Write the DID log to a file alongside the database for easy operator access.
-fn write_did_log_file(data_dir: &PathBuf, value: &[u8]) {
+fn write_did_log_file(data_dir: &Path, value: &[u8]) {
     // Write to the parent directory of the store (e.g., /mnt/vta-data/did.jsonl)
-    let output_path = data_dir
-        .parent()
-        .unwrap_or(data_dir.as_path())
-        .join("did.jsonl");
+    let output_path = data_dir.parent().unwrap_or(data_dir).join("did.jsonl");
     match std::fs::write(&output_path, value) {
         Ok(()) => info!("[storage] wrote DID log to {}", output_path.display()),
         Err(e) => warn!(

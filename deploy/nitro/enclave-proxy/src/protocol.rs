@@ -265,8 +265,11 @@ pub fn decode_bool_response(data: &[u8]) -> Result<bool, String> {
     }
 }
 
+/// One key-value pair as it comes off the wire, owned.
+pub type KvPair = (Vec<u8>, Vec<u8>);
+
 /// Decode a response that returns a list of key-value pairs (PrefixIter).
-pub fn decode_kv_list_response(data: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+pub fn decode_kv_list_response(data: &[u8]) -> Result<Vec<KvPair>, String> {
     if data.is_empty() {
         return Err("empty response".into());
     }

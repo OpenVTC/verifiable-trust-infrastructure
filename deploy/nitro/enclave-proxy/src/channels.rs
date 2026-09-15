@@ -329,7 +329,7 @@ async fn handle_connect_request(
     buf_reader.read_line(&mut request_line).await?;
 
     // Parse: CONNECT host:port HTTP/1.1
-    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 2 || parts[0] != "CONNECT" {
         // SECURITY: Only CONNECT requests are allowed. Reject anything else
         // to prevent request smuggling through the proxy.
