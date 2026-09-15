@@ -342,7 +342,7 @@ reconciler becomes visible. It polls every 15s and shows:
 | Counter | What it means |
 |---|---|
 | **Pending** | Queued + in-flight jobs, with the age of the oldest *dispatchable* one. Depth alone is normal — a burst of joins drains. Depth that stays **old** is a stuck reconciler; ≥1h is the spec's degraded SLI. |
-| **Failed** | Terminal rows: `attempts > max_attempts`, or a `Permanent` error such as `permissionDenied`. **The syncer will not retry these** — they need operator triage, and they never clear on their own. |
+| **Failed** | Terminal rows: `attempts > max_attempts`, or a `Permanent` / `Incompatible` error such as `permissionDenied` or `unsupportedType`. **The syncer will not retry these** — they never clear on their own. Every one is listed in full underneath; see [Triaging a failed job](#triaging-a-failed-job). |
 | **RTBF batched** | Deletions parked behind the daily flush window. Expected to be non-zero between flushes. |
 | **Syncer** | `running` / `stopped` / `off`, plus the panic-restart count. `enabled` but not `running` means the task is spawned and dead; a rising restart count is a "keeps crashing" signal. |
 
@@ -351,6 +351,71 @@ dashboard's trust-registry tile surfaces the two states worth
 interrupting for — any failed job, or a queue ≥1h behind — in
 place of the transport line, so a registry that answers while
 nothing is landing does not read as healthy.
+
+### Triaging a failed job
+
+Below the counters, every failed job is listed in full: the member
+DID, which operation was being published, how many attempts it made,
+when it gave up, when the retention sweeper will purge the row, and
+the registry's verbatim error. The member DID is the field that makes
+the list actionable and the one the audit trail cannot give you —
+`RegistrySyncFailed` envelopes carry only `targetDidHash` (§11.1).
+
+`attempts` distinguishes the two ways a job dies, and they have
+nothing in common:
+
+- **`1`** — the registry answered and refused. Read the error.
+- **`17`** (`DEFAULT_MAX_ATTEMPTS` + 1) — the registry never answered
+  across ~18 hours of backoff. A reachability problem, not a
+  contract one.
+
+Three errors account for almost everything:
+
+| Error | What it means | Fix |
+|---|---|---|
+| `permissionDenied` | This VTC's DID is not in the registry's `admin_dids`. Reads work, writes do not. | Add the VTC's DID at the registry. |
+| `unsupportedType` | The registry does not route that Trust Task **at all** — the deployed registry is out of step with this VTC. Nothing about this community's configuration is wrong. | Upgrade the trust registry. `registry/record/put/0.1` and `registry/record/query/0.1` need affinidi-trust-registry-rs **≥ 0.10.0**, whose cutover removed `registry/record/{create,update,read,list}/0.1` with no dual-accept. |
+| `proofInvalid` | The registry rejected our Data-Integrity proof. | Check the VTC's signing key bundle and the DID document it resolves to. |
+
+A registry answering `unsupportedType` also drives the **Status**
+field to `degraded`, and the page carries an explicit banner. This is
+deliberate and was not always true: the liveness probe counts an
+ordinary rejection as proof the registry is alive — it read the
+document, routed it, and refused it — but an `unsupportedType` on the
+probe's own task proves the opposite, and reporting it as `active` is
+how a community can publish nothing for weeks behind a green
+dashboard.
+
+Fixing the cause does **not** re-drive the jobs. The sync cursor
+advanced past the audit envelopes that created them long ago, and
+nothing re-derives a `Failed` row. Requeue them by hand, on a
+**stopped** daemon:
+
+```bash
+vtc sync-jobs list                      # what failed, and why
+vtc sync-jobs retry --job-id <uuid>     # requeue one
+vtc sync-jobs retry --all               # requeue every failed job
+vtc sync-jobs discard --job-id <uuid>   # drop one that should not be retried
+```
+
+`retry` resets the row to `Pending` with a clean attempt budget, so
+the syncer dispatches it on its next tick after you restart. It
+refuses anything that is not `Failed` — a pending or in-flight row
+belongs to the syncer. `discard` deletes the row and changes nothing
+at the registry: for a failed `publishMember` that means the member
+stays unpublished, permanently.
+
+These are offline commands for the same reason `vtc acl` is — fjall
+takes an exclusive lock, so they fail while the daemon is running,
+and they are not available in TEE deployments. There is no online
+equivalent: the mutation would need a new `spec/vtc/registry/…` Trust
+Task URI, and binding one ahead of its upstream specification is what
+`UNPUBLISHED_CANONICAL_OK` exists to refuse.
+
+Doing nothing is also a decision with a deadline. The retention
+sweeper purges `Failed` rows `[join_requests] retentionDays` after
+they gave up (default 30). That clears the counter and the table; it
+does not publish the member.
 
 ## See also
 

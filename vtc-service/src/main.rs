@@ -2,7 +2,7 @@
 // `tests/` can pull the same modules the binary uses). Re-import the
 // pieces this binary needs at the top level.
 use vtc_service::store::keyspaces;
-use vtc_service::{acl_cli, config, did_key, keys, server, status, store};
+use vtc_service::{acl_cli, config, did_key, keys, server, status, store, sync_jobs_cli};
 #[cfg(feature = "setup")]
 use vtc_service::{emergency, setup};
 
@@ -81,6 +81,27 @@ enum Commands {
         #[command(subcommand)]
         command: AclCommands,
     },
+    /// Triage the trust-registry membership-sync queue (offline — run on
+    /// a **stopped** daemon).
+    ///
+    /// A sync job that has flipped to `Failed` is terminal: the syncer
+    /// skips it on every tick, boot recovery rescues only `InFlight` rows,
+    /// and nothing re-derives it — so the member it carries stays absent
+    /// (or stale) in the trust registry until an operator acts, or until
+    /// the retention sweeper purges the row and the failure becomes
+    /// invisible without becoming fixed.
+    ///
+    /// `list` shows what failed and why; `retry` is the only thing that
+    /// re-drives a failed row; `discard` drops one that should not be.
+    ///
+    /// Sits beside `acl` rather than under `admin` because it is plain
+    /// store access with no setup machinery behind it — `admin` is gated
+    /// on the `setup` feature, and queue triage should not disappear from
+    /// a `--no-default-features` build.
+    SyncJobs {
+        #[command(subcommand)]
+        command: SyncJobCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -158,6 +179,38 @@ enum AdminCommands {
         /// Token TTL in seconds (default: 900 = 15 min).
         #[arg(long, default_value_t = 900)]
         ttl: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum SyncJobCommands {
+    /// List failed sync jobs — job id, kind, member DID, and the
+    /// registry's verbatim error.
+    List {
+        /// Include pending, in-flight and complete rows, not just failed.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Requeue a failed job for immediate dispatch.
+    ///
+    /// Fix the cause first — a retry against an unchanged registry just
+    /// fails again. An error naming `unsupportedType` means the deployed
+    /// trust registry does not route that Trust Task at all; upgrade the
+    /// registry before retrying.
+    Retry {
+        /// The job to requeue, from `sync-jobs list`.
+        #[arg(long, conflicts_with = "all")]
+        job_id: Option<String>,
+        /// Requeue every failed job. Use when one cause broke them all.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Delete a failed job without dispatching it. The registry's record
+    /// for that member is left exactly as it is.
+    Discard {
+        /// The job to delete, from `sync-jobs list`.
+        #[arg(long)]
+        job_id: String,
     },
 }
 
@@ -267,6 +320,21 @@ async fn main() {
                     .await
                 }
                 AclCommands::Remove { did } => acl_cli::run_acl_remove(cli.config, did).await,
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::SyncJobs { command }) => {
+            let result = match command {
+                SyncJobCommands::List { all } => sync_jobs_cli::run_list(cli.config, all).await,
+                SyncJobCommands::Retry { job_id, all } => {
+                    sync_jobs_cli::run_retry(cli.config, job_id, all).await
+                }
+                SyncJobCommands::Discard { job_id } => {
+                    sync_jobs_cli::run_discard(cli.config, job_id).await
+                }
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");

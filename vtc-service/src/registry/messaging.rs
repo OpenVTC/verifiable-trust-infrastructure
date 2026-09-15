@@ -505,6 +505,12 @@ fn tsp_envelope(doc: &TrustTask<Value>) -> Result<Vec<u8>, RegistryError> {
 /// `unavailable` is worth another attempt, whereas `permissionDenied` (the
 /// VTC's DID is not in the registry's `admin_dids`) or `proofInvalid` needs an
 /// operator and must not spin.
+///
+/// `unsupportedType` is a third thing and gets its own variant. It does not
+/// mean the request was wrong; it means the registry does not route this URI
+/// at all — the deployed registry is older (or newer) than this VTC. The
+/// distinction is load-bearing for [`MessagingRegistryClient::health`], which
+/// counts an ordinary rejection as proof of life but must not count this one.
 fn classify(doc: &TrustTask<Value>, expect_slug: &str) -> Result<(), RegistryError> {
     let slug = doc.type_uri.slug();
     if slug == "trust-task-error" {
@@ -526,6 +532,7 @@ fn classify(doc: &TrustTask<Value>, expect_slug: &str) -> Result<(), RegistryErr
         };
         return match code {
             "internalError" | "unavailable" => Err(RegistryError::Transient(detail)),
+            "unsupportedType" => Err(RegistryError::Incompatible(detail)),
             _ => Err(RegistryError::Permanent(detail)),
         };
     }
@@ -720,9 +727,23 @@ impl TrustRegistryClient for MessagingRegistryClient {
                 // exercises the whole path we actually depend on: mediator,
                 // transport, dispatcher, storage.
                 //
-                // Any correlated reply proves liveness, **including a rejection**
-                // — the registry answered. Only silence is unhealthy, which is
-                // what makes this signal re-falsifiable (R6.2).
+                // A correlated reply proves liveness, **including a rejection**
+                // — the registry read our document, routed it, and refused it.
+                // Only silence is unhealthy, which is what makes this signal
+                // re-falsifiable (R6.2).
+                //
+                // With one exception, and it is the case this probe exists to
+                // catch. `unsupportedType` says the registry does not route
+                // `record/query` — a task it has served since
+                // affinidi-trust-registry-rs 0.10.0, whose cutover deliberately
+                // carried no dual-accept. A registry that cannot answer the
+                // read this VTC depends on cannot answer the writes either, and
+                // reporting that as `active` is precisely how a community
+                // published nothing for weeks while its dashboard stayed green
+                // and one job sat in `Failed` with no surface to see it.
+                //
+                // Still re-falsifiable: upgrade the registry and the next tick
+                // flips back to active on its own.
                 let payload = json!({ "limit": 1 });
                 match self
                     .round_trip(RECORD_QUERY, payload, false, protocol)
@@ -826,6 +847,32 @@ mod tests {
 
         let internal = classify(&error_doc("internalError"), "registry/record/put").unwrap_err();
         assert!(internal.is_retriable());
+    }
+
+    /// `unsupportedType` is its own class, not a `Permanent` rejection.
+    ///
+    /// It says the registry does not route the task at all — a version skew,
+    /// resolved by upgrading the peer, with nothing wrong in the request. The
+    /// split matters because `health` counts an ordinary rejection as proof
+    /// the registry is alive and must not count this one: a registry that
+    /// cannot answer `record/query` cannot answer `record/put` either, and
+    /// reporting it `active` leaves an operator with a failed job, a green
+    /// status, and no `lastError`.
+    #[test]
+    fn unsupported_type_is_incompatible_not_a_rejection() {
+        let skew = classify(&error_doc("unsupportedType"), "registry/record/put").unwrap_err();
+        assert!(
+            matches!(skew, RegistryError::Incompatible(_)),
+            "got {skew:?}"
+        );
+        assert!(skew.is_incompatible());
+        // Not worth retrying — a redeploy of the peer is what clears it, and
+        // the answer is stable until then.
+        assert!(!skew.is_retriable());
+
+        // And the ordinary rejection stays on the other side of the split.
+        let denied = classify(&error_doc("permissionDenied"), "registry/record/put").unwrap_err();
+        assert!(!denied.is_incompatible());
     }
 
     #[test]

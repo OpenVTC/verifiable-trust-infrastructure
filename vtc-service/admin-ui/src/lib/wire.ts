@@ -2656,6 +2656,54 @@ export interface components {
         ExportResponse: {
             document: components["schemas"]["ConfigExportDocument"];
         };
+        /**
+         * @description One terminally-failed reconciliation job, as the operator needs to see it.
+         *
+         *     `member_did` is in the clear. It is already stored unhashed in the
+         *     `sync_queue` row (the registry call needs the real DID), this response is
+         *     admin-gated, and an admin can list the same DIDs from `/v1/members` — so
+         *     nothing is disclosed here that the caller could not already read. Hashing
+         *     it would only reproduce the gap that made this field necessary: the audit
+         *     envelope for these failures already carries `targetDidHash`, and an
+         *     operator holding a hash cannot tell which member stopped publishing.
+         */
+        FailedSyncJob: {
+            /**
+             * Format: int32
+             * @description Attempts made before giving up. `1` means the registry refused it
+             *     outright (a permanent or incompatible answer); a number at
+             *     `DEFAULT_MAX_ATTEMPTS` means it exhausted ~18 hours of backoff
+             *     against a registry that never answered.
+             */
+            attempts: number;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * @description UUID of the `sync_queue` row. The handle `vtc sync-jobs
+             *     {retry,discard}` takes, and the `jobId` on the matching
+             *     `RegistrySyncFailed` audit envelope.
+             */
+            jobId: string;
+            /**
+             * @description Wire-form `SyncJobKind` — `publishMember`, `updateMember`,
+             *     `deleteMember`, `markDeparted`.
+             */
+            kind: string;
+            /** Format: date-time */
+            lastAttemptedAt?: string | null;
+            /** @description The registry's last answer, verbatim. */
+            lastError?: string | null;
+            /** @description The member whose registry record is now stale or absent. */
+            memberDid: string;
+            /**
+             * Format: date-time
+             * @description When the retention sweeper will purge this row
+             *     (`last_attempted_at` — or `created_at` — plus the configured
+             *     `join_requests` retention window). After that the failure is gone
+             *     and the member is still unpublished, so it is a deadline, not a fix.
+             */
+            purgeDueAt: string;
+        };
         FieldDef: {
             default: components["schemas"]["Value"];
             hint?: string | null;
@@ -3387,6 +3435,25 @@ export interface components {
         };
         /** @description What OpenVTC adds to the standard diagnostics payload. */
         OpenVtcDiagnostics: {
+            /**
+             * @description The `Failed` sync jobs behind [`DiagnosticsResponse::failed_count`],
+             *     in full.
+             *
+             *     The count alone was not an operator surface. A `Failed` row is
+             *     terminal — the syncer skips it on every tick, boot recovery only
+             *     rescues `InFlight`, and no drift reconciler re-derives it — so the
+             *     number names a condition that will never resolve on its own, and
+             *     the doc comment on `failed_count` asks for "operator triage" that
+             *     nothing on the wire made possible. The detail lived only in the
+             *     service log and in a `RegistrySyncFailed` audit envelope whose DIDs
+             *     are HMAC-hashed, so even the audit trail could not say *which
+             *     member* had stopped publishing.
+             *
+             *     Capped at [`MAX_REPORTED_FAILED_JOBS`]; `failed_count` remains the
+             *     authoritative total. Newest failure first, so a truncated list is
+             *     the part an operator wants.
+             */
+            failedJobs: components["schemas"]["FailedSyncJob"][];
             /**
              * @description What the document-versus-binary comparison actually *means*, from
              *     [`transport_capability::findings_for_build`](crate::transport_capability::findings_for_build)

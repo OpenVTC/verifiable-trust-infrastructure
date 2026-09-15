@@ -364,13 +364,43 @@ impl MembershipSyncer {
                         warn!(error = %s, job_id = %job.id, "failed to persist Failed state");
                     }
                     self.emit_outcome(&job, false);
-                    warn!(
-                        job_id = %job.id,
-                        did = %job.member_did,
-                        kind = job.kind.as_str(),
-                        error = %e,
-                        "registry rejected sync job permanently — operator intervention required"
-                    );
+                    if e.is_incompatible() {
+                        // The registry answered but does not route this task —
+                        // a statement about the registry, not this job, so it
+                        // belongs on the health signal. Without this the panel
+                        // reads `active` with a failed job beside it and no
+                        // `lastError`, because the permanent branch never
+                        // touched health; the operator is left with a bare
+                        // count. The probe would reach the same verdict on its
+                        // next tick, and will flip it back to active on its own
+                        // once the registry is upgraded — recording it here
+                        // only makes it visible immediately.
+                        self.health
+                            .record_failure(
+                                format!("{e}"),
+                                self.audit_writer.as_ref(),
+                                &self.actor_did,
+                            )
+                            .await;
+                        warn!(
+                            job_id = %job.id,
+                            did = %job.member_did,
+                            kind = job.kind.as_str(),
+                            error = %e,
+                            "the trust registry does not route this Trust Task — the deployed \
+                             registry is out of step with this VTC; upgrade it and re-drive the \
+                             job with `vtc sync-jobs retry`"
+                        );
+                    } else {
+                        warn!(
+                            job_id = %job.id,
+                            did = %job.member_did,
+                            kind = job.kind.as_str(),
+                            error = %e,
+                            "registry rejected sync job permanently — operator intervention \
+                             required; inspect with `vtc sync-jobs list`"
+                        );
+                    }
                 }
             }
         }
