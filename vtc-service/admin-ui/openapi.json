@@ -5990,6 +5990,15 @@
           }
         }
       },
+      "Disagreement": {
+        "type": "string",
+        "description": "How the two views of one member's record disagree.",
+        "enum": [
+          "missingAtRegistry",
+          "unknownLocally",
+          "statusMismatch"
+        ]
+      },
       "Disposition": {
         "type": "string",
         "description": "Spec §5.5 disposition for a removal. Determines what happens to\nthe Member record + status-list slot on member departure.",
@@ -5999,6 +6008,90 @@
           "historical",
           "policydefault"
         ]
+      },
+      "DriftEntry": {
+        "type": "object",
+        "description": "One member whose two views disagree.",
+        "required": [
+          "memberDid",
+          "disagreement"
+        ],
+        "properties": {
+          "disagreement": {
+            "$ref": "#/components/schemas/Disagreement"
+          },
+          "localStatus": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RegistryStatus",
+                "description": "Our view's status, when we hold a record."
+              }
+            ]
+          },
+          "memberDid": {
+            "type": "string"
+          },
+          "registryStatus": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RegistryStatus",
+                "description": "The registry's view, when it holds a record."
+              }
+            ]
+          }
+        }
+      },
+      "DriftSnapshot": {
+        "type": "object",
+        "description": "The result of one comparison.",
+        "required": [
+          "checkedAt",
+          "localCount",
+          "registryCount",
+          "entries",
+          "total"
+        ],
+        "properties": {
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DriftEntry"
+            },
+            "description": "Every disagreement, capped at [`MAX_REPORTED`]."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the comparison could not be made. The previous snapshot is\nretained rather than replaced, so a transient registry outage does not\nerase a real finding — but `checked_at` stops advancing, and this says\nwhy."
+          },
+          "localCount": {
+            "type": "integer",
+            "description": "Records in the local mirror.",
+            "minimum": 0
+          },
+          "registryCount": {
+            "type": "integer",
+            "description": "Records the registry returned for this community's authority.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "description": "Total disagreements found, which may exceed `entries.len()`.",
+            "minimum": 0
+          }
+        }
       },
       "EffectiveConfig": {
         "type": "object",
@@ -7579,6 +7672,17 @@
             },
             "description": "The `Failed` sync jobs behind [`DiagnosticsResponse::failed_count`],\nin full.\n\nThe count alone was not an operator surface. A `Failed` row is\nterminal — the syncer skips it on every tick, boot recovery only\nrescues `InFlight`, and no drift reconciler re-derives it — so the\nnumber names a condition that will never resolve on its own, and\nthe doc comment on `failed_count` asks for \"operator triage\" that\nnothing on the wire made possible. The detail lived only in the\nservice log and in a `RegistrySyncFailed` audit envelope whose DIDs\nare HMAC-hashed, so even the audit trail could not say *which\nmember* had stopped publishing.\n\nCapped at [`MAX_REPORTED_FAILED_JOBS`]; `failed_count` remains the\nauthoritative total. Newest failure first, so a truncated list is\nthe part an operator wants."
           },
+          "registryDrift": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DriftSnapshot",
+                "description": "The latest comparison of the local `registry_records` mirror against\nwhat the trust registry actually holds, or `null` before the first\ncheck completes.\n\n`null` is \"not yet known\", **not** \"no drift\", and a consumer must not\nrender the two alike. The check runs on its own timer\n(`[registry] drift_check_interval_seconds`, default 900s), so a\nfreshly-booted VTC legitimately reports `null` for the first half\nminute.\n\nAnswers the question a failed sync job leaves open: a job that has\naged out of the queue is gone, and until this existed nothing in the\nservice could then say the member was still unpublished."
+              }
+            ]
+          },
           "transportFindings": {
             "type": "array",
             "items": {
@@ -8743,6 +8847,14 @@
             }
           }
         }
+      },
+      "RegistryStatus": {
+        "type": "string",
+        "description": "Wire-form status for [`RegistryRecord::status`]. Mirrors the\n`status ∈ { Active, Departed }` enumeration in spec §5.7.",
+        "enum": [
+          "active",
+          "departed"
+        ]
       },
       "RegistryTransport": {
         "type": "object",

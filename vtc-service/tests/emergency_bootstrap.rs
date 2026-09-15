@@ -334,6 +334,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         consumed_invitations_ks,
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
+        registry_drift: vtc_service::registry::DriftState::new(),
         syncer_health: vtc_service::registry::SyncerHealth::new(),
         credential_signer: None,
         audit_ks,

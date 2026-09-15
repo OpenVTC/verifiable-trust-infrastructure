@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 /// Wire-form status for [`RegistryRecord::status`]. Mirrors the
 /// `status ∈ { Active, Departed }` enumeration in spec §5.7.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RegistryStatus {
     Active,

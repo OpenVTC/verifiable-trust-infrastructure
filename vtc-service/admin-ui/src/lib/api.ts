@@ -34,6 +34,8 @@ import type { DiagnosticsResponse } from "./wire-types";
 export type {
   DiagnosticsExt,
   DiagnosticsResponse,
+  DriftEntry,
+  DriftSnapshot,
   FailedSyncJob,
   RegistryTransport,
   TransportFinding,

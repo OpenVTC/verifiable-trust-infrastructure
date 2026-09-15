@@ -282,6 +282,16 @@ pub struct RegistryConfig {
     /// — not merely whether a URL is up.
     #[serde(default = "default_health_probe_interval")]
     pub health_probe_interval_seconds: u64,
+    /// Period (seconds) between background drift checks — the comparison of
+    /// the local `registry_records` mirror against what the registry actually
+    /// holds. `0` disables it. Default: 900s (15 minutes).
+    ///
+    /// Much slower than the health probe on purpose. The probe is one round
+    /// trip and answers "is the registry up"; a drift check enumerates the
+    /// whole graph and answers "is what we published still there", which
+    /// changes on the timescale of membership events, not of sockets.
+    #[serde(default = "default_drift_check_interval")]
+    pub drift_check_interval_seconds: u64,
     /// Per-call HTTP timeout for registry operations (seconds).
     /// Default: 5s.
     #[serde(default = "default_registry_http_timeout")]
@@ -305,6 +315,10 @@ fn default_health_probe_interval() -> u64 {
     60
 }
 
+fn default_drift_check_interval() -> u64 {
+    900
+}
+
 fn default_registry_http_timeout() -> u64 {
     5
 }
@@ -324,6 +338,7 @@ impl Default for RegistryConfig {
             url: None,
             did: None,
             health_probe_interval_seconds: default_health_probe_interval(),
+            drift_check_interval_seconds: default_drift_check_interval(),
             http_timeout_seconds: default_registry_http_timeout(),
             rtbf_batch_window_hours: default_rtbf_batch_window_hours(),
         }

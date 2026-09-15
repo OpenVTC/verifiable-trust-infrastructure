@@ -13,6 +13,7 @@ import { AlertTriangle, Check, Network, X } from "lucide-react";
 import {
   checkRecognition,
   fetchDiagnostics,
+  type DriftEntry,
   type FailedSyncJob,
   type RecognitionCheck,
 } from "@/lib/api";
@@ -60,6 +61,9 @@ export function Recognition() {
   // Called out on its own because the remedy is "upgrade the registry", which
   // is not something an operator would infer from a queue of failures.
   const incompatible = failedJobs.some(isUnsupportedType);
+  // `undefined` is "no check has completed yet", which is not the same as
+  // "no drift" and must not render as a clean result.
+  const drift = diagnostics.data?.ext["org.openvtc"].registryDrift;
 
   return (
     <div className="page">
@@ -311,6 +315,88 @@ export function Recognition() {
       </section>
 
       <section className="card">
+        <h3>Registry records</h3>
+        <p className="muted">
+          What this community believes it published, against what the registry
+          actually holds. The two are compared on their own timer, not on page
+          load — <code>registryStatus</code> says the registry answers, and the
+          sync counters say our writes were <em>accepted</em>; only this says
+          they are still <em>there</em>.
+        </p>
+        {diagnostics.isPending && <p className="muted">Loading…</p>}
+        {diagnostics.data && !drift && (
+          <p className="finding info">
+            <strong>Not checked yet.</strong>
+            <span className="muted">
+              The first comparison runs shortly after boot, then every 15
+              minutes by default. This is <em>unknown</em>, not{" "}
+              <em>no drift</em>. Set <code>[registry]</code>{" "}
+              <code>drift_check_interval_seconds = 0</code> to disable it
+              entirely.
+            </span>
+          </p>
+        )}
+        {drift && (
+          <>
+            <dl>
+              <dt>Last checked</dt>
+              <dd>{formatIso(drift.checkedAt)}</dd>
+              <dt>Ours / registry</dt>
+              <dd>
+                <code>{drift.localCount}</code> / <code>{drift.registryCount}</code>
+              </dd>
+            </dl>
+            {drift.error && (
+              <p className="finding warn">
+                <strong>The last comparison did not complete.</strong>
+                <span className="muted">
+                  {drift.error} — any findings below are from the last check
+                  that did complete, and are deliberately kept rather than
+                  cleared: a registry that was briefly unreachable is not
+                  evidence that drift went away.
+                </span>
+              </p>
+            )}
+            {drift.total === 0 && !drift.error && (
+              <p className="finding ok">
+                <strong>The two views agree.</strong>
+                <span className="muted">
+                  Every record this community published is present at the
+                  registry with the status we expect.
+                </span>
+              </p>
+            )}
+            {drift.entries.length > 0 && (
+              <>
+                <div className="table-scroll">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Member</th>
+                        <th>Disagreement</th>
+                        <th>Ours</th>
+                        <th>Registry</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {drift.entries.map((e) => (
+                        <DriftRow key={`${e.disagreement}:${e.memberDid}`} entry={e} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {drift.entries.length < drift.total && (
+                  <p className="muted">
+                    Showing {drift.entries.length} of {drift.total}.
+                  </p>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </section>
+
+      <section className="card">
         <h3>Check recognition</h3>
         <form
           onSubmit={(e) => {
@@ -373,6 +459,43 @@ export function Recognition() {
         )}
       </section>
     </div>
+  );
+}
+
+/**
+ * One member whose two views disagree.
+ *
+ * The direction is the whole content of the row, so it is named in prose
+ * rather than shown as a status word: "missing at registry" and "unknown
+ * locally" are opposite problems with opposite fixes, and an operator
+ * scanning a column of near-identical DIDs should not have to decode which
+ * is which.
+ */
+function DriftRow({ entry }: { entry: DriftEntry }) {
+  const fault = entry.disagreement !== "unknownLocally";
+  const says: Record<DriftEntry["disagreement"], string> = {
+    missingAtRegistry: "we published it; the registry does not have it",
+    unknownLocally: "the registry has it; we have no record of publishing it",
+    statusMismatch: "both have it and disagree on whether the member is active",
+  };
+  return (
+    <tr>
+      <td>
+        <code>{entry.memberDid}</code>
+        <CopyButton
+          value={entry.memberDid}
+          label="Copy member DID"
+          successMessage="Member DID copied"
+        />
+      </td>
+      <td>
+        <span className={fault ? "warn" : undefined}>
+          {says[entry.disagreement]}
+        </span>
+      </td>
+      <td>{entry.localStatus ?? "—"}</td>
+      <td>{entry.registryStatus ?? "—"}</td>
+    </tr>
   );
 }
 

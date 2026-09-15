@@ -161,6 +161,10 @@ pub struct AppState {
     /// why it lives in memory.
     pub publish_rate_limiter: crate::relationships::rate_limit::PublishRateLimiter,
     pub registry_health: crate::registry::RegistryHealth,
+    /// Latest comparison of the local registry mirror against the registry
+    /// itself. `None` until the first check completes — "not yet known", which
+    /// the diagnostics surface must not render as "no drift".
+    pub registry_drift: crate::registry::DriftState,
     /// Liveness of the `MembershipSyncer` task (P3.13). The
     /// supervisor updates it on start / restart-after-panic; the
     /// diagnostics handler reads it so a dead syncer is visible.
@@ -532,6 +536,7 @@ pub async fn run(
     }
 
     let registry_health = crate::registry::RegistryHealth::new();
+    let registry_drift = crate::registry::DriftState::new();
 
     // Initialize auth infrastructure. Pass the audit keyspaces in so
     // `init_auth` can derive the HMAC audit key from the same secret
@@ -760,6 +765,7 @@ pub async fn run(
             k
         }),
         registry_health: registry_health.clone(),
+        registry_drift: registry_drift.clone(),
         syncer_health: crate::registry::SyncerHealth::new(),
         config: Arc::new(RwLock::new(config)),
         did_resolver,
@@ -950,6 +956,47 @@ pub async fn run(
                     }
                     _ = probe_shutdown.changed() => {
                         debug!("trust-registry health probe task shutting down");
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    // Drift check: compare the local `registry_records` mirror against what the
+    // registry actually holds. Its own timer rather than the diagnostics
+    // handler, because enumerating the graph is several round trips and the
+    // admin console polls diagnostics every 15 seconds — computing on demand
+    // would turn one open browser tab into steady load on a third party.
+    let drift_interval_secs = boot_cfg.registry.drift_check_interval_seconds;
+    if registry_client.is_some() && drift_interval_secs > 0 {
+        let drift_client = registry_client.clone().expect("checked is_some");
+        let drift_state = registry_drift.clone();
+        let drift_records_ks = state.registry_records_ks.clone();
+        let mut drift_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            // Offset the first check past boot. The mirror is durable and the
+            // registry is a third party, so there is nothing to learn in the
+            // first seconds that is not better learned once messaging has
+            // settled — and a check that races the health probe's first
+            // connect just reports an outage that is not one.
+            let mut timer = tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(30),
+                Duration::from_secs(drift_interval_secs),
+            );
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = timer.tick() => {
+                        crate::registry::check_drift(
+                            drift_client.as_ref(),
+                            &drift_records_ks,
+                            &drift_state,
+                        )
+                        .await;
+                    }
+                    _ = drift_shutdown.changed() => {
+                        debug!("trust-registry drift check task shutting down");
                         return;
                     }
                 }
