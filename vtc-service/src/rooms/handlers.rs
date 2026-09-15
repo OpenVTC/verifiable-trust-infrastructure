@@ -25,7 +25,7 @@ use trust_tasks_rs::TrustTask;
 use super::policy as room_policy;
 use crate::server::AppState;
 use crate::trust_tasks::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, success_response, verify_trust_task_proof,
+    TrustTaskOutcome, app_error_to_reject, parse_payload, success_response,
 };
 use vti_common::audit::{AuditEvent, RoomOperationData};
 use vti_rooms::audit::{self as rooms_audit, RoomOperation};
@@ -213,7 +213,7 @@ pub(crate) async fn handle_create(
     // a typed payload, because re-deriving the signed bytes from a parsed payload is
     // only sound if that type round-trips losslessly — see `JoinAuthCtx::
     // verified_signer`.
-    let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, &presenter) {
+    let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, presenter) {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };

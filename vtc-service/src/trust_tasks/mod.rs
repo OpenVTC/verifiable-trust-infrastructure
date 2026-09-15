@@ -165,22 +165,38 @@ pub(crate) async fn dispatch_trust_task_core(
         return reject_with(&doc, reason);
     }
 
-    // 3. Framework §7.2 item 8 — the proof, where the specification requires
-    //    one. Checked here, against the document **as received**, because this
-    //    is the last point at which those bytes exist: past dispatch a handler
-    //    holds a payload that may have dropped a member it does not know, and
-    //    canonicalising that yields different bytes and refuses a valid proof.
+    // 3. Framework §7.2 item 8 — the proof, verified here against the document
+    //    **as received**, because this is the last point at which those bytes
+    //    exist: past dispatch a handler holds a payload that may have dropped a
+    //    member it does not know, and canonicalising that yields different bytes
+    //    and refuses a valid proof.
     //
-    //    Gated on the published requirement rather than on a list kept here, so
-    //    a task whose specification does not demand a proof is untouched and no
-    //    existing behaviour moves. `spec_policy_for` reads the same generated
-    //    bindings the schemas come from.
+    //    ## Verify what is here; do not demand what the transport already proved
+    //
+    //    The obvious rule — verify wherever the published specification says
+    //    `proof` is REQUIRED — is wrong for this service, and the join tests say
+    //    so immediately. `join-requests/submit/0.2` declares a proof REQUIRED,
+    //    and over DIDComm the applicant carries none: authcrypt proved the
+    //    sender, and the document rides inside that envelope. Enforcing the
+    //    specification's flag here refuses every join over DIDComm and TSP with
+    //    "document has no proof".
+    //
+    //    That gap between the published requirement and what this service
+    //    accepts is real and predates this change; it is not something to close
+    //    by silently breaking the transport. So the rule is the one the
+    //    framework's own HTTPS binding uses for exactly this situation
+    //    (`require_attribution`): attribution must come from *somewhere* — a
+    //    verified proof, or a transport-authenticated peer. A present proof is
+    //    always checked; an absent one is the transport's business, and each
+    //    handler already knows which it needs. The `rooms/*` arms demand a
+    //    verified signer and refuse without one, which is exactly what those
+    //    handlers did for themselves before.
     let type_uri = doc.type_uri.to_string();
-    let proof_required = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
-        .is_some_and(|policy| policy.is_proof_required);
-    let ctx = if proof_required {
+    let ctx = if doc.proof.is_some() {
         match verify_trust_task_proof(state, &doc).await {
             Ok(signer) => &ctx.with_verified_signer(Some(signer)),
+            // A proof that is present and does not verify is always fatal,
+            // whatever the transport proved separately.
             Err(e) => return app_error_to_reject(&doc, &e),
         }
     } else {
@@ -269,11 +285,17 @@ async fn dispatch_typed(
     doc: TrustTask<Value>,
     type_uri: &str,
 ) -> TrustTaskOutcome {
-    // Every `rooms/*` specification requires a proof, so the spine has already
-    // verified one and put the signer here. `""` is unreachable for those tasks;
-    // the arms below are the only readers, and a rooms task that somehow arrived
-    // without a verified signer is refused by the spine before reaching them.
-    let rooms_presenter = ctx.verified_signer.as_deref().unwrap_or_default();
+    // Every `rooms/*` operation is authorized against the DID that **signed the
+    // request**, so an unsigned one has nothing to authorize and is refused.
+    //
+    // That refusal is not new: each of these handlers used to call
+    // `verify_trust_task_proof` itself and return this same rejection. The
+    // verification moved to the spine; the requirement did not move anywhere.
+    // Stated as a guard here rather than assumed, because `verified_signer` is
+    // `None` for every transport-authenticated task that carries no proof — the
+    // normal case for join over DIDComm — and defaulting to an empty presenter
+    // would authorize a room operation against nobody.
+    let rooms_presenter = ctx.verified_signer.as_deref();
 
     match type_uri {
         jr::JOIN_REQUEST_SUBMIT_TYPE => handle_submit(state, ctx, doc).await,
@@ -303,39 +325,70 @@ async fn dispatch_typed(
         // payload, because re-deriving the signed bytes from a parsed payload is sound
         // only for a type that round-trips losslessly. See `JoinAuthCtx::
         // verified_signer`.
-        rooms_wire::ROOMS_CREATE_TYPE => {
-            crate::rooms::handlers::handle_create(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_RECORDS_PUT_TYPE => {
-            crate::rooms::handlers::handle_put_record(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_RECORDS_GET_TYPE => {
-            crate::rooms::handlers::handle_get_record(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_RECORDS_LIST_TYPE => {
-            crate::rooms::handlers::handle_list_records(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_RECORDS_CURATE_TYPE => {
-            crate::rooms::handlers::handle_curate_record(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_EPOCH_MINT_TYPE => {
-            crate::rooms::handlers::handle_mint_epoch(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_EPOCH_CHAIN_TYPE => {
-            crate::rooms::handlers::handle_epoch_chain(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_EPOCH_PRUNE_TYPE => {
-            crate::rooms::handlers::handle_epoch_prune(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_EPOCH_COMMITS_TYPE => {
-            crate::rooms::handlers::handle_epoch_commits(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_OWNER_TRANSFER_TYPE => {
-            crate::rooms::handlers::handle_transfer_owner(state, doc, rooms_presenter).await
-        }
-        rooms_wire::ROOMS_OWNER_CLAIM_TYPE => {
-            crate::rooms::handlers::handle_claim_owner(state, doc, rooms_presenter).await
-        }
+        rooms_wire::ROOMS_CREATE_TYPE => match rooms_presenter {
+            Some(presenter) => crate::rooms::handlers::handle_create(state, doc, presenter).await,
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_RECORDS_PUT_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_put_record(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_RECORDS_GET_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_get_record(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_RECORDS_LIST_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_list_records(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_RECORDS_CURATE_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_curate_record(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_EPOCH_MINT_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_mint_epoch(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_EPOCH_CHAIN_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_epoch_chain(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_EPOCH_PRUNE_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_epoch_prune(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_EPOCH_COMMITS_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_epoch_commits(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_OWNER_TRANSFER_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_transfer_owner(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_OWNER_CLAIM_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_claim_owner(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
@@ -346,54 +399,54 @@ async fn dispatch_typed(
 mod spine_proof_tests {
     use super::*;
 
-    /// The spine verifies a proof exactly when the **published specification**
-    /// says one is required — not according to a list kept in this crate.
+    /// The rule the spine actually follows, and the one it must not.
     ///
-    /// This is the gate that decides whether a handler can be handed a typed
-    /// payload at all: verification has to happen here, against the document as
-    /// received, because a parsed payload may have dropped a member it does not
-    /// know and re-deriving the signed bytes from it would refuse a valid proof
-    /// (`vta-sdk/tests/typed_proof_verify.rs`).
+    /// The tempting rule is "verify wherever the published specification says
+    /// `proof` is REQUIRED". This test exists because that rule is wrong here,
+    /// and wrong in a way that takes the service down rather than tightening it:
+    /// `join-requests/submit` declares a proof REQUIRED, and over DIDComm the
+    /// applicant sends none — authcrypt proved the sender and the document rides
+    /// inside that envelope. Enforcing the flag refuses every join over DIDComm
+    /// and TSP.
     ///
-    /// Asserted against `spec_policy_for` rather than against hardcoded
-    /// expectations, so the day a specification changes its requirement, this
-    /// service follows it instead of disagreeing with it.
+    /// So the assertion is inverted from what it looks like it should be: these
+    /// URIs demand a proof *per the specification* while this service accepts
+    /// them without one. That divergence is real and predates the spine change.
+    /// It is recorded here so the next person to reach for `spec_policy_for` as
+    /// an enforcement gate meets it as a failing test rather than as a total
+    /// outage.
     #[test]
-    fn a_rooms_task_requires_a_proof_and_the_spine_knows_it() {
+    fn a_transport_authenticated_task_declares_a_proof_it_does_not_carry() {
+        let declares_required = |uri: &str| {
+            trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .is_some_and(|policy| policy.is_proof_required)
+        };
+
+        assert!(
+            declares_required(jr::JOIN_REQUEST_SUBMIT_TYPE),
+            "if this is now false the specification changed, and the comment \
+             above — plus the rule in the spine — should be re-read"
+        );
+    }
+
+    /// And the rooms family, where the requirement *is* enforced — by the arms
+    /// in `dispatch_typed`, which refuse without a verified signer exactly as
+    /// each handler used to refuse for itself.
+    ///
+    /// The two together are the whole rule: a present proof is always verified,
+    /// an absent one is the transport's business, and a handler that needs a
+    /// signed identity says so.
+    #[test]
+    fn every_rooms_task_declares_the_proof_its_arm_requires() {
         for uri in rooms_wire::ROOMS_DISPATCHED_URIS {
             let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
                 policy.is_proof_required,
-                "{uri}: every rooms task requires a proof, and the spine's \
-                 verification is gated on exactly this flag — if it is now false, \
-                 the handlers below would receive an empty presenter"
+                "{uri}: its arm refuses without a verified signer, so the \
+                 specification had better agree that one is required"
             );
         }
-    }
-
-    /// And the converse, so the gate is not vacuously "always verify": a task
-    /// whose specification requires no proof must not be forced through
-    /// verification, or every unsigned request this service accepts today would
-    /// start being refused.
-    #[test]
-    fn a_task_without_a_proof_requirement_is_left_alone() {
-        let unsigned: Vec<&str> = DISPATCHED_URIS
-            .iter()
-            .filter(|uri| {
-                trust_tasks_rs::schema_index::spec_policy_for(uri)
-                    .is_some_and(|p| !p.is_proof_required)
-            })
-            .copied()
-            .collect();
-
-        assert!(
-            !unsigned.is_empty(),
-            "no dispatched task is proof-optional, which would make the spine's \
-             conditional verification indistinguishable from unconditional — if \
-             that is genuinely true now, this test should be re-read rather than \
-             deleted, because the condition is what keeps the change additive"
-        );
     }
 }
 
