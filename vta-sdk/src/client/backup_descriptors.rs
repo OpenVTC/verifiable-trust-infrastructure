@@ -228,7 +228,9 @@ impl VtaClient {
         // REST arm (it paces only the DIDComm/TSP wait), so its value is
         // immaterial here.
         let payload_value = serde_json::to_value(&payload)?;
-        let response_payload = self.dispatch_trust_task(type_uri, payload_value, 30).await?;
+        let response_payload = self
+            .dispatch_trust_task(type_uri, payload_value, 30)
+            .await?;
         Ok(serde_json::from_value(response_payload)?)
     }
 
@@ -322,7 +324,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod descriptor_envelope_tests {
     use super::super::{ClientIdentity, VtaClient};
-    use crate::protocols::backup_management::descriptors::{InitiateExportBody, InitiateImportBody};
+    use crate::protocols::backup_management::descriptors::{
+        InitiateExportBody, InitiateImportBody,
+    };
     use crate::trust_tasks;
 
     const VTA_DID: &str = "did:key:z6MkVtaBackupTarget";
@@ -348,12 +352,22 @@ mod descriptor_envelope_tests {
 
     /// Build the document the descriptor flow would emit for `type_uri` and
     /// assert it is addressed to the VTA, issued by the caller, and carries a
-    /// cryptographically valid proof by the caller's key. `signed_task_document`
-    /// is exactly what `post_trust_task` now delegates to, so what it produces
-    /// is what goes on the wire.
+    /// cryptographically valid proof by the caller's key.
+    ///
+    /// This walks the two steps `post_trust_task`'s delegate
+    /// [`VtaClient::dispatch_trust_task`] takes before the transport, in the
+    /// order it takes them: the payload-conformance gate, then
+    /// `signed_task_document`. Running the gate here is what keeps the helper
+    /// honest about being "what goes on the wire" — it is the one client-side
+    /// refusal the delegation introduced, and a test that only built the
+    /// envelope would pass on a payload the real call rejects before it ever
+    /// builds one.
     async fn assert_conforming_request(type_uri: &'static str, payload: serde_json::Value) {
         let id = caller_identity();
         let client = VtaClient::new("http://vta.invalid").with_identity(id.clone());
+
+        VtaClient::check_payload_conforms(type_uri, &payload)
+            .unwrap_or_else(|e| panic!("{type_uri}: the payload does not conform: {e}"));
 
         let doc = client
             .signed_task_document(type_uri, payload)
