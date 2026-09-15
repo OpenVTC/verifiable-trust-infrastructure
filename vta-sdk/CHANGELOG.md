@@ -2,6 +2,81 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.38.1...vta-sdk-v0.38.2) — 2026-09-15
+
+
+### Added
+
+- **vtc**: Retry and discard a failed sync job from the console ([#1493](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1493))
+
+The queue became visible in #1487 and comparable against the registry in #1489,
+  and in both the answer to "so fix it" was: stop the daemon and run a CLI. The
+  mutation could not be a route, because binding a `spec/vtc/registry/…` Trust
+  Task URI ahead of its upstream specification is what `trust_task_manifest.rs`
+  refuses.
+
+  trustoverip/dtgwg-trust-tasks-tf#460 specified the family and trust-tasks-rs
+  0.20.6 publishes it, so the four tasks bind and the buttons work:
+
+  - `GET  /v1/registry/sync-jobs`         `…/sync-jobs/list/0.1`
+  - `POST /v1/registry/sync-jobs/retry`   `…/sync-jobs/retry/0.1`
+  - `POST /v1/registry/sync-jobs/discard` `…/sync-jobs/discard/0.1`
+  - `GET  /v1/registry/records`           `…/records/list/0.1`
+
+  The offline `vtc sync-jobs` CLI stays. It is the break-glass path for a daemon
+  that will not start, which is exactly when an HTTP route is no use, and both
+  surfaces go through `sync_jobs_cli::requeue` and the same eligibility rule, so
+  "only a Failed row may move" is written once.
+
+  Where the two deliberately differ is in how they refuse. Retry *reports* an
+  ineligible row (`skipped`, with `notFailed` or `notFound`) rather than failing,
+  so one row the reconciler picked up cannot defeat a bulk retry, and a job swept
+  between the page load and the click is an ordinary race. Discard *raises*
+  409/404, because the request names exactly one job and there is no partial
+  outcome to describe. Bulk retry is `allFailed: true` rather than an omitted
+  `jobId` — a client bug that drops the identifier must not become a bulk
+  operation — and discard has no bulk form at all.
+
+  Two census gates caught real defects on the way, both worth recording:
+
+  - `generated_wire_types_census` rejected the two query structs I had written
+    by hand. It was right: they restated `…/list/0.1`'s payload. The handlers now
+    take the generated `Payload` as the `Query` extractor, and the OpenAPI
+    parameters are declared inline rather than derived from a mirror.
+  - `every_bound_published_uri_has_a_witness` required a conformance fixture per
+    bound URI. Added four, transcribed from what the handlers build — including
+    that a failed job carries no `nextAttemptAt`, because it has no schedule and
+    claiming one would be the response asserting something untrue.
+
+  Every `#[non_exhaustive]` generated enum is matched with an explicit refusal
+  rather than a catch-all that guesses. A future spec release naming a fourth
+  retry target must not be silently read as one of the existing two.
+
+
+
+### Fixed
+
+- **tsp**: Every client seals Trust Tasks in the binding envelope ([#1488](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1488))
+
+#1478 gave the VTA's TSP receiver the published `trust-tasks-tsp` binding and
+  cut the browser wallet over with it. Every Rust client kept sealing the bare
+  document, so the VTA refused all of them:
+
+      refused a TSP frame that is not a binding envelope
+        reason=TSP payload is not a `…/binding/tsp/0.1/envelope` envelope
+               (got `…/spec/messaging/ping/0.1`)
+
+  A TSP trust ping, and `keys/export-secret/0.1` from openvtc, are the two that
+  were reported; the cause is one missing call, in the send funnels every TSP
+  client in this workspace goes through — `TspSession::send_document` (so
+  `announce`, `request`, and the mobile approver), `DIDCommSession::
+  send_tsp_document` (so `request_tsp`, so every `VtaClient` trust task on TSP),
+  and the two `TspPingSession` probes behind `pnm health`.
+
+  ## The binding is now one module, not one per crate
+
+
+
 ## [0.38.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.38.0...vta-sdk-v0.38.1) — 2026-09-14
 
 

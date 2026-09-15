@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.16.4...pnm-cli-v0.16.5) — 2026-09-15
+
+
 ## [0.16.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.16.3...pnm-cli-v0.16.4) — 2026-09-14
 
 
