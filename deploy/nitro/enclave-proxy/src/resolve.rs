@@ -141,7 +141,10 @@ fn parse_endpoint_url(url: &str) -> Result<MediatorEndpoint, String> {
         "wss" | "https" => true,
         "ws" | "http" => false,
         _ => {
-            warn!(scheme, url, "unknown scheme in mediator endpoint, assuming TLS");
+            warn!(
+                scheme,
+                url, "unknown scheme in mediator endpoint, assuming TLS"
+            );
             true
         }
     };

@@ -6,7 +6,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio_rustls::TlsConnector;
-use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
+use tokio_vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener, VsockStream};
 use tracing::{debug, error, info, warn};
 
 /// Maximum concurrent connections per proxy channel.
@@ -43,7 +43,9 @@ pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
         let permit = match semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
-                warn!("[inbound] connection limit reached ({MAX_CONCURRENT_CONNECTIONS}), rejecting {peer}");
+                warn!(
+                    "[inbound] connection limit reached ({MAX_CONCURRENT_CONNECTIONS}), rejecting {peer}"
+                );
                 drop(tcp_stream);
                 continue;
             }
@@ -84,10 +86,7 @@ pub struct MediatorConfig {
     pub resolver: Option<std::sync::Arc<DIDResolver>>,
 }
 
-pub async fn run_mediator(
-    vsock_port: u32,
-    mediator_config: MediatorConfig,
-) {
+pub async fn run_mediator(vsock_port: u32, mediator_config: MediatorConfig) {
     let tls_connector = match build_tls_connector() {
         Ok(c) => c,
         Err(e) => {
@@ -210,8 +209,7 @@ pub async fn run_mediator(
                     if new_ep.host != endpoint.host || new_ep.port != endpoint.port {
                         info!(
                             "[mediator] endpoint changed: {}:{} → {}:{} (tls={})",
-                            endpoint.host, endpoint.port,
-                            new_ep.host, new_ep.port, new_ep.tls
+                            endpoint.host, endpoint.port, new_ep.host, new_ep.port, new_ep.tls
                         );
                     } else {
                         info!(
@@ -221,7 +219,10 @@ pub async fn run_mediator(
                     }
                     endpoint = new_ep;
                 } else {
-                    warn!("[mediator] re-resolution failed — keeping current endpoint {}:{}", endpoint.host, endpoint.port);
+                    warn!(
+                        "[mediator] re-resolution failed — keeping current endpoint {}:{}",
+                        endpoint.host, endpoint.port
+                    );
                 }
                 consecutive_failures = 0;
             }
@@ -269,10 +270,7 @@ async fn resolve_mediator(config: &MediatorConfig) -> Option<MediatorEndpoint> {
 /// Simple HTTPS CONNECT proxy: reads the HTTP CONNECT request from the
 /// enclave, validates the target against the allowlist, establishes a TCP
 /// connection, and bridges bytes bidirectionally.
-pub async fn run_https_proxy(
-    vsock_port: u32,
-    allowlist: Vec<(String, u16)>,
-) {
+pub async fn run_https_proxy(vsock_port: u32, allowlist: Vec<(String, u16)>) {
     let allowlist = Arc::new(allowlist);
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
@@ -300,7 +298,9 @@ pub async fn run_https_proxy(
         let permit = match semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
-                warn!("[https] connection limit reached ({MAX_CONCURRENT_CONNECTIONS}), rejecting vsock peer {peer:?}");
+                warn!(
+                    "[https] connection limit reached ({MAX_CONCURRENT_CONNECTIONS}), rejecting vsock peer {peer:?}"
+                );
                 drop(vsock_stream);
                 continue;
             }
@@ -365,15 +365,11 @@ async fn handle_connect_request(
     }
 
     // Check allowlist
-    let allowed = allowlist
-        .iter()
-        .any(|(h, p)| h == &host && *p == port);
+    let allowed = allowlist.iter().any(|(h, p)| h == &host && *p == port);
 
     if !allowed {
-        let allowed_hosts: Vec<String> = allowlist
-            .iter()
-            .map(|(h, p)| format!("{h}:{p}"))
-            .collect();
+        let allowed_hosts: Vec<String> =
+            allowlist.iter().map(|(h, p)| format!("{h}:{p}")).collect();
         warn!(
             "[https] CONNECT to {host}:{port} BLOCKED — not in allowlist. \
              This request came from inside the enclave (via HTTPS_PROXY). \
@@ -382,9 +378,7 @@ async fn handle_connect_request(
              Current allowlist: {allowed_hosts:?}"
         );
         drop(buf_reader);
-        stream
-            .write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")
-            .await?;
+        stream.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await?;
         return Ok(());
     }
 
@@ -482,7 +476,9 @@ pub async fn run_resolver(vsock_port: u32, resolver_port: u16) {
             return;
         }
     };
-    info!("[resolver] listening on vsock:{vsock_port} → localhost:{resolver_port} (DID resolver sidecar)");
+    info!(
+        "[resolver] listening on vsock:{vsock_port} → localhost:{resolver_port} (DID resolver sidecar)"
+    );
 
     loop {
         let (vsock_stream, peer) = match listener.accept().await {
@@ -551,8 +547,7 @@ pub(crate) async fn run_log_receiver(vsock_port: u32) {
         // The VTA sends a heartbeat every 15 seconds when idle.
         // If we don't receive anything for 45 seconds (3 missed heartbeats),
         // the connection is dead (enclave terminated without clean EOF).
-        const DEAD_CONNECTION_TIMEOUT: std::time::Duration =
-            std::time::Duration::from_secs(45);
+        const DEAD_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
         let reader = tokio::io::BufReader::new(stream);
         let mut lines = reader.lines();
@@ -574,8 +569,10 @@ pub(crate) async fn run_log_receiver(vsock_port: u32) {
                 }
                 Err(_) => {
                     // No data for 45s (3 missed heartbeats) — connection is dead
-                    warn!("[logs] no heartbeat received for {}s — connection dead",
-                        DEAD_CONNECTION_TIMEOUT.as_secs());
+                    warn!(
+                        "[logs] no heartbeat received for {}s — connection dead",
+                        DEAD_CONNECTION_TIMEOUT.as_secs()
+                    );
                     break;
                 }
             }
@@ -636,7 +633,10 @@ pub async fn run_config_server(vsock_port: u32, envelope_path: std::path::PathBu
             std::process::exit(1);
         }
     };
-    info!("[config] listening on vsock:{vsock_port} → {}", envelope_path.display());
+    info!(
+        "[config] listening on vsock:{vsock_port} → {}",
+        envelope_path.display()
+    );
 
     loop {
         let (mut vsock_stream, peer) = match listener.accept().await {
@@ -670,7 +670,10 @@ pub async fn run_config_server(vsock_port: u32, envelope_path: std::path::PathBu
                     // Fully-qualified: VsockStream also has an inherent
                     // `shutdown(Shutdown)`; we want the async AsyncWriteExt one.
                     let _ = AsyncWriteExt::shutdown(&mut vsock_stream).await;
-                    debug!("[config] served {} bytes to vsock peer {peer:?}", bytes.len());
+                    debug!(
+                        "[config] served {} bytes to vsock peer {peer:?}",
+                        bytes.len()
+                    );
                 }
                 Err(e) => {
                     error!("[config] failed to read envelope {}: {e}", path.display());
@@ -715,10 +718,18 @@ mod tests {
         ];
 
         // Allowed
-        assert!(allowlist.iter().any(|(h, p)| h == "kms.us-east-1.amazonaws.com" && *p == 443));
+        assert!(
+            allowlist
+                .iter()
+                .any(|(h, p)| h == "kms.us-east-1.amazonaws.com" && *p == 443)
+        );
         // Not allowed
         assert!(!allowlist.iter().any(|(h, p)| h == "evil.com" && *p == 443));
         // Wrong port
-        assert!(!allowlist.iter().any(|(h, p)| h == "kms.us-east-1.amazonaws.com" && *p == 8080));
+        assert!(
+            !allowlist
+                .iter()
+                .any(|(h, p)| h == "kms.us-east-1.amazonaws.com" && *p == 8080)
+        );
     }
 }

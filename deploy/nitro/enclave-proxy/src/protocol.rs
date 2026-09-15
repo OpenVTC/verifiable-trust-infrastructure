@@ -89,7 +89,10 @@ pub fn decode_bytes(data: &[u8], offset: usize) -> Result<(&[u8], usize), String
     let start = offset + 4;
     let end = start + len;
     if end > data.len() {
-        return Err(format!("truncated data: need {len} bytes at offset {start}, have {}", data.len() - start));
+        return Err(format!(
+            "truncated data: need {len} bytes at offset {start}, have {}",
+            data.len() - start
+        ));
     }
     Ok((&data[start..end], end))
 }
@@ -387,10 +390,7 @@ mod tests {
 
     #[test]
     fn test_kv_list_response() {
-        let resp = build_ok_kv_list(&[
-            (b"key1", b"val1"),
-            (b"key2", b"val2"),
-        ]);
+        let resp = build_ok_kv_list(&[(b"key1", b"val1"), (b"key2", b"val2")]);
         let pairs = decode_kv_list_response(&resp).unwrap();
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], (b"key1".to_vec(), b"val1".to_vec()));
@@ -409,5 +409,4 @@ mod tests {
         assert!(decode_bool_response(&build_ok_bool(true)).unwrap());
         assert!(!decode_bool_response(&build_ok_bool(false)).unwrap());
     }
-
 }

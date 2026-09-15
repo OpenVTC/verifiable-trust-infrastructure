@@ -60,7 +60,10 @@ impl ProxyConfig {
             let contents = std::fs::read_to_string(config_path).unwrap_or_default();
             toml::from_str::<VtaConfig>(&contents).unwrap_or_default()
         } else {
-            tracing::warn!("config file not found: {} — using defaults", config_path.display());
+            tracing::warn!(
+                "config file not found: {} — using defaults",
+                config_path.display()
+            );
             VtaConfig::default()
         };
 
@@ -99,11 +102,8 @@ impl ProxyConfig {
             .unwrap_or(cli.listen_port);
 
         // Parse extra allowlisted hosts
-        let mut allowlist_hosts: Vec<(String, u16)> = cli
-            .allowlist
-            .iter()
-            .map(|s| parse_host_port(s))
-            .collect();
+        let mut allowlist_hosts: Vec<(String, u16)> =
+            cli.allowlist.iter().map(|s| parse_host_port(s)).collect();
 
         if let Ok(hosts) = std::env::var("ALLOWLIST_HOSTS") {
             for entry in hosts.split(',') {
@@ -178,14 +178,20 @@ impl ProxyConfig {
 ///   did:webvh:SCID:example.com:path → example.com
 fn extract_host_from_did(did: &str) -> Option<String> {
     if let Some(rest) = did.strip_prefix("did:web:") {
-        Some(rest.split('%').next().unwrap_or(rest)
-            .split(':').next().unwrap_or(rest)
-            .to_string())
+        Some(
+            rest.split('%')
+                .next()
+                .unwrap_or(rest)
+                .split(':')
+                .next()
+                .unwrap_or(rest)
+                .to_string(),
+        )
     } else if let Some(rest) = did.strip_prefix("did:webvh:") {
         // did:webvh:SCID:host:path — skip SCID (first segment)
-        rest.split(':').nth(1).map(|segment| {
-            segment.split('%').next().unwrap_or(segment).to_string()
-        })
+        rest.split(':')
+            .nth(1)
+            .map(|segment| segment.split('%').next().unwrap_or(segment).to_string())
     } else {
         None
     }
@@ -247,4 +253,3 @@ mod tests {
         assert!(allow.contains(&("dynamodb.us-east-1.amazonaws.com".to_string(), 443)));
     }
 }
-
