@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.27.1...vta-service-v0.28.0) — 2026-09-15
+
+
+### Fixed
+
+- **tsp**: Every client seals Trust Tasks in the binding envelope ([#1488](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1488))
+
+#1478 gave the VTA's TSP receiver the published `trust-tasks-tsp` binding and
+  cut the browser wallet over with it. Every Rust client kept sealing the bare
+  document, so the VTA refused all of them:
+
+      refused a TSP frame that is not a binding envelope
+        reason=TSP payload is not a `…/binding/tsp/0.1/envelope` envelope
+               (got `…/spec/messaging/ping/0.1`)
+
+  A TSP trust ping, and `keys/export-secret/0.1` from openvtc, are the two that
+  were reported; the cause is one missing call, in the send funnels every TSP
+  client in this workspace goes through — `TspSession::send_document` (so
+  `announce`, `request`, and the mobile approver), `DIDCommSession::
+  send_tsp_document` (so `request_tsp`, so every `VtaClient` trust task on TSP),
+  and the two `TspPingSession` probes behind `pnm health`.
+
+  ## The binding is now one module, not one per crate
+
+
+
 ## [0.27.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.27.0...vta-service-v0.27.1) — 2026-09-14
 
 

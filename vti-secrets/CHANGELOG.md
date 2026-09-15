@@ -2,6 +2,67 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.8](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.3.7...vti-secrets-v0.3.8) — 2026-09-15
+
+
+### Fixed
+
+- **deps**: Bound aws-smithy-types below 1.7, which breaks aws-smithy-json 0.63 ([#1485](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1485))
+
+A fresh dependency resolution stopped compiling:
+
+      error[E0308]: expected `DocumentObject`, found `HashMap<String, Document>`
+        --> aws-smithy-json-0.63.0/src/codec/deserializer.rs:707:37
+      error[E0004]: non-exhaustive patterns: `&_` not covered
+        --> aws-smithy-json-0.63.0/src/serialize.rs:36:15
+
+  `aws-smithy-types` 1.7.0 changed `Document::Object` from
+  `HashMap<String, Document>` to a new `DocumentObject`, and added a variant
+  to an enum that is `#[non_exhaustive]` — a breaking change shipped as a
+  MINOR bump. `aws-smithy-json` 0.63.0 declares `aws-smithy-types = "^1.6.1"`,
+  which admits 1.7.0 and then does not compile against it.
+
+  Cargo unifies `aws-smithy-types` to one version across the graph but keeps
+  both `aws-smithy-json` 0.63 and 0.64 — 0.x minors are incompatible majors —
+  so the two coexist and only the 0.63 copy breaks. We have both because
+  `aws-sdk-secretsmanager` 1.116.0 moved to json `^0.64.0` while `aws-config`
+  1.12.0, its newest release, still wants `^0.63.0`. Both reach us:
+  `vti-secrets` behind `aws-secrets`, and `vta-tee` unconditionally, so a
+  plain `cargo build --workspace` is affected as well as the secrets path.
+
+  Cargo.lock already held 1.6.3, so committed builds were never affected and
+  only a lockless resolution broke — which is what `cargo install --path`
+  does unless given `--locked`. That is how this was met:
+
+      cargo install --path vtc-service --no-default-features \
+        --features setup,website,admin-ui,aws-secrets,tsp
+
+  `--locked` remains the right flag for a reproducible install. This bound is
+  what keeps `cargo update` and a lockless build honest too.
+
+  The bound is declared once in `[workspace.dependencies]` with the
+  reasoning, and referenced from the two crates that pull `aws-config` —
+  Cargo only honours a version requirement from a crate that declares it, so
+  a workspace entry alone would constrain nothing. Neither crate calls it.
+
+  `>= 1.6.1, < 1.7` rather than `= 1.6.3`: 1.6.1 is aws-smithy-json 0.63.0's
+  own floor, and the upper bound excludes the break without freezing out
+  patch releases in the working line. **Remove it when `aws-config` ships a
+  release on json 0.64.**
+
+  Verified, on this branch:
+
+    - without the bound, a lockless resolve picks aws-smithy-types 1.7.0 with
+      aws-smithy-json 0.63.0 AND 0.64.0 — the failing combination
+    - with it, a lockless resolve picks 1.6.3, json 0.63.0 alone, and backs
+      aws-sdk-secretsmanager off to 1.115.0
+    - Cargo.lock moves by two lines, both dependency edges; no version churn
+    - `cargo check -p vti-secrets --no-default-features --features aws-secrets`
+      and `cargo check -p vtc-service --no-default-features --features
+      setup,website,admin-ui,aws-secrets,tsp` both pass
+
+
+
 ## [0.3.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.3.6...vti-secrets-v0.3.7) — 2026-09-12
 
 
