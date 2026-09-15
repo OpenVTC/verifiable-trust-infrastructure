@@ -238,6 +238,8 @@ pub async fn publish_log_to_server(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
     transport
@@ -272,6 +274,8 @@ pub async fn delete_log_on_server(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
     transport
@@ -308,6 +312,8 @@ pub async fn register_did_atomic_on_server(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
     transport
@@ -347,6 +353,8 @@ pub async fn agent_name_op_on_server(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
     transport
@@ -381,6 +389,8 @@ pub async fn list_agent_names_on_server(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
     transport
@@ -414,6 +424,8 @@ pub async fn check_agent_name_on_server(
         deps.did_resolver,
         deps.didcomm_bridge,
         &auth_ctx,
+        #[cfg(feature = "tsp")]
+        deps.tsp.clone(),
     )
     .await?;
     transport

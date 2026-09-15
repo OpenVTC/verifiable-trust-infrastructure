@@ -412,6 +412,9 @@ mod tests {
             did_resolver: resolver,
             didcomm_bridge: bridge,
             auth_locks: locks,
+            // Test scaffolding: no mediator socket.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         }
     }
 

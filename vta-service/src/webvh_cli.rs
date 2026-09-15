@@ -225,6 +225,10 @@ pub async fn run_create_did(
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
         auth_locks: &auth_locks,
+        // Offline: no mediator socket to lend, so the seam cannot choose
+        // TSP. Same reason as the `auth_locks` note above.
+        #[cfg(feature = "tsp")]
+        tsp: None,
     };
     let result = operations::did_webvh::create_did_webvh(&deps, &auth, params, "cli").await?;
     cs.persist().await?;
@@ -372,6 +376,10 @@ pub async fn run_delete_did(
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
         auth_locks: &auth_locks,
+        // Offline: no mediator socket to lend, so the seam cannot choose
+        // TSP. Same reason as the `auth_locks` note above.
+        #[cfg(feature = "tsp")]
+        tsp: None,
     };
     // Show what this would do before doing it.
     //
@@ -586,6 +594,10 @@ pub async fn run_edit_did(
         did_resolver: &did_resolver,
         didcomm_bridge: &didcomm_bridge,
         auth_locks: &auth_locks,
+        // Offline: no mediator socket to lend, so the seam cannot choose
+        // TSP. Same reason as the `auth_locks` note above.
+        #[cfg(feature = "tsp")]
+        tsp: None,
     };
     // Dry-run the real update and show the operator what it will actually do.
     //
@@ -680,6 +692,10 @@ pub async fn run_register_did(
         did_resolver: &did_resolver,
         didcomm_bridge: &didcomm_bridge,
         auth_locks: &auth_locks,
+        // Offline: no mediator socket to lend, so the seam cannot choose
+        // TSP. Same reason as the `auth_locks` note above.
+        #[cfg(feature = "tsp")]
+        tsp: None,
     };
     let result = operations::did_webvh::register_did_with_server(
         &deps,

@@ -697,6 +697,9 @@ mod pre_rotation_e2e_tests {
             did_resolver: resolver,
             didcomm_bridge: bridge,
             auth_locks: locks,
+            // Test scaffolding: no mediator socket.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         }
     }
 
@@ -762,6 +765,10 @@ mod pre_rotation_e2e_tests {
             did_resolver: resolver,
             didcomm_bridge: bridge,
             auth_locks: &auth_locks,
+            // Offline: no mediator socket to lend, so the seam cannot choose
+            // TSP. Same reason as the `auth_locks` note above.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         };
         let result = create_did_webvh(
             &deps,

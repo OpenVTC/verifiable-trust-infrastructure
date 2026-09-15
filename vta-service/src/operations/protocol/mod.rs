@@ -284,6 +284,12 @@ impl<'a> ServiceOpDeps<'a> {
             did_resolver: self.did_resolver,
             didcomm_bridge: self.didcomm_bridge,
             auth_locks: self.webvh_auth_locks,
+            // `ProtocolDeps` is assembled from the same narrow borrows this
+            // bundle re-lists; none of them is a mediator socket. Threading a
+            // sender onto `ProtocolDeps` is what would change this, and no
+            // protocol op talks to a webvh host often enough to justify it yet.
+            #[cfg(feature = "tsp")]
+            tsp: None,
         }
     }
 }
