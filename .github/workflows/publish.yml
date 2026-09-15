@@ -270,6 +270,54 @@ jobs:
         with:
           tool: cargo-semver-checks
 
+      # `cargo-semver-checks` on `vta-service` peaks at **5.3 GB** resident
+      # (measured: 146 s and 5,311,905,792 bytes max RSS, warm cache). An
+      # `ubuntu-latest` runner has 7 GB total, and the check rustdocs the crate
+      # twice — current and baseline — on top of a cold dependency build. It
+      # does not fit, and the kernel kills it.
+      #
+      # ## Why this was hard to see, and what to look for next time
+      #
+      # A killed process logs nothing. The job's whole failure is:
+      #
+      #     INFO Checking API compatibility with cargo-semver-checks...
+      #     ##[error]Process completed with exit code 143.
+      #
+      # No message, no crate named, no stack — just SIGTERM six minutes in,
+      # well inside the 30-minute `timeout-minutes`, so it does not read as a
+      # timeout either. It ran that way **sixteen consecutive times** (first
+      # failure 2026-09-14 on #1470) while the `Release-plz release` job beside
+      # it stayed green and kept publishing, so from outside it looked like
+      # release-plz was not firing at all rather than half-failing. An exit 143
+      # with no output in a memory-hungry step is the memory ceiling until
+      # proven otherwise.
+      #
+      # ## Swap, rather than a bigger runner
+      #
+      # No workflow in this repo uses a larger-runner label, so moving there is
+      # an org-level change with billing attached. Swap costs a few minutes of
+      # paging on one job. If this step ever stops being enough, the next moves
+      # are a larger runner or `semver_check = false` for `vta-service` in
+      # `release-plz.toml` — the latter last, because that crate keeps the
+      # check for a reason: `openvtc-core` dev-depends on it, so a silent break
+      # reaches somebody (see RELEASING.md).
+      #
+      # `ubuntu-latest` ships a 4 GB swapfile at this path already; it is
+      # replaced rather than added to, because a second `swapon` on the same
+      # file fails.
+      - name: Give the semver check room to run
+        run: |
+          set -euo pipefail
+          sudo swapoff /mnt/swapfile || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          # Printed so a future failure can be read against real numbers rather
+          # than the assumption that this step worked.
+          free -h
+
       - name: Run release-plz
         # Pinned to a full version: release-plz/action does NOT publish a
         # moving major tag, so `@v0` resolves to nothing and the job fails at
