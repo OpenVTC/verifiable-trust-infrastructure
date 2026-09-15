@@ -2231,6 +2231,109 @@ mod tests {
     /// A source assertion rather than a behavioural one because the alternative
     /// needs a booted agent with a resident signing secret, and the property is
     /// one line: does every answer pass through the signer on its way out.
+    /// **One inbound path, and it stays one.**
+    ///
+    /// Every transport this service accepts Trust Tasks on — REST, DIDComm, TSP
+    /// — reaches [`dispatch_trust_task_core`], and each does only what its own
+    /// binding requires on the way: REST's binding is the request path, DIDComm's
+    /// is the message `type`, TSP's is the payload wrapper
+    /// (`messaging::tsp_binding`). None of them parses a Trust-Task document
+    /// itself.
+    ///
+    /// That is true today. This is what keeps it true: a fourth transport is
+    /// meant to be a binding module plus a thin entry, and the way that goes
+    /// wrong is not dramatic — someone deserialises the document in their
+    /// handler to read one field, then branches on it, and a second spine grows
+    /// with its own idea of validation, replay and signing. By the time it is
+    /// visible it is a rewrite.
+    ///
+    /// Source-level, because the property is about *where* parsing happens, and
+    /// a behavioural test cannot see that: a second spine that does all the same
+    /// checks passes every round-trip test there is.
+    #[test]
+    fn only_the_spine_parses_a_trust_task_document() {
+        /// Transport modules that legitimately parse a document, with the
+        /// reason. May only shrink.
+        const ALLOWED: &[(&str, &str)] = &[(
+            "routes/auth.rs",
+            "Pre-login: `auth/{challenge,authenticate,refresh}` carry no session,              so they cannot pass `AuthClaims` through the dispatcher's extractor              and are served as dedicated REST routes. `vta_sdk`'s              `REST_ROUTED_URIS` is the canonical list and names exactly these.",
+        )];
+
+        fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    rust_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        for area in ["messaging", "routes"] {
+            rust_files(&root.join(area), &mut files);
+        }
+        assert!(
+            !files.is_empty(),
+            "the sweep found no transport sources — it has stopped checking anything"
+        );
+
+        let mut offenders: Vec<String> = Vec::new();
+        let mut allowed_seen: Vec<&str> = Vec::new();
+        for file in &files {
+            let rel = file
+                .strip_prefix(&root)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let src = std::fs::read_to_string(file).expect("read a transport source");
+            // Test code is exempt: a test constructing a document to feed the
+            // spine is the spine being tested, not a second one.
+            let production = src.split("#[cfg(test)]").next().unwrap_or(&src);
+            for (n, line) in production.lines().enumerate() {
+                let parses = line.contains("TrustTask<")
+                    && (line.contains("from_slice")
+                        || line.contains("from_str")
+                        || line.contains("from_value"));
+                if !parses {
+                    continue;
+                }
+                if ALLOWED.iter().any(|(f, _)| *f == rel) {
+                    if !allowed_seen.contains(&rel.as_str()) {
+                        allowed_seen.push(Box::leak(rel.clone().into_boxed_str()));
+                    }
+                    continue;
+                }
+                offenders.push(format!("{rel}:{}  {}", n + 1, line.trim()));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these transport modules parse a Trust-Task document themselves:\n  {}\n\n\
+             A transport opens its own binding and hands the bytes to \
+             `dispatch_trust_task_core`; it does not read the document. Parsing one \
+             here is how a second dispatch path starts — first to read a field, then \
+             to branch on it, and then with its own idea of validation, replay and \
+             signing. If this is genuinely a pre-dispatch surface like \
+             `routes/auth.rs`, add it to ALLOWED with the reason.",
+            offenders.join("\n  ")
+        );
+
+        for (file, _) in ALLOWED {
+            assert!(
+                allowed_seen.contains(file),
+                "`{file}` is allow-listed but no longer parses a document — remove \
+                 the entry so the list shrinks"
+            );
+        }
+    }
+
     #[test]
     fn the_spine_signs_every_response_it_returns() {
         let src = include_str!("mod.rs");
