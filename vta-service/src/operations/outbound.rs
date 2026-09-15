@@ -57,9 +57,11 @@ use serde_json::Value;
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities};
 use vti_common::error::{AppError, bad_gateway_error};
 
+#[cfg(feature = "didcomm")]
 use crate::didcomm_bridge::DIDCommBridge;
 
 /// How long to wait for a reply over DIDComm, in seconds.
+#[cfg(feature = "didcomm")]
 const DIDCOMM_REPLY_TIMEOUT_SECS: u64 = 30;
 
 /// The protocols this VTA can **initiate** a Trust-Task request on.
@@ -67,7 +69,16 @@ const DIDCOMM_REPLY_TIMEOUT_SECS: u64 = 30;
 /// Order here is not the preference order — [`Protocol::PREFERENCE_ORDER`] is,
 /// and [`pick_transport`] walks that and consults this only for membership. A
 /// second ordering would be a second thing to keep in step.
-pub const OUTBOUND_SUPPORTED: [Protocol; 2] = [Protocol::Didcomm, Protocol::Rest];
+pub const OUTBOUND_SUPPORTED: &[Protocol] = &[
+    // Only where this build can actually initiate it. A VTA compiled without
+    // `didcomm` has no bridge to send on, and naming a protocol here that the
+    // build cannot reach would turn a compile-time absence into a runtime
+    // "named in OUTBOUND_SUPPORTED but has no send path" — a worse way to find
+    // out.
+    #[cfg(feature = "didcomm")]
+    Protocol::Didcomm,
+    Protocol::Rest,
+];
 
 /// What makes a reply believable.
 ///
@@ -104,7 +115,33 @@ pub enum ReplyTrust {
 /// the bridge and DIDComm silently stops being selectable.
 pub struct Outbound<'a> {
     pub resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    /// Absent in a build without `didcomm`, along with the arm that uses it and
+    /// the entry in [`OUTBOUND_SUPPORTED`] that would select it.
+    #[cfg(feature = "didcomm")]
     pub bridge: &'a DIDCommBridge,
+}
+
+impl<'a> Outbound<'a> {
+    /// Borrow what this needs from an [`AppState`](crate::server::AppState).
+    ///
+    /// A constructor rather than five struct literals because the bridge is
+    /// feature-gated: without this, every call site would carry the same `cfg`
+    /// and the next one added would omit it and break a build nobody runs
+    /// locally. Same reason `WebvhDeps::from_app_state` exists.
+    ///
+    /// `resolver` is threaded separately because `AppState` holds it as an
+    /// `Option` — the caller unwraps it, surfacing the typed "DID resolver not
+    /// available" reject, before there is anything to send.
+    pub fn from_app_state(
+        state: &'a crate::server::AppState,
+        resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    ) -> Self {
+        Self {
+            resolver,
+            #[cfg(feature = "didcomm")]
+            bridge: state.didcomm_bridge.as_ref(),
+        }
+    }
 }
 
 /// The highest-preference protocol both this VTA and `peer` can do, with the
@@ -167,7 +204,16 @@ impl Outbound<'_> {
 
         let reply = match protocol {
             Protocol::Rest => self.send_rest(recipient, &endpoint, &document).await?,
+            #[cfg(feature = "didcomm")]
             Protocol::Didcomm => self.send_didcomm(recipient, document).await?,
+            // Not selectable in this build — it is not in `OUTBOUND_SUPPORTED`
+            // — but the arm must exist for the match to be exhaustive.
+            #[cfg(not(feature = "didcomm"))]
+            Protocol::Didcomm => {
+                return Err(AppError::Internal(
+                    "DIDComm was selected in a build without the `didcomm` feature".into(),
+                ));
+            }
             // Its own arm rather than a catch-all, so naming TSP in
             // `OUTBOUND_SUPPORTED` fails to compile here instead of silently
             // doing nothing. See the module header for what it needs.
@@ -214,6 +260,7 @@ impl Outbound<'_> {
         })
     }
 
+    #[cfg(feature = "didcomm")]
     async fn send_didcomm(&self, recipient: &str, document: Value) -> Result<Value, AppError> {
         // The message is addressed to the **peer's** DID; the endpoint it
         // advertises is the mediator it can be reached through, and the delivery
