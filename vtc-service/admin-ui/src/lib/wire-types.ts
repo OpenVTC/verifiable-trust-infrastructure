@@ -158,3 +158,17 @@ export type RegistryTransport = Schemas["RegistryTransport"];
 export type FailedSyncJob = Schemas["FailedSyncJob"];
 export type DriftSnapshot = Schemas["DriftSnapshot"];
 export type DriftEntry = Schemas["DriftEntry"];
+
+// ── Trust-registry operator surface ─────────────────────────────────────
+//
+// The published Trust Task shapes, not this service's own: the schemas are
+// rendered from `vtc/registry/{sync-jobs,records}/…` so the console and the
+// specification cannot disagree about a field name.
+export type SyncJobsListResponse = Schemas["VtcRegistrySyncJobsListV0_1Response"];
+export type SyncJobRow = Schemas["VtcRegistrySyncJobsListV0_1Job"];
+export type SyncJobState = Schemas["VtcRegistrySyncJobsListV0_1State"];
+export type SyncJobKind = Schemas["VtcRegistrySyncJobsListV0_1Kind"];
+export type SyncJobsRetryResponse = Schemas["VtcRegistrySyncJobsRetryV0_1Response"];
+export type SyncJobsDiscardResponse = Schemas["VtcRegistrySyncJobsDiscardV0_1Response"];
+export type RegistryRecordsResponse = Schemas["VtcRegistryRecordsListV0_1Response"];
+export type RegistryRecordRow = Schemas["VtcRegistryRecordsListV0_1Record"];

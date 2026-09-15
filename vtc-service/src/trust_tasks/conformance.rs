@@ -1245,6 +1245,77 @@ fn table() -> Vec<Conformance> {
                 "transports": [{ "protocol": "rest", "advertised": true, "serviceable": true }],
             })
         ),
+        // The reconciler's operator surface. These fixtures are transcribed
+        // from what `routes/registry_admin.rs` actually builds, and every
+        // field an operator acts on is present: the member DID in the clear,
+        // the registry's verbatim error, and the attempt count that separates
+        // "answered and refused" from "never answered".
+        checked!(
+            s::registry::sync_jobs::list::v0_1::Payload,
+            s::registry::sync_jobs::list::v0_1::Response,
+            json!({ "state": "failed", "limit": 50 }),
+            // `job_wire` — routes/registry_admin.rs. A failed row carries no
+            // `nextAttemptAt`: it has no schedule, and claiming one would be
+            // the response asserting something untrue.
+            json!({
+                "items": [{
+                    "jobId": "07c6c189-8272-4761-96e9-0ef869380665",
+                    "kind": "publishMember",
+                    "memberDid": "did:web:member.example",
+                    "state": "failed",
+                    "attempts": 1,
+                    "lastError": "registry rejected registry/record/put: unsupportedType",
+                    "createdAt": TS,
+                    "lastAttemptedAt": TS,
+                    "purgeDueAt": TS,
+                }],
+            })
+        ),
+        checked!(
+            s::registry::sync_jobs::retry::v0_1::Payload,
+            s::registry::sync_jobs::retry::v0_1::Response,
+            json!({ "jobId": "07c6c189-8272-4761-96e9-0ef869380665" }),
+            // Both halves are always present, including when one is empty:
+            // "requeued nothing" and "declined nothing" are distinct answers
+            // and a consumer must not have to infer either from absence.
+            json!({
+                "requeued": [{
+                    "jobId": "07c6c189-8272-4761-96e9-0ef869380665",
+                    "memberDid": "did:web:member.example",
+                }],
+                "skipped": [{
+                    "jobId": "1f2e3d4c-5b6a-4798-8765-43210fedcba9",
+                    "reason": "notFailed",
+                }],
+            })
+        ),
+        checked!(
+            s::registry::sync_jobs::discard::v0_1::Payload,
+            s::registry::sync_jobs::discard::v0_1::Response,
+            json!({ "jobId": "07c6c189-8272-4761-96e9-0ef869380665" }),
+            json!({
+                "jobId": "07c6c189-8272-4761-96e9-0ef869380665",
+                "memberDid": "did:web:member.example",
+            })
+        ),
+        checked!(
+            s::registry::records::list::v0_1::Payload,
+            s::registry::records::list::v0_1::Response,
+            json!({ "source": "registry", "limit": 50 }),
+            // `source` is echoed, so a consumer never infers which view it
+            // received from the request it believes it sent.
+            json!({
+                "source": "registry",
+                "items": [{
+                    "entityId": "did:web:member.example",
+                    "authorityId": "did:web:community.example",
+                    "action": "recognise",
+                    "resource": "trust-graph",
+                    "recordType": "recognition",
+                    "recognized": true,
+                }],
+            })
+        ),
         // ─── relationships ───────────────────────────────────────────
         checked!(
             s::relationships::list::v0_2::Payload,

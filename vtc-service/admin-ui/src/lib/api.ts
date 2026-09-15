@@ -29,7 +29,13 @@ export interface HealthResponse {
 // interface *is* what it checks the console against. Re-export the generated
 // aliases instead, so a response change fails to compile rather than arriving
 // as `undefined`.
-import type { DiagnosticsResponse } from "./wire-types";
+import type {
+  DiagnosticsResponse,
+  RegistryRecordsResponse,
+  SyncJobsDiscardResponse,
+  SyncJobsListResponse,
+  SyncJobsRetryResponse,
+} from "./wire-types";
 
 export type {
   DiagnosticsExt,
@@ -37,6 +43,12 @@ export type {
   DriftEntry,
   DriftSnapshot,
   FailedSyncJob,
+  RegistryRecordRow,
+  RegistryRecordsResponse,
+  SyncJobRow,
+  SyncJobsDiscardResponse,
+  SyncJobsListResponse,
+  SyncJobsRetryResponse,
   RegistryTransport,
   TransportFinding,
   TransportFindingCode,
@@ -329,6 +341,58 @@ const DIAGNOSTICS_TASK =
 export const fetchDiagnostics = (): Promise<DiagnosticsResponse> =>
   getJson<DiagnosticsResponse>("/v1/health/diagnostics", {
     trustTask: DIAGNOSTICS_TASK,
+  });
+
+// ── Trust-registry operator surface ─────────────────────────────────────
+//
+// `vtc/registry/{sync-jobs,records}/…`. The offline `vtc sync-jobs` CLI does
+// the same three things against a stopped daemon; these are the online half,
+// and they share the daemon's eligibility rule rather than re-deriving it.
+const SYNC_JOBS_LIST_TASK =
+  "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
+const SYNC_JOBS_RETRY_TASK =
+  "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1";
+const SYNC_JOBS_DISCARD_TASK =
+  "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1";
+const REGISTRY_RECORDS_TASK =
+  "https://trusttasks.org/spec/vtc/registry/records/list/0.1";
+
+export const fetchSyncJobs = (
+  state?: "pending" | "inFlight" | "failed",
+): Promise<SyncJobsListResponse> =>
+  getJson<SyncJobsListResponse>(
+    `/v1/registry/sync-jobs${state ? `?state=${state}` : ""}`,
+    { trustTask: SYNC_JOBS_LIST_TASK },
+  );
+
+/**
+ * Requeue one job, or every failed job.
+ *
+ * `allFailed` is spelled as its own member rather than an omitted `jobId`,
+ * exactly as the specification requires: a bug that dropped the identifier
+ * would otherwise turn one operator's retry into a bulk requeue.
+ */
+export const retrySyncJob = (
+  target: { jobId: string } | { allFailed: true },
+): Promise<SyncJobsRetryResponse> =>
+  postJson<SyncJobsRetryResponse>("/v1/registry/sync-jobs/retry", target, {
+    trustTask: SYNC_JOBS_RETRY_TASK,
+  });
+
+export const discardSyncJob = (
+  jobId: string,
+): Promise<SyncJobsDiscardResponse> =>
+  postJson<SyncJobsDiscardResponse>(
+    "/v1/registry/sync-jobs/discard",
+    { jobId },
+    { trustTask: SYNC_JOBS_DISCARD_TASK },
+  );
+
+export const fetchRegistryRecords = (
+  source: "registry" | "local",
+): Promise<RegistryRecordsResponse> =>
+  getJson<RegistryRecordsResponse>(`/v1/registry/records?source=${source}`, {
+    trustTask: REGISTRY_RECORDS_TASK,
   });
 
 /**

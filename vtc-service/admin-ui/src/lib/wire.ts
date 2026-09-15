@@ -1315,6 +1315,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/registry/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["registryRecordsList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/registry/sync-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["registrySyncJobsList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/registry/sync-jobs/discard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["registrySyncJobsDiscard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/registry/sync-jobs/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["registrySyncJobsRetry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/relationships": {
         parameters: {
             query?: never;
@@ -5210,6 +5274,138 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRegistryRecordsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcRegistryRecordsListV0_1Record: {
+            /** @description The action the assertion covers. */
+            action: string;
+            /** @description The authority asserting it. */
+            authorityId: string;
+            /** @description Present on authorization records: whether the action+resource authorization is confirmed. Absent on other record types — absent is not `false`. */
+            authorized?: unknown;
+            /** @description The entity the record is about. */
+            entityId: string;
+            ext?: components["schemas"]["VtcRegistryRecordsListV0_1Ext"];
+            /** @description Present on recognition records: whether the action+resource is recognised. Absent on other record types — absent is not `false`. */
+            recognized?: unknown;
+            /** @description Record discriminator, as the trust registry states it. */
+            recordType: string;
+            /** @description The resource the assertion covers. */
+            resource: string;
+        };
+        VtcRegistryRecordsListV0_1Response: {
+            ext?: components["schemas"]["VtcRegistryRecordsListV0_1Ext"];
+            /** @description The matching records, in the maintainer's stable enumeration order. */
+            items: components["schemas"]["VtcRegistryRecordsListV0_1Record"][];
+            /** @description Continuation token for the next page, or null when this is the last. */
+            nextCursor?: unknown;
+            source: components["schemas"]["VtcRegistryRecordsListV0_1Source"];
+        };
+        /**
+         * @description `registry` enumerates the trust registry itself; `local` enumerates the community's own record of what it published. They are different questions and a consumer MUST NOT treat one as a cache of the other.
+         * @enum {string}
+         */
+        VtcRegistryRecordsListV0_1Source: "registry" | "local";
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRegistrySyncJobsDiscardV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Delete an abandoned trust-registry reconciliation job without dispatching it. The registry's record for that member is left exactly as it is. */
+        VtcRegistrySyncJobsDiscardV0_1Payload: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsDiscardV0_1Ext"];
+            /** @description The job to delete, from `vtc/registry/sync-jobs/list`. Required and single: discard is irreversible, so there is deliberately no bulk form. */
+            jobId: string;
+        };
+        VtcRegistrySyncJobsDiscardV0_1Response: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsDiscardV0_1Ext"];
+            /** @description The deleted job, echoed. */
+            jobId: string;
+            /** @description The member whose pending change was dropped. Returned because the caller is discarding by identifier and this names what it actually cost. */
+            memberDid: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRegistrySyncJobsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcRegistrySyncJobsListV0_1Job: {
+            /** @description Attempts made so far. `1` on a failed job means the registry answered and refused; a value at the maintainer's retry ceiling means it never answered. */
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description When the job was enqueued.
+             */
+            createdAt: string;
+            ext?: components["schemas"]["VtcRegistrySyncJobsListV0_1Ext"];
+            /** @description Identifier of the queued job. The handle `vtc/registry/sync-jobs/retry` and `.../discard` take. */
+            jobId: string;
+            kind: components["schemas"]["VtcRegistrySyncJobsListV0_1Kind"];
+            /**
+             * Format: date-time
+             * @description When it was last dispatched.
+             */
+            lastAttemptedAt?: unknown;
+            /** @description The registry's last answer, verbatim. Diagnostic prose for an operator; a consumer MUST NOT parse it. */
+            lastError?: unknown;
+            /** @description The member whose registry record the job carries. In the clear, because an operator holding a hash cannot tell who stopped publishing. */
+            memberDid: string;
+            /**
+             * Format: date-time
+             * @description When it is next due. Null on a failed job: nothing is scheduled.
+             */
+            nextAttemptAt?: unknown;
+            /**
+             * Format: date-time
+             * @description When the maintainer's retention sweep will delete this row. A deadline, not a fix — the member stays unpublished.
+             */
+            purgeDueAt?: unknown;
+            state: components["schemas"]["VtcRegistrySyncJobsListV0_1State"];
+        };
+        /**
+         * @description Which mutation the job carries to the registry.
+         * @enum {string}
+         */
+        VtcRegistrySyncJobsListV0_1Kind: "publishMember" | "updateMember" | "deleteMember" | "markDeparted";
+        VtcRegistrySyncJobsListV0_1Response: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsListV0_1Ext"];
+            items: components["schemas"]["VtcRegistrySyncJobsListV0_1Job"][];
+            /** @description Continuation token for the next page, or null when this is the last. */
+            nextCursor?: unknown;
+        };
+        /**
+         * @description `failed` is terminal: the reconciler has abandoned the job and will not retry it without an operator. `pending` and `inFlight` are moving on their own.
+         * @enum {string}
+         */
+        VtcRegistrySyncJobsListV0_1State: "pending" | "inFlight" | "failed";
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRegistrySyncJobsRetryV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Requeue an abandoned trust-registry reconciliation job so the community's reconciler dispatches it again. */
+        VtcRegistrySyncJobsRetryV0_1Payload: unknown | unknown;
+        VtcRegistrySyncJobsRetryV0_1Requeued: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Ext"];
+            jobId: string;
+            /** @description The member whose record the requeued job carries. */
+            memberDid?: string;
+        };
+        VtcRegistrySyncJobsRetryV0_1Response: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Ext"];
+            /** @description Jobs now scheduled for dispatch. Empty is a valid answer and is not an error. */
+            requeued: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Requeued"][];
+            /** @description Jobs the maintainer declined to requeue, each with why. Reported rather than failing the task, so a bulk retry is not defeated by one ineligible row. */
+            skipped: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Skipped"][];
+        };
+        VtcRegistrySyncJobsRetryV0_1Skipped: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Ext"];
+            jobId: string;
+            /**
+             * @description `notFailed` — the reconciler still owns the job, so requeueing it would dispatch the same mutation twice. `notFound` — no such job; it may already have been retried, discarded, or swept.
+             * @enum {string}
+             */
+            reason: "notFailed" | "notFound";
+        };
         /**
          * @description One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.
          * @example admin
@@ -8696,6 +8892,200 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RecognitionCheck"];
                 };
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registryRecordsList: {
+        parameters: {
+            query?: {
+                /** @description registry (default) or local. */
+                source?: string;
+                /** @description Filter to records about this entity. */
+                entityId?: string;
+                /** @description Filter to records asserted by this authority. */
+                authorityId?: string;
+                /** @description Filter to records for this action. */
+                action?: string;
+                /** @description Filter to records for this resource. */
+                resource?: string;
+                /** @description Continuation token from a previous page's nextCursor. */
+                cursor?: string;
+                /** @description Page size, clamped to 1..=200 (default 50). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trust records from the requested view */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcRegistryRecordsListV0_1Response"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The registry could not be enumerated */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No trust registry is configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registrySyncJobsList: {
+        parameters: {
+            query?: {
+                /** @description pending | inFlight | failed. Omit for every state. */
+                state?: string;
+                /** @description Continuation token from a previous page's nextCursor. */
+                cursor?: string;
+                /** @description Page size, clamped to 1..=200 (default 50). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The reconciliation queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcRegistrySyncJobsListV0_1Response"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registrySyncJobsDiscard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VtcRegistrySyncJobsDiscardV0_1Payload"];
+            };
+        };
+        responses: {
+            /** @description The job was deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcRegistrySyncJobsDiscardV0_1Response"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such job */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The job is not in the terminal failed state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registrySyncJobsRetry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VtcRegistrySyncJobsRetryV0_1Payload"];
+            };
+        };
+        responses: {
+            /** @description What was requeued, and what was declined */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcRegistrySyncJobsRetryV0_1Response"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Caller is not an admin */
             403: {

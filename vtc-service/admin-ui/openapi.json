@@ -3631,6 +3631,260 @@
         ]
       }
     },
+    "/v1/registry/records": {
+      "get": {
+        "tags": [
+          "registry"
+        ],
+        "operationId": "registryRecordsList",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "query",
+            "description": "registry (default) or local.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entityId",
+            "in": "query",
+            "description": "Filter to records about this entity.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorityId",
+            "in": "query",
+            "description": "Filter to records asserted by this authority.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Filter to records for this action.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource",
+            "in": "query",
+            "description": "Filter to records for this resource.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Continuation token from a previous page's nextCursor.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to 1..=200 (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trust records from the requested view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VtcRegistryRecordsListV0_1Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "502": {
+            "description": "The registry could not be enumerated"
+          },
+          "503": {
+            "description": "No trust registry is configured"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/registry/sync-jobs": {
+      "get": {
+        "tags": [
+          "registry"
+        ],
+        "operationId": "registrySyncJobsList",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "description": "pending | inFlight | failed. Omit for every state.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Continuation token from a previous page's nextCursor.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to 1..=200 (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The reconciliation queue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VtcRegistrySyncJobsListV0_1Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/registry/sync-jobs/discard": {
+      "post": {
+        "tags": [
+          "registry"
+        ],
+        "operationId": "registrySyncJobsDiscard",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VtcRegistrySyncJobsDiscardV0_1Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The job was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VtcRegistrySyncJobsDiscardV0_1Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "404": {
+            "description": "No such job"
+          },
+          "409": {
+            "description": "The job is not in the terminal failed state"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/registry/sync-jobs/retry": {
+      "post": {
+        "tags": [
+          "registry"
+        ],
+        "operationId": "registrySyncJobsRetry",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was requeued, and what was declined",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/relationships": {
       "post": {
         "tags": [
@@ -10427,6 +10681,331 @@
           }
         },
         "additionalProperties": true
+      },
+      "VtcRegistryRecordsListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRegistryRecordsListV0_1Record": {
+        "type": "object",
+        "required": [
+          "entityId",
+          "authorityId",
+          "action",
+          "resource",
+          "recordType"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "The action the assertion covers.",
+            "minLength": 1
+          },
+          "authorityId": {
+            "type": "string",
+            "description": "The authority asserting it.",
+            "minLength": 1
+          },
+          "authorized": {
+            "description": "Present on authorization records: whether the action+resource authorization is confirmed. Absent on other record types — absent is not `false`."
+          },
+          "entityId": {
+            "type": "string",
+            "description": "The entity the record is about.",
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistryRecordsListV0_1Ext"
+          },
+          "recognized": {
+            "description": "Present on recognition records: whether the action+resource is recognised. Absent on other record types — absent is not `false`."
+          },
+          "recordType": {
+            "type": "string",
+            "description": "Record discriminator, as the trust registry states it.",
+            "minLength": 1
+          },
+          "resource": {
+            "type": "string",
+            "description": "The resource the assertion covers.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRegistryRecordsListV0_1Response": {
+        "type": "object",
+        "required": [
+          "items",
+          "source"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistryRecordsListV0_1Ext"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcRegistryRecordsListV0_1Record"
+            },
+            "description": "The matching records, in the maintainer's stable enumeration order."
+          },
+          "nextCursor": {
+            "description": "Continuation token for the next page, or null when this is the last."
+          },
+          "source": {
+            "$ref": "#/components/schemas/VtcRegistryRecordsListV0_1Source"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRegistryRecordsListV0_1Source": {
+        "type": "string",
+        "description": "`registry` enumerates the trust registry itself; `local` enumerates the community's own record of what it published. They are different questions and a consumer MUST NOT treat one as a cache of the other.",
+        "enum": [
+          "registry",
+          "local"
+        ]
+      },
+      "VtcRegistrySyncJobsDiscardV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRegistrySyncJobsDiscardV0_1Payload": {
+        "type": "object",
+        "description": "Delete an abandoned trust-registry reconciliation job without dispatching it. The registry's record for that member is left exactly as it is.",
+        "required": [
+          "jobId"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsDiscardV0_1Ext"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "The job to delete, from `vtc/registry/sync-jobs/list`. Required and single: discard is irreversible, so there is deliberately no bulk form.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRegistrySyncJobsDiscardV0_1Response": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "memberDid"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsDiscardV0_1Ext"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "The deleted job, echoed.",
+            "minLength": 1
+          },
+          "memberDid": {
+            "type": "string",
+            "description": "The member whose pending change was dropped. Returned because the caller is discarding by identifier and this names what it actually cost.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRegistrySyncJobsListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRegistrySyncJobsListV0_1Job": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "kind",
+          "memberDid",
+          "state",
+          "attempts",
+          "createdAt"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "description": "Attempts made so far. `1` on a failed job means the registry answered and refused; a value at the maintainer's retry ceiling means it never answered.",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the job was enqueued."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsListV0_1Ext"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "Identifier of the queued job. The handle `vtc/registry/sync-jobs/retry` and `.../discard` take.",
+            "minLength": 1
+          },
+          "kind": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsListV0_1Kind"
+          },
+          "lastAttemptedAt": {
+            "format": "date-time",
+            "description": "When it was last dispatched."
+          },
+          "lastError": {
+            "description": "The registry's last answer, verbatim. Diagnostic prose for an operator; a consumer MUST NOT parse it.",
+            "maxLength": 1024
+          },
+          "memberDid": {
+            "type": "string",
+            "description": "The member whose registry record the job carries. In the clear, because an operator holding a hash cannot tell who stopped publishing.",
+            "minLength": 1
+          },
+          "nextAttemptAt": {
+            "format": "date-time",
+            "description": "When it is next due. Null on a failed job: nothing is scheduled."
+          },
+          "purgeDueAt": {
+            "format": "date-time",
+            "description": "When the maintainer's retention sweep will delete this row. A deadline, not a fix — the member stays unpublished."
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsListV0_1State"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRegistrySyncJobsListV0_1Kind": {
+        "type": "string",
+        "description": "Which mutation the job carries to the registry.",
+        "enum": [
+          "publishMember",
+          "updateMember",
+          "deleteMember",
+          "markDeparted"
+        ]
+      },
+      "VtcRegistrySyncJobsListV0_1Response": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsListV0_1Ext"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcRegistrySyncJobsListV0_1Job"
+            }
+          },
+          "nextCursor": {
+            "description": "Continuation token for the next page, or null when this is the last."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRegistrySyncJobsListV0_1State": {
+        "type": "string",
+        "description": "`failed` is terminal: the reconciler has abandoned the job and will not retry it without an operator. `pending` and `inFlight` are moving on their own.",
+        "enum": [
+          "pending",
+          "inFlight",
+          "failed"
+        ]
+      },
+      "VtcRegistrySyncJobsRetryV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRegistrySyncJobsRetryV0_1Payload": {
+        "oneOf": [
+          {},
+          {}
+        ],
+        "description": "Requeue an abandoned trust-registry reconciliation job so the community's reconciler dispatches it again."
+      },
+      "VtcRegistrySyncJobsRetryV0_1Requeued": {
+        "type": "object",
+        "required": [
+          "jobId"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Ext"
+          },
+          "jobId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "memberDid": {
+            "type": "string",
+            "description": "The member whose record the requeued job carries.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRegistrySyncJobsRetryV0_1Response": {
+        "type": "object",
+        "required": [
+          "requeued",
+          "skipped"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Ext"
+          },
+          "requeued": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Requeued"
+            },
+            "description": "Jobs now scheduled for dispatch. Empty is a valid answer and is not an error."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Skipped"
+            },
+            "description": "Jobs the maintainer declined to requeue, each with why. Reported rather than failing the task, so a bulk retry is not defeated by one ineligible row."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRegistrySyncJobsRetryV0_1Skipped": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "reason"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRegistrySyncJobsRetryV0_1Ext"
+          },
+          "jobId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "`notFailed` — the reconciler still owns the job, so requeueing it would dispatch the same mutation twice. `notFound` — no such job; it may already have been retried, discarded, or swept.",
+            "enum": [
+              "notFailed",
+              "notFound"
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "VtcRole": {
         "type": "string",
