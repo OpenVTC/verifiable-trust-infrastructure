@@ -30,6 +30,7 @@
 use tracing::info;
 
 use crate::messaging::auth::auth_for_trust_task_envelope;
+use crate::messaging::tsp_binding::{open_envelope, wrap_envelope};
 use crate::server::AppState;
 
 /// Per-message bridge: turn one unpacked TSP message into a dispatched Trust
@@ -63,6 +64,23 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // a zero-authority claim rather than refused. Kept identical to the DIDComm
     // bridge — an approver must not be able to reach the VTA over one transport
     // and not the other.
+    // The binding envelope comes off first: everything below — authorization,
+    // dispatch, the reply — works on the Trust-Task document, exactly as the
+    // REST and DIDComm paths do. Carriage is opened here and nowhere else.
+    let document = match open_envelope(payload) {
+        Ok(d) => d,
+        Err(reason) => {
+            info!(sender = %sender_vid, %reason, "refused a TSP frame that is not a binding envelope");
+            // Not `reject_trust_task`: it re-parses the body and, when that
+            // fails, replaces the caller's reason with its own "body did not
+            // parse as a Trust Task document". Here the document may be
+            // perfectly good and merely unwrapped, so that message would send
+            // the sender to inspect the wrong thing.
+            return wrap_envelope(&crate::trust_tasks::malformed_request_response(reason).body);
+        }
+    };
+    let payload = document.as_slice();
+
     let outcome = match auth_for_trust_task_envelope(app_state, sender_vid, payload).await {
         // TSP seals to the recipient VID, same guarantee as authcrypt.
         Ok(auth) => {
@@ -86,7 +104,10 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
         status = %outcome.status,
         "TSP trust-task dispatched"
     );
-    outcome.body
+    // Sealed back in the same envelope it arrived in. A reply that dropped the
+    // wrapper would make this binding asymmetric — conformant one way and not
+    // the other — which is harder to notice than being wrong in both.
+    wrap_envelope(&outcome.body)
 }
 
 // The delivery-layer inbound loop (`super::service::handle_tsp`) unpacks the
@@ -102,6 +123,28 @@ mod tests {
     use crate::acl::{AclEntry, Role, store_acl_entry};
     use crate::test_support::build_signing_test_app_state;
 
+    /// A frame carrying `document`, wrapped as the binding requires.
+    fn framed(document: &str) -> Vec<u8> {
+        wrap_envelope(document.as_bytes())
+    }
+
+    /// Open a reply and return the document inside, asserting the wrapper is
+    /// there. Every one of these tests asserts on the *document*, so the
+    /// wrapper has to come off in one shared place or three tests quietly stop
+    /// checking it.
+    fn document_of(reply: &[u8]) -> serde_json::Value {
+        let envelope: serde_json::Value = serde_json::from_slice(reply).expect("reply is JSON");
+        assert_eq!(
+            envelope.get("type").and_then(|t| t.as_str()),
+            Some(trust_tasks_tsp::ENVELOPE_TYPE),
+            "a reply must be sealed in the binding envelope it arrived in: {envelope}"
+        );
+        envelope
+            .get("document")
+            .cloned()
+            .expect("the envelope carries a document")
+    }
+
     /// A sender with no ACL entry still gets a Trust-Task error **envelope**
     /// back (not a silent drop) — the sender VID is proven, so we reply like the
     /// DIDComm path. With this unparseable `{}` body the reject degrades to a
@@ -113,16 +156,16 @@ mod tests {
     async fn dispatch_one_unknown_sender_replies_with_error_envelope() {
         let (app_state, _dir) = build_signing_test_app_state().await;
 
-        let body = dispatch_one(&app_state, b"{}", "did:key:zUnauthorizedTspSender").await;
+        let body = dispatch_one(&app_state, &framed("{}"), "did:key:zUnauthorizedTspSender").await;
 
         assert!(
             !body.is_empty(),
             "unauthorized sender must get a reply envelope"
         );
-        let doc: serde_json::Value = serde_json::from_slice(&body).expect("reply is JSON");
+        let doc = document_of(&body);
         assert!(
             doc.get("type").is_some() && doc.get("payload").is_some(),
-            "reply should be a trust-task error envelope, got: {doc}"
+            "reply should be a trust-task error document, got: {doc}"
         );
     }
 
@@ -140,13 +183,13 @@ mod tests {
             .await
             .unwrap();
 
-        let body = dispatch_one(&app_state, b"{}", did).await;
+        let body = dispatch_one(&app_state, &framed("{}"), did).await;
 
         assert!(
             !body.is_empty(),
             "authorized sender must get a reply envelope"
         );
-        serde_json::from_slice::<serde_json::Value>(&body).expect("reply is JSON");
+        document_of(&body);
     }
 
     /// The learn-from-inbound hook: dispatching any inbound TSP frame records its
@@ -164,11 +207,75 @@ mod tests {
             "a DID we've never seen over TSP is not reachable"
         );
 
-        let _ = dispatch_one(&app_state, b"{}", did).await;
+        let _ = dispatch_one(&app_state, &framed("{}"), did).await;
 
         assert!(
             app_state.tsp_reach.fresh(did),
             "an inbound TSP frame must mark its proven sender TSP-reachable"
+        );
+    }
+
+    // ── The binding itself ──────────────────────────────────────────────────
+
+    /// A frame sealed the way this workspace used to seal them — the bare
+    /// document, no wrapper — is refused. Accepting it would keep the private
+    /// dialect alive on the wire for as long as anyone spoke it.
+    #[tokio::test]
+    async fn a_bare_document_is_refused_as_carriage() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let bare = br#"{"id":"urn:uuid:1","type":"https://example.org/t","issuedAt":"2026-01-01T00:00:00Z","payload":{}}"#;
+
+        let reply = dispatch_one(&app_state, bare, "did:key:zLegacySender").await;
+        let doc = document_of(&reply);
+
+        assert_eq!(doc["payload"]["code"], "malformedRequest");
+    }
+
+    /// And it is refused **for the right reason**. This is the one that earns
+    /// its place: the obvious implementation routes the refusal through
+    /// `reject_trust_task`, which re-parses the body and, on failure, replaces
+    /// the caller's reason with "body did not parse as a Trust Task document".
+    /// Here the document parses perfectly — it is the carriage that is wrong —
+    /// so that message sends the sender to inspect the one thing that is fine.
+    /// During a binding cutover it is the most misleading sentence this service
+    /// could say.
+    #[tokio::test]
+    async fn the_refusal_names_the_carriage_not_the_document() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let bare = br#"{"id":"urn:uuid:1","type":"https://example.org/t","issuedAt":"2026-01-01T00:00:00Z","payload":{}}"#;
+
+        let reply = dispatch_one(&app_state, bare, "did:key:zLegacySender").await;
+        let message = document_of(&reply)["payload"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        assert!(
+            message.contains("envelope"),
+            "the refusal must name the envelope, not the document: {message}"
+        );
+        assert!(
+            !message.contains("did not parse as a Trust Task document"),
+            "this points the sender at a document that is perfectly well formed: {message}"
+        );
+    }
+
+    /// A wrapper carrying someone else's binding is not ours to open.
+    #[tokio::test]
+    async fn an_envelope_of_the_wrong_type_is_refused() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let wrong =
+            br#"{"type":"https://trusttasks.org/binding/didcomm/0.1/envelope","document":{}}"#;
+
+        let reply = dispatch_one(&app_state, wrong, "did:key:zConfusedSender").await;
+        let message = document_of(&reply)["payload"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        assert!(
+            message.contains("binding/didcomm"),
+            "the refusal must name what arrived, so a misconfigured peer can see it: {message}"
         );
     }
 }

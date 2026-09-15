@@ -114,7 +114,7 @@ pub(crate) mod wire_v0_2;
 /// Re-exported so both transports (`routes`-mounted REST handler + DIDComm
 /// `messaging::handlers::handle_trust_task`) can name `crate::trust_tasks::
 /// TrustTaskOutcome`.
-pub(crate) use helpers::TrustTaskOutcome;
+pub(crate) use helpers::{TrustTaskOutcome, malformed_request_response};
 use helpers::{body_parse_error_response, method_not_found, reject_with};
 // Used unconditionally by the replay-dedup reject + `reject_trust_task`, not just
 // the didcomm path — keep the import ungated (previously `#[cfg(feature =

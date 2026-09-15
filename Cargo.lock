@@ -10233,6 +10233,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "trust-tasks-tsp"
+version = "0.20.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2703d94386458b3c46d9368334ce6698512b8d55c5509e8ef86abc06c35dcc41"
+dependencies = [
+ "affinidi-tsp",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "trust-tasks-rs",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11179,6 +11193,7 @@ dependencies = [
  "trust-tasks-https",
  "trust-tasks-proof",
  "trust-tasks-rs",
+ "trust-tasks-tsp",
  "url",
  "urlencoding",
  "utoipa",

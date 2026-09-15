@@ -532,9 +532,22 @@ fn framework_error_type_uri() -> TypeUri {
 /// malformed-body failures since the producer can correlate on the
 /// response `id`.
 pub(super) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
-    let reject = RejectReason::MalformedRequest {
-        reason: format!("body did not parse as a Trust Task document: {reason}"),
-    };
+    malformed_request_response(format!(
+        "body did not parse as a Trust Task document: {reason}"
+    ))
+}
+
+/// An unrouted `malformedRequest` carrying `reason` **verbatim**.
+///
+/// Split out of [`body_parse_error_response`] because not every malformed
+/// request is a malformed *document*. A transport binding can refuse a payload
+/// whose document would have parsed perfectly — a TSP frame that is not wrapped
+/// in the binding envelope, say — and telling that sender "body did not parse as
+/// a Trust Task document" sends them to inspect a document that is fine. During
+/// a binding cutover that is the single most misleading thing this service could
+/// say, so the wording stays the caller's.
+pub(crate) fn malformed_request_response(reason: String) -> TrustTaskOutcome {
+    let reject = RejectReason::MalformedRequest { reason };
     let payload: ErrorPayload = reject.into();
     let type_uri: TypeUri = framework_error_type_uri();
     let err = ErrorResponse {
