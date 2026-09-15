@@ -66,8 +66,6 @@ use vta_sdk::protocols::vetting::{
     self as vetting_wire, revoke_statement::v0_1 as revoke_statement,
 };
 
-use vti_rooms::wire as rooms_wire;
-
 use crate::join::{JoinSubmitOutcome, JoinTransport};
 use crate::routes::join_requests::manifest::ManifestVersion;
 use crate::server::AppState;
@@ -325,70 +323,22 @@ async fn dispatch_typed(
         // payload, because re-deriving the signed bytes from a parsed payload is sound
         // only for a type that round-trips losslessly. See `JoinAuthCtx::
         // verified_signer`.
-        rooms_wire::ROOMS_CREATE_TYPE => match rooms_presenter {
-            Some(presenter) => crate::rooms::handlers::handle_create(state, doc, presenter).await,
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_RECORDS_PUT_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_put_record(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_RECORDS_GET_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_get_record(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_RECORDS_LIST_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_list_records(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_RECORDS_CURATE_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_curate_record(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_EPOCH_MINT_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_mint_epoch(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_EPOCH_CHAIN_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_epoch_chain(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_EPOCH_PRUNE_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_epoch_prune(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_EPOCH_COMMITS_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_epoch_commits(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_OWNER_TRANSFER_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_transfer_owner(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
-        rooms_wire::ROOMS_OWNER_CLAIM_TYPE => match rooms_presenter {
-            Some(presenter) => {
-                crate::rooms::handlers::handle_claim_owner(state, doc, presenter).await
-            }
-            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
-        },
+        // Every `rooms/*` task, in one arm, because the dispatcher *is* the
+        // routing table: each registration names a payload type and the
+        // framework derives the URI from it. There is no second list to keep in
+        // step — which is what this replaces. Eleven hand-written arms had to
+        // agree with `ROOMS_DISPATCHED_URIS` by hand, and had already failed to:
+        // `rooms/records/curate` was dispatched and named in neither array, so
+        // every version hint this service emitted was wrong about it.
+        uri if crate::rooms::handlers::serves(uri) => {
+            // A room operation is authorized against the DID that signed the
+            // request, so an unsigned one has nothing to authorize. The spine
+            // verified any proof that was present; absent, there is no signer.
+            let Some(presenter) = rooms_presenter else {
+                return reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired);
+            };
+            crate::rooms::handlers::dispatch(state, doc, presenter).await
+        }
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
@@ -438,7 +388,7 @@ mod spine_proof_tests {
     /// signed identity says so.
     #[test]
     fn every_rooms_task_declares_the_proof_its_arm_requires() {
-        for uri in rooms_wire::ROOMS_DISPATCHED_URIS {
+        for uri in vti_rooms::wire::ROOMS_DISPATCHED_URIS {
             let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
@@ -492,9 +442,15 @@ fn unsupported_type_or_version(doc: &TrustTask<Value>, type_uri: &str) -> TrustT
     use vta_sdk::protocols::trust_task_reject_details as details;
 
     let family = task_family(type_uri);
+    // Both halves of what this service serves: the URIs still routed by the
+    // match below, and the ones the rooms dispatcher derives from its
+    // registrations. The second used to be a `const` array copied by hand from
+    // the arms — this reads the routing table itself, so a version hint cannot
+    // name a task nobody serves, nor omit one that is served.
     let mut served: Vec<&str> = DISPATCHED_URIS
         .iter()
         .copied()
+        .chain(crate::rooms::handlers::served_uris())
         .filter(|uri| family.is_some() && task_family(uri) == family)
         .collect();
     served.sort_unstable();
@@ -563,17 +519,6 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
     // does not cover these; they are pinned by `rooms_dispatch_matches_wire` below.
-    rooms_wire::ROOMS_CREATE_TYPE,
-    rooms_wire::ROOMS_RECORDS_PUT_TYPE,
-    rooms_wire::ROOMS_RECORDS_GET_TYPE,
-    rooms_wire::ROOMS_RECORDS_LIST_TYPE,
-    rooms_wire::ROOMS_EPOCH_MINT_TYPE,
-    rooms_wire::ROOMS_EPOCH_CHAIN_TYPE,
-    rooms_wire::ROOMS_EPOCH_PRUNE_TYPE,
-    rooms_wire::ROOMS_EPOCH_COMMITS_TYPE,
-    rooms_wire::ROOMS_RECORDS_CURATE_TYPE,
-    rooms_wire::ROOMS_OWNER_TRANSFER_TYPE,
-    rooms_wire::ROOMS_OWNER_CLAIM_TYPE,
 ];
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce
@@ -1324,35 +1269,52 @@ mod tests {
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
-        // rooms/* comes from `vti_rooms::wire`'s own list rather than a hand-copy.
+        // `rooms/*` is no longer checked here, because there is no longer a copy
+        // to check.
         //
-        // The copy was the defect: `rooms/records/curate` was dispatched by the `match`
-        // above and named in neither array, so the census passed while curate was missing
-        // from every version hint this VTC emits. A second list of the same thing agrees
-        // right up until someone adds to one of them.
+        // This assertion used to compare `DISPATCHED_URIS` against
+        // `ROOMS_DISPATCHED_URIS` — two hand-maintained lists of the same fact,
+        // which is exactly the shape that had already failed:
+        // `rooms/records/curate` was dispatched by the `match` and named in
+        // neither array, so the census passed while curate was missing from
+        // every version hint this VTC emitted.
         //
-        // rooms/* still names hand-written constants rather than generated `TYPE_URI`s,
-        // and no longer needs to be swapped for them: the bindings have published, and
-        // `vti-rooms/tests/schema_conformance.rs::every_dispatched_uri_is_the_published_one`
-        // pins every one of those constants against its generated `TYPE_URI`. This test
-        // therefore does reach the registry — through that one — rather than only checking
-        // that two of our own lists agree, which is what it could do before.
+        // The rooms family now routes through `rooms::handlers::dispatcher()`,
+        // where the URI is derived from each registered payload type. The served
+        // list *is* `registered_uris()`, so there is nothing for a census to
+        // disagree with — and `rooms_dispatcher_serves_every_wire_uri` below
+        // holds the one claim that still needs holding: that the registrations
+        // cover the family.
         for u in DISPATCHED_URIS {
             assert!(
-                declared.contains(u) || rooms_wire::ROOMS_DISPATCHED_URIS.contains(u),
+                declared.contains(u),
                 "dispatched URI is not a declared request URI: {u}"
             );
         }
-        for u in rooms_wire::ROOMS_DISPATCHED_URIS {
+        assert_eq!(DISPATCHED_URIS.len(), declared.len());
+    }
+
+    /// The rooms dispatcher serves every URI `vti_rooms` puts on the wire.
+    ///
+    /// The one thing registration-by-type cannot check for itself: that no verb
+    /// was *forgotten*. A missing `.on_async` is silent — the task simply is not
+    /// served — so this compares the dispatcher's own list against the family's
+    /// wire constants, which `vti-rooms/tests/schema_conformance.rs` in turn
+    /// pins against the published `TYPE_URI`s.
+    #[test]
+    fn rooms_dispatcher_serves_every_wire_uri() {
+        let served = crate::rooms::handlers::served_uris();
+        for uri in vti_rooms::wire::ROOMS_DISPATCHED_URIS {
             assert!(
-                DISPATCHED_URIS.contains(u),
-                "`vti_rooms::wire` dispatches {u}, but this VTC does not declare it — a \
+                served.contains(uri),
+                "`{uri}` is on the wire but no handler is registered for it — a \
                  client would be told it is unsupported at every version"
             );
         }
         assert_eq!(
-            DISPATCHED_URIS.len(),
-            declared.len() + rooms_wire::ROOMS_DISPATCHED_URIS.len()
+            served.len(),
+            vti_rooms::wire::ROOMS_DISPATCHED_URIS.len(),
+            "the dispatcher serves something the wire module does not name: {served:?}"
         );
     }
 
