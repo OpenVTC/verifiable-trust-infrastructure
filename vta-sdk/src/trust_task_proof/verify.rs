@@ -37,6 +37,7 @@
 use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 
 use super::vm_resolver::TrustTaskVmResolver;
+use serde::Serialize;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 
@@ -115,8 +116,25 @@ pub async fn verify_trust_task_proof(doc: &TrustTask<Value>) -> Result<String, D
 /// however the verification method resolved. A proof by
 /// `did:webvh:…:someone-else#key-0` verifies perfectly well; that it is not the
 /// party you expected is a separate check, and not one this function makes.
-pub async fn verify_trust_task_proof_with(
-    doc: &TrustTask<Value>,
+/// # Generic over the payload, and why that is the point
+///
+/// A proof is taken over the document, and the payload's Rust *shape* is not
+/// part of it — `eddsa-jcs-2022` canonicalises whatever serialises. Pinning this
+/// to `TrustTask<Value>` therefore constrained nothing cryptographically while
+/// forcing every typed caller to convert first.
+///
+/// That conversion is not free and not safe-by-inspection: re-serialising a
+/// document *before* checking its signature is the one place in the path that
+/// could change what was signed. `vta_sdk::tsp_binding::wrap_envelope` hand-rolls
+/// its JSON specifically to avoid the same hazard on the carriage side. A
+/// dispatcher that hands handlers `TrustTask<P>` (which is what registering by
+/// type gives you) would have made that round trip mandatory on every
+/// proof-checking handler.
+///
+/// Existing `&TrustTask<Value>` call sites are unaffected — `P` infers to
+/// `Value`.
+pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
+    doc: &TrustTask<P>,
     resolver: &TrustTaskVmResolver,
 ) -> Result<String, DiProofError> {
     let proof = doc.proof.as_ref().ok_or(DiProofError::NoProof)?;
