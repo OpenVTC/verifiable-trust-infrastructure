@@ -2,6 +2,25 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.8](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.3.7...vta-support-v0.3.8) — 2026-09-14
+
+
+### Fixed
+
+- **webvh**: Clamp versionTime against the previous log entry ([#1456](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1456))
+
+* fix(tee): backdate WebVH genesis versionTime
+
+  The TEE genesis path used the library's current-time default while
+  runtime updates used PR #600's backdated timestamps. This caused the
+  first update to have a lower versionTime than genesis, making the DID
+  unresolvable.
+
+  Apply the shared PR #600 backdating policy to TEE genesis and move the
+  helper into vta-support so both TEE and service paths use one implementation.
+
+
+
 ## [0.3.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.3.6...vta-support-v0.3.7) — 2026-09-12
 
 
