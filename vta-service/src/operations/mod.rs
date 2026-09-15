@@ -44,6 +44,8 @@ pub mod keys;
 /// `mem:<contextId>:<key>` in the [`MEMORY`](crate::keyspaces::MEMORY) keyspace;
 /// `list` is a `mem:<contextId>:` prefix scan.
 pub mod memory;
+/// Runtime Policy Decision Point management (`policy/*`).
+pub mod outbound;
 /// Passkey login — DID-VM-resolved WebAuthn assertion verification.
 /// Drives `vta/auth/passkey-login-{start,finish}/1.0` trust-tasks.
 /// Distinct from [`passkey_vms`] which handles VM *enrolment*.
@@ -54,7 +56,6 @@ pub mod passkey_login;
 /// `docs/02-vta/passkey-verification-methods.md`.
 #[cfg(feature = "webvh")]
 pub mod passkey_vms;
-/// Runtime Policy Decision Point management (`policy/*`).
 pub mod policy;
 /// DIDComm protocol management: enable/disable/migrate operations that
 /// patch the VTA's own DID document service array. See

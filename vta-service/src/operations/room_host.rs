@@ -10,84 +10,28 @@
 //! from there. `rooms/keys/backfill` and `rooms/owner/register` move that call
 //! to the party that *can* make it, and this module is how it makes it.
 //!
-//! # What this is not
+//! # What is here, and what is not
 //!
-//! It is **not** a second Trust-Task client. The document layer is already
-//! transport-agnostic — that is what a Trust Task is — and `vta-sdk` already
-//! owns the selection: [`ServiceCapabilities::from_did_document`] reads what a
-//! peer advertises by service **type**, and [`Protocol::PREFERENCE_ORDER`] is
-//! the workspace's TSP > DIDComm > REST. This module composes those with the
-//! one thing the SDK's own client cannot do here.
+//! **Carriage is not here.** Choosing a transport from what the host advertises,
+//! applying that transport's binding, and deciding whether a reply is evidence
+//! all live in [`crate::operations::outbound`], because none of it is about
+//! rooms — it was here only because this was the first caller to need it, and a
+//! second caller would have copied it. What stays is the part that *is* about
+//! rooms: the document, the refusal to write to a host caught contradicting
+//! itself, and reading a room reply's three outcomes apart.
 //!
-//! That one thing is signing. [`vta_sdk::client::VtaClient`] signs from a
-//! `ClientIdentity` carrying a raw `private_key_multibase`, and **a VTA never
-//! holds its own keys in that shape** — it derives, signs and zeroizes behind
-//! [`crate::operations::keys::sign_payload`], where the context gates live. So
-//! the document is built and signed here, through the same `Signer` seam
+//! Signing also stays, and cannot move: [`vta_sdk::client::VtaClient`] signs
+//! from a `ClientIdentity` carrying a raw `private_key_multibase`, and **a VTA
+//! never holds its own keys in that shape** — it derives, signs and zeroizes
+//! behind [`crate::operations::keys::sign_payload`], where the context gates
+//! live. The document is signed here, through the same `Signer` seam
 //! `RoomKeySigner` uses, and only the bytes travel.
-//!
-//! # Transport: an intersection, not a downgrade
-//!
-//! The rule is that the protocol used is the highest-preference one present in
-//! **both** parties' advertisements. [`OUTBOUND_SUPPORTED`] is this VTA's half,
-//! and it is deliberately a named constant rather than an implicit assumption:
-//! today it holds REST alone, because initiating TSP or DIDComm needs a
-//! correlated reply this service does not yet keep for outbound requests (it has
-//! `send_routed`, but only reply-side, and no pending-reply waiter of the kind
-//! `vtc-service` keeps).
-//!
-//! A host advertising nothing in that intersection is therefore a **loud typed
-//! refusal naming both sets**, never a quiet fallback. That distinction is the
-//! whole of the workspace rule: downgrading past what a peer advertises is
-//! forbidden; being honest that this VTA cannot yet initiate on a protocol is
-//! not the same thing, and the error says which it is.
 
 use serde_json::Value;
-use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities};
-use vti_common::error::{AppError, bad_gateway_error};
+use vti_common::error::AppError;
 
+use crate::operations::outbound::{Outbound, ReplyTrust};
 use crate::operations::room_issuance::{SigningContext, VtaKeySigner};
-
-/// The protocols this VTA can **initiate** a Trust-Task request on, in
-/// preference order.
-///
-/// Adding TSP here takes one thing: a pending-reply registry keyed by the
-/// document's `threadId`, so a `send_routed` can be awaited. `vtc-service`'s
-/// `state.pending_replies` is the shape. Until that exists, naming TSP here
-/// would produce a request that is sent and never answered.
-pub const OUTBOUND_SUPPORTED: [Protocol; 1] = [Protocol::Rest];
-
-/// The highest-preference protocol both this VTA and `host` can do, with the
-/// endpoint to reach it on.
-fn pick_transport(caps: &ServiceCapabilities, host: &str) -> Result<(Protocol, String), AppError> {
-    for protocol in Protocol::PREFERENCE_ORDER {
-        if !OUTBOUND_SUPPORTED.contains(&protocol) {
-            continue;
-        }
-        if let Some(endpoint) = caps.endpoint(protocol) {
-            return Ok((protocol, endpoint.to_string()));
-        }
-    }
-
-    let advertised: Vec<&str> = Protocol::PREFERENCE_ORDER
-        .iter()
-        .filter(|p| caps.endpoint(**p).is_some())
-        .map(|p| p.as_str())
-        .collect();
-    let ours: Vec<&str> = OUTBOUND_SUPPORTED.iter().map(|p| p.as_str()).collect();
-
-    Err(AppError::Validation(format!(
-        "no transport in common with room host `{host}`: it advertises [{}] and this agent can \
-         initiate [{}]. This is not a host that cannot be reached — it is one this agent cannot \
-         yet start a conversation with, which is a gap in the agent rather than in the host.",
-        if advertised.is_empty() {
-            "nothing".to_string()
-        } else {
-            advertised.join(", ")
-        },
-        ours.join(", "),
-    )))
-}
 
 /// Build the Trust-Task document that carries `task` to a host.
 ///
@@ -107,74 +51,6 @@ pub fn build_room_task(task: &str, host: &str, issuer: &str, payload: Value) -> 
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,
     })
-}
-
-/// Check that a host's reply is actually from the host, before believing a word
-/// of it.
-///
-/// # Why this is not optional
-///
-/// A reply is bytes off a socket. Without a proof it attests to nothing: an
-/// intermediary can rewrite a record listing, change the epoch a chain claims to
-/// reach, or answer for a host that never spoke — and every downstream check
-/// would pass, because the downstream checks are about *shape*.
-///
-/// Two things are required and the second is the one that is easy to omit: the
-/// proof must **verify**, and its proven signer must be **the host we
-/// addressed**. `verify_trust_task_proof_with` says so in its own docs — a proof
-/// by `did:webvh:…:someone-else#key-0` verifies perfectly well, and that it is
-/// not the party you expected is a separate check. Skipping it turns "signed by
-/// somebody" into "signed by the host", which is the whole property.
-///
-/// # Why an error document is exempt
-///
-/// A refusal's `type` resolves to the framework's `trust-task-error`
-/// specification, whose own proof requirement is **RECOMMENDED**, not REQUIRED
-/// (SPEC §8.1). Demanding one would make every conforming refusal unreadable —
-/// including the `hostRefused` this family declares, whose entire purpose is to
-/// carry the host's reason back to an operator. A refusal is believed only to
-/// the extent of being a refusal; it confers nothing and grants nothing, which
-/// is why the framework asks less of it.
-async fn verify_host_reply(
-    reply: &Value,
-    host: &str,
-    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
-) -> Result<(), AppError> {
-    let doc_type = reply
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if doc_type.starts_with("https://trusttasks.org/spec/trust-task-error/") {
-        return Ok(());
-    }
-
-    let doc: trust_tasks_rs::TrustTask<Value> =
-        serde_json::from_value(reply.clone()).map_err(|e| {
-            bad_gateway_error(format!(
-                "room host `{host}` sent a reply this agent cannot read as a Trust-Task \
-                 document: {e}"
-            ))
-        })?;
-
-    let vm_resolver = vti_common::auth::TrustTaskVmResolver::from_optional(Some(resolver.clone()));
-    let signer = vti_common::auth::verify_trust_task_proof_with(&doc, &vm_resolver)
-        .await
-        .map_err(|e| {
-            AppError::Forbidden(format!(
-                "the reply from room host `{host}` is unsigned or its proof does not verify \
-                 ({e}), so nothing in it can be believed — an unsigned answer is bytes, not \
-                 evidence"
-            ))
-        })?;
-
-    if signer != host {
-        return Err(AppError::Forbidden(format!(
-            "the reply claiming to come from room host `{host}` is signed by `{signer}`. The \
-             proof verifies, which means somebody really signed it — just not the party this \
-             agent asked"
-        )));
-    }
-    Ok(())
 }
 
 /// Read a host's reply, distinguishing the three things it can be.
@@ -289,11 +165,18 @@ pub async fn refuse_if_caught(
 /// member's backfill that is the agent itself — the host binds the presentation
 /// to the DID that signed the envelope, so the presentation must have been
 /// minted for this same DID or the host will (correctly) refuse it.
+/// Send one room task to `host` and return the response document's `payload`.
+///
+/// `signing_key_id` and `issuer` name the identity this VTA signs as. For a
+/// member's backfill that is the agent itself — the host binds the presentation
+/// to the DID that signed the envelope, so the presentation must have been
+/// minted for this same DID or the host will (correctly) refuse it.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_room_task(
     ctx: SigningContext<'_>,
     groups: &vti_common::store::KeyspaceHandle,
     room_id: &str,
-    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    out: &Outbound<'_>,
     host: &str,
     signing_key_id: &str,
     issuer: &str,
@@ -306,17 +189,6 @@ pub async fn send_room_task(
     // caller: a write task added later inherits the refusal instead of having to
     // remember it, which is the difference between a rule and a convention.
     refuse_if_caught(groups, room_id, task).await?;
-
-    let resolved = resolver.resolve(host).await.map_err(|e| {
-        AppError::Validation(format!(
-            "the room host `{host}` does not resolve, so there is nothing to send to: {e}"
-        ))
-    })?;
-    let doc_value = serde_json::to_value(&resolved.doc)
-        .map_err(|e| AppError::Internal(format!("serialise the host's DID document: {e}")))?;
-
-    let caps = ServiceCapabilities::from_did_document(&doc_value);
-    let (protocol, endpoint) = pick_transport(&caps, host)?;
 
     let mut document = build_room_task(task, host, issuer, payload);
     let signer = VtaKeySigner::new(ctx, signing_key_id, verification_method);
@@ -344,92 +216,17 @@ pub async fn send_room_task(
     document["proof"] = serde_json::to_value(proof)
         .map_err(|e| AppError::Internal(format!("serialise the proof: {e}")))?;
 
-    match protocol {
-        Protocol::Rest => {
-            let url = format!("{}/trust-tasks", endpoint.trim_end_matches('/'));
-            let response = vta_sdk::http::rest_client()
-                .post(&url)
-                .header("content-type", "application/json")
-                .json(&document)
-                .send()
-                .await
-                .map_err(|e| {
-                    bad_gateway_error(format!("room host `{host}` at {url} did not answer: {e}"))
-                })?;
-
-            // The body is read once, and before the status is judged: a refusal
-            // arrives as a `trust-task-error` document with a code an operator
-            // can act on, and throwing on the status first would discard it
-            // (guide rule R3.7).
-            let body = response.text().await.map_err(|e| {
-                bad_gateway_error(format!("room host `{host}` sent an unreadable body: {e}"))
-            })?;
-            let reply: Value = serde_json::from_str(&body).map_err(|e| {
-                bad_gateway_error(format!(
-                    "room host `{host}` sent a body that is not a Trust-Task document: {e}: {body}"
-                ))
-            })?;
-            verify_host_reply(&reply, host, resolver).await?;
-            read_reply(&reply, response_task, host)
-        }
-        // Unreachable while `OUTBOUND_SUPPORTED` holds REST alone; kept as an
-        // arm rather than a catch-all so adding a protocol there fails to
-        // compile here instead of silently doing nothing.
-        Protocol::Tsp | Protocol::Didcomm => Err(AppError::Internal(format!(
-            "{} is named in OUTBOUND_SUPPORTED but has no send path here",
-            protocol.as_str()
-        ))),
-    }
+    // `SignedByRecipient`, and not because a room host is special: a reply that
+    // is acted on has to be evidence, and everything this returns is acted on.
+    let reply = out
+        .send(host, document, ReplyTrust::SignedByRecipient)
+        .await?;
+    read_reply(&reply, response_task, host)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn caps_from(services: Value) -> ServiceCapabilities {
-        ServiceCapabilities::from_did_document(&serde_json::json!({ "service": services }))
-    }
-
-    #[test]
-    fn a_host_serving_rest_is_reachable() {
-        let caps = caps_from(serde_json::json!([{
-            "id": "#rest", "type": "VTARest", "serviceEndpoint": "https://host.example"
-        }]));
-        let (protocol, endpoint) = pick_transport(&caps, "did:example:host").expect("reachable");
-        assert_eq!(protocol, Protocol::Rest);
-        assert_eq!(endpoint, "https://host.example");
-    }
-
-    /// The honest refusal. A host that speaks only TSP is not unreachable in
-    /// principle — this agent cannot start the conversation — and the message
-    /// has to say which, or an operator goes looking at the host.
-    #[test]
-    fn a_tsp_only_host_is_refused_naming_both_sides() {
-        let caps = caps_from(serde_json::json!([{
-            "id": "#tsp", "type": "TSPTransport", "serviceEndpoint": "did:example:mediator"
-        }]));
-        let err = pick_transport(&caps, "did:example:host").expect_err("no common transport");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("tsp"),
-            "must name what the host advertises: {msg}"
-        );
-        assert!(
-            msg.contains("rest"),
-            "must name what this agent can do: {msg}"
-        );
-        assert!(
-            msg.contains("gap in the agent"),
-            "must say whose limitation it is: {msg}"
-        );
-    }
-
-    #[test]
-    fn a_host_advertising_nothing_says_so() {
-        let err = pick_transport(&caps_from(serde_json::json!([])), "did:example:host")
-            .expect_err("nothing advertised");
-        assert!(err.to_string().contains("nothing"));
-    }
 
     #[test]
     fn the_document_is_addressed_and_attributed() {
@@ -477,52 +274,6 @@ mod tests {
             matches!(err, AppError::Forbidden(_)),
             "a refusal, not a 502"
         );
-    }
-
-    /// A refusal is exempt, and deliberately: `trust-task-error` declares its
-    /// proof RECOMMENDED, so demanding one would make every conforming refusal
-    /// unreadable — including the `hostRefused` whose whole job is to carry the
-    /// host's reason back.
-    #[tokio::test]
-    async fn a_refusal_is_read_without_a_proof() {
-        let reply = serde_json::json!({
-            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
-            "payload": { "code": "notAMember", "reason": "no" }
-        });
-        verify_host_reply(&reply, "did:example:host", &test_resolver().await)
-            .await
-            .expect("a refusal needs no proof");
-    }
-
-    /// An unsigned success reply is refused. Bytes off a socket attest to
-    /// nothing, and every check downstream of this one is about *shape* — so an
-    /// intermediary that rewrote a record listing would pass all of them.
-    #[tokio::test]
-    async fn an_unsigned_success_reply_is_refused() {
-        let reply = serde_json::json!({
-            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
-            "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
-            "issuer": "did:example:host",
-            "recipient": "did:example:agent",
-            "issuedAt": "2026-01-01T00:00:00Z",
-            "payload": { "links": [] }
-        });
-        let err = verify_host_reply(&reply, "did:example:host", &test_resolver().await)
-            .await
-            .expect_err("an unsigned success reply must not be believed");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("bytes, not") || msg.contains("unsigned"),
-            "the refusal must say why an unsigned answer is worthless: {msg}"
-        );
-    }
-
-    async fn test_resolver() -> affinidi_did_resolver_cache_sdk::DIDCacheClient {
-        affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
-            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
-        )
-        .await
-        .expect("a resolver for tests")
     }
 
     #[test]
