@@ -43,6 +43,20 @@ mls = [
 ]
 
 [dependencies]
+# The Trust Task framework. A normal dependency rather than a dev one, because
+# `wire.rs` now implements `trust_tasks_rs::Payload` for each request body: the
+# type states which task URI it is the payload of, so a dispatcher can be keyed
+# on the type rather than on a URI written out at the registration site. That is
+# production API, not a test aid.
+#
+# It has to live here. `Payload` is a foreign trait and these are this crate's
+# types, so the orphan rule puts the impls in this crate or nowhere — a consumer
+# cannot add them.
+#
+# Note this does not adopt the generated `specs::rooms` types; see `wire.rs`'s
+# header for why these stay hand-written. The dependency buys the trait and the
+# schema index, not a replacement for the shapes.
+trust-tasks-rs = { workspace = true }
 # The store abstraction and AppError. This crate's only internal dependency:
 # a room's storage and authorization need nothing from a community service,
 # which is the whole reason they are extractable.
@@ -109,7 +123,4 @@ getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"], opti
 
 [dev-dependencies]
 tempfile = "3"
-# The published rooms/* schemas, so the hand-rolled wire types above are checked
-# against the spec rather than only against themselves.
-trust-tasks-rs = { workspace = true }
 tokio = { workspace = true }
