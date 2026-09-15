@@ -197,6 +197,70 @@ pub struct OpenVtcDiagnostics {
     /// resolve" — [`DiagnosticsResponse::transports`] being empty
     /// distinguishes them.
     pub transport_findings: Vec<crate::transport_capability::Finding>,
+    /// The `Failed` sync jobs behind [`DiagnosticsResponse::failed_count`],
+    /// in full.
+    ///
+    /// The count alone was not an operator surface. A `Failed` row is
+    /// terminal — the syncer skips it on every tick, boot recovery only
+    /// rescues `InFlight`, and no drift reconciler re-derives it — so the
+    /// number names a condition that will never resolve on its own, and
+    /// the doc comment on `failed_count` asks for "operator triage" that
+    /// nothing on the wire made possible. The detail lived only in the
+    /// service log and in a `RegistrySyncFailed` audit envelope whose DIDs
+    /// are HMAC-hashed, so even the audit trail could not say *which
+    /// member* had stopped publishing.
+    ///
+    /// Capped at [`MAX_REPORTED_FAILED_JOBS`]; `failed_count` remains the
+    /// authoritative total. Newest failure first, so a truncated list is
+    /// the part an operator wants.
+    pub failed_jobs: Vec<FailedSyncJob>,
+}
+
+/// How many `Failed` rows [`OpenVtcDiagnostics::failed_jobs`] will carry.
+///
+/// A healthy VTC has zero and a broken one usually has a handful — every
+/// member added while the registry was mis-deployed, sharing one cause.
+/// The cap exists so a community that queued thousands before anyone looked
+/// cannot turn an admin page load into a multi-megabyte response.
+pub const MAX_REPORTED_FAILED_JOBS: usize = 50;
+
+/// One terminally-failed reconciliation job, as the operator needs to see it.
+///
+/// `member_did` is in the clear. It is already stored unhashed in the
+/// `sync_queue` row (the registry call needs the real DID), this response is
+/// admin-gated, and an admin can list the same DIDs from `/v1/members` — so
+/// nothing is disclosed here that the caller could not already read. Hashing
+/// it would only reproduce the gap that made this field necessary: the audit
+/// envelope for these failures already carries `targetDidHash`, and an
+/// operator holding a hash cannot tell which member stopped publishing.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedSyncJob {
+    /// UUID of the `sync_queue` row. The handle `vtc sync-jobs
+    /// {retry,discard}` takes, and the `jobId` on the matching
+    /// `RegistrySyncFailed` audit envelope.
+    pub job_id: String,
+    /// Wire-form `SyncJobKind` — `publishMember`, `updateMember`,
+    /// `deleteMember`, `markDeparted`.
+    pub kind: String,
+    /// The member whose registry record is now stale or absent.
+    pub member_did: String,
+    /// Attempts made before giving up. `1` means the registry refused it
+    /// outright (a permanent or incompatible answer); a number at
+    /// `DEFAULT_MAX_ATTEMPTS` means it exhausted ~18 hours of backoff
+    /// against a registry that never answered.
+    pub attempts: u32,
+    /// The registry's last answer, verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attempted_at: Option<DateTime<Utc>>,
+    /// When the retention sweeper will purge this row
+    /// (`last_attempted_at` — or `created_at` — plus the configured
+    /// `join_requests` retention window). After that the failure is gone
+    /// and the member is still unpublished, so it is a deadline, not a fix.
+    pub purge_due_at: DateTime<Utc>,
 }
 
 #[utoipa::path(
@@ -231,6 +295,31 @@ pub async fn diagnostics(
         .iter()
         .filter(|j| j.state == crate::registry::SyncJobState::Failed)
         .count() as u64;
+    // The rows behind that count. Newest failure first so a truncated list
+    // is the part worth reading; `failed_count` above stays authoritative.
+    let retention_days = { state.config.read().await.join_requests.retention_days };
+    let mut failed: Vec<&crate::registry::SyncJob> = jobs
+        .iter()
+        .filter(|j| j.state == crate::registry::SyncJobState::Failed)
+        .collect();
+    failed.sort_by_key(|j| std::cmp::Reverse(j.last_attempted_at.unwrap_or(j.created_at)));
+    let failed_jobs: Vec<FailedSyncJob> = failed
+        .into_iter()
+        .take(MAX_REPORTED_FAILED_JOBS)
+        .map(|j| {
+            let gave_up_at = j.last_attempted_at.unwrap_or(j.created_at);
+            FailedSyncJob {
+                job_id: j.id.to_string(),
+                kind: j.kind.as_str().to_string(),
+                member_did: j.member_did.clone(),
+                attempts: j.attempts,
+                last_error: j.last_error.clone(),
+                created_at: j.created_at,
+                last_attempted_at: j.last_attempted_at,
+                purge_due_at: gave_up_at + chrono::Duration::days(retention_days as i64),
+            }
+        })
+        .collect();
     // Oldest *dispatchable* pending job — RTBF-parked rows are
     // intentionally future-dated so they shouldn't count
     // against the "stuck" SLI.
@@ -328,7 +417,10 @@ pub async fn diagnostics(
         registry_transport,
         transports,
         ext: DiagnosticsExt {
-            openvtc: OpenVtcDiagnostics { transport_findings },
+            openvtc: OpenVtcDiagnostics {
+                transport_findings,
+                failed_jobs,
+            },
         },
     }))
 }

@@ -242,7 +242,12 @@ pub async fn verify_foreign_vec(
         RegistryError::Unreachable(msg) | RegistryError::Transient(msg) => {
             RecognitionError::RegistryUnreachable(msg)
         }
-        RegistryError::Permanent(msg) => RecognitionError::RegistryRejected(msg),
+        // An incompatible registry is the same class as a rejection for this
+        // caller: 502, an upstream fault, never the 403 that would tell an
+        // operator they forgot to add the peer community.
+        RegistryError::Permanent(msg) | RegistryError::Incompatible(msg) => {
+            RecognitionError::RegistryRejected(msg)
+        }
     })?;
     if !recognised {
         return Err(RecognitionError::IssuerNotRecognised(issuer));

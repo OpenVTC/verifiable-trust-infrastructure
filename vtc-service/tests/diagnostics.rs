@@ -260,3 +260,98 @@ async fn diagnostics_requires_trust_task_header() {
         "missing Trust-Task header must 400"
     );
 }
+
+/// The `Failed` rows themselves ride in `ext["org.openvtc"].failedJobs`.
+///
+/// `failedCount` alone was not an operator surface. A `Failed` row is
+/// terminal — the syncer skips it on every tick, boot recovery rescues only
+/// `InFlight`, and nothing re-derives it — so the count named a condition
+/// that never resolves on its own while giving nobody a way to see *which*
+/// member had stopped publishing. The log had it; the `RegistrySyncFailed`
+/// audit envelope did not, because its DIDs are HMAC-hashed (§11.1).
+///
+/// Same placement contract as `transportFindings` above: the published
+/// response schema is `additionalProperties: false`, so this belongs under
+/// the reverse-DNS `ext` namespace and nowhere else.
+#[tokio::test]
+async fn failed_jobs_ride_in_the_openvtc_ext_namespace() {
+    let fix = build().await;
+    let token = token_for(&fix, "admin").await;
+
+    let mut failed = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:z6MkStranded");
+    failed.state = SyncJobState::Failed;
+    failed.attempts = 1;
+    failed.last_attempted_at = Some(chrono::Utc::now());
+    failed.last_error = Some(
+        "permanent registry failure: registry rejected registry/record/put: unsupportedType".into(),
+    );
+    store_sync_job(&fix.state.sync_queue_ks, &failed)
+        .await
+        .unwrap();
+
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
+        .await
+        .unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+
+    let jobs = v
+        .pointer("/ext/org.openvtc/failedJobs")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("failedJobs must live under ext[org.openvtc]: {v}"));
+    assert_eq!(jobs.len(), 1, "{v}");
+
+    let job = &jobs[0];
+    assert_eq!(job["jobId"], failed.id.to_string());
+    assert_eq!(job["kind"], "publishMember");
+    // The member DID in the clear is the whole point: it is the one field the
+    // audit trail cannot give an operator, and without it the list names a
+    // failure without naming who it stranded.
+    assert_eq!(job["memberDid"], "did:key:z6MkStranded");
+    assert_eq!(job["attempts"], 1);
+    assert!(
+        job["lastError"]
+            .as_str()
+            .is_some_and(|e| e.contains("unsupportedType")),
+        "the registry's answer is carried verbatim, because it is what tells \
+         an operator to upgrade the registry rather than change this VTC: {v}"
+    );
+    // A deadline, not a fix: the retention sweeper clears the row and leaves
+    // the member unpublished.
+    assert!(
+        job["purgeDueAt"].as_str().is_some(),
+        "every failed row carries when it will age out: {v}"
+    );
+
+    assert!(
+        v.get("failedJobs").is_none(),
+        "must not also appear at the top level — the published response is \
+         additionalProperties:false: {v}"
+    );
+}
+
+/// A healthy VTC serves an empty list, not an absent field, so the console
+/// never has to distinguish "none failed" from "this build predates the
+/// field".
+#[tokio::test]
+async fn failed_jobs_is_an_empty_list_when_nothing_failed() {
+    let fix = build().await;
+    let token = token_for(&fix, "admin").await;
+
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
+        .await
+        .unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        v.pointer("/ext/org.openvtc/failedJobs"),
+        Some(&json!([])),
+        "{v}"
+    );
+}

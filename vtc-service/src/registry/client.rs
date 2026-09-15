@@ -50,6 +50,24 @@ pub enum RegistryError {
     /// should open after enough of these in a row.
     #[error("registry unreachable: {0}")]
     Unreachable(String),
+    /// The registry answered, but does not route the Trust Task URI we
+    /// sent (`unsupportedType`) — a **version skew** between this VTC and
+    /// the deployed registry, not a fault in the request.
+    ///
+    /// Split out of [`Self::Permanent`] because the two need opposite
+    /// handling on the health signal. A `permissionDenied` proves the
+    /// registry's dispatcher is alive and working — it read our document,
+    /// routed it, and refused it — so the liveness probe may count it as
+    /// healthy. An `unsupportedType` on the probe's own task proves the
+    /// opposite: the registry cannot serve the contract this VTC depends
+    /// on, and reporting that as `active` is how a community can sit for
+    /// weeks publishing nothing while its dashboard stays green.
+    ///
+    /// Not retriable — a redeploy of the peer is what clears it, and the
+    /// answer is stable until then, so spinning the backoff schedule for
+    /// ~18 hours only delays the operator seeing it.
+    #[error("registry incompatible: {0}")]
+    Incompatible(String),
 }
 
 impl RegistryError {
@@ -58,6 +76,15 @@ impl RegistryError {
     /// immediately".
     pub fn is_retriable(&self) -> bool {
         matches!(self, Self::Transient(_) | Self::Unreachable(_))
+    }
+
+    /// `true` when the registry answered but cannot serve the task we sent.
+    /// Distinct from [`Self::is_retriable`]: an incompatible registry is not
+    /// worth retrying, but — unlike every other terminal failure — it is a
+    /// statement about the *registry*, not about this job, so the liveness
+    /// probe must not count it as proof of health.
+    pub fn is_incompatible(&self) -> bool {
+        matches!(self, Self::Incompatible(_))
     }
 }
 
@@ -80,6 +107,10 @@ impl From<RegistryError> for vti_common::error::AppError {
             RegistryError::Permanent(msg) => vti_common::error::AppError::ServiceError {
                 status: StatusCode::BAD_GATEWAY,
                 message: format!("trust registry rejected request: {msg}"),
+            },
+            RegistryError::Incompatible(msg) => vti_common::error::AppError::ServiceError {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("trust registry is incompatible: {msg}"),
             },
         }
     }

@@ -155,3 +155,4 @@ export type TransportFinding = Schemas["Finding"];
 export type TransportFindingCode = Schemas["FindingCode"];
 export type DiagnosticsExt = Schemas["DiagnosticsExt"];
 export type RegistryTransport = Schemas["RegistryTransport"];
+export type FailedSyncJob = Schemas["FailedSyncJob"];

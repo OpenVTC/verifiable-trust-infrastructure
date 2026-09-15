@@ -8,11 +8,12 @@
 
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Check, Network, X } from "lucide-react";
+import { AlertTriangle, Check, Network, X } from "lucide-react";
 
 import {
   checkRecognition,
   fetchDiagnostics,
+  type FailedSyncJob,
   type RecognitionCheck,
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -53,6 +54,12 @@ export function Recognition() {
 
   const result = lookup.data;
   const oldestPending = diagnostics.data?.oldestPendingAgeSeconds;
+  const failedJobs = diagnostics.data?.ext["org.openvtc"].failedJobs ?? [];
+  // `unsupportedType` in any failed job means the deployed registry does not
+  // route a Trust Task this VTC sends — a version skew, not a bad request.
+  // Called out on its own because the remedy is "upgrade the registry", which
+  // is not something an operator would infer from a queue of failures.
+  const incompatible = failedJobs.some(isUnsupportedType);
 
   return (
     <div className="page">
@@ -169,10 +176,13 @@ export function Recognition() {
                 label="Failed"
                 value={diagnostics.data.failedCount}
                 // Terminal rows: the syncer has given up on them, so unlike
-                // pending they will never clear on their own.
+                // pending they will never clear on their own. The count used
+                // to be the whole surface, which named a condition without
+                // giving anyone a way to see or act on it — the table below
+                // is the triage it was asking for.
                 foot={
                   diagnostics.data.failedCount > 0
-                    ? "given up — needs operator triage"
+                    ? "given up — see below"
                     : "none"
                 }
                 tone={diagnostics.data.failedCount > 0 ? "warn" : "ok"}
@@ -233,6 +243,69 @@ export function Recognition() {
                 </>
               )}
             </dl>
+
+            {incompatible && (
+              <p className="finding warn" role="status">
+                <strong>
+                  <AlertTriangle
+                    size={15}
+                    strokeWidth={1.75}
+                    aria-hidden
+                    style={{ verticalAlign: "-2px" }}
+                  />{" "}
+                  The trust registry does not route a Trust Task this VTC
+                  sends.
+                </strong>
+                <span className="muted">
+                  At least one job below was refused with{" "}
+                  <code>unsupportedType</code>. That is a version skew — the
+                  deployed registry does not serve that task at all — not a
+                  rejection of anything we sent, so nothing about this
+                  community&rsquo;s configuration will fix it. Upgrade the
+                  trust registry, then requeue with{" "}
+                  <code>vtc sync-jobs retry --all</code> on a stopped daemon.
+                </span>
+              </p>
+            )}
+
+            {failedJobs.length > 0 && (
+              <>
+                <h4>Failed jobs</h4>
+                <p className="muted">
+                  These are terminal. The syncer skips them on every tick and
+                  boot recovery does not rescue them, so each member below is
+                  absent or stale in the registry until an operator acts — or
+                  until the retention sweeper purges the row, which clears the
+                  failure without fixing it. Fix the cause, then{" "}
+                  <code>vtc sync-jobs retry</code> on a stopped daemon.
+                </p>
+                <div className="table-scroll">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Member</th>
+                        <th>Operation</th>
+                        <th>Attempts</th>
+                        <th>Gave up</th>
+                        <th>Registry said</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {failedJobs.map((job) => (
+                        <FailedJobRow key={job.jobId} job={job} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {failedJobs.length < diagnostics.data.failedCount && (
+                  <p className="muted">
+                    Showing {failedJobs.length} of{" "}
+                    {diagnostics.data.failedCount}. Run{" "}
+                    <code>vtc sync-jobs list</code> for the rest.
+                  </p>
+                )}
+              </>
+            )}
           </>
         )}
       </section>
@@ -300,6 +373,70 @@ export function Recognition() {
         )}
       </section>
     </div>
+  );
+}
+
+/** Whether a failed job was refused because the registry doesn't route it. */
+function isUnsupportedType(job: FailedSyncJob): boolean {
+  return (job.lastError ?? "").includes("unsupportedType");
+}
+
+/** The wire-form `SyncJobKind`, as an operator would say it. */
+function kindName(kind: string): string {
+  switch (kind) {
+    case "publishMember":
+      return "Publish member";
+    case "updateMember":
+      return "Update member";
+    case "deleteMember":
+      return "Delete member";
+    case "markDeparted":
+      return "Mark departed";
+    default:
+      return kind;
+  }
+}
+
+/**
+ * One terminally-failed sync job.
+ *
+ * The member DID is shown in full rather than shortened: it is the thing the
+ * operator has to act on, and the failure's audit envelope carries only
+ * `targetDidHash` (§11.1), so this row is the only place the plaintext DID is
+ * legible. `attempts === 1` is worth distinguishing — it means the registry
+ * refused outright rather than going quiet for eighteen hours of backoff, and
+ * those two have completely different causes.
+ */
+function FailedJobRow({ job }: { job: FailedSyncJob }) {
+  const gaveUp = job.lastAttemptedAt ?? job.createdAt;
+  return (
+    <tr>
+      <td>
+        <code>{job.memberDid}</code>
+        <CopyButton
+          value={job.memberDid}
+          label="Copy member DID"
+          successMessage="Member DID copied"
+        />
+      </td>
+      <td>{kindName(job.kind)}</td>
+      <td>
+        {job.attempts}
+        {job.attempts === 1 && (
+          <span className="muted"> (refused outright)</span>
+        )}
+      </td>
+      <td>
+        {formatIso(gaveUp)}
+        <br />
+        <span className="muted">purged {formatIso(job.purgeDueAt)}</span>
+      </td>
+      <td>
+        <span className={isUnsupportedType(job) ? "warn" : undefined}>
+          {job.lastError ?? "(no error recorded)"}
+        </span>
+      </td>
+    </tr>
   );
 }
 

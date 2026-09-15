@@ -52,6 +52,7 @@ pub mod status;
 pub mod status_list;
 pub mod store;
 pub mod supervisor;
+pub mod sync_jobs_cli;
 pub mod transport_capability;
 pub mod trust_tasks;
 pub mod vetting;
