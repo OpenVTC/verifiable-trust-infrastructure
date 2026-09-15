@@ -1026,7 +1026,7 @@ Build and run the proxy on the EC2 instance:
 ```bash
 # Build the proxy (first time only — on the parent EC2 instance)
 cd deploy/nitro/enclave-proxy
-cargo build --release
+cargo build --release --locked
 cd ../../..
 
 # Run with the finalized config. Pin --enclave-cid 16 so the proxy doesn't
@@ -1076,8 +1076,11 @@ DID resolution uses two components:
 and lives upstream at
 [`affinidi/affinidi-tdk-rs`](https://github.com/affinidi/affinidi-tdk-rs)
 under `crates/identity/affinidi-did-resolver-cache-server/`. A plain
-`cargo install affinidi-did-resolver-cache-server` is all you need —
-no git clone, no feature flags. "Network mode" refers to the WebSocket
+`cargo install --locked affinidi-did-resolver-cache-server` is all you
+need — no git clone, no feature flags. (`--locked` takes the crate's own
+published lockfile; without it the install resolves the newest of every
+transitive dependency, which is how an upstream semver break lands on a
+box mid-deploy.) "Network mode" refers to the WebSocket
 endpoint at `/did/v1/ws`, which the server exposes by default.
 
 #### Automatic (recommended)
@@ -1085,7 +1088,7 @@ endpoint at `/did/v1/ws`, which the server exposes by default.
 `deploy-vta.sh` does all of this for you in **Step 9**, before the
 `enclave-proxy` and the enclave itself:
 
-- Runs `cargo install affinidi-did-resolver-cache-server` if the binary
+- Runs `cargo install --locked affinidi-did-resolver-cache-server` if the binary
   isn't on `$PATH` yet.
 - Creates a runtime directory at `.deploy-nitro/resolver/` with a
   minimal `conf/cache-conf.toml` (the sidecar hard-codes its config
@@ -1104,7 +1107,7 @@ with systemd), install and start it by hand:
 
 ```bash
 # Install (first time only — compiles from source, takes a few minutes)
-cargo install affinidi-did-resolver-cache-server
+cargo install --locked affinidi-did-resolver-cache-server
 
 # Create a runtime directory with the required config file.
 # The server reads `conf/cache-conf.toml` relative to its CWD — there

@@ -95,8 +95,30 @@ Dependencies flow strictly downward — no cycles.
 **Build the workspace:**
 
 ```sh
-cargo build --workspace
+cargo build --workspace --locked
 ```
+
+> **Always pass `--locked`, and never install without it.** `Cargo.lock` is
+> this workspace's tested dependency set, and re-resolving it is not a
+> harmless refresh — the AWS SDK subtree currently only compiles at the
+> versions pinned there. `aws-smithy-types` 1.7.0 replaced
+> `Document::Object`'s payload in a *minor* release, which `aws-smithy-json`
+> 0.63.0 (reached through the latest `aws-config`) does not compile against
+> while still declaring it compatible. A build that re-resolves therefore
+> fails with `E0308`/`E0004` errors **inside the registry source**, naming
+> files nobody here wrote.
+>
+> `cargo build` and `cargo test` honour the lockfile on their own; `--locked`
+> makes them say so and turns a silently stale lock into an error.
+> **`cargo install` is the trap: it ignores `Cargo.lock` by default**, so a
+> host install must be spelled
+>
+> ```sh
+> cargo install --locked --path vtc-service   # or any workspace binary
+> ```
+>
+> The Dockerfiles already pass `--locked`; a command typed by hand on a box
+> does not.
 
 **Pick a path:**
 

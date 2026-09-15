@@ -472,7 +472,7 @@ oracle over handing credentials across: there is a place to say no.
 ### 8.1 T1 — your own room host
 
 ```bash
-cargo build --release -p room-host
+cargo build --release --locked -p room-host
 
 room-host \
   --data-dir /var/lib/room-host \

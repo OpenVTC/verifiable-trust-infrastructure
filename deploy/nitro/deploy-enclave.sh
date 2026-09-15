@@ -199,7 +199,10 @@ RESOLVER_LISTEN="${VTA_RESOLVER_LISTEN:-127.0.0.1:8080}"
 if ! command -v affinidi-did-resolver-cache-server &>/dev/null; then
     info "Installing affinidi-did-resolver-cache-server from crates.io..."
     info "(first install takes several minutes — compiles from source)"
-    cargo install affinidi-did-resolver-cache-server
+    # `--locked` takes the crate's own published lockfile. Without it this
+    # resolves the newest of every transitive dep at install time, which is
+    # how an upstream semver break lands on a box mid-deploy.
+    cargo install --locked affinidi-did-resolver-cache-server
     ok "Resolver sidecar installed: $(command -v affinidi-did-resolver-cache-server)"
 else
     ok "Resolver sidecar already installed: $(command -v affinidi-did-resolver-cache-server)"
@@ -264,7 +267,7 @@ if [ -f "$PROXY_BIN" ]; then
     ok "Enclave proxy binary found: $PROXY_BIN"
 else
     info "Building enclave proxy..."
-    (cd "$SCRIPT_DIR/enclave-proxy" && cargo build --release)
+    (cd "$SCRIPT_DIR/enclave-proxy" && cargo build --release --locked)
     ok "Enclave proxy built"
 fi
 
