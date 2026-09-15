@@ -236,6 +236,23 @@ pub async fn create_key(
             let encoded = verifying_key.to_sec1_point(true);
             multibase::encode(Base::Base58Btc, encoded.as_bytes())
         }
+        // `KeyType` is `#[non_exhaustive]`, so this arm is required. It
+        // refuses rather than falling back, because every branch above derives
+        // through a scheme-specific SLIP-0010 path and there is no generic one
+        // to fall through to — a wildcard could only mint a key of some *other*
+        // algorithm wearing this label.
+        //
+        // ML-DSA lands here today. FIPS 204 KeyGen takes a 32-byte seed, so it
+        // is derivable in principle from the same chain, and the `-priv-seed`
+        // multicodecs beside `KeyType` exist precisely to store the result —
+        // but `ExtendedSigningKey` has no `derive_ml_dsa` yet, and inventing
+        // one here rather than beside its siblings is how two derivations of
+        // the same key end up disagreeing.
+        other => {
+            return Err(AppError::Validation(format!(
+                "key derivation does not support {other} yet"
+            )));
+        }
     };
 
     let now = Utc::now();
@@ -367,6 +384,16 @@ pub async fn import_key(
             let encoded = public.to_sec1_point(true);
             let pub_multibase = multibase::encode(Base::Base58Btc, encoded.as_bytes());
             (pub_multibase, "p256")
+        }
+        // `KeyType` is `#[non_exhaustive]`, so this arm is required. Import
+        // validates the supplied bytes against the scheme before storing them,
+        // and there is no generic validation to fall through to — accepting a
+        // key type this function cannot check would store unvalidated material
+        // under a label claiming it was checked.
+        other => {
+            return Err(AppError::Validation(format!(
+                "key import does not support {other} yet"
+            )));
         }
     };
 
@@ -824,6 +851,20 @@ pub async fn get_key_secret(
                     );
                     (pub_mb, priv_mb)
                 }
+                // `KeyType` is `#[non_exhaustive]`, so this arm is required.
+                // It refuses rather than falling back: every branch above
+                // derives through a scheme-specific SLIP-0010 path and there is
+                // no generic one, so a wildcard could only return a key of some
+                // other algorithm under this label. ML-DSA lands here until
+                // `ExtendedSigningKey` grows a `derive_ml_dsa` beside its
+                // siblings — FIPS 204 KeyGen takes a 32-byte seed, so the chain
+                // can produce one; it is the derivation that is missing, not
+                // the possibility.
+                other => {
+                    return Err(AppError::Validation(format!(
+                        "key derivation does not support {other} yet"
+                    )));
+                }
             }
         }
     };
@@ -1048,6 +1089,20 @@ pub async fn get_key_secret_internal(
                         &p256_secret.secret_key.to_bytes(),
                     );
                     (pub_mb, priv_mb)
+                }
+                // `KeyType` is `#[non_exhaustive]`, so this arm is required.
+                // It refuses rather than falling back: every branch above
+                // derives through a scheme-specific SLIP-0010 path and there is
+                // no generic one, so a wildcard could only return a key of some
+                // other algorithm under this label. ML-DSA lands here until
+                // `ExtendedSigningKey` grows a `derive_ml_dsa` beside its
+                // siblings — FIPS 204 KeyGen takes a 32-byte seed, so the chain
+                // can produce one; it is the derivation that is missing, not
+                // the possibility.
+                other => {
+                    return Err(AppError::Validation(format!(
+                        "key derivation does not support {other} yet"
+                    )));
                 }
             }
         }

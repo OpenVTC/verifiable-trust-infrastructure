@@ -20,11 +20,7 @@ pub use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 /// This makes private key material self-describing and compatible with
 /// `Secret::from_multibase()` in the SSI ecosystem.
 pub fn encode_private_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
-    let codec: &[u8] = match key_type {
-        KeyType::Ed25519 => &[0x80, 0x26], // ed25519-priv (0x1300)
-        KeyType::X25519 => &[0x82, 0x26],  // x25519-priv (0x1302)
-        KeyType::P256 => &[0x86, 0x26],    // p256-priv (0x1306)
-    };
+    let codec = key_type.multicodec_private();
     let mut buf = Vec::with_capacity(codec.len() + raw_bytes.len());
     buf.extend_from_slice(codec);
     buf.extend_from_slice(raw_bytes);
@@ -33,11 +29,7 @@ pub fn encode_private_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String 
 
 /// Encode raw public key bytes as multibase (Base58BTC) with multicodec prefix.
 pub fn encode_public_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
-    let codec: &[u8] = match key_type {
-        KeyType::Ed25519 => &[0xed, 0x01], // ed25519-pub
-        KeyType::X25519 => &[0xec, 0x01],  // x25519-pub
-        KeyType::P256 => &[0x80, 0x24],    // p256-pub (0x1200)
-    };
+    let codec = key_type.multicodec_public();
     let mut buf = Vec::with_capacity(codec.len() + raw_bytes.len());
     buf.extend_from_slice(codec);
     buf.extend_from_slice(raw_bytes);

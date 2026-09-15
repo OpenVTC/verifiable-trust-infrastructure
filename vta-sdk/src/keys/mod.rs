@@ -4,11 +4,27 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub enum KeyType {
     Ed25519,
     X25519,
     /// ECDSA P-256 key for ES256 signing.
     P256,
+    /// ML-DSA-44 (FIPS 204) post-quantum signing key.
+    ///
+    /// The parameter set W3C Quantum-Resistant Cryptosuites v1.0 defines for
+    /// Data Integrity (`mldsa44-jcs-2024`, `mldsa44-rdfc-2024`), so this is the
+    /// one a credential proof uses.
+    MlDsa44,
+    /// ML-DSA-65 (FIPS 204) post-quantum signing key.
+    ///
+    /// The parameter set Trust Spanning Protocol Rev 3 §8.1 mandates.
+    ///
+    /// Carried alongside [`KeyType::MlDsa44`] because two specifications
+    /// require different sets — the parameter set is chosen by whatever
+    /// consumes the key, never by the holder. Not duplication to be tidied
+    /// away.
+    MlDsa65,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -113,12 +129,76 @@ pub struct KeyRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+impl KeyType {
+    /// The multicodec prefix for this key type's **public** half, as an
+    /// unsigned-varint byte sequence.
+    ///
+    /// This lives here, beside the enum, for one reason: `KeyType` is
+    /// `#[non_exhaustive]`, so a `match` in any *other* crate needs a wildcard
+    /// arm — and a wildcard in a codec table is a latent defect. It cannot
+    /// produce a correct prefix, so it can only produce a wrong one, and a
+    /// multibase string under the wrong prefix round-trips perfectly inside
+    /// this workspace and decodes as the wrong algorithm everywhere else.
+    ///
+    /// `#[non_exhaustive]` binds other crates, not this one, so the match below
+    /// is genuinely exhaustive and a new `KeyType` is a compile error here until
+    /// it is given a codec. That is the guarantee callers rely on to keep their
+    /// own encoders infallible.
+    ///
+    /// Values verified against `multiformats/multicodec` `table.csv`; the
+    /// post-quantum entries are `draft` upstream and pinned by
+    /// `affinidi-encoding`'s `pqc_code_points_match_the_multicodec_registry`.
+    pub fn multicodec_public(&self) -> &'static [u8] {
+        match self {
+            KeyType::Ed25519 => &[0xed, 0x01], // ed25519-pub
+            KeyType::X25519 => &[0xec, 0x01],  // x25519-pub
+            KeyType::P256 => &[0x80, 0x24],    // p256-pub (0x1200)
+            KeyType::MlDsa44 => &[0x90, 0x24], // mldsa-44-pub (0x1210)
+            KeyType::MlDsa65 => &[0x91, 0x24], // mldsa-65-pub (0x1211)
+        }
+    }
+
+    /// The multicodec prefix for this key type's **private** half.
+    ///
+    /// ML-DSA private material is the 32-byte seed xi, so these are the
+    /// `-priv-seed` codecs (0x131a / 0x131b), not the multi-kilobyte expanded
+    /// private codecs at 0x1317-0x1318. The seed is what lets an ML-DSA key be
+    /// re-derived from the BIP-32 chain, which is the only reason a *derived*
+    /// post-quantum key is possible at all — so the choice is load-bearing
+    /// rather than a size optimisation.
+    ///
+    /// Exhaustive for the same reason as [`Self::multicodec_public`].
+    pub fn multicodec_private(&self) -> &'static [u8] {
+        match self {
+            KeyType::Ed25519 => &[0x80, 0x26], // ed25519-priv (0x1300)
+            KeyType::X25519 => &[0x82, 0x26],  // x25519-priv (0x1302)
+            KeyType::P256 => &[0x86, 0x26],    // p256-priv (0x1306)
+            KeyType::MlDsa44 => &[0x9a, 0x26], // mldsa-44-priv-seed (0x131a)
+            KeyType::MlDsa65 => &[0x9b, 0x26], // mldsa-65-priv-seed (0x131b)
+        }
+    }
+}
+
 impl std::fmt::Display for KeyType {
+    /// Must agree with the `rename_all = "lowercase"` serde spelling, arm for
+    /// arm.
+    ///
+    /// Both reach the wire — serde on every REST body and Trust Task payload,
+    /// this on log lines, error messages and the CLI's key table — so a
+    /// disagreement reads as one key type in an error and a different one in
+    /// the document that caused it. `display_matches_serde` pins it.
+    ///
+    /// Deliberately exhaustive with no wildcard arm, even though the type is
+    /// `#[non_exhaustive]`: that attribute binds other crates, not this one, so
+    /// a new variant is still a compile error *here* until it is given a
+    /// spelling rather than silently acquiring a `Debug`-ish one.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             KeyType::Ed25519 => write!(f, "ed25519"),
             KeyType::X25519 => write!(f, "x25519"),
             KeyType::P256 => write!(f, "p256"),
+            KeyType::MlDsa44 => write!(f, "mldsa44"),
+            KeyType::MlDsa65 => write!(f, "mldsa65"),
         }
     }
 }
@@ -129,5 +209,116 @@ impl std::fmt::Display for KeyStatus {
             KeyStatus::Active => write!(f, "active"),
             KeyStatus::Revoked => write!(f, "revoked"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Display` and serde must spell a `KeyType` identically.
+    ///
+    /// Both spellings reach the wire — serde on REST bodies and Trust Task
+    /// payloads, `Display` on logs, errors and the CLI key table — so a drift
+    /// between them reads as one key type in an error message and another in
+    /// the document that produced it.
+    ///
+    /// The list is written out rather than derived, so adding a `KeyType`
+    /// without adding it here is a visible omission rather than a silently
+    /// smaller test.
+    #[test]
+    fn display_matches_serde() {
+        for kt in [
+            KeyType::Ed25519,
+            KeyType::X25519,
+            KeyType::P256,
+            KeyType::MlDsa44,
+            KeyType::MlDsa65,
+        ] {
+            let serde_spelling = serde_json::to_string(&kt).expect("serialises");
+            assert_eq!(
+                kt.to_string(),
+                serde_spelling.trim_matches('"'),
+                "Display and serde disagree for {kt:?}"
+            );
+        }
+    }
+
+    /// The wire spellings must match the `keys/_shared/0.1` `KeyType`
+    /// enumeration, which is what the VTA validates its own responses against.
+    ///
+    /// Pinned literally: a rename here — including one arriving via a change to
+    /// `rename_all` — emits a value the published schema does not list, and the
+    /// dispatch spine rejects the VTA's *own* response as a schema violation.
+    /// That failure surfaces as a 500 on an operation that otherwise succeeded.
+    #[test]
+    fn key_type_wire_spellings_match_the_published_schema() {
+        for (kt, expected) in [
+            (KeyType::Ed25519, "ed25519"),
+            (KeyType::X25519, "x25519"),
+            (KeyType::P256, "p256"),
+            (KeyType::MlDsa44, "mldsa44"),
+            (KeyType::MlDsa65, "mldsa65"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&kt).unwrap(),
+                format!("\"{expected}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<KeyType>(&format!("\"{expected}\"")).unwrap(),
+                kt
+            );
+        }
+    }
+
+    /// Every key type has a distinct multicodec pair, and the post-quantum ones
+    /// are the registered values.
+    ///
+    /// The prefixes are unsigned-varint, so they are not the code points read
+    /// off the registry table — `0x1210` encodes as `[0x90, 0x24]`. Getting
+    /// that conversion wrong produces a multibase string this workspace decodes
+    /// perfectly and nobody else can, which is why the expected bytes are
+    /// written out rather than computed by the same code that emits them.
+    #[test]
+    fn multicodecs_are_distinct_and_registered() {
+        assert_eq!(KeyType::MlDsa44.multicodec_public(), &[0x90, 0x24]); // 0x1210
+        assert_eq!(KeyType::MlDsa65.multicodec_public(), &[0x91, 0x24]); // 0x1211
+        assert_eq!(KeyType::MlDsa44.multicodec_private(), &[0x9a, 0x26]); // 0x131a
+        assert_eq!(KeyType::MlDsa65.multicodec_private(), &[0x9b, 0x26]); // 0x131b
+
+        let all = [
+            KeyType::Ed25519,
+            KeyType::X25519,
+            KeyType::P256,
+            KeyType::MlDsa44,
+            KeyType::MlDsa65,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(
+                    a.multicodec_public(),
+                    b.multicodec_public(),
+                    "{a:?} and {b:?} share a public codec"
+                );
+                assert_ne!(
+                    a.multicodec_private(),
+                    b.multicodec_private(),
+                    "{a:?} and {b:?} share a private codec"
+                );
+            }
+        }
+    }
+
+    /// ML-DSA-44 and ML-DSA-65 are both carried on purpose.
+    ///
+    /// Two specifications mandate different parameter sets — W3C
+    /// Quantum-Resistant Cryptosuites defines Data Integrity suites only for
+    /// ML-DSA-44, TSP Rev 3 §8.1 requires ML-DSA-65 — so the parameter set is
+    /// chosen by whatever consumes the key. This exists to stop them being
+    /// "harmonised" into one.
+    #[test]
+    fn the_two_ml_dsa_parameter_sets_are_distinct() {
+        assert_ne!(KeyType::MlDsa44, KeyType::MlDsa65);
+        assert_ne!(KeyType::MlDsa44.to_string(), KeyType::MlDsa65.to_string());
     }
 }
