@@ -90,6 +90,22 @@ use helpers::{
 pub(crate) struct JoinAuthCtx {
     pub transport: JoinTransport,
     pub sender_did: Option<String>,
+    /// The DID that signed this document's Data-Integrity proof, verified by
+    /// the spine against the document **as received**.
+    ///
+    /// `None` when the task's specification does not require a proof, or when
+    /// the context was built by a transport rather than by the spine.
+    ///
+    /// # Why the spine and not the handler
+    ///
+    /// A proof covers the document as it was sent. A handler that has been
+    /// handed a typed payload can only re-derive those bytes if its payload type
+    /// round-trips losslessly — and none promises to: parse a document into a
+    /// type that does not know one of its fields and the field is gone, so the
+    /// canonicalisation differs and a valid proof fails. Verifying here, once,
+    /// against the bytes that arrived, is what makes typed handlers possible at
+    /// all. Pinned by `vta-sdk/tests/typed_proof_verify.rs`.
+    pub verified_signer: Option<String>,
 }
 
 impl JoinAuthCtx {
@@ -98,6 +114,7 @@ impl JoinAuthCtx {
         Self {
             transport: JoinTransport::DIDComm,
             sender_did: Some(sender_did),
+            verified_signer: None,
         }
     }
 
@@ -110,6 +127,16 @@ impl JoinAuthCtx {
         Self {
             transport: JoinTransport::Rest,
             sender_did: None,
+            verified_signer: None,
+        }
+    }
+
+    /// The same context with `verified_signer` filled in by the spine.
+    fn with_verified_signer(&self, signer: Option<String>) -> Self {
+        Self {
+            transport: self.transport,
+            sender_did: self.sender_did.clone(),
+            verified_signer: signer,
         }
     }
 }
@@ -138,8 +165,45 @@ pub(crate) async fn dispatch_trust_task_core(
         return reject_with(&doc, reason);
     }
 
-    // 3. Dispatch by type URI, then sign what comes back.
+    // 3. Framework §7.2 item 8 — the proof, verified here against the document
+    //    **as received**, because this is the last point at which those bytes
+    //    exist: past dispatch a handler holds a payload that may have dropped a
+    //    member it does not know, and canonicalising that yields different bytes
+    //    and refuses a valid proof.
+    //
+    //    ## Verify what is here; do not demand what the transport already proved
+    //
+    //    The obvious rule — verify wherever the published specification says
+    //    `proof` is REQUIRED — is wrong for this service, and the join tests say
+    //    so immediately. `join-requests/submit/0.2` declares a proof REQUIRED,
+    //    and over DIDComm the applicant carries none: authcrypt proved the
+    //    sender, and the document rides inside that envelope. Enforcing the
+    //    specification's flag here refuses every join over DIDComm and TSP with
+    //    "document has no proof".
+    //
+    //    That gap between the published requirement and what this service
+    //    accepts is real and predates this change; it is not something to close
+    //    by silently breaking the transport. So the rule is the one the
+    //    framework's own HTTPS binding uses for exactly this situation
+    //    (`require_attribution`): attribution must come from *somewhere* — a
+    //    verified proof, or a transport-authenticated peer. A present proof is
+    //    always checked; an absent one is the transport's business, and each
+    //    handler already knows which it needs. The `rooms/*` arms demand a
+    //    verified signer and refuse without one, which is exactly what those
+    //    handlers did for themselves before.
     let type_uri = doc.type_uri.to_string();
+    let ctx = if doc.proof.is_some() {
+        match verify_trust_task_proof(state, &doc).await {
+            Ok(signer) => &ctx.with_verified_signer(Some(signer)),
+            // A proof that is present and does not verify is always fatal,
+            // whatever the transport proved separately.
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+    } else {
+        ctx
+    };
+
+    // 4. Dispatch by type URI, then sign what comes back.
     let outcome = dispatch_typed(state, ctx, doc, &type_uri).await;
     sign_success_response(state, outcome).await
 }
@@ -221,6 +285,18 @@ async fn dispatch_typed(
     doc: TrustTask<Value>,
     type_uri: &str,
 ) -> TrustTaskOutcome {
+    // Every `rooms/*` operation is authorized against the DID that **signed the
+    // request**, so an unsigned one has nothing to authorize and is refused.
+    //
+    // That refusal is not new: each of these handlers used to call
+    // `verify_trust_task_proof` itself and return this same rejection. The
+    // verification moved to the spine; the requirement did not move anywhere.
+    // Stated as a guard here rather than assumed, because `verified_signer` is
+    // `None` for every transport-authenticated task that carries no proof — the
+    // normal case for join over DIDComm — and defaulting to an empty presenter
+    // would authorize a room operation against nobody.
+    let rooms_presenter = ctx.verified_signer.as_deref();
+
     match type_uri {
         jr::JOIN_REQUEST_SUBMIT_TYPE => handle_submit(state, ctx, doc).await,
         jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, doc, ManifestVersion::V0_1).await,
@@ -237,44 +313,140 @@ async fn dispatch_typed(
         vetting_wire::VETTING_VETTER_PROFILE_TYPE => handle_vetter_profile(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
-        // The rooms family. Note what these do not take: no `ctx`, and no auth claims.
-        // A room operation is authorized by the authority chain the room itself issued,
-        // never by this service's ACL, roster, or the caller's session — invariant I5 of
-        // `docs/05-design-notes/data-rooms.md`, and what makes a room portable.
-        rooms_wire::ROOMS_CREATE_TYPE => crate::rooms::handlers::handle_create(state, doc).await,
-        rooms_wire::ROOMS_RECORDS_PUT_TYPE => {
-            crate::rooms::handlers::handle_put_record(state, doc).await
-        }
-        rooms_wire::ROOMS_RECORDS_GET_TYPE => {
-            crate::rooms::handlers::handle_get_record(state, doc).await
-        }
-        rooms_wire::ROOMS_RECORDS_LIST_TYPE => {
-            crate::rooms::handlers::handle_list_records(state, doc).await
-        }
-        rooms_wire::ROOMS_RECORDS_CURATE_TYPE => {
-            crate::rooms::handlers::handle_curate_record(state, doc).await
-        }
-        rooms_wire::ROOMS_EPOCH_MINT_TYPE => {
-            crate::rooms::handlers::handle_mint_epoch(state, doc).await
-        }
-        rooms_wire::ROOMS_EPOCH_CHAIN_TYPE => {
-            crate::rooms::handlers::handle_epoch_chain(state, doc).await
-        }
-        rooms_wire::ROOMS_EPOCH_PRUNE_TYPE => {
-            crate::rooms::handlers::handle_epoch_prune(state, doc).await
-        }
-        rooms_wire::ROOMS_EPOCH_COMMITS_TYPE => {
-            crate::rooms::handlers::handle_epoch_commits(state, doc).await
-        }
-        rooms_wire::ROOMS_OWNER_TRANSFER_TYPE => {
-            crate::rooms::handlers::handle_transfer_owner(state, doc).await
-        }
-        rooms_wire::ROOMS_OWNER_CLAIM_TYPE => {
-            crate::rooms::handlers::handle_claim_owner(state, doc).await
-        }
+        // The rooms family. Note what these still do not take: no `ctx`, and no auth
+        // claims. A room operation is authorized by the authority chain the room itself
+        // issued, never by this service's ACL, roster, or the caller's session —
+        // invariant I5 of `docs/05-design-notes/data-rooms.md`, and what makes a room
+        // portable.
+        //
+        // They do take the **verified signer**, which is not a weakening of that: it is
+        // a cryptographic fact about the request, not an authority this service confers.
+        // The handlers used to derive it themselves; they cannot once they hold a typed
+        // payload, because re-deriving the signed bytes from a parsed payload is sound
+        // only for a type that round-trips losslessly. See `JoinAuthCtx::
+        // verified_signer`.
+        rooms_wire::ROOMS_CREATE_TYPE => match rooms_presenter {
+            Some(presenter) => crate::rooms::handlers::handle_create(state, doc, presenter).await,
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_RECORDS_PUT_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_put_record(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_RECORDS_GET_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_get_record(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_RECORDS_LIST_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_list_records(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_RECORDS_CURATE_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_curate_record(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_EPOCH_MINT_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_mint_epoch(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_EPOCH_CHAIN_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_epoch_chain(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_EPOCH_PRUNE_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_epoch_prune(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_EPOCH_COMMITS_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_epoch_commits(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_OWNER_TRANSFER_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_transfer_owner(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
+        rooms_wire::ROOMS_OWNER_CLAIM_TYPE => match rooms_presenter {
+            Some(presenter) => {
+                crate::rooms::handlers::handle_claim_owner(state, doc, presenter).await
+            }
+            None => reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired),
+        },
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
+    }
+}
+
+#[cfg(test)]
+mod spine_proof_tests {
+    use super::*;
+
+    /// The rule the spine actually follows, and the one it must not.
+    ///
+    /// The tempting rule is "verify wherever the published specification says
+    /// `proof` is REQUIRED". This test exists because that rule is wrong here,
+    /// and wrong in a way that takes the service down rather than tightening it:
+    /// `join-requests/submit` declares a proof REQUIRED, and over DIDComm the
+    /// applicant sends none — authcrypt proved the sender and the document rides
+    /// inside that envelope. Enforcing the flag refuses every join over DIDComm
+    /// and TSP.
+    ///
+    /// So the assertion is inverted from what it looks like it should be: these
+    /// URIs demand a proof *per the specification* while this service accepts
+    /// them without one. That divergence is real and predates the spine change.
+    /// It is recorded here so the next person to reach for `spec_policy_for` as
+    /// an enforcement gate meets it as a failing test rather than as a total
+    /// outage.
+    #[test]
+    fn a_transport_authenticated_task_declares_a_proof_it_does_not_carry() {
+        let declares_required = |uri: &str| {
+            trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .is_some_and(|policy| policy.is_proof_required)
+        };
+
+        assert!(
+            declares_required(jr::JOIN_REQUEST_SUBMIT_TYPE),
+            "if this is now false the specification changed, and the comment \
+             above — plus the rule in the spine — should be re-read"
+        );
+    }
+
+    /// And the rooms family, where the requirement *is* enforced — by the arms
+    /// in `dispatch_typed`, which refuse without a verified signer exactly as
+    /// each handler used to refuse for itself.
+    ///
+    /// The two together are the whole rule: a present proof is always verified,
+    /// an absent one is the transport's business, and a handler that needs a
+    /// signed identity says so.
+    #[test]
+    fn every_rooms_task_declares_the_proof_its_arm_requires() {
+        for uri in rooms_wire::ROOMS_DISPATCHED_URIS {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
+            assert!(
+                policy.is_proof_required,
+                "{uri}: its arm refuses without a verified signer, so the \
+                 specification had better agree that one is required"
+            );
+        }
     }
 }
 

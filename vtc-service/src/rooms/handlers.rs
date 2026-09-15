@@ -25,7 +25,7 @@ use trust_tasks_rs::TrustTask;
 use super::policy as room_policy;
 use crate::server::AppState;
 use crate::trust_tasks::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, success_response, verify_trust_task_proof,
+    TrustTaskOutcome, app_error_to_reject, parse_payload, success_response,
 };
 use vti_common::audit::{AuditEvent, RoomOperationData};
 use vti_rooms::audit::{self as rooms_audit, RoomOperation};
@@ -46,18 +46,14 @@ use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
 /// from the document's own `eddsa-jcs-2022` proof — not from any field in the payload —
 /// because a presentation names what may be done, not who is doing it: unbound, it is a
 /// bearer token that anyone observing it inherits.
-async fn presenter_and_verifier(
-    state: &AppState,
-    doc: &TrustTask<Value>,
-) -> Result<(String, DtgChainVerifier), vti_common::error::AppError> {
-    let presenter = verify_trust_task_proof(state, doc).await?;
+fn presenter_and_verifier(state: &AppState, presenter: &str) -> (String, DtgChainVerifier) {
     // `without_zk`: this service has no zero-knowledge profile for a private room's subject
     // binding, and the verifier refuses those rather than serving a pooling defence nobody
     // checked. Swap for `with_zk` when the working group settles the profile.
-    Ok((
-        presenter,
+    (
+        presenter.to_string(),
         DtgChainVerifier::without_zk(Box::new(DataIntegrityKeys(state.trust_task_vm_resolver()))),
-    ))
+    )
 }
 
 /// Record a room operation, per §8 of the design note.
@@ -198,7 +194,11 @@ async fn govern_creation(
 /// The creator brings the room's identifier; this service does not assign one. A room
 /// identified by something its host chose could not move to another host without changing
 /// identity, and portability is the property the whole family rests on.
-pub(crate) async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+pub(crate) async fn handle_create(
+    state: &AppState,
+    doc: TrustTask<Value>,
+    presenter: &str,
+) -> TrustTaskOutcome {
     let req: CreateRoomBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -208,11 +208,12 @@ pub(crate) async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> Tr
     // this service has is the proof on the request. That proof is what makes `ownerDid` a
     // fact rather than a field — and the decision itself lives in `vti-rooms`, so a room host
     // and this service cannot disagree about who may register a room.
-    let presenter = match verify_trust_task_proof(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
-    let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, &presenter) {
+    // `presenter` is the proof's signer, verified by the spine against the document
+    // as received. This handler used to verify it here; it cannot, once it is handed
+    // a typed payload, because re-deriving the signed bytes from a parsed payload is
+    // only sound if that type round-trips losslessly — see `JoinAuthCtx::
+    // verified_signer`.
+    let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, presenter) {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
@@ -270,7 +271,11 @@ pub(crate) async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> Tr
 }
 
 /// `rooms/records/put/0.1`.
-pub(crate) async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+pub(crate) async fn handle_put_record(
+    state: &AppState,
+    doc: TrustTask<Value>,
+    presenter: &str,
+) -> TrustTaskOutcome {
     let req: PutRecordBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -280,10 +285,7 @@ pub(crate) async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -362,7 +364,11 @@ pub(crate) async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -
 /// A read presents exactly as a write does. Authorizing reads by session would record a
 /// member identifier on every access, and a period of those records reconstructs the
 /// membership a sealed room exists to withhold — without breaking any cryptography.
-pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+pub(crate) async fn handle_get_record(
+    state: &AppState,
+    doc: TrustTask<Value>,
+    presenter: &str,
+) -> TrustTaskOutcome {
     let req: GetRecordBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -372,10 +378,7 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -420,6 +423,7 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
 pub(crate) async fn handle_list_records(
     state: &AppState,
     doc: TrustTask<Value>,
+    presenter: &str,
 ) -> TrustTaskOutcome {
     let req: ListRecordsBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -430,10 +434,7 @@ pub(crate) async fn handle_list_records(
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -548,7 +549,11 @@ async fn room_head(state: &AppState, room_id: &str) -> Option<vti_rooms::merkle:
 /// check possible here on a room whose membership this service cannot see. Binding it to an
 /// action the *room* confers is what makes the restriction enforceable by a service that
 /// knows nothing about the membership.
-pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+pub(crate) async fn handle_mint_epoch(
+    state: &AppState,
+    doc: TrustTask<Value>,
+    presenter: &str,
+) -> TrustTaskOutcome {
     let req: MintEpochBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -558,10 +563,7 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -651,6 +653,7 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
 pub(crate) async fn handle_epoch_prune(
     state: &AppState,
     doc: TrustTask<Value>,
+    presenter: &str,
 ) -> TrustTaskOutcome {
     let req: PruneBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -661,10 +664,7 @@ pub(crate) async fn handle_epoch_prune(
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     // `admin`, not `curate`: pruning makes no statement about any record, and
     // every member who can write can curate — which would put "end the room's
     // readable history" within reach of every writer.
@@ -728,6 +728,7 @@ pub(crate) async fn handle_epoch_prune(
 pub(crate) async fn handle_epoch_commits(
     state: &AppState,
     doc: TrustTask<Value>,
+    presenter: &str,
 ) -> TrustTaskOutcome {
     let req: CommitsBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -738,10 +739,7 @@ pub(crate) async fn handle_epoch_commits(
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -801,6 +799,7 @@ pub(crate) async fn handle_epoch_commits(
 pub(crate) async fn handle_epoch_chain(
     state: &AppState,
     doc: TrustTask<Value>,
+    presenter: &str,
 ) -> TrustTaskOutcome {
     let req: ChainBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -811,10 +810,7 @@ pub(crate) async fn handle_epoch_chain(
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -877,6 +873,7 @@ pub(crate) async fn handle_epoch_chain(
 pub(crate) async fn handle_transfer_owner(
     state: &AppState,
     doc: TrustTask<Value>,
+    presenter: &str,
 ) -> TrustTaskOutcome {
     let req: TransferOwnerBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -887,10 +884,7 @@ pub(crate) async fn handle_transfer_owner(
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let operation = RoomOperation::TransferOwner;
     let authorized = match authz::authorize(
         &room,
@@ -952,6 +946,7 @@ pub(crate) async fn handle_transfer_owner(
 pub(crate) async fn handle_claim_owner(
     state: &AppState,
     doc: TrustTask<Value>,
+    presenter: &str,
 ) -> TrustTaskOutcome {
     let req: ClaimOwnerBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -962,10 +957,7 @@ pub(crate) async fn handle_claim_owner(
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
 
     // 1. The nomination, against the party who actually signed this request — never against
     //    a DID named in the payload, which the claimant chooses.
@@ -1028,6 +1020,7 @@ pub(crate) async fn handle_claim_owner(
 pub(crate) async fn handle_curate_record(
     state: &AppState,
     doc: TrustTask<Value>,
+    presenter: &str,
 ) -> TrustTaskOutcome {
     let req: CurateRecordBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -1046,10 +1039,7 @@ pub(crate) async fn handle_curate_record(
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
         &room,
         &req.presentation,
@@ -1108,6 +1098,66 @@ mod tests {
     use serde_json::json;
     use vti_rooms::Visibility;
     use vti_rooms_dtg::test_support::RoomFixture;
+
+    /// Verify the document's proof the way the **spine** does, and return the
+    /// signer.
+    ///
+    /// Every `rooms/*` specification declares `proof` REQUIRED, so
+    /// `dispatch_trust_task_core` verifies one and hands the signer to these
+    /// handlers. A test that called a handler with a presenter of its own
+    /// choosing would assert nothing about the signature — it would be checking
+    /// that the handler uses the argument it was given. Deriving it here keeps
+    /// what these tests have always proved: that the identity a room operation
+    /// is authorized against is the one that *signed the request*.
+    async fn spine_presenter(state: &AppState, doc: &TrustTask<Value>) -> String {
+        crate::trust_tasks::helpers::verify_trust_task_proof(state, doc)
+            .await
+            .expect("a test document is signed by its fixture owner")
+    }
+
+    // Thin shims, deliberately named after the handlers they wrap, so the call
+    // sites below read exactly as they did when the handler verified its own
+    // proof. They shadow the glob-imported originals; `super::` reaches past
+    // them.
+    async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+        let presenter = spine_presenter(state, &doc).await;
+        super::handle_create(state, doc, &presenter).await
+    }
+
+    async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+        let presenter = spine_presenter(state, &doc).await;
+        super::handle_put_record(state, doc, &presenter).await
+    }
+
+    async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+        let presenter = spine_presenter(state, &doc).await;
+        super::handle_get_record(state, doc, &presenter).await
+    }
+
+    async fn handle_list_records(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+        let presenter = spine_presenter(state, &doc).await;
+        super::handle_list_records(state, doc, &presenter).await
+    }
+
+    async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+        let presenter = spine_presenter(state, &doc).await;
+        super::handle_mint_epoch(state, doc, &presenter).await
+    }
+
+    async fn handle_curate_record(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+        let presenter = spine_presenter(state, &doc).await;
+        super::handle_curate_record(state, doc, &presenter).await
+    }
+
+    async fn handle_transfer_owner(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+        let presenter = spine_presenter(state, &doc).await;
+        super::handle_transfer_owner(state, doc, &presenter).await
+    }
+
+    async fn handle_claim_owner(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+        let presenter = spine_presenter(state, &doc).await;
+        super::handle_claim_owner(state, doc, &presenter).await
+    }
 
     /// A **signed** room document.
     ///
