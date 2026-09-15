@@ -49,6 +49,11 @@ hmac = "0.13"
 aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
+# Not called from this crate — a resolver bound, explained in the workspace
+# manifest. Unconditional because `aws-config` above is: without it a plain
+# `cargo build --workspace` resolves `aws-smithy-types` 1.7.0 and fails to
+# compile `aws-smithy-json` 0.63.0.
+aws-smithy-types.workspace = true
 aws-lc-rs = "1"
 aes = "0.9"
 cbc = "0.2"

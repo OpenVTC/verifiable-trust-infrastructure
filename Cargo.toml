@@ -268,6 +268,36 @@ jsonwebtoken = { version = "11", default-features = false, features = ["use_pem"
 # regress.
 aws-lc-rs = "1.16"
 
+# Upper bound on `aws-smithy-types`, which we do not use directly.
+#
+# **This is here to constrain the resolver, not because anything calls it.**
+# `aws-smithy-types` 1.7.0 changed `Document::Object` from
+# `HashMap<String, Document>` to a new `DocumentObject`, and added a variant to
+# an enum that is `#[non_exhaustive]` — a breaking change shipped as a MINOR
+# bump. `aws-smithy-json` 0.63.0 declares `aws-smithy-types = "^1.6.1"`, which
+# admits 1.7.0 and then fails to compile against it:
+#
+#   error[E0308]: expected `DocumentObject`, found `HashMap<String, Document>`
+#   error[E0004]: non-exhaustive patterns: `&_` not covered
+#
+# Cargo unifies `aws-smithy-types` to one version across the graph but keeps
+# both `aws-smithy-json` 0.63 and 0.64 (0.x minors are incompatible majors), so
+# the two coexist and only the 0.63 copy breaks. We have both because
+# `aws-sdk-secretsmanager` 1.116.0 moved to json `^0.64.0` while `aws-config`
+# 1.12.0 — its newest release — still wants `^0.63.0`. Both reach us:
+# `vti-secrets` behind `aws-secrets`, and `vta-tee` unconditionally.
+#
+# The lockfile already held 1.6.3, so committed builds were fine and only a
+# fresh resolution broke — which is what `cargo install --path` does unless it
+# is given `--locked`. That is the more common way to meet this, and `--locked`
+# remains the right flag for an install; this bound is what keeps `cargo update`
+# and a lockless build honest too.
+#
+# **Remove this the moment `aws-config` ships a release on json 0.64.** The
+# bound is `< 1.7` rather than `= 1.6.3` so patch releases in the working line
+# are still picked up; it is an exclusion of the break, not a freeze.
+aws-smithy-types = ">=1.6.1, <1.7"
+
 # Trust-Tasks framework — wire-envelope for the trust-task migration
 # initiative (docs/05-design-notes/trust-task-uri-registry.md). On
 # crates.io; the `[patch.crates-io]` git pin that lived here through
