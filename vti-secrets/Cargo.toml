@@ -17,7 +17,7 @@ config-seed = []
 # OS keyring backend. The consuming binary must register a platform store
 # (e.g. via `vta_sdk::keyring_init::install_default_store()`) at startup.
 keyring = ["dep:keyring-core"]
-aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config"]
+aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config", "dep:aws-smithy-types"]
 gcp-secrets = [
   "dep:google-cloud-secretmanager-v1",
   "dep:google-cloud-auth",
@@ -82,6 +82,12 @@ aws-config = { version = "1", default-features = false, features = [
   "default-https-client",
   "rt-tokio",
 ], optional = true }
+# Not called from this crate: a version bound on a transitive dependency, which
+# Cargo only honours from a crate that declares it. The whole reason is in the
+# workspace manifest beside the requirement — in short, `aws-smithy-types` 1.7.0
+# breaks `aws-smithy-json` 0.63.0, which `aws-config` still pulls. Tied to the
+# same feature as the SDK deps above so it is present exactly when they are.
+aws-smithy-types = { workspace = true, optional = true }
 # GCP Secret Manager backend (gcp-secrets feature).
 google-cloud-secretmanager-v1 = { version = "1", optional = true }
 google-cloud-auth = { version = "1", optional = true }
