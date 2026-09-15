@@ -47,6 +47,7 @@
 //!   exactly where the prior run left off (M3.3).
 
 pub mod client;
+pub mod drift;
 pub mod health;
 pub mod messaging;
 pub mod model;
@@ -71,6 +72,10 @@ pub const RECOGNISE_ACTION: &str = "recognise";
 pub const TRUST_GRAPH_RESOURCE: &str = "trust-graph";
 
 pub use client::{MockRegistryClient, RegistryError, RegistryTransport, TrustRegistryClient};
+pub use drift::{
+    Disagreement, DriftEntry, DriftSnapshot, DriftState, MAX_REPORTED as MAX_REPORTED_DRIFT,
+    check as check_drift,
+};
 pub use health::{HealthStatus, RegistryHealth, SyncerHealth, SyncerHealthSnapshot};
 pub use messaging::MessagingRegistryClient;
 pub use model::{

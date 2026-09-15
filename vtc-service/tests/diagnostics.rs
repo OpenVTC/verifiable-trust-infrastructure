@@ -333,6 +333,39 @@ async fn failed_jobs_ride_in_the_openvtc_ext_namespace() {
     );
 }
 
+/// Before any drift check has run, `registryDrift` is **absent** — and that is
+/// deliberately distinguishable from a check that found nothing.
+///
+/// "Not yet compared" and "compared, and the two views agree" are different
+/// facts with different operator responses, and a surface that rendered them
+/// alike would let a VTC whose drift check never ran look permanently healthy.
+/// The check runs on its own timer, so a freshly-booted VTC — and every test
+/// fixture, which spawns no background tasks — legitimately reports absent.
+#[tokio::test]
+async fn registry_drift_is_absent_until_a_check_has_run() {
+    let fix = build().await;
+    let token = token_for(&fix, "admin").await;
+
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
+        .await
+        .unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(
+        v.pointer("/ext/org.openvtc/registryDrift").is_none(),
+        "absent means not-yet-checked; an empty snapshot here would read as \
+         'the two views agree', which nothing has established: {v}"
+    );
+    assert!(
+        v.get("registryDrift").is_none(),
+        "must not appear at the top level — the published response is \
+         additionalProperties:false: {v}"
+    );
+}
+
 /// A healthy VTC serves an empty list, not an absent field, so the console
 /// never has to distinguish "none failed" from "this build predates the
 /// field".

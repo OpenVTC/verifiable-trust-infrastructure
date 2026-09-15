@@ -156,6 +156,21 @@ pub trait TrustRegistryClient: Send + Sync {
     /// refresh, not when a TTL elapses.
     async fn recognise(&self, foreign_issuer_did: &str) -> Result<bool, RegistryError>;
 
+    /// Every record the registry holds under this community's authority.
+    ///
+    /// Used only by the drift check ([`super::drift`]), which compares the
+    /// answer against the local mirror. Pages internally and returns the whole
+    /// set, because a partial enumeration compared against a complete mirror
+    /// would report every unreached member as a lost write — the exact false
+    /// alarm the check exists to avoid raising.
+    ///
+    /// Defaults to [`super::drift::unsupported`] so a transport that cannot
+    /// enumerate reports "not supported here" rather than an outage, and so a
+    /// test double need not implement it.
+    async fn list_records(&self) -> Result<Vec<RegistryRecord>, RegistryError> {
+        Err(super::drift::unsupported())
+    }
+
     /// How this client is reaching the registry, for operator diagnostics.
     ///
     /// Defaults to "nothing known", so a test double need not implement it.

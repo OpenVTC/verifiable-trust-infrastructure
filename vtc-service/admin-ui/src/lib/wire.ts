@@ -2562,11 +2562,43 @@ export interface components {
             subject: string;
         };
         /**
+         * @description How the two views of one member's record disagree.
+         * @enum {string}
+         */
+        Disagreement: "missingAtRegistry" | "unknownLocally" | "statusMismatch";
+        /**
          * @description Spec §5.5 disposition for a removal. Determines what happens to
          *     the Member record + status-list slot on member departure.
          * @enum {string}
          */
         Disposition: "purge" | "tombstone" | "historical" | "policydefault";
+        /** @description One member whose two views disagree. */
+        DriftEntry: {
+            disagreement: components["schemas"]["Disagreement"];
+            localStatus?: null | components["schemas"]["RegistryStatus"];
+            memberDid: string;
+            registryStatus?: null | components["schemas"]["RegistryStatus"];
+        };
+        /** @description The result of one comparison. */
+        DriftSnapshot: {
+            /** Format: date-time */
+            checkedAt: string;
+            /** @description Every disagreement, capped at [`MAX_REPORTED`]. */
+            entries: components["schemas"]["DriftEntry"][];
+            /**
+             * @description Set when the comparison could not be made. The previous snapshot is
+             *     retained rather than replaced, so a transient registry outage does not
+             *     erase a real finding — but `checked_at` stops advancing, and this says
+             *     why.
+             */
+            error?: string | null;
+            /** @description Records in the local mirror. */
+            localCount: number;
+            /** @description Records the registry returned for this community's authority. */
+            registryCount: number;
+            /** @description Total disagreements found, which may exceed `entries.len()`. */
+            total: number;
+        };
         /**
          * @description Response shape for `GET /v1/admin/config` — every registry key
          *     resolved through the four-layer overlay.
@@ -3454,6 +3486,7 @@ export interface components {
              *     the part an operator wants.
              */
             failedJobs: components["schemas"]["FailedSyncJob"][];
+            registryDrift?: null | components["schemas"]["DriftSnapshot"];
             /**
              * @description What the document-versus-binary comparison actually *means*, from
              *     [`transport_capability::findings_for_build`](crate::transport_capability::findings_for_build)
@@ -4314,6 +4347,12 @@ export interface components {
             registeredAt: string;
             transports: string[];
         };
+        /**
+         * @description Wire-form status for [`RegistryRecord::status`]. Mirrors the
+         *     `status ∈ { Active, Departed }` enumeration in spec §5.7.
+         * @enum {string}
+         */
+        RegistryStatus: "active" | "departed";
         /**
          * @description How the VTC reaches its trust registry, as an operator sees it.
          *

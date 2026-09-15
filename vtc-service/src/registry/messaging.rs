@@ -674,6 +674,70 @@ impl TrustRegistryClient for MessagingRegistryClient {
         }
     }
 
+    async fn list_records(&self) -> Result<Vec<RegistryRecord>, RegistryError> {
+        let authority = self.authority()?.to_string();
+        match self.select().await? {
+            // The REST arm is a TRQP query surface, not an enumeration one.
+            Protocol::Rest => Err(crate::registry::drift::unsupported()),
+            protocol => {
+                let mut out = Vec::new();
+                let mut cursor: Option<String> = None;
+                // Bounded so a registry that returns a cursor forever cannot
+                // pin this task. Exceeding it is reported rather than silently
+                // truncated: a short list compared against a complete mirror
+                // would invent lost writes for every member past the cap.
+                const MAX_PAGES: usize = 50;
+                const PAGE: u32 = 200;
+
+                for page in 0..MAX_PAGES {
+                    let mut payload = json!({
+                        "authority_id": authority,
+                        "action": RECOGNISE_ACTION,
+                        "limit": PAGE,
+                    });
+                    if let Some(c) = &cursor {
+                        payload["cursor"] = json!(c);
+                    }
+                    let reply = self
+                        .round_trip(RECORD_QUERY, payload, false, protocol)
+                        .await?;
+                    classify(&reply, "registry/record/query")?;
+
+                    out.extend(
+                        reply
+                            .payload
+                            .get("records")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter(|r| {
+                                r.get("resource").and_then(Value::as_str)
+                                    == Some(TRUST_GRAPH_RESOURCE)
+                            })
+                            .filter_map(registry_record_from),
+                    );
+
+                    cursor = reply
+                        .payload
+                        .get("nextCursor")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if cursor.is_none() {
+                        return Ok(out);
+                    }
+                    if page + 1 == MAX_PAGES {
+                        return Err(RegistryError::Transient(format!(
+                            "the trust registry is still paginating after {MAX_PAGES} pages \
+                             ({} records); refusing to compare a partial enumeration",
+                            out.len()
+                        )));
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
     async fn recognise(&self, foreign_issuer_did: &str) -> Result<bool, RegistryError> {
         let authority = self.authority()?.to_string();
         match self.select().await? {

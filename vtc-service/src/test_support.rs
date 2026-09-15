@@ -381,6 +381,9 @@ impl TestVtcBuilder {
             invitations_ks,
             registry_client: None,
             registry_health: crate::registry::RegistryHealth::new(),
+            // Empty: no drift check has run, which is "not yet known" and is
+            // exactly what a test fixture should report until one does.
+            registry_drift: crate::registry::DriftState::new(),
             syncer_health: crate::registry::SyncerHealth::new(),
             config: Arc::new(RwLock::new(config)),
             did_resolver,

@@ -214,6 +214,21 @@ pub struct OpenVtcDiagnostics {
     /// authoritative total. Newest failure first, so a truncated list is
     /// the part an operator wants.
     pub failed_jobs: Vec<FailedSyncJob>,
+    /// The latest comparison of the local `registry_records` mirror against
+    /// what the trust registry actually holds, or `null` before the first
+    /// check completes.
+    ///
+    /// `null` is "not yet known", **not** "no drift", and a consumer must not
+    /// render the two alike. The check runs on its own timer
+    /// (`[registry] drift_check_interval_seconds`, default 900s), so a
+    /// freshly-booted VTC legitimately reports `null` for the first half
+    /// minute.
+    ///
+    /// Answers the question a failed sync job leaves open: a job that has
+    /// aged out of the queue is gone, and until this existed nothing in the
+    /// service could then say the member was still unpublished.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry_drift: Option<crate::registry::DriftSnapshot>,
 }
 
 /// How many `Failed` rows [`OpenVtcDiagnostics::failed_jobs`] will carry.
@@ -329,6 +344,7 @@ pub async fn diagnostics(
         .map(|j| (now - j.created_at).num_seconds())
         .max();
 
+    let registry_drift = state.registry_drift.snapshot().await;
     let snapshot = state.registry_health.snapshot().await;
     let registry_status = match snapshot.status {
         HealthStatus::Active => "active",
@@ -420,6 +436,7 @@ pub async fn diagnostics(
             openvtc: OpenVtcDiagnostics {
                 transport_findings,
                 failed_jobs,
+                registry_drift,
             },
         },
     }))

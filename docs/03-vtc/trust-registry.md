@@ -352,6 +352,53 @@ interrupting for — any failed job, or a queue ≥1h behind — in
 place of the transport line, so a registry that answers while
 nothing is landing does not read as healthy.
 
+### Registry records, and drift
+
+Recognition's **Registry records** card compares two views that nothing
+previously compared: the local `registry_records` mirror — what this
+community believes it published — against what the registry actually
+holds. The mirror had been written on every successful sync since Phase 3
+and never read; its own model doc said it existed "so the daemon can
+detect drift at boot", and no drift check was ever built.
+
+The distinction matters because the three signals on this page answer
+three different questions, and only the last one is about your members:
+
+| Signal | Answers |
+|---|---|
+| `registryStatus` | does the registry respond? |
+| Membership sync counters | were our writes *accepted*? |
+| Registry records | are they still *there*? |
+
+A disagreement is reported in one of three directions, because they have
+opposite fixes:
+
+- **missing at registry** — we published it, the registry does not have
+  it. A lost write; the member is invisible to every other community.
+  This is what a failed `publishMember` leaves behind, and it survives
+  the job being swept.
+- **unknown locally** — the registry has a record we have no note of.
+  Usually benign: an earlier deployment, or another admin. Reported, but
+  not counted as a fault, because it makes no member invisible.
+- **status mismatch** — both hold the record and disagree on whether the
+  member is active. A removal that half-landed.
+
+The comparison runs on its own timer — `[registry]
+drift_check_interval_seconds`, default 900 — rather than on page load,
+because enumerating the graph is several round trips and the console
+polls diagnostics every 15 seconds. Set it to `0` to disable.
+
+Two readings that are **not** the same, and the card keeps them apart:
+
+- **"Not checked yet"** — no comparison has completed. Unknown, not
+  clean. A freshly-booted VTC shows this for the first half minute.
+- **"The two views agree"** — a comparison completed and found nothing.
+
+If a check fails, the previous findings are kept rather than cleared, and
+the failure is stated alongside them. A registry that was briefly
+unreachable is not evidence that drift went away, and clearing a real
+finding on a transient error would silently cancel an operator's alarm.
+
 ### Triaging a failed job
 
 Below the counters, every failed job is listed in full: the member

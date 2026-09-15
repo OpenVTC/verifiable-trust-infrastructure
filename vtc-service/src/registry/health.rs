@@ -126,7 +126,13 @@ impl RegistryHealth {
         drop(guard);
 
         if prior != HealthStatus::Degraded {
-            warn!(error = %error, "trust-registry health probe failed — flipping to degraded");
+            // "the registry", not "the health probe": the probe is no longer
+            // the only caller. The syncer records a failed dispatch here too,
+            // and naming the probe sent an operator reading the log to look at
+            // a probe that had in fact just succeeded — while the error beside
+            // it named `record/put`, a task the probe never sends. A message
+            // that contradicts its own fields costs more than it explains.
+            warn!(error = %error, "trust-registry call failed — flipping to degraded");
             emit_changed(
                 audit_writer,
                 actor_did,
