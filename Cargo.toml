@@ -330,6 +330,25 @@ trust-tasks-https = { version = "0.20.4", default-features = false, features = [
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
 trust-tasks-didcomm = { version = "0.20.4", default-features = false }
+# The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
+# Trust-Task TSP frame must use: `{"type": …, "document": …}`.
+#
+# The wrapper exists because TSP, unlike DIDComm, has no message `type` field of
+# its own to carry the binding in and no request path the way HTTPS does — so
+# the JSON payload carries it. That is the whole difference between the three
+# bindings, and the reason each is a crate rather than a convention.
+#
+# Taken as a dependency for the constant rather than writing the URI out, for
+# the same reason the DIDComm one above is: a binding URI written locally is a
+# private dialect the moment the binding moves — and this workspace has been
+# speaking one over TSP.
+#
+# Only the constant is used. The crate's `pack_trust_task*` takes a `PrivateVid`
+# (the sender's raw signing and decryption keys) and a VTA never holds its own
+# keys in that shape; it signs through `operations::keys::sign_payload`, where
+# the context gates live. Using the crate's sealing API needs a signer seam
+# upstream, of the shape `affinidi_data_integrity::Signer` already provides.
+trust-tasks-tsp = { version = "0.20.4", default-features = false }
 trust-tasks-proof = { version = "0.20.4", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)

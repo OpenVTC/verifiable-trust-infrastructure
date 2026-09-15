@@ -209,6 +209,7 @@ vti-webauthn = { path = "../vti-webauthn", version = "0.2" }
 trust-tasks-rs = { workspace = true }
 trust-tasks-https = { workspace = true }
 trust-tasks-didcomm = { workspace = true }
+trust-tasks-tsp = { workspace = true }
 trust-tasks-proof = { workspace = true }
 # Shared CLI helpers for the consumer side of sealed-transfer (request
 # generation, bundle opening). Used by `vta bootstrap request` /
