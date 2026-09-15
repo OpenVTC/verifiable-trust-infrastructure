@@ -107,10 +107,19 @@ pub const OUTBOUND_SUPPORTED: &[Protocol] = &[
     // build cannot reach would turn a compile-time absence into a runtime
     // "named in OUTBOUND_SUPPORTED but has no send path" — a worse way to find
     // out.
+    #[cfg(feature = "tsp")]
+    Protocol::Tsp,
     #[cfg(feature = "didcomm")]
     Protocol::Didcomm,
     Protocol::Rest,
 ];
+
+/// How long to wait for a reply over TSP, in seconds.
+///
+/// The same window DIDComm gets. TSP delivers through the same mediator socket,
+/// so the thing being waited on is the peer's processing time either way.
+#[cfg(feature = "tsp")]
+const TSP_REPLY_TIMEOUT_SECS: u64 = 30;
 
 /// What makes a reply believable.
 ///
@@ -139,6 +148,50 @@ pub enum ReplyTrust {
     TransportAuthenticated,
 }
 
+/// What sending a Trust Task over TSP takes.
+///
+/// A struct because the four travel together and none is useful alone: the
+/// socket to send on, the profile that seals, the mediator to route the outer
+/// layer through, and the registry that holds the waiter until the reply comes
+/// back as its own inbound frame.
+///
+/// That last one is why TSP took longer than the other two. TSP has no
+/// request/response — `trust-tasks-tsp` is `pack` and `unpack`, deliberately,
+/// because correlation belongs to the document layer. So a round trip is a send
+/// now and an inbound document later, and without somewhere to keep the waiter
+/// between them an agent can only receive.
+#[cfg(feature = "tsp")]
+#[derive(Clone)]
+pub struct TspSender<'a> {
+    atm: &'a affinidi_tdk::messaging::ATM,
+    profile: &'a std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    mediator_did: String,
+    replies: crate::trust_tasks::pending_replies::PendingReplies,
+}
+
+#[cfg(feature = "tsp")]
+impl<'a> TspSender<'a> {
+    /// `None` when this node cannot initiate TSP — no socket, no profile, or no
+    /// mediator configured. Absence here removes TSP from selection rather than
+    /// failing at send time, which is the difference between a peer being
+    /// reached over its next-preferred transport and a request that errors.
+    fn from_app_state(state: &'a crate::server::AppState) -> Option<Self> {
+        let mediator_did = state
+            .config
+            .try_read()
+            .ok()?
+            .messaging
+            .as_ref()
+            .map(|m| m.mediator_did.clone())?;
+        Some(Self {
+            atm: state.atm.as_ref()?,
+            profile: state.tsp_profile.as_ref()?,
+            mediator_did,
+            replies: state.pending_replies.clone(),
+        })
+    }
+}
+
 /// The transports this VTA can reach a peer on, and the things needed to use
 /// them.
 ///
@@ -146,14 +199,47 @@ pub enum ReplyTrust {
 /// the resolver and there is nothing to read a peer's advertisement from; drop
 /// the bridge and DIDComm silently stops being selectable.
 pub struct Outbound<'a> {
-    pub resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    // Private, and the constructors below are the only way in. A struct literal
+    // is how a caller silently opts out of a transport: `webvh_didcomm` built
+    // one, so adding TSP here broke it at compile time — which was lucky. The
+    // next field added would have broken it the same way, or worse, been given
+    // a plausible default that quietly removed a transport from selection.
+    resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    /// What a TSP send needs: the socket, the profile that seals, the mediator
+    /// to route through, and somewhere to leave the waiter. Absent in a build
+    /// without `tsp`, along with its arm and its entry in
+    /// [`OUTBOUND_SUPPORTED`].
+    #[cfg(feature = "tsp")]
+    tsp: Option<TspSender<'a>>,
     /// Absent in a build without `didcomm`, along with the arm that uses it and
     /// the entry in [`OUTBOUND_SUPPORTED`] that would select it.
     #[cfg(feature = "didcomm")]
-    pub bridge: &'a DIDCommBridge,
+    bridge: &'a DIDCommBridge,
 }
 
 impl<'a> Outbound<'a> {
+    /// A seam that can only reach a peer over DIDComm or REST.
+    ///
+    /// For a caller that holds a bridge and a resolver but no `AppState` —
+    /// today that is `webvh_didcomm`, whose client is constructed deep inside
+    /// the webvh transport enum. It is a **limitation, not a decision**: a
+    /// did-host advertises TSP and now serves the full Trust-Task surface on it
+    /// (affinidi-webvh-service#183), so this caller is passing up its
+    /// highest-preference transport for want of plumbing. Threading `AppState`
+    /// through `WebvhTransport` removes the constructor.
+    pub fn didcomm_or_rest(
+        resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+        #[cfg(feature = "didcomm")] bridge: &'a DIDCommBridge,
+    ) -> Self {
+        Self {
+            resolver,
+            #[cfg(feature = "tsp")]
+            tsp: None,
+            #[cfg(feature = "didcomm")]
+            bridge,
+        }
+    }
+
     /// Borrow what this needs from an [`AppState`](crate::server::AppState).
     ///
     /// A constructor rather than five struct literals because the bridge is
@@ -170,6 +256,8 @@ impl<'a> Outbound<'a> {
     ) -> Self {
         Self {
             resolver,
+            #[cfg(feature = "tsp")]
+            tsp: TspSender::from_app_state(state),
             #[cfg(feature = "didcomm")]
             bridge: state.didcomm_bridge.as_ref(),
         }
@@ -265,6 +353,14 @@ impl Outbound<'_> {
 
         let reply = match protocol {
             Protocol::Rest => self.send_rest(recipient, &endpoint, &document).await?,
+            #[cfg(feature = "tsp")]
+            Protocol::Tsp => self.send_tsp(recipient, document).await?,
+            #[cfg(not(feature = "tsp"))]
+            Protocol::Tsp => {
+                return Err(AppError::Internal(
+                    "TSP was selected in a build without the `tsp` feature".into(),
+                ));
+            }
             #[cfg(feature = "didcomm")]
             Protocol::Didcomm => self.send_didcomm(recipient, document).await?,
             // Not selectable in this build — it is not in `OUTBOUND_SUPPORTED`
@@ -274,15 +370,6 @@ impl Outbound<'_> {
                 return Err(AppError::Internal(
                     "DIDComm was selected in a build without the `didcomm` feature".into(),
                 ));
-            }
-            // Its own arm rather than a catch-all, so naming TSP in
-            // `OUTBOUND_SUPPORTED` fails to compile here instead of silently
-            // doing nothing. See the module header for what it needs.
-            Protocol::Tsp => {
-                return Err(AppError::Internal(format!(
-                    "{} is named in OUTBOUND_SUPPORTED but has no send path here",
-                    protocol.as_str()
-                )));
             }
         };
 
@@ -319,6 +406,93 @@ impl Outbound<'_> {
                 "`{recipient}` sent a body that is not a Trust-Task document: {e}: {body}"
             ))
         })
+    }
+
+    /// Seal a Trust Task to `recipient` over TSP and wait for the reply to come
+    /// back as its own inbound frame.
+    ///
+    /// The shape is forced by the binding rather than chosen. TSP has no
+    /// request/response: `pack` and `unpack` is the whole of it, because
+    /// correlation is a document concern (SPEC §4.9 `threadId`). So this is a
+    /// send now, and later an inbound document that the dispatch spine
+    /// recognises as an answer and hands to the receiver registered here.
+    ///
+    /// **The waiter is registered before the frame is sealed.** A reply that
+    /// arrived between sending and registering would find nothing waiting, be
+    /// dispatched as a request, and be refused — while this call sat here until
+    /// it timed out. The window is small and the mediator is fast, which is
+    /// exactly the combination that makes it rare enough to survive testing.
+    #[cfg(feature = "tsp")]
+    async fn send_tsp(&self, recipient: &str, document: Value) -> Result<Value, AppError> {
+        let tsp = self.tsp.as_ref().ok_or_else(|| {
+            AppError::Internal(
+                "TSP was selected but this node has no TSP transport; it should not have been \
+                 offered"
+                    .into(),
+            )
+        })?;
+
+        // The thread the reply will name, not the request's id — see
+        // `reply_thread_of`, which is the contract `trust-tasks-rs` applies when
+        // it builds the response.
+        let thread = crate::trust_tasks::pending_replies::reply_thread_of(&document)
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "an outbound Trust Task with neither `threadId` nor `id` cannot be answered"
+                        .into(),
+                )
+            })?
+            .to_string();
+
+        let body = serde_json::to_vec(&document)
+            .map_err(|e| AppError::Internal(format!("serialise the request: {e}")))?;
+        let framed = crate::messaging::tsp_binding::wrap_envelope(&body);
+
+        let waiting = tsp.replies.register(&thread);
+
+        // Inner sealed end-to-end to the recipient, outer to the mediator — the
+        // routed shape the inbound loop already uses for its replies.
+        if let Err(e) = tsp
+            .atm
+            .tsp()
+            .send_routed(
+                tsp.profile,
+                &[tsp.mediator_did.clone(), recipient.to_string()],
+                &framed,
+            )
+            .await
+        {
+            tsp.replies.abandon(&thread);
+            return Err(bad_gateway_error(format!(
+                "`{recipient}` could not be reached over TSP: {e}"
+            )));
+        }
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(TSP_REPLY_TIMEOUT_SECS),
+            waiting,
+        )
+        .await
+        {
+            Ok(Ok(reply)) => serde_json::to_value(reply)
+                .map_err(|e| AppError::Internal(format!("re-serialise the reply: {e}"))),
+            // The sender was dropped without sending — the registry was cleared
+            // from under us. Not a timeout and not an answer.
+            Ok(Err(_)) => {
+                tsp.replies.abandon(&thread);
+                Err(bad_gateway_error(format!(
+                    "the wait for `{recipient}`'s reply was cancelled"
+                )))
+            }
+            Err(_elapsed) => {
+                // Abandoned on the way out, or the entry outlives the process:
+                // a reply arriving later would find a receiver nobody reads.
+                tsp.replies.abandon(&thread);
+                Err(bad_gateway_error(format!(
+                    "`{recipient}` did not answer over TSP within {TSP_REPLY_TIMEOUT_SECS}s"
+                )))
+            }
+        }
     }
 
     #[cfg(feature = "didcomm")]

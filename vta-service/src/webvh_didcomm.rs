@@ -398,16 +398,14 @@ impl<'a> WebvhDIDCommClient<'a> {
         // path, an availability answer, an acknowledgement. Raising it to
         // `SignedByRecipient` is a real question, and one to ask of did-hosting
         // (whether it signs these replies at all) rather than to assume here.
-        let reply = crate::operations::outbound::Outbound {
-            resolver: self.resolver,
-            bridge: self.bridge,
-        }
-        .send(
-            self.server_did,
-            doc,
-            crate::operations::outbound::ReplyTrust::TransportAuthenticated,
-        )
-        .await?;
+        let reply =
+            crate::operations::outbound::Outbound::didcomm_or_rest(self.resolver, self.bridge)
+                .send(
+                    self.server_did,
+                    doc,
+                    crate::operations::outbound::ReplyTrust::TransportAuthenticated,
+                )
+                .await?;
 
         unwrap_envelope_reply(reply, response_task)
     }

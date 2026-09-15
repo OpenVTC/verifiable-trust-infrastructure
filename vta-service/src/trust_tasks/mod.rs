@@ -76,6 +76,7 @@ mod memory;
 mod messaging;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
+pub mod pending_replies;
 mod persona;
 pub(crate) mod planner;
 mod policy;
@@ -706,6 +707,33 @@ async fn dispatch_trust_task_inner(
         // deprecation signal.
         Err(e) => return body_parse_error_response(&e.to_string()),
     };
+
+    // 2. Is this an answer rather than a question?
+    //
+    // A document that threads to a request this agent sent belongs to whoever
+    // is waiting for it, not to the dispatcher. Checked here, before any
+    // authorization or dispatch, because that is what it is: a reply carries no
+    // authority and asks for nothing, and running it through the request
+    // pipeline would at best refuse it and at worst execute it.
+    //
+    // Here rather than in a transport for two reasons. It is a fact about the
+    // *document* (`threadId`, SPEC §4.9), and this is the one place documents
+    // are read. And every transport gets it at once — TSP is what needs it,
+    // because its binding has no request/response of its own, but nothing about
+    // this is TSP-specific.
+    //
+    // An empty body is the "nothing goes back" signal the transports already
+    // understand: `handle_tsp` drops an empty reply rather than sealing one.
+    if state.pending_replies.complete(&doc) {
+        tracing::debug!(
+            thread_id = ?doc.thread_id,
+            "inbound document delivered to a waiting request"
+        );
+        return TrustTaskOutcome {
+            status: axum::http::StatusCode::NO_CONTENT,
+            body: Vec::new(),
+        };
+    }
 
     // Superseded-task signalling wraps everything below, for the same reason
     // `mark_superseded` is a layer rather than a call inside each of the 56

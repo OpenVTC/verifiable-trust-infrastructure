@@ -284,6 +284,14 @@ pub struct AppState {
     /// Populated by the inbound TSP dispatcher from the proven `sender_vid`.
     #[cfg(feature = "tsp")]
     pub tsp_reach: Arc<crate::messaging::tsp_reach::TspReachability>,
+
+    /// Waiters for replies to Trust Tasks this agent sent.
+    ///
+    /// Read by the dispatch spine before a document is treated as a request —
+    /// see `trust_tasks::pending_replies`. Deliberately **not** feature-gated:
+    /// correlation is a property of the document layer, so the spine consults it
+    /// on every transport. TSP is only the first that needed it.
+    pub pending_replies: crate::trust_tasks::pending_replies::PendingReplies,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     /// VTA's registered TSP profile, used to unpack `tsp-message` sealed
@@ -582,6 +590,7 @@ pub async fn build_app_state(
             .unwrap_or_else(|| Arc::new(DIDCommBridge::placeholder())),
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
+        pending_replies: crate::trust_tasks::pending_replies::PendingReplies::new(),
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
         #[cfg(feature = "tsp")]
