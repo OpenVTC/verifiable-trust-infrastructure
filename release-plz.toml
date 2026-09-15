@@ -111,36 +111,3 @@ semver_check = false
 [[package]]
 name = "vti-webauthn"
 semver_check = false
-
-# ── vti-secrets: the baseline cannot be built, temporarily ───────────────────
-#
-# Not "checking this costs too much" like the block above — this check is
-# **impossible right now**, and it is impossible for a reason that ends by
-# itself.
-#
-# `cargo-semver-checks` builds each crate's *published* baseline with all
-# features. `vti-secrets 0.3.7` on crates.io declares `aws-config` and
-# `aws-sdk-secretsmanager` and **no `aws-smithy-types`** — the `>=1.6.1, <1.7`
-# bound in the workspace manifest landed in #1485, after 0.3.7 went out. So the
-# baseline resolves `aws-smithy-types 1.7.0`, and `aws-smithy-json 0.63` does
-# not compile against it:
-#
-#   error[E0308]: expected `DocumentObject`, found `HashMap<String, Document>`
-#   error[E0004]: non-exhaustive patterns: `&_` not covered
-#   error: failed to build rustdoc for crate vti-secrets v0.3.7
-#
-# Which is a deadlock: the baseline builds once a `vti-secrets` carrying the
-# bound is published, and publishing needs the Release PR that this check was
-# blocking. Sixteen runs had already failed for an unrelated reason (#1491);
-# this was the wall behind that one.
-#
-# **Delete this entry after the first release that publishes `vti-secrets`.**
-# At that point the baseline is ≥ 0.3.8, it carries the bound, it builds, and
-# the check works again — nothing else needs to change. It is scoped to this one
-# crate deliberately: `vta-service` reaches `aws-config` too, but its baseline
-# builds (verified against a cold `cargo-semver-checks` cache — a warm one hides
-# this class of failure entirely), and the other checked crates do not reach the
-# AWS stack at all.
-[[package]]
-name = "vti-secrets"
-semver_check = false
