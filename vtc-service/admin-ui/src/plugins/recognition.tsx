@@ -14,10 +14,12 @@ import {
   checkRecognition,
   discardSyncJob,
   fetchDiagnostics,
+  fetchRegistryRecords,
   retrySyncJob,
   type DriftEntry,
   type FailedSyncJob,
   type RecognitionCheck,
+  type RegistryRecordRow,
   type SyncJobsRetryResponse,
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -41,6 +43,10 @@ function protocolName(protocol: string): string {
 export function Recognition() {
   const toast = useToast();
   const [did, setDid] = useState("");
+  // Which view the records table is showing. Defaults to the registry, the
+  // same default the specification gives a caller who did not think about it:
+  // the authoritative answer, not this community's belief about it.
+  const [source, setSource] = useState<"registry" | "local">("registry");
 
   // Polled, not fetched once: the queue below is the live picture of a
   // background reconciler, and a snapshot frozen at page-load would show a
@@ -54,6 +60,17 @@ export function Recognition() {
   const lookup = useMutation<RecognitionCheck, Error, string>({
     mutationFn: (d: string) => checkRecognition(d),
     onError: (e) => toast.pushFromError(e),
+  });
+
+  // Deliberately not polled, unlike diagnostics. Every `registry` read is a
+  // live round trip to a third party — the specification forbids serving that
+  // view from a cache — so a 15-second timer would put steady load on the
+  // registry for a page someone left open. Refetch is an explicit act.
+  const records = useQuery({
+    queryKey: ["registry-records", source],
+    queryFn: () => fetchRegistryRecords(source),
+    refetchOnWindowFocus: false,
+    retry: false,
   });
 
   const queryClient = useQueryClient();
@@ -477,6 +494,114 @@ export function Recognition() {
       </section>
 
       <section className="card">
+        <h3>Trust records</h3>
+        <p className="muted">
+          The recognition graph itself. <strong>Registry</strong> asks the trust
+          registry what it holds; <strong>ours</strong> asks this community what
+          it believes it published. They are different questions — the drift
+          summary above is what happens when the answers disagree.
+        </p>
+
+        <div className="field">
+          <span className="field-label">View</span>
+          <div role="group" aria-label="Which view to enumerate">
+            <button
+              type="button"
+              className={source === "registry" ? "primary sm" : "secondary sm"}
+              aria-pressed={source === "registry"}
+              onClick={() => setSource("registry")}
+            >
+              Registry
+            </button>{" "}
+            <button
+              type="button"
+              className={source === "local" ? "primary sm" : "secondary sm"}
+              aria-pressed={source === "local"}
+              onClick={() => setSource("local")}
+            >
+              Ours
+            </button>{" "}
+            <button
+              type="button"
+              className="secondary sm"
+              disabled={records.isFetching}
+              onClick={() => void records.refetch()}
+            >
+              {records.isFetching ? "Reading…" : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        {records.isPending && <p className="muted">Reading…</p>}
+
+        {records.isError && (
+          <p className="finding warn" role="status">
+            <strong>
+              Could not read the {source === "registry" ? "registry" : "local"}{" "}
+              view.
+            </strong>
+            <span className="muted">
+              {(records.error as { message?: string })?.message ??
+                String(records.error)}
+              {source === "registry" && (
+                <>
+                  {" "}
+                  A registry view is never served from our own copy — a stale
+                  local answer presented as the registry&rsquo;s is the fault
+                  this page exists to detect — so an unreachable registry is an
+                  error here rather than a quietly substituted list.
+                </>
+              )}
+            </span>
+          </p>
+        )}
+
+        {records.data && records.data.items.length === 0 && (
+          <p className="muted">
+            No records.{" "}
+            {records.data.source === "registry"
+              ? "The registry holds nothing under this community's authority."
+              : "This community has not recorded publishing anything."}
+          </p>
+        )}
+
+        {records.data && records.data.items.length > 0 && (
+          <>
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Entity</th>
+                    <th>Authority</th>
+                    <th>Action</th>
+                    <th>Resource</th>
+                    <th>Type</th>
+                    <th>Assertion</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.data.items.map((r) => (
+                    <RecordRow
+                      key={`${r.entityId}:${r.action}:${r.resource}`}
+                      record={r}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="muted">
+              {records.data.items.length} record
+              {records.data.items.length === 1 ? "" : "s"} from{" "}
+              <code>{records.data.source}</code>
+              {records.data.nextCursor
+                ? " — more pages exist; use `vtc sync-jobs`-style paging via the API for the rest."
+                : "."}
+            </p>
+          </>
+        )}
+      </section>
+
+      <section className="card">
         <h3>Check recognition</h3>
         <form
           onSubmit={(e) => {
@@ -565,12 +690,63 @@ function DriftRow({ entry }: { entry: DriftEntry }) {
         />
       </td>
       <td>
-        <span className={fault ? "warn" : undefined}>
-          {says[entry.disagreement]}
+        {/* A chip carries the tone, the sentence carries the meaning. The
+            bare `warn` class this used was never styled — `.warn` exists
+            only scoped to `.finding` and `.stat-tile-foot` — so the
+            direction that decides which way to act rendered as plain text
+            indistinguishable from the benign case. */}
+        <span className={fault ? "chip danger" : "chip"}>
+          {fault ? "fault" : "informational"}
         </span>
+        <span className="muted">{says[entry.disagreement]}</span>
       </td>
       <td>{entry.localStatus ?? "—"}</td>
       <td>{entry.registryStatus ?? "—"}</td>
+    </tr>
+  );
+}
+
+/**
+ * One trust record.
+ *
+ * The assertion is rendered as three states, not two. The specification says
+ * an absent member means the record makes no such assertion, and absence is
+ * emphatically not `false` — a recognition record carries no `authorized`,
+ * and showing "no" there would invent a refusal the registry never made.
+ */
+function RecordRow({ record }: { record: RegistryRecordRow }) {
+  const assertion = record.recognized ?? record.authorized ?? null;
+  const which =
+    record.recognized != null
+      ? "recognised"
+      : record.authorized != null
+        ? "authorised"
+        : null;
+  return (
+    <tr>
+      <td>
+        <code>{record.entityId}</code>
+        <CopyButton
+          value={record.entityId}
+          label="Copy entity DID"
+          successMessage="Entity DID copied"
+        />
+      </td>
+      <td>
+        <code>{record.authorityId}</code>
+      </td>
+      <td>{record.action}</td>
+      <td>{record.resource}</td>
+      <td>{record.recordType}</td>
+      <td>
+        {which === null ? (
+          <span className="muted">&mdash; no assertion</span>
+        ) : (
+          <span className={assertion ? "chip success" : "chip danger"}>
+            {assertion ? which : `not ${which}`}
+          </span>
+        )}
+      </td>
     </tr>
   );
 }
@@ -641,9 +817,15 @@ function FailedJobRow({
         <span className="muted">purged {formatIso(job.purgeDueAt)}</span>
       </td>
       <td>
-        <span className={isUnsupportedType(job) ? "warn" : undefined}>
-          {job.lastError ?? "(no error recorded)"}
-        </span>
+        {/* The chip, not a colour on the error text. Colouring a 200-character
+            registry message says "something here is bad" without saying what;
+            naming the class says the deployed registry is out of step, which
+            is the one reading that changes what an operator does next. The
+            bare `warn` class this used was never styled at all. */}
+        {isUnsupportedType(job) && (
+          <span className="chip warning">version skew</span>
+        )}
+        {job.lastError ?? "(no error recorded)"}
       </td>
       <td>
         {/* Retry first and discard second, in that order and with only
