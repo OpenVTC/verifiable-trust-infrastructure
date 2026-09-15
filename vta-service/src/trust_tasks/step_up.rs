@@ -783,7 +783,7 @@ pub(super) fn approver_mediator(approver_did: &str, configured: Option<&str>) ->
 /// fresh learn-from-inbound proof it's listening on TSP (a `did:key` device
 /// can't advertise `#tsp`, so its inbound TSP frames are the only signal — see
 /// [`crate::messaging::tsp_reach`]). Routes the document, wrapped in the TSP
-/// binding envelope ([`crate::messaging::tsp_binding`]), through the shared
+/// binding envelope ([`vta_sdk::tsp_binding`]), through the shared
 /// mediator; §3 resolved to 3c (relationship-free routed send — see
 /// `docs/05-design-notes/tsp-outbound-send.md`), so no relationship setup is
 /// needed. Returns `true` if delivered over TSP, `false` to fall back to DIDComm
@@ -813,7 +813,7 @@ pub(super) async fn try_push_over_tsp(
     // expects no reply changes nothing about how it is carried, and sending
     // this one bare would leave exactly one frame in the system speaking the
     // old dialect — the hardest kind to find later.
-    let body = crate::messaging::tsp_binding::wrap_envelope(&body);
+    let body = vta_sdk::tsp_binding::wrap_envelope(&body);
     // inner sealed end-to-end to the device, outer sealed to the mediator — the
     // same routed shape the inbound loop uses for its replies.
     match atm

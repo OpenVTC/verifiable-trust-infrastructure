@@ -30,8 +30,9 @@ use vti_common::error::AppError;
 #[cfg(feature = "didcomm")]
 const CONSENT_PUSH_DELIVER_BY_SECS: u64 = 300;
 
-// Only the DIDComm sends below name the envelope; TSP carries the document
-// bytes directly, so this is unused when the DIDComm binding is compiled out.
+// Only the DIDComm sends below name this envelope type; TSP's binding has its
+// own (`vta_sdk::tsp_binding`, applied inside `step_up::try_push_over_tsp`), so
+// this import is unused when the DIDComm binding is compiled out.
 use crate::policy::consent::PendingTaskConsent;
 use crate::policy::effects::Effect;
 use crate::policy::types::TaskClass;
@@ -238,9 +239,10 @@ async fn push_one(
                 // indistinguishable from "not addressed to me". That is what
                 // sent this request into a void: delivered, acked, discarded.
                 //
-                // TSP is deliberately untouched above: it carries the document
-                // bytes directly with no envelope, so the wrapper is a property
-                // of the DIDComm binding, not of the task.
+                // TSP is untouched above because it has a wrapper of its
+                // own: `try_push_over_tsp` seals the same document in the TSP
+                // binding envelope. Carriage is a property of the binding, not
+                // of the task — which is why each binding names its own.
                 message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
                 body: request.clone(),
                 thread_id: request

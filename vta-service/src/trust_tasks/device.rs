@@ -210,8 +210,9 @@ fn provision_gateway(
     vta_did: &Option<String>,
     body: &Value,
 ) {
-    // Only the DIDComm sends below name the envelope; TSP carries the document
-    // bytes directly, so this is unused when the DIDComm binding is compiled out.
+    // Only the DIDComm sends below name this envelope type; TSP's binding has
+    // its own (`vta_sdk::tsp_binding`), so this is unused when the DIDComm
+    // binding is compiled out.
     #[cfg(feature = "didcomm")]
     use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 

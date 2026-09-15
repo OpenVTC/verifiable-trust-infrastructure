@@ -44,7 +44,7 @@
 //! Giving this function a no-reply mode and a pluggable selection strategy to
 //! absorb that would make it less clear about what it does, not more. What the
 //! two paths **do** share is the thing that matters for adding a transport: the
-//! binding. Both go through `messaging::tsp_binding` for TSP, and both would go
+//! binding. Both go through `vta_sdk::tsp_binding` for TSP, and both would go
 //! through the next one the same way.
 //!
 //! # Transport: an intersection, not a downgrade
@@ -64,16 +64,16 @@
 //! request/response semantics of its own. REST happens to hand the reply back on
 //! the same socket; that is REST's accident, not the framework's model.
 //!
-//! This matters for the transport still missing here. TSP's binding
-//! (`trust-tasks-tsp`) offers `pack` and `unpack` and nothing else, by design.
-//! Reaching it is therefore **not** a matter of building a request/reply call
-//! over `send_routed`: it is teaching the inbound path that a document threading
-//! to one we sent is a reply rather than a request, which
-//! `messaging::tsp_inbound::dispatch_one` does not do — it authorizes every
-//! frame and dispatches it as a request. Until that exists, naming TSP in
-//! `OUTBOUND_SUPPORTED` would produce a request that is sent and never answered:
-//! worse than the refusal below, because it would time out instead of saying
-//! why.
+//! This is what TSP took longest to get. TSP's binding (`trust-tasks-tsp`)
+//! offers `pack` and `unpack` and nothing else, by design, so reaching it was
+//! **not** a matter of building a request/reply call over `send_routed`: it was
+//! teaching the inbound path that a document threading to one we sent is a reply
+//! rather than a request — which `messaging::tsp_inbound::dispatch_one` did not
+//! do, since it authorizes every frame and dispatches it as a request. Until
+//! that landed, naming TSP in `OUTBOUND_SUPPORTED` would have produced a request
+//! that is sent and never answered: worse than an honest refusal, because it
+//! times out instead of saying why. It is named there now, under `cfg(tsp)`,
+//! because the spine correlates the reply.
 
 use serde_json::Value;
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities};
@@ -451,7 +451,7 @@ impl Outbound<'_> {
 
         let body = serde_json::to_vec(&document)
             .map_err(|e| AppError::Internal(format!("serialise the request: {e}")))?;
-        let framed = crate::messaging::tsp_binding::wrap_envelope(&body);
+        let framed = vta_sdk::tsp_binding::wrap_envelope(&body);
 
         let waiting = tsp.replies.register(&thread);
 
@@ -709,14 +709,33 @@ mod tests {
         );
     }
 
+    /// A peer advertising only TSP, as this file's two builds see it. One
+    /// helper because the peer is the same in both; only what this agent can do
+    /// about it differs.
+    fn tsp_only_peer() -> ServiceCapabilities {
+        caps_from(serde_json::json!([{
+            "id": "#tsp", "type": "TSPTransport", "serviceEndpoint": "did:example:mediator"
+        }]))
+    }
+
     /// The honest refusal. A peer speaking only TSP is not unreachable in
     /// principle — this agent cannot start the conversation — and the message
     /// has to say which, or an operator goes looking at the peer.
+    ///
+    /// **Only in a build without `tsp`.** With the feature on this VTA can
+    /// initiate TSP, so the intersection is non-empty and there is nothing to
+    /// refuse — see the sibling test. The gate is load-bearing rather than
+    /// tidiness: this assertion used to be unconditional, which held only for as
+    /// long as nothing in a workspace build turned `tsp` on for `vta-service`.
+    /// The first thing that did (a sibling crate's dev-dependency asking for it,
+    /// feature unification doing the rest) made it panic — in a crate whose own
+    /// `cargo test -p vta-service` was green, because that build has no `tsp`
+    /// either. A test that asserts a refusal must say which build it is
+    /// describing.
+    #[cfg(not(feature = "tsp"))]
     #[test]
     fn a_tsp_only_peer_is_refused_naming_both_sides() {
-        let caps = caps_from(serde_json::json!([{
-            "id": "#tsp", "type": "TSPTransport", "serviceEndpoint": "did:example:mediator"
-        }]));
+        let caps = tsp_only_peer();
         let msg = pick_transport(&caps, "did:example:peer")
             .expect_err("no common transport")
             .to_string();
@@ -731,6 +750,26 @@ mod tests {
         assert!(
             msg.contains("gap in the agent"),
             "must say whose limitation it is: {msg}"
+        );
+    }
+
+    /// And the other half of that statement: in a build that *can* initiate TSP,
+    /// the same peer is reached over it rather than refused. Asserting both
+    /// sides keeps the refusal above a claim about this build, not about TSP.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn a_tsp_only_peer_is_reached_over_tsp_when_this_build_can_initiate_it() {
+        let (protocol, endpoint) = pick_transport(&tsp_only_peer(), "did:example:peer")
+            .expect("TSP is in the intersection when this build can initiate it");
+
+        assert_eq!(
+            protocol,
+            Protocol::Tsp,
+            "a TSP-only peer must be reached over TSP, not refused"
+        );
+        assert_eq!(
+            endpoint, "did:example:mediator",
+            "and over the mediator the peer's `#tsp` service names"
         );
     }
 

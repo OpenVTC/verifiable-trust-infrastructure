@@ -11108,6 +11108,7 @@ dependencies = [
  "tokio",
  "tracing",
  "trust-tasks-rs",
+ "trust-tasks-tsp",
  "url",
  "utoipa",
  "uuid",

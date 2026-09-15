@@ -2860,7 +2860,11 @@ impl TspPingSession {
             .and_then(|v| v.as_str())
             .ok_or("messaging/ping payload carries no nonce")?
             .to_string();
-        let body = serde_json::to_vec(&doc)?;
+        // Sealed inside the TSP binding envelope, like every other Trust Task
+        // this SDK sends. The bare document is what the VTA refuses as
+        // "not a binding envelope" — which reads, from here, as a ping that
+        // never gets a pong.
+        let body = crate::tsp_binding::wrap_envelope(&serde_json::to_vec(&doc)?);
 
         let start = Instant::now();
         // Route through our mediator to the VTA (a local account on it):
@@ -2912,7 +2916,15 @@ impl TspPingSession {
             else {
                 continue; // not sealed to us / not TSP — not our business
             };
-            let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+            // The pong arrives in the same binding envelope it was sent in.
+            // Open it before correlating: `correlates` reads `threadId` /
+            // `nonce` off the *document*, and an unopened envelope has neither —
+            // so a reply that is in fact ours would be skipped as uncorrelated
+            // and the probe would time out against a healthy VTA.
+            let Ok(document) = crate::tsp_binding::open_envelope(&payload) else {
+                continue; // not our binding — mediator traffic or a control frame
+            };
+            let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&document) else {
                 continue; // not a Trust-Task document
             };
 
@@ -2967,7 +2979,10 @@ impl TspPingSession {
     }
 
     pub async fn probe_send(&self, vta_did: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let body = serde_json::to_vec(&ping_document(&self.client_did, vta_did)?)?;
+        let body = crate::tsp_binding::wrap_envelope(&serde_json::to_vec(&ping_document(
+            &self.client_did,
+            vta_did,
+        )?)?);
 
         self.identity
             .hub
@@ -3166,10 +3181,11 @@ impl TspSession {
     }
 
     /// Send an already-built Trust-Task document to `vta_did`, routed through
-    /// `mediator_did`. `body` is the serialized document itself — TSP carries
-    /// the Trust-Task bytes directly, with no DIDComm envelope around them (the
-    /// VTA's `tsp_inbound::dispatch_one` hands the payload straight to
-    /// `dispatch_trust_task_core`).
+    /// `mediator_did`. `body` is the serialized Trust-Task document; it goes on
+    /// the wire inside the TSP **binding envelope** ([`crate::tsp_binding`]),
+    /// which is how a TSP payload says "this is a Trust Task" — TSP has neither
+    /// a message `type` nor a request path to say it with. Callers pass the
+    /// document; carriage is this layer's business.
     ///
     /// This is the generalisation of [`announce`](Self::announce), which is
     /// just this with a `messaging/ping/0.1` body. The same properties hold:
@@ -3192,6 +3208,7 @@ impl TspSession {
         mediator_did: &str,
         body: &[u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let framed = crate::tsp_binding::wrap_envelope(body);
         self.identity
             .hub
             .atm()
@@ -3199,7 +3216,7 @@ impl TspSession {
             .send_routed(
                 &self.identity.profile,
                 &[mediator_did.to_string(), vta_did.to_string()],
-                body,
+                &framed,
             )
             .await?;
         Ok(())
@@ -3222,10 +3239,10 @@ impl TspSession {
     /// inbox look exactly like a quiet one — callers spun on it forever instead
     /// of reconnecting. Keep these three cases distinct.
     ///
-    /// The plaintext is the *inner* document the sender packed, not a DIDComm
-    /// envelope: TSP carries the Trust-Task bytes directly, so callers parse the
-    /// returned JSON as the document itself (its own `type`/`issuer` fields),
-    /// not as `{ body: … }`.
+    /// The returned JSON is the Trust-Task **document**: the TSP binding
+    /// envelope is opened by this layer, so callers parse it as the document
+    /// itself (its own `type`/`issuer` fields), not as `{ body: … }` and not as
+    /// `{ type, document }`.
     pub async fn receive_next(
         &self,
         timeout_secs: u64,
@@ -3462,7 +3479,19 @@ impl TspSession {
             else {
                 continue; // not sealed to us / TSP control traffic
             };
-            let json = String::from_utf8(payload)
+            // Carriage comes off here, the mirror of `send_document` putting it
+            // on. A frame that is not our binding is skipped rather than
+            // surfaced: this socket also carries the mediator's own management
+            // traffic (which speaks the bare document — see `tsp_binding`), so
+            // "not an envelope" means "not addressed to this layer".
+            let document = match crate::tsp_binding::open_envelope(&payload) {
+                Ok(document) => document,
+                Err(reason) => {
+                    tracing::debug!(%reason, "skipping a TSP frame that is not a binding envelope");
+                    continue;
+                }
+            };
+            let json = String::from_utf8(document)
                 .map_err(|e| format!("TSP payload was not UTF-8: {e}"))?;
 
             // One correlation rule for every TSP session — see `tsp_demux`.

@@ -92,7 +92,8 @@ impl TspMediatorSession {
     }
 
     /// Submit an already-signed Trust Task document to `vta_did`, routed through
-    /// `mediator_did`. TSP carries the document bytes directly — no DIDComm
+    /// `mediator_did`. The SDK seals the document in the TSP binding envelope
+    /// (`vta_sdk::tsp_binding`) — no DIDComm
     /// envelope — so the VTA's `tsp_inbound::dispatch_one` hands the payload
     /// straight to the same `dispatch_trust_task_core` that backs
     /// `POST /api/trust-tasks`.

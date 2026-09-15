@@ -176,7 +176,9 @@ the answer. Instead the VTA **learns from inbound**:
   every inbound TSP frame — cryptographic proof that DID is on TSP right now.
 - The device-push sites (`consent_request::push_one` and
   `step_up::maybe_push_step_up`) call `step_up::try_push_over_tsp`: if the
-  recipient is fresh in the map, route the **bare** Trust-Task doc over TSP via
+  recipient is fresh in the map, route the Trust-Task doc over TSP — sealed in
+  the binding envelope (`vta_sdk::tsp_binding`, which every TSP send on both
+  sides now goes through) — via
   `atm.tsp().send_routed([mediator, recipient])` (§3 = 3c, no relationship);
   otherwise fall through to the existing DIDComm `send_guaranteed`. A TSP send
   error also falls back to DIDComm.
