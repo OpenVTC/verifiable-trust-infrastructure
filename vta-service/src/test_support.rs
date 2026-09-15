@@ -1401,6 +1401,11 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
+        // Not feature-gated, in test scaffolding as in `build_app_state`: reply
+        // correlation is a document concern, so the spine consults it on every
+        // transport. A test agent with no registry would dispatch a reply as a
+        // request, which is the defect the registry exists to prevent.
+        pending_replies: crate::trust_tasks::pending_replies::PendingReplies::new(),
         jwt_keys: Some(jwt_keys.clone()),
         atm: transport.atm.or(opts.atm),
         #[cfg(feature = "tsp")]
