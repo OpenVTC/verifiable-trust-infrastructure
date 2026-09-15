@@ -31,7 +31,6 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 use super::Transport;
 use super::VtaClient;
@@ -177,6 +176,16 @@ impl VtaClient {
     /// deserialise the response payload as `R`. Used by the descriptor
     /// flows above; exposed in case external integrators want to
     /// drive the slice manually.
+    ///
+    /// The document is built and signed by the shared
+    /// [`dispatch_trust_task`](VtaClient::dispatch_trust_task) path — the same
+    /// one every other trust-task surface uses — so the envelope carries the
+    /// in-band `recipient` (the VTA DID, SPEC §7.2 item 5b), `issuer` (the
+    /// caller DID, item 6), and a `proof` signed by the caller's key (item 7a)
+    /// that all come from this client's [`ClientIdentity`](super::ClientIdentity).
+    /// It used to hand-build a bare `{ id, type, issuedAt, payload }` envelope
+    /// with none of those, which a §7.2-enforcing VTA rejects as
+    /// `malformedRequest` — see FTL backup-export defect.
     pub async fn post_trust_task<B, R>(
         &self,
         type_uri: &'static str,
@@ -186,12 +195,13 @@ impl VtaClient {
         B: Serialize,
         R: DeserializeOwned,
     {
-        let (client, base_url, auth) = match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => (client, base_url, auth),
+        // The descriptor pattern is REST-only: the blob download/upload leg has
+        // no DIDComm/TSP transport yet, so a client on a mediator transport
+        // could initiate but never move the bytes. Gate here rather than let the
+        // trust task go out over DIDComm/TSP and then strand the ceremony at
+        // `download_blob`/`upload_blob`.
+        match &self.transport {
+            Transport::Rest { .. } => {}
             #[cfg(feature = "tsp")]
             Transport::Tsp { .. } => {
                 return Err(VtaError::Validation(
@@ -208,48 +218,18 @@ impl VtaClient {
                         .into(),
                 ));
             }
-        };
-        Self::ensure_token_valid(client, base_url, auth).await?;
-        let token = auth.lock().await.token.clone();
-
-        // Construct the envelope as raw JSON to avoid making
-        // `trust-tasks-rs` a runtime dep of every SDK consumer
-        // (it's a dev-dep here for the URI-parsing test only;
-        // pulling it into the regular dep tree would balloon the
-        // CLI's transitive deps with a framework crate the SDK
-        // only needs for one round-trip-shape contract). The wire
-        // shape is just `{ id, type, payload }` — see
-        // `docs/05-design-notes/trust-task-uri-registry.md`.
-        let payload_value = serde_json::to_value(&payload)?;
-        let doc = serde_json::json!({
-            "id": format!("urn:uuid:{}", Uuid::new_v4()),
-            "type": type_uri,
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": payload_value,
-        });
-
-        // `<base>/trust-tasks` — the same contract `rpc_tt` uses. This is a
-        // second hand-built call site rather than a shared helper, which is
-        // exactly why it carried the legacy prefix after the shared one moved.
-        let url = format!("{}/trust-tasks", base_url);
-        let req = client.post(url).json(&doc);
-        let resp = Self::with_auth_token(req, &token).send().await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtaError::from_http(status, body));
         }
-        // Framework responses are themselves trust-task envelopes.
-        // Walk to the `payload` field and deserialize as `R`.
-        let response_doc: serde_json::Value = resp.json().await?;
-        let payload = response_doc
-            .get("payload")
-            .ok_or_else(|| {
-                VtaError::Protocol("trust-task response missing `payload` field".into())
-            })?
-            .clone();
-        Ok(serde_json::from_value(payload)?)
+
+        // Delegate to the shared signed-dispatch path. It builds the envelope
+        // via `build_task_document` (recipient + issuer from the identity),
+        // signs it (item 7a proof), POSTs `<base>/trust-tasks`, parses a
+        // `trust-task-error` document into a typed `VtaError`, and returns the
+        // success reply's `payload`. The `timeout` argument is unused on the
+        // REST arm (it paces only the DIDComm/TSP wait), so its value is
+        // immaterial here.
+        let payload_value = serde_json::to_value(&payload)?;
+        let response_payload = self.dispatch_trust_task(type_uri, payload_value, 30).await?;
+        Ok(serde_json::from_value(response_payload)?)
     }
 
     /// GET the blob bytes for an export bundle. Carries the
@@ -331,4 +311,114 @@ fn sha256_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+/// The descriptor flow used to hand-build a bare `{ id, type, issuedAt, payload }`
+/// envelope with no in-band `recipient` and no `proof`, so a §7.2-enforcing VTA
+/// rejected `backup/initiate-export` (and `initiate-import`) as
+/// `malformedRequest`. It now routes through the shared signed-dispatch path;
+/// these tests pin that the two initiate requests carry the members §7.2
+/// requires.
+#[cfg(test)]
+mod descriptor_envelope_tests {
+    use super::super::{ClientIdentity, VtaClient};
+    use crate::protocols::backup_management::descriptors::{InitiateExportBody, InitiateImportBody};
+    use crate::trust_tasks;
+
+    const VTA_DID: &str = "did:key:z6MkVtaBackupTarget";
+
+    /// A `did:key` caller identity, whose proof verifies with no network I/O.
+    fn caller_identity() -> ClientIdentity {
+        let seed = [0xb4u8; 32];
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let client_did = format!(
+            "did:key:{}",
+            crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut buf = vec![0x80, 0x26];
+        buf.extend_from_slice(&seed);
+        let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, &buf);
+        ClientIdentity {
+            client_did,
+            private_key_multibase,
+            vta_did: VTA_DID.to_string(),
+            verification_method: None,
+        }
+    }
+
+    /// Build the document the descriptor flow would emit for `type_uri` and
+    /// assert it is addressed to the VTA, issued by the caller, and carries a
+    /// cryptographically valid proof by the caller's key. `signed_task_document`
+    /// is exactly what `post_trust_task` now delegates to, so what it produces
+    /// is what goes on the wire.
+    async fn assert_conforming_request(type_uri: &'static str, payload: serde_json::Value) {
+        let id = caller_identity();
+        let client = VtaClient::new("http://vta.invalid").with_identity(id.clone());
+
+        let doc = client
+            .signed_task_document(type_uri, payload)
+            .await
+            .unwrap_or_else(|e| panic!("{type_uri}: building the request failed: {e}"));
+
+        assert_eq!(
+            doc.get("recipient").and_then(|v| v.as_str()),
+            Some(id.vta_did.as_str()),
+            "{type_uri}: recipient must be the VTA DID (SPEC §7.2 item 5b)"
+        );
+        assert_eq!(
+            doc.get("issuer").and_then(|v| v.as_str()),
+            Some(id.client_did.as_str()),
+            "{type_uri}: issuer must be the caller DID (item 6)"
+        );
+
+        let typed: trust_tasks_rs::TrustTask<serde_json::Value> =
+            serde_json::from_value(doc).expect("the built document is a TrustTask");
+
+        // The proof is present *and* verifies (item 7a) — not merely a proof
+        // block, but a signature that checks out — and the proven signer is the
+        // caller.
+        let signer = crate::trust_task_proof::verify_trust_task_proof(&typed)
+            .await
+            .unwrap_or_else(|e| panic!("{type_uri}: the proof does not verify: {e:?}"));
+        assert_eq!(
+            signer, id.client_did,
+            "{type_uri}: the proof must be signed by the caller's key"
+        );
+
+        // The VTA's own dispatch spine would run this exact check; running it
+        // here fails the test if the registry ever drops the requirement.
+        let policy = trust_tasks_rs::schema_index::spec_policy_for(type_uri)
+            .unwrap_or_else(|| panic!("{type_uri} has no published policy"));
+        policy
+            .enforce(&typed)
+            .unwrap_or_else(|r| panic!("{type_uri}: a conforming VTA would refuse this: {r:?}"));
+    }
+
+    #[tokio::test]
+    async fn initiate_export_request_is_addressed_and_signed() {
+        let body = InitiateExportBody {
+            password: "correct horse battery staple".into(),
+            include_audit: true,
+            algorithm: "stream".into(),
+        };
+        assert_conforming_request(
+            trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0,
+            serde_json::to_value(body).unwrap(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn initiate_import_request_is_addressed_and_signed() {
+        let body = InitiateImportBody {
+            expected_sha256: super::sha256_hex(b"a backup blob"),
+            expected_size_bytes: 13,
+            algorithm: "stream".into(),
+        };
+        assert_conforming_request(
+            trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0,
+            serde_json::to_value(body).unwrap(),
+        )
+        .await;
+    }
 }
