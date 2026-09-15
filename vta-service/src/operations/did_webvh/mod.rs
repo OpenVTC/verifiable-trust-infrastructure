@@ -656,7 +656,7 @@ async fn authenticated_server_transport<'a>(
     seed_store: &dyn SeedStore,
     audit: &vta_audit::SharedAuditSink,
     webvh_ks: &KeyspaceHandle,
-    did_resolver: &DIDCacheClient,
+    did_resolver: &'a DIDCacheClient,
     didcomm_bridge: &'a Arc<DIDCommBridge>,
     auth_locks: &WebvhAuthLocks,
     vta_did: Option<&str>,
@@ -1876,6 +1876,10 @@ pub(super) enum WebvhTransport<'a> {
     Rest(WebvhClient),
     DIDComm {
         bridge: &'a DIDCommBridge,
+        /// Needed because the DIDComm leg now goes through
+        /// `operations::outbound`, which reads the peer's advertisement to
+        /// choose a transport rather than assuming one.
+        resolver: &'a DIDCacheClient,
         server_did: String,
     },
 }
@@ -1891,7 +1895,7 @@ impl<'a> WebvhTransport<'a> {
     /// canonical set of types we emit vs. accept.
     pub(super) async fn from_server(
         server: &WebvhServerRecord,
-        did_resolver: &DIDCacheClient,
+        did_resolver: &'a DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
     ) -> Result<Self, AppError> {
         let resolved = did_resolver.resolve(&server.did).await.map_err(|e| {
@@ -1903,6 +1907,7 @@ impl<'a> WebvhTransport<'a> {
                 info!(server_did = %server.did, transport = "didcomm", "resolved webvh server endpoint");
                 Ok(Self::DIDComm {
                     bridge: didcomm_bridge,
+                    resolver: did_resolver,
                     server_did: server.did.clone(),
                 })
             }
@@ -1933,9 +1938,12 @@ impl<'a> WebvhTransport<'a> {
         match self {
             Self::Rest(c) => c.request_uri(path, domain).await,
             Self::DIDComm {
-                bridge, server_did, ..
+                bridge,
+                resolver,
+                server_did,
+                ..
             } => {
-                WebvhDIDCommClient::new(bridge, server_did)
+                WebvhDIDCommClient::new(bridge, resolver, server_did)
                     .request_uri(path, domain)
                     .await
             }
@@ -1951,9 +1959,12 @@ impl<'a> WebvhTransport<'a> {
         match self {
             Self::Rest(c) => c.publish_did(mnemonic, log_content, domain).await,
             Self::DIDComm {
-                bridge, server_did, ..
+                bridge,
+                resolver,
+                server_did,
+                ..
             } => {
-                WebvhDIDCommClient::new(bridge, server_did)
+                WebvhDIDCommClient::new(bridge, resolver, server_did)
                     .publish_did(mnemonic, log_content, domain)
                     .await
             }
@@ -1991,7 +2002,7 @@ impl<'a> WebvhTransport<'a> {
     /// authentication lives at the envelope layer.
     pub(super) async fn from_server_authenticated(
         server: &WebvhServerRecord,
-        did_resolver: &DIDCacheClient,
+        did_resolver: &'a DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
         auth_ctx: &auth_cache::AuthContext<'_>,
     ) -> Result<Self, AppError> {
@@ -2028,9 +2039,12 @@ impl<'a> WebvhTransport<'a> {
                 Err(e) => Err(e),
             },
             Self::DIDComm {
-                bridge, server_did, ..
+                bridge,
+                resolver,
+                server_did,
+                ..
             } => {
-                WebvhDIDCommClient::new(bridge, server_did)
+                WebvhDIDCommClient::new(bridge, resolver, server_did)
                     .publish_did(mnemonic, log_content, domain)
                     .await
             }
@@ -2060,9 +2074,12 @@ impl<'a> WebvhTransport<'a> {
                 Err(e) => Err(e),
             },
             Self::DIDComm {
-                bridge, server_did, ..
+                bridge,
+                resolver,
+                server_did,
+                ..
             } => {
-                WebvhDIDCommClient::new(bridge, server_did)
+                WebvhDIDCommClient::new(bridge, resolver, server_did)
                     .delete_did(mnemonic, domain)
                     .await
             }
@@ -2094,9 +2111,12 @@ impl<'a> WebvhTransport<'a> {
                 Err(e) => Err(e),
             },
             Self::DIDComm {
-                bridge, server_did, ..
+                bridge,
+                resolver,
+                server_did,
+                ..
             } => {
-                WebvhDIDCommClient::new(bridge, server_did)
+                WebvhDIDCommClient::new(bridge, resolver, server_did)
                     .register_did_atomic(path, did_log, force, domain)
                     .await
             }
@@ -2122,9 +2142,12 @@ impl<'a> WebvhTransport<'a> {
         // bearer token, hence no 401 retry on this arm.
         let c = match self {
             Self::DIDComm {
-                bridge, server_did, ..
+                bridge,
+                resolver,
+                server_did,
+                ..
             } => {
-                return WebvhDIDCommClient::new(bridge, server_did)
+                return WebvhDIDCommClient::new(bridge, resolver, server_did)
                     .list_agent_names(mnemonic, domain)
                     .await;
             }
@@ -2155,9 +2178,12 @@ impl<'a> WebvhTransport<'a> {
     ) -> Result<crate::webvh_client::AgentNameAvailabilityWire, AppError> {
         let c = match self {
             Self::DIDComm {
-                bridge, server_did, ..
+                bridge,
+                resolver,
+                server_did,
+                ..
             } => {
-                return WebvhDIDCommClient::new(bridge, server_did)
+                return WebvhDIDCommClient::new(bridge, resolver, server_did)
                     .check_agent_name(name, domain)
                     .await;
             }
@@ -2190,9 +2216,12 @@ impl<'a> WebvhTransport<'a> {
     ) -> Result<(), AppError> {
         let c = match self {
             Self::DIDComm {
-                bridge, server_did, ..
+                bridge,
+                resolver,
+                server_did,
+                ..
             } => {
-                let client = WebvhDIDCommClient::new(bridge, server_did);
+                let client = WebvhDIDCommClient::new(bridge, resolver, server_did);
                 // `host_state()` is `Some` for exactly the three verbs the
                 // host serves via `update` and `None` for `remove`, so this
                 // match is the verb→task mapping — no second place for the
