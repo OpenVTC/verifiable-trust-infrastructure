@@ -60,7 +60,10 @@ impl ProxyConfig {
             let contents = std::fs::read_to_string(config_path).unwrap_or_default();
             toml::from_str::<VtaConfig>(&contents).unwrap_or_default()
         } else {
-            tracing::warn!("config file not found: {} — using defaults", config_path.display());
+            tracing::warn!(
+                "config file not found: {} — using defaults",
+                config_path.display()
+            );
             VtaConfig::default()
         };
 
@@ -99,11 +102,8 @@ impl ProxyConfig {
             .unwrap_or(cli.listen_port);
 
         // Parse extra allowlisted hosts
-        let mut allowlist_hosts: Vec<(String, u16)> = cli
-            .allowlist
-            .iter()
-            .map(|s| parse_host_port(s))
-            .collect();
+        let mut allowlist_hosts: Vec<(String, u16)> =
+            cli.allowlist.iter().map(|s| parse_host_port(s)).collect();
 
         if let Ok(hosts) = std::env::var("ALLOWLIST_HOSTS") {
             for entry in hosts.split(',') {
@@ -159,11 +159,11 @@ impl ProxyConfig {
         // Auto-add DID hosting servers from the mediator DID.
         // The enclave's TDK resolves the mediator DID via HTTPS, so
         // the hosting server must be in the allowlist.
-        if let Some(ref did) = self.mediator_did {
-            if let Some(host) = extract_host_from_did(did) {
-                tracing::info!(did = %did, host = %host, "auto-allowlisting DID host from mediator DID");
-                hosts.push((host, 443));
-            }
+        if let Some(ref did) = self.mediator_did
+            && let Some(host) = extract_host_from_did(did)
+        {
+            tracing::info!(did = %did, host = %host, "auto-allowlisting DID host from mediator DID");
+            hosts.push((host, 443));
         }
 
         hosts.extend(self.allowlist_hosts.clone());
@@ -178,24 +178,30 @@ impl ProxyConfig {
 ///   did:webvh:SCID:example.com:path → example.com
 fn extract_host_from_did(did: &str) -> Option<String> {
     if let Some(rest) = did.strip_prefix("did:web:") {
-        Some(rest.split('%').next().unwrap_or(rest)
-            .split(':').next().unwrap_or(rest)
-            .to_string())
+        Some(
+            rest.split('%')
+                .next()
+                .unwrap_or(rest)
+                .split(':')
+                .next()
+                .unwrap_or(rest)
+                .to_string(),
+        )
     } else if let Some(rest) = did.strip_prefix("did:webvh:") {
         // did:webvh:SCID:host:path — skip SCID (first segment)
-        rest.split(':').nth(1).map(|segment| {
-            segment.split('%').next().unwrap_or(segment).to_string()
-        })
+        rest.split(':')
+            .nth(1)
+            .map(|segment| segment.split('%').next().unwrap_or(segment).to_string())
     } else {
         None
     }
 }
 
 fn parse_host_port(s: &str) -> (String, u16) {
-    if let Some((host, port)) = s.rsplit_once(':') {
-        if let Ok(port) = port.parse::<u16>() {
-            return (host.to_string(), port);
-        }
+    if let Some((host, port)) = s.rsplit_once(':')
+        && let Ok(port) = port.parse::<u16>()
+    {
+        return (host.to_string(), port);
     }
     (s.to_string(), 443)
 }
@@ -247,4 +253,3 @@ mod tests {
         assert!(allow.contains(&("dynamodb.us-east-1.amazonaws.com".to_string(), 443)));
     }
 }
-

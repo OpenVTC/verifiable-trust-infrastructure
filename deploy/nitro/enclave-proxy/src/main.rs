@@ -97,11 +97,8 @@ async fn main() {
         .expect("failed to install rustls crypto provider");
 
     // Initialize tracing
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let mut cli = Cli::parse();
 
@@ -149,32 +146,76 @@ async fn main() {
     eprintln!();
     eprintln!("  Config:      {}", cli.config.display());
     eprintln!("  Enclave CID: {}", config.enclave_cid);
-    eprintln!("  Resolver:    {}", if resolver.is_some() { "embedded (Affinidi)" } else { "none" });
+    eprintln!(
+        "  Resolver:    {}",
+        if resolver.is_some() {
+            "embedded (Affinidi)"
+        } else {
+            "none"
+        }
+    );
     eprintln!();
-    eprintln!("  [1] Inbound  REST:     0.0.0.0:{} → vsock:{}", config.listen_port, config.vsock_inbound_port);
+    eprintln!(
+        "  [1] Inbound  REST:     0.0.0.0:{} → vsock:{}",
+        config.listen_port, config.vsock_inbound_port
+    );
     if let Some(ref host) = config.mediator_host_override {
-        eprintln!("  [2] Outbound Mediator: vsock:{} → {}:{} (manual override)", config.vsock_mediator_port, host, config.mediator_port_override.unwrap_or(443));
+        eprintln!(
+            "  [2] Outbound Mediator: vsock:{} → {}:{} (manual override)",
+            config.vsock_mediator_port,
+            host,
+            config.mediator_port_override.unwrap_or(443)
+        );
     } else if let Some(ref did) = config.mediator_did {
-        eprintln!("  [2] Outbound Mediator: vsock:{} → resolve {did}", config.vsock_mediator_port);
+        eprintln!(
+            "  [2] Outbound Mediator: vsock:{} → resolve {did}",
+            config.vsock_mediator_port
+        );
     } else {
         eprintln!("  [2] Outbound Mediator: DISABLED (no mediator_did configured)");
     }
-    eprintln!("  [3] Outbound HTTPS:    vsock:{} → {} hosts allowlisted", config.vsock_https_port, allowlist.len());
+    eprintln!(
+        "  [3] Outbound HTTPS:    vsock:{} → {} hosts allowlisted",
+        config.vsock_https_port,
+        allowlist.len()
+    );
     for (host, port) in &allowlist {
         eprintln!("       - {host}:{port}");
     }
-    eprintln!("  [4] Outbound IMDS:     vsock:{} → 169.254.169.254:80", config.vsock_imds_port);
-    eprintln!("  [5] Storage:           vsock:{} → {} (fjall)", config.vsock_storage_port, config.storage_data_dir.display());
-    eprintln!("  [6] DID Resolver:      vsock:{} → localhost:{} (sidecar)", cli.vsock_resolver, cli.resolver_port);
-    eprintln!("  [7] Enclave Logs:      vsock:{} → stdout (prefixed [vta])", cli.vsock_logs);
+    eprintln!(
+        "  [4] Outbound IMDS:     vsock:{} → 169.254.169.254:80",
+        config.vsock_imds_port
+    );
+    eprintln!(
+        "  [5] Storage:           vsock:{} → {} (fjall)",
+        config.vsock_storage_port,
+        config.storage_data_dir.display()
+    );
+    eprintln!(
+        "  [6] DID Resolver:      vsock:{} → localhost:{} (sidecar)",
+        cli.vsock_resolver, cli.resolver_port
+    );
+    eprintln!(
+        "  [7] Enclave Logs:      vsock:{} → stdout (prefixed [vta])",
+        cli.vsock_logs
+    );
     match cli.config_envelope {
-        Some(ref p) => eprintln!("  [0] Config:            vsock:{} → {} (un-baked config envelope)", cli.vsock_config, p.display()),
-        None => eprintln!("  [0] Config:            DISABLED (no --config-envelope; enclave uses baked/mounted config)"),
+        Some(ref p) => eprintln!(
+            "  [0] Config:            vsock:{} → {} (un-baked config envelope)",
+            cli.vsock_config,
+            p.display()
+        ),
+        None => eprintln!(
+            "  [0] Config:            DISABLED (no --config-envelope; enclave uses baked/mounted config)"
+        ),
     }
     eprintln!();
     eprintln!("  Test:");
     eprintln!("    curl http://localhost:{}/health", config.listen_port);
-    eprintln!("    curl http://localhost:{}/attestation/status", config.listen_port);
+    eprintln!(
+        "    curl http://localhost:{}/attestation/status",
+        config.listen_port
+    );
     eprintln!();
 
     // Spawn all proxy channels as concurrent tasks
@@ -205,9 +246,7 @@ async fn main() {
         allowlist,
     ));
 
-    let imds = tokio::spawn(channels::run_imds(
-        config.vsock_imds_port,
-    ));
+    let imds = tokio::spawn(channels::run_imds(config.vsock_imds_port));
 
     let storage = tokio::spawn(storage::run_storage(
         config.vsock_storage_port,
@@ -225,11 +264,16 @@ async fn main() {
     // path is supplied and the file exists. Absent → the enclave uses a
     // baked/mounted config (backward compatible).
     let config_server = match cli.config_envelope.clone() {
-        Some(path) if path.exists() => {
-            Some(tokio::spawn(channels::run_config_server(cli.vsock_config, path)))
-        }
+        Some(path) if path.exists() => Some(tokio::spawn(channels::run_config_server(
+            cli.vsock_config,
+            path,
+        ))),
         Some(path) => {
-            warn!("--config-envelope {} does not exist — not serving config over vsock:{}", path.display(), cli.vsock_config);
+            warn!(
+                "--config-envelope {} does not exist — not serving config over vsock:{}",
+                path.display(),
+                cli.vsock_config
+            );
             None
         }
         None => None,

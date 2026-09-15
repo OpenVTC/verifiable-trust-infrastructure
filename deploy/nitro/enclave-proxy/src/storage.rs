@@ -7,12 +7,12 @@
 //! reaches this server — the parent only stores opaque blobs.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use fjall::{Database, KeyspaceCreateOptions, Keyspace, PersistMode};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use tokio::sync::RwLock;
-use tokio_vsock::{VsockAddr, VsockListener, VMADDR_CID_ANY};
+use tokio_vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener};
 use tracing::{debug, error, info, warn};
 
 use crate::protocol::*;
@@ -24,14 +24,20 @@ use crate::protocol::*;
 pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
     // Open the fjall database on the parent's EBS volume
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        error!("[storage] failed to create data directory {}: {e}", data_dir.display());
+        error!(
+            "[storage] failed to create data directory {}: {e}",
+            data_dir.display()
+        );
         return;
     }
 
     let db = match Database::builder(&data_dir).open() {
         Ok(db) => db,
         Err(e) => {
-            error!("[storage] failed to open fjall database at {}: {e}", data_dir.display());
+            error!(
+                "[storage] failed to open fjall database at {}: {e}",
+                data_dir.display()
+            );
             return;
         }
     };
@@ -44,10 +50,10 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
     // The key is spelled out rather than imported: this proxy runs on the
     // *parent* and deliberately does not link enclave code. Canonical
     // definition is `vta_tee::did_autogen::DID_LOG_STORE_KEY` — keep in sync.
-    if let Ok(ks) = db.keyspace("bootstrap", KeyspaceCreateOptions::default) {
-        if let Ok(Some(value)) = ks.get("tee:did_log") {
-            write_did_log_file(&data_dir, &value);
-        }
+    if let Ok(ks) = db.keyspace("bootstrap", KeyspaceCreateOptions::default)
+        && let Ok(Some(value)) = ks.get("tee:did_log")
+    {
+        write_did_log_file(&data_dir, &value);
     }
 
     let state = Arc::new(StorageState {
@@ -182,15 +188,15 @@ async fn handle_get(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 /// Write the DID log to a file alongside the database for easy operator access.
-fn write_did_log_file(data_dir: &PathBuf, value: &[u8]) {
+fn write_did_log_file(data_dir: &Path, value: &[u8]) {
     // Write to the parent directory of the store (e.g., /mnt/vta-data/did.jsonl)
-    let output_path = data_dir
-        .parent()
-        .unwrap_or(data_dir.as_path())
-        .join("did.jsonl");
+    let output_path = data_dir.parent().unwrap_or(data_dir).join("did.jsonl");
     match std::fs::write(&output_path, value) {
         Ok(()) => info!("[storage] wrote DID log to {}", output_path.display()),
-        Err(e) => warn!("[storage] failed to write DID log to {}: {e}", output_path.display()),
+        Err(e) => warn!(
+            "[storage] failed to write DID log to {}: {e}",
+            output_path.display()
+        ),
     }
 }
 
@@ -276,7 +282,10 @@ async fn handle_prefix_iter(state: &StorageState, data: &[u8]) -> Vec<u8> {
         }
     }
 
-    let refs: Vec<(&[u8], &[u8])> = pairs.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
+    let refs: Vec<(&[u8], &[u8])> = pairs
+        .iter()
+        .map(|(k, v)| (k.as_slice(), v.as_slice()))
+        .collect();
     build_ok_kv_list(&refs)
 }
 
