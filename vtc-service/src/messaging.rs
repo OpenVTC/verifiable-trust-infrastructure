@@ -558,13 +558,14 @@ fn tsp_sender(message: &affinidi_messaging_core::ReceivedMessage) -> Option<Stri
 /// Is this inbound TSP payload a **reply** to a task we sent, rather than a
 /// request addressed to us?
 ///
-/// Accepts both wire shapes deliberately. This workspace sends Trust-Task
-/// document bytes bare over TSP (`vta_sdk::session::DIDCommSession::
-/// send_document`), while the published `trust-tasks-tsp` binding — which the
-/// trust registry implements — wraps them in
-/// `{"type": ".../binding/tsp/0.1/envelope", "document": …}`. Being liberal
-/// here costs nothing: the two shapes are unambiguous, and the alternative is
-/// a peer's replies silently falling through to the request dispatcher.
+/// Accepts both wire shapes deliberately. The published `trust-tasks-tsp`
+/// binding — which the trust registry, `vta-service` and (since the SDK's
+/// `tsp_binding` cutover) every client in this workspace implement — wraps a
+/// document in `{"type": ".../binding/tsp/0.1/envelope", "document": …}`. The
+/// bare shape is what this workspace used to send, and a peer may still be on
+/// it. Being liberal here costs nothing: the two shapes are unambiguous, and
+/// the alternative is a peer's replies silently falling through to the request
+/// dispatcher.
 ///
 /// Returns `Some` only for a `#response` or `trust-task-error` carrying a
 /// `threadId` — a request never qualifies, so no inbound work is diverted.
@@ -599,8 +600,10 @@ async fn handle_tsp(
     // unsupported-type error, and the caller — which is waiting on a
     // correlated reply, not on a send `Ok` — would time out and retry forever.
     //
-    // The DIDComm arm gets this from its envelope branch in `dispatch`; TSP
-    // carries documents bare, so the check is here.
+    // The DIDComm arm gets this from its envelope branch in `dispatch`; TSP has
+    // no message type to switch on, so the check is here. `tsp_reply_document`
+    // reads through the binding envelope as well as around it, so this runs
+    // before the envelope comes off.
     if let Some(doc) = tsp_reply_document(&inbound.message.payload) {
         let thread_id = doc.thread_id.clone().unwrap_or_default();
         if !state.pending_replies.complete(doc) {
@@ -609,23 +612,46 @@ async fn handle_tsp(
         return;
     }
 
+    // Carriage off before dispatch: the spine parses a Trust-Task document and
+    // an envelope is not one, so a wrapped frame reaching it is a
+    // `malformedRequest` for a request that was perfectly well formed.
+    //
+    // Liberal, unlike `vta-service`, and for a reason that is about *this*
+    // service: the VTC answers peers it does not ship with — the trust registry,
+    // an operator's own client — and the two shapes are unambiguous, so refusing
+    // the older one buys nothing. What the carriage decides here is the reply's
+    // (see below), which is the part a peer cannot shrug off.
+    let wrapped = vta_sdk::tsp_binding::open_envelope(&inbound.message.payload);
+    let document = match &wrapped {
+        Ok(document) => document.as_slice(),
+        Err(_) => inbound.message.payload.as_slice(),
+    };
+
     let ctx = JoinAuthCtx {
         transport: JoinTransport::Tsp,
         sender_did: Some(sender_vid.clone()),
     };
-    let outcome = dispatch_trust_task_core(state, &ctx, &inbound.message.payload).await;
+    let outcome = dispatch_trust_task_core(state, &ctx, document).await;
 
     // The spine returns the self-describing framework document (its own `type` +
     // status code), so an unauthorised caller gets a Trust-Task error envelope
     // rather than silence — the VID is proven, so there is no enumeration
     // exposure, and a conformant client only understands envelopes.
-    // No re-wrapping: TSP carries the Trust-Task document bytes directly, which is
-    // exactly what the spine returns. The DIDComm path re-parses `body` only
-    // because it must lift `type` into a DIDComm envelope.
+    // No DIDComm envelope — TSP has a binding of its own — and the reply goes
+    // back in **the carriage the request arrived in**. Always-wrap would be
+    // wrong here precisely because the accept above is liberal: a peer still
+    // sending bare would get an envelope it cannot open, and a reply that cannot
+    // be read is indistinguishable from a request that was never answered. The
+    // DIDComm path re-parses `body` only because it must lift `type` into a
+    // DIDComm envelope.
     if outcome.body.is_empty() {
         return;
     }
-    let reply = outcome.body;
+    let reply = if wrapped.is_ok() {
+        vta_sdk::tsp_binding::wrap_envelope(&outcome.body)
+    } else {
+        outcome.body
+    };
 
     let route = vec![mediator_did.to_string(), sender_vid.clone()];
     if let Err(e) = messaging

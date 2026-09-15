@@ -30,8 +30,8 @@
 use tracing::info;
 
 use crate::messaging::auth::auth_for_trust_task_envelope;
-use crate::messaging::tsp_binding::{open_envelope, wrap_envelope};
 use crate::server::AppState;
+use vta_sdk::tsp_binding::{open_envelope, wrap_envelope};
 
 /// Per-message bridge: turn one unpacked TSP message into a dispatched Trust
 /// Task on the shared spine and return the framework response envelope bytes.

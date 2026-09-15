@@ -137,7 +137,8 @@ pub(super) enum Transport {
     /// TSP — the workspace's highest-preference transport.
     ///
     /// Carries the **Trust-Task** surface only ([`VtaClient::rpc_tt`]). The
-    /// VTA's TSP inbound dispatcher hands each unpacked payload straight to
+    /// VTA's TSP inbound dispatcher opens the binding envelope and hands the
+    /// document to
     /// `dispatch_trust_task_core`, so a trust task routes over TSP unchanged —
     /// but the older DIDComm *protocol-message* surface ([`VtaClient::rpc`],
     /// e.g. `key-management/1.0/sign-request`) has no TSP dispatcher behind it
@@ -1799,11 +1800,11 @@ impl VtaClient {
                 self.finish_reply(response_doc).await
             }
             // The whole typed VTA surface over TSP. The VTA's inbound
-            // dispatcher hands the unpacked payload straight to
-            // `dispatch_trust_task_core` — the same spine REST and DIDComm use
-            // — so the request and reply documents are byte-identical across
-            // all three transports. No envelope wrapper: TSP carries the
-            // Trust-Task bytes directly.
+            // dispatcher opens the TSP binding envelope and hands the document
+            // to `dispatch_trust_task_core` — the same spine REST and DIDComm
+            // use — so the request and reply *documents* are byte-identical
+            // across all three transports. Only the carriage differs, and each
+            // binding names its own (`crate::tsp_binding` for this one).
             #[cfg(feature = "tsp")]
             Transport::Tsp {
                 session,

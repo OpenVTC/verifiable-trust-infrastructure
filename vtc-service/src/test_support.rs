@@ -635,6 +635,8 @@ pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
     .expect("offline ATM")
 }
 
+#[cfg(all(feature = "didcomm-harness", feature = "tsp"))]
+pub use didcomm_harness::Carriage;
 #[cfg(feature = "didcomm-harness")]
 pub use didcomm_harness::{MockVtcDidcomm, ProblemReport, ReplyOutcome, TestJoinClient};
 
@@ -884,6 +886,22 @@ mod didcomm_harness {
         Timeout,
     }
 
+    /// How a Trust-Task document is carried in a TSP payload.
+    ///
+    /// The VTC accepts both, so a harness that could only produce one could not
+    /// test that it does. Not a preference — the sender's carriage decides the
+    /// reply's, so each variant exercises a different round trip.
+    #[cfg(feature = "tsp")]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Carriage {
+        /// `{"type": ".../binding/tsp/0.1/envelope", "document": …}` — the
+        /// published binding, and what every client in this workspace sends.
+        BindingEnvelope,
+        /// The document alone, with no wrapper — what they sent before the
+        /// binding, and what a peer that has not adopted it still sends.
+        BareDocument,
+    }
+
     /// A DIDComm join applicant connected to the harness mediator.
     ///
     /// Sends authcrypt requests to the VTC and awaits the threaded reply;
@@ -1076,8 +1094,8 @@ mod didcomm_harness {
         ///
         /// The wire shape is the whole difference from
         /// [`request`](Self::request), and it is the difference that broke: TSP
-        /// carries the Trust-Task document bytes directly, where DIDComm nests
-        /// them in a packed envelope. A VTC without the `tsp` feature never sees
+        /// carries the document in its own binding wrapper, where DIDComm nests
+        /// it in a packed envelope. A VTC without the `tsp` feature never sees
         /// this frame at all — the messaging SDK's websocket transport
         /// classifies TSP only under its own `tsp` feature, and otherwise hands
         /// the CESR bytes to the DIDComm unpacker, which fails with `Cannot
@@ -1093,8 +1111,31 @@ mod didcomm_harness {
         /// its reply), never on this returning `Ok`.
         #[cfg(feature = "tsp")]
         pub async fn send_tsp(&self, vtc_did: &str, typ: &str, payload: Value) {
+            self.send_tsp_framed(vtc_did, typ, payload, Carriage::BindingEnvelope)
+                .await;
+        }
+
+        /// [`send_tsp`](Self::send_tsp), with the carriage chosen explicitly.
+        ///
+        /// Exists because the VTC accepts **both** shapes over TSP and a harness
+        /// that can only produce one cannot test that. The default is the
+        /// binding envelope, which is what every client in this workspace sends;
+        /// [`Carriage::BareDocument`] is what they sent before the binding and
+        /// what a peer may still send.
+        #[cfg(feature = "tsp")]
+        pub async fn send_tsp_framed(
+            &self,
+            vtc_did: &str,
+            typ: &str,
+            payload: Value,
+            carriage: Carriage,
+        ) {
             let doc = wrap_trust_task(typ, &self.did, vtc_did, payload);
-            let bytes = serde_json::to_vec(&doc).expect("serialise Trust Task document");
+            let document = serde_json::to_vec(&doc).expect("serialise Trust Task document");
+            let bytes = match carriage {
+                Carriage::BindingEnvelope => vta_sdk::tsp_binding::wrap_envelope(&document),
+                Carriage::BareDocument => document,
+            };
             let route = vec![self.mediator_did.clone(), vtc_did.to_string()];
             self.atm
                 .tsp()

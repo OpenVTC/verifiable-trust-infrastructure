@@ -38,8 +38,6 @@ pub mod shim;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 pub mod transient_handshake;
 #[cfg(feature = "tsp")]
-pub mod tsp_binding;
-#[cfg(feature = "tsp")]
 pub mod tsp_inbound;
 #[cfg(feature = "tsp")]
 pub mod tsp_reach;

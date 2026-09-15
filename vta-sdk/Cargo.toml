@@ -58,6 +58,7 @@ didcomm = [
 # upstream toggle the outbound-seam PR must enable. See
 # docs/05-design-notes/tsp-enablement.md.
 tsp = [
+  "dep:trust-tasks-tsp",
   "dep:affinidi-tdk",
   "affinidi-tdk/tsp",
   # `atm.tsp()` + `TspWebSocket` are gated on the messaging SDK's own `tsp`
@@ -329,6 +330,12 @@ affinidi-secrets-resolver = { workspace = true, optional = true }
 # response types as this crate's wire layer, and check values against the
 # schemas those types embed (the workspace dependency enables `validate`).
 trust-tasks-rs = { workspace = true }
+# The TSP binding (`tsp` feature). Carries `ENVELOPE_TYPE` — the payload wrapper
+# every Trust-Task TSP frame must use — so `tsp_binding` takes the URI from the
+# crate that defines the binding rather than writing it out locally. A binding
+# URI written locally is a private dialect the moment the binding moves, which
+# is precisely what this workspace had been speaking over TSP.
+trust-tasks-tsp = { workspace = true, optional = true }
 # DTG credential construction for the Vetting Statement (`vetting` feature).
 dtg-credentials = { workspace = true, optional = true }
 # Bitstring status-list decoding for `vetting::status` (`vetting` feature).

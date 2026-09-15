@@ -937,10 +937,12 @@ impl DIDCommSession {
     /// arrives on [`receive_next_tsp`](Self::receive_next_tsp) (or is
     /// correlated by [`request_tsp`](Self::request_tsp) if one is waiting).
     ///
-    /// `body` is the serialized document itself — TSP carries the Trust-Task
-    /// bytes directly, with no DIDComm envelope around them (the VTA's
-    /// `tsp_inbound::dispatch_one` hands the payload straight to
-    /// `dispatch_trust_task_core`).
+    /// `body` is the serialized Trust-Task document. It goes on the wire inside
+    /// the TSP **binding envelope** ([`crate::tsp_binding`]) — that wrapper is
+    /// how a TSP payload says "this is a Trust Task", since TSP has neither a
+    /// message `type` nor a request path to say it with. Callers pass the
+    /// document; carriage is this layer's business and is applied in exactly one
+    /// place.
     ///
     /// **Opens no socket.** The send is an HTTP `POST /inbound` to the mediator,
     /// so it never touches the websocket and is safe to call while a
@@ -954,13 +956,14 @@ impl DIDCommSession {
         recipient_did: &str,
         body: &[u8],
     ) -> Result<(), VtaError> {
+        let framed = crate::tsp_binding::wrap_envelope(body);
         self.tsp
             .atm
             .tsp()
             .send_routed(
                 &self.tsp.profile,
                 &[self.mediator_did.clone(), recipient_did.to_string()],
-                body,
+                &framed,
             )
             .await
             .map_err(|e| VtaError::TspTransport(format!("TSP send failed: {e}")))
@@ -1153,7 +1156,21 @@ impl DIDCommSession {
             if inbound.message.protocol != affinidi_messaging_core::Protocol::TSP {
                 continue; // a DIDComm frame — `receive_next`'s business, not ours
             }
-            let json = String::from_utf8(inbound.message.payload)
+            // Carriage comes off here, so everything past this line works on the
+            // document — the mirror of `send_tsp_document` putting it on. A frame
+            // that is not our binding is skipped rather than surfaced: this
+            // socket also carries the mediator's own management traffic (which
+            // speaks the bare document — see `tsp_binding`) and TSP control
+            // frames, so "not an envelope" means "not addressed to this layer",
+            // not "malformed".
+            let document = match crate::tsp_binding::open_envelope(&inbound.message.payload) {
+                Ok(document) => document,
+                Err(reason) => {
+                    debug!(%reason, "skipping a TSP frame that is not a binding envelope");
+                    continue;
+                }
+            };
+            let json = String::from_utf8(document)
                 .map_err(|e| format!("TSP payload was not UTF-8: {e}"))?;
 
             // One correlation rule for every TSP session — see `tsp_demux`.

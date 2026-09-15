@@ -202,6 +202,12 @@ pub mod trust_task_sign;
 /// Canonical Trust-Task URLs for VTA operations. Mirrors
 /// `did-hosting-common::did_hosting_tasks` for the webvh-service side.
 pub mod trust_tasks;
+// How a Trust Task is carried in a TSP payload — the binding's wrapper, opened
+// and applied in one place for the whole workspace (`vta-service`'s receiver
+// uses this module too). Public because a peer implementing the binding needs
+// to name the envelope type.
+#[cfg(feature = "tsp")]
+pub mod tsp_binding;
 // Reply correlation for TSP, shared by `TspSession` and the `DIDCommSession`
 // TSP leg. Internal: consumers see the sessions, not the bookkeeping.
 #[cfg(all(feature = "session", feature = "tsp"))]

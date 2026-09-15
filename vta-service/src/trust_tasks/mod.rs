@@ -2271,7 +2271,7 @@ mod tests {
     /// — reaches [`dispatch_trust_task_core`], and each does only what its own
     /// binding requires on the way: REST's binding is the request path, DIDComm's
     /// is the message `type`, TSP's is the payload wrapper
-    /// (`messaging::tsp_binding`). None of them parses a Trust-Task document
+    /// (`vta_sdk::tsp_binding`). None of them parses a Trust-Task document
     /// itself.
     ///
     /// That is true today. This is what keeps it true: a fourth transport is

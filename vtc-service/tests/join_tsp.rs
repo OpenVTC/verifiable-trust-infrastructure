@@ -35,7 +35,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use vtc_service::join::storage::list_join_requests;
-use vtc_service::test_support::MockVtcDidcomm;
+use vtc_service::test_support::{Carriage, MockVtcDidcomm};
 use vtc_service::transport_capability::{
     MessagingVerdict, NON_TSP_BUILD, TSP_BUILD, classify_against,
 };
@@ -142,6 +142,53 @@ async fn a_join_submitted_over_tsp_is_dispatched_and_recorded() {
     );
 
     mock.shutdown().await;
+}
+
+/// Both carriages reach the dispatcher.
+///
+/// The VTC is deliberately liberal about how a Trust Task is carried in a TSP
+/// payload — the published `trust-tasks-tsp` binding envelope, and the bare
+/// document this workspace sent before adopting it. Liberality that nothing
+/// exercises is just an untested branch: when every client moved to the
+/// envelope, the bare arm would have been the only shape any test produced, and
+/// when the harness moved with them the wrapped arm would have been. Sending
+/// both from one test is what keeps the claim honest.
+///
+/// Asserted on the VTC's own state, like the test above: the submit is the same
+/// one, and only the wrapper differs.
+#[tokio::test]
+async fn a_join_over_tsp_is_recorded_in_either_carriage() {
+    init_tracing();
+
+    for carriage in [Carriage::BindingEnvelope, Carriage::BareDocument] {
+        let mock = MockVtcDidcomm::start_with_tsp().await;
+        seed_for_submit(&mock).await;
+
+        let vtc_did = mock.vtc_did().to_string();
+        let applicant_did = mock.client.did().to_string();
+
+        mock.client
+            .send_tsp_framed(
+                &vtc_did,
+                JOIN_REQUEST_SUBMIT_TYPE,
+                serde_json::to_value(JoinRequestSubmitBody {
+                    vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+                    registry_consent: false,
+                    extensions: json!({}),
+                })
+                .expect("serialise submit body"),
+                carriage,
+            )
+            .await;
+
+        let request = await_recorded_join(&mock, &applicant_did).await;
+        assert_eq!(
+            request.applicant_did, applicant_did,
+            "a join sent as {carriage:?} must be recorded against the proven TSP sender"
+        );
+
+        mock.shutdown().await;
+    }
 }
 
 /// The harness's premise, asserted rather than assumed: the VTC's DID really

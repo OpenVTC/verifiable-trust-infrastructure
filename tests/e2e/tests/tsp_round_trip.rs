@@ -53,9 +53,11 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     (did, priv_mb)
 }
 
-/// A minimal Trust-Task-shaped document. TSP carries these bytes directly (no
-/// DIDComm envelope), which is what the VTA's `tsp_inbound::dispatch_one`
-/// expects, so this matches the real wire shape.
+/// A minimal Trust-Task-shaped document. `send_document` seals it in the TSP
+/// binding envelope on the way out and `receive_next` opens it on the way in,
+/// so these tests assert on the document and the carriage is exercised
+/// underneath them — see `tsp_binding_pair` for the test that asserts on the
+/// carriage itself.
 fn doc(id: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "id": id,
