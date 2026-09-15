@@ -19,6 +19,7 @@ pub(crate) mod members;
 pub(crate) mod policies;
 pub mod recognise;
 mod recognition_admin;
+mod registry_admin;
 pub(crate) mod relationships;
 pub(crate) mod rooms;
 mod schemas;
@@ -356,6 +357,28 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         .routes(tt(
             routes!(health::diagnostics),
             "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1",
+        ))
+        // The reconciler's operator surface. Admin-gated, not super-admin: the
+        // same on-call staff who read `diagnostics` are the ones who act on it,
+        // and a queue you can see but not clear is what this family was added
+        // to fix. `retry` and `discard` share the eligibility rule with the
+        // offline `vtc sync-jobs` CLI, which remains the break-glass path for a
+        // daemon that will not start.
+        .routes(tt(
+            routes!(registry_admin::sync_jobs_list),
+            "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1",
+        ))
+        .routes(tt(
+            routes!(registry_admin::sync_jobs_retry),
+            "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1",
+        ))
+        .routes(tt(
+            routes!(registry_admin::sync_jobs_discard),
+            "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1",
+        ))
+        .routes(tt(
+            routes!(registry_admin::records_list),
+            "https://trusttasks.org/spec/vtc/registry/records/list/0.1",
         ))
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension

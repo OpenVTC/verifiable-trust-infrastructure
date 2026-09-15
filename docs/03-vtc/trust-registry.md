@@ -435,8 +435,25 @@ dashboard.
 
 Fixing the cause does **not** re-drive the jobs. The sync cursor
 advanced past the audit envelopes that created them long ago, and
-nothing re-derives a `Failed` row. Requeue them by hand, on a
-**stopped** daemon:
+nothing re-derives a `Failed` row.
+
+Each failed row in the admin console carries **Retry** and **Discard**,
+and a **Retry all failed** control appears when more than one shares a
+cause. Retry reports both halves of what it did: jobs requeued, and jobs
+declined with the reason — `notFailed` when the reconciler still owns
+one, `notFound` when it was swept between the page load and the click.
+Neither is an error, so one ineligible row does not defeat a bulk retry.
+Discard confirms first and is irreversible; it deletes the community's
+record that the change never landed, and does **not** touch the
+registry, so a discarded publish leaves the member unpublished
+permanently with nothing left to show it.
+
+These are `vtc/registry/sync-jobs/{list,retry,discard}/0.1`, admin-gated
+like the rest of the page.
+
+The same three operations also run offline, on a **stopped** daemon —
+the break-glass path for a VTC that will not start, which is exactly
+when an HTTP route is no use:
 
 ```bash
 vtc sync-jobs list                      # what failed, and why
@@ -452,12 +469,10 @@ belongs to the syncer. `discard` deletes the row and changes nothing
 at the registry: for a failed `publishMember` that means the member
 stays unpublished, permanently.
 
-These are offline commands for the same reason `vtc acl` is — fjall
-takes an exclusive lock, so they fail while the daemon is running,
-and they are not available in TEE deployments. There is no online
-equivalent: the mutation would need a new `spec/vtc/registry/…` Trust
-Task URI, and binding one ahead of its upstream specification is what
-`UNPUBLISHED_CANONICAL_OK` exists to refuse.
+fjall takes an exclusive lock, so these fail while the daemon is
+running, and they are not available in TEE deployments. The online and
+offline surfaces share one eligibility rule — only a `Failed` row may
+move — so they cannot disagree about what a retry does.
 
 Doing nothing is also a decision with a deadline. The retention
 sweeper purges `Failed` rows `[join_requests] retentionDays` after

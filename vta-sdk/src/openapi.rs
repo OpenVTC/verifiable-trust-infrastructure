@@ -49,6 +49,7 @@ use utoipa::openapi::{Ref, RefOr};
 
 use crate::protocols::vetting::vetters;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
+use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
 
 /// Transparent wrappers documenting generated types, one per line.
 macro_rules! spec_types {
@@ -140,6 +141,24 @@ spec_types! {
     /// VTC's `GET`/`PUT /v1/community/branding`.
     JoinManifest02CommunityBranding(manifest::v0_2::CommunityBranding)
         in manifest::v0_2::Response as "CommunityBranding";
+    /// `vtc/registry/sync-jobs/list/0.1` payload.
+    RegistrySyncJobsList01Payload(sync_jobs::list::v0_1::Payload);
+    /// `vtc/registry/sync-jobs/list/0.1#response`.
+    RegistrySyncJobsList01Response(sync_jobs::list::v0_1::Response);
+    /// `vtc/registry/sync-jobs/retry/0.1` payload. An untagged enum: exactly one
+    /// of `jobId` or `allFailed`, which is what stops a dropped identifier
+    /// becoming a bulk retry.
+    RegistrySyncJobsRetry01Payload(sync_jobs::retry::v0_1::Payload);
+    /// `vtc/registry/sync-jobs/retry/0.1#response`.
+    RegistrySyncJobsRetry01Response(sync_jobs::retry::v0_1::Response);
+    /// `vtc/registry/sync-jobs/discard/0.1` payload.
+    RegistrySyncJobsDiscard01Payload(sync_jobs::discard::v0_1::Payload);
+    /// `vtc/registry/sync-jobs/discard/0.1#response`.
+    RegistrySyncJobsDiscard01Response(sync_jobs::discard::v0_1::Response);
+    /// `vtc/registry/records/list/0.1` payload.
+    RegistryRecordsList01Payload(records::list::v0_1::Payload);
+    /// `vtc/registry/records/list/0.1#response`.
+    RegistryRecordsList01Response(records::list::v0_1::Response);
 }
 
 /// One type's component, and every other definition of its schema, which the
@@ -427,6 +446,14 @@ mod tests {
         check::<JoinManifest02Response>();
         check::<JoinManifest02VettingRequirements>();
         check::<JoinManifest02CommunityBranding>();
+        check::<RegistrySyncJobsList01Payload>();
+        check::<RegistrySyncJobsList01Response>();
+        check::<RegistrySyncJobsRetry01Payload>();
+        check::<RegistrySyncJobsRetry01Response>();
+        check::<RegistrySyncJobsDiscard01Payload>();
+        check::<RegistrySyncJobsDiscard01Response>();
+        check::<RegistryRecordsList01Payload>();
+        check::<RegistryRecordsList01Response>();
     }
 
     #[test]

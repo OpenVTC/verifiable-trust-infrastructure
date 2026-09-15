@@ -7,15 +7,18 @@
 // invitation issuer is trusted (M2).
 
 import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, Network, X } from "lucide-react";
 
 import {
   checkRecognition,
+  discardSyncJob,
   fetchDiagnostics,
+  retrySyncJob,
   type DriftEntry,
   type FailedSyncJob,
   type RecognitionCheck,
+  type SyncJobsRetryResponse,
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { CopyButton } from "@/components/CopyButton";
@@ -50,6 +53,58 @@ export function Recognition() {
 
   const lookup = useMutation<RecognitionCheck, Error, string>({
     mutationFn: (d: string) => checkRecognition(d),
+    onError: (e) => toast.pushFromError(e),
+  });
+
+  const queryClient = useQueryClient();
+  // Both mutations refetch diagnostics rather than editing the cache: the
+  // queue is the daemon's, the reconciler may have moved it between the
+  // click and the answer, and a locally-patched row would show an operator
+  // an outcome nothing confirmed.
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ["diagnostics"] });
+  };
+
+  const retry = useMutation<
+    SyncJobsRetryResponse,
+    Error,
+    { jobId: string } | { allFailed: true }
+  >({
+    mutationFn: retrySyncJob,
+    onSuccess: (r) => {
+      // The response reports both halves, and the skipped half is the
+      // interesting one: a job the reconciler had already picked up, or one
+      // swept between the page load and the click. Saying only "requeued 0"
+      // would leave an operator staring at an unchanged table.
+      const n = r.requeued.length;
+      if (n > 0) {
+        toast.push(
+          "success",
+          `Requeued ${n} job${n === 1 ? "" : "s"}. The reconciler dispatches on its next tick.`,
+        );
+      }
+      for (const s of r.skipped) {
+        toast.push(
+          "info",
+          s.reason === "notFound"
+            ? `Job ${s.jobId.slice(0, 8)}… is gone — already retried, discarded, or swept.`
+            : `Job ${s.jobId.slice(0, 8)}… is not failed; the reconciler still owns it.`,
+        );
+      }
+      invalidate();
+    },
+    onError: (e) => toast.pushFromError(e),
+  });
+
+  const discard = useMutation<unknown, Error, { jobId: string; did: string }>({
+    mutationFn: ({ jobId }) => discardSyncJob(jobId),
+    onSuccess: (_r, v) => {
+      toast.push(
+        "success",
+        `Discarded. The registry's record for ${v.did.slice(0, 24)}… is unchanged.`,
+      );
+      invalidate();
+    },
     onError: (e) => toast.pushFromError(e),
   });
 
@@ -257,16 +312,15 @@ export function Recognition() {
                     aria-hidden
                     style={{ verticalAlign: "-2px" }}
                   />{" "}
-                  The trust registry does not route a Trust Task this VTC
-                  sends.
+                  The trust registry does not route a Trust Task this VTC sends.
                 </strong>
                 <span className="muted">
                   At least one job below was refused with{" "}
                   <code>unsupportedType</code>. That is a version skew — the
                   deployed registry does not serve that task at all — not a
                   rejection of anything we sent, so nothing about this
-                  community&rsquo;s configuration will fix it. Upgrade the
-                  trust registry, then requeue with{" "}
+                  community&rsquo;s configuration will fix it. Upgrade the trust
+                  registry, then requeue with{" "}
                   <code>vtc sync-jobs retry --all</code> on a stopped daemon.
                 </span>
               </p>
@@ -292,15 +346,37 @@ export function Recognition() {
                         <th>Attempts</th>
                         <th>Gave up</th>
                         <th>Registry said</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {failedJobs.map((job) => (
-                        <FailedJobRow key={job.jobId} job={job} />
+                        <FailedJobRow
+                          key={job.jobId}
+                          job={job}
+                          busy={retry.isPending || discard.isPending}
+                          onRetry={() => retry.mutate({ jobId: job.jobId })}
+                          onDiscard={() =>
+                            discard.mutate({
+                              jobId: job.jobId,
+                              did: job.memberDid,
+                            })
+                          }
+                        />
                       ))}
                     </tbody>
                   </table>
                 </div>
+                {failedJobs.length > 1 && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={retry.isPending || discard.isPending}
+                    onClick={() => retry.mutate({ allFailed: true })}
+                  >
+                    {retry.isPending ? "Requeueing…" : "Retry all failed"}
+                  </button>
+                )}
                 {failedJobs.length < diagnostics.data.failedCount && (
                   <p className="muted">
                     Showing {failedJobs.length} of{" "}
@@ -343,7 +419,8 @@ export function Recognition() {
               <dd>{formatIso(drift.checkedAt)}</dd>
               <dt>Ours / registry</dt>
               <dd>
-                <code>{drift.localCount}</code> / <code>{drift.registryCount}</code>
+                <code>{drift.localCount}</code> /{" "}
+                <code>{drift.registryCount}</code>
               </dd>
             </dl>
             {drift.error && (
@@ -380,7 +457,10 @@ export function Recognition() {
                     </thead>
                     <tbody>
                       {drift.entries.map((e) => (
-                        <DriftRow key={`${e.disagreement}:${e.memberDid}`} entry={e} />
+                        <DriftRow
+                          key={`${e.disagreement}:${e.memberDid}`}
+                          entry={e}
+                        />
                       ))}
                     </tbody>
                   </table>
@@ -439,21 +519,17 @@ export function Recognition() {
               </span>
             ) : (
               <span>
-                <X
-                  size={16}
-                  strokeWidth={1.75}
-                  aria-label="Not recognised"
-                />{" "}
+                <X size={16} strokeWidth={1.75} aria-label="Not recognised" />{" "}
                 <strong>Not recognised</strong> — <code>{result.did}</code> is
                 not in the recognition graph
-                {result.registryConfigured ? "" : " (no trust registry configured)"}.
+                {result.registryConfigured
+                  ? ""
+                  : " (no trust registry configured)"}
+                .
               </span>
             )}
             {result.error && (
-              <span className="muted">
-                {" "}
-                (registry error: {result.error})
-              </span>
+              <span className="muted"> (registry error: {result.error})</span>
             )}
           </p>
         )}
@@ -530,7 +606,17 @@ function kindName(kind: string): string {
  * refused outright rather than going quiet for eighteen hours of backoff, and
  * those two have completely different causes.
  */
-function FailedJobRow({ job }: { job: FailedSyncJob }) {
+function FailedJobRow({
+  job,
+  busy,
+  onRetry,
+  onDiscard,
+}: {
+  job: FailedSyncJob;
+  busy: boolean;
+  onRetry: () => void;
+  onDiscard: () => void;
+}) {
   const gaveUp = job.lastAttemptedAt ?? job.createdAt;
   return (
     <tr>
@@ -558,6 +644,40 @@ function FailedJobRow({ job }: { job: FailedSyncJob }) {
         <span className={isUnsupportedType(job) ? "warn" : undefined}>
           {job.lastError ?? "(no error recorded)"}
         </span>
+      </td>
+      <td>
+        {/* Retry first and discard second, in that order and with only
+            discard confirmed: retrying an already-correct member is a
+            wasted round trip, while discarding drops the community's last
+            record that the member was never published. */}
+        <button
+          type="button"
+          className="secondary sm"
+          disabled={busy}
+          onClick={onRetry}
+        >
+          Retry
+        </button>{" "}
+        <button
+          type="button"
+          className="destructive sm"
+          disabled={busy}
+          onClick={() => {
+            if (
+              window.confirm(
+                `Discard the queued ${job.kind} for ${job.memberDid}?\n\n` +
+                  `This deletes the community's record that the change never ` +
+                  `reached the registry. The registry itself is not touched, so ` +
+                  `for a failed publish the member stays unpublished — ` +
+                  `permanently, and with nothing left to show it.`,
+              )
+            ) {
+              onDiscard();
+            }
+          }}
+        >
+          Discard
+        </button>
       </td>
     </tr>
   );
