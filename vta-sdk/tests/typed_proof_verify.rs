@@ -124,3 +124,57 @@ async fn a_tampered_typed_document_is_refused() {
          the typed path is not covered by the proof"
     );
 }
+
+/// **The constraint typed verification imposes, stated as a test.**
+///
+/// A proof covers the document as it was *sent*. Parsing into a payload type
+/// that does not preserve an unknown field drops it, so canonicalising the typed
+/// form yields different bytes and the proof fails — even though nothing was
+/// tampered with.
+///
+/// That is a soundness constraint on where verification may happen, not a bug in
+/// the verifier: it means a handler holding `TrustTask<P>` cannot be the thing
+/// that checks the proof unless `P` round-trips losslessly. Verification belongs
+/// in the spine, against the document as received, with the verified signer
+/// handed onward — which is what `vta-service` already does.
+#[tokio::test]
+async fn a_payload_field_the_type_does_not_know_breaks_typed_verification() {
+    let (did, private_key) = holder();
+
+    let mut signed: TrustTask<Value> = TrustTask::new(
+        "urn:uuid:33333333-3333-4333-8333-333333333333".to_string(),
+        "https://trusttasks.org/spec/rooms/create/0.1"
+            .parse()
+            .expect("a valid type URI"),
+        // `note` is not a field of `RoomCreate`.
+        json!({ "roomId": "room-1", "ownerDid": did, "epoch": 1, "note": "extra" }),
+    );
+    signed.issuer = Some(did.clone());
+    signed.recipient = Some("did:key:zVtc".to_string());
+    signed.issued_at = Some(chrono::Utc::now());
+    sign_in_place(&mut signed, &did, &private_key)
+        .await
+        .expect("sign");
+
+    let wire = serde_json::to_vec(&signed).expect("serialise");
+
+    // As received: verifies.
+    let as_received: TrustTask<Value> = serde_json::from_slice(&wire).expect("parse");
+    assert!(
+        verify_trust_task_proof_with(&as_received, &TrustTaskVmResolver::did_key_only())
+            .await
+            .is_ok(),
+        "the document as sent must verify"
+    );
+
+    // Downcast to a type that does not know `note`: the field is gone.
+    let typed: TrustTask<RoomCreate> = serde_json::from_slice(&wire).expect("downcast");
+    let result = verify_trust_task_proof_with(&typed, &TrustTaskVmResolver::did_key_only()).await;
+
+    assert!(
+        result.is_err(),
+        "expected the lossy downcast to break verification — if this now passes, \
+         the payload type preserves unknown fields and the constraint above can \
+         be relaxed"
+    );
+}

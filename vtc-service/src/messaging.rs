@@ -630,6 +630,10 @@ async fn handle_tsp(
     let ctx = JoinAuthCtx {
         transport: JoinTransport::Tsp,
         sender_did: Some(sender_vid.clone()),
+        // A transport proves a *sender*; it never checks the document's
+        // proof. The spine fills this in where the specification
+        // requires one.
+        verified_signer: None,
     };
     let outcome = dispatch_trust_task_core(state, &ctx, document).await;
 
@@ -1099,6 +1103,10 @@ async fn envelope_task_handler(
     let ctx = JoinAuthCtx {
         transport: JoinTransport::DIDComm,
         sender_did: auth_sender,
+        // A transport proves a *sender*; it never checks the document's
+        // proof. The spine fills this in where the specification
+        // requires one.
+        verified_signer: None,
     };
     let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
     tt_didcomm_reply(outcome, thid)
@@ -1115,6 +1123,10 @@ async fn join_request_manifest_handler(msg: &Message, state: &AppState) -> Optio
     let ctx = JoinAuthCtx {
         transport: JoinTransport::DIDComm,
         sender_did: msg.from.clone(),
+        // A transport proves a *sender*; it never checks the document's
+        // proof. The spine fills this in where the specification
+        // requires one.
+        verified_signer: None,
     };
     let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
     tt_didcomm_reply(outcome, thid)
