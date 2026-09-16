@@ -308,7 +308,9 @@ mod agent_devices;
 #[cfg(feature = "session")]
 mod auto_connect;
 mod backup;
+mod backup_chunked;
 mod backup_descriptors;
+pub use backup_chunked::{ChunkedDownload, ChunkedUpload, TransferProgress};
 mod bootstrap;
 mod consent;
 mod contexts;

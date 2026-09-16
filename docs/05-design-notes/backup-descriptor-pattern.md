@@ -13,15 +13,15 @@ closes the audit loop.
 Modelled on OCI image distribution (blob upload sessions), Sigstore
 (transparency-log entries), and Git LFS (large-object handoff).
 
-**Status**: implemented for the `stream` algorithm, and the default
-`pnm backup export|import` path (rollout step 5, #892). The five 1.0
-specifications are published upstream in `dtgwg-trust-tasks-tf`
-(`specs/vta/backup/*`) and listed in
-`docs/05-design-notes/trust-task-uri-registry.md` §"Backup slice".
-**REST-only**: a VTA with no `public_url` answers `initiate-*` with
-`vta/backup/initiate-{export,import}:transportUnavailable`, and a client
-whose Trust-Task surface is DIDComm or TSP is refused locally with
-`VtaError::UnsupportedTransport`. See
+**Status**: implemented, and the default `pnm backup export|import`
+path (rollout step 5, #892), for both transfer algorithms: `stream` over
+REST and `chunkedTrustTask` over DIDComm/TSP. The specifications are
+published upstream in `dtgwg-trust-tasks-tf` (`specs/vta/backup/*`: the
+five 1.0 tasks, the 1.1 initiators and finalizer, `get-chunk/1.0` and
+`put-chunk/1.0`) and listed in
+`docs/05-design-notes/trust-task-uri-registry.md` §"Backup slice". A VTA
+with no `public_url` answers a `stream` request with
+`vta/backup/initiate-{export,import}:transportUnavailable`. See
 [DIDComm/TSP-only VTAs](#didcommtsp-only-vtas-the-chunkedtrusttask-algorithm).
 
 ## Goals
@@ -82,55 +82,88 @@ The blob endpoints are deliberately REST-only, analogous to
 
 A VTA that advertises only DIDComm and/or TSP — a supported deployment,
 since runtime service management lets REST be disabled while another
-transport remains — has no HTTPS address to publish a `transportUrl` at.
-Today such a VTA **cannot be backed up remotely**:
+transport remains — has no HTTPS address to publish a `transportUrl` at,
+and its transport will not carry a whole bundle in one message: a
+mediator refuses messages over its `message_size` (1 MiB by default, of
+which DIDComm's nested base64 leaves roughly 500–700 KB). Before this
+algorithm such a VTA could not be backed up remotely at all.
 
-- The server answers `initiate-export` / `initiate-import` with the
-  specification's `transportUnavailable` code (previously an opaque
-  `internalError`).
-- The SDK refuses the descriptor flow on a DIDComm/TSP Trust-Task surface
-  with `VtaError::UnsupportedTransport` before sending anything, because
-  it could initiate but never move the bytes. A DIDComm client's optional
-  `rest_url` is not used to get round this: it can come from the caller
-  rather than from a `VTARest` service in the VTA's DID document, and the
-  transport rules forbid downgrading past what the peer advertises.
-- The legacy inline protocol message (`--use-rest-legacy` on a DIDComm
-  client) is no substitute. The whole envelope rides one message, a
-  mediator refuses messages over its `message_size` (1 MiB default, of
-  which DIDComm's nested base64 leaves roughly 500–700 KB), and the
-  refused reply shows up as a timeout. The CLI now warns about this.
-
-The planned path is a second transfer algorithm, specified upstream in
-[trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474). The name was `chunked-trust-task` in earlier
-revisions of this note; it is **`chunkedTrustTask`** in the specification,
-because trusttasks SPEC §4.10 requires lowerCamelCase for values a
-specification defines. In outline:
+`chunkedTrustTask` is specified upstream in [trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474). The name was
+`chunked-trust-task` in earlier revisions of this note; it is
+**`chunkedTrustTask`** because trusttasks SPEC §4.10 requires
+lowerCamelCase for values a specification defines. The shapes:
 
 - `vta/backup/initiate-export/1.1` and `initiate-import/1.1` — a
   `chunkedTrustTask` descriptor carries a manifest (chunk size, chunk
   count, per-chunk `DigestMultibase` digests, whole-bundle digest,
-  expiry) instead of `transportUrl` / `transportToken`. Relaxing those
-  required members is published as a MINOR because the 1.0
-  specifications are `draft` (SPEC §5.2).
+  expiry) instead of `transportUrl` / `transportToken`. A `stream`
+  request is wire-identical to 1.0, and a VTA never answers one with a
+  chunked descriptor. Relaxing the required members is a MINOR because
+  the specifications are `draft` (SPEC §5.2).
 - `vta/backup/get-chunk/1.0` — the client **pulls** chunk *i*.
-  Non-consuming, so a lost reply is retried by asking again; the bundle
-  is released by `complete-export`, `abort` or expiry. Pull rather than
-  push because a mediator queue caps at 1000 messages per DID and a
-  send `Ok` is not delivery (R1.1).
-- `vta/backup/put-chunk/1.0` — idempotent for an identical re-put,
-  refused for a mismatched one; `finalize-import/1.1` verifies every
-  index and the whole-bundle digest, naming missing indices so the
-  client resumes by re-sending only those.
-- A raw chunk is at most 256 KiB (262144 bytes), carried base64url
-  without padding, so one chunk survives the payload encoding plus
-  DIDComm's nested base64 layers inside a 1 MiB mediator message.
-- On DIDComm/TSP, intrinsic sender authentication plus the bundle
-  ownership check replace the bearer token; per-requester rate limits
-  replace the per-IP limiter, which does not see mediator traffic.
+- `vta/backup/put-chunk/1.0` — the client writes chunk *i*, checked
+  against the manifest it committed at `initiate-import`.
+- `vta/backup/finalize-import/1.1` — as 1.0, and names missing chunks
+  (`incompleteUpload`) or a manifest that did not describe the bundle
+  (`bundleDigestMismatch`) before the password is used.
 
-Implementation waits on that specification merging and reaching VTI
-through a `trust-tasks-rs` release (Trust Task wire types come from
-`trust_tasks_rs::specs`, never hand-written).
+### How VTI implements it
+
+**Algorithm selection (`vta_sdk::client`).** The client uses `stream` when
+its Trust-Task transport is REST and `chunkedTrustTask` when it is DIDComm
+or TSP. That transport is chosen from the VTA's DID document, so the
+algorithm follows what the VTA advertises. There is no fallback in either
+direction. A DIDComm client's `rest_url` is never used to reach the blob
+endpoint, because it may come from the caller rather than from a `VTARest`
+service.
+
+**Server (`vta-backup::ops::chunked`).**
+- A chunked bundle reuses the descriptor pattern's `BundleRecord` state
+  machine and staging directory unchanged. What is new — the manifest and
+  which indices have moved — is a `ChunkPlan` stored beside the record at
+  `chunks:{bundle_id}`.
+- **Serving.** `get-chunk` reads only that chunk's byte range from the
+  staged file, re-checks it against the manifest digest, and never
+  consumes it.
+- **Completion.** `complete-export` releases the bundle. `downloaded` means
+  every index was served at least once.
+- **Writing.** `put-chunk` refuses bytes whose digest is not the committed
+  one, so a repeat of a stored index is `stored: false` and a mismatched
+  one is `digestMismatch`. It writes at the chunk's offset in a staging
+  file sized up front, and syncs before answering `stored: true`.
+- **Finalizing.** `finalize-import` (either version) assembles and verifies
+  a chunked upload before the password is used. Only then does the bundle
+  move to `ImportReceived`, the one state the finalize op accepts.
+- **Expiry.** Each chunk request slides `expires_at` to one TTL from now,
+  never past `created_at + MAX_BUNDLE_TTL_SECS` (one hour).
+- **Rate limit.** Chunk requests are limited per authenticated DID
+  (`ChunkRateLimiter`, 50/s with a burst of 100), because the per-IP REST
+  limiter never sees mediator traffic. Over budget is answered
+  `unavailable` with `retryAfter`, which `VtaClient::idempotent` honours.
+- **Abort and sweeper.** Abort and the sweeper's retention pass delete the
+  plan with the record.
+
+**Client (`vta_sdk::client::backup_chunked`).**
+- Chunks are pulled and written one at a time, each through
+  `VtaClient::idempotent`, with no retry loop of its own.
+- Each chunk is verified on arrival, and the assembled bundle against the
+  whole-bundle digest and size.
+- A failed pass leaves `ChunkedDownload` / `ChunkedUpload` holding what
+  moved. Calling `fetch_missing` / `put_missing` again resumes with only
+  the missing indices.
+- The high-level `backup_export_via_descriptor` /
+  `backup_import_via_descriptor` abort the bundle on failure, so a
+  half-transferred copy is not left retrievable until expiry.
+
+**Why pull, not push.** A mediator queue caps at 1000 messages per DID
+with a 7-day expiry, and a send `Ok` is not delivery (R1.1). A chunk the
+client has to ask for is a chunk it knows it lacks.
+
+**Why 256 KiB.** 262144 raw bytes become 349526 characters of base64url.
+That survives DIDComm authcrypt and two nested forward wrappers, each
+×4⁄3, inside a 1 MiB message; 512 KiB would not survive even one wrapper.
+With at most 4096 chunks a bundle is capped at 1 GiB, and the manifest's
+digests still fit one message.
 
 ## Wire format
 
@@ -145,8 +178,8 @@ pub struct BundleDescriptor {
     pub bundle_id: String,
 
     /// Transport algorithm. v1 supports only `"stream"` (VTA hosts
-    /// the bytes on its own blob endpoint). Future: `"s3-presigned"`,
-    /// `"chunkedTrustTask"` (see below). The wire shape is forward-compatible
+    /// the bytes on its own blob endpoint). `"chunkedTrustTask"` uses a
+    /// different descriptor shape (see above). Future: `"s3-presigned"`. The wire shape is forward-compatible
     /// — unknown algorithms surface as `MalformedRequest` at the
     /// dispatcher.
     pub algorithm: String,

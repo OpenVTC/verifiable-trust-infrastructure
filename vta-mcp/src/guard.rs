@@ -209,6 +209,12 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // A backup export is a full-state dump — sensitive in both directions.
     ("vta/backup/initiate-export", Risk::Sensitive),
     ("vta/backup/complete-export", Risk::Sensitive),
+    // A chunk of that dump. Each `get-chunk` releases part of the encrypted
+    // export, so it is classified with `complete-export` rather than read as the
+    // ordinary `get` its verb would suggest. `put-chunk` writes part of a bundle
+    // that `finalize-import` may later impose on the whole agent.
+    ("vta/backup/get-chunk", Risk::Sensitive),
+    ("vta/backup/put-chunk", Risk::Sensitive),
 ];
 
 /// Final-segment verbs that only ever read.

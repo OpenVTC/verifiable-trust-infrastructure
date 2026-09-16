@@ -195,6 +195,36 @@ pub async fn complete_export(
     let mut record = require_owned(deps.bundles_ks, &bundle_id, &auth.did).await?;
     enforce_kind(&record, BundleKind::Export)?;
 
+    // A chunked bundle is never one-shot: it stays `ExportReady` while its chunks
+    // are served, and `complete-export` is what releases it. `downloaded` then
+    // means every index was served at least once (`initiate-export/1.1` §
+    // Expiry and completion), and the staged bytes go now rather than at expiry.
+    if record.algorithm == super::chunked_algorithm() && record.state == BundleState::ExportReady {
+        let downloaded = super::chunked::all_served(deps.bundles_ks, &bundle_id)
+            .await?
+            .unwrap_or(false);
+        if let Some(path) = record.blob_path.take()
+            && let Err(e) = tokio::fs::remove_file(&path).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!(
+                bundle_id = %bundle_id,
+                path = %path.display(),
+                error = %e,
+                "complete-export: failed to delete chunked blob; sweeper will retry"
+            );
+            record.blob_path = Some(path);
+        }
+        record.state = BundleState::ExportAcked;
+        backup_bundle_store::store_bundle(deps.bundles_ks, &record).await?;
+        super::chunked::delete_plan(deps.bundles_ks, &bundle_id).await?;
+        info!(bundle_id = %bundle_id, downloaded, "complete-export (chunked): released");
+        return Ok(CompleteExportResultBody {
+            bundle_id: bundle_id.to_string(),
+            downloaded,
+        });
+    }
+
     let downloaded = match record.state {
         BundleState::ExportDownloaded => {
             record.state = BundleState::ExportAcked;
@@ -447,6 +477,8 @@ pub async fn abort_bundle(
     record.state = BundleState::Aborted;
     record.blob_path = None;
     backup_bundle_store::store_bundle(deps.bundles_ks, &record).await?;
+    // A chunked bundle's manifest and progress end with it. Absent for stream.
+    super::chunked::delete_plan(deps.bundles_ks, &bundle_id).await?;
 
     info!(bundle_id = %bundle_id, "abort: bundle cancelled");
     Ok(AbortBundleResultBody {
@@ -457,7 +489,7 @@ pub async fn abort_bundle(
 
 // ─── Internal helpers ────────────────────────────────────────────────
 
-fn bundle_ttl() -> Duration {
+pub(crate) fn bundle_ttl() -> Duration {
     Duration::seconds(DEFAULT_BUNDLE_TTL_SECS as i64)
 }
 
@@ -470,7 +502,10 @@ fn validate_algorithm(algorithm: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn enforce_open_bundle_cap(ks: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
+pub(crate) async fn enforce_open_bundle_cap(
+    ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<(), AppError> {
     let all = backup_bundle_store::list_bundles(ks).await?;
     let open = all
         .iter()
@@ -486,14 +521,14 @@ async fn enforce_open_bundle_cap(ks: &KeyspaceHandle, did: &str) -> Result<(), A
     Ok(())
 }
 
-fn parse_bundle_id(s: &str) -> Result<Uuid, AppError> {
+pub(crate) fn parse_bundle_id(s: &str) -> Result<Uuid, AppError> {
     Uuid::parse_str(s).map_err(|e| AppError::Validation(format!("invalid bundle_id `{s}`: {e}")))
 }
 
 /// Look up a bundle and verify the caller owns it. Returns `NotFound`
 /// for both "no such record" and "exists but wrong DID" so the API
 /// doesn't leak the existence of a peer super-admin's bundle.
-async fn require_owned(
+pub(crate) async fn require_owned(
     ks: &KeyspaceHandle,
     id: &Uuid,
     caller_did: &str,
@@ -514,7 +549,7 @@ async fn require_owned(
     Ok(record)
 }
 
-fn enforce_kind(record: &BundleRecord, expected: BundleKind) -> Result<(), AppError> {
+pub(crate) fn enforce_kind(record: &BundleRecord, expected: BundleKind) -> Result<(), AppError> {
     if record.kind != expected {
         // Treat as not-found — don't leak the existence of a bundle
         // of the other kind with the same id.
@@ -587,7 +622,7 @@ fn build_blob_url(public_url: &str, bundle_id: &Uuid) -> String {
     format!("{base}/backup/blob/{bundle_id}")
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -600,7 +635,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(unix)]
-async fn set_dir_mode_700(path: &Path) -> Result<(), AppError> {
+pub(crate) async fn set_dir_mode_700(path: &Path) -> Result<(), AppError> {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o700);
     tokio::fs::set_permissions(path, perms)
@@ -609,7 +644,7 @@ async fn set_dir_mode_700(path: &Path) -> Result<(), AppError> {
 }
 
 #[cfg(unix)]
-async fn set_file_mode_600(path: &Path) -> Result<(), AppError> {
+pub(crate) async fn set_file_mode_600(path: &Path) -> Result<(), AppError> {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o600);
     tokio::fs::set_permissions(path, perms)

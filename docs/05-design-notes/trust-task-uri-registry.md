@@ -293,15 +293,17 @@ Analogous to `GET /did/{did}/log` — bulk transport is wrong on top of
 a JSON envelope. The 1 MB global body cap is overridden for these
 routes (100 MB; enforced in-handler via `to_bytes(_, CAP)`).
 
-Algorithms supported: `stream` (this VTA serves the bytes), REST-only — a
-VTA with no `public_url` refuses `initiate-*` with
-`vta/backup/initiate-{export,import}:transportUnavailable`. Future:
-`s3-presigned`, and `chunkedTrustTask` (formerly written
-`chunked-trust-task`) for DIDComm/TSP-only deployments with no HTTPS
-transport — specified upstream in [trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474) as
-`vta/backup/initiate-{export,import}/1.1`, `vta/backup/get-chunk/1.0`,
-`vta/backup/put-chunk/1.0` and `vta/backup/finalize-import/1.1`; not yet
-implemented. See `backup-descriptor-pattern.md`.
+Algorithms supported:
+- `stream` (this VTA serves the bytes), REST-only. A VTA with no
+  `public_url` refuses it with
+  `vta/backup/initiate-{export,import}:transportUnavailable`.
+- `chunkedTrustTask` (formerly written `chunked-trust-task`), for DIDComm/TSP
+  clients: the bytes move as Trust Tasks, with no HTTPS transport. Specified in
+  [trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474) and served as `vta/backup/initiate-{export,import}/1.1`,
+  `vta/backup/get-chunk/1.0`, `vta/backup/put-chunk/1.0` and
+  `vta/backup/finalize-import/1.1`. See `backup-descriptor-pattern.md`.
+
+Future: `s3-presigned`.
 
 ### Config slice (`spec/vta/config/*`)
 

@@ -132,6 +132,16 @@ pub async fn sweep_bundles(
                     }
                 }
             }
+            // A chunked bundle's plan goes with its record. Absent for stream
+            // bundles; a failure here only leaves an inert record to retry.
+            if let Err(e) = crate::ops::chunked::delete_plan(bundles_ks, &record.bundle_id).await {
+                warn!(
+                    bundle_id = %record.bundle_id,
+                    error = %e,
+                    "sweeper: failed to delete chunk plan; retry next pass"
+                );
+                continue;
+            }
             if let Err(e) = backup_bundle_store::delete_bundle(bundles_ks, &record.bundle_id).await
             {
                 warn!(

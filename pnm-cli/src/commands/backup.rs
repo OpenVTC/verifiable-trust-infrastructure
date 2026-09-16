@@ -7,7 +7,7 @@
 
 use vta_cli_common::render::{DIM, GREEN, RED, RESET};
 use vta_cli_common::secure_file;
-use vta_sdk::client::{SurfaceTransport, VtaClient};
+use vta_sdk::client::{SurfaceTransport, TransferProgress, VtaClient};
 use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
 use crate::cli::BackupCommands;
@@ -73,8 +73,9 @@ fn legacy_over_mediator_warning(surface: SurfaceTransport) -> Option<String> {
              {other}, so the whole backup travels as a single mediator message. A \
              mediator refuses messages over its size limit (1 MiB by default, roughly \
              half of that usable after DIDComm encoding), so this fails — usually as a \
-             timeout — for all but very small VTAs. Re-run with `--transport rest` for \
-             an actual REST transfer."
+             timeout — for all but very small VTAs. Drop the flag: the default flow \
+             moves the backup in verified chunks over {other}. Or re-run with \
+             `--transport rest` for an actual REST transfer."
         )),
     }
 }
@@ -207,10 +208,13 @@ async fn cmd_backup_export_descriptor(
         .interact()?;
     validate_backup_password(&password)?;
 
-    println!("Exporting backup (trust-task descriptor flow)...");
+    let surface = client.trust_task_transport();
+    println!("Exporting backup ({})...", flow_label(surface));
     let bytes = client
-        .backup_export_via_descriptor(&password, include_audit)
-        .await?;
+        .backup_export_with_progress(&password, include_audit, &mut progress_line("received"))
+        .await;
+    finish_progress_line(surface);
+    let bytes = bytes?;
 
     // Bytes are the JSON-serialised `BackupEnvelope`; inflate just
     // enough to surface the source DID + audit flag for the user.
@@ -233,10 +237,63 @@ async fn cmd_backup_export_descriptor(
     );
     println!("  Includes audit: {}", envelope.includes_audit);
     println!("  File size: {} bytes", bytes.len());
-    println!(
-        "{DIM}  Flow: trust-task descriptor (one-shot bearer token, bytes deleted server-side){RESET}"
-    );
+    println!("{DIM}  Flow: {}{RESET}", flow_detail(surface));
     Ok(())
+}
+
+/// What the operator is told the transfer is using. The algorithm follows the
+/// client's Trust-Task transport, which follows what the VTA advertises.
+fn flow_label(surface: SurfaceTransport) -> String {
+    match surface {
+        SurfaceTransport::Rest => "trust-task descriptor flow, HTTPS stream".into(),
+        other => format!("trust-task descriptor flow, chunked over {other}"),
+    }
+}
+
+fn flow_detail(surface: SurfaceTransport) -> &'static str {
+    match surface {
+        SurfaceTransport::Rest => {
+            "trust-task descriptor, `stream` (one-shot bearer token, bytes deleted server-side)"
+        }
+        _ => {
+            "trust-task descriptor, `chunkedTrustTask` (each chunk verified, bundle released on completion)"
+        }
+    }
+}
+
+/// A progress reporter for a chunked transfer: one line on stderr, rewritten
+/// in place. Called only by the chunked path, so a `stream` transfer prints
+/// nothing extra.
+fn progress_line(verb: &'static str) -> impl FnMut(TransferProgress) + Send {
+    move |p: TransferProgress| {
+        eprint!(
+            "\r  {verb} chunk {}/{} ({} / {})",
+            p.chunks_done,
+            p.chunks_total,
+            human_bytes(p.bytes_done),
+            human_bytes(p.bytes_total)
+        );
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    }
+}
+
+/// End the in-place progress line, if one was drawn.
+fn finish_progress_line(surface: SurfaceTransport) {
+    if surface != SurfaceTransport::Rest {
+        eprintln!();
+    }
+}
+
+fn human_bytes(n: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let n = n as f64;
+    if n < KIB {
+        format!("{n} B")
+    } else if n < KIB * KIB {
+        format!("{:.1} KiB", n / KIB)
+    } else {
+        format!("{:.1} MiB", n / (KIB * KIB))
+    }
 }
 
 async fn cmd_backup_import_descriptor(
@@ -272,10 +329,13 @@ async fn cmd_backup_import_descriptor(
     // Preview run: confirm=false. This uploads the bytes; the commit below
     // re-runs finalize against the same bundle. Each finalize call reads the
     // staged bytes server-side; the state machine allows preview → commit.
-    println!("Validating backup (trust-task descriptor flow)...");
+    let surface = client.trust_task_transport();
+    println!("Validating backup ({})...", flow_label(surface));
     let preview = client
-        .backup_import_via_descriptor(&bytes, &password, false)
-        .await?;
+        .backup_import_with_progress(&bytes, &password, false, &mut progress_line("sent"))
+        .await;
+    finish_progress_line(surface);
+    let preview = preview?;
     println!();
     println!("  Keys:        {}", preview.key_count);
     println!("  ACL entries: {}", preview.acl_count);
@@ -323,9 +383,11 @@ async fn cmd_backup_import_descriptor(
         Ok(result) => result,
         Err(vta_sdk::error::VtaError::NotFound(_)) => {
             println!("{DIM}  Upload slot expired during confirmation; uploading again...{RESET}");
-            client
-                .backup_import_via_descriptor(&bytes, &password, true)
-                .await?
+            let result = client
+                .backup_import_with_progress(&bytes, &password, true, &mut progress_line("sent"))
+                .await;
+            finish_progress_line(surface);
+            result?
         }
         Err(e @ vta_sdk::error::VtaError::Conflict(_)) => {
             eprintln!(
@@ -356,6 +418,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_flow_names_the_algorithm_the_transport_selects() {
+        assert!(flow_label(SurfaceTransport::Rest).contains("stream"));
+        assert!(flow_label(SurfaceTransport::Didcomm).contains("chunked over DIDComm"));
+        assert!(flow_label(SurfaceTransport::Tsp).contains("chunked over TSP"));
+    }
+
+    #[test]
+    fn progress_sizes_are_human_readable() {
+        assert_eq!(human_bytes(12), "12 B");
+        assert_eq!(human_bytes(262_144), "256.0 KiB");
+        assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MiB");
+    }
+
+    #[test]
     fn legacy_flag_is_silent_on_a_rest_client() {
         assert!(legacy_over_mediator_warning(SurfaceTransport::Rest).is_none());
     }
@@ -366,6 +442,7 @@ mod tests {
             let w = legacy_over_mediator_warning(surface).expect("a warning");
             assert!(w.contains("1 MiB"), "{w}");
             assert!(w.contains("--transport rest"), "{w}");
+            assert!(w.contains("Drop the flag"), "{w}");
         }
     }
 }

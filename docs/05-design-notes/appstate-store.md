@@ -200,9 +200,10 @@ DIDComm client can come from the caller rather than from a `VTARest` service in
 the VTA's DID document, and the transport rules forbid downgrading past what the
 peer advertises.
 
-So blobs, as the descriptor pattern implements them today, **require a REST
+So blobs on the descriptor pattern's `stream` algorithm **require a REST
 client against a VTA that publishes an HTTPS address** (`public_url`; without
-one the VTA answers `initiate-*` with `transportUnavailable`).
+one the VTA answers `initiate-*` with `transportUnavailable`). Backup has since
+added a second algorithm that removes that dependency — see option 2 below.
 
 **That is the real constraint, and it is sharper than the issue's.** A VTA may
 legitimately stop advertising REST: runtime service management allows disabling
@@ -219,10 +220,11 @@ decision rather than an implementation detail:
    varies by deployment.
 2. **Chunked transfer over the Trust-Task surface.** No REST dependency, and it
    puts large payloads back inside the envelope this design deliberately keeps
-   them out of. (The backup family is now taking this route for exactly the
+   them out of. (The backup family now takes this route for exactly the
    DIDComm/TSP-only case — the `chunkedTrustTask` algorithm,
-   [trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474) — which would give an appstate blob design a bounded,
-   client-pulled precedent to reuse rather than invent.)
+   [trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474), implemented in `vta-backup::ops::chunked` and
+   `vta_sdk::client::backup_chunked` — which gives an appstate blob design a
+   bounded, client-pulled precedent to reuse rather than invent.)
 3. **Defer blobs.** Ship `appstate` without them and let the first real consumer
    requirement decide. Nothing in OpenVTC's stated need — labels, relationships,
    contacts, join history — obviously wants a blob.

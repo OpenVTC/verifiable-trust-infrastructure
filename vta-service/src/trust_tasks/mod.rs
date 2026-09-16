@@ -2026,6 +2026,21 @@ dispatch_table! {
         [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_BACKUP_ABORT_1_0 => backup::handle_abort
         [ Mutating None false ],
+    // The `chunkedTrustTask` algorithm. The 1.1 initiators serve `stream` through
+    // the 1.0 path unchanged. `get-chunk` releases part of the encrypted export,
+    // so it discloses Secret like `complete-export`; it is Mutating because it
+    // records the index as served and slides the bundle's expiry. `put-chunk`
+    // stages inert bytes checked against a pre-committed manifest.
+    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1 => backup::handle_initiate_export_1_1
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1 => backup::handle_initiate_import_1_1
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1 => backup::handle_finalize_import_1_1
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_BACKUP_GET_CHUNK_1_0 => backup::handle_get_chunk
+        [ Mutating Secret false ],
+    vta_sdk::trust_tasks::TASK_BACKUP_PUT_CHUNK_1_0 => backup::handle_put_chunk
+        [ Mutating None false ],
     // ─── DID-templates slice (2.0 — optional contextId selects the
     // scope; the twelve retired 1.0 URIs now get UnsupportedType) ──
     vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0 => did_templates::handle_list

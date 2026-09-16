@@ -10,10 +10,9 @@ impl VtaClient {
     /// response, which is why this rides a protocol message rather than a Trust
     /// Task — and why it has no TSP dispatcher. The descriptor flow
     /// (`backup/initiate-export` + a blob fetch + `backup/complete-export`) is
-    /// the default as of rollout step 5. It is **REST-only** today — its bytes
-    /// move over the VTA's HTTPS blob endpoint, and a DIDComm/TSP client is
-    /// refused with [`VtaError::UnsupportedTransport`] — until the
-    /// `chunkedTrustTask` transfer algorithm lands. This remains only as the
+    /// the default as of rollout step 5, and works on every transport: `stream`
+    /// over the VTA's HTTPS blob endpoint on a REST client, `chunkedTrustTask`
+    /// (bytes as `get-chunk` Trust Tasks) on a DIDComm/TSP one. This remains only as the
     /// `--use-rest-legacy` escape hatch, and goes at step 6 with the route it
     /// calls. Over DIDComm it is no substitute: the envelope rides one message,
     /// and a mediator refuses any over its size limit (1 MiB by default).
