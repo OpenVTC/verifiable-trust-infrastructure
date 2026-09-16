@@ -736,7 +736,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   of the reserved row over `policy/get/0.1` + `policy/upsert/0.2`.
   **Trust-Task transport only**; the SDK's REST arm is unimplemented and
   no `/policies` axum route exists, so a REST client gets a 404.
-- **Offline break-glass**: `vta approvals {list,remove,disable}` +
+- **Offline break-glass**: `vta approvals {list,remove,delete-all}` +
   `vta policy {list,delete}`. Deliberately **cannot create** a rule; daemon
   stopped; not available in TEE.
 - **Ceremony**: `task-consent/request/0.1` (outbound push, VTA-signed),
