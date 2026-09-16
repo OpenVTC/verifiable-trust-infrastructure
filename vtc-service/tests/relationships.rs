@@ -784,6 +784,7 @@ mod pairwise {
         session_id: String,
         relationships_ks: vti_common::store::KeyspaceHandle,
         audit_ks: vti_common::store::KeyspaceHandle,
+        publish_rate_limiter: vtc_service::relationships::rate_limit::PublishRateLimiter,
         _vtc: TestVtc,
     }
 
@@ -864,6 +865,7 @@ mod pairwise {
             session_id,
             relationships_ks: vtc.state.relationships_ks.clone(),
             audit_ks: vtc.state.audit_ks.clone(),
+            publish_rate_limiter: vtc.state.publish_rate_limiter.clone(),
             _vtc: vtc,
         }
     }
@@ -1008,6 +1010,70 @@ mod pairwise {
             "session id leaked into the stored VRC — this is the linkage the \
              pairwise identifier exists to remove"
         );
+    }
+
+    /// A member over their publish allowance gets the ecosystem rate-limit
+    /// contract, not a bare 400: status 429, `x-rate-limit-source: vtc`, a
+    /// `Retry-After`, and a JSON body naming the `relationships` limiter —
+    /// so an operator can tell which service, and which of its limiters,
+    /// refused. Nothing is stored.
+    #[tokio::test]
+    async fn a_member_over_the_publish_allowance_gets_the_rate_limit_contract() {
+        use vtc_service::relationships::rate_limit::{MAX_PER_WINDOW, WINDOW_SECS};
+
+        let fix = fixture().await;
+        let now = chrono::Utc::now();
+        for _ in 0..MAX_PER_WINDOW {
+            fix.publish_rate_limiter
+                .check_and_record(&did_for(MEMBER), now)
+                .await
+                .expect("within the allowance");
+        }
+
+        let v = vrc(RDID, PEER_RDID).await;
+        let res = post(&fix, &v, true).await;
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(res.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vtc");
+        assert_eq!(res.headers()["content-type"], "application/json");
+        let retry_after: u64 = res.headers()["retry-after"]
+            .to_str()
+            .unwrap()
+            .parse()
+            .expect("Retry-After is whole seconds");
+        assert!((1..=WINDOW_SECS as u64).contains(&retry_after));
+
+        let headers = res.headers().clone();
+        let (status, body) = body_value(res).await;
+        assert_eq!(body["error"], "rate_limited");
+        assert_eq!(body["limiter"], "relationships");
+
+        // The SDK's parser — the client half of the contract — attributes it
+        // to the VTC and recovers the limiter name.
+        match vta_sdk::error::VtaError::rate_limited_from_http(
+            status,
+            &headers,
+            &body.to_string(),
+            "https://vtc.example.com/v1/relationships",
+        ) {
+            Some(vta_sdk::error::VtaError::RateLimited {
+                limited_by,
+                limiter,
+                retry_after,
+                ..
+            }) => {
+                assert_eq!(limited_by, vta_sdk::rate_limit::RateLimitSource::Vtc);
+                assert_eq!(limiter.as_deref(), Some("relationships"));
+                assert!(retry_after.is_some());
+            }
+            other => panic!("the SDK must read this as a VTC rate limit: {other:?}"),
+        }
+        assert_eq!(body["retryAfterSecs"], retry_after);
+        assert!(body["message"].is_string());
+
+        let rows = vtc_service::relationships::list_all(&fix.relationships_ks)
+            .await
+            .unwrap();
+        assert!(rows.is_empty(), "a refused publish must store nothing");
     }
 
     /// The authorization is verified and dropped. If it ever reaches the audit

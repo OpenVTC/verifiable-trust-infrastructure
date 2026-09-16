@@ -45,8 +45,8 @@ use super::model::PolicyPurpose;
 /// adversarial input shape burns CPU per request unbounded. regorus's
 /// cooperative timer interrupts evaluation once elapsed work exceeds this —
 /// real policies evaluate in microseconds, so the headroom is ~1000×, while
-/// a runaway aborts fast enough that the 5 rps/IP governor keeps total cost
-/// bounded.
+/// a runaway aborts fast enough that the per-IP governor (a burst of 10, then
+/// one request per 5 s) keeps total cost bounded.
 const POLICY_EVAL_TIME_LIMIT: Duration = Duration::from_millis(250);
 
 /// How many evaluation "work units" the timer accumulates between wall-clock
