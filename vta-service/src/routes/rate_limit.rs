@@ -35,8 +35,17 @@
 //!   on this header name and value; do not rename either.**
 //! - `x-rate-limit-scope: <auth|did-log|backup-blob>` — which limiter tripped.
 //! - `retry-after: <seconds>` (and the legacy `x-ratelimit-after`, same value).
-//! - a `text/plain` body naming the VTA and the limiter, with no configuration
-//!   values or other internal detail.
+//! - an `application/json` body, with no configuration values or other
+//!   internal detail:
+//!
+//!   ```json
+//!   {"error":"rate_limited","limiter":"did-log",
+//!    "message":"Too Many Requests: rejected by the VTA's `did-log` rate limiter. Retry after 3 s.",
+//!    "retryAfterSecs":3}
+//!   ```
+//!
+//!   `vta_sdk::rate_limit` reads `limiter` from it; the header set is the
+//!   primary signal and the body names the limiter for a human too.
 
 use std::sync::Arc;
 
@@ -49,11 +58,13 @@ use vta_config::ServerConfig;
 
 /// Response header naming who produced a 429. Always `vta` here.
 ///
-/// A client-side contract: the CLI uses it to tell a VTA rate limit (tunable
-/// by the VTA operator) from a mediator's, a DID host's or a proxy's.
-pub const RATE_LIMIT_SOURCE_HEADER: &str = "x-rate-limit-source";
+/// A client-side contract, so the name is `vta_sdk::rate_limit`'s — the module
+/// the SDK reads it with — rather than a second literal that could drift.
+pub const RATE_LIMIT_SOURCE_HEADER: &str = vta_sdk::rate_limit::SOURCE_HEADER;
 
 /// Value of [`RATE_LIMIT_SOURCE_HEADER`] on every 429 the VTA itself emits.
+/// `vta_sdk::rate_limit::RateLimitSource::from_source_header` maps it to
+/// `RateLimitSource::Vta`; a test below holds the two together.
 pub const RATE_LIMIT_SOURCE_VTA: &str = "vta";
 
 /// Response header naming which VTA limiter produced a 429 — the
@@ -62,7 +73,7 @@ pub const RATE_LIMIT_SCOPE_HEADER: &str = "x-rate-limit-scope";
 
 /// Legacy header `tower_governor` has always set alongside `retry-after`.
 /// Kept, with the same value, so existing clients that read it keep working.
-const LEGACY_RATE_LIMIT_AFTER_HEADER: &str = "x-ratelimit-after";
+const LEGACY_RATE_LIMIT_AFTER_HEADER: &str = vta_sdk::rate_limit::LEGACY_RETRY_AFTER_HEADER;
 
 /// Default auth-limiter interval (seconds per token). Mirrors
 /// `vta_config::ServerConfig::default()`; used by callers with no config (the
@@ -234,13 +245,19 @@ fn governor_error_response(limiter: Limiter, err: GovernorError) -> Response<Bod
 /// clamped to ≥1 so a client never busy-loops on `retry-after: 0`.
 pub(crate) fn too_many_requests(limiter: Limiter, retry_after_secs: u64) -> Response<Body> {
     let retry_after = retry_after_secs.max(1);
-    let body = format!(
-        "Too Many Requests: rejected by the VTA's `{}` rate limiter. Retry after {retry_after} s.\n",
-        limiter.name()
-    );
+    let body = serde_json::json!({
+        "error": "rate_limited",
+        "limiter": limiter.name(),
+        "message": format!(
+            "Too Many Requests: rejected by the VTA's `{}` rate limiter. Retry after {retry_after} s.",
+            limiter.name()
+        ),
+        "retryAfterSecs": retry_after,
+    })
+    .to_string();
     Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CONTENT_TYPE, "application/json")
         .header(header::RETRY_AFTER, HeaderValue::from(retry_after))
         .header(
             LEGACY_RATE_LIMIT_AFTER_HEADER,
@@ -377,18 +394,35 @@ mod tests {
             let retry: u64 = h[header::RETRY_AFTER].to_str().unwrap().parse().unwrap();
             assert!(retry >= 1, "retry-after must be at least 1 s, got {retry}");
             assert_eq!(h[LEGACY_RATE_LIMIT_AFTER_HEADER], h[header::RETRY_AFTER]);
+            assert_eq!(h[header::CONTENT_TYPE], "application/json");
             let body = to_bytes(r.into_body(), usize::MAX).await.unwrap();
-            let body = std::str::from_utf8(&body).unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
             // Exactly this and nothing more: the VTA, the limiter, the wait.
             // No burst size or other configuration detail.
             assert_eq!(
                 body,
-                format!(
-                    "Too Many Requests: rejected by the VTA's `{scope}` rate limiter. \
-                     Retry after {retry} s.\n"
-                )
+                serde_json::json!({
+                    "error": "rate_limited",
+                    "limiter": scope,
+                    "message": format!(
+                        "Too Many Requests: rejected by the VTA's `{scope}` rate limiter. \
+                         Retry after {retry} s."
+                    ),
+                    "retryAfterSecs": retry,
+                })
             );
         }
+    }
+
+    /// The server's label and the SDK's reading of it are one contract.
+    #[test]
+    fn source_label_is_what_the_sdk_reads_as_vta() {
+        use vta_sdk::rate_limit::RateLimitSource;
+        assert_eq!(
+            RateLimitSource::from_source_header(Some(RATE_LIMIT_SOURCE_VTA)),
+            RateLimitSource::Vta
+        );
+        assert_eq!(RATE_LIMIT_SOURCE_HEADER, "x-rate-limit-source");
     }
 
     #[test]

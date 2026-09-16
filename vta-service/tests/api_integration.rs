@@ -4058,7 +4058,7 @@ async fn unauth_endpoint_rate_limit_returns_429_after_burst() {
         "expected at least one 429 within 20 sequential POST /auth/challenge calls; \
          the auth rate limiter (10 burst) appears to be missing",
     );
-    assert_eq!(resp.headers()["x-rate-limit-source"], "vta");
+    assert_eq!(resp.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vta");
     assert_eq!(resp.headers()["x-rate-limit-scope"], "auth");
     assert!(resp.headers().contains_key("retry-after"));
 }
@@ -4120,7 +4120,7 @@ async fn did_log_flood_does_not_spend_auth_budget() {
         }
     }
     let resp = rejection.expect("100 did.jsonl GETs must trip the did-log limiter");
-    assert_eq!(resp.headers()["x-rate-limit-source"], "vta");
+    assert_eq!(resp.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vta");
     assert_eq!(resp.headers()["x-rate-limit-scope"], "did-log");
 
     // The same IP's auth bucket is untouched: the full burst still passes.
@@ -4187,7 +4187,7 @@ async fn backup_blob_branch_is_rate_limited() {
         "expected a 429 within 20 GET /backup/blob calls; the backup-blob \
          branch is missing its rate limiter",
     );
-    assert_eq!(resp.headers()["x-rate-limit-source"], "vta");
+    assert_eq!(resp.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vta");
     assert_eq!(resp.headers()["x-rate-limit-scope"], "backup-blob");
 }
 
