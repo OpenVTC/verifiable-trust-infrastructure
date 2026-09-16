@@ -44,6 +44,7 @@ pub(super) async fn handle_update(
     };
     match operations::config::update_config(
         &state.config,
+        &state.audit_sink,
         auth,
         req.overrides,
         TRANSPORT_TRUST_TASK,

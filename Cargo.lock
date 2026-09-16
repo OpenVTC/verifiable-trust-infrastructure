@@ -11188,6 +11188,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "fjall",
  "futures-util",
+ "governor",
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",

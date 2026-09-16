@@ -1407,9 +1407,15 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     // sets `x-forwarded-for: 192.0.2.1` so all calls hash to the
     // same bucket and trip the burst within 20 requests.
     let state_for_ctx = state.clone();
-    let router = crate::routes::router_with_cors(&[], true, crate::routes::RateLimits::default())
-        .with_state(state.clone())
-        .merge(crate::routes::health_router().with_state(state));
+    // Quotas are read live from the harness config, as in production, so a
+    // test that patches a rate-limit key sees it applied.
+    let router = crate::routes::router_with_cors(
+        &[],
+        true,
+        crate::routes::QuotaSource::Live(state.config.clone()),
+    )
+    .with_state(state.clone())
+    .merge(crate::routes::health_router().with_state(state));
 
     let ctx = TestAppContext {
         jwt_keys,

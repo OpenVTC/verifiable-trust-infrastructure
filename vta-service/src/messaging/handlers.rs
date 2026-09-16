@@ -927,8 +927,14 @@ didcomm_handler!(
     Gate::SuperAdmin,
     vta_management::UPDATE_CONFIG_RESULT,
     vta_management::update_config::UpdateConfigBody,
-    |s, auth, body| operations::config::update_config(&s.config, &auth, body.overrides, "didcomm",)
-        .await
+    |s, auth, body| operations::config::update_config(
+        &s.config,
+        &s.audit_sink,
+        &auth,
+        body.overrides,
+        "didcomm",
+    )
+    .await
 );
 
 // ---------------------------------------------------------------------------

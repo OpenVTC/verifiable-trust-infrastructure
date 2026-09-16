@@ -170,7 +170,12 @@ summary.
   `--features tsp`; setup refuses either combination by name rather than
   publishing a transport the VTA cannot answer on. Nothing checks that the
   mediator actually routes TSP — its services belong to its own controller.
-- **`[server]`** — `host = "0.0.0.0"`, `port = 8100`.
+- **`[server]`** — `host = "0.0.0.0"`, `port = 8100`. Also `trust_xff` and the
+  per-IP rate limits (`rate_limit_interval_secs` / `rate_limit_burst` for the
+  auth endpoints, `did_log_rate_limit_interval_secs` / `did_log_rate_limit_burst`
+  for the public `did.jsonl` routes) — intervals are *seconds per token*, not
+  rates. See [Rate limiting](rate-limiting.md) for the semantics, the proxy
+  trap, and runtime tuning with `pnm config update`.
 - **`[log]`** — `level = "info"`, `format = "text"`.
 - **`[secrets]`** — required; tagged enum on `backend`. See below.
 - **`[messaging]`** — optional; tagged enum on `kind`. Default `"skip"`.

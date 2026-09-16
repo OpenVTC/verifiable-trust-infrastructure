@@ -351,6 +351,10 @@ tower = { version = "0.5", features = ["limit"] }
 # Per-IP rate limiting for unauthenticated endpoints (`/bootstrap/request`,
 # `/auth/*`) so a flood of requests can't burn CPU on attestation / crypto.
 tower_governor = "0.8"
+# Keyed token-bucket limiter behind `routes::rate_limit` — already in the graph
+# via tower_governor; used directly so a quota can be swapped at runtime.
+# tower_governor stays for its client-IP key extractors.
+governor = "0.10"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 aes-gcm = { workspace = true }

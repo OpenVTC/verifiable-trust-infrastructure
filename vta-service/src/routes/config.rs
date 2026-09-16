@@ -51,7 +51,13 @@ pub async fn update_config(
     State(state): State<AppState>,
     Json(req): Json<UpdateConfigRequest>,
 ) -> Result<Json<UpdateConfigResultBody>, AppError> {
-    let result =
-        operations::config::update_config(&state.config, &auth.0, req.overrides, "rest").await?;
+    let result = operations::config::update_config(
+        &state.config,
+        &state.audit_sink,
+        &auth.0,
+        req.overrides,
+        "rest",
+    )
+    .await?;
     Ok(Json(result))
 }

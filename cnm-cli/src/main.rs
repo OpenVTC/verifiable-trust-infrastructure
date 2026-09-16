@@ -457,6 +457,19 @@ enum ConfigCommands {
         /// Public URL for this VTA
         #[arg(long)]
         public_url: Option<String>,
+        /// Auth rate limiter: SECONDS PER TOKEN, 1-3600. Not a rate — lower
+        /// is looser. Applied live, no restart.
+        #[arg(long, value_name = "SECS")]
+        rate_limit_interval_secs: Option<u64>,
+        /// Auth rate limiter burst, 1-10000. Applied live.
+        #[arg(long, value_name = "N")]
+        rate_limit_burst: Option<u32>,
+        /// DID-log rate limiter (public did.jsonl): SECONDS PER TOKEN, 1-3600.
+        #[arg(long, value_name = "SECS")]
+        did_log_rate_limit_interval_secs: Option<u64>,
+        /// DID-log rate limiter burst, 1-10000. Applied live.
+        #[arg(long, value_name = "N")]
+        did_log_rate_limit_burst: Option<u32>,
     },
 }
 
@@ -1146,9 +1159,24 @@ async fn main() {
             ConfigCommands::Update {
                 community_vta_name,
                 public_url,
+                rate_limit_interval_secs,
+                rate_limit_burst,
+                did_log_rate_limit_interval_secs,
+                did_log_rate_limit_burst,
             } => {
-                config_cmd::cmd_config_update(&client, "Community ", community_vta_name, public_url)
-                    .await
+                let mut rate_limits = config_cmd::RateLimitOverrides::default();
+                rate_limits.rate_limit_interval_secs = rate_limit_interval_secs;
+                rate_limits.rate_limit_burst = rate_limit_burst;
+                rate_limits.did_log_rate_limit_interval_secs = did_log_rate_limit_interval_secs;
+                rate_limits.did_log_rate_limit_burst = did_log_rate_limit_burst;
+                config_cmd::cmd_config_patch(
+                    &client,
+                    "Community ",
+                    community_vta_name,
+                    public_url,
+                    rate_limits,
+                )
+                .await
             }
         },
         Commands::Contexts { command } => match command {
@@ -1900,6 +1928,29 @@ fn print_community_local_only_notice(name: &str, client_did: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
+    /// The shared 429 renderer prints `cnm config update --rate-limit-… <N>`;
+    /// cnm must accept exactly those flags.
+    #[test]
+    fn config_update_accepts_the_flags_the_sdk_hint_prints() {
+        use clap::Parser;
+        for flags in [
+            vta_sdk::rate_limit::VTA_RUNTIME_FLAGS,
+            vta_sdk::rate_limit::VTA_DID_LOG_RUNTIME_FLAGS,
+        ] {
+            let args: Vec<&str> = std::iter::once("cnm")
+                .chain(
+                    flags
+                        .split_whitespace()
+                        .map(|t| if t == "<N>" { "7" } else { t }),
+                )
+                .collect();
+            assert!(
+                super::Cli::try_parse_from(&args).is_ok(),
+                "cnm must accept the SDK hint `{flags}`"
+            );
+        }
+    }
+
     use super::*;
 
     /// `community delete` is the name; `remove` stays a hidden alias so
