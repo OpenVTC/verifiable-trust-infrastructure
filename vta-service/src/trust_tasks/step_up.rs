@@ -788,17 +788,18 @@ pub(super) fn approver_mediator(approver_did: &str, configured: Option<&str>) ->
 /// `docs/05-design-notes/tsp-outbound-send.md`), so no relationship setup is
 /// needed. Returns `true` if delivered over TSP, `false` to fall back to DIDComm
 /// (not TSP-reachable, TSP transport not connected on this node, or a send error).
+///
+/// The mediator is not a parameter: it is a property of the profile that seals
+/// the frame, and [`TspTransport`](crate::messaging::tsp_transport::TspTransport)
+/// reads it from there. The caller's `approver_mediator` decision still gates
+/// whether a push is attempted at all — it also picks the route for the DIDComm
+/// fallback, which has no profile to read.
 #[cfg(feature = "tsp")]
-pub(super) async fn try_push_over_tsp(
-    state: &AppState,
-    recipient: &str,
-    mediator_did: &str,
-    doc: &Value,
-) -> bool {
+pub(super) async fn try_push_over_tsp(state: &AppState, recipient: &str, doc: &Value) -> bool {
     if !state.tsp_reach.fresh(recipient) {
         return false;
     }
-    let (Some(atm), Some(profile)) = (state.atm.as_ref(), state.tsp_profile.as_ref()) else {
+    let Some(transport) = state.tsp_transport() else {
         return false; // TSP transport not connected on this node
     };
     let body = match serde_json::to_vec(doc) {
@@ -814,17 +815,7 @@ pub(super) async fn try_push_over_tsp(
     // this one bare would leave exactly one frame in the system speaking the
     // old dialect — the hardest kind to find later.
     let body = vta_sdk::tsp_binding::wrap_envelope(&body);
-    // inner sealed end-to-end to the device, outer sealed to the mediator — the
-    // same routed shape the inbound loop uses for its replies.
-    match atm
-        .tsp()
-        .send_routed(
-            profile,
-            &[mediator_did.to_string(), recipient.to_string()],
-            &body,
-        )
-        .await
-    {
+    match transport.send_to(recipient, &body).await {
         Ok(_) => {
             tracing::debug!(recipient = %recipient, "delivered Trust-Task over TSP (learn-from-inbound)");
             true
@@ -870,7 +861,7 @@ async fn maybe_push_step_up(
     // a fresh hit delivers over TSP and rings the doorbell, otherwise fall
     // through to the DIDComm path below.
     #[cfg(feature = "tsp")]
-    if try_push_over_tsp(state, recipient, &mediator_did, approve_request).await {
+    if try_push_over_tsp(state, recipient, approve_request).await {
         #[cfg(feature = "didcomm")]
         trigger_gateway_wake(state, recipient, &mediator_did).await;
         return;

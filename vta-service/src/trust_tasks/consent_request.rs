@@ -203,7 +203,7 @@ async fn push_one(
     // Prefer TSP when the approver's device was recently seen on it
     // (learn-from-inbound); otherwise fall through to DIDComm below.
     #[cfg(feature = "tsp")]
-    if super::step_up::try_push_over_tsp(state, approver, &mediator_did, request).await {
+    if super::step_up::try_push_over_tsp(state, approver, request).await {
         tracing::info!(
             approver = %approver, mediator = %mediator_did, transport = "tsp",
             "consent request pushed to approver"

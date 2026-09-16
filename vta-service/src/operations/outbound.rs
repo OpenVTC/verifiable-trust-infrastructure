@@ -148,45 +148,36 @@ pub enum ReplyTrust {
     TransportAuthenticated,
 }
 
-/// What sending a Trust Task over TSP takes.
+/// A TSP transport, plus the registry that turns it into a round trip.
 ///
-/// A struct because the four travel together and none is useful alone: the
-/// socket to send on, the profile that seals, the mediator to route the outer
-/// layer through, and the registry that holds the waiter until the reply comes
-/// back as its own inbound frame.
-///
-/// That last one is why TSP took longer than the other two. TSP has no
+/// Carriage is [`TspTransport`](crate::messaging::tsp_transport::TspTransport)'s
+/// job and lives there, shared with the inbound reply path and the device push.
+/// The only thing this adds is the half those two do not need: TSP has no
 /// request/response — `trust-tasks-tsp` is `pack` and `unpack`, deliberately,
-/// because correlation belongs to the document layer. So a round trip is a send
-/// now and an inbound document later, and without somewhere to keep the waiter
-/// between them an agent can only receive.
+/// because correlation belongs to the document layer — so a round trip here is
+/// a send now and an inbound document later, and without somewhere to keep the
+/// waiter between them an agent can only receive.
+///
+/// That split is why the mediator is not a field: it belongs to the transport,
+/// which reads it off the profile that will seal to it. This struct used to
+/// carry its own copy out of `AppConfig`, which was a second source for one fact
+/// with nothing checking that the two agreed.
 #[cfg(feature = "tsp")]
 #[derive(Clone)]
-pub struct TspSender<'a> {
-    atm: &'a affinidi_tdk::messaging::ATM,
-    profile: &'a std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
-    mediator_did: String,
+pub struct TspSender {
+    transport: crate::messaging::tsp_transport::TspTransport,
     replies: crate::trust_tasks::pending_replies::PendingReplies,
 }
 
 #[cfg(feature = "tsp")]
-impl<'a> TspSender<'a> {
-    /// `None` when this node cannot initiate TSP — no socket, no profile, or no
-    /// mediator configured. Absence here removes TSP from selection rather than
-    /// failing at send time, which is the difference between a peer being
+impl TspSender {
+    /// `None` when this node cannot initiate TSP — no live mediator session, so
+    /// no profile that can seal. Absence here removes TSP from selection rather
+    /// than failing at send time, which is the difference between a peer being
     /// reached over its next-preferred transport and a request that errors.
-    pub(crate) fn from_app_state(state: &'a crate::server::AppState) -> Option<Self> {
-        let mediator_did = state
-            .config
-            .try_read()
-            .ok()?
-            .messaging
-            .as_ref()
-            .map(|m| m.mediator_did.clone())?;
+    pub(crate) fn from_app_state(state: &crate::server::AppState) -> Option<Self> {
         Some(Self {
-            atm: state.atm.as_ref()?,
-            profile: state.tsp_profile.as_ref()?,
-            mediator_did,
+            transport: state.tsp_transport()?,
             replies: state.pending_replies.clone(),
         })
     }
@@ -210,7 +201,7 @@ pub struct Outbound<'a> {
     /// without `tsp`, along with its arm and its entry in
     /// [`OUTBOUND_SUPPORTED`].
     #[cfg(feature = "tsp")]
-    tsp: Option<TspSender<'a>>,
+    tsp: Option<TspSender>,
     /// Absent in a build without `didcomm`, along with the arm that uses it and
     /// the entry in [`OUTBOUND_SUPPORTED`] that would select it.
     #[cfg(feature = "didcomm")]
@@ -234,7 +225,7 @@ impl<'a> Outbound<'a> {
     pub fn from_parts(
         resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
         #[cfg(feature = "didcomm")] bridge: &'a DIDCommBridge,
-        #[cfg(feature = "tsp")] tsp: Option<TspSender<'a>>,
+        #[cfg(feature = "tsp")] tsp: Option<TspSender>,
     ) -> Self {
         Self {
             resolver,
@@ -455,18 +446,7 @@ impl Outbound<'_> {
 
         let waiting = tsp.replies.register(&thread);
 
-        // Inner sealed end-to-end to the recipient, outer to the mediator — the
-        // routed shape the inbound loop already uses for its replies.
-        if let Err(e) = tsp
-            .atm
-            .tsp()
-            .send_routed(
-                tsp.profile,
-                &[tsp.mediator_did.clone(), recipient.to_string()],
-                &framed,
-            )
-            .await
-        {
+        if let Err(e) = tsp.transport.send_to(recipient, &framed).await {
             tsp.replies.abandon(&thread);
             return Err(bad_gateway_error(format!(
                 "`{recipient}` could not be reached over TSP: {e}"

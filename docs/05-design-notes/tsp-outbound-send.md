@@ -250,3 +250,74 @@ use. The proven signer is supplied by `auth_from_did` (PR 6b, tested). There is
 no TSP-specific auth surface and therefore no TSP-specific audience-isolation
 gap to test beyond the existing `handle_authenticate` coverage. **6c is complete
 by construction once 6b merged.**
+
+---
+
+## 9. Resolved: one transport, and it must carry a mediator (2026-09-16)
+
+§6 asked for "a **mediator-bearing** `Arc<ATMProfile>` in the `AppState`". The
+VTA ended up with two profiles for its own DID and the wrong one in that slot:
+
+- `server::init_auth` built `ATMProfile::new(atm, "VTA", vta_did, None)` — no
+  mediator — reasoning that unsealing reads the decryption key from the ATM's
+  secrets resolver and so needs no route. It landed in `AppState.tsp_profile`.
+- `messaging::service::build_messaging` built the mediator-bearing one and kept
+  it inside `VtaMessaging`, where only the inbound loop could see it.
+
+So the VTA answered TSP correctly — `handle_tsp` seals replies on the second
+profile — and could not initiate on the first. When #1482/#1483 made the
+outbound seam able to *select* TSP, it sealed on the profile `AppState` held,
+and every TSP send failed instantly with `ConfigError("No Mediator is configured
+for this Profile")`, surfaced to the operator as
+`trust task failed [internalError]`.
+
+### The premise that was false
+
+**Every TSP entry point in the messaging SDK resolves the mediator off the
+profile handed to it.** `TspOps::pack` and `unpack_bytes` both call
+`ATMProfile::dids()`, which errors without a mediator; `send_raw` calls it *and*
+`get_mediator_rest_endpoint()`. A profile with no mediator can neither send nor
+unseal — it is not a receive-only profile, it is a non-functional one. The
+unseal path it was built for had never worked either; nothing had exercised it.
+
+### What replaced it
+
+One type, `messaging::tsp_transport::TspTransport`, holding the ATM, the profile
+registered on it, and the mediator read *from that profile*. Its constructor
+checks, so a mediator-less profile cannot become a transport — the bug is no
+longer expressible. Everything TSP goes through it:
+
+| before | after |
+|---|---|
+| `handle_tsp` took `mediator_did` down a parameter chain from `run_inbound_loop`, past a DIDComm arm that discarded it | reads it off the session's own profile; the parameter is gone from all three functions |
+| `outbound::TspSender` read the mediator from `AppConfig` — a second source, unchecked against the first | holds a `TspTransport`; no config read |
+| `step_up::try_push_over_tsp` took `mediator_did` from a caller that computed it for the DIDComm fallback | takes the transport; the caller's `approver_mediator` still gates *whether* to push |
+| `trust_tasks::vault` passed an ATM and a profile from different places | passes one `TspTransport`, so the pair cannot be mismatched |
+| three hand-rolled `send_routed([mediator, recipient])` call sites | one `TspTransport::send_to` |
+
+`AppState.tsp_profile` is gone; `AppState::tsp_transport()` is the only way to
+reach TSP. Absence means no live mediator session, which `operations::outbound`
+treats as "TSP is not selectable" — the peer is reached over its next-preferred
+transport instead of over one this VTA cannot put a frame on.
+
+### What deliberately did not consolidate
+
+The VTA keeps **two ATMs**, and that is correct. `AppState.atm` is built in
+`init_auth` with no socket and no mediator; the messaging ATM exists only while a
+session is up and is rebuilt on every reconnect. Vault release, proxy-login and
+the DIDComm-envelope auth path pack and unpack through `AppState.atm` with no
+profile at all, and must keep working on a REST-only VTA that has no mediator and
+whenever a session is down. Folding them together would tie those paths to the
+mediator's uptime. Two ATMs with different lifetimes was never the defect — two
+*profiles*, one of which could not work, was.
+
+### Why nothing caught it
+
+The test harness reproduced the same split: `start_with_transports` ran the
+inbound loop but left the bridge a placeholder, and built its own mediator-less
+profile exactly as `init_auth` did. A harness that only ever answers cannot show
+that the initiating half is broken. It now publishes the wiring the way
+`MessagingConnect::connect_once` does, and two tests hold the line —
+`the_vta_can_initiate_a_tsp_send_not_only_answer_one` drives a real routed send
+through the embedded mediator, and `atm_profile_mediator_census` fails the build
+on any `ATMProfile::new(..., None)` in `vta-service`.

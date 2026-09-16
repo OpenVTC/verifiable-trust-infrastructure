@@ -250,7 +250,7 @@ pub struct WebvhDIDCommClient<'a> {
     /// What lets the seam choose TSP. `None` on a caller with no `AppState` to
     /// borrow a socket from, where DIDComm is the honest answer.
     #[cfg(feature = "tsp")]
-    tsp: Option<crate::operations::outbound::TspSender<'a>>,
+    tsp: Option<crate::operations::outbound::TspSender>,
 }
 
 /// The `trust-task-error/0.x` family the framework emits for transport-level
@@ -364,7 +364,7 @@ impl<'a> WebvhDIDCommClient<'a> {
         bridge: &'a DIDCommBridge,
         resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
         server_did: impl Into<String>,
-        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender<'a>>,
+        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender>,
     ) -> Self {
         Self {
             bridge,

@@ -71,7 +71,12 @@ pub async fn unseal_secret(
 /// stripped) instead of `msg.from`.
 ///
 /// The route has already established that the envelope is the `tsp-message`
-/// variant, that an ATM is configured, and that a TSP profile is registered.
+/// variant and that this VTA has a live
+/// [`TspTransport`](crate::messaging::tsp_transport::TspTransport). Taking the
+/// transport rather than an ATM and a profile is what keeps the two from coming
+/// from different places: `unpack` reads the envelope's intended receiver off
+/// `ATMProfile::dids()`, so a profile with no mediator — or one registered on a
+/// different ATM — refuses to unseal anything.
 ///
 /// NOTE: every error arm except `UnpackFailed` (`SenderMismatch`,
 /// `CleartextInvalid`) is only reachable *after* a successful
@@ -82,14 +87,14 @@ pub async fn unseal_secret(
 /// configured" reject) is covered by a unit test in `trust_tasks::vault`.
 #[cfg(feature = "tsp")]
 pub async fn unseal_tsp_secret(
-    atm: &ATM,
-    profile: &std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    transport: &crate::messaging::tsp_transport::TspTransport,
     caller_did: &str,
     message: &str,
 ) -> Result<VaultSecret, UnsealError> {
-    let (payload, sender_vid) = atm
+    let (payload, sender_vid) = transport
+        .atm()
         .tsp()
-        .unpack(profile, message)
+        .unpack(transport.profile(), message)
         .await
         .map_err(|e| UnsealError::UnpackFailed(e.to_string()))?;
 

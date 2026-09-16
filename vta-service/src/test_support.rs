@@ -1005,16 +1005,21 @@ pub(crate) struct VtaOwnSigner {
 }
 
 /// What [`build_transport_state`] hands back — a struct rather than a tuple so
-/// the TSP slot can be `cfg`-gated (attributes are not allowed on tuple type
-/// elements) and so the five `Option`s stay distinguishable at the call site.
+/// the `Option`s stay distinguishable at the call site.
+///
+/// There is no TSP profile here. The harness used to build one the way
+/// `init_auth` did — no mediator — which made it a faithful copy of the wiring
+/// defect rather than a check on it: a profile with no mediator fails every TSP
+/// operation inside the SDK, so a test holding one proved nothing about a TSP
+/// path working. A harness that wants real TSP needs a mediator-registered
+/// profile, which means a mediator; until there is one, `AppState::tsp_transport`
+/// answers `None` here and the TSP arms take their not-configured branch.
 #[derive(Default)]
 struct TransportState {
     secrets_resolver: Option<Arc<affinidi_secrets_resolver::ThreadedSecretsResolver>>,
     signing_vm_id: Option<String>,
     ka_vm_id: Option<String>,
     atm: Option<affinidi_tdk::messaging::ATM>,
-    #[cfg(feature = "tsp")]
-    tsp_profile: Option<Arc<affinidi_tdk::messaging::profiles::ATMProfile>>,
 }
 
 /// Build the AppState transport slots from a pre-minted
@@ -1069,30 +1074,11 @@ async fn build_transport_state(
     .await
     .expect("transport ATM");
 
-    #[cfg(feature = "tsp")]
-    let tsp_profile = {
-        let profile = affinidi_tdk::messaging::profiles::ATMProfile::new(
-            &atm,
-            Some("VTA".to_string()),
-            identity.did.clone(),
-            None,
-        )
-        .await
-        .expect("build TSP profile");
-        Some(
-            atm.profile_add(&profile, false)
-                .await
-                .expect("register TSP profile"),
-        )
-    };
-
     TransportState {
         secrets_resolver: Some(Arc::new(secrets_resolver)),
         signing_vm_id: vm_id("#key-1"),
         ka_vm_id: vm_id("#key-2"),
         atm: Some(atm),
-        #[cfg(feature = "tsp")]
-        tsp_profile,
     }
 }
 
@@ -1408,8 +1394,6 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         pending_replies: crate::trust_tasks::pending_replies::PendingReplies::new(),
         jwt_keys: Some(jwt_keys.clone()),
         atm: transport.atm.or(opts.atm),
-        #[cfg(feature = "tsp")]
-        tsp_profile: transport.tsp_profile,
         tee: None,
         restart_tx,
         metrics_handle: None,
@@ -2109,24 +2093,31 @@ impl MockVta {
         .expect("build VTA messaging over the test mediator");
         let atm = messaging.atm.clone();
 
+        // Publish the wiring, exactly as `server::MessagingConnect::connect_once`
+        // does. Without this the harness was receive-only: the inbound loop ran,
+        // so a reply sealed on `messaging.profile` went out fine, while anything
+        // the VTA wanted to *initiate* found no profile published and either
+        // dropped TSP from transport selection or reached for a profile that
+        // could not send. A harness that only ever answers cannot show that a
+        // half-wired outbound path is broken — which is how it stayed broken.
+        ctx.state.didcomm_bridge.set_messaging(
+            messaging.service.clone(),
+            (*messaging.atm).clone(),
+            messaging.profile.clone(),
+            vta_did.clone(),
+        );
+
         let shutdown = tokio_util::sync::CancellationToken::new();
         let loop_handle = tokio::spawn({
-            let (messaging, state, vta_did, mediator_did, shutdown) = (
+            let (messaging, state, vta_did, shutdown) = (
                 Arc::new(messaging),
                 ctx.state.clone(),
                 vta_did.clone(),
-                mediator_did.clone(),
                 shutdown.clone(),
             );
             async move {
-                crate::messaging::service::run_inbound_loop(
-                    messaging,
-                    state,
-                    vta_did,
-                    mediator_did,
-                    shutdown,
-                )
-                .await;
+                crate::messaging::service::run_inbound_loop(messaging, state, vta_did, shutdown)
+                    .await;
             }
         });
 
@@ -2434,6 +2425,80 @@ mod transport_harness_tests {
         );
 
         mock.shutdown().await;
+    }
+
+    /// A VTA that can answer over TSP must also be able to **start** a TSP
+    /// exchange — and it could not.
+    ///
+    /// `pnm did-mgmt dids create` against a did-host advertising `#tsp` failed
+    /// instantly with `bad gateway: ... could not be reached over TSP: Config
+    /// error: No Mediator is configured for this Profile`. The seam selected
+    /// TSP correctly; the profile it sealed on was the one `init_auth` built
+    /// with no mediator, and `ATMProfile::dids()` — which `TspOps::pack` and
+    /// `unpack_bytes` both call, and `send_raw` calls alongside
+    /// `get_mediator_rest_endpoint()` — has no answer without one. So the send
+    /// died inside the SDK before any I/O, while inbound replies kept working,
+    /// because `messaging::service::handle_tsp` seals on the *other* profile:
+    /// the mediator-registered one.
+    ///
+    /// The assertion is a real routed send over the embedded mediator rather
+    /// than an inspection of the profile. The defect was never visible in the
+    /// profile's type, only in what the SDK refused to do with it.
+    #[tokio::test]
+    async fn the_vta_can_initiate_a_tsp_send_not_only_answer_one() {
+        let mock = MockVta::start_with_transports().await;
+
+        let transport = mock
+            .ctx
+            .state
+            .tsp_transport()
+            .expect("a mediator-connected VTA has a TSP transport to send on");
+
+        // The route is the transport's to build, and it builds it from the
+        // profile that seals — so this also pins that the mediator it routes
+        // through is the one the session actually registered against.
+        assert_eq!(
+            transport.mediator_did(),
+            mock.mediator_did(),
+            "the transport must route through this session's own mediator"
+        );
+
+        // Addressed back to the VTA itself: the point is that the frame seals
+        // and the mediator accepts it, which is exactly the step that failed.
+        // Who reads it afterwards is a different test's concern.
+        let body = vta_sdk::tsp_binding::wrap_envelope(br#"{"probe":true}"#);
+
+        let sent = transport.send_to(mock.vta_did(), &body).await;
+        assert!(
+            sent.is_ok(),
+            "the VTA could not put a TSP frame on the wire: {:?}",
+            sent.err()
+        );
+
+        mock.shutdown().await;
+    }
+
+    /// Selection follows the **live session**, not the config.
+    ///
+    /// `TspSender::from_app_state` reads the mediator DID out of the config and
+    /// the sealing pair off the bridge. Config alone is not enough: before the
+    /// first connect — and between a dropped session and its reconnect — there
+    /// is no profile to seal on, and offering TSP then means choosing a
+    /// transport this VTA cannot send over instead of falling to the peer's
+    /// next-preferred one.
+    #[tokio::test]
+    async fn tsp_is_not_offered_before_a_mediator_session_exists() {
+        // `build_test_app` leaves the bridge a placeholder — the state of a VTA
+        // that has not connected yet.
+        let (_router, ctx) = build_test_app().await;
+        assert!(
+            ctx.state.tsp_transport().is_none(),
+            "an unconnected VTA must not claim a TSP transport"
+        );
+        assert!(
+            crate::operations::outbound::TspSender::from_app_state(&ctx.state).is_none(),
+            "TSP must drop out of transport selection until a session can carry it"
+        );
     }
 }
 

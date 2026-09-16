@@ -4,6 +4,7 @@ use std::time::Duration;
 use affinidi_messaging_delivery::{Delivery, MessagingService, MessagingStatus};
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::messaging::ATM;
+use affinidi_tdk::messaging::profiles::ATMProfile;
 use tracing::debug;
 
 use crate::error::{AppError, bad_gateway_error};
@@ -63,6 +64,16 @@ struct BridgeInner {
     /// The ATM used to authcrypt-pack outbound messages (pack sender = the
     /// VTA's DID).
     atm: ATM,
+    /// The profile this session registered against the mediator — the one a
+    /// TSP seal, send or unseal must use.
+    ///
+    /// Published here rather than left in `MessagingConnect` because a profile
+    /// is only good for TSP if it *has a mediator*: `ATMProfile::dids()` and
+    /// `get_mediator_rest_endpoint()` both fail without one, and every TSP
+    /// entry point in the SDK goes through them. A profile built for unpacking
+    /// alone looks interchangeable with this one and is not, which is how the
+    /// outbound seam came to seal on a profile that could never send.
+    profile: Arc<ATMProfile>,
     /// The VTA's own DID — the `from` on every packed outbound message.
     vta_did: String,
 }
@@ -137,13 +148,20 @@ impl DIDCommBridge {
     /// Publish the live delivery-layer wiring, replacing any previous session's.
     /// Called from `server::MessagingConnect` after each successful mediator
     /// connect.
-    pub fn set_messaging(&self, service: Arc<MessagingService>, atm: ATM, vta_did: String) {
+    pub fn set_messaging(
+        &self,
+        service: Arc<MessagingService>,
+        atm: ATM,
+        profile: Arc<ATMProfile>,
+        vta_did: String,
+    ) {
         let replacing = {
             let mut guard = self.write_inner();
             guard
                 .replace(Arc::new(BridgeInner {
                     service,
                     atm,
+                    profile,
                     vta_did,
                 }))
                 .is_some()
@@ -178,6 +196,24 @@ impl DIDCommBridge {
     /// the mediator handshake), or `None` before the service is published.
     pub fn atm(&self) -> Option<ATM> {
         self.snapshot().map(|i| i.atm.clone())
+    }
+
+    /// The mediator-registered profile, or `None` before the service is
+    /// published.
+    ///
+    /// This is the profile every TSP operation needs, because a TSP seal, send
+    /// or unseal resolves the mediator off the profile itself: `pack` and
+    /// `unpack_bytes` call `ATMProfile::dids()`, and `send_raw` additionally
+    /// calls `get_mediator_rest_endpoint()`. A profile constructed with no
+    /// mediator answers `ConfigError("No Mediator is configured for this
+    /// Profile")` to all three — before any I/O, so it reads like a logic error
+    /// rather than a wiring one.
+    ///
+    /// Paired with [`atm`](Self::atm): the profile is registered *on* that ATM,
+    /// and passing a profile to a different ATM's `tsp()` is not a
+    /// combination that works.
+    pub fn profile(&self) -> Option<Arc<ATMProfile>> {
+        self.snapshot().map(|i| i.profile.clone())
     }
 
     /// The VTA's own DID, or `None` before the service is published.

@@ -294,14 +294,6 @@ pub struct AppState {
     pub pending_replies: crate::trust_tasks::pending_replies::PendingReplies,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
-    /// VTA's registered TSP profile, used to unpack `tsp-message` sealed
-    /// envelopes (e.g. on `vault/upsert`). Built in `init_auth` when the `tsp`
-    /// feature is on and an ATM is available; `None` if the VTA keys are
-    /// missing or profile registration fails (TSP unseal then stays
-    /// unavailable, never panics). Unpack reads the decryption key from the
-    /// ATM's own secrets resolver, so the profile carries no secrets itself.
-    #[cfg(feature = "tsp")]
-    pub tsp_profile: Option<std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>>,
     pub tee: Option<TeeContext>,
     /// Send `true` to trigger a soft restart (threads shut down and re-initialize).
     pub restart_tx: watch::Sender<bool>,
@@ -319,6 +311,19 @@ impl AppState {
     /// which is what a deployment with no outbound DID resolution gets.
     pub fn trust_task_vm_resolver(&self) -> vti_common::auth::TrustTaskVmResolver {
         vti_common::auth::TrustTaskVmResolver::from_optional(self.did_resolver.clone())
+    }
+
+    /// The one transport every TSP operation goes through, or `None` when this
+    /// node has no live mediator session.
+    ///
+    /// Sending, sealing and unsealing all need the same ATM + mediator-bearing
+    /// profile, and getting that pair from anywhere else is how this VTA came to
+    /// answer over TSP while being unable to initiate. See
+    /// [`TspTransport`](crate::messaging::tsp_transport::TspTransport) for the
+    /// invariant and for what a mediator-less profile actually does.
+    #[cfg(feature = "tsp")]
+    pub fn tsp_transport(&self) -> Option<crate::messaging::tsp_transport::TspTransport> {
+        crate::messaging::tsp_transport::TspTransport::from_app_state(self)
     }
 }
 
@@ -593,8 +598,6 @@ pub async fn build_app_state(
         pending_replies: crate::trust_tasks::pending_replies::PendingReplies::new(),
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
-        #[cfg(feature = "tsp")]
-        tsp_profile: auth.tsp_profile,
         tee: tee_context,
         restart_tx,
         #[cfg(feature = "rest")]
@@ -1631,10 +1634,6 @@ struct AuthInit {
     secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     jwt_keys: Option<Arc<JwtKeys>>,
     atm: Option<ATM>,
-    /// VTA's registered TSP profile (see [`AppState::tsp_profile`]). Built
-    /// alongside `atm` when the `tsp` feature is on; `None` on any failure.
-    #[cfg(feature = "tsp")]
-    tsp_profile: Option<std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>>,
     /// Signing verification method ID (e.g. `{did}#key-0` or `{did}#{ed_pub_mb}`).
     /// Consumed only by the DIDComm secret-collection path; cfg-gated to
     /// keep non-didcomm builds warning-free.
@@ -1652,8 +1651,6 @@ impl AuthInit {
             secrets_resolver: None,
             jwt_keys: None,
             atm: None,
-            #[cfg(feature = "tsp")]
-            tsp_profile: None,
             signing_vm_id: None,
             ka_vm_id: None,
         }
@@ -1951,42 +1948,23 @@ async fn init_auth(
         }
     };
 
-    // 5. Build + register the VTA's TSP profile (used to unpack `tsp-message`
-    // sealed envelopes). The unpack path reads the VTA's decryption key from
-    // the ATM's own secrets resolver — which already holds the signing + KA
-    // secrets inserted above (mirroring the DIDComm listener's secret
-    // collection in `run()`) — so the profile itself carries no secrets and
-    // needs no mediator. On any failure we warn! and leave it None; TSP unseal
-    // just stays unavailable, never a panic.
-    #[cfg(feature = "tsp")]
-    let tsp_profile = if let Some(ref atm) = atm {
-        match affinidi_tdk::messaging::profiles::ATMProfile::new(
-            atm,
-            Some("VTA".to_string()),
-            vta_did.clone(),
-            None,
-        )
-        .await
-        {
-            Ok(profile) => match atm.profile_add(&profile, false).await {
-                Ok(arc) => {
-                    info!("TSP profile registered for DID {vta_did}");
-                    Some(arc)
-                }
-                Err(e) => {
-                    warn!("failed to register TSP profile (TSP unseal disabled): {e}");
-                    None
-                }
-            },
-            Err(e) => {
-                warn!("failed to build TSP profile (TSP unseal disabled): {e}");
-                None
-            }
-        }
-    } else {
-        warn!("ATM unavailable — TSP profile not built (TSP unseal disabled)");
-        None
-    };
+    // No TSP profile is built here, and that absence is deliberate.
+    //
+    // There used to be one: `ATMProfile::new(atm, "VTA", vta_did, None)` — no
+    // mediator — on the reasoning that unpacking reads the decryption key from
+    // the ATM's secrets resolver and so needs no route. That reasoning is
+    // wrong, and wrong in a way nothing here could show. Every TSP entry point
+    // in the messaging SDK goes through `ATMProfile::dids()`, which *errors*
+    // without a mediator: `unpack_bytes` calls it to check the envelope's
+    // receiver, `pack` to name the sender, and `send_raw` also needs
+    // `get_mediator_rest_endpoint()`. So that profile could neither send nor
+    // unseal, and answered every attempt with `ConfigError("No Mediator is
+    // configured for this Profile")` before touching the network — which reads
+    // as an internal error rather than as missing wiring.
+    //
+    // The profile that works is the one `messaging::service::build_messaging`
+    // registers against the mediator, and it is published on the bridge. Read
+    // it via `AppState::tsp_transport`.
 
     info!("auth initialized for DID {vta_did}");
 
@@ -1995,8 +1973,6 @@ async fn init_auth(
         secrets_resolver: Some(secrets_resolver),
         jwt_keys: Some(Arc::new(jwt_keys)),
         atm,
-        #[cfg(feature = "tsp")]
-        tsp_profile,
         signing_vm_id,
         ka_vm_id,
     }
@@ -2249,7 +2225,6 @@ impl MessagingConnect {
                             messaging.clone(),
                             self.app_state.clone(),
                             self.vta_did.clone(),
-                            self.messaging_config.mediator_did.clone(),
                             self.shutdown.clone(),
                         )
                         .await;
@@ -2406,6 +2381,7 @@ impl MessagingConnect {
         app_state.didcomm_bridge.set_messaging(
             messaging.service.clone(),
             (*messaging.atm).clone(),
+            messaging.profile.clone(),
             vta_did.to_string(),
         );
 

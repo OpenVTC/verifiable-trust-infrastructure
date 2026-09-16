@@ -143,7 +143,7 @@ pub struct WebvhDeps<'a> {
     /// produce one, and the webvh ops layer deliberately does not take an
     /// `AppState`.
     #[cfg(feature = "tsp")]
-    pub tsp: Option<crate::operations::outbound::TspSender<'a>>,
+    pub tsp: Option<crate::operations::outbound::TspSender>,
 }
 
 impl<'a> WebvhDeps<'a> {
@@ -250,7 +250,7 @@ pub struct CreateDidWebvhDeps<'a> {
     /// What lets the outbound seam choose TSP when publishing to a webvh host.
     /// See the note on [`WebvhDeps::tsp`] — `None` is a real answer.
     #[cfg(feature = "tsp")]
-    pub tsp: Option<crate::operations::outbound::TspSender<'a>>,
+    pub tsp: Option<crate::operations::outbound::TspSender>,
 }
 
 impl<'a> CreateDidWebvhDeps<'a> {
@@ -689,7 +689,7 @@ async fn authenticated_server_transport<'a>(
     auth_locks: &WebvhAuthLocks,
     vta_did: Option<&str>,
     server: &WebvhServerRecord,
-    #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender<'a>>,
+    #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender>,
 ) -> Result<WebvhTransport<'a>, AppError> {
     let vta_did = vta_did.ok_or_else(|| {
         AppError::Validation(
@@ -1951,7 +1951,7 @@ impl<'a> WebvhTransport<'a> {
         server: &WebvhServerRecord,
         did_resolver: &'a DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
-        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender<'a>>,
+        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender>,
     ) -> Result<Self, AppError> {
         let resolved = did_resolver.resolve(&server.did).await.map_err(|e| {
             AppError::Internal(format!("failed to resolve server DID {}: {e}", server.did))
@@ -2046,7 +2046,7 @@ impl<'a> WebvhTransport<'a> {
         did_resolver: &'a DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
         auth_ctx: &auth_cache::AuthContext<'_>,
-        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender<'a>>,
+        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender>,
     ) -> Result<Self, AppError> {
         let mut transport = Self::from_server(
             server,
