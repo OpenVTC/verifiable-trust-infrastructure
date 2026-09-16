@@ -2012,10 +2012,14 @@ impl VtaClient {
         let resolver = self
             .reply_resolver
             .get_or_init(|| async {
+                // Must honour PNM_RESOLVER_URL like every other resolver in the
+                // SDK. Building a default config here resolves did:webvh
+                // directly, so each verification refetches the signer's
+                // did.jsonl from its own host — which both defeats a configured
+                // cache and lets that host rate-limit verification. The helper
+                // already applies webvh_host_policy().
                 affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
-                    affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default()
-                        .with_host_policy(crate::resolver::webvh_host_policy())
-                        .build(),
+                    crate::resolver::build_did_cache_config_from_env(),
                 )
                 .await
                 .ok()
