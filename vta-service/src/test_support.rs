@@ -1510,6 +1510,9 @@ pub struct StubWebvhHost {
     /// 500 before accepting again — lets a test simulate a transient host
     /// outage and assert the VTA self-recovers. Shared with the route handler.
     fail_puts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Number of `DELETE /api/dids/{mnemonic}` calls the host has accepted, so
+    /// a test can tell a deletion that reached the host from one that did not.
+    deletes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -1527,6 +1530,7 @@ impl StubWebvhHost {
         // > 0, decrementing each time, so a test can outage the host for N
         // publishes and watch the VTA recover afterwards.
         let fail_puts = Arc::new(AtomicUsize::new(0));
+        let deletes = Arc::new(AtomicUsize::new(0));
 
         /// Reject a request that arrives without an `Authorization: Bearer`
         /// header. The real hosting daemon returns 401 "missing or invalid
@@ -1747,9 +1751,16 @@ impl StubWebvhHost {
                         }
                     }
                 })
-                .delete(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::http::StatusCode::OK)
+                .delete({
+                    let deletes = deletes.clone();
+                    move |headers: axum::http::HeaderMap| {
+                        let deletes = deletes.clone();
+                        async move {
+                            require_bearer(&headers)?;
+                            deletes.fetch_add(1, Ordering::SeqCst);
+                            Ok::<_, axum::http::StatusCode>(axum::http::StatusCode::OK)
+                        }
+                    }
                 }),
             );
 
@@ -1771,6 +1782,7 @@ impl StubWebvhHost {
         StubWebvhHost {
             base_url,
             fail_puts,
+            deletes,
             shutdown: Some(tx),
             handle: Some(handle),
         }
@@ -1786,6 +1798,11 @@ impl StubWebvhHost {
     /// then accept again — a transient outage a test can recover from.
     pub fn fail_next_publishes(&self, n: usize) {
         self.fail_puts.store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many `DELETE /api/dids/{mnemonic}` calls the host has accepted.
+    pub fn deletes(&self) -> usize {
+        self.deletes.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -2247,6 +2264,14 @@ impl MockVta {
         if let Some(host) = &self.webvh_host {
             host.fail_next_publishes(n);
         }
+    }
+
+    /// How many DID deletions the stub host has accepted — `0` for a mock
+    /// without one. Only meaningful for a mock started via
+    /// [`start_with_webvh_host`](Self::start_with_webvh_host).
+    #[cfg(feature = "webvh")]
+    pub fn webvh_host_deletes(&self) -> usize {
+        self.webvh_host.as_ref().map_or(0, StubWebvhHost::deletes)
     }
 
     /// Test-only corruption: move a version's key handles to the `superseded:`

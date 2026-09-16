@@ -863,6 +863,12 @@ enum WebvhCommands {
     DeleteDid {
         /// The DID to delete
         did: String,
+        /// Delete only the local record of a DID whose hosting server is no
+        /// longer registered, leaving its published log on that host.
+        /// Without it such a delete is refused. Refused for a DID whose
+        /// server is registered, or that is serverless.
+        #[arg(long)]
+        local_only: bool,
         /// Skip the confirmation prompt. Skips the *prompt* only — a DID
         /// something still depends on is refused regardless, and that refusal
         /// has no override. `--force` is accepted as a hidden alias.
@@ -1095,6 +1101,12 @@ enum DidMgmtDidCommands {
     Delete {
         /// The DID to delete.
         did: String,
+        /// Delete only the local record of a DID whose hosting server is no
+        /// longer registered, leaving its published log on that host.
+        /// Without it such a delete is refused. Refused for a DID whose
+        /// server is registered, or that is serverless.
+        #[arg(long)]
+        local_only: bool,
         /// Skip the confirmation prompt. Skips the *prompt* only — a DID
         /// something still depends on is refused regardless, and that refusal
         /// has no override. `--force` is accepted as a hidden alias.
@@ -1183,7 +1195,15 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 DidMgmtDidCommands::List { context, server } => {
                     WebvhCommands::ListDids { context, server }
                 }
-                DidMgmtDidCommands::Delete { did, yes } => WebvhCommands::DeleteDid { did, yes },
+                DidMgmtDidCommands::Delete {
+                    did,
+                    local_only,
+                    yes,
+                } => WebvhCommands::DeleteDid {
+                    did,
+                    local_only,
+                    yes,
+                },
                 DidMgmtDidCommands::GetLog { did, out } => WebvhCommands::DidLog { did, out },
             },
         }
@@ -2505,9 +2525,11 @@ async fn run_webvh_dispatch(config_path: Option<PathBuf>, command: WebvhCommands
         WebvhCommands::ListDids { context, server } => {
             webvh_cli::run_list_dids(config_path, context, server).await
         }
-        WebvhCommands::DeleteDid { did, yes } => {
-            webvh_cli::run_delete_did(config_path, did, yes).await
-        }
+        WebvhCommands::DeleteDid {
+            did,
+            local_only,
+            yes,
+        } => webvh_cli::run_delete_did(config_path, did, local_only, yes).await,
         WebvhCommands::DidLog { did, out } => webvh_cli::run_did_log(config_path, did, out).await,
         WebvhCommands::EditDid {
             did,

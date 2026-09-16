@@ -1294,3 +1294,225 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
 
     mock.shutdown().await;
 }
+
+// ── `webvh/dids/delete` and the copy of the log on the host ─────────────────
+//
+// VTI R2.1 (Remote-First): no local commit before the remote effect. A DID's
+// local record holds the only credentials that can delete its published log on
+// the hosting server, so a deletion that drops the record without reaching the
+// host leaves a live log nobody can update or remove.
+
+#[cfg(feature = "webvh")]
+async fn mint_did(client: &VtaClient, hosted: bool) -> String {
+    use vta_sdk::client::CreateDidWebvhRequest;
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+
+    let (server_id, url, path_mode) = if hosted {
+        (
+            Some(MockVta::WEBVH_SERVER_ID.into()),
+            None,
+            Some(WebvhPathMode::AutoAssign),
+        )
+    } else {
+        (
+            None,
+            Some(vta_service::test_support::STUB_WEBVH_DID_URL.into()),
+            None,
+        )
+    };
+    client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id,
+            url,
+            path: None,
+            path_mode,
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            add_tsp_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("mint a did:webvh")
+        .did
+}
+
+/// The unchanged path: a hosted DID's delete reaches the host, and the
+/// response reports no leftover.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn deleting_a_hosted_did_deletes_its_log_on_the_host() {
+    let mock = MockVta::start_with_webvh_host().await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
+    let did = mint_did(&client, true).await;
+
+    let outcome = client
+        .delete_did_webvh_with_outcome(&did)
+        .await
+        .expect("a hosted DID deletes");
+    assert!(outcome.deleted);
+    assert_eq!(outcome.daemon_cleanup_error, None);
+    assert_eq!(mock.webvh_host_deletes(), 1, "the host was asked to delete");
+    assert!(client.get_did_webvh(&did).await.is_err(), "record is gone");
+
+    mock.shutdown().await;
+}
+
+/// A DID whose hosting server is no longer registered is refused, typed as a
+/// conflict, with the commands that fix it, and nothing is touched. The
+/// corrective sequence the refusal names then works.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn deleting_a_did_whose_server_is_unregistered_is_refused_until_it_is_registered_again() {
+    use vta_sdk::client::AddWebvhServerRequest;
+    use vta_sdk::error::VtaError;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
+    let did = mint_did(&client, true).await;
+
+    let server_did = client
+        .list_webvh_servers()
+        .await
+        .expect("list servers")
+        .servers
+        .into_iter()
+        .find(|s| s.id == MockVta::WEBVH_SERVER_ID)
+        .expect("stub server is registered")
+        .did;
+    client
+        .remove_webvh_server(MockVta::WEBVH_SERVER_ID)
+        .await
+        .expect("unregister the server");
+
+    let err = client
+        .delete_did_webvh_with_outcome(&did)
+        .await
+        .expect_err("a DID whose server is unregistered must not be deleted");
+    let VtaError::Conflict(msg) = &err else {
+        panic!("expected a typed Conflict, got {err:?}");
+    };
+    for needle in [
+        "no longer registered".to_string(),
+        format!("servers add --id {}", MockVta::WEBVH_SERVER_ID),
+        "--local-only".to_string(),
+    ] {
+        assert!(msg.contains(&needle), "refusal must name `{needle}`: {msg}");
+    }
+    assert_eq!(mock.webvh_host_deletes(), 0);
+    client
+        .get_did_webvh(&did)
+        .await
+        .expect("the local record survives the refusal");
+
+    // The fix the refusal names.
+    client
+        .add_webvh_server(AddWebvhServerRequest {
+            id: MockVta::WEBVH_SERVER_ID.into(),
+            did: server_did,
+            label: None,
+        })
+        .await
+        .expect("register the server again");
+    let outcome = client
+        .delete_did_webvh_with_outcome(&did)
+        .await
+        .expect("deletes once the server is registered");
+    assert_eq!(outcome.daemon_cleanup_error, None);
+    assert_eq!(mock.webvh_host_deletes(), 1);
+
+    mock.shutdown().await;
+}
+
+/// A serverless DID has no host copy, so there is nothing to refuse over.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn deleting_a_serverless_did_needs_no_host() {
+    let mock = MockVta::start_with_webvh_host().await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
+    let did = mint_did(&client, false).await;
+
+    let outcome = client
+        .delete_did_webvh_with_outcome(&did)
+        .await
+        .expect("a serverless DID deletes");
+    assert!(outcome.deleted);
+    assert_eq!(outcome.daemon_cleanup_error, None);
+    assert_eq!(mock.webvh_host_deletes(), 0);
+
+    mock.shutdown().await;
+}
+
+/// The explicit opt-in (offline `vta did-mgmt dids delete --local-only`):
+/// honoured only for an unregistered server, and the result says the host copy
+/// remains. Anywhere else it is refused rather than silently ignored.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn local_only_is_honoured_only_for_an_unregistered_server_and_says_what_remains() {
+    use vta_service::operations::did_webvh::{DeleteDidOptions, WebvhDeps, delete_did_webvh_with};
+    use vta_service::test_support::super_admin_claims;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
+    let hosted = mint_did(&client, true).await;
+    let serverless = mint_did(&client, false).await;
+
+    let state = &mock.ctx.state;
+    let resolver = state.did_resolver.as_ref().expect("resolver");
+    let deps = WebvhDeps::from_app_state(state, resolver);
+    let auth = super_admin_claims();
+    let vta_did = mock.vta_did().to_string();
+
+    for (did, why) in [(&hosted, "still registered"), (&serverless, "serverless")] {
+        let err = delete_did_webvh_with(
+            &deps,
+            &auth,
+            did,
+            Some(&vta_did),
+            "test",
+            DeleteDidOptions::local_only(),
+        )
+        .await
+        .expect_err("local-only must be refused here");
+        assert!(
+            err.to_string().contains(why),
+            "refusal for {did} must say `{why}`: {err}"
+        );
+    }
+    assert_eq!(mock.webvh_host_deletes(), 0);
+
+    client
+        .remove_webvh_server(MockVta::WEBVH_SERVER_ID)
+        .await
+        .expect("unregister the server");
+    let outcome = delete_did_webvh_with(
+        &deps,
+        &auth,
+        &hosted,
+        Some(&vta_did),
+        "test",
+        DeleteDidOptions::local_only(),
+    )
+    .await
+    .expect("local-only deletes a DID whose server is unregistered");
+    assert!(outcome.deleted);
+    let remains = outcome
+        .daemon_cleanup_error
+        .expect("the result must say the host copy was not deleted");
+    assert!(remains.contains(MockVta::WEBVH_SERVER_ID), "{remains}");
+    assert_eq!(mock.webvh_host_deletes(), 0);
+    assert!(client.get_did_webvh(&hosted).await.is_err());
+
+    mock.shutdown().await;
+}

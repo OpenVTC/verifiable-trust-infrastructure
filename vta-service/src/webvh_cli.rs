@@ -333,7 +333,11 @@ pub async fn run_list_dids(
 /// whether to proceed is deciding about *those* credentials, and "3 will be
 /// revoked" cannot be checked against what they expected — which is the only
 /// question a confirmation prompt is actually asking.
-fn render_did_deletion_plan(did: &str, plan: &operations::did_webvh::DidDeletionPlan) {
+fn render_did_deletion_plan(
+    did: &str,
+    plan: &operations::did_webvh::DidDeletionPlan,
+    local_only: bool,
+) {
     println!("Deleting {did} would:");
     if plan.has_acl_entry {
         println!("  - remove its ACL entry (its authorization at this VTA)");
@@ -353,9 +357,14 @@ fn render_did_deletion_plan(did: &str, plan: &operations::did_webvh::DidDeletion
             println!("      {id}");
         }
     }
-    println!("  - delete its keys, its local record and its published log");
+    if local_only {
+        println!("  - delete its keys and its local record");
+        println!("  - LEAVE its published log on the hosting server, where it may still resolve");
+    } else {
+        println!("  - delete its keys, its local record and its published log");
+    }
     if !plan.blockers.is_empty() {
-        println!("\nIt will be refused, because these still depend on it:");
+        println!("\nIt will be refused until these are resolved:");
         for blocker in &plan.blockers {
             println!("  - {blocker}");
         }
@@ -366,8 +375,14 @@ fn render_did_deletion_plan(did: &str, plan: &operations::did_webvh::DidDeletion
 pub async fn run_delete_did(
     config_path: Option<PathBuf>,
     did: String,
-    force: bool,
+    local_only: bool,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let options = if local_only {
+        operations::did_webvh::DeleteDidOptions::local_only()
+    } else {
+        operations::did_webvh::DeleteDidOptions::default()
+    };
     let config = AppConfig::load(config_path)?;
     let cs = CliStore::open(&config).await?;
     let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
@@ -420,25 +435,42 @@ pub async fn run_delete_did(
     // other people's wallets stop being good, and no undo puts them back. The
     // same plan the deletion acts on is rendered here, so the preview cannot
     // under-report what is about to happen.
-    let plan =
-        operations::did_webvh::plan_did_deletion(&deps, &auth, &did, config.vta_did.as_deref())
-            .await?;
-    render_did_deletion_plan(&did, &plan);
-    // `force` skips the *prompt*, not the blockers — those are refused by
+    let plan = operations::did_webvh::plan_did_deletion_with(
+        &deps,
+        &auth,
+        &did,
+        config.vta_did.as_deref(),
+        options,
+    )
+    .await?;
+    render_did_deletion_plan(&did, &plan, local_only);
+    // `--yes` skips the *prompt*, not the blockers — those are refused by
     // `delete_did_webvh` regardless, and deliberately have no escape hatch.
     if plan.touches_anything_else()
-        && !force
+        && !yes
         && !vta_cli_common::commands::contexts::confirm_destructive("Proceed with deletion?")?
     {
         println!("Aborted.");
         return Ok(());
     }
 
-    operations::did_webvh::delete_did_webvh(&deps, &auth, &did, config.vta_did.as_deref(), "cli")
-        .await?;
+    let result = operations::did_webvh::delete_did_webvh_with(
+        &deps,
+        &auth,
+        &did,
+        config.vta_did.as_deref(),
+        "cli",
+        options,
+    )
+    .await?;
     cs.persist().await?;
 
     eprintln!("WebVH DID deleted: {did}");
+    // The spec's partial success: the record is gone but the host copy was not
+    // confirmed deleted, so the DID may still resolve. Said, never swallowed.
+    if let Some(reason) = &result.daemon_cleanup_error {
+        eprintln!("warning: {reason}");
+    }
     Ok(())
 }
 

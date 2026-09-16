@@ -1554,12 +1554,60 @@ pub async fn create_did_webvh(
     }
 }
 
+/// How a DID deletion treats the copy of its log on a hosting server.
+///
+/// The default deletes the host copy as well and refuses when it cannot even
+/// try. [`local_only`](Self::local_only) is the explicit opt-in for the one case
+/// the default refuses: a DID whose hosting server is no longer registered here.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct DeleteDidOptions {
+    /// Delete the local record even though its hosting server is no longer
+    /// registered, leaving the published log on that host. Refused for a DID
+    /// whose server *is* registered (the host copy can be deleted there) and
+    /// for a serverless DID (there is no host copy).
+    pub local_only: bool,
+}
+
+impl DeleteDidOptions {
+    /// Opt in to deleting only the local record of a DID whose hosting server
+    /// is no longer registered. See [`DeleteDidOptions::local_only`].
+    #[must_use]
+    pub fn local_only() -> Self {
+        Self { local_only: true }
+    }
+}
+
+/// Delete a DID, deleting its published log on the hosting server too.
+///
+/// Refuses a DID whose hosting server is no longer registered; see
+/// [`delete_did_webvh_with`] for the explicit local-only opt-in.
 pub async fn delete_did_webvh(
     deps: &WebvhDeps<'_>,
     auth: &AuthClaims,
     did: &str,
     vta_did: Option<&str>,
     channel: &str,
+) -> Result<DeleteDidWebvhResultBody, AppError> {
+    delete_did_webvh_with(
+        deps,
+        auth,
+        did,
+        vta_did,
+        channel,
+        DeleteDidOptions::default(),
+    )
+    .await
+}
+
+/// [`delete_did_webvh`] with explicit [`DeleteDidOptions`].
+pub async fn delete_did_webvh_with(
+    deps: &WebvhDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    vta_did: Option<&str>,
+    channel: &str,
+    options: DeleteDidOptions,
 ) -> Result<DeleteDidWebvhResultBody, AppError> {
     auth.require_admin()?;
 
@@ -1581,12 +1629,14 @@ pub async fn delete_did_webvh(
     // "operator errors should suggest the fix" convention. There is no
     // `--force`: the same call as `would_violate_last_service`, for the same
     // reason — the escape hatch is what gets used at 2am.
-    let blockers = plan_did_deletion(deps, auth, did, vta_did).await?.blockers;
+    let blockers = plan_did_deletion_with(deps, auth, did, vta_did, options)
+        .await?
+        .blockers;
     if !blockers.is_empty() {
         return Err(AppError::Conflict(format!(
-            "{did} cannot be deleted — {} still depend{} on it:\n{}",
+            "{did} cannot be deleted — {} blocker{} to resolve first:\n{}",
             blockers.len(),
-            if blockers.len() == 1 { "s" } else { "" },
+            if blockers.len() == 1 { "" } else { "s" },
             blockers
                 .iter()
                 .map(|b| format!("  - {b}"))
@@ -1629,7 +1679,36 @@ pub async fn delete_did_webvh(
     // local cleanup succeed silently. (Spec / audit H4: surface the
     // failure on the result body.)
     let mut daemon_cleanup_error: Option<String> = None;
-    let server = webvh_store::get_server(deps.webvh_ks, &record.server_id).await?;
+    let server = if record.server_id == SERVERLESS_SERVER_ID {
+        None
+    } else {
+        match webvh_store::get_server(deps.webvh_ks, &record.server_id).await? {
+            Some(server) => Some(server),
+            // The opt-in the pre-flight check honoured: the host copy stays,
+            // and the result says so rather than reading as a full deletion.
+            None if options.local_only => {
+                let msg = format!(
+                    "deleted locally only: hosting server `{}` is not registered, so the \
+                     published log for {did} was not deleted there and may still resolve",
+                    record.server_id
+                );
+                tracing::warn!(did = %did, server_id = %record.server_id, "{msg}");
+                daemon_cleanup_error = Some(msg);
+                None
+            }
+            // Unregistered between the pre-flight check and here. Refuse for
+            // the reason the check does (VTI R2.1, Remote-First): dropping the
+            // record now would discard the only credentials that can delete the
+            // host copy. Credentials revoked above stay revoked, and re-running
+            // after re-registering the server completes the deletion.
+            None => {
+                return Err(AppError::Conflict(format!(
+                    "{did} cannot be deleted — {}",
+                    unregistered_server_refusal(did, &record.server_id)
+                )));
+            }
+        }
+    };
     if let Some(server) = server {
         match vta_did {
             Some(vta_did_value) => {
@@ -1756,7 +1835,18 @@ pub async fn plan_did_deletion(
     did: &str,
     vta_did: Option<&str>,
 ) -> Result<DidDeletionPlan, AppError> {
-    let blockers = delete_blockers(deps, auth, did, vta_did).await?;
+    plan_did_deletion_with(deps, auth, did, vta_did, DeleteDidOptions::default()).await
+}
+
+/// [`plan_did_deletion`] for a deletion run with `options`.
+pub async fn plan_did_deletion_with(
+    deps: &WebvhDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    vta_did: Option<&str>,
+    options: DeleteDidOptions,
+) -> Result<DidDeletionPlan, AppError> {
+    let blockers = delete_blockers(deps, auth, did, vta_did, options).await?;
 
     // Without the cascade keyspaces there is nothing further to report — and
     // the deletion itself will refuse for the same reason.
@@ -1787,8 +1877,39 @@ async fn delete_blockers(
     auth: &AuthClaims,
     did: &str,
     vta_did_value: Option<&str>,
+    options: DeleteDidOptions,
 ) -> Result<Vec<String>, AppError> {
     let mut blockers = Vec::new();
+
+    // A published log on a host this VTA can no longer reach. With the
+    // server's registration gone the delete cannot even be attempted there,
+    // and dropping the local record would throw away the credentials that
+    // delete it, leaving a live log nobody can update or remove. VTI R2.1
+    // (Remote-First): no local commit before the remote effect, so refuse
+    // unless the caller opted in to leaving the host copy behind.
+    if let Some(record) = webvh_store::get_did(deps.webvh_ks, did).await? {
+        let serverless = record.server_id == SERVERLESS_SERVER_ID;
+        let registered = serverless
+            || webvh_store::get_server(deps.webvh_ks, &record.server_id)
+                .await?
+                .is_some();
+        match (registered, options.local_only) {
+            (false, false) => blockers.push(unregistered_server_refusal(did, &record.server_id)),
+            (false, true) | (true, false) => {}
+            // `local_only` exists for the unregistered case alone. Honoured
+            // anywhere else it would orphan a host copy that can be deleted,
+            // so it is refused rather than quietly ignored.
+            (true, true) if serverless => blockers.push(format!(
+                "--local-only was given, but {did} is serverless: there is no host copy to \
+                 leave behind. Delete it without --local-only"
+            )),
+            (true, true) => blockers.push(format!(
+                "--local-only was given, but hosting server `{}` is still registered, so the \
+                 published log can be deleted there. Delete {did} without --local-only",
+                record.server_id
+            )),
+        }
+    }
 
     // The VTA's own DID. Deleting it does not decommission the VTA; it strands
     // it — unable to authenticate to its mediator, unable to publish, and
@@ -1811,6 +1932,24 @@ async fn delete_blockers(
 
     let _ = auth;
     Ok(blockers)
+}
+
+/// The `server_id` a DID record stores when no hosting server publishes it.
+const SERVERLESS_SERVER_ID: &str = "serverless";
+
+/// The refusal for a DID whose hosting server is no longer registered, naming
+/// the commands that get the operator unstuck.
+fn unregistered_server_refusal(did: &str, server_id: &str) -> String {
+    format!(
+        "its published log is on hosting server `{server_id}`, which is no longer registered \
+         here. The VTA cannot delete the log on that host, and deleting only the local record \
+         would discard the keys needed to remove it later while the DID keeps resolving. \
+         Register the server again, then retry the delete: \
+         `pnm did-mgmt servers add --id {server_id} --did <server-did>` \
+         (offline: `vta did-mgmt servers add --id {server_id} --did <server-did>`). \
+         If that host is gone for good, delete only the local record with \
+         `vta did-mgmt dids delete {did} --local-only` (offline, VTA stopped)"
+    )
 }
 
 /// Ids of the not-yet-revoked credentials the VTA issued to `did`.
