@@ -136,7 +136,8 @@ pnm config get
 
 A value outside its range is reported under `Rejected` and nothing is written.
 Over the wire the value is a JSON integer (a string of decimal digits is also
-accepted).
+accepted). Every applied change is recorded in the audit log as a
+`config.update` row naming each key and its new value (`pnm audit list`).
 
 **Changing a limiter's quota resets that limiter's buckets**: every client
 starts again from a full burst at the new quota. A patch that leaves a

@@ -30,6 +30,15 @@
 //! without a restart: the limiters read `[server]` from the shared config on
 //! every request (see `routes::rate_limit`), so writing the value here *is*
 //! applying it. They are persisted to `config.toml` like every other key.
+//!
+//! # Every applied patch is audited
+//!
+//! A patch that writes anything records one `config.update` audit row naming
+//! each key and its new value (none of these keys is secret). Loosening a
+//! rate limiter is a change to a security control, and before the rate-limit
+//! keys arrived a successful patch left no audit trail at all — the dispatch
+//! spine only records refusals for non-vault tasks, leaving success to the
+//! handler, and this one recorded nothing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -256,6 +265,7 @@ pub async fn get_config(
 /// is applied. A patch that rejects every key writes nothing.
 pub async fn update_config(
     config: &Arc<RwLock<AppConfig>>,
+    audit_sink: &crate::audit::SharedAuditSink,
     auth: &AuthClaims,
     overrides: HashMap<String, Value>,
     channel: &str,
@@ -302,7 +312,7 @@ pub async fn update_config(
         });
     }
 
-    let (contents, path) = {
+    let (contents, path, detail) = {
         let mut config = config.write().await;
         for (def, value) in &writes {
             match (def.key, value) {
@@ -335,10 +345,27 @@ pub async fn update_config(
         }
         let contents = toml::to_string_pretty(&*config)
             .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))?;
-        (contents, config.config_path.clone())
+        let mut changed: Vec<String> = writes
+            .iter()
+            .map(|(def, _)| format!("{}={}", def.key, value_of(&config, def.key)))
+            .collect();
+        changed.sort();
+        (contents, config.config_path.clone(), changed.join(", "))
     };
 
     std::fs::write(&path, contents).map_err(AppError::Io)?;
+
+    crate::audit::record_with_detail_best_effort(
+        audit_sink,
+        "config.update",
+        &auth.did,
+        Some("config"),
+        "success",
+        Some(channel),
+        None,
+        Some(&detail),
+    )
+    .await;
 
     info!(
         channel,
@@ -480,6 +507,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_in(dir.path());
         let auth = crate::test_support::super_admin_claims();
+        let ts = crate::test_support::open_test_store().await;
         let overrides = HashMap::from([
             ("rate_limit_interval_secs".to_string(), serde_json::json!(2)),
             ("rate_limit_burst".to_string(), serde_json::json!(30)),
@@ -492,7 +520,7 @@ mod tests {
                 serde_json::json!(600),
             ),
         ]);
-        let result = update_config(&config, &auth, overrides, "test")
+        let result = update_config(&config, &ts.audit, &auth, overrides, "test")
             .await
             .unwrap();
         let mut applied = result.applied.clone();
@@ -508,6 +536,27 @@ mod tests {
         );
         assert!(result.pending_restart.is_empty());
         assert!(result.rejected.is_empty());
+
+        // One audit row names every changed key and its new value.
+        let rows = ts.audit_ks.prefix_iter_raw("log:").await.unwrap();
+        let rows: Vec<String> = rows
+            .iter()
+            .map(|(_, raw)| String::from_utf8_lossy(raw).into_owned())
+            .filter(|r| r.contains("config.update"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one config.update row: {rows:?}");
+        for needle in [
+            "did_log_rate_limit_burst=600",
+            "did_log_rate_limit_interval_secs=3",
+            "rate_limit_burst=30",
+            "rate_limit_interval_secs=2",
+        ] {
+            assert!(
+                rows[0].contains(needle),
+                "{needle} missing from {}",
+                rows[0]
+            );
+        }
 
         let server = config.read().await.server.clone();
         assert_eq!(server.rate_limit_interval_secs, 2);
@@ -537,6 +586,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_in(dir.path());
         let auth = crate::test_support::super_admin_claims();
+        let ts = crate::test_support::open_test_store().await;
         let overrides = HashMap::from([
             ("rate_limit_burst".to_string(), serde_json::json!(0)),
             (
@@ -544,7 +594,7 @@ mod tests {
                 serde_json::json!(1_000_000),
             ),
         ]);
-        let result = update_config(&config, &auth, overrides, "test")
+        let result = update_config(&config, &ts.audit, &auth, overrides, "test")
             .await
             .unwrap();
         assert!(result.applied.is_empty());
@@ -563,10 +613,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_in(dir.path());
         let mut auth = crate::test_support::super_admin_claims();
+        let ts = crate::test_support::open_test_store().await;
         auth.role = vti_common::acl::Role::Reader;
         let overrides = HashMap::from([("rate_limit_burst".to_string(), serde_json::json!(100))]);
         assert!(
-            update_config(&config, &auth, overrides, "test")
+            update_config(&config, &ts.audit, &auth, overrides, "test")
                 .await
                 .is_err()
         );

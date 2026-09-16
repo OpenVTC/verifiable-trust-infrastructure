@@ -174,9 +174,11 @@ mod tests {
     fn rate_limit_overrides_emit_only_set_keys_as_integers() {
         assert!(RateLimitOverrides::default().entries().is_empty());
 
-        let mut o = RateLimitOverrides::default();
-        o.rate_limit_burst = Some(30);
-        o.did_log_rate_limit_interval_secs = Some(2);
+        let o = RateLimitOverrides {
+            rate_limit_burst: Some(30),
+            did_log_rate_limit_interval_secs: Some(2),
+            ..Default::default()
+        };
         let entries = o.entries();
         assert_eq!(
             entries,
