@@ -27,6 +27,7 @@
 //! framework document as its reply, so TSP and DIDComm callers get
 //! byte-identical round-trip semantics off the shared `dispatch_trust_task_core`.
 
+use affinidi_messaging_core::RelationshipRequest;
 use tracing::info;
 
 use crate::messaging::auth::auth_for_trust_task_envelope;
@@ -117,8 +118,138 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
 // `TspHandler`/`TspResponse` wrapper the old `start_with_tsp` path required is
 // no longer needed.
 
+/// What the VTA does about an inbound TSP relationship request (§7.2).
+///
+/// Separated from the sends so the *policy* can be tested without a mediator or
+/// a socket. Every arm is a decision someone has to defend; one buried in an
+/// `if` beside two `await`s is one nobody reviews.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlDecision {
+    /// Send an accept (`XRFA`). The transport has already recorded the
+    /// relationship; this completes it.
+    Accept,
+    /// Send a cancellation (`XRFD`), carrying why.
+    ///
+    /// Named for the wire action rather than the intent, because it serves
+    /// **answering** a peer's cancellation of a mutual relationship (§7.3)
+    /// rather than refusing anything. Calling it `Refuse` would make a courtesy
+    /// read as hostility.
+    Cancel(&'static str),
+    /// Send nothing. The message needed recording and nothing else.
+    Nothing,
+}
+
+/// Decide what to do about a relationship request.
+///
+/// # Why there is no ACL check here
+///
+/// This was the open question in the Rev 3 plan, and it was settled by building
+/// the alternative and watching it fail.
+///
+/// The ACL gate was first put *here*, refusing an invite from a sender with no
+/// entry. The justification was diagnosability: §7.2.2 prescribes *drop*, so an
+/// endpoint that stays silent is indistinguishable from a broken transport, and
+/// an explicit refusal turns silence into an answer.
+///
+/// Building it showed the argument runs the other way. A peer sends its invite
+/// and its first Trust Task together (§3.6 permits exactly that). Refusing the
+/// invite means §7.2.2 then drops the Trust Task — so the peer's actual request
+/// goes unanswered, and the `XRFD` it does get is a *control* message its
+/// application layer never sees. The gate produced the silence it was meant to
+/// prevent. `tsp_vta_trust_task`'s
+/// `an_unauthorized_sender_is_refused_over_tsp_not_met_with_silence` caught it.
+///
+/// So the relationship is formed with any sender TSP has authenticated, and
+/// **the ACL remains the only gate, where it already lives** — at the Trust
+/// Task layer, which answers with a named `permissionDenied` envelope the peer
+/// can act on. This costs nothing: a relationship grants no authority on its
+/// own, every task behind it is still checked, and the sender VID is
+/// cryptographically proven by `unpack`, so there is no enumeration exposure.
+///
+/// That is the explicit refusal the decision asked for. It is simply at the
+/// layer that can express it.
+pub fn decide_control(request: RelationshipRequest, reply_expected: bool) -> ControlDecision {
+    match request {
+        // §7.2.5: an invite may introduce a VID, whose signature the transport
+        // verified before this was reached. Not gated here either, for the same
+        // reason — the introduced VID gains a relationship and no authority,
+        // and its own tasks meet the same ACL.
+        RelationshipRequest::Invite => ControlDecision::Accept,
+        // The peer accepted an invite this VTA sent. The transport recorded the
+        // state change; answering an accept would start a loop.
+        RelationshipRequest::Accept => ControlDecision::Nothing,
+        // §7.3: a cancellation for a relationship held in both directions is
+        // answered with one of our own before forgetting it. `reply_expected`
+        // is the transport's reading of that condition, deliberately not
+        // re-derived here.
+        RelationshipRequest::Cancel => {
+            if reply_expected {
+                ControlDecision::Cancel("the peer cancelled a mutual relationship (§7.3)")
+            } else {
+                ControlDecision::Nothing
+            }
+        }
+        // `RelationshipRequest` is `#[non_exhaustive]`, so a request type this
+        // build does not know is one upstream minor release away.
+        //
+        // Record and say nothing, rather than guess. Answering a request whose
+        // meaning is unknown is how an endpoint agrees to something it cannot
+        // describe; the transport has already recorded whatever state change
+        // the message implied, so silence here loses nothing a later release
+        // cannot add deliberately.
+        _ => ControlDecision::Nothing,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    use super::{ControlDecision, decide_control};
+    use affinidi_messaging_core::RelationshipRequest;
+
+    /// An invite is accepted from any sender TSP authenticated, because the ACL
+    /// gate lives at the Trust Task layer.
+    ///
+    /// Gating it here was built first and then removed. A peer sends its invite
+    /// and its first task together (§3.6 permits exactly that), so refusing the
+    /// invite makes §7.2.2 drop the task — the peer's actual request goes
+    /// unanswered and the `XRFD` it gets is a control message its application
+    /// never sees. The gate produced the silence it existed to prevent. See
+    /// `decide_control`'s docs, and
+    /// `tsp_vta_trust_task::an_unauthorized_sender_is_refused_over_tsp_not_met_with_silence`,
+    /// which is the test that caught it.
+    #[test]
+    fn an_invite_is_accepted_and_the_acl_gate_stays_at_the_task_layer() {
+        assert_eq!(
+            decide_control(RelationshipRequest::Invite, false),
+            ControlDecision::Accept,
+            "refusing here drops the peer's first task and answers it with nothing"
+        );
+    }
+
+    /// Answering an accept would start a loop: the peer answers our answer.
+    #[test]
+    fn an_accept_is_not_answered() {
+        assert_eq!(
+            decide_control(RelationshipRequest::Accept, false),
+            ControlDecision::Nothing
+        );
+    }
+
+    /// §7.3 — and `reply_expected` is the transport's reading of the condition,
+    /// deliberately not re-derived here.
+    #[test]
+    fn a_cancellation_is_answered_only_when_the_relationship_was_mutual() {
+        assert_eq!(
+            decide_control(RelationshipRequest::Cancel, false),
+            ControlDecision::Nothing
+        );
+        assert!(matches!(
+            decide_control(RelationshipRequest::Cancel, true),
+            ControlDecision::Cancel(_)
+        ));
+    }
+
     use super::*;
     use crate::acl::{AclEntry, Role, store_acl_entry};
     use crate::test_support::build_signing_test_app_state;

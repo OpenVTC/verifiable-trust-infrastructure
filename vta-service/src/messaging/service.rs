@@ -565,6 +565,33 @@ async fn handle_tsp(inbound: Inbound, messaging: &Arc<VtaMessaging>, app_state: 
         warn!("inbound TSP frame has no authenticated sender VID — dropping");
         return;
     };
+
+    // A relationship request is not traffic and must not reach the Trust Task
+    // spine: it carries no envelope, so dispatching it would answer a perfectly
+    // valid control message with "this is not a Trust Task envelope".
+    //
+    // The transport has already RECORDED it (affinidi-messaging-sdk 0.26.4),
+    // which is what admits the application messages that follow. What is left
+    // is the authorization decision, and that is this VTA's to make.
+    if let affinidi_messaging_core::InboundKind::RelationshipControl {
+        request,
+        thread_digest,
+        reply_expected,
+        introduces,
+    } = &inbound.kind
+    {
+        handle_tsp_control(
+            &sender_vid,
+            *request,
+            *thread_digest,
+            *reply_expected,
+            introduces.as_deref(),
+            messaging,
+        )
+        .await;
+        return;
+    }
+
     let reply = crate::messaging::tsp_inbound::dispatch_one(
         app_state,
         &inbound.message.payload,
@@ -576,6 +603,73 @@ async fn handle_tsp(inbound: Inbound, messaging: &Arc<VtaMessaging>, app_state: 
     }
     if let Err(e) = messaging.tsp.send_to(&sender_vid, &reply).await {
         warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
+    }
+}
+
+/// Answer one inbound TSP relationship request (§7.2), or decline to.
+///
+/// The policy is [`decide_control`](crate::messaging::tsp_inbound::decide_control)
+/// — a pure function, tested without a socket — and it deliberately performs
+/// **no ACL check**: the ACL gate lives at the Trust Task layer, which can
+/// answer a peer with a named `permissionDenied` envelope rather than a control
+/// message its application never sees. `decide_control`'s docs carry the full
+/// reasoning and the test that forced it.
+///
+/// Nothing here can fail the listener. A reply that cannot be sent is logged
+/// and dropped, because the alternative is a VTA that stops receiving because
+/// one peer became unreachable mid-answer.
+#[cfg(feature = "tsp")]
+async fn handle_tsp_control(
+    sender_vid: &str,
+    request: affinidi_messaging_core::RelationshipRequest,
+    thread_digest: [u8; 32],
+    reply_expected: bool,
+    introduces: Option<&str>,
+    messaging: &Arc<VtaMessaging>,
+) {
+    use crate::messaging::tsp_inbound::{ControlDecision, decide_control};
+
+    let atm = messaging.atm.clone();
+    let profile = messaging.profile.clone();
+
+    match decide_control(request, reply_expected) {
+        ControlDecision::Accept => {
+            match atm
+                .tsp()
+                .accept_relationship(&profile, sender_vid, thread_digest)
+                .await
+            {
+                Ok(state) => info!(
+                    sender = %sender_vid, ?request, ?state, introduced = ?introduces,
+                    "accepted an inbound TSP relationship request",
+                ),
+                Err(e) => warn!(
+                    sender = %sender_vid, error = %e,
+                    "could not send a TSP relationship accept; the relationship stays recorded, \
+                     so traffic still flows, but the peer sees no answer",
+                ),
+            }
+        }
+        ControlDecision::Cancel(why) => {
+            match atm
+                .tsp()
+                .cancel_relationship(&profile, sender_vid, thread_digest)
+                .await
+            {
+                Ok(state) => info!(
+                    sender = %sender_vid, ?request, ?state, reason = %why,
+                    "answered an inbound TSP relationship request with a cancellation",
+                ),
+                Err(e) => warn!(
+                    sender = %sender_vid, reason = %why, error = %e,
+                    "could not send a TSP relationship cancellation",
+                ),
+            }
+        }
+        ControlDecision::Nothing => info!(
+            sender = %sender_vid, ?request,
+            "recorded an inbound TSP relationship request; no answer is due",
+        ),
     }
 }
 
