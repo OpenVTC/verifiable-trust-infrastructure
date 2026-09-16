@@ -185,7 +185,35 @@ jobs:
     # specific job by id.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 60, not 30, because this job's cost scales with **how many crates changed
+    # since their last release** — release-plz semver-checks each one against
+    # its published baseline. An ordinary merge touches a few; a workspace-wide
+    # dependency move touches all of them.
+    #
+    # Measured on 2026-09-16, same day, same workflow:
+    #
+    #     07:09  19m14s  success
+    #     09:32  20m11s  success
+    #     12:59  22m58s  success
+    #     15:08  30m26s  CANCELLED — timed out
+    #
+    # The last of those is the merge of #1512, which moved every `affinidi-*`
+    # pin at once. The budget had been creeping toward the ceiling for a while
+    # and that change went through it.
+    #
+    # The failure mode is worth knowing because it is silent in the way that
+    # matters: the job is cancelled, the `Release-plz release` job beside it
+    # stays green, and the Release PR is simply **left describing an older
+    # main** — no error on the PR, nothing red pointing at it. Exactly the
+    # shape of the stale-PR hazard the concurrency note below describes, via a
+    # different route. Read a Release PR's `updatedAt` against main's HEAD
+    # before merging it; do not assume it regenerated.
+    #
+    # For scale: CI's own `semver report` job covers a broader crate set, is
+    # given 45 minutes, and uses 41–44 of them. 60 matches
+    # `release-plz-release` above and leaves real headroom rather than the
+    # thin margin that just failed.
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
