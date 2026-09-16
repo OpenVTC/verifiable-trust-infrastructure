@@ -196,6 +196,8 @@ fn a_later_runtime_gets_a_working_resolver() {
     }
     // One fetch per runtime: the second runtime's resolver is its own.
     assert_eq!(server_rt.block_on(log_fetches(&server)), 2);
-
-    vta_sdk::resolver::shutdown_shared_did_resolvers();
+    // No `shutdown_shared_did_resolvers()` here: it drains the process-wide
+    // map, so it would discard the resolvers of the tests running beside this
+    // one and make their fetch counts depend on timing. Dropping each runtime
+    // already retires its entry.
 }
