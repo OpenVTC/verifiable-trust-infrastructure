@@ -4230,3 +4230,44 @@ fn every_witnessed_task_round_trips_through_its_generated_types() {
         eprintln!("KNOWN DRIFT (follow-up issue required): {line}");
     }
 }
+
+#[cfg(test)]
+mod pqc_key_type_conformance {
+    use super::*;
+
+    /// A post-quantum `KeyRecord` validates against the published `keys/*`
+    /// response schema.
+    ///
+    /// This is the end of a four-repository chain and the only place it is
+    /// checked in one step: the `keyType` enumeration widens in
+    /// `dtgwg-trust-tasks-tf`'s `keys/_shared/0.1/key-record.schema.json`,
+    /// codegen carries it into `trust-tasks-rs`, this workspace takes that
+    /// release, and `vta_sdk::keys::KeyType` gains the matching variants.
+    ///
+    /// If any link is missing the failure is not a compile error — it is the
+    /// VTA emitting a `keyType` the schema does not list and then **rejecting
+    /// its own response** at the dispatch spine, which reaches an operator as a
+    /// 500 on an operation that otherwise succeeded. The canonical
+    /// `key_record()` fixture stays Ed25519 because that is the ordinary case;
+    /// this asserts the post-quantum one separately rather than changing what
+    /// the rest of the suite is about.
+    #[test]
+    fn a_post_quantum_key_record_validates_against_the_published_schema() {
+        for key_type in [KeyType::MlDsa44, KeyType::MlDsa65] {
+            let record = KeyRecord {
+                key_type: key_type.clone(),
+                ..key_record()
+            };
+            let body = to_v(GetKeyResponseBody { key: Some(record) });
+
+            validates::<specs::keys::show::v0_1::Response>(&body).unwrap_or_else(|e| {
+                panic!(
+                    "a {key_type} KeyRecord was refused by the keys/show response \
+                     schema: {e}\n\nThe published `keyType` enumeration does not \
+                     list this value. Check that this workspace's trust-tasks-rs \
+                     carries the widened keys/_shared/0.1 component."
+                )
+            });
+        }
+    }
+}

@@ -107,6 +107,21 @@ pub async fn generate(
                 "internal keys are signing keys; X25519 is key-agreement only".into(),
             ));
         }
+        // `KeyType` is `#[non_exhaustive]`, so this arm is required from
+        // outside `vta-sdk`. It refuses rather than falling back: an internal
+        // key is unrecoverable by construction (no derivation path, absent from
+        // the mnemonic), so minting one under a key type this function does not
+        // actually implement would strand whatever it was minted for.
+        //
+        // ML-DSA lands here. The encoders in `lib.rs` already know its
+        // multicodecs, so a `KeyRecord` can *carry* one — deriving it is the
+        // separate piece of work, and until that exists this is the honest
+        // answer rather than a silent Ed25519 key wearing an ML-DSA label.
+        other => {
+            return Err(AppError::Validation(format!(
+                "internal keys do not support {other} yet"
+            )));
+        }
     };
 
     let record = StoredInternalSecret {
@@ -167,6 +182,13 @@ pub async fn sign(
         KeyType::X25519 => Err(AppError::Internal(
             "an X25519 internal key should never have been stored".into(),
         )),
+        // Unreachable in practice — `generate` refuses these, so nothing can
+        // have stored one. `Internal` rather than `Validation` for that reason:
+        // reaching it means the store holds a record `generate` could not have
+        // written, which is a fault here and not bad input.
+        other => Err(AppError::Internal(format!(
+            "an internal key of type {other} should never have been stored"
+        ))),
     };
 
     secret.zeroize();

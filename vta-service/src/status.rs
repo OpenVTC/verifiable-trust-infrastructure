@@ -273,6 +273,7 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     let mut ed25519_count = 0usize;
     let mut x25519_count = 0usize;
     let mut p256_count = 0usize;
+    let mut other_count = 0usize;
 
     for (_key, value) in &raw_keys {
         if let Ok(record) = serde_json::from_slice::<KeyRecord>(value) {
@@ -285,13 +286,24 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
                 KeyType::Ed25519 => ed25519_count += 1,
                 KeyType::X25519 => x25519_count += 1,
                 KeyType::P256 => p256_count += 1,
+                // Counted, not dropped. `KeyType` is `#[non_exhaustive]`, and a
+                // wildcard that only fell through would leave the per-type
+                // breakdown failing to add up to `total_keys` — with the
+                // missing keys being exactly the new ones nobody is looking for
+                // yet.
+                _ => other_count += 1,
             }
         }
     }
 
+    let other_note = if other_count > 0 {
+        format!(", other: {other_count}")
+    } else {
+        String::new()
+    };
     section(&format!("Keys ({total_keys})"));
     eprintln!(
-        "  {CYAN}{:<13}{RESET} {active}  Ed25519: {ed25519_count}, X25519: {x25519_count}, P-256: {p256_count}",
+        "  {CYAN}{:<13}{RESET} {active}  Ed25519: {ed25519_count}, X25519: {x25519_count}, P-256: {p256_count}{other_note}",
         "Active"
     );
     eprintln!("  {CYAN}{:<13}{RESET} {revoked}", "Revoked");

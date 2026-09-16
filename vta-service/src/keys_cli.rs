@@ -153,6 +153,14 @@ pub async fn run_keys_secrets(
                     ),
                 )
             }
+            // `KeyType` is `#[non_exhaustive]`, so this arm is required. Same
+            // reasoning as the online path in `operations::keys`: each branch
+            // derives through a scheme-specific SLIP-0010 path, so a wildcard
+            // could only export a key of some other algorithm under this
+            // record's label. ML-DSA lands here until a `derive_ml_dsa` exists.
+            other => {
+                return Err(format!("key derivation does not support {other} yet").into());
+            }
         };
 
         eprintln!("Key ID:               {}", record.key_id);
