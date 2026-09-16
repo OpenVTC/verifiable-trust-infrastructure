@@ -294,7 +294,7 @@ enum Commands {
     /// directly on the local fjall keystore, so the daemon must be
     /// stopped.
     ///
-    /// `vta did-mgmt servers {add,list,update,remove}` manages the
+    /// `vta did-mgmt servers {add,list,update,delete}` manages the
     /// controller's registered DID-hosting servers. `vta did-mgmt
     /// dids {…}` operates on the DIDs themselves.
     ///
@@ -393,18 +393,20 @@ enum VaultCommands {
     ///   re-wrapper).
     /// - Reset the demo state between test runs.
     ///
-    /// Refuses to run unless `--force` is supplied — this is
-    /// irreversible against the local store and you'd lose any
-    /// real entries the wallet has saved.
+    /// A hard, bulk delete — there is no soft-delete or grace window on
+    /// this path. Refuses to run unless `--yes` is supplied (without it,
+    /// it reports what would be deleted): this is irreversible against the
+    /// local store and you'd lose any real entries the wallet has saved.
     ///
     /// Daemon must be stopped (fjall holds an exclusive lock); the
     /// `vault:` keyspace is the only one touched, so other VTA
     /// state (ACL, contexts, keys, audit) is preserved.
     Wipe {
         /// Required confirmation flag. Without it the command lists
-        /// the row count and exits without writing.
-        #[arg(long)]
-        force: bool,
+        /// the row count and exits without writing. `--force` is accepted
+        /// as a hidden alias.
+        #[arg(long = "yes", short = 'y', alias = "force")]
+        yes: bool,
         /// Optional: only wipe rows whose `contextId` matches.
         /// Useful when the user wants to reset a single persona's
         /// vault without clearing the others. Omit to wipe every row.
@@ -729,9 +731,10 @@ enum ContextCommands {
     Delete {
         /// Context ID.
         id: String,
-        /// Skip confirmation and delete immediately.
-        #[arg(long, short)]
-        force: bool,
+        /// Skip the confirmation prompt. `--force` / `-f` are accepted as
+        /// hidden aliases.
+        #[arg(long = "yes", short = 'y', alias = "force", short_alias = 'f')]
+        yes: bool,
     },
     /// Export an existing context — its admin credential + all DID
     /// keys (signing + KA + any pre-rotation) + DID document + log —
@@ -807,9 +810,9 @@ enum WebvhCommands {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Remove a WebVH server
-    RemoveServer {
-        /// Server identifier to remove
+    /// Delete a WebVH server
+    DeleteServer {
+        /// Server identifier to delete
         id: String,
     },
     /// Create a did:webvh DID and publish to a WebVH server
@@ -862,9 +865,9 @@ enum WebvhCommands {
         did: String,
         /// Skip the confirmation prompt. Skips the *prompt* only — a DID
         /// something still depends on is refused regardless, and that refusal
-        /// has no override.
-        #[arg(long)]
-        force: bool,
+        /// has no override. `--force` is accepted as a hidden alias.
+        #[arg(long = "yes", short = 'y', alias = "force")]
+        yes: bool,
     },
     /// Print the raw `did.jsonl` log for a webvh DID the VTA knows.
     ///
@@ -984,9 +987,14 @@ enum DidMgmtServerCommands {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Remove a DID-hosting server.
-    Remove {
-        /// Server identifier to remove.
+    /// Delete a DID-hosting server from the registry.
+    ///
+    /// Only the registry row goes. DIDs registered against the server keep
+    /// naming it and their logs stay hosted on it — the command lists any
+    /// such DIDs and how to delete them completely.
+    #[command(alias = "remove")]
+    Delete {
+        /// Server identifier to delete.
         id: String,
     },
 }
@@ -1089,9 +1097,9 @@ enum DidMgmtDidCommands {
         did: String,
         /// Skip the confirmation prompt. Skips the *prompt* only — a DID
         /// something still depends on is refused regardless, and that refusal
-        /// has no override.
-        #[arg(long)]
-        force: bool,
+        /// has no override. `--force` is accepted as a hidden alias.
+        #[arg(long = "yes", short = 'y', alias = "force")]
+        yes: bool,
     },
     /// Print the raw `did.jsonl` log for a DID the VTA knows.
     ///
@@ -1124,7 +1132,7 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 DidMgmtServerCommands::Update { id, label } => {
                     WebvhCommands::UpdateServer { id, label }
                 }
-                DidMgmtServerCommands::Remove { id } => WebvhCommands::RemoveServer { id },
+                DidMgmtServerCommands::Delete { id } => WebvhCommands::DeleteServer { id },
             },
             DidMgmtCommands::Dids { command } => match command {
                 DidMgmtDidCommands::Create {
@@ -1175,9 +1183,7 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 DidMgmtDidCommands::List { context, server } => {
                     WebvhCommands::ListDids { context, server }
                 }
-                DidMgmtDidCommands::Delete { did, force } => {
-                    WebvhCommands::DeleteDid { did, force }
-                }
+                DidMgmtDidCommands::Delete { did, yes } => WebvhCommands::DeleteDid { did, yes },
                 DidMgmtDidCommands::GetLog { did, out } => WebvhCommands::DidLog { did, out },
             },
         }
@@ -1221,6 +1227,11 @@ enum ApprovalsCommands {
     /// The hammer, for when no single rule is identifiable or the row itself is
     /// unparseable. Every task goes back to running on the caller's own
     /// authority.
+    DeleteAll,
+    /// Former name of `delete-all`, which says what it does: this never
+    /// disabled anything, it deletes every rule and approver set. Still
+    /// works; prints a note naming the new command.
+    #[command(hide = true)]
     Disable,
 }
 
@@ -1721,7 +1732,14 @@ async fn main() {
                 ApprovalsCommands::Remove { task_type, context } => {
                     approvals_cli::run_remove(cli.config, task_type, context).await
                 }
-                ApprovalsCommands::Disable => approvals_cli::run_disable(cli.config).await,
+                ApprovalsCommands::DeleteAll => approvals_cli::run_delete_all(cli.config).await,
+                ApprovalsCommands::Disable => {
+                    eprintln!(
+                        "Note: `vta approvals disable` is now `vta approvals delete-all` — it \
+                         deletes every rule and approver set. The old name still works."
+                    );
+                    approvals_cli::run_delete_all(cli.config).await
+                }
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
@@ -1883,10 +1901,10 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
-            VaultCommands::Wipe { force, context } => {
+            VaultCommands::Wipe { yes, context } => {
                 let args = vault_cli::VaultWipeArgs {
                     config_path: cli.config,
-                    force,
+                    yes,
                     context,
                 };
                 if let Err(e) = vault_cli::run_vault_wipe(args).await {
@@ -1983,8 +2001,8 @@ async fn main() {
                 } => {
                     bootstrap_cli::run_context_update(cli.config, id, name, did, description).await
                 }
-                ContextCommands::Delete { id, force } => {
-                    bootstrap_cli::run_context_delete(cli.config, id, force).await
+                ContextCommands::Delete { id, yes } => {
+                    bootstrap_cli::run_context_delete(cli.config, id, yes).await
                 }
                 ContextCommands::Reprovision {
                     id,
@@ -2458,7 +2476,7 @@ async fn run_webvh_dispatch(config_path: Option<PathBuf>, command: WebvhCommands
         WebvhCommands::UpdateServer { id, label } => {
             webvh_cli::run_update_server(config_path, id, label).await
         }
-        WebvhCommands::RemoveServer { id } => webvh_cli::run_remove_server(config_path, id).await,
+        WebvhCommands::DeleteServer { id } => webvh_cli::run_remove_server(config_path, id).await,
         WebvhCommands::CreateDid {
             context,
             server,
@@ -2487,8 +2505,8 @@ async fn run_webvh_dispatch(config_path: Option<PathBuf>, command: WebvhCommands
         WebvhCommands::ListDids { context, server } => {
             webvh_cli::run_list_dids(config_path, context, server).await
         }
-        WebvhCommands::DeleteDid { did, force } => {
-            webvh_cli::run_delete_did(config_path, did, force).await
+        WebvhCommands::DeleteDid { did, yes } => {
+            webvh_cli::run_delete_did(config_path, did, yes).await
         }
         WebvhCommands::DidLog { did, out } => webvh_cli::run_did_log(config_path, did, out).await,
         WebvhCommands::EditDid {
@@ -3002,4 +3020,93 @@ async fn reconstruct_credential(
     });
     let bundle_json = serde_json::to_string(&bundle)?;
     Ok(BASE64.encode(bundle_json.as_bytes()))
+}
+
+#[cfg(test)]
+mod removal_verb_tests {
+    use super::*;
+
+    /// Prompt-skip (and, on `vault wipe`, the required confirmation) is
+    /// `--yes`; the `--force` spellings these commands used to take still
+    /// parse, so no script breaks.
+    #[test]
+    fn prompt_skip_is_yes_and_force_still_parses() {
+        for flag in ["--yes", "-y", "--force", "-f"] {
+            let cli = Cli::try_parse_from(["vta", "contexts", "delete", "ctx", flag])
+                .unwrap_or_else(|e| panic!("contexts delete {flag}: {e}"));
+            let Some(Commands::Contexts {
+                command: ContextCommands::Delete { yes, .. },
+            }) = cli.command
+            else {
+                panic!("expected contexts delete");
+            };
+            assert!(yes, "contexts delete {flag} did not set yes");
+        }
+        for flag in ["--yes", "-y", "--force"] {
+            let cli = Cli::try_parse_from(["vta", "vault", "wipe", flag])
+                .unwrap_or_else(|e| panic!("vault wipe {flag}: {e}"));
+            let Some(Commands::Vault {
+                command: VaultCommands::Wipe { yes, .. },
+            }) = cli.command
+            else {
+                panic!("expected vault wipe");
+            };
+            assert!(yes, "vault wipe {flag} did not set yes");
+        }
+    }
+
+    /// `delete-all` is the name; `disable` stays reachable (hidden) and
+    /// dispatches to the same delete.
+    #[test]
+    fn approvals_delete_all_keeps_disable() {
+        let cli = Cli::try_parse_from(["vta", "approvals", "delete-all"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Approvals {
+                command: ApprovalsCommands::DeleteAll
+            })
+        ));
+        let cli = Cli::try_parse_from(["vta", "approvals", "disable"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Approvals {
+                command: ApprovalsCommands::Disable
+            })
+        ));
+    }
+
+    #[cfg(feature = "webvh")]
+    #[test]
+    fn did_mgmt_servers_delete_keeps_remove_and_dids_delete_keeps_force() {
+        for verb in ["delete", "remove"] {
+            let cli = Cli::try_parse_from(["vta", "did-mgmt", "servers", verb, "host-1"])
+                .unwrap_or_else(|e| panic!("{verb}: {e}"));
+            assert!(
+                matches!(
+                    cli.command,
+                    Some(Commands::DidMgmt {
+                        command: DidMgmtCommands::Servers {
+                            command: DidMgmtServerCommands::Delete { .. }
+                        }
+                    })
+                ),
+                "servers {verb} did not parse as servers delete"
+            );
+        }
+        for flag in ["--yes", "--force"] {
+            let cli = Cli::try_parse_from(["vta", "did-mgmt", "dids", "delete", "did:x", flag])
+                .unwrap_or_else(|e| panic!("dids delete {flag}: {e}"));
+            assert!(
+                matches!(
+                    cli.command,
+                    Some(Commands::DidMgmt {
+                        command: DidMgmtCommands::Dids {
+                            command: DidMgmtDidCommands::Delete { yes: true, .. }
+                        }
+                    })
+                ),
+                "dids delete {flag} did not set yes"
+            );
+        }
+    }
 }

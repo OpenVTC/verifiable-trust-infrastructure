@@ -17,7 +17,7 @@ pub(crate) async fn run(
         WebvhCommands::UpdateServer { id, label } => {
             webvh::cmd_webvh_server_update(client, &id, label).await
         }
-        WebvhCommands::RemoveServer { id } => webvh::cmd_webvh_server_remove(client, &id).await,
+        WebvhCommands::DeleteServer { id } => webvh::cmd_webvh_server_remove(client, &id).await,
         WebvhCommands::CreateDid {
             context,
             server,

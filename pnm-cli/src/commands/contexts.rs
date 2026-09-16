@@ -42,9 +42,7 @@ pub(crate) async fn run(
         ContextCommands::UpdateDid { id, did } => {
             contexts::cmd_context_update_did(client, &id, &did).await
         }
-        ContextCommands::Delete { id, force } => {
-            contexts::cmd_context_delete(client, &id, force).await
-        }
+        ContextCommands::Delete { id, yes } => contexts::cmd_context_delete(client, &id, yes).await,
         ContextCommands::Bootstrap {
             id,
             name,

@@ -311,7 +311,7 @@ Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password
 | ------------- | ----------------------------------------------------- |
 | `vta list`    | List configured VTAs                                  |
 | `vta use`     | Set the default VTA                                   |
-| `vta remove`  | Remove a VTA connection                               |
+| `vta delete`  | Delete a local VTA connection and its stored credential (the VTA's ACL entry stays — `acl delete` revokes it) |
 | `vta info`    | Show current VTA details                              |
 | `vta restart` | Trigger a soft restart (reloads config, reconnects)   |
 

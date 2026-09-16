@@ -27,7 +27,7 @@
 //!
 //! ## Read-mostly, and deliberately cannot add a gate
 //!
-//! `list` diagnoses; `remove` / `disable` / `policy delete` recover. There is no
+//! `list` diagnoses; `remove` / `delete-all` / `policy delete` recover. There is no
 //! offline command that *creates* an approval rule, and that asymmetry is
 //! intentional: adding a gate is never an emergency, and a break-glass path that
 //! can install one is a way to plant a control that never went through the
@@ -93,7 +93,7 @@ async fn list_on(ks: &vti_common::store::KeyspaceHandle) -> CliResult {
             println!(
                 "The declarative approvals row is present but unreadable: {e}\n\
                  Its rules cannot be shown, and `vta approvals remove` cannot edit it.\n\
-                 `vta approvals disable` will delete the row outright."
+                 `vta approvals delete-all` will delete the row outright."
             );
         }
     }
@@ -163,7 +163,10 @@ async fn remove_on(
     Ok(())
 }
 
-/// `vta approvals disable` — delete the whole declarative row.
+/// `vta approvals delete-all` — delete the whole declarative row.
+///
+/// Named `disable` until removal commands were standardised on `delete`; it
+/// never disabled anything, and the hidden `disable` alias still reaches it.
 ///
 /// The hammer, for when the operator cannot identify a single culprit or the row
 /// itself is unparseable. Every task goes back to running on the caller's own
@@ -173,16 +176,16 @@ async fn remove_on(
 ///
 /// Approver sets go with it: they live on the same row, and a set with no rule
 /// naming it grants nothing. Re-declare both with `pnm approvals`.
-pub async fn run_disable(config_path: Option<PathBuf>) -> CliResult {
-    disable_on(&policy_ks(config_path).await?).await
+pub async fn run_delete_all(config_path: Option<PathBuf>) -> CliResult {
+    delete_all_on(&policy_ks(config_path).await?).await
 }
 
-async fn disable_on(ks: &vti_common::store::KeyspaceHandle) -> CliResult {
+async fn delete_all_on(ks: &vti_common::store::KeyspaceHandle) -> CliResult {
     if storage::get_policy(ks, DECLARATIVE_POLICY_ID)
         .await?
         .is_none()
     {
-        println!("No declarative approvals row — nothing to disable.");
+        println!("No declarative approvals row — nothing to delete.");
         return Ok(());
     }
 
@@ -254,7 +257,7 @@ pub async fn run_policy_list(config_path: Option<PathBuf>, show_module: bool) ->
 ///
 /// The recovery path for a hand-authored module that denies what you need to
 /// reach. Refuses the declarative row: deleting it here would silently drop the
-/// rules *and* the approver sets, which `approvals disable` does deliberately
+/// rules *and* the approver sets, which `approvals delete-all` does deliberately
 /// and says so. Two commands, because the operator should have to mean it.
 pub async fn run_policy_delete(config_path: Option<PathBuf>, id: String) -> CliResult {
     // The refusal is checked before the store is opened: it is a property of the
@@ -263,7 +266,7 @@ pub async fn run_policy_delete(config_path: Option<PathBuf>, id: String) -> CliR
     if id == DECLARATIVE_POLICY_ID {
         return Err(format!(
             "`{id}` is the declarative approvals row, not a hand-authored module — use \
-             `vta approvals remove <task-uri>` to drop one rule, or `vta approvals disable` \
+             `vta approvals remove <task-uri>` to drop one rule, or `vta approvals delete-all` \
              to drop the row and every approver set with it"
         )
         .into());
@@ -416,9 +419,9 @@ mod tests {
         );
     }
 
-    /// `disable` is the hammer: the row goes, and the approver sets with it.
+    /// `delete-all` is the hammer: the row goes, and the approver sets with it.
     #[tokio::test]
-    async fn disable_drops_the_row_and_its_sets() {
+    async fn delete_all_drops_the_row_and_its_sets() {
         let (ks, _d) = ks().await;
         seed(
             &ks,
@@ -427,7 +430,7 @@ mod tests {
         )
         .await;
 
-        disable_on(&ks).await.expect("disable");
+        delete_all_on(&ks).await.expect("delete-all");
 
         assert!(
             storage::get_policy(&ks, DECLARATIVE_POLICY_ID)
@@ -499,7 +502,7 @@ mod tests {
     }
 
     /// A hand-authored module denying everything is the other half of the
-    /// lockout, and `approvals disable` cannot touch it — `policy delete` is
+    /// lockout, and `approvals delete-all` cannot touch it — `policy delete` is
     /// what recovers, and it must leave the declarative row alone.
     #[tokio::test]
     async fn policy_delete_removes_a_hand_authored_module_only() {
@@ -549,7 +552,7 @@ mod tests {
     ///
     /// `list` parsed the row before printing anything, so it died with a bare
     /// serde error on the one row an operator would be running it to inspect.
-    /// `disable` parsed the row before deleting it, so the hammer — the last
+    /// `delete-all` parsed the row before deleting it, so the hammer — the last
     /// thing left when every other command has failed — did not work on the
     /// state that most needs it. Both now treat parsing as best-effort.
     #[tokio::test]
@@ -578,7 +581,9 @@ mod tests {
         list_on(&ks)
             .await
             .expect("list must report an unreadable row, not fail on it");
-        disable_on(&ks).await.expect("disable clears a corrupt row");
+        delete_all_on(&ks)
+            .await
+            .expect("delete-all clears a corrupt row");
         assert!(
             storage::get_policy(&ks, DECLARATIVE_POLICY_ID)
                 .await

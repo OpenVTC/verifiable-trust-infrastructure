@@ -132,11 +132,44 @@ pub async fn run_remove_server(
     let cs = CliStore::open(&config).await?;
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
+    // Read before the row goes: DIDs still naming this server, and the
+    // server's own DID for the re-add command in the notice below. Deleting
+    // the registry row does not refuse in that case — it is what the
+    // operation does over the wire too — but it is not a complete delete of
+    // what the operator may think they are deleting, so say what remains.
+    let dependents: Vec<String> = crate::webvh_store::list_dids(&webvh_ks)
+        .await?
+        .into_iter()
+        .filter(|d| d.server_id == id)
+        .map(|d| d.did)
+        .collect();
+    let server_did = crate::webvh_store::get_server(&webvh_ks, &id)
+        .await?
+        .map(|s| s.did);
+
     let auth = cli_super_admin();
     operations::did_webvh::remove_webvh_server(&webvh_ks, &auth, &id, "cli").await?;
     cs.persist().await?;
 
-    eprintln!("WebVH server removed: {id}");
+    eprintln!("WebVH server deleted: {id}");
+    if !dependents.is_empty() {
+        eprintln!(
+            "Warning: only the registry entry was deleted. {} DID(s) are still registered \
+             against server '{id}', and their logs are still hosted on it:",
+            dependents.len()
+        );
+        for did in &dependents {
+            eprintln!("    {did}");
+        }
+        eprintln!(
+            "  While the id is unregistered, `vta did-mgmt dids delete` removes only the local \
+             record and leaves the hosted log behind. To delete those DIDs completely, re-add \
+             the server and delete them first:\n    \
+             vta did-mgmt servers add --id {id} --did {}\n    \
+             vta did-mgmt dids delete <did>",
+            server_did.as_deref().unwrap_or("<server-did>")
+        );
+    }
     Ok(())
 }
 

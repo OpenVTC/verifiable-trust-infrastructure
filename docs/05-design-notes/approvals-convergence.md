@@ -108,7 +108,8 @@ approver sets from the declarative row.
 
 ## The offline break-glass
 
-*Landed (#915).* `vta approvals {list,remove,disable}` and
+*Landed (#915).* `vta approvals {list,remove,disable}` (`disable` is now
+`delete-all`, with `disable` kept as a hidden alias) and
 `vta policy {list,delete}` read and write the policy keyspace directly, the way
 `vta services …` does for the DID document. This is what the retired
 `vta step-up disable` used to be for the config floors.

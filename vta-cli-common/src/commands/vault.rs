@@ -78,6 +78,10 @@ pub async fn cmd_vault_delete(
                 "{DIM}Vault entry {id} soft-deleted — recoverable with `vault restore {id}`.{RESET}"
             ),
         }
+        // A soft delete is not a complete delete: say how to finish it.
+        println!(
+            "{DIM}To delete it immediately and irreversibly, run `vault purge {id}` (or `vault delete {id} --force`).{RESET}"
+        );
     }
     print_result("Result:", &result)
 }
@@ -126,7 +130,7 @@ pub async fn cmd_vault_restore(
 }
 
 /// `vault purge` — irreversibly hard-delete an entry, skipping any grace
-/// window.
+/// window. The same operation as `vault delete --force`.
 pub async fn cmd_vault_purge(
     client: &VtaClient,
     id: String,

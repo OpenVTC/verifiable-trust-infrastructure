@@ -8,7 +8,7 @@
 use vta_sdk::client::VtaClient;
 
 use vta_cli_common::commands::contexts;
-use vta_cli_common::render::{GREEN, RED, RESET};
+use vta_cli_common::render::{DIM, GREEN, RED, RESET, YELLOW};
 
 use crate::auth;
 use crate::cli::VtaCommands;
@@ -62,17 +62,21 @@ pub(crate) async fn run_offline(
             println!("Default VTA set to '{slug}'.");
             true
         }
-        VtaCommands::Remove { slug, force } => {
+        VtaCommands::Delete { slug, yes } => {
             let Some(vta) = pnm_config.vtas.get(slug) else {
                 eprintln!("Error: VTA '{slug}' not found.");
                 std::process::exit(1);
             };
+            let key = config::vta_keyring_key(slug);
+            // Read before the keyring entry goes: the notice names the DID
+            // whose ACL entry survives on the VTA.
+            let client_did = auth::loaded_session(&key).map(|s| s.client_did);
 
-            // Removal drops the stored connection *and* the cached
+            // Deletion drops the stored connection *and* the cached
             // credential — it is not recoverable from the config file,
             // so show what goes and ask before doing it.
-            if !force {
-                println!("About to remove VTA '{slug}':");
+            if !yes {
+                println!("About to delete VTA connection '{slug}':");
                 println!("  Name: {}", vta.name);
                 if let Some(ref did) = vta.vta_did {
                     println!("  DID:  {did}");
@@ -82,7 +86,9 @@ pub(crate) async fn run_offline(
                     println!("  This is the default VTA — the default will move.");
                 }
                 println!();
-                let proceed = contexts::confirm_destructive("Proceed with removal?")
+                print_local_only_notice(slug, client_did.as_deref());
+                println!();
+                let proceed = contexts::confirm_destructive("Proceed with deletion?")
                     .unwrap_or_else(|e| {
                         eprintln!("Error reading confirmation: {e}");
                         std::process::exit(1);
@@ -94,18 +100,20 @@ pub(crate) async fn run_offline(
             }
 
             pnm_config.vtas.remove(slug);
-            // Clear default if it was the removed VTA
+            // Clear default if it was the deleted VTA
             if pnm_config.default_vta.as_deref() == Some(slug.as_str()) {
                 pnm_config.default_vta = pnm_config.vtas.keys().next().cloned();
             }
             // Clear the keyring entry
-            let key = config::vta_keyring_key(slug);
             auth::logout(&key);
             if let Err(e) = config::save_config(pnm_config) {
                 eprintln!("Error saving config: {e}");
                 std::process::exit(1);
             }
-            println!("VTA '{slug}' removed.");
+            println!("{GREEN}✓{RESET} VTA connection '{slug}' deleted.");
+            if *yes {
+                print_local_only_notice(slug, client_did.as_deref());
+            }
             true
         }
         VtaCommands::Info => {
@@ -163,4 +171,26 @@ pub(crate) async fn run_restart(client: &VtaClient) -> Result<(), Box<dyn std::e
         }
     }
     Ok(())
+}
+
+/// `pnm vta delete` is not a complete delete: it forgets the connection on
+/// this machine, while the VTA keeps the ACL entry that authorises the
+/// credential. Say so, and name the command that revokes it, because an
+/// operator retiring a credential usually means both.
+fn print_local_only_notice(slug: &str, client_did: Option<&str>) {
+    eprintln!(
+        "{YELLOW}⚠{RESET} This deletes only the local connection and credential for '{slug}'. \
+         The VTA, and its ACL entry for this credential, are untouched."
+    );
+    match client_did {
+        Some(did) => eprintln!(
+            "  To revoke the credential on the VTA as well, run this from an admin \
+             connection to it{DIM} (not if it is that VTA's only admin){RESET}:\n    \
+             pnm acl delete {did}"
+        ),
+        None => eprintln!(
+            "  To revoke a credential on the VTA as well, run `pnm acl delete <did>` from \
+             an admin connection to it."
+        ),
+    }
 }

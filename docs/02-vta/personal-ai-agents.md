@@ -273,8 +273,8 @@ From the operator side the same three tasks are `pnm memory`:
 ```bash
 pnm memory plant favourite-colour green --context my-agent-memory
 pnm memory recall --context my-agent-memory          # or `recall <key>`
-pnm memory forget favourite-colour --context my-agent-memory
-pnm memory wipe --context my-agent-memory            # confirms; --yes to skip
+pnm memory delete favourite-colour --context my-agent-memory
+pnm memory wipe --context my-agent-memory            # deletes every entry; confirms, --yes to skip
 ```
 
 `--context` is required on every subcommand: a super-admin's access check

@@ -45,7 +45,7 @@ VTA boots.
    (interactive) or requires `--overwrite` (non-interactive). Running
    against a slug that is already **complete** is an error in both
    modes; overwriting a completed VTA requires the existing
-   `pnm vta remove` path first (out of scope).
+   `pnm vta delete` path first (out of scope).
 8. Existing one-shot `pnm setup` users experience zero behavior change
    beyond **prompt ordering** (DID shown first, then name + VTA DID).
 
@@ -250,7 +250,7 @@ If slug `my-vta` already has a **complete** keyring entry → error:
 ```
 error: 'my-vta' is already set up (VTA DID: did:webvh:...)
 hint:  use `pnm vta show my-vta` to inspect, or
-       `pnm vta remove my-vta` to start over.
+       `pnm vta delete my-vta` to start over.
 ```
 
 ## Prompt flow — phase 1 (non-interactive)
@@ -269,7 +269,7 @@ $ pnm setup --name "My VTA" --overwrite
 
 $ pnm setup --name "Existing"    # slug 'existing' is complete
 error: 'existing' is already set up (VTA DID: did:webvh:...)
-hint:  `pnm vta remove existing` to start over.
+hint:  `pnm vta delete existing` to start over.
 exit code: 2
 ```
 
@@ -312,7 +312,7 @@ $ pnm setup continue my-vta --vta-did did:webvh:...
 | `pnm setup continue <slug>` — slug complete | 2 | — | "'<slug>' is already set up" + `pnm vta show` hint |
 | `pnm setup continue <slug>` — config complete but keyring missing | 2 | — | "keyring entry missing" + recovery guidance |
 | `pnm setup --name X` — slug pending, no `--overwrite` | 2 | — | "pending setup exists" + `--overwrite` or `continue` hint |
-| `pnm setup --name X` — slug complete | 2 | — | "already set up" + `pnm vta remove` hint |
+| `pnm setup --name X` — slug complete | 2 | — | "already set up" + `pnm vta delete` hint |
 | Any authenticated command against a pending slug | 2 | — | "'<slug>' is pending setup — run `pnm setup continue <slug>`" |
 | Ctrl-C after DID shown but before keyring write | N/A | — | no state persisted; keypair discarded |
 | Ctrl-C after keyring write but before config save | N/A | — | keyring entry is orphaned; next `pnm setup --name X` will prompt to override |
@@ -373,7 +373,7 @@ sealed-transfer envelope. None of those are touched.
 
 **Ask first:**
 - Adding a `--force` flag that overwrites a *complete* VTA (out of
-  scope for this spec; operator must use `pnm vta remove` today).
+  scope for this spec; operator must use `pnm vta delete` today).
 - Exposing a "bulk create N pending VTAs" path for fleet operators.
 - Changing `vta_did: Option<String>` in `VtaConfig` to anything more
   structured (e.g., a state enum). Today it's already `Option` — keeping

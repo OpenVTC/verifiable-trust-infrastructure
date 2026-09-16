@@ -408,7 +408,7 @@ pub async fn cmd_context_update_did(
 
 /// Print the human-readable resource preview shown before context
 /// deletion. Returns `true` when the preview lists any resources
-/// (i.e. the caller should prompt for confirmation unless `--force`).
+/// (i.e. the caller should prompt for confirmation unless `--yes`).
 ///
 /// Shared by online + offline delete paths so both warn about exactly
 /// the same resource classes.
