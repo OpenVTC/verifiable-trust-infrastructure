@@ -4234,6 +4234,20 @@ export interface components {
             subjectDid: string;
             vrcDigestMultibase: string;
         };
+        /** @description The JSON body of a rate-limit refusal. */
+        RateLimitedBody: {
+            /** @description Always `rate_limited`. */
+            error: string;
+            /** @description Which of this service's limiters refused the request. */
+            limiter: string;
+            /** @description Operator-readable explanation. */
+            message: string;
+            /**
+             * Format: int64
+             * @description Seconds to wait before retrying; the same value as `Retry-After`.
+             */
+            retryAfterSecs: number;
+        };
         /** @description Response body for `POST /v1/auth/recognise/challenge`. */
         RecogniseChallengeResponse: {
             /**
@@ -9131,6 +9145,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description The signer has used their publish allowance for the current window, or the source address tripped the unauthenticated limiter. Carries `x-rate-limit-source: vtc` and `Retry-After`. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RateLimitedBody"];
+                };
             };
         };
     };

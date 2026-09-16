@@ -3541,7 +3541,7 @@ async fn status_pending_carries_no_refusal_fields() {
 
 // ---------------------------------------------------------------------------
 // P0.5 — the unauthenticated join-request POSTs (submit / status)
-// must sit on the governed branch (5 rps + burst 10 per source IP), like the
+// must sit on the governed branch (burst 10, then one per 5 s per source IP), like the
 // recognise route — they run attacker-driven crypto + Rego eval and were
 // previously on the ungoverned 1 MiB main chain. The governor is the
 // outermost layer, so a flood trips 429 before the handler runs; the admin

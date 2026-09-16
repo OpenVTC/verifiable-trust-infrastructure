@@ -46,6 +46,7 @@ use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
 use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
+use crate::routing::rate_limit::{RELATIONSHIPS_LIMITER, RateLimited, RateLimitedBody};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -139,12 +140,13 @@ pub struct PublishResponse {
         (status = 201, description = "Relationship (VRC) published", body = PublishResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not the VRC issuer or policy denied"),
+        (status = 429, description = "The signer has used their publish allowance for the current window, or the source address tripped the unauthenticated limiter. Carries `x-rate-limit-source: vtc` and `Retry-After`.", body = RateLimitedBody),
     ),
 )]
 pub async fn publish(
     State(state): State<AppState>,
     Json(doc): Json<TrustTaskDoc<JsonValue>>,
-) -> Result<(StatusCode, Json<TrustTaskDoc<PublishResponse>>), AppError> {
+) -> Result<(StatusCode, Json<TrustTaskDoc<PublishResponse>>), PublishError> {
     let now = Utc::now();
     let vtc_did = crate::routes::recognise::vtc_did(&state).await?;
 
@@ -219,7 +221,8 @@ pub async fn publish(
             "VRC issuer ({issuer_did}) is not the document signer and no publish \
              authorization (`pop`) was supplied — a VRC issued under a \
              relationship DID must carry proof the caller controls it"
-        )));
+        ))
+        .into());
     }
 
     // 4. Verify the VC's data-integrity proof against the key
@@ -285,7 +288,8 @@ pub async fn publish(
                 "VRC issuer is not the document signer and no publish \
                  authorization (`pop`) was supplied"
                     .into(),
-            ));
+            )
+            .into());
         }
     };
 
@@ -321,7 +325,8 @@ pub async fn publish(
                  counterparty. Mint a new one for this relationship, or issue \
                  under your membership DID to publish an attributed edge",
                 others.len()
-            )));
+            ))
+            .into());
         }
     }
 
@@ -352,7 +357,8 @@ pub async fn publish(
     {
         return Err(AppError::Validation(format!(
             "subject DID {subject_did} is not a current community member"
-        )));
+        ))
+        .into());
     }
 
     let policy_input = json!({
@@ -370,7 +376,8 @@ pub async fn publish(
     if !allow {
         return Err(AppError::Forbidden(
             "RelationshipPolicyDenied: active relationships.rego rejected the publish".into(),
-        ));
+        )
+        .into());
     }
 
     // 8. Idempotency: same hash → same id.
@@ -1397,21 +1404,55 @@ fn check_vpc_shape(vpc: &JsonValue, now: chrono::DateTime<Utc>) -> Result<(), Ap
 /// Bound how fast one member can publish.
 ///
 /// The limiter and the reasoning behind it live in
-/// [`crate::relationships::rate_limit`]; this is the route's use of it.
-async fn enforce_publish_rate_limit(state: &AppState, did: &str) -> Result<(), AppError> {
-    if state
+/// [`crate::relationships::rate_limit`]; this is the route's use of it. A
+/// refusal is a `429` in the shape [`crate::routing::rate_limit`] defines, so
+/// an operator can tell from the response alone that this VTC refused, and
+/// which of its limiters did.
+async fn enforce_publish_rate_limit(state: &AppState, did: &str) -> Result<(), RateLimited> {
+    state
         .publish_rate_limiter
         .check_and_record(did, Utc::now())
         .await
-    {
-        return Ok(());
+        .map_err(|retry_after_secs| {
+            RateLimited::new(
+                RELATIONSHIPS_LIMITER,
+                retry_after_secs,
+                format!(
+                    "a member may publish at most {} relationship credentials per {}s",
+                    crate::relationships::rate_limit::MAX_PER_WINDOW,
+                    crate::relationships::rate_limit::WINDOW_SECS,
+                ),
+            )
+        })
+}
+
+/// The publish handler's error: an ordinary [`AppError`], or a rate-limit
+/// refusal, which needs response headers `AppError` cannot carry.
+#[derive(Debug)]
+pub enum PublishError {
+    App(AppError),
+    RateLimited(RateLimited),
+}
+
+impl From<AppError> for PublishError {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
     }
-    Err(AppError::Validation(format!(
-        "rate limit: a member may publish at most {} relationship credentials \
-         per {}s",
-        crate::relationships::rate_limit::MAX_PER_WINDOW,
-        crate::relationships::rate_limit::WINDOW_SECS,
-    )))
+}
+
+impl From<RateLimited> for PublishError {
+    fn from(e: RateLimited) -> Self {
+        Self::RateLimited(e)
+    }
+}
+
+impl axum::response::IntoResponse for PublishError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::App(e) => e.into_response(),
+            Self::RateLimited(r) => r.into_response(),
+        }
+    }
 }
 
 /// `type` of the publish authorization object. Guarding on it stops a

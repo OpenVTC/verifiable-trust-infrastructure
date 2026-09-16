@@ -1537,7 +1537,7 @@ fn run_rest_thread(
     // P0.10: the REST surface must not run CPU-bound work (Argon2id verify on
     // the unauth claim-start, Rego eval, VC signing) on a single executor — a
     // few distinct source IPs hitting claim-start would otherwise saturate the
-    // lone thread (the 5 rps governor is per-IP, so it doesn't help). A small
+    // lone thread (the governor is per-IP, so it doesn't help). A small
     // worker pool lets concurrent requests progress while one is mid-Argon2id;
     // the heavy calls themselves are also moved off-runtime via `spawn_blocking`.
     let worker_threads = std::thread::available_parallelism()

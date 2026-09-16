@@ -16,8 +16,9 @@
 //! Alphabet is **unambiguous** — no `0`/`O`/`1`/`I`/`l`. 32-char
 //! alphabet × 10 chars = 32^10 ≈ 2^50 combinations, far beyond what
 //! the tower-governor rate limit on `/v1/install/claim/start`
-//! (5 rps + 10 burst per IP) and the 15-min TTL allow an attacker
-//! to brute-force.
+//! (a burst of 10, then one request per 5 s per IP — `per_second(5)` is a
+//! replenishment interval, not a rate) and the 15-min TTL allow an
+//! attacker to brute-force.
 
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;

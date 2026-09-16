@@ -85,14 +85,15 @@ impl PublishRateLimiter {
         mac.finalize().into_bytes().into()
     }
 
-    /// Record a publication by `did` and report whether it is within the
-    /// window's allowance.
+    /// Record a publication by `did` if it is within the window's allowance.
     ///
-    /// Returns `false` when the member has already used their allowance, and
-    /// in that case records nothing — a refused request must not extend the
-    /// window it was refused by, or a member at the limit could be held there
-    /// indefinitely by their own retries.
-    pub async fn check_and_record(&self, did: &str, now: DateTime<Utc>) -> bool {
+    /// Returns `Err(retry_after_secs)` when the member has already used their
+    /// allowance: the whole seconds until the oldest counted publication
+    /// leaves the window, never less than 1. In that case nothing is recorded
+    /// — a refused request must not extend the window it was refused by, or a
+    /// member at the limit could be held there indefinitely by their own
+    /// retries.
+    pub async fn check_and_record(&self, did: &str, now: DateTime<Utc>) -> Result<(), u64> {
         let cutoff = now - Duration::seconds(WINDOW_SECS);
         let k = self.hash(did);
         let mut map = self.inner.lock().await;
@@ -100,7 +101,7 @@ impl PublishRateLimiter {
         let hits = map.entry(k).or_default();
         hits.retain(|t| *t > cutoff);
         if hits.len() >= MAX_PER_WINDOW {
-            return false;
+            return Err(retry_after_secs(hits, now));
         }
         hits.push(now);
 
@@ -109,8 +110,21 @@ impl PublishRateLimiter {
         if map.len() > 1024 {
             map.retain(|_, hits| hits.iter().any(|t| *t > cutoff));
         }
-        true
+        Ok(())
     }
+}
+
+/// Seconds until the oldest hit leaves the window, rounded up, at least 1.
+///
+/// A hit at `t` stops counting once `now >= t + WINDOW_SECS`; rounding down
+/// would name a moment at which the retry is still refused.
+fn retry_after_secs(hits: &[DateTime<Utc>], now: DateTime<Utc>) -> u64 {
+    let Some(oldest) = hits.iter().min() else {
+        return 1;
+    };
+    let wait_ms = (*oldest + Duration::seconds(WINDOW_SECS) - now).num_milliseconds();
+    let secs = u64::try_from(wait_ms).unwrap_or(0).div_ceil(1000);
+    secs.max(1)
 }
 
 #[cfg(test)]
@@ -126,9 +140,12 @@ mod tests {
         let l = limiter();
         let now = Utc::now();
         for i in 0..MAX_PER_WINDOW {
-            assert!(l.check_and_record("did:key:zA", now).await, "call {i}");
+            assert!(
+                l.check_and_record("did:key:zA", now).await.is_ok(),
+                "call {i}"
+            );
         }
-        assert!(!l.check_and_record("did:key:zA", now).await);
+        assert!(l.check_and_record("did:key:zA", now).await.is_err());
     }
 
     /// Members are counted separately, which is the whole point of keying on
@@ -138,10 +155,10 @@ mod tests {
         let l = limiter();
         let now = Utc::now();
         for _ in 0..MAX_PER_WINDOW {
-            l.check_and_record("did:key:zA", now).await;
+            let _ = l.check_and_record("did:key:zA", now).await;
         }
-        assert!(!l.check_and_record("did:key:zA", now).await);
-        assert!(l.check_and_record("did:key:zB", now).await);
+        assert!(l.check_and_record("did:key:zA", now).await.is_err());
+        assert!(l.check_and_record("did:key:zB", now).await.is_ok());
     }
 
     #[tokio::test]
@@ -149,11 +166,11 @@ mod tests {
         let l = limiter();
         let start = Utc::now();
         for _ in 0..MAX_PER_WINDOW {
-            l.check_and_record("did:key:zA", start).await;
+            let _ = l.check_and_record("did:key:zA", start).await;
         }
-        assert!(!l.check_and_record("did:key:zA", start).await);
+        assert!(l.check_and_record("did:key:zA", start).await.is_err());
         let later = start + Duration::seconds(WINDOW_SECS + 1);
-        assert!(l.check_and_record("did:key:zA", later).await);
+        assert!(l.check_and_record("did:key:zA", later).await.is_ok());
     }
 
     /// A refused call must not extend the window, or a member who keeps
@@ -163,18 +180,45 @@ mod tests {
         let l = limiter();
         let start = Utc::now();
         for _ in 0..MAX_PER_WINDOW {
-            l.check_and_record("did:key:zA", start).await;
+            let _ = l.check_and_record("did:key:zA", start).await;
         }
         // Retry throughout the window; none of these should be recorded.
         for s in 1..WINDOW_SECS {
             assert!(
-                !l.check_and_record("did:key:zA", start + Duration::seconds(s))
+                l.check_and_record("did:key:zA", start + Duration::seconds(s))
                     .await
+                    .is_err()
             );
         }
         // One second past the original burst, the allowance is back.
         let after = start + Duration::seconds(WINDOW_SECS + 1);
-        assert!(l.check_and_record("did:key:zA", after).await);
+        assert!(l.check_and_record("did:key:zA", after).await.is_ok());
+    }
+
+    /// The refusal says how long to wait: until the oldest counted publication
+    /// leaves the window, rounded up so the retry it names is not itself
+    /// refused, and never 0.
+    #[tokio::test]
+    async fn a_refusal_names_when_the_allowance_returns() {
+        let l = limiter();
+        let start = Utc::now();
+        for _ in 0..MAX_PER_WINDOW {
+            let _ = l.check_and_record("did:key:zA", start).await;
+        }
+        assert_eq!(
+            l.check_and_record("did:key:zA", start).await,
+            Err(WINDOW_SECS as u64)
+        );
+        let mid = start + Duration::milliseconds(20_500);
+        assert_eq!(
+            l.check_and_record("did:key:zA", mid).await,
+            Err(WINDOW_SECS as u64 - 20)
+        );
+        let nearly = start + Duration::milliseconds(WINDOW_SECS * 1000 - 500);
+        assert_eq!(l.check_and_record("did:key:zA", nearly).await, Err(1));
+        // At the named moment the oldest publication has left the window.
+        let at_edge = start + Duration::seconds(WINDOW_SECS);
+        assert!(l.check_and_record("did:key:zA", at_edge).await.is_ok());
     }
 
     /// The stored key is an HMAC, not the DID. Nothing in the map should be
@@ -182,7 +226,7 @@ mod tests {
     #[tokio::test]
     async fn keys_are_hashed_not_stored_plain() {
         let l = limiter();
-        l.check_and_record("did:key:zAlice", Utc::now()).await;
+        let _ = l.check_and_record("did:key:zAlice", Utc::now()).await;
         let map = l.inner.lock().await;
         let k = map.keys().next().expect("one entry");
         assert_ne!(&k[..], b"did:key:zAlice".as_slice());

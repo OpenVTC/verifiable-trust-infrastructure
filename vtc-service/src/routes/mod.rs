@@ -1031,8 +1031,11 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
 /// - [`UNAUTH_BODY_SIZE`] body cap (tighter than the 1 MiB main
 ///   API cap — generous enough for a JWE / sealed-transfer
 ///   envelope, small enough to reject blob floods).
-/// - Per-IP `tower-governor` (5 rps + 10 burst) via
-///   [`SmartIpKeyExtractor`].
+/// - Per-IP `tower-governor` via [`SmartIpKeyExtractor`] (or the peer
+///   address when `trust_xff` is off): a burst of 10, then one request
+///   every 5 s. `per_second(5)` is a replenishment *interval*, not a rate —
+///   a bigger number is a tighter limit. A refusal is a `429` in the shape
+///   [`crate::routing::rate_limit`] defines, reporting limiter `unauth`.
 fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
     //
@@ -1054,8 +1057,8 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     // outbound HTTP fetch of the foreign `statusListCredential`
     // URL, Rego policy eval, and a session JWT mint, all driven by
     // attacker-supplied JSON. Behind the rate limit, a sustained
-    // SSRF / CPU-amplification probe is throttled to 5 rps per
-    // source IP.
+    // SSRF / CPU-amplification probe is throttled to one request
+    // every 5 s per source IP after a burst of 10.
     // Step 1 of the recognise flow — issues the single-use challenge nonce the
     // holder binds into the VP presented to `/auth/recognise`. Same unauth
     // chain (governor + body cap) as the other challenge endpoints.
@@ -1183,7 +1186,10 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
                 .finish()
                 .expect("governor config values are static and non-zero"),
         );
-        unauth_router.layer(GovernorLayer::new(cfg))
+        unauth_router.layer(
+            GovernorLayer::new(cfg)
+                .error_handler(crate::routing::rate_limit::governor_error_response),
+        )
     } else {
         let cfg = Arc::new(
             GovernorConfigBuilder::default()
@@ -1193,7 +1199,10 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
                 .finish()
                 .expect("governor config values are static and non-zero"),
         );
-        unauth_router.layer(GovernorLayer::new(cfg))
+        unauth_router.layer(
+            GovernorLayer::new(cfg)
+                .error_handler(crate::routing::rate_limit::governor_error_response),
+        )
     };
     unauth_router.layer(synth_connect_info)
 }

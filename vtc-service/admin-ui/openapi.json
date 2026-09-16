@@ -3917,6 +3917,16 @@
           },
           "403": {
             "description": "Caller is not the VRC issuer or policy denied"
+          },
+          "429": {
+            "description": "The signer has used their publish allowance for the current window, or the source address tripped the unauthenticated limiter. Carries `x-rate-limit-source: vtc` and `Retry-After`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitedBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8775,6 +8785,36 @@
           },
           "vrcDigestMultibase": {
             "type": "string"
+          }
+        }
+      },
+      "RateLimitedBody": {
+        "type": "object",
+        "description": "The JSON body of a rate-limit refusal.",
+        "required": [
+          "error",
+          "limiter",
+          "message",
+          "retryAfterSecs"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Always `rate_limited`."
+          },
+          "limiter": {
+            "type": "string",
+            "description": "Which of this service's limiters refused the request."
+          },
+          "message": {
+            "type": "string",
+            "description": "Operator-readable explanation."
+          },
+          "retryAfterSecs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds to wait before retrying; the same value as `Retry-After`.",
+            "minimum": 0
           }
         }
       },
