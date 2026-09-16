@@ -2153,10 +2153,18 @@ impl MessagingConnect {
     /// Gate, then run the connect/supervise/reconnect loop until shutdown, the
     /// configured horizon, or a `reconnect = false` single-shot failure.
     async fn run(self) {
-        match crate::messaging::readiness::run_gate(
+        // One probe for the life of the supervisor, shared by the gate and every
+        // reconnect: a pass it has just observed answers the next check instead
+        // of fetching our own `did.jsonl` again (see `SELF_RESOLUTION_FRESH_FOR`).
+        // It never consults the long-lived resolver, so the preloaded self-DID
+        // entry cannot stand in for a network resolution.
+        let mut probe = crate::messaging::readiness::SelfResolutionProbe::new(
             &self.vta_did,
-            &self.readiness,
             self.resolver_url.as_deref(),
+        );
+        match crate::messaging::readiness::run_gate_with_probe(
+            &self.readiness,
+            &mut probe,
             &self.shutdown,
         )
         .await
@@ -2184,11 +2192,11 @@ impl MessagingConnect {
         // attempts.
         self.run_startup_recovery().await;
 
-        self.supervise().await;
+        self.supervise(&mut probe).await;
     }
 
     /// The connect → supervise-session → reconnect loop.
-    async fn supervise(&self) {
+    async fn supervise(&self, probe: &mut crate::messaging::readiness::SelfResolutionProbe) {
         // The give-up / how-long-to-wait arithmetic lives in `ReconnectPolicy`
         // so it is unit-testable without a mediator; this loop owns the effects.
         let policy = crate::messaging::readiness::ReconnectPolicy::from_config(&self.readiness);
@@ -2207,13 +2215,11 @@ impl MessagingConnect {
             // Never touch the mediator unless the VTA can resolve its own DID
             // over the network (the same path the mediator takes). A cold VTA
             // that can't resolve itself would only storm the mediator with
-            // unresolvable-sender auth attempts.
-            if crate::messaging::readiness::self_did_network_resolvable(
-                &self.vta_did,
-                self.resolver_url.as_deref(),
-            )
-            .await
-            {
+            // unresolvable-sender auth attempts. A success observed within
+            // `SELF_RESOLUTION_FRESH_FOR` answers without a fetch; a failure is
+            // never remembered, so an unresolvable VTA re-probes on every
+            // attempt, paced by the backoff below.
+            if probe.is_resolvable().await {
                 match self.connect_once().await {
                     Ok(messaging) => {
                         info!("DIDComm messaging started");

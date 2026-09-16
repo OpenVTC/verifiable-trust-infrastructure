@@ -270,7 +270,10 @@ pub struct MediatorReadinessConfig {
     /// mediator's negative cache expires, so rather than give up until the next
     /// restart, keep retrying with capped exponential backoff + full jitter.
     /// Each attempt first re-confirms the VTA can resolve its own DID, so the
-    /// mediator is never touched while the VTA is unresolvable.
+    /// mediator is never touched while the VTA is unresolvable. A successful
+    /// confirmation is trusted for 300 s rather than re-fetched per attempt
+    /// (see `vta_service::messaging::readiness::SELF_RESOLUTION_FRESH_FOR`); a
+    /// failed one is always re-checked.
     ///
     /// This also covers an *established* session whose inbound loop ends: the
     /// supervisor tears the session down and reconnects, instead of leaving the
