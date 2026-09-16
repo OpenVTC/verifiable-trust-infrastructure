@@ -80,9 +80,7 @@ pub async fn challenge_response_light(
         .await?;
 
     if !challenge_resp.status().is_success() {
-        let status = challenge_resp.status();
-        let body = challenge_resp.text().await.unwrap_or_default();
-        return Err(VtaError::from_http(status, body));
+        return Err(VtaError::from_response(challenge_resp).await);
     }
 
     let challenge: ChallengeResponse = challenge_resp.json().await?;
@@ -114,9 +112,7 @@ pub async fn challenge_response_light(
         .await?;
 
     if !auth_resp.status().is_success() {
-        let status = auth_resp.status();
-        let body = auth_resp.text().await.unwrap_or_default();
-        return Err(VtaError::from_http(status, body));
+        return Err(VtaError::from_response(auth_resp).await);
     }
 
     let auth_data = auth_di::parse_auth_response(&auth_resp.text().await?)
@@ -172,9 +168,7 @@ pub async fn refresh_token_light(
         .await?;
 
     if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(VtaError::from_http(status, body));
+        return Err(VtaError::from_response(resp).await);
     }
 
     let auth_data = auth_di::parse_auth_response(&resp.text().await?)

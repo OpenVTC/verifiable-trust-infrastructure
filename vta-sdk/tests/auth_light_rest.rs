@@ -90,6 +90,152 @@ async fn mount_challenge(server: &MockServer) {
         .await;
 }
 
+// ── Rate limiting ───────────────────────────────────────────────────
+//
+// The unauthenticated auth endpoints are the ones behind the VTA's limiter, so
+// they are where an operator meets a 429 first. It must arrive typed and
+// attributed: as a flat string it read as a fault, and through the boxed
+// session path as "authentication failed".
+
+#[tokio::test]
+async fn challenge_endpoint_429_from_the_vta_is_rate_limited_and_attributed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/challenge"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("x-rate-limit-source", "vta")
+                .insert_header("retry-after", "7")
+                .set_body_json(json!({ "error": "rate limited", "limiter": "auth" })),
+        )
+        .mount(&server)
+        .await;
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, _) = did_key_from_seed(0x22);
+    let http = reqwest::Client::new();
+    let err = challenge_response_light(&http, &server.uri(), &client_did, &client_priv, &vta_did)
+        .await
+        .unwrap_err();
+    match err {
+        VtaError::RateLimited {
+            limited_by,
+            retry_after,
+            limiter,
+            url,
+        } => {
+            assert_eq!(limited_by, vta_sdk::rate_limit::RateLimitSource::Vta);
+            assert!(retry_after.is_some(), "Retry-After must survive");
+            assert_eq!(limiter.as_deref(), Some("auth"));
+            assert_eq!(url, Some(format!("{}/auth/challenge", server.uri())));
+        }
+        other => panic!("expected RateLimited, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn authenticate_endpoint_429_without_a_source_header_is_upstream() {
+    let server = MockServer::start().await;
+    mount_challenge(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/auth/"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("x-ratelimit-after", "4")
+                .set_body_string("Too Many Requests! Wait for 4s"),
+        )
+        .mount(&server)
+        .await;
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, _) = did_key_from_seed(0x22);
+    let http = reqwest::Client::new();
+    let err = challenge_response_light(&http, &server.uri(), &client_did, &client_priv, &vta_did)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            VtaError::RateLimited {
+                limited_by: vta_sdk::rate_limit::RateLimitSource::Upstream,
+                retry_after: Some(_),
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+}
+
+/// The boxed-error session path formats every other refusal into a string; a
+/// 429 must stay downcastable so the CLI renders it as a rate limit rather
+/// than an authentication failure.
+#[cfg(feature = "session")]
+#[tokio::test]
+async fn session_challenge_response_keeps_a_429_typed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/challenge"))
+        .respond_with(ResponseTemplate::new(429).insert_header("x-rate-limit-source", "vta"))
+        .mount(&server)
+        .await;
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, _) = did_key_from_seed(0x22);
+    let err =
+        vta_sdk::session::challenge_response(&server.uri(), &client_did, &client_priv, &vta_did)
+            .await
+            .unwrap_err();
+    let typed = err
+        .downcast_ref::<VtaError>()
+        .unwrap_or_else(|| panic!("429 must stay a VtaError, got {err}"));
+    assert!(typed.is_rate_limited(), "got {typed:?}");
+}
+
+/// `idempotent` is the single retry owner, so it is where a rate limit is
+/// retried: a refusal whose wait fits the cap is re-attempted, and the second
+/// attempt's result is returned.
+#[tokio::test]
+async fn idempotent_retries_a_rate_limit_that_fits_the_cap() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let client = VtaClient::new("http://127.0.0.1:1");
+    let attempts = AtomicUsize::new(0);
+    let result = client
+        .idempotent(|| async {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(VtaError::RateLimited {
+                    limited_by: vta_sdk::rate_limit::RateLimitSource::Vta,
+                    retry_after: Some(chrono::Utc::now()),
+                    limiter: None,
+                    url: None,
+                })
+            } else {
+                Ok("done")
+            }
+        })
+        .await;
+    assert_eq!(result.unwrap(), "done");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+/// ...and one asking for longer than the cap surfaces on the first attempt,
+/// rather than sleeping the cap only to be refused again.
+#[tokio::test]
+async fn idempotent_surfaces_a_rate_limit_longer_than_the_cap_at_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let client = VtaClient::new("http://127.0.0.1:1");
+    let attempts = AtomicUsize::new(0);
+    let result: Result<(), _> = client
+        .idempotent(|| async {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(VtaError::RateLimited {
+                limited_by: vta_sdk::rate_limit::RateLimitSource::Vta,
+                retry_after: Some(chrono::Utc::now() + chrono::Duration::minutes(10)),
+                limiter: None,
+                url: None,
+            })
+        })
+        .await;
+    assert!(result.unwrap_err().is_rate_limited());
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
 /// Mount the canonical `authenticate` response shape. The `expires_at`
 /// argument is the absolute Unix-second value the client should
 /// observe after parsing. We anchor `issuedAt` at the Unix epoch so

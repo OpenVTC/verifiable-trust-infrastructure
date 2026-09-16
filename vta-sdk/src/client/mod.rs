@@ -390,12 +390,19 @@ impl VtaClient {
             Ok(resp.json::<T>().await?)
         } else {
             let status = resp.status();
+            // Headers and URL before the body consumes the response: a 429's
+            // attribution and wait hint live only there.
+            let headers = resp.headers().clone();
+            let url = resp.url().to_string();
             let text = resp.text().await?;
             // For 409 Conflict, preserve the full JSON body so callers can
             // extract structured details (e.g. EnableDidcommConflictBody).
             // Other error codes only need the `error` field string.
             if status == reqwest::StatusCode::CONFLICT {
                 return Err(VtaError::Conflict(text));
+            }
+            if let Some(err) = VtaError::rate_limited_from_http(status, &headers, &text, &url) {
+                return Err(err);
             }
             let body = Self::extract_error_message(&text);
             Err(VtaError::from_http(status, body))
@@ -1780,8 +1787,17 @@ impl VtaClient {
                     // an unparseable body rather than letting a
                     // server-controlled page of text reach logs and CLI output.
                     let status = resp.status();
+                    let headers = resp.headers().clone();
+                    let url = resp.url().to_string();
                     let text = resp.text().await.unwrap_or_default();
 
+                    // A 429 is refused before any handler runs, so its body is
+                    // never a Trust Task document; its meaning is in the headers.
+                    if let Some(err) =
+                        VtaError::rate_limited_from_http(status, &headers, &text, &url)
+                    {
+                        return Err(err);
+                    }
                     if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text)
                         && let Some(payload) = doc.get("payload")
                         && let Some(err) = Self::trust_task_error(payload)

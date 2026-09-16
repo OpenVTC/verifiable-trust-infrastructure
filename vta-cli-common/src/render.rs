@@ -252,6 +252,25 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
             VtaError::Validation(msg) => {
                 eprintln!("{RED}\u{2717}{RESET} Invalid request: {msg}");
             }
+            VtaError::RateLimited {
+                limited_by,
+                retry_after,
+                limiter,
+                url,
+            } => {
+                let (headline, hints) = rate_limit_message(
+                    *limited_by,
+                    *retry_after,
+                    limiter.as_deref(),
+                    url.as_deref(),
+                    chrono::Utc::now(),
+                    bin_name(),
+                );
+                eprintln!("{RED}\u{2717}{RESET} {headline}");
+                for hint in hints {
+                    eprintln!("  {DIM}{hint}{RESET}");
+                }
+            }
             VtaError::Network(e) => {
                 eprintln!("{RED}\u{2717}{RESET} Network error: {e}");
                 eprintln!("  {DIM}Is the VTA reachable? Check its URL with `pnm vta info`.{RESET}");
@@ -351,6 +370,92 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
         eprintln!("  {DIM}caused by: {s}{RESET}");
         source = s.source();
     }
+}
+
+/// The operator-facing text for a rate-limit refusal: a headline, then hint
+/// lines. Pure (no ANSI, `now` and the binary name passed in) so the wording is
+/// testable.
+///
+/// Answers the three things an operator needs, in order: *who* refused (a rate
+/// limit is not a fault, and not necessarily the VTA's), *how long* to wait,
+/// and *which knob* loosens it. The knob names come from
+/// `vta_sdk::rate_limit`, which holds every one of them once.
+fn rate_limit_message(
+    limited_by: vta_sdk::rate_limit::RateLimitSource,
+    retry_after: Option<chrono::DateTime<chrono::Utc>>,
+    limiter: Option<&str>,
+    url: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    bin: &str,
+) -> (String, Vec<String>) {
+    use vta_sdk::rate_limit::{self as rl, RateLimitSource};
+
+    let limiter = limiter.map(|l| format!(" ({l})")).unwrap_or_default();
+    let headline = format!(
+        "Rate limited by {}{limiter} — the request was refused, not failed.",
+        limited_by.label()
+    );
+
+    let mut hints = Vec::new();
+    hints.push(match retry_after {
+        Some(at) => {
+            // Round up: "wait 0s" for a 400 ms hint would invite an immediate,
+            // refused, retry.
+            let ms = (at - now).num_milliseconds().max(0);
+            let secs = (ms + 999) / 1000;
+            format!("Wait {secs}s before retrying.")
+        }
+        None => "No wait was given; wait a few seconds before retrying.".to_string(),
+    });
+    if let Some(url) = url {
+        hints.push(format!("Refused request: {url}"));
+    }
+
+    match limited_by {
+        RateLimitSource::Vta => {
+            hints.push(format!(
+                "To loosen it, in the VTA's `[server]` config: `{}` / `{}` for the auth and \
+                 bootstrap endpoints, `{}` / `{}` for the VTA's own did.jsonl. Intervals are \
+                 seconds per token, so lower is looser.",
+                rl::VTA_INTERVAL_KEY,
+                rl::VTA_BURST_KEY,
+                rl::VTA_DID_LOG_INTERVAL_KEY,
+                rl::VTA_DID_LOG_BURST_KEY,
+            ));
+            hints.push(format!(
+                "At runtime: `{bin} {}`, or `{bin} {}`.",
+                rl::VTA_RUNTIME_FLAGS,
+                rl::VTA_DID_LOG_RUNTIME_FLAGS,
+            ));
+            hints.push(format!(
+                "Behind a reverse proxy with `{} = false`, every client shares one bucket. \
+                 See {}.",
+                rl::VTA_TRUST_XFF_KEY,
+                rl::VTA_DOCS,
+            ));
+        }
+        RateLimitSource::Mediator => hints.push(format!(
+            "This is the DIDComm/TSP mediator, not the VTA. Its operator tunes {} — requests \
+             per second, so higher is looser.",
+            rl::MEDIATOR_KEYS,
+        )),
+        RateLimitSource::Upstream => {
+            hints.push(format!(
+                "The response carried no `{}` header, so nothing says who sent it: a reverse \
+                 proxy or load balancer in front of the VTA, or a VTA older than that header.",
+                rl::SOURCE_HEADER,
+            ));
+            hints.push(format!(
+                "Check the proxy / load balancer's limits and logs, or upgrade the VTA so its \
+                 own refusals are labelled. See {}.",
+                rl::VTA_DOCS,
+            ));
+        }
+        // VTC, DID host, and any source added later: the SDK's hint is the
+        // whole story — none of them has a knob this CLI can name.
+        other => hints.push(rl::suggested_fix(other).to_string()),
+    }
+    (headline, hints)
 }
 
 /// Pull a human-readable line out of a (possibly JSON) error body.
@@ -501,6 +606,87 @@ pub fn print_section(title: &str) {
         "\n{DIM}──{RESET} {BOLD}{title}{RESET} {DIM}{}{RESET}",
         "─".repeat(pad)
     );
+}
+
+#[cfg(test)]
+mod rate_limit_render_tests {
+    use super::rate_limit_message;
+    use vta_sdk::rate_limit::RateLimitSource;
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-09-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn a_vta_refusal_names_the_vta_the_wait_and_every_knob() {
+        let (headline, hints) = rate_limit_message(
+            RateLimitSource::Vta,
+            Some(now() + chrono::Duration::milliseconds(3_200)),
+            Some("auth"),
+            Some("https://vta.example.com/auth/challenge"),
+            now(),
+            "pnm",
+        );
+        assert_eq!(
+            headline,
+            "Rate limited by the VTA (auth) — the request was refused, not failed."
+        );
+        let all = hints.join("\n");
+        assert_eq!(hints[0], "Wait 4s before retrying.", "rounded up");
+        for needle in [
+            "Refused request: https://vta.example.com/auth/challenge",
+            "`rate_limit_interval_secs` / `rate_limit_burst`",
+            "`did_log_rate_limit_interval_secs` / `did_log_rate_limit_burst`",
+            "lower is looser",
+            "`pnm config update --rate-limit-interval-secs <N> --rate-limit-burst <N>`",
+            "`pnm config update --did-log-rate-limit-interval-secs <N> --did-log-rate-limit-burst <N>`",
+            "`trust_xff = false`",
+            "docs/02-vta/rate-limiting.md",
+        ] {
+            assert!(all.contains(needle), "missing {needle:?} in:\n{all}");
+        }
+    }
+
+    #[test]
+    fn an_unlabelled_refusal_points_at_the_proxy_and_uses_the_invoked_binary() {
+        let (headline, hints) =
+            rate_limit_message(RateLimitSource::Upstream, None, None, None, now(), "cnm");
+        assert!(headline.contains("unidentified service"), "{headline}");
+        let all = hints.join("\n");
+        assert!(all.contains("No wait was given"), "{all}");
+        assert!(all.contains("`x-rate-limit-source`"), "{all}");
+        assert!(all.contains("load balancer"), "{all}");
+        assert!(
+            !all.contains("config update"),
+            "an unattributed 429 must not send the operator to retune the VTA:\n{all}"
+        );
+    }
+
+    #[test]
+    fn a_mediator_refusal_names_the_mediator_limits_not_the_vta_config() {
+        let (headline, hints) = rate_limit_message(
+            RateLimitSource::Mediator,
+            Some(now() - chrono::Duration::seconds(5)),
+            None,
+            None,
+            now(),
+            "pnm",
+        );
+        assert!(headline.contains("the mediator"), "{headline}");
+        let all = hints.join("\n");
+        assert!(all.contains("Wait 0s"), "a stale hint is no wait: {all}");
+        assert!(all.contains("rate_limit_per_ip"), "{all}");
+        assert!(!all.contains("rate_limit_interval_secs"), "{all}");
+    }
+
+    #[test]
+    fn a_did_host_refusal_says_it_is_not_tunable_from_the_vta() {
+        let (_, hints) =
+            rate_limit_message(RateLimitSource::DidHost, None, None, None, now(), "pnm");
+        assert!(hints.join("\n").contains("not tunable from the VTA"));
+    }
 }
 
 #[cfg(test)]

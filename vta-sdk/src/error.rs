@@ -1,5 +1,7 @@
 //! Structured error type for VTA SDK operations.
 
+pub use crate::rate_limit::RateLimitSource;
+
 /// Errors returned by VTA SDK client operations.
 #[derive(Debug, thiserror::Error)]
 pub enum VtaError {
@@ -236,6 +238,41 @@ pub enum VtaError {
         retry_after: Option<chrono::DateTime<chrono::Utc>>,
     },
 
+    /// A rate limiter refused the request (HTTP 429). Not a server fault, and
+    /// not necessarily the VTA's doing.
+    ///
+    /// Typed rather than folded into [`Self::Other`] because the two questions
+    /// an operator has — *who* refused, and *how long* to wait — have different
+    /// answers per refusing service, and a flat `"429: Too Many Requests"`
+    /// answers neither. It was indistinguishable from a fault, and the wait
+    /// hint the server sent was thrown away before the error was built.
+    ///
+    /// - `limited_by`: which service's limiter it was, read from the
+    ///   `x-rate-limit-source` response header
+    ///   ([`crate::rate_limit::SOURCE_HEADER`]). Absent means
+    ///   [`RateLimitSource::Upstream`]: a proxy / load balancer, or a VTA older
+    ///   than the header. (Not named `source`: `thiserror` treats a field of
+    ///   that name as the underlying error.)
+    /// - `retry_after`: the server's `Retry-After` hint as an instant, when it
+    ///   sent one — the same shape as [`Self::Unavailable`]. Cap it before
+    ///   sleeping on it.
+    /// - `limiter`: which of the service's limiters tripped, when it said.
+    /// - `url`: the refused request's URL, when known — the quickest way to
+    ///   tell the VTA apart from a DID host or a proxy on another hostname.
+    #[error("rate limited by {limited_by}{}{}", match .retry_after {
+        Some(t) => format!(" (retry after {t})"),
+        None => String::new(),
+    }, match .url {
+        Some(u) => format!(" at {u}"),
+        None => String::new(),
+    })]
+    RateLimited {
+        limited_by: RateLimitSource,
+        retry_after: Option<chrono::DateTime<chrono::Utc>>,
+        limiter: Option<String>,
+        url: Option<String>,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -276,9 +313,20 @@ impl VtaError {
     /// Public so a downstream SDK consumer wiring its own HTTP transport
     /// (e.g. a wasm `gloo-net` client) can produce typed `VtaError`s
     /// from status codes without re-implementing the mapping.
+    ///
+    /// A `429` becomes [`Self::RateLimited`] with
+    /// [`RateLimitSource::Upstream`]: without the response headers it can be
+    /// neither attributed nor given a wait. A consumer that has the headers
+    /// should call [`Self::from_http_with_headers`].
     #[cfg(feature = "client")]
     pub fn from_http(status: reqwest::StatusCode, body: String) -> Self {
         match status.as_u16() {
+            429 => Self::RateLimited {
+                limited_by: RateLimitSource::Upstream,
+                retry_after: None,
+                limiter: None,
+                url: None,
+            },
             401 => Self::Auth(body),
             403 => Self::Forbidden(body),
             404 => Self::NotFound(body),
@@ -288,6 +336,71 @@ impl VtaError {
             s if s >= 500 => Self::Server { status: s, body },
             s => Self::Other(format!("{s}: {body}")),
         }
+    }
+
+    /// [`Self::from_http`], plus what only the response headers and the request
+    /// URL can say.
+    ///
+    /// Identical to `from_http` for every status except `429`, where it reads
+    /// the attribution header ([`crate::rate_limit::SOURCE_HEADER`]) and the
+    /// wait hint (`Retry-After`, else the legacy `x-ratelimit-after`) into
+    /// [`Self::RateLimited`]. `url` is the refused request's URL.
+    ///
+    /// Public, like `from_http`, for consumers wiring their own HTTP transport.
+    #[cfg(feature = "client")]
+    pub fn from_http_with_headers(
+        status: reqwest::StatusCode,
+        headers: &reqwest::header::HeaderMap,
+        body: String,
+        url: Option<&str>,
+    ) -> Self {
+        if status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Self::from_http(status, body);
+        }
+        use crate::rate_limit as rl;
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        let limited_by = RateLimitSource::from_source_header(header(rl::SOURCE_HEADER));
+        let now = chrono::Utc::now();
+        let retry_after = header(rl::RETRY_AFTER_HEADER)
+            .and_then(|v| rl::parse_retry_after(v, now))
+            .or_else(|| {
+                header(rl::LEGACY_RETRY_AFTER_HEADER).and_then(|v| rl::parse_retry_after(v, now))
+            });
+        Self::RateLimited {
+            limited_by,
+            retry_after,
+            limiter: limiter_from_body(limited_by, &body),
+            url: url.map(str::to_string),
+        }
+    }
+
+    /// Consume a failed `reqwest::Response` into a typed error, keeping the
+    /// headers and URL that [`Self::from_http_with_headers`] needs. The body is
+    /// passed through verbatim.
+    #[cfg(feature = "client")]
+    pub async fn from_response(resp: reqwest::Response) -> Self {
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let url = resp.url().to_string();
+        let body = resp.text().await.unwrap_or_default();
+        Self::from_http_with_headers(status, &headers, body, Some(&url))
+    }
+
+    /// `Some` iff `status` is `429`: the typed [`Self::RateLimited`] for it.
+    ///
+    /// For the auth helpers that return a boxed error and otherwise format the
+    /// status into a string. A rate limit is the refusal that must stay typed
+    /// there, because the string form reads as "authentication failed" and
+    /// sends the operator to re-authenticate.
+    #[cfg(feature = "client")]
+    pub fn rate_limited_from_http(
+        status: reqwest::StatusCode,
+        headers: &reqwest::header::HeaderMap,
+        body: &str,
+        url: &str,
+    ) -> Option<Self> {
+        (status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+            .then(|| Self::from_http_with_headers(status, headers, body.to_string(), Some(url)))
     }
 
     /// Create from a DIDComm problem-report `code` + `comment`. Mirrors
@@ -378,6 +491,11 @@ impl VtaError {
         }
     }
 
+    /// Returns true if a rate limiter refused the request (429).
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, Self::RateLimited { .. })
+    }
+
     /// Returns true if the resource was permanently consumed/gone (410).
     pub fn is_gone(&self) -> bool {
         matches!(self, Self::Gone(_))
@@ -447,6 +565,9 @@ impl VtaError {
                  still running: retry with the same key and the original result will be \
                  returned rather than the operation repeated.",
             ),
+            Self::RateLimited { limited_by, .. } => {
+                Some(crate::rate_limit::suggested_fix(*limited_by))
+            }
             Self::Validation(_) => Some(
                 "The request body or parameters were rejected by the VTA's schema. \
                  Inspect the response body for the specific field that failed.",
@@ -531,6 +652,27 @@ impl VtaError {
     }
 }
 
+/// Which limiter tripped, when the refusing service said.
+///
+/// A JSON body's `limiter` field wins. Failing that, a plain-text body from a
+/// *labelled* source is taken as its description of the limiter — the VTA's
+/// contract is that the body names it. An unlabelled `429`'s body is whatever a
+/// proxy or an older VTA wrote (`"Too Many Requests! Wait for 4s"`), which names
+/// no limiter, so it is not promoted to one.
+#[cfg(feature = "client")]
+fn limiter_from_body(limited_by: RateLimitSource, body: &str) -> Option<String> {
+    const MAX_LIMITER_LEN: usize = 128;
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        return v
+            .get("limiter")
+            .and_then(|l| l.as_str())
+            .map(|l| l.chars().take(MAX_LIMITER_LEN).collect());
+    }
+    let text = body.trim();
+    (limited_by != RateLimitSource::Upstream && !text.is_empty())
+        .then(|| text.chars().take(MAX_LIMITER_LEN).collect())
+}
+
 impl From<crate::did_key::DidKeyError> for VtaError {
     fn from(e: crate::did_key::DidKeyError) -> Self {
         Self::Validation(e.to_string())
@@ -546,6 +688,162 @@ mod tests {
     fn from_http_410_maps_to_gone() {
         let err = VtaError::from_http(reqwest::StatusCode::GONE, "carve-out closed".into());
         assert!(err.is_gone(), "410 must map to VtaError::Gone, got {err:?}");
+    }
+
+    #[cfg(feature = "client")]
+    fn headers(pairs: &[(&'static str, &str)]) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn a_labelled_429_is_attributed_to_the_vta_with_its_wait() {
+        let before = chrono::Utc::now();
+        let err = VtaError::from_http_with_headers(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            &headers(&[("x-rate-limit-source", "vta"), ("retry-after", "4")]),
+            r#"{"error":"rate limited","limiter":"auth"}"#.into(),
+            Some("https://vta.example.com/auth/challenge"),
+        );
+        let VtaError::RateLimited {
+            limited_by,
+            retry_after,
+            limiter,
+            url,
+        } = &err
+        else {
+            panic!("429 must map to RateLimited, got {err:?}");
+        };
+        assert_eq!(*limited_by, RateLimitSource::Vta);
+        let wait = retry_after.expect("Retry-After must be kept") - before;
+        assert!(
+            (3..=5).contains(&wait.num_seconds()),
+            "retry_after should be ~4s out, was {wait}"
+        );
+        assert_eq!(limiter.as_deref(), Some("auth"));
+        assert_eq!(
+            url.as_deref(),
+            Some("https://vta.example.com/auth/challenge")
+        );
+        assert!(err.is_rate_limited());
+        assert!(
+            err.suggested_fix()
+                .unwrap()
+                .contains("rate_limit_interval_secs"),
+            "a VTA refusal must point at the VTA's knobs"
+        );
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn a_plain_text_body_from_a_labelled_vta_names_the_limiter() {
+        let err = VtaError::from_http_with_headers(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            &headers(&[("x-rate-limit-source", "vta")]),
+            "did-log".into(),
+            None,
+        );
+        assert!(
+            matches!(&err, VtaError::RateLimited { limiter: Some(l), .. } if l == "did-log"),
+            "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn an_unlabelled_429_is_upstream_and_keeps_the_legacy_wait_hint() {
+        let err = VtaError::from_http_with_headers(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            // What tower-governor sends from a VTA older than the source header.
+            &headers(&[("x-ratelimit-after", "4")]),
+            "Too Many Requests! Wait for 4s".into(),
+            Some("https://vta.example.com/auth/challenge"),
+        );
+        let VtaError::RateLimited {
+            limited_by,
+            retry_after,
+            limiter,
+            ..
+        } = &err
+        else {
+            panic!("got {err:?}");
+        };
+        assert_eq!(*limited_by, RateLimitSource::Upstream);
+        assert!(retry_after.is_some(), "the legacy header is still a hint");
+        assert_eq!(
+            *limiter, None,
+            "a proxy's body names no limiter and must not be promoted to one"
+        );
+        assert!(
+            err.suggested_fix().unwrap().contains("proxy"),
+            "an unattributable 429 must send the operator to the proxy, not only the VTA"
+        );
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn retry_after_http_date_is_read() {
+        let err = VtaError::from_http_with_headers(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            &headers(&[
+                ("x-rate-limit-source", "vta"),
+                ("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT"),
+            ]),
+            String::new(),
+            None,
+        );
+        let VtaError::RateLimited { retry_after, .. } = err else {
+            panic!("got {err:?}")
+        };
+        assert_eq!(
+            retry_after.map(|t| t.to_rfc3339()),
+            Some("2015-10-21T07:28:00+00:00".to_string())
+        );
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn from_http_without_headers_still_types_a_429() {
+        let err = VtaError::from_http(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "Too Many Requests! Wait for 4s".into(),
+        );
+        assert!(
+            matches!(
+                err,
+                VtaError::RateLimited {
+                    limited_by: RateLimitSource::Upstream,
+                    retry_after: None,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn other_statuses_are_unchanged_by_the_header_aware_constructor() {
+        let err = VtaError::from_http_with_headers(
+            reqwest::StatusCode::GONE,
+            &headers(&[("x-rate-limit-source", "vta")]),
+            "carve-out closed".into(),
+            None,
+        );
+        assert!(err.is_gone(), "got {err:?}");
+        assert!(
+            VtaError::rate_limited_from_http(
+                reqwest::StatusCode::UNAUTHORIZED,
+                &headers(&[]),
+                "",
+                "https://vta.example.com/auth/"
+            )
+            .is_none()
+        );
     }
 
     #[test]

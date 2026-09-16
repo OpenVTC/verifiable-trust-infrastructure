@@ -261,9 +261,7 @@ impl VtaClient {
             .send()
             .await?;
         if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtaError::from_http(status, body));
+            return Err(VtaError::from_response(resp).await);
         }
         Ok(resp.bytes().await?.to_vec())
     }
@@ -295,9 +293,7 @@ impl VtaClient {
             .send()
             .await?;
         if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtaError::from_http(status, body));
+            return Err(VtaError::from_response(resp).await);
         }
         // 202 Accepted with empty body; nothing to deserialise.
         Ok(())

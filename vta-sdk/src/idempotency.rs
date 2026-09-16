@@ -101,19 +101,35 @@ pub fn new_key() -> String {
 /// - 5xx, transient in the same way;
 /// - [`VtaError::Unavailable`], which the VTA's idempotency layer returns while
 ///   a first attempt on this key is still running. Treating that as terminal
-///   would abandon the one answer the caller was told to wait for.
+///   would abandon the one answer the caller was told to wait for;
+/// - [`VtaError::RateLimited`] whose wait fits inside [`MAX_RETRY_AFTER`] (or
+///   that named no wait). A rate limiter refuses at the edge, before any
+///   handler runs, so the refused attempt had no effect and repeating it is
+///   safe with or without the key. A refusal that asks for *longer* than the
+///   cap is not retried: sleeping the cap and re-sending would be refused
+///   again, so it would only delay the error the operator needs to see.
 ///
 /// Deterministic faults — validation, conflict, not-found, auth, gone — are
 /// never retried. Re-sending cannot change them.
 pub fn is_transient(e: &VtaError) -> bool {
-    matches!(
-        e,
+    match e {
         VtaError::DidcommTransport(_)
-            | VtaError::TspTransport(_)
-            | VtaError::Network(_)
-            | VtaError::Server { .. }
-            | VtaError::Unavailable { .. }
-    )
+        | VtaError::TspTransport(_)
+        | VtaError::Network(_)
+        | VtaError::Server { .. }
+        | VtaError::Unavailable { .. } => true,
+        VtaError::RateLimited { retry_after, .. } => {
+            wait_until(*retry_after).is_none_or(|d| d <= MAX_RETRY_AFTER)
+        }
+        _ => false,
+    }
+}
+
+/// The wait a server-supplied instant asks for: `None` when there was no hint,
+/// zero when the instant has already passed.
+fn wait_until(at: Option<chrono::DateTime<chrono::Utc>>) -> Option<Duration> {
+    // Already in the past, or unrepresentable: no reason to wait.
+    at.map(|at| (at - chrono::Utc::now()).to_std().unwrap_or(Duration::ZERO))
 }
 
 /// How long to wait before the next attempt.
@@ -121,17 +137,16 @@ pub fn is_transient(e: &VtaError) -> bool {
 /// Prefers the server's hint when it gave one, capped by [`MAX_RETRY_AFTER`];
 /// otherwise exponential backoff from [`RETRY_BASE`].
 pub(crate) fn backoff_for(e: &VtaError, attempt: usize) -> Duration {
-    if let VtaError::Unavailable {
-        retry_after: Some(at),
-    } = e
-    {
-        let delta = *at - chrono::Utc::now();
-        if let Ok(d) = delta.to_std() {
-            return d.min(MAX_RETRY_AFTER);
+    let hint = match e {
+        VtaError::Unavailable { retry_after } | VtaError::RateLimited { retry_after, .. } => {
+            *retry_after
         }
-        // Already in the past, or unrepresentable: retry promptly rather than
-        // treating a stale hint as a reason to wait.
-        return Duration::ZERO;
+        _ => None,
+    };
+    // A stale hint retries promptly rather than being treated as a reason to
+    // wait.
+    if let Some(wait) = wait_until(hint) {
+        return wait.min(MAX_RETRY_AFTER);
     }
     RETRY_BASE * (1 << (attempt.saturating_sub(1)) as u32)
 }
@@ -186,6 +201,39 @@ mod tests {
         assert!(
             d <= Duration::from_secs(2) && d > Duration::from_millis(500),
             "{d:?}"
+        );
+    }
+
+    fn rate_limited(retry_after: Option<chrono::DateTime<chrono::Utc>>) -> VtaError {
+        VtaError::RateLimited {
+            limited_by: crate::rate_limit::RateLimitSource::Vta,
+            retry_after,
+            limiter: None,
+            url: None,
+        }
+    }
+
+    #[test]
+    fn a_rate_limit_is_retried_when_its_wait_fits_the_cap() {
+        let soon = rate_limited(Some(chrono::Utc::now() + chrono::Duration::seconds(4)));
+        assert!(is_transient(&soon));
+        let d = backoff_for(&soon, 1);
+        assert!(
+            d <= Duration::from_secs(4) && d > Duration::from_secs(2),
+            "the server's wait must be honoured, not the 0.5s base: {d:?}"
+        );
+
+        let unhinted = rate_limited(None);
+        assert!(is_transient(&unhinted));
+        assert_eq!(backoff_for(&unhinted, 2), RETRY_BASE * 2);
+    }
+
+    #[test]
+    fn a_rate_limit_asking_for_longer_than_the_cap_surfaces_at_once() {
+        let far = rate_limited(Some(chrono::Utc::now() + chrono::Duration::minutes(5)));
+        assert!(
+            !is_transient(&far),
+            "sleeping the cap and re-sending would only be refused again"
         );
     }
 
