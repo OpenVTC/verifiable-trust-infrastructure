@@ -11526,6 +11526,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "trust-tasks-rs",
  "url",
  "uuid",
  "vta-sdk",

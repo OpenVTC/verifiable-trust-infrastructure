@@ -2143,6 +2143,25 @@ impl MockVta {
             .mediator_did
     }
 
+    /// Register `did` as a local account on the embedded mediator, so the
+    /// mediator will hold frames for it and let it open a socket.
+    ///
+    /// A counterparty needs this *and* an ACL grant, and they are different
+    /// permissions in different places: the mediator decides whether a DID may
+    /// connect and be routed to, the VTA decides what it may ask for. Without
+    /// the account the VTA's reply is accepted by the mediator and then dropped,
+    /// which looks exactly like the VTA not answering.
+    #[cfg(feature = "transport-harness")]
+    pub async fn register_mediator_account(&self, did: &str) {
+        self.transports
+            .as_ref()
+            .expect("register_mediator_account() requires start_with_transports()")
+            .mediator
+            .register_local_did(did)
+            .await
+            .expect("register a local mediator account");
+    }
+
     /// Bind an ephemeral loopback port, serve `router` in a background task,
     /// and return once bound. Shared by [`start`](Self::start) /
     /// [`start_provisionable`](Self::start_provisionable).

@@ -24,9 +24,15 @@ affinidi-messaging-test-mediator = { version = "0.7", features = ["tsp"] }
 # VTA: enable the `test-support` feature so we can stand up complete VTA
 # state (in-memory keyspaces, default `AppConfig`, bootstrap helpers)
 # from outside the crate.
-vta-service = { path = "../../vta-service", features = ["test-support", "didcomm", "tsp", "webvh", "rest"] }
+# `transport-harness` brings the embedded mediator behind
+# `MockVta::start_with_transports` — a whole VTA on a real mediator socket,
+# which is what `tsp_vta_trust_task` drives a Trust Task through.
+vta-service = { path = "../../vta-service", features = ["test-support", "transport-harness", "didcomm", "tsp", "webvh", "rest"] }
 vta-sdk = { path = "../../vta-sdk", features = ["client", "didcomm", "session", "tsp", "sealed-transfer", "provision-integration", "provision-client"] }
 vti-common = { path = "../../vti-common" }
+
+# `TrustTask<Value>` — the document type `vta_sdk::trust_task_sign` signs.
+trust-tasks-rs = { workspace = true }
 
 affinidi-tdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
