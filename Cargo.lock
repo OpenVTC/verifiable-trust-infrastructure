@@ -127,6 +127,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hmac 0.13.0",
  "k256 0.14.0",
+ "ml-dsa",
  "multibase",
  "p256 0.14.0",
  "p384 0.14.0",
@@ -665,9 +666,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-secrets-resolver"
-version = "0.5.11"
+version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff9c7363b25897b1b7080caab1ab36f95a833d84aca905b5b6d6e3a3a2b384bb"
+checksum = "739a3e55468ddacf4192ea713262b6fbf2e7d76cec0e4230627bfae45af2d48b"
 dependencies = [
  "affinidi-crypto",
  "affinidi-encoding",
@@ -6423,6 +6424,7 @@ dependencies = [
  "pkcs8 0.11.0",
  "shake",
  "signature 3.0.0",
+ "zeroize",
 ]
 
 [[package]]

@@ -236,18 +236,19 @@ pub async fn create_key(
             let encoded = verifying_key.to_sec1_point(true);
             multibase::encode(Base::Base58Btc, encoded.as_bytes())
         }
-        // `KeyType` is `#[non_exhaustive]`, so this arm is required. It
-        // refuses rather than falling back, because every branch above derives
-        // through a scheme-specific SLIP-0010 path and there is no generic one
-        // to fall through to — a wildcard could only mint a key of some *other*
-        // algorithm wearing this label.
-        //
-        // ML-DSA lands here today. FIPS 204 KeyGen takes a 32-byte seed, so it
-        // is derivable in principle from the same chain, and the `-priv-seed`
-        // multicodecs beside `KeyType` exist precisely to store the result —
-        // but `ExtendedSigningKey` has no `derive_ml_dsa` yet, and inventing
-        // one here rather than beside its siblings is how two derivations of
-        // the same key end up disagreeing.
+        KeyType::MlDsa44 => {
+            let s = bip32.derive_ml_dsa_44(&derivation_path)?;
+            s.get_public_keymultibase()?
+        }
+        KeyType::MlDsa65 => {
+            let s = bip32.derive_ml_dsa_65(&derivation_path)?;
+            s.get_public_keymultibase()?
+        }
+        // `KeyType` is `#[non_exhaustive]`, so this arm is required. It refuses
+        // rather than falling back, because every branch above derives through a
+        // scheme-specific SLIP-0010 path and there is no generic one — a
+        // wildcard could only mint a key of some *other* algorithm wearing this
+        // label.
         other => {
             return Err(AppError::Validation(format!(
                 "key derivation does not support {other} yet"
@@ -851,15 +852,25 @@ pub async fn get_key_secret(
                     );
                     (pub_mb, priv_mb)
                 }
-                // `KeyType` is `#[non_exhaustive]`, so this arm is required.
-                // It refuses rather than falling back: every branch above
-                // derives through a scheme-specific SLIP-0010 path and there is
-                // no generic one, so a wildcard could only return a key of some
-                // other algorithm under this label. ML-DSA lands here until
-                // `ExtendedSigningKey` grows a `derive_ml_dsa` beside its
-                // siblings — FIPS 204 KeyGen takes a 32-byte seed, so the chain
-                // can produce one; it is the derivation that is missing, not
-                // the possibility.
+                KeyType::MlDsa44 => {
+                    let secret = bip32.derive_ml_dsa_44(&record.derivation_path)?;
+                    (
+                        secret.get_public_keymultibase()?,
+                        secret.get_private_keymultibase()?,
+                    )
+                }
+                KeyType::MlDsa65 => {
+                    let secret = bip32.derive_ml_dsa_65(&record.derivation_path)?;
+                    (
+                        secret.get_public_keymultibase()?,
+                        secret.get_private_keymultibase()?,
+                    )
+                }
+                // `KeyType` is `#[non_exhaustive]`, so this arm is required. It
+                // refuses rather than falling back: every branch above derives
+                // through a scheme-specific SLIP-0010 path and there is no
+                // generic one, so a wildcard could only return a key of some
+                // other algorithm under this label.
                 other => {
                     return Err(AppError::Validation(format!(
                         "key derivation does not support {other} yet"
@@ -1090,15 +1101,25 @@ pub async fn get_key_secret_internal(
                     );
                     (pub_mb, priv_mb)
                 }
-                // `KeyType` is `#[non_exhaustive]`, so this arm is required.
-                // It refuses rather than falling back: every branch above
-                // derives through a scheme-specific SLIP-0010 path and there is
-                // no generic one, so a wildcard could only return a key of some
-                // other algorithm under this label. ML-DSA lands here until
-                // `ExtendedSigningKey` grows a `derive_ml_dsa` beside its
-                // siblings — FIPS 204 KeyGen takes a 32-byte seed, so the chain
-                // can produce one; it is the derivation that is missing, not
-                // the possibility.
+                KeyType::MlDsa44 => {
+                    let secret = bip32.derive_ml_dsa_44(&record.derivation_path)?;
+                    (
+                        secret.get_public_keymultibase()?,
+                        secret.get_private_keymultibase()?,
+                    )
+                }
+                KeyType::MlDsa65 => {
+                    let secret = bip32.derive_ml_dsa_65(&record.derivation_path)?;
+                    (
+                        secret.get_public_keymultibase()?,
+                        secret.get_private_keymultibase()?,
+                    )
+                }
+                // `KeyType` is `#[non_exhaustive]`, so this arm is required. It
+                // refuses rather than falling back: every branch above derives
+                // through a scheme-specific SLIP-0010 path and there is no
+                // generic one, so a wildcard could only return a key of some
+                // other algorithm under this label.
                 other => {
                     return Err(AppError::Validation(format!(
                         "key derivation does not support {other} yet"

@@ -82,6 +82,27 @@ pub trait Bip32Extension {
     /// independent from the Ed25519 key at the same path. This avoids
     /// cross-curve key reuse, Ed25519 clamping artifacts, and group-order bias.
     fn derive_p256(&self, path: &str) -> Result<P256Secret, AppError>;
+
+    /// Derive an ML-DSA-44 (FIPS 204) key pair from a seed and BIP32 path.
+    ///
+    /// Domain-separated for the same reason as [`Self::derive_p256`], and it is
+    /// the whole reason this is not a two-line function. `derive_ed25519` feeds
+    /// the SLIP-0010 output straight to the key constructor; doing that here
+    /// would make the ML-DSA seed **equal to the Ed25519 private key at the same
+    /// path**, so compromising either would yield the other. The label also
+    /// differs per parameter set: ML-DSA-44 and ML-DSA-65 are different
+    /// algorithms and must not share a seed either.
+    ///
+    /// Simpler than P-256 in one respect — FIPS 204 KeyGen takes xi as 32
+    /// arbitrary bytes with no group-order constraint, so there is no reduction
+    /// and no retry loop. Any 32 bytes is a valid seed.
+    fn derive_ml_dsa_44(&self, path: &str) -> Result<Secret, AppError>;
+
+    /// Derive an ML-DSA-65 (FIPS 204) key pair from a seed and BIP32 path.
+    ///
+    /// See [`Self::derive_ml_dsa_44`]; this uses a distinct domain label so the
+    /// two parameter sets never share key material at one path.
+    fn derive_ml_dsa_65(&self, path: &str) -> Result<Secret, AppError>;
 }
 
 impl Bip32Extension for ExtendedSigningKey {
@@ -153,6 +174,53 @@ impl Bip32Extension for ExtendedSigningKey {
 
         Ok(P256Secret { secret_key })
     }
+
+    fn derive_ml_dsa_44(&self, path: &str) -> Result<Secret, AppError> {
+        let seed = self.domain_separated_seed(path, b"ml-dsa-44-key-derivation")?;
+        Ok(Secret::generate_ml_dsa_44(None, Some(&seed)))
+    }
+
+    fn derive_ml_dsa_65(&self, path: &str) -> Result<Secret, AppError> {
+        let seed = self.domain_separated_seed(path, b"ml-dsa-65-key-derivation")?;
+        Ok(Secret::generate_ml_dsa_65(None, Some(&seed)))
+    }
+}
+
+/// The HMAC-SHA512 domain separation both post-quantum derivations use.
+///
+/// Extracted rather than written twice because the two differ only in the
+/// label, and a second copy is how the two parameter sets would eventually
+/// come to disagree about how a seed is produced — which is unrecoverable
+/// rather than merely wrong, since the key cannot be re-derived afterwards.
+///
+/// Mirrors `derive_p256`'s construction exactly: HMAC-SHA512 over the derived
+/// signing key and chain code, keyed by the label, first 32 bytes taken.
+trait DomainSeparatedSeed {
+    fn domain_separated_seed(&self, path: &str, label: &[u8]) -> Result<[u8; 32], AppError>;
+}
+
+impl DomainSeparatedSeed for ExtendedSigningKey {
+    fn domain_separated_seed(&self, path: &str, label: &[u8]) -> Result<[u8; 32], AppError> {
+        use hmac::{Hmac, KeyInit, Mac};
+        use sha2::Sha512;
+
+        let derivation_path: DerivationPath = path
+            .parse()
+            .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
+
+        let derived = self
+            .derive(&derivation_path)
+            .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
+
+        let mut mac = Hmac::<Sha512>::new_from_slice(label).expect("HMAC accepts any key length");
+        mac.update(derived.signing_key.as_bytes());
+        mac.update(&derived.chain_code);
+        let out = mac.finalize().into_bytes();
+
+        out[..32].try_into().map_err(|_| {
+            key_derivation_error("HMAC-SHA512 output is shorter than 32 bytes".to_string())
+        })
+    }
 }
 
 /// Load an existing master seed from the store, or generate/derive a new one.
@@ -209,6 +277,19 @@ pub async fn load_or_generate_seed(
 mod tests {
     use super::*;
     use p256::elliptic_curve::sec1::ToSec1Point;
+
+    /// The raw key material inside a multibase private key, with the
+    /// multicodec prefix removed.
+    ///
+    /// Needed because the codec differs between Ed25519 and ML-DSA, so
+    /// comparing the encoded strings would report "different" even if the
+    /// underlying 32 bytes were identical — which is precisely the failure the
+    /// tests below exist to catch.
+    fn seed_of(multibase_key: &str) -> Vec<u8> {
+        let (_base, bytes) = multibase::decode(multibase_key).expect("valid multibase");
+        // Every codec used here is a 2-byte unsigned varint.
+        bytes[2..].to_vec()
+    }
 
     fn get_bip32() -> ExtendedSigningKey {
         ExtendedSigningKey::from_seed(&[
@@ -583,5 +664,96 @@ mod tests {
         let bip32 = get_bip32();
         let result = bip32.derive_p256("not/a/valid/path");
         assert!(result.is_err());
+    }
+
+    /// The post-quantum seed must not equal the Ed25519 private key at the same
+    /// path.
+    ///
+    /// This is the property the domain separation exists for, and it is the one
+    /// a naive implementation gets wrong: `derive_ed25519` hands the SLIP-0010
+    /// output straight to the key constructor, and ML-DSA's constructor takes a
+    /// 32-byte seed, so the two line up and the obvious code compiles and looks
+    /// right. It would mean compromising either key yields the other.
+    #[test]
+    fn ml_dsa_seed_is_independent_of_the_ed25519_key_at_the_same_path() {
+        let bip32 = get_bip32();
+        let path = "m/44'/0'/0'";
+
+        let ed = bip32.derive_ed25519(path).unwrap();
+        let ml44 = bip32.derive_ml_dsa_44(path).unwrap();
+        let ml65 = bip32.derive_ml_dsa_65(path).unwrap();
+
+        // Compared as multibase because that is the persisted form and the
+        // raw bytes are `pub(crate)` upstream. The codec prefix differs
+        // between Ed25519 and ML-DSA, so this compares the *material* by
+        // decoding past it — the seeds are both 32 bytes, which is exactly why
+        // the collision is easy to write by accident.
+        let ed_mb = ed.get_private_keymultibase().unwrap();
+        let ml44_mb = ml44.get_private_keymultibase().unwrap();
+        let ml65_mb = ml65.get_private_keymultibase().unwrap();
+
+        assert_ne!(
+            seed_of(&ml44_mb),
+            seed_of(&ed_mb),
+            "ML-DSA-44 seed equals the Ed25519 private key — domain separation is not applied"
+        );
+        assert_ne!(
+            seed_of(&ml65_mb),
+            seed_of(&ed_mb),
+            "ML-DSA-65 seed equals the Ed25519 private key — domain separation is not applied"
+        );
+    }
+
+    /// The two parameter sets must not share a seed either.
+    ///
+    /// ML-DSA-44 and ML-DSA-65 are different algorithms; deriving both at one
+    /// path with one label would make a holder of the -44 key able to
+    /// reconstruct the -65 one. The labels differ for that reason and nothing
+    /// else, so this is the only thing asserting they still do.
+    #[test]
+    fn the_two_ml_dsa_parameter_sets_get_independent_seeds() {
+        let bip32 = get_bip32();
+        let path = "m/44'/0'/0'";
+
+        let a = bip32.derive_ml_dsa_44(path).unwrap();
+        let b = bip32.derive_ml_dsa_65(path).unwrap();
+
+        assert_ne!(
+            seed_of(&a.get_private_keymultibase().unwrap()),
+            seed_of(&b.get_private_keymultibase().unwrap()),
+            "ML-DSA-44 and ML-DSA-65 share a seed — the domain labels are not distinct"
+        );
+        // Different parameter sets: ML-DSA-65's verifying key is 1952 bytes to
+        // ML-DSA-44's 1312, so the encodings cannot be the same length.
+        assert!(
+            b.get_public_keymultibase().unwrap().len() > a.get_public_keymultibase().unwrap().len(),
+            "ML-DSA-65's verifying key should encode longer than ML-DSA-44's"
+        );
+    }
+
+    /// Derivation is deterministic — the property the whole BIP-32 chain exists
+    /// for, and what makes a derived post-quantum key recoverable from the
+    /// mnemonic rather than stranded like an internal one.
+    #[test]
+    fn ml_dsa_derivation_is_deterministic() {
+        let path = "m/44'/0'/1'";
+        let first = get_bip32().derive_ml_dsa_44(path).unwrap();
+        let second = get_bip32().derive_ml_dsa_44(path).unwrap();
+
+        assert_eq!(
+            first.get_private_keymultibase().unwrap(),
+            second.get_private_keymultibase().unwrap()
+        );
+        assert_eq!(
+            first.get_public_keymultibase().unwrap(),
+            second.get_public_keymultibase().unwrap()
+        );
+
+        // A different path gives different material, or the path is being ignored.
+        let other = get_bip32().derive_ml_dsa_44("m/44'/0'/2'").unwrap();
+        assert_ne!(
+            first.get_private_keymultibase().unwrap(),
+            other.get_private_keymultibase().unwrap()
+        );
     }
 }
