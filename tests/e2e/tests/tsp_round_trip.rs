@@ -85,6 +85,11 @@ async fn tsp_frame_routes_between_two_local_accounts() {
     let mediator = TestMediator::builder()
         .local_did(sender_did.clone())
         .local_did(recipient_did.clone())
+        // The §7.2.2 invite each sender now sends is a *direct* control
+        // message — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -95,6 +100,14 @@ async fn tsp_frame_routes_between_two_local_accounts() {
     let sender = TspSession::connect(&sender_did, &sender_priv, mediator.did())
         .await
         .expect("sender TSP session connects");
+
+    // §7.2.2: without a recorded relationship the recipient drops what follows,
+    // and drops rather than refuses — so the symptom is a receive that times
+    // out with nothing explaining it.
+    sender
+        .relate(&recipient_did)
+        .await
+        .expect("sender forms a TSP relationship with the recipient");
 
     let body = doc("urn:uuid:tsp-local-probe");
     sender
@@ -136,6 +149,11 @@ async fn didcomm_control_over_the_same_mediator() {
     let mediator = TestMediator::builder()
         .local_did(sender_did.clone())
         .local_did(recipient_did.clone())
+        // The §7.2.2 invite each sender now sends is a *direct* control
+        // message — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -173,6 +191,11 @@ async fn tsp_round_trip_is_not_intermittent() {
     let mediator = TestMediator::builder()
         .local_did(sender_did.clone())
         .local_did(recipient_did.clone())
+        // The §7.2.2 invite each sender now sends is a *direct* control
+        // message — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -183,6 +206,14 @@ async fn tsp_round_trip_is_not_intermittent() {
     let sender = TspSession::connect(&sender_did, &sender_priv, mediator.did())
         .await
         .expect("sender connects");
+
+    // §7.2.2: without a recorded relationship the recipient drops what follows,
+    // and drops rather than refuses — so the symptom is a receive that times
+    // out with nothing explaining it.
+    sender
+        .relate(&recipient_did)
+        .await
+        .expect("sender forms a TSP relationship with the recipient");
 
     let mut delivered = 0usize;
     for round in 0..ROUNDS {
@@ -249,6 +280,11 @@ async fn tsp_frame_arrives_on_the_pickup_socket() {
     let mediator = TestMediator::builder()
         .local_did(sender_did.clone())
         .local_did(recipient_did.clone())
+        // The §7.2.2 invite each sender now sends is a *direct* control
+        // message — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -290,6 +326,13 @@ async fn tsp_frame_arrives_on_the_pickup_socket() {
     let sender = TspSession::connect(&sender_did, &sender_priv, mediator.did())
         .await
         .expect("sender connects");
+    // §7.2.2: without a recorded relationship the recipient drops what follows,
+    // and drops rather than refuses — so the symptom is a receive that times
+    // out with nothing explaining it.
+    sender
+        .relate(&recipient_did)
+        .await
+        .expect("sender forms a TSP relationship with the recipient");
     sender
         .send_document(
             &recipient_did,

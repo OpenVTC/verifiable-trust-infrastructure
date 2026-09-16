@@ -1154,6 +1154,32 @@ mod didcomm_harness {
         /// *not* proof of delivery, so assert on the VTC's recorded state (or
         /// its reply), never on this returning `Ok`.
         #[cfg(feature = "tsp")]
+        /// Form a TSP relationship with the VTC, which Rev 3 requires before
+        /// any application message.
+        ///
+        /// §7.2.2: "It is not permissible that one endpoint which has learned a
+        /// VID of the other simply starts with an application level message
+        /// without first having an exchange of TSP control messages." A test
+        /// that skips this has its messages **dropped** at the receiver — the
+        /// specified behaviour, not a fault — and because §7.2.2 drops rather
+        /// than refuses, the symptom is a poll that times out with nothing in
+        /// the log to explain it.
+        ///
+        /// Only the invite is sent. The VTC records it on arrival, and a
+        /// recorded relationship already admits application messages —
+        /// `RelationshipState::admits_application_message` is true for any
+        /// state but `None`, because §3.6 lets a sender pack user data
+        /// alongside its invite. So there is nothing to wait for and no accept
+        /// to await, which is what keeps this one line at the call site.
+        #[cfg(feature = "tsp")]
+        pub async fn relate_tsp(&self, vtc_did: &str) {
+            self.atm
+                .tsp()
+                .form_relationship(&self.profile, vtc_did)
+                .await
+                .expect("form a TSP relationship with the VTC");
+        }
+
         pub async fn send_tsp(&self, vtc_did: &str, typ: &str, payload: Value) {
             self.send_tsp_framed(vtc_did, typ, payload, Carriage::BindingEnvelope)
                 .await;
@@ -1566,6 +1592,15 @@ mod didcomm_harness {
             let mediator = TestMediator::builder()
                 .local_did(vtc_did.clone())
                 .local_did(applicant_did.clone())
+                // Rev 3 §7.2.2 makes a relationship a precondition of every
+                // application message, and the invite that forms one is a
+                // *direct* control message — "routed" names the reply path an
+                // invite advertises, not the carriage of the invite itself. The
+                // fixture default for `local_direct_delivery_allowed` is
+                // `false`, so without this `relate_tsp` is refused with
+                // `e.p.direct_delivery.denied` and every TSP test below is
+                // dropped at the VTC with nothing to explain it.
+                .local_direct_delivery(true, false)
                 .spawn()
                 .await
                 .expect("spawn test mediator");

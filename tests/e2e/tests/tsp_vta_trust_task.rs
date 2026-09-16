@@ -231,6 +231,16 @@ async fn a_tsp_sealed_secret_is_unsealed_by_a_running_vta() {
         .await
         .expect("client TSP session connects to the VTA's mediator");
 
+    // TSP Rev 3 §7.2.2: the VTA drops an application message from a VID it
+    // holds no relationship with, before the spine ever sees it. So the
+    // relationship is a precondition of the dispatch this test is about, and
+    // its absence would present as the #1507 silence the `expect` below
+    // describes — the same symptom from a different cause.
+    session
+        .relate(mock.vta_did())
+        .await
+        .expect("client forms a TSP relationship with the VTA");
+
     let id = "urn:uuid:tsp-upsert-probe";
     let doc = upsert_with_tsp_secret(
         id,
@@ -318,6 +328,17 @@ async fn an_unauthorized_sender_is_refused_over_tsp_not_met_with_silence() {
         .await
         .expect("client TSP session connects");
 
+    // The relationship is the *transport* gate and the ACL is the
+    // *authorization* gate, and this test is about the second one. Under
+    // §7.2.2 an unrelated sender is dropped before dispatch, which would make
+    // this pass for the wrong reason if it asserted only "silence is wrong":
+    // forming the relationship first is what proves the refusal comes from the
+    // ACL rather than from the VTA never having heard of us.
+    session
+        .relate(mock.vta_did())
+        .await
+        .expect("client forms a TSP relationship with the VTA");
+
     let doc = upsert_with_tsp_secret(
         "urn:uuid:tsp-unauthorized",
         &client_did,
@@ -376,6 +397,13 @@ async fn the_reply_threads_to_the_request_that_asked_for_it() {
     let session = TspSession::connect(&client_did, &client_priv, mock.mediator_did())
         .await
         .expect("client TSP session connects");
+
+    // §7.2.2, as above: no relationship, no dispatch, and so no reply to
+    // correlate.
+    session
+        .relate(mock.vta_did())
+        .await
+        .expect("client forms a TSP relationship with the VTA");
 
     let id = "urn:uuid:tsp-thread-probe";
     let doc = upsert_with_tsp_secret(

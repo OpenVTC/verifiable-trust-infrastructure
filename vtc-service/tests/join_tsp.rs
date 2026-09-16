@@ -118,6 +118,13 @@ async fn a_join_submitted_over_tsp_is_dispatched_and_recorded() {
     let vtc_did = mock.vtc_did().to_string();
     let applicant_did = mock.client.did().to_string();
 
+    // Rev 3 §7.2.2 gates application messages on an existing relationship, and
+    // this test's subject is TSP carriage, not relationship forming. Without
+    // the invite the join below is dropped at the VTC and the poll times out
+    // with nothing explaining why — which is exactly the failure this file was
+    // written to make impossible to ship.
+    mock.client.relate_tsp(&vtc_did).await;
+
     mock.client
         .send_tsp(
             &vtc_did,
@@ -166,6 +173,13 @@ async fn a_join_over_tsp_is_recorded_in_either_carriage() {
 
         let vtc_did = mock.vtc_did().to_string();
         let applicant_did = mock.client.did().to_string();
+
+        // Rev 3 §7.2.2 gates application messages on an existing relationship, and
+        // this test's subject is TSP carriage, not relationship forming. Without
+        // the invite the join below is dropped at the VTC and the poll times out
+        // with nothing explaining why — which is exactly the failure this file was
+        // written to make impossible to ship.
+        mock.client.relate_tsp(&vtc_did).await;
 
         mock.client
             .send_tsp_framed(

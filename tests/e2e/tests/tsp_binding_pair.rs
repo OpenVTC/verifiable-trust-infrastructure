@@ -33,6 +33,7 @@ use affinidi_messaging_test_mediator::TestMediator;
 use affinidi_tdk::common::{TDKSharedState, config::TDKConfig};
 use affinidi_tdk::messaging::{ATM, config::ATMConfig, profiles::ATMProfile};
 // `insert` lives on the SecretsResolver trait — must be in scope.
+use affinidi_messaging_sdk::protocols::tsp::InboundTsp;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
 use ed25519_dalek::SigningKey;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
@@ -123,6 +124,11 @@ async fn what_the_sdk_seals_is_what_the_vta_opens() {
     let mediator = TestMediator::builder()
         .local_did(client_did.clone())
         .local_did(vta_did.clone())
+        // The §7.2.2 invite each sender now sends is a *direct* control
+        // message — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -132,6 +138,14 @@ async fn what_the_sdk_seals_is_what_the_vta_opens() {
     let client = TspSession::connect(&client_did, &client_priv, mediator.did())
         .await
         .expect("client TSP session connects");
+    // §7.2.2: the VTA's pickup socket drops an application message from a VID it
+    // holds no relationship with, which here would look exactly like the
+    // binding mismatch this test exists to detect.
+    client
+        .relate(&vta_did)
+        .await
+        .expect("client forms a TSP relationship with the VTA");
+
     let id = "urn:uuid:binding-pair-probe";
     client
         .send_document(
@@ -157,19 +171,49 @@ async fn what_the_sdk_seals_is_what_the_vta_opens() {
         else {
             continue; // a DIDComm pickup status frame, or nothing yet
         };
-        // `unpack`, not `unpack_bytes`: the multiplexed pickup socket surfaces a
-        // TSP frame as the **qb64** text (`-E…`), and `unpack_bytes` wants raw
-        // qb2. This is the same pair of calls the delivery layer's
-        // `tsp_to_inbound` documents, and picking the wrong one here would fail
-        // as "missing -E envelope wrapper" — an unpack fault wearing the costume
-        // of a binding fault, in the one test whose job is to tell them apart.
-        let (bytes, _sender) = vta_atm
+        // The qb64 stored text (`-E…`) has to be decoded before
+        // `unpack_message`, which takes raw qb2 — `unpack` used to hide that,
+        // and picking the wrong one fails as "missing -E envelope wrapper", an
+        // unpack fault wearing the costume of a binding fault in the one test
+        // whose job is to tell them apart.
+        let qb2 = vta_atm.tsp().decode(&raw).expect("frame is valid qb64");
+
+        // `unpack_message`, not `unpack`: the client's §7.2.2 invite arrives on
+        // this socket *before* the application frame, and `unpack` cannot say
+        // that a frame is a control message — it fails, and the `expect` below
+        // would read as "the VTA cannot open a frame sealed to it", which is
+        // precisely the wrong diagnosis. Skipping it by name keeps this test
+        // about the binding.
+        match vta_atm
             .tsp()
-            .unpack(&vta_profile, &raw)
+            .unpack_message(&vta_profile, &qb2)
             .await
-            .expect("the VTA can unpack a frame sealed to it");
-        payload = Some(bytes);
-        break;
+            .expect("the VTA can unpack a frame sealed to it")
+        {
+            InboundTsp::Application { payload: bytes, .. } => {
+                payload = Some(bytes);
+                break;
+            }
+            // The client's invite. **Recording it is not optional**: §7.2.2
+            // discards an application message from a VID with no recorded
+            // relationship, so skipping the control frame here means the very
+            // next frame — the one this test is about — is refused with "no
+            // relationship with …". This is what the delivery layer does for a
+            // real consumer (affinidi-tdk-rs#800); a hand-rolled pickup loop
+            // has to do it itself.
+            InboundTsp::Control {
+                control, sender, ..
+            } => {
+                vta_atm
+                    .tsp()
+                    .record_incoming_control(&vta_profile, &sender, &control)
+                    .await
+                    .expect("the VTA records the client's invite");
+                continue;
+            }
+            // Padding (§9.4) and upper-layer control (`XCTL`).
+            _ => continue,
+        }
     }
 
     client.shutdown().await;

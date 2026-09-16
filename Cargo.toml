@@ -90,7 +90,7 @@ uniffi = "0.32"
 # the floor is now structural rather than a specific patch: do not move this
 # back below 0.9, and do not drop to a bare major.
 # 0.11 re-exports `affinidi-mdoc` 0.3 — see the coupling note on `coset` below.
-affinidi-tdk = "0.15"
+affinidi-tdk = "0.16"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
