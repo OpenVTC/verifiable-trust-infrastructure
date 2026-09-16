@@ -19,16 +19,13 @@ pub(crate) async fn run(
     keyring_key: &str,
     fresh_tsp_probe: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-
     let session = auth::loaded_session(keyring_key);
 
-    // Single shared DID resolver — cached across all resolutions.
-    // Honours PNM_RESOLVER_URL (set from `~/.config/pnm/config.toml`'s
-    // `resolver_url` at startup) for shared-cache deployments.
-    let did_resolver = DIDCacheClient::new(vta_sdk::resolver::build_did_cache_config_from_env())
-        .await
-        .ok();
+    // The process-shared DID resolver — the same one the SDK's own entry points
+    // (authentication, endpoint discovery) use, so a DID resolved here is not
+    // fetched again by them. Honours PNM_RESOLVER_URL (set from
+    // `~/.config/pnm/config.toml`'s `resolver_url` at startup).
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await.ok();
 
     // ── VTA ────────────────────────────────────────────────────────
     print_section("VTA");

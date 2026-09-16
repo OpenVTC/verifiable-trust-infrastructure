@@ -23,6 +23,18 @@
 //! `with_network_mode(url)` directly), so PNM's setting does not leak
 //! into long-running daemons that have their own opinion.
 //!
+//! ## One resolver per process, not one per call
+//!
+//! Those entry points used to build a fresh `DIDCacheClient` on every call.
+//! A fresh client has an empty cache, so a single CLI command resolved the
+//! VTA's DID from scratch several times — endpoint discovery, the mediator
+//! lookup, reply-proof verification — each an HTTP fetch of `did.jsonl` from
+//! the same address as the authentication calls that followed. A VTA that
+//! hosts its own log serves those fetches on its unauthenticated routes, under
+//! the same per-IP rate limiter as `/auth/*`, so the CLI spent the operator's
+//! budget before it authenticated. They now resolve through
+//! [`shared_did_resolver`], whose cache answers every repeat within its TTL.
+//!
 //! ## Host policy: which hosts a DID may be fetched from
 //!
 //! `affinidi-did-resolver-cache-sdk` 0.8.37 (`didwebvh-rs` 0.7) refuses
@@ -54,6 +66,7 @@
 //! to loosen one without the other — and that under `AllowPrivate` a
 //! `localhost` DID is fetched over plain `http://`.
 
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_did_resolver_cache_sdk::config::{DIDCacheConfig, DIDCacheConfigBuilder};
 use affinidi_did_resolver_cache_sdk::network_resolvers::HostPolicy;
 
@@ -120,6 +133,154 @@ pub fn build_did_cache_config_from_env() -> DIDCacheConfig {
         .ok()
         .filter(|s| !s.is_empty());
     build_did_cache_config(url.as_deref())
+}
+
+// ── The process-shared resolver ─────────────────────────────────────────────
+
+/// What a shared resolver is keyed on: the runtime it was built on, the
+/// resolver sidecar it dispatches to, and the host policy it enforces.
+///
+/// The runtime is part of the key because a `DIDCacheClient` is not
+/// runtime-neutral: in network mode it spawns a websocket task on the runtime
+/// that built it, and pooled HTTP connections are driven by that runtime too. A
+/// process that runs more than one runtime — every `#[tokio::test]` does, and
+/// so does a binary that builds one per job — gets one resolver per runtime
+/// rather than one that silently stops working when its runtime ends.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct SharedKey {
+    runtime: tokio::runtime::Id,
+    resolver_url: Option<String>,
+    allow_private: bool,
+}
+
+struct SharedEntry {
+    client: DIDCacheClient,
+    /// Dead once the runtime that built `client` has shut down: the task
+    /// holding the strong half is dropped with every other task on it.
+    runtime_alive: std::sync::Weak<()>,
+}
+
+static SHARED_RESOLVERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<SharedKey, SharedEntry>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn shared_resolvers()
+-> std::sync::MutexGuard<'static, std::collections::HashMap<SharedKey, SharedEntry>> {
+    // A panic while the lock is held leaves a map that is still consistent
+    // (every mutation is a single insert or remove), so recover it rather than
+    // turn every later resolution in the process into a panic.
+    SHARED_RESOLVERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Drop entries whose runtime has shut down, stopping each client first.
+fn prune_dead(map: &mut std::collections::HashMap<SharedKey, SharedEntry>) {
+    map.retain(|_, entry| {
+        let alive = entry.runtime_alive.strong_count() > 0;
+        if !alive {
+            entry.client.stop();
+        }
+        alive
+    });
+}
+
+/// The resolver this process shares for `url`, built on first use.
+///
+/// Every SDK entry point that used to build a throwaway `DIDCacheClient` per
+/// call — [`crate::session::resolve_vta_endpoint`],
+/// [`crate::session::resolve_vta_url`],
+/// [`crate::session::resolve_mediator_did`], `VtaClient::resolve_did`, reply
+/// verification, agent-name lookup — resolves through this instead. A throwaway
+/// client starts with an empty cache, so one CLI command resolved the VTA's DID
+/// from scratch several times over, each an HTTP fetch from the same address as
+/// the authentication calls that followed — against a VTA that hosts its own
+/// log, on the same per-IP rate limiter. Sharing one client lets its cache
+/// (300 s for `did:web` / `did:webvh`, successes only) answer every repeat.
+///
+/// Built with [`build_did_cache_config`], so the host policy is the one
+/// [`webvh_host_policy`] reports at the time of the call; a change to that
+/// opt-in, or a different `url`, gets its own client rather than a cache that
+/// was filled under other rules.
+///
+/// # Lifetime
+///
+/// One client per (tokio runtime, `url`, host policy). A client whose runtime
+/// has shut down is stopped and discarded the next time any shared resolver is
+/// requested, and [`shutdown_shared_did_resolvers`] stops all of them — call it
+/// from a long-lived embedder that wants the network-mode websocket closed
+/// before its runtime ends. Outside a tokio runtime nothing can be shared, so an
+/// unshared client is returned.
+pub async fn shared_did_resolver(
+    url: Option<&str>,
+) -> Result<DIDCacheClient, affinidi_did_resolver_cache_sdk::errors::DIDCacheError> {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return DIDCacheClient::new(build_did_cache_config(url)).await;
+    };
+    let key = SharedKey {
+        runtime: handle.id(),
+        resolver_url: url.map(str::to_string),
+        allow_private: allow_private_did_hosts(),
+    };
+
+    {
+        let mut map = shared_resolvers();
+        prune_dead(&mut map);
+        if let Some(entry) = map.get(&key) {
+            return Ok(entry.client.clone());
+        }
+    }
+
+    // Built without the lock held: construction is async, and in network mode
+    // it connects to the sidecar.
+    let client = DIDCacheClient::new(build_did_cache_config(url)).await?;
+
+    let mut map = shared_resolvers();
+    if let Some(entry) = map.get(&key) {
+        // Another caller on this runtime built one first. Keep theirs so every
+        // caller shares one cache, and stop ours so its network task (if any)
+        // does not outlive this call.
+        client.stop();
+        return Ok(entry.client.clone());
+    }
+    let sentinel = std::sync::Arc::new(());
+    let runtime_alive = std::sync::Arc::downgrade(&sentinel);
+    handle.spawn(async move {
+        let _sentinel = sentinel;
+        std::future::pending::<()>().await;
+    });
+    map.insert(
+        key,
+        SharedEntry {
+            client: client.clone(),
+            runtime_alive,
+        },
+    );
+    Ok(client)
+}
+
+/// [`shared_did_resolver`] for the `PNM_RESOLVER_URL` setting — the shared
+/// counterpart of [`build_did_cache_config_from_env`].
+pub async fn shared_did_resolver_from_env()
+-> Result<DIDCacheClient, affinidi_did_resolver_cache_sdk::errors::DIDCacheError> {
+    let url = std::env::var("PNM_RESOLVER_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    shared_did_resolver(url.as_deref()).await
+}
+
+/// Stop and discard every shared resolver.
+///
+/// Stopping ends a network-mode client's websocket task; the `DIDCacheClient`
+/// has no `Drop` impl, so discarding one without stopping it leaves that task
+/// reconnecting for as long as its runtime runs. A clone a caller still holds
+/// keeps its cache but can no longer dispatch to the sidecar. The next
+/// [`shared_did_resolver`] call builds a fresh client.
+pub fn shutdown_shared_did_resolvers() {
+    let mut map = shared_resolvers();
+    for (_, entry) in map.drain() {
+        entry.client.stop();
+    }
 }
 
 #[cfg(test)]

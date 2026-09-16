@@ -2214,7 +2214,7 @@ fn advertised_hint(has_didcomm: bool, has_rest: bool) -> &'static str {
 pub async fn resolve_vta_endpoint(
     vta_did: &str,
 ) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
-    let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
+    let did_resolver = crate::resolver::shared_did_resolver_from_env()
         .await
         .map_err(|e| format!("DID resolver init failed: {e}"))?;
     resolve_vta_endpoint_with_resolver(vta_did, &did_resolver).await
@@ -2378,7 +2378,7 @@ async fn discover_mediator_via_status(client: &crate::client::VtaClient) -> Opti
 async fn rest_url_from_did_doc(
     vta_did: &str,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let Ok(did_resolver) = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
+    let Ok(did_resolver) = crate::resolver::shared_did_resolver_from_env()
         .await
         .inspect_err(|e| debug!(error = %e, "DID resolver init failed"))
     else {
@@ -2543,7 +2543,7 @@ pub async fn send_trust_ping(
 pub async fn resolve_mediator_did(
     vta_did: &str,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
+    let did_resolver = crate::resolver::shared_did_resolver_from_env()
         .await
         .map_err(|e| format!("DID resolver init failed: {e}"))?;
     resolve_mediator_did_with_resolver(vta_did, &did_resolver).await

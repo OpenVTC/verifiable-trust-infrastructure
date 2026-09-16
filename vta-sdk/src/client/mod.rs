@@ -2027,15 +2027,11 @@ impl VtaClient {
 
         let resolver = self
             .reply_resolver
-            .get_or_init(|| async {
-                affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
-                    affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default()
-                        .with_host_policy(crate::resolver::webvh_host_policy())
-                        .build(),
-                )
-                .await
-                .ok()
-            })
+            // Local mode, as before — the signer's key is resolved in-process
+            // rather than taken from a sidecar — but the process-shared local
+            // resolver, so the VTA DID this client already resolved to find its
+            // endpoint is answered from cache instead of fetched again.
+            .get_or_init(|| async { crate::resolver::shared_did_resolver(None).await.ok() })
             .await;
 
         // `None` means the resolver could not be built at all, which leaves a
@@ -2355,8 +2351,9 @@ impl VtaClient {
     /// feature (which pulls the resolver).
     #[cfg(feature = "didcomm")]
     pub async fn resolve_did(&self, did: &str) -> Result<serde_json::Value, VtaError> {
-        use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-        let resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
+        // The process-shared resolver, not a throwaway: a fresh client starts
+        // with an empty cache, so every call would fetch the document again.
+        let resolver = crate::resolver::shared_did_resolver_from_env()
             .await
             .map_err(|e| VtaError::Protocol(format!("resolver init: {e}")))?;
         let resolved = resolver
