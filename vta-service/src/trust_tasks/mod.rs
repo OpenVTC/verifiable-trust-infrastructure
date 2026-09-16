@@ -327,7 +327,18 @@ macro_rules! dispatch_table {
             match type_uri.as_str() {
                 $(
                     $(#[$meta])*
-                    $($uri)|+ => $handler(state, auth, doc).await,
+                    // `Box::pin` is load-bearing, not a style choice. An async
+                    // fn's future is sized to its largest live state, and a
+                    // `match` future is sized to its largest arm — so awaiting
+                    // every handler *inline* here would size this one future to
+                    // the sum-shaped worst case of every task the VTA dispatches
+                    // (the backup/webvh/services handlers are each large on their
+                    // own). Debug builds do not elide that layout, so the first
+                    // inbound Trust Task overflowed the worker-thread stack —
+                    // which reads as, but is not, infinite recursion. Boxing
+                    // heap-allocates each handler's future so this dispatch frame
+                    // stays pointer-sized per arm. Do NOT "simplify" this away.
+                    $($uri)|+ => Box::pin($handler(state, auth, doc)).await,
                 )+
                 // A client mistakenly sending a REST-routed URI through the
                 // envelope path gets `unsupported_type` here — correct from the
