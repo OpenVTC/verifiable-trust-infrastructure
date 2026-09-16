@@ -63,6 +63,16 @@ timer, so retrying means the VTA **self-heals with no restart**.
 Every attempt re-confirms self-resolution first, so a VTA that can't resolve
 itself never storms the mediator with unauthenticatable handshakes.
 
+A *successful* confirmation is trusted for 300 s (the gate's pass included), so
+a run of failed connects does not re-fetch the VTA's own `did.jsonl` on every
+attempt. That matters most for a VTA that hosts its own log: each fetch lands on
+its own unauthenticated routes, from its own address, against the same per-IP
+rate limiter as everything else from that address. 300 s is the default document
+TTL of the resolver the mediator authenticates us through, so the mediator is
+already acting on a copy of our document that old. A failed confirmation is
+never remembered — an unresolvable VTA re-checks on every attempt, paced by the
+backoff.
+
 ### 3. Session supervision
 
 Once connected, the supervisor watches the session. If the inbound loop ends, it

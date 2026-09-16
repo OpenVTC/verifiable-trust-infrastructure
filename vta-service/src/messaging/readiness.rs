@@ -130,12 +130,35 @@ pub fn self_did_endpoint_hint(vta_did: &str) -> Option<String> {
 /// network fetch (e.g. `did:key`), or when the gate is disabled. Returns
 /// `Ok(Skip)` on timeout under the `skip` policy, and on cancellation. Returns
 /// `Err(ReadinessTimeout)` only on timeout under the `fail` policy.
+///
+/// Each call starts from nothing — it neither consults nor records a previous
+/// success. A caller that goes on to re-check resolvability before connecting
+/// (the reconnect supervisor does) should use [`run_gate_with_probe`], so the
+/// check that follows a passed gate does not fetch the document again.
 pub async fn run_gate(
     vta_did: &str,
     cfg: &MediatorReadinessConfig,
     resolver_url: Option<&str>,
     shutdown: &CancellationToken,
 ) -> Result<GateDecision, ReadinessTimeout> {
+    let mut probe = SelfResolutionProbe::new(vta_did, resolver_url);
+    run_gate_with_probe(cfg, &mut probe, shutdown).await
+}
+
+/// [`run_gate`] over a caller-owned [`SelfResolutionProbe`].
+///
+/// A pass is recorded on `probe`, so the caller's next
+/// [`SelfResolutionProbe::is_resolvable`] inside the freshness window answers
+/// from that observation instead of fetching the document a second time. The
+/// gate's own retries are never short-circuited: until it passes, every attempt
+/// is a real resolution, exactly as before.
+pub async fn run_gate_with_probe(
+    cfg: &MediatorReadinessConfig,
+    probe: &mut SelfResolutionProbe,
+    shutdown: &CancellationToken,
+) -> Result<GateDecision, ReadinessTimeout> {
+    let vta_did = probe.vta_did.clone();
+    let vta_did = vta_did.as_str();
     if !cfg.enabled {
         info!("mediator self-readiness gate disabled; connecting without waiting");
         return Ok(GateDecision::Proceed);
@@ -165,7 +188,7 @@ pub async fn run_gate(
     );
 
     let did = vta_did.to_string();
-    let resolver_url = resolver_url.map(str::to_string);
+    let resolver_url = probe.resolver_url.clone();
     let outcome = run_readiness_loop(base, cap, max_wait, shutdown, move || {
         let did = did.clone();
         let resolver_url = resolver_url.clone();
@@ -175,6 +198,10 @@ pub async fn run_gate(
 
     match outcome {
         LoopOutcome::Ready => {
+            // Stamped on return rather than at the start of the passing
+            // attempt, which the loop does not surface; the difference is one
+            // fetch's duration, against a window of minutes.
+            probe.record_confirmed(tokio::time::Instant::now());
             info!(
                 vta_did,
                 "own DID resolves over the network; proceeding to mediator connect"
@@ -275,15 +302,126 @@ async fn self_did_resolves(vta_did: &str, resolver_url: Option<&str>) -> bool {
 
 /// Single-shot: can the VTA resolve its own DID over the network right now?
 ///
-/// The persistent-reconnect supervisor calls this before every mediator connect
-/// attempt, so a cold VTA never storms the mediator with unresolvable-sender
-/// auth attempts while it can't even resolve itself. Methods that resolve
-/// without a network fetch (`did:key`) are always considered ready.
+/// Always performs a real resolution for a network-resolved method; methods
+/// that resolve without a network fetch (`did:key`) are always considered
+/// ready. A caller that asks repeatedly — the reconnect supervisor, before every
+/// connect attempt — should hold a [`SelfResolutionProbe`] instead, which
+/// answers from a recent success rather than fetching the document each time.
 pub async fn self_did_network_resolvable(vta_did: &str, resolver_url: Option<&str>) -> bool {
     if !needs_network_probe(vta_did) {
         return true;
     }
     self_did_resolves(vta_did, resolver_url).await
+}
+
+/// How long a successful self-resolution is trusted before the next check
+/// fetches the VTA's own DID document again.
+///
+/// Why a window at all: the supervisor re-confirms self-resolution before
+/// **every** connect attempt, and each confirmation used to be an uncached fetch
+/// of the VTA's own `did.jsonl` (directly, or through the resolver sidecar). For
+/// a VTA that hosts its own log those fetches arrive at its own unauthenticated
+/// routes from its own address, and they share the per-IP rate limiter with
+/// every other unauthenticated caller from that address — a connect that kept
+/// failing for reasons unrelated to resolvability (the mediator's negative
+/// cache, a mediator restart) spent the budget one probe per attempt.
+///
+/// Why 300 s: it is the default document TTL of
+/// `affinidi-did-resolver-cache-sdk` for mutable methods (`did:web`,
+/// `did:webvh`), which is the resolver the mediator authenticates us through.
+/// The mediator is therefore already prepared to act on a copy of our document
+/// up to 300 s old; trusting our own positive observation for the same window
+/// adds no staleness the party we are proving resolvability *to* does not
+/// already accept. A shorter window would buy nothing a connect attempt does
+/// not report anyway — if the document has become unresolvable, the mediator's
+/// authcrypt check fails, the connect fails, and the supervisor's backoff
+/// governs the retry exactly as before. Longer would outlive the mediator's own
+/// cache, which is the point past which a stale "yes" could hide a real change.
+///
+/// Only successes are remembered. A failed check leaves nothing behind, so the
+/// next attempt resolves again — on the supervisor's backoff schedule, as it
+/// always did.
+pub const SELF_RESOLUTION_FRESH_FOR: Duration = Duration::from_secs(300);
+
+/// A repeated "does the VTA's own DID resolve over the network?" check that
+/// fetches the document at most once per [`SELF_RESOLUTION_FRESH_FOR`] while it
+/// keeps succeeding.
+///
+/// Each real check still goes through [`self_did_resolves`] — a fresh resolver,
+/// built and stopped per check — so nothing here can be satisfied by the
+/// startup-preloaded self-DID entry (`server::preload_self_did_document`) or by
+/// the long-lived resolver's cache: the only thing remembered is *when this
+/// probe last saw a real network resolution succeed*. That is also why the
+/// window is kept here rather than by holding one resolver and leaning on its
+/// cache: a remembered instant is exactly as stale as the configured bound, can
+/// never be seeded from anywhere else, and holds no socket that has to be
+/// stopped on shutdown.
+#[derive(Debug, Clone)]
+pub struct SelfResolutionProbe {
+    vta_did: String,
+    resolver_url: Option<String>,
+    fresh_for: Duration,
+    last_confirmed: Option<tokio::time::Instant>,
+}
+
+impl SelfResolutionProbe {
+    /// A probe for `vta_did`, resolving through `resolver_url` when set (network
+    /// mode, as the mediator-facing path runs) and locally otherwise.
+    pub fn new(vta_did: &str, resolver_url: Option<&str>) -> Self {
+        Self {
+            vta_did: vta_did.to_string(),
+            resolver_url: resolver_url.map(str::to_string),
+            fresh_for: SELF_RESOLUTION_FRESH_FOR,
+            last_confirmed: None,
+        }
+    }
+
+    /// `true` when the DID resolved over the network within the freshness
+    /// window, or does so now. Methods that resolve without a network fetch
+    /// (`did:key`) are always ready and never probed.
+    pub async fn is_resolvable(&mut self) -> bool {
+        if !needs_network_probe(&self.vta_did) {
+            return true;
+        }
+        let did = self.vta_did.clone();
+        let resolver_url = self.resolver_url.clone();
+        self.check_with(|| async move { self_did_resolves(&did, resolver_url.as_deref()).await })
+            .await
+    }
+
+    /// Record a network resolution that succeeded at `at`.
+    fn record_confirmed(&mut self, at: tokio::time::Instant) {
+        self.last_confirmed = Some(at);
+    }
+
+    /// The window logic, over an injected probe so it is testable without I/O.
+    async fn check_with<F, Fut>(&mut self, probe: F) -> bool
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let started = tokio::time::Instant::now();
+        if let Some(at) = self.last_confirmed
+            && started.saturating_duration_since(at) < self.fresh_for
+        {
+            debug!(
+                vta_did = %self.vta_did,
+                confirmed_secs_ago = started.saturating_duration_since(at).as_secs(),
+                "self-readiness: own DID confirmed resolvable recently; not re-fetching"
+            );
+            return true;
+        }
+        // Stamp the start of the check, not its end: the observation is of the
+        // document as it was when we asked, so the window must not be extended
+        // by however long the fetch took.
+        if probe().await {
+            self.record_confirmed(started);
+            true
+        } else {
+            self.last_confirmed = None;
+            false
+        }
+    }
 }
 
 /// Why [`run_readiness_loop`] stopped.
@@ -571,6 +709,90 @@ mod tests {
             started.elapsed() < Duration::from_secs(1),
             "cancellation must not wait out the horizon"
         );
+    }
+
+    // ── SelfResolutionProbe: the reconnect supervisor's resolvability check ──
+
+    /// A `did:webvh` probe whose checks run `results` in order, counting how
+    /// many real (injected) resolutions were attempted.
+    async fn drive_probe(probe: &mut SelfResolutionProbe, results: &[bool]) -> (Vec<bool>, usize) {
+        let calls = Cell::new(0usize);
+        let mut answers = Vec::with_capacity(results.len());
+        for &result in results {
+            let answer = probe
+                .check_with(|| {
+                    calls.set(calls.get() + 1);
+                    async move { result }
+                })
+                .await;
+            answers.push(answer);
+        }
+        (answers, calls.get())
+    }
+
+    const WEBVH_DID: &str = "did:webvh:QmScid:example.com:agent";
+
+    #[tokio::test]
+    async fn consecutive_successful_checks_fetch_once_within_the_window() {
+        // The defect: every connect attempt re-fetched our own did.jsonl, which
+        // a self-hosting VTA serves on routes sharing its own per-IP limiter.
+        let mut probe = SelfResolutionProbe::new(WEBVH_DID, None);
+        let (answers, calls) = drive_probe(&mut probe, &[true, true, true, true]).await;
+        assert_eq!(answers, vec![true; 4]);
+        assert_eq!(calls, 1, "a recent success must answer later checks");
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_is_not_remembered() {
+        // Only successes are cached: an unresolvable VTA must re-probe on every
+        // attempt (paced by the supervisor's backoff), and must not proceed.
+        let mut probe = SelfResolutionProbe::new(WEBVH_DID, None);
+        let (answers, calls) = drive_probe(&mut probe, &[false, false, true, true]).await;
+        assert_eq!(answers, vec![false, false, true, true]);
+        assert_eq!(
+            calls, 3,
+            "both failures and the first success resolve for real"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_success_expires_after_the_window() {
+        let mut probe = SelfResolutionProbe::new(WEBVH_DID, None);
+        probe.fresh_for = Duration::from_millis(20);
+        let (_, first) = drive_probe(&mut probe, &[true]).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        // Past the window the next check resolves again, and a failure then
+        // clears the confirmation instead of being masked by it.
+        let (answers, second) = drive_probe(&mut probe, &[false, true]).await;
+        assert_eq!((first, second), (1, 2));
+        assert_eq!(answers, vec![false, true]);
+    }
+
+    #[tokio::test]
+    async fn a_gate_pass_answers_the_first_reconnect_check() {
+        let mut probe = SelfResolutionProbe::new(WEBVH_DID, None);
+        probe.record_confirmed(tokio::time::Instant::now());
+        let (answers, calls) = drive_probe(&mut probe, &[false]).await;
+        assert_eq!(answers, vec![true]);
+        assert_eq!(
+            calls, 0,
+            "the gate's pass must not be re-fetched straight away"
+        );
+    }
+
+    #[test]
+    fn freshness_window_does_not_outlive_the_mediator_resolver_cache() {
+        // The bound is justified by the mediator's resolver keeping our document
+        // for its default mutable-method TTL of 300 s. Pin it so a change to one
+        // is a deliberate change to the other.
+        assert_eq!(SELF_RESOLUTION_FRESH_FOR, Duration::from_secs(300));
+    }
+
+    #[tokio::test]
+    async fn did_key_probe_is_ready_without_resolving() {
+        let mut probe = SelfResolutionProbe::new("did:key:z6MkExampleKeyValue", None);
+        assert!(probe.is_resolvable().await);
+        assert!(probe.last_confirmed.is_none());
     }
 
     #[test]
