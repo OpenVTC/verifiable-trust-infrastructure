@@ -55,11 +55,23 @@ async fn authed_post(
         .send()
         .await?;
     let status = resp.status();
+    // Headers before body: a 429 from the VTC's limiter carries
+    // `x-rate-limit-source: vtc` and `retry-after`, which the typed error reads.
+    let headers = resp.headers().clone();
+    let url = format!("{base}{path}");
     let bytes = vta_sdk::http::read_body_capped(resp, MAX_BACKUP_RESPONSE_BYTES)
         .await
         .map_err(|e| format!("VTC backup request ({status}): {e}"))?;
     let text = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
+        // A rate limit must stay typed so the CLI names the VTC and the wait,
+        // rather than surfacing a bare "request failed" the operator reads as a
+        // backup fault.
+        if let Some(rl) =
+            vta_sdk::error::VtaError::rate_limited_from_http(status, &headers, &text, &url)
+        {
+            return Err(rl.into());
+        }
         // Surface the server's error body verbatim — it carries the
         // actionable message (short password, vtc_did mismatch, …).
         return Err(format!("VTC backup request failed ({status}): {text}").into());
