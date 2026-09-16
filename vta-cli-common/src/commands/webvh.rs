@@ -650,8 +650,14 @@ pub async fn cmd_webvh_did_delete(
     client: &VtaClient,
     did: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    client.delete_did_webvh(did).await?;
+    let outcome = client.delete_did_webvh_with_outcome(did).await?;
     println!("WebVH DID deleted: {did}");
+    // A partial success: the record is gone, but the host did not confirm
+    // deleting the published log, so the DID may still resolve. The spec says a
+    // consumer MUST surface it.
+    if let Some(reason) = &outcome.daemon_cleanup_error {
+        eprintln!("warning: {reason}");
+    }
     Ok(())
 }
 

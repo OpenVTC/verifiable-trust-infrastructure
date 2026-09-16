@@ -243,8 +243,36 @@ impl VtaClient {
         })
     }
 
+    /// Delete a DID, discarding the response.
+    ///
+    /// Prefer [`delete_did_webvh_with_outcome`](Self::delete_did_webvh_with_outcome):
+    /// a successful `webvh/dids/delete/1.0` can still carry
+    /// `daemonCleanupError`, which the specification says a consumer MUST
+    /// surface, and this method cannot.
     pub async fn delete_did_webvh(&self, did: &str) -> Result<(), VtaError> {
         self.rpc_tt_void(
+            crate::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
+            serde_json::json!({ "did": did }),
+            60,
+        )
+        .await
+    }
+
+    /// Delete a DID and return the `webvh/dids/delete/1.0` response.
+    ///
+    /// A success whose `daemon_cleanup_error` is set is a partial success: the
+    /// VTA removed its record, but the hosting server did not confirm removing
+    /// the published log, so the DID may still resolve. The specification
+    /// requires a consumer to surface it rather than treat the deletion as
+    /// complete.
+    ///
+    /// A DID whose hosting server is no longer registered on the VTA is refused
+    /// as [`VtaError::Conflict`], whose message names the commands to run.
+    pub async fn delete_did_webvh_with_outcome(
+        &self,
+        did: &str,
+    ) -> Result<trust_tasks_rs::specs::vta::webvh::dids::delete::v1_0::Response, VtaError> {
+        self.rpc_tt(
             crate::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
             serde_json::json!({ "did": did }),
             60,

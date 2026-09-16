@@ -103,6 +103,38 @@ says so.
 A plan that touches nothing beyond the DID's own records does not prompt at
 all. The ceremony is for consequences, not for deletions.
 
+## The copy on the hosting server
+
+The local record holds the only credentials that can delete a hosted DID's
+published log. Dropping the record without reaching the host leaves a log that
+keeps resolving and that nobody can update or remove any more. VTI R2.1
+(Remote-First) says the remote effect comes first, so:
+
+- **Server no longer registered → refused.** `get_server` returning nothing used
+  to skip the host delete silently: the record went, the log stayed live, and
+  nothing reported it. The deletion now refuses before touching anything
+  (including revocation), with the corrective sequence: `servers add --id <id>
+  --did <server-did>`, then retry. The refusal is a `Conflict`, the same typed
+  error as every other blocker, on REST, DIDComm and TSP alike.
+- **Serverless → unaffected.** There is no host copy.
+- **Server registered but the host delete fails → partial success, reported.**
+  The `webvh/dids/delete/1.0` response defines `daemonCleanupError` for exactly
+  this, and says a consumer MUST surface it. `pnm` used to discard it (the SDK's
+  `delete_did_webvh` returns `()`); it now calls
+  `delete_did_webvh_with_outcome` and prints it.
+
+`--local-only` (offline `vta did-mgmt dids delete` only) is the explicit opt-in
+for a host that is gone for good, where `servers add` cannot succeed because the
+server DID no longer resolves. It is not the `--force` decision 3 rules out: it
+acknowledges one specific leftover, it is refused for a registered or serverless
+DID (where it would orphan a deletable copy, or mean nothing), and the result
+still says the host copy remains.
+
+It is offline-only because the request payload is generated from the
+specification with `additionalProperties: false`. An online opt-in needs a
+`localOnly` member on `vta/webvh/dids/delete` in `dtgwg-trust-tasks-tf` first,
+then a `trust-tasks-rs` bump.
+
 ## A caller that cannot cascade cannot delete
 
 `WebvhDeps::delete_cascade` is `None` on the paths that only read or publish.
