@@ -847,20 +847,14 @@ pub(super) async fn handle_upsert(
             // `envelope_unsupported`, exactly as before.
             #[cfg(feature = "tsp")]
             if let SealedEnvelope::TspMessage { message } = env {
-                let atm = match state.atm.as_ref() {
-                    Some(atm) => atm,
-                    None => {
-                        return reject_with(
-                            &doc,
-                            RejectReason::InternalError {
-                                reason: "TSP not configured — VTA cannot unpack TSP envelopes"
-                                    .into(),
-                            },
-                        );
-                    }
-                };
-                let profile = match state.tsp_profile.as_ref() {
-                    Some(p) => p,
+                // Unsealing looks like it should need no route — the
+                // decryption key comes from the ATM's secrets resolver — but
+                // `TspOps::unpack_bytes` reads the envelope's intended receiver
+                // off `ATMProfile::dids()`, which has no answer without a
+                // mediator. So a profile built to unseal and nothing else
+                // cannot unseal either. See `TspTransport`.
+                let transport = match state.tsp_transport() {
+                    Some(t) => t,
                     None => {
                         return reject_with(
                             &doc,
@@ -873,7 +867,7 @@ pub(super) async fn handle_upsert(
                 };
                 use crate::operations::vault::upsert::UnsealError;
                 match crate::operations::vault::upsert::unseal_tsp_secret(
-                    atm, profile, &auth.did, message,
+                    &transport, &auth.did, message,
                 )
                 .await
                 {
@@ -2116,11 +2110,12 @@ mod tsp_unseal_tests {
         TrustTask::new(format!("urn:uuid:{}", uuid::Uuid::new_v4()), uri, payload)
     }
 
-    /// With the `tsp` feature on but no ATM / TSP profile wired (the default
-    /// test state), a `tspMessage` envelope must be refused with an
-    /// `InternalError` "TSP not configured" reject rather than panicking or
-    /// attempting an unpack. This exercises the configuration gate in the TSP
-    /// arm (`state.atm` / `state.tsp_profile` are both `None` in the harness).
+    /// With the `tsp` feature on but no mediator session (the default test
+    /// state), a `tspMessage` envelope must be refused with an `InternalError`
+    /// "TSP not configured" reject rather than panicking or attempting an
+    /// unpack. This exercises the configuration gate in the TSP arm —
+    /// `state.tsp_transport()` is `None` here, because the harness leaves the
+    /// bridge a placeholder.
     #[tokio::test]
     async fn tsp_message_without_tsp_configured_is_rejected() {
         let (state, _dir) = build_signing_test_app_state().await;

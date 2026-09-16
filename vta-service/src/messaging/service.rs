@@ -53,6 +53,15 @@ pub struct VtaMessaging {
     pub service: Arc<MessagingService>,
     pub atm: Arc<ATM>,
     pub profile: Arc<ATMProfile>,
+    /// This session's TSP transport, built once here rather than per frame.
+    ///
+    /// Not an `Option`: the profile above is registered against a mediator, so
+    /// if it cannot route, nothing about this session works and
+    /// [`build_messaging`] refuses rather than coming up able to receive and
+    /// not to answer. That half-working state is exactly what this whole
+    /// arrangement replaced.
+    #[cfg(feature = "tsp")]
+    pub tsp: crate::messaging::tsp_transport::TspTransport,
 }
 
 /// Build the delivery-layer [`MessagingService`] over a [`DidCommTransport`]
@@ -128,6 +137,26 @@ pub async fn build_messaging(
         .await
         .map_err(|e| format!("register ATM profile: {e}"))?;
 
+    // Built here, where a failure can still refuse the session. The profile was
+    // constructed with `Some(mediator_did)` a few lines up, so this only fails
+    // if that stopped being true — and a session whose profile cannot route is
+    // worse than no session, because the inbound loop would still run and the
+    // VTA would answer nothing.
+    #[cfg(feature = "tsp")]
+    let tsp = match crate::messaging::tsp_transport::TspTransport::new(
+        (*atm).clone(),
+        profile.clone(),
+    ) {
+        Some(t) => t,
+        None => {
+            atm.graceful_shutdown().await;
+            return Err(
+                "the profile registered for this session carries no mediator, so it can neither                  send nor unseal over TSP"
+                    .to_string(),
+            );
+        }
+    };
+
     // ── Past this point the ATM owns a registered profile and a live (or
     // half-open) mediator websocket, so every error path MUST tear it down. ──
     //
@@ -176,6 +205,8 @@ pub async fn build_messaging(
         service,
         atm,
         profile,
+        #[cfg(feature = "tsp")]
+        tsp,
     })
 }
 
@@ -231,7 +262,6 @@ pub async fn run_inbound_loop(
     messaging: Arc<VtaMessaging>,
     app_state: AppState,
     vta_did: String,
-    mediator_did: String,
     shutdown: CancellationToken,
 ) {
     // Handler state for the DIDComm dispatcher only — TSP's spine entry
@@ -284,7 +314,6 @@ pub async fn run_inbound_loop(
                 #[cfg(feature = "didcomm")]
                 let vta_state = Arc::clone(&vta_state);
                 let vta_did = vta_did.clone();
-                let mediator_did = mediator_did.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
                     // Two call sites rather than one with a `#[cfg]` argument:
@@ -292,17 +321,9 @@ pub async fn run_inbound_loop(
                     // attributes on the parameter (below) and on a statement
                     // are.
                     #[cfg(feature = "didcomm")]
-                    handle_inbound(
-                        inbound,
-                        &messaging,
-                        &app_state,
-                        &vta_state,
-                        &vta_did,
-                        &mediator_did,
-                    )
-                    .await;
+                    handle_inbound(inbound, &messaging, &app_state, &vta_state, &vta_did).await;
                     #[cfg(not(feature = "didcomm"))]
-                    handle_inbound(inbound, &messaging, &app_state, &vta_did, &mediator_did).await;
+                    handle_inbound(inbound, &messaging, &app_state, &vta_did).await;
                 });
             }
             _ = shutdown.cancelled() => {
@@ -314,20 +335,17 @@ pub async fn run_inbound_loop(
     info!("VTA messaging stopped");
 }
 
-/// Route one inbound frame by protocol. `mediator_did` (and `messaging.profile`)
-/// are used only by the `tsp`-gated arm.
+/// Route one inbound frame by protocol.
 async fn handle_inbound(
     inbound: Inbound,
     messaging: &Arc<VtaMessaging>,
     app_state: &AppState,
     #[cfg(feature = "didcomm")] vta_state: &Arc<VtaState>,
     vta_did: &str,
-    mediator_did: &str,
 ) {
     match inbound.message.protocol {
         #[cfg(feature = "didcomm")]
         Protocol::DIDComm => {
-            let _ = mediator_did;
             handle_didcomm(inbound, messaging, app_state, vta_state, vta_did).await;
         }
         // Mirror of the TSP arm below: a mediator that routes both protocols
@@ -335,18 +353,17 @@ async fn handle_inbound(
         // named reason beats a panic or a silent discard.
         #[cfg(not(feature = "didcomm"))]
         Protocol::DIDComm => {
-            let _ = (messaging, app_state, vta_did, mediator_did);
+            let _ = (messaging, app_state, vta_did);
             warn!(
                 "received an inbound DIDComm frame but the `didcomm` feature is disabled — dropping"
             );
         }
         #[cfg(feature = "tsp")]
         Protocol::TSP => {
-            handle_tsp(inbound, messaging, app_state, mediator_did).await;
+            handle_tsp(inbound, messaging, app_state).await;
         }
         #[cfg(not(feature = "tsp"))]
         Protocol::TSP => {
-            let _ = mediator_did;
             warn!("received an inbound TSP frame but the `tsp` feature is disabled — dropping");
         }
         // DIDComm v1 (Aries RFC 0019) is a different protocol wearing a similar
@@ -533,16 +550,17 @@ async fn handle_didcomm(
 }
 
 /// TSP inbound: dispatch on the shared Trust-Task spine and seal + route the
-/// reply back to the proven sender VID over the same mediator socket
-/// (`send_routed([mediator_did, sender_vid])`), mirroring the framework's
-/// `TspResponse` handling.
+/// reply back to the proven sender VID over the same mediator socket, mirroring
+/// the framework's `TspResponse` handling.
+///
+/// The route's first hop is read off this session's own profile rather than
+/// taken as an argument. It is the same value either way — `build_messaging`
+/// registers the profile against that mediator — but one of the two can go stale
+/// and the other cannot, and threading it here meant carrying a `mediator_did`
+/// down through `run_inbound_loop` and `handle_inbound`, past a DIDComm arm that
+/// discards it.
 #[cfg(feature = "tsp")]
-async fn handle_tsp(
-    inbound: Inbound,
-    messaging: &Arc<VtaMessaging>,
-    app_state: &AppState,
-    mediator_did: &str,
-) {
+async fn handle_tsp(inbound: Inbound, messaging: &Arc<VtaMessaging>, app_state: &AppState) {
     let Some(sender_vid) = inbound.message.sender.clone() else {
         warn!("inbound TSP frame has no authenticated sender VID — dropping");
         return;
@@ -556,13 +574,7 @@ async fn handle_tsp(
     if reply.is_empty() {
         return;
     }
-    let route = vec![mediator_did.to_string(), sender_vid.clone()];
-    if let Err(e) = messaging
-        .atm
-        .tsp()
-        .send_routed(&messaging.profile, &route, &reply)
-        .await
-    {
+    if let Err(e) = messaging.tsp.send_to(&sender_vid, &reply).await {
         warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
     }
 }
