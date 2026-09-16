@@ -1183,6 +1183,9 @@ async fn gather_inputs(
             trust_xff,
             rate_limit_interval_secs: ServerConfig::default().rate_limit_interval_secs,
             rate_limit_burst: ServerConfig::default().rate_limit_burst,
+            did_log_rate_limit_interval_secs: ServerConfig::default()
+                .did_log_rate_limit_interval_secs,
+            did_log_rate_limit_burst: ServerConfig::default().did_log_rate_limit_burst,
         },
         log: LogConfig {
             level: log_level,

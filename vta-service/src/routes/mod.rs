@@ -19,19 +19,17 @@ pub mod keys;
 mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod protocol;
+pub mod rate_limit;
 #[cfg(feature = "webvh")]
 mod self_hosted_did;
 mod vta;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue, Method};
 use axum::routing::{get, post};
-use tower_governor::GovernorLayer;
-use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 use utoipa::OpenApi;
@@ -39,6 +37,8 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::server::AppState;
+
+pub use rate_limit::{Limiter, Quota, RateLimits};
 
 /// OpenAPI document root for the VTA REST surface.
 ///
@@ -114,26 +114,6 @@ const UNAUTH_BODY_SIZE: usize = 64 * 1024;
 /// `backup_blob_router` construction below).
 pub(super) const BACKUP_BLOB_BODY_SIZE: usize = 100 * 1024 * 1024;
 
-/// Per-client-IP rate-limit budget for unauthenticated endpoints.
-///
-/// **`per_second(n)` is a replenishment interval, not a rate** — it sets
-/// `Quota::with_period(Duration::from_secs(n))`, one token every `n` seconds.
-/// `burst_size(b)` sizes the bucket. So (5, 10) means 10 rapid requests, then
-/// one every 5 s — *not* 5 requests per second. Raising the interval tightens
-/// the limiter; lowering it loosens.
-///
-/// Loose enough that a legit operator running provisioning scripts doesn't hit
-/// it, tight enough that a sustained flood from one IP is rejected with 429.
-/// These endpoints do real crypto work (attestation, HPKE seal, Ed25519
-/// verify) so throttling them protects VTA CPU regardless of any reverse proxy
-/// upstream.
-///
-/// Both are overridable per-deployment via `[server] rate_limit_interval_secs`
-/// / `rate_limit_burst`; these remain the defaults and the values the test
-/// harness and OpenAPI spec builder use.
-pub(crate) const UNAUTH_INTERVAL_SECS: u64 = 5;
-pub(crate) const UNAUTH_BURST: u32 = 10;
-
 /// Global per-request timeout. The REST surface runs on a current-thread
 /// runtime, so a handler that stalls on network I/O (a dead mediator, a
 /// slow remote DID host) would otherwise hold its connection — and a
@@ -143,55 +123,6 @@ pub(crate) const UNAUTH_BURST: u32 = 10;
 /// "indefinite" becomes "120 s then 408". Not a substitute for the
 /// handshake/op-specific timeouts, which stay; this is the backstop.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Apply the unauthenticated-endpoint rate limiter to `router`.
-///
-/// Split out so the two key extractors — which instantiate
-/// `GovernorConfig` at distinct generic types — are confined here and the
-/// returned `Router<AppState>` is uniform (type-erased by axum). Used for
-/// both the unauth branch and the token-gated backup-blob branch, which is
-/// otherwise an unthrottled large-body write surface.
-///
-/// `trust_xff`: `false` keys on the socket peer (`PeerIpKeyExtractor`,
-/// spoof-safe for direct binding); `true` honours `X-Forwarded-For`
-/// (`SmartIpKeyExtractor`, only safe behind a header-sanitising proxy).
-///
-/// `interval_secs` / `burst` come from `[server]` config (see
-/// [`UNAUTH_INTERVAL_SECS`] for the units — seconds per token, not a rate).
-/// Both are clamped to ≥1: `GovernorConfigBuilder::finish` returns `None` on a
-/// zero period or burst, and an operator writing `0` means "no limit", which
-/// this layer cannot express. Clamping keeps the strictest reading rather than
-/// panicking the REST thread on a typo.
-fn apply_unauth_governor(
-    router: OpenApiRouter<AppState>,
-    trust_xff: bool,
-    interval_secs: u64,
-    burst: u32,
-) -> OpenApiRouter<AppState> {
-    let interval_secs = interval_secs.max(1);
-    let burst = burst.max(1);
-    if trust_xff {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(interval_secs)
-                .burst_size(burst)
-                .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
-                .finish()
-                .expect("interval_secs and burst are clamped to >= 1 above"),
-        );
-        router.layer(GovernorLayer::new(cfg))
-    } else {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(interval_secs)
-                .burst_size(burst)
-                .key_extractor(tower_governor::key_extractor::PeerIpKeyExtractor)
-                .finish()
-                .expect("interval_secs and burst are clamped to >= 1 above"),
-        );
-        router.layer(GovernorLayer::new(cfg))
-    }
-}
 
 /// Health-check route — served without the request/response trace layer.
 /// Minimal response only; detailed info requires authentication.
@@ -266,7 +197,7 @@ fn build_cors_layer(allowed_origins: &[String]) -> Option<CorsLayer> {
 }
 
 pub fn router() -> Router<AppState> {
-    router_with_cors(&[], false, UNAUTH_INTERVAL_SECS, UNAUTH_BURST)
+    router_with_cors(&[], false, RateLimits::default())
 }
 
 /// Assemble the VTA REST surface as an [`OpenApiRouter`] — the single source
@@ -287,20 +218,16 @@ pub fn router() -> Router<AppState> {
 ///   proxy that overwrites or strips these headers from external
 ///   requests. Misconfiguring this is a silent rate-limit bypass.
 ///
-/// `interval_secs` / `burst` control the per-IP rate limiter on unauthenticated
-/// endpoints. Read from `[server]` config at startup; callers that have no
-/// config (tests, the OpenAPI spec builder) pass
-/// [`UNAUTH_INTERVAL_SECS`] / [`UNAUTH_BURST`].
-fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiRouter<AppState> {
-    // Per-IP rate-limit layer applied to every unauthenticated endpoint.
-    // Authenticated routes stay unthrottled — JWT auth is itself a gate,
-    // and legitimate operator traffic against the management plane
-    // shouldn't be rate-limited.
-    //
-    // The branches build the layer separately because the two key
-    // extractors instantiate `GovernorConfig` at distinct generic
-    // types — the layer itself is type-erased via the axum
-    // dispatcher so the downstream router shape stays uniform.
+/// `limits` sets the per-IP quotas of the unauthenticated limiters (see
+/// [`rate_limit`] for which routes sit behind which). Read from `[server]`
+/// config at startup; callers that have no config (tests, the OpenAPI spec
+/// builder) pass [`RateLimits::default`].
+fn build_api_router(trust_xff: bool, limits: RateLimits) -> OpenApiRouter<AppState> {
+    // Per-IP rate limiters on the unauthenticated endpoints, one bucket set
+    // per branch: `auth` (crypto on caller input), `did-log` (public log
+    // reads), `backup-blob`. Authenticated routes stay unthrottled — JWT auth
+    // is itself a gate, and legitimate operator traffic against the
+    // management plane shouldn't be rate-limited.
     let unauth = OpenApiRouter::new()
         // Sealed-transfer bootstrap (token or attestation gated inside)
         .routes(routes!(bootstrap::request))
@@ -327,39 +254,54 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
             attestation::cached_report,
             attestation::generate_report
         ))
-        .routes(routes!(attestation::config_report))
-        .routes(routes!(attestation::did_log));
-    #[cfg(feature = "webvh")]
-    let unauth = unauth
-        // Public did.jsonl retrieval — matches webvh's world-readable
-        // log model, security is cryptographic not access-gated. Rate-
-        // limited via the same governor layer as the other unauth
-        // endpoints.
-        .routes(routes!(did_webvh::get_did_log_public_handler))
-        // The VTA's own self-hosted did.jsonl at the canonical resolver
-        // paths (see `routes::self_hosted_did` for the security model).
-        .routes(routes!(self_hosted_did::get_vta_well_known_did_log_handler))
-        // Catch-all canonical did:webvh retrieval for pathful DIDs:
-        // `/<path>/did.jsonl`. Returns a bare 404 for every non-canonical
-        // path, so it is safe as an unauth fallback-style route.
-        //
-        // INVARIANT: this must stay the ONLY root-level wildcard route — a
-        // second `/{*...}` or an overlapping root `nest()` would conflict in
-        // axum's matcher. Static routes keep precedence, so real endpoints
-        // are never shadowed.
-        .route(
-            "/{*did_log_path}",
-            get(self_hosted_did::get_vta_canonical_did_log_handler),
-        );
+        .routes(routes!(attestation::config_report));
     // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
-    // Applied after ALL unauth routes (including the cfg-gated ones) are
+    // Applied after ALL auth-branch routes (including the cfg-gated ones) are
     // registered so every POST on this branch (auth, attestation report)
     // gets the 64 KB ceiling, not just the base set. Layered here (not
     // globally) so authenticated endpoints keep MAX_BODY_SIZE for backup
     // import etc.
     let unauth = unauth.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
-    // Rate-limit every unauth endpoint (see `apply_unauth_governor`).
-    let unauth = apply_unauth_governor(unauth, trust_xff, interval_secs, burst);
+    let unauth = rate_limit::apply(unauth, Limiter::Auth, trust_xff, limits);
+
+    // Public DID-log retrieval, on its own per-IP limiter. Resolving the
+    // VTA's DID precedes every client command and the mediator + readiness
+    // gate fetch the log too, while serving it is a store read with no crypto
+    // — so it must not spend the auth branch's budget (see `rate_limit`).
+    // Still unauthenticated, still rate-limited, still body-capped.
+    #[allow(unused_mut)]
+    let mut did_log = OpenApiRouter::new();
+    // TEE auto-generated did.jsonl — the same public log model.
+    #[cfg(feature = "tee")]
+    {
+        did_log = did_log.routes(routes!(attestation::did_log));
+    }
+    #[cfg(feature = "webvh")]
+    {
+        did_log = did_log
+            // Public did.jsonl retrieval — matches webvh's world-readable
+            // log model, security is cryptographic not access-gated.
+            .routes(routes!(did_webvh::get_did_log_public_handler))
+            // The VTA's own self-hosted did.jsonl at the canonical resolver
+            // paths (see `routes::self_hosted_did` for the security model).
+            .routes(routes!(self_hosted_did::get_vta_well_known_did_log_handler))
+            // Catch-all canonical did:webvh retrieval for pathful DIDs:
+            // `/<path>/did.jsonl`. Returns a bare 404 for every non-canonical
+            // path, so it is safe as an unauth fallback-style route.
+            //
+            // INVARIANT: this must stay the ONLY root-level wildcard route — a
+            // second `/{*...}` or an overlapping root `nest()` would conflict in
+            // axum's matcher. Static routes keep precedence, so real endpoints
+            // are never shadowed.
+            .route(
+                "/{*did_log_path}",
+                get(self_hosted_did::get_vta_canonical_did_log_handler),
+            );
+    }
+    // Same unauth body cap as the auth branch — these are GETs, so any body
+    // at all is unexpected.
+    let did_log = did_log.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
+    let did_log = rate_limit::apply(did_log, Limiter::DidLog, trust_xff, limits);
 
     // Auth portal — same-origin popup target for cross-origin WebAuthn
     // flows. Sits on its own router branch so:
@@ -381,7 +323,9 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
     #[cfg(feature = "webvh")]
     let auth_provision = OpenApiRouter::new().routes(routes!(bootstrap::provision_integration));
 
-    let router = OpenApiRouter::with_openapi(ApiDoc::openapi()).merge(unauth);
+    let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .merge(unauth)
+        .merge(did_log);
     #[cfg(feature = "webvh")]
     let router = router.merge(auth_provision);
     let router = router.merge(auth_portal_router);
@@ -608,7 +552,7 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
         .routes(routes!(backup_blob::get_blob, backup_blob::post_blob))
         .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE));
     let backup_blob_router =
-        apply_unauth_governor(backup_blob_router, trust_xff, interval_secs, burst);
+        rate_limit::apply(backup_blob_router, Limiter::BackupBlob, trust_xff, limits);
     let router = router.merge(backup_blob_router);
 
     // Authenticated health details.
@@ -632,7 +576,7 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
 pub fn openapi_spec() -> utoipa::openapi::OpenApi {
     // CORS attribution doesn't affect the documented surface; build with the
     // safe default.
-    build_api_router(false, UNAUTH_INTERVAL_SECS, UNAUTH_BURST)
+    build_api_router(false, RateLimits::default())
         .split_for_parts()
         .1
 }
@@ -644,14 +588,13 @@ pub fn openapi_spec() -> utoipa::openapi::OpenApi {
 pub fn router_with_cors(
     allowed_origins: &[String],
     trust_xff: bool,
-    interval_secs: u64,
-    burst: u32,
+    limits: RateLimits,
 ) -> Router<AppState> {
     // Finalise the OpenAPI document from the assembled router (paths come from
     // the `routes!()` registrations) and recover a plain axum `Router` to layer
     // + serve. Splitting here, *before* the global layers, lets `/openapi.json`
     // be added as a sibling that the same global layers then wrap.
-    let (router, api) = build_api_router(trust_xff, interval_secs, burst).split_for_parts();
+    let (router, api) = build_api_router(trust_xff, limits).split_for_parts();
     let router = router.route("/openapi.json", get(move || serve_openapi(api.clone())));
 
     // Apply global request body size limit to protect enclave memory,
@@ -826,27 +769,46 @@ mod cors_tests {
 
     #[test]
     fn build_api_router_accepts_custom_rate_limit() {
-        // Constructing with non-default interval_secs/burst must not panic.
-        let _ = build_api_router(false, 50, 100);
-        let _ = build_api_router(true, 1000, 2000);
+        // Constructing with non-default quotas must not panic.
+        let _ = build_api_router(
+            false,
+            RateLimits::new(Quota::new(50, 100), Quota::new(2, 500)),
+        );
+        let _ = build_api_router(
+            true,
+            RateLimits::new(Quota::new(1000, 2000), Quota::new(1, 1)),
+        );
     }
 
     #[test]
     fn router_with_cors_passes_rate_limit_through() {
         // The full router assembly with custom rate limits must not panic.
-        let _ = router_with_cors(&[], false, 50, 100);
+        let _ = router_with_cors(
+            &[],
+            false,
+            RateLimits::new(Quota::new(50, 100), Quota::new(3, 30)),
+        );
     }
 
-    /// A `0` in either `[server]` field reaches `apply_unauth_governor`, whose
-    /// `GovernorConfigBuilder::finish()` returns `None` on a zero period or
-    /// burst — the `.expect()` there would panic the REST thread. This asserts
-    /// the production clamp, not a test helper's: it goes through the real
-    /// router builders on both `trust_xff` branches.
+    /// A `0` in any of the four `[server]` rate-limit keys reaches
+    /// `rate_limit::apply`, whose `GovernorConfigBuilder::finish()` returns
+    /// `None` on a zero period or burst — the `.expect()` there would panic
+    /// the REST thread. This asserts the production clamp (`Quota::new`), not
+    /// a test helper's: it goes through the real router builders on both
+    /// `trust_xff` branches, from a real `ServerConfig`.
     #[test]
     fn zero_rate_limit_config_is_clamped_not_panicked() {
-        let _ = build_api_router(false, 0, 0);
-        let _ = build_api_router(true, 0, 0);
-        let _ = router_with_cors(&[], false, 0, 0);
+        let server = crate::config::ServerConfig {
+            rate_limit_interval_secs: 0,
+            rate_limit_burst: 0,
+            did_log_rate_limit_interval_secs: 0,
+            did_log_rate_limit_burst: 0,
+            ..Default::default()
+        };
+        let limits = RateLimits::from_server_config(&server);
+        let _ = build_api_router(false, limits);
+        let _ = build_api_router(true, limits);
+        let _ = router_with_cors(&[], false, limits);
     }
 }
 
@@ -855,10 +817,10 @@ mod cors_tests {
 /// (one token every `n` seconds), and `burst_size(b)` is how many requests
 /// get through back-to-back before throttling starts.
 ///
-/// This exercises the governor directly rather than
-/// [`apply_unauth_governor`] — that takes an `OpenApiRouter<AppState>`, and a
-/// full `AppState` is far more machinery than these assertions need. The
-/// end-to-end wiring is covered by the harness test
+/// This exercises the governor directly rather than [`rate_limit::apply`], so
+/// the semantics are pinned independent of our wrapper. The wrapper (branch
+/// independence, the 429 contract) is covered in `rate_limit::tests`, the
+/// end-to-end wiring by the harness test
 /// `unauth_endpoint_rate_limit_returns_429_after_burst`, and the clamp by
 /// `cors_tests::zero_rate_limit_config_is_clamped_not_panicked` above.
 #[cfg(test)]
@@ -943,7 +905,7 @@ mod rate_limit_tests {
     /// `finish()` return `None`, so an unclamped `.expect()` would panic.
     #[test]
     fn zero_period_or_burst_has_no_governor_config() {
-        // Same builder chain as `apply_unauth_governor`, minus the clamp.
+        // Same builder chain as `rate_limit::apply`, minus the clamp.
         let zero_period = GovernorConfigBuilder::default()
             .per_second(0)
             .burst_size(10)
