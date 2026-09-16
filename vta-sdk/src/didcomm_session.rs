@@ -968,11 +968,27 @@ impl DIDCommSession {
     /// this session sends is routed — "routed" names the reply path an invite
     /// advertises (§7.2.4), not the carriage of the invite itself. A mediator
     /// that refuses direct delivery answers `e.p.direct_delivery.denied`.
+    ///
+    /// Idempotent. `SendInvite` is a valid transition only from
+    /// `RelationshipState::None`, so re-inviting a peer this session already
+    /// holds a relationship with would be an `InvalidTransition` rather than a
+    /// no-op — see [`TspSession::relate`](crate::session::TspSession::relate)
+    /// for why that bites a consumer with a durable relationship store and not
+    /// the default in-memory one.
     pub async fn relate_tsp(&self, recipient_did: &str) -> Result<(), VtaError> {
-        self.tsp
-            .atm
-            .tsp()
-            .form_relationship(&self.tsp.profile, recipient_did)
+        let tsp = self.tsp.atm.tsp();
+
+        let state = tsp
+            .relationship_state(&self.tsp.profile, recipient_did)
+            .await
+            .map_err(|e| {
+                VtaError::TspTransport(format!("could not read the TSP relationship state: {e}"))
+            })?;
+        if state.admits_application_message() {
+            return Ok(());
+        }
+
+        tsp.form_relationship(&self.tsp.profile, recipient_did)
             .await
             .map(|_| ())
             .map_err(|e| VtaError::TspTransport(format!("TSP relationship failed: {e}")))

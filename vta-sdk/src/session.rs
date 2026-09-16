@@ -2759,11 +2759,36 @@ impl TspPingSession {
     /// the prober needs one for the same §7.2.2 reason, in both directions: the
     /// peer must admit the ping, and this side must admit the reply.
     pub async fn relate(&self, peer_did: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.identity
-            .hub
-            .atm()
-            .tsp()
-            .form_relationship_routed(&self.identity.profile, peer_did)
+        let tsp = self.identity.hub.atm().tsp();
+
+        // Idempotent, and it has to be: `SendInvite` is a valid transition
+        // ONLY from `RelationshipState::None`
+        // (affinidi-tsp::relationship::transition), so inviting a peer we
+        // already hold a relationship with is an `InvalidTransition` error
+        // rather than a no-op.
+        //
+        // That matters because this is now called from the client
+        // constructors. The SDK's DEFAULT relationship store is ephemeral and
+        // in-memory, so a fresh ATM per connect always starts at `None` and an
+        // unconditional invite looks perfectly safe — which is exactly why
+        // this is worth a comment. A consumer that configures a durable store
+        // through `ATMConfigBuilder::with_relationship_store` reconnects into
+        // `Pending` or `Bidirectional`, and an unconditional invite would fail
+        // their connect where it used to work: a silent-drop bug traded for a
+        // connect-time failure, and only for the deployments careful enough to
+        // persist their relationships.
+        //
+        // The check is a state read rather than catching and inspecting the
+        // error, so it does not depend on the text of an `InvalidTransition`.
+        if tsp
+            .relationship_state(&self.identity.profile, peer_did)
+            .await?
+            .admits_application_message()
+        {
+            return Ok(());
+        }
+
+        tsp.form_relationship_routed(&self.identity.profile, peer_did)
             .await?;
         Ok(())
     }
@@ -3226,11 +3251,36 @@ impl TspSession {
     /// also advertises our mediator, which is what lets the peer's accept find
     /// its way back (§7.2.4).
     pub async fn relate(&self, peer_did: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.identity
-            .hub
-            .atm()
-            .tsp()
-            .form_relationship_routed(&self.identity.profile, peer_did)
+        let tsp = self.identity.hub.atm().tsp();
+
+        // Idempotent, and it has to be: `SendInvite` is a valid transition
+        // ONLY from `RelationshipState::None`
+        // (affinidi-tsp::relationship::transition), so inviting a peer we
+        // already hold a relationship with is an `InvalidTransition` error
+        // rather than a no-op.
+        //
+        // That matters because this is now called from the client
+        // constructors. The SDK's DEFAULT relationship store is ephemeral and
+        // in-memory, so a fresh ATM per connect always starts at `None` and an
+        // unconditional invite looks perfectly safe — which is exactly why
+        // this is worth a comment. A consumer that configures a durable store
+        // through `ATMConfigBuilder::with_relationship_store` reconnects into
+        // `Pending` or `Bidirectional`, and an unconditional invite would fail
+        // their connect where it used to work: a silent-drop bug traded for a
+        // connect-time failure, and only for the deployments careful enough to
+        // persist their relationships.
+        //
+        // The check is a state read rather than catching and inspecting the
+        // error, so it does not depend on the text of an `InvalidTransition`.
+        if tsp
+            .relationship_state(&self.identity.profile, peer_did)
+            .await?
+            .admits_application_message()
+        {
+            return Ok(());
+        }
+
+        tsp.form_relationship_routed(&self.identity.profile, peer_did)
             .await?;
         Ok(())
     }
@@ -3727,6 +3777,46 @@ mod ping_document_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `relate` skips the invite exactly when sending one would be invalid.
+    ///
+    /// This is the invariant the idempotency rests on, and it is a
+    /// *correspondence* between two things that live in different crates:
+    /// `relate` decides using `admits_application_message()`, while the
+    /// transition table decides whether `SendInvite` is legal. If those ever
+    /// disagree, `relate` either re-invites a peer it already holds (an
+    /// `InvalidTransition`, the bug this fixes) or silently skips forming a
+    /// relationship it actually needed — and the second failure is the one that
+    /// presents as an unexplained §7.2.2 drop with nothing in any log.
+    ///
+    /// Pinning it here costs no mediator and no socket.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn relate_skips_the_invite_exactly_when_sending_one_would_be_invalid() {
+        use affinidi_tdk::tsp::relationship::{RelationshipEvent, RelationshipState};
+
+        for state in [
+            RelationshipState::None,
+            RelationshipState::Pending,
+            RelationshipState::InviteReceived,
+            RelationshipState::Bidirectional,
+        ] {
+            let invite_is_legal = state.transition(RelationshipEvent::SendInvite).is_ok();
+            assert_eq!(
+                state.admits_application_message(),
+                !invite_is_legal,
+                "`relate` skips inviting from {state:?} because \
+                 `admits_application_message` is {}, but `SendInvite` from that state is {} — \
+                 the two have diverged and `relate` is now wrong in one direction or the other",
+                state.admits_application_message(),
+                if invite_is_legal {
+                    "legal"
+                } else {
+                    "an InvalidTransition"
+                },
+            );
+        }
+    }
 
     #[test]
     fn test_session_round_trip() {
