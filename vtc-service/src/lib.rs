@@ -37,6 +37,8 @@ pub mod join;
 pub mod keys;
 pub mod members;
 pub mod messaging;
+/// The one place this service packs a Trust Task for the wire.
+mod outbound;
 pub mod policy;
 pub mod recognition;
 pub mod registry;
