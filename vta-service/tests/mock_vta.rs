@@ -680,28 +680,19 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
 /// validates every response these provoke against its published schema, so a
 /// drift shows up as a `500` and fails the call, not as a weak assertion here.
 ///
-/// Run on a thread with a real stack rather than libtest's 2 MiB, for the
-/// reason recorded on `services_write_paths_against_a_hosted_vta_did`: this
-/// body boots an in-process VTA and drives a whole family through it, so the
-/// future is enormous in a debug build and grows every time the dispatch table
-/// does. It overflowed when an `audit/verify` arm was added, which is not a
-/// fact about that arm — it is this test sitting just under a limit nobody had
-/// written down, exactly as the other one was.
+/// Runs on the default libtest stack (~2 MiB) on purpose. This body boots an
+/// in-process VTA and drives a whole family through the dispatch spine, so it
+/// exercises the heaviest handler futures the VTA has. It used to need a
+/// hand-spawned 32 MiB thread because `dispatch_typed` awaited every handler
+/// inline, sizing one dispatch future to the sum-shaped worst case of the whole
+/// table — so it overflowed whenever a heavy arm (`audit/verify`, then a
+/// `rooms/keys/*` pair) was added. `dispatch_typed` now `Box::pin`s every arm,
+/// keeping that frame pointer-sized, so the default stack is enough. Kept here
+/// as the regression guard: unbox the seam and this overflows again.
 #[cfg(feature = "webvh")]
-#[test]
-fn webvh_family_response_shapes() {
-    std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build a runtime")
-                .block_on(webvh_family_response_shapes_inner());
-        })
-        .expect("spawn the test thread")
-        .join()
-        .expect("the test thread panicked");
+#[tokio::test]
+async fn webvh_family_response_shapes() {
+    webvh_family_response_shapes_inner().await;
 }
 
 #[cfg(feature = "webvh")]
@@ -1147,6 +1138,51 @@ async fn post_trust_task(
     serde_json::from_str(&text).map_err(|e| format!("{type_uri} reply is not JSON: {e} ({text})"))
 }
 
+/// A heavy Trust Task through the full inbound dispatch spine on the default
+/// libtest stack (~2 MiB), current-thread runtime — the in-process axum server
+/// runs on this same thread, so the dispatch future is polled here.
+///
+/// `initiate-export/1.1` with `algorithm: chunkedTrustTask` runs
+/// `handle_initiate_export_1_1`, which awaits a full state export inline — one
+/// of the largest handler futures the VTA has, and the one #1522 hand-boxed.
+/// That box moved to the dispatch seam (`dispatch_typed` `Box::pin`s every arm),
+/// so this handler's whole future is heap-allocated there and the match frame
+/// stays pointer-sized. This is the regression guard for that: unbox the seam
+/// and this overflows the stack — which aborts the process, not merely fails the
+/// assert. A well-formed reply of any kind proves the poll completed without
+/// overflow; the assert also pins the happy path.
+#[tokio::test]
+async fn heavy_trust_task_dispatches_on_default_stack() {
+    let mock = MockVta::start().await;
+    // Empty contexts == super-admin, which backup export requires.
+    let (identity, token) = mock
+        .ctx
+        .mint_signing_identity(0x51, "admin", vec![], mock.vta_did())
+        .await;
+
+    let reply = post_trust_task(
+        &mock,
+        &identity,
+        &token,
+        vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1,
+        serde_json::json!({
+            "algorithm": "chunkedTrustTask",
+            "includeAudit": false,
+            // >= 15 chars: the schema's minLength floor for the KDF password.
+            "password": "dispatch-seam-guard-pw",
+        }),
+    )
+    .await
+    .expect("chunked initiate-export dispatched without a stack overflow");
+
+    // The chunked path answers with a descriptor; its presence confirms the
+    // heavy handler ran to completion rather than merely not overflowing.
+    assert!(
+        reply["payload"]["descriptor"].is_object(),
+        "expected a chunked bundle descriptor, got: {reply}"
+    );
+}
+
 /// The `services/*` write paths, against a VTA whose own DID is hosted.
 ///
 /// These were the last uncovered block with a shared cause. `services/enable`
@@ -1157,31 +1193,21 @@ async fn post_trust_task(
 ///
 /// Minting one against the stub host and pointing `vta_did` at it is what
 /// unlocks the whole family, which is why this is one test rather than five.
-/// Run on a thread with a real stack rather than libtest's 2 MiB.
 ///
-/// This body boots an entire in-process VTA and drives the whole write family
-/// through it, so the future is enormous in a debug build — and it grows every
-/// time the dispatch table does. It overflowed for the first time when two
-/// `rooms/keys/*` arms were added, which is not a fact about those arms: it is
-/// this test sitting just under a limit nobody had written down.
-///
-/// `RUST_MIN_STACK=16777216` also fixes it, and that is how it was diagnosed —
-/// but a test that passes only when an environment variable is set is a test
-/// that fails for the next person. The stack is asked for here instead.
-#[test]
-fn services_write_paths_against_a_hosted_vta_did() {
-    std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build a runtime")
-                .block_on(services_write_paths_against_a_hosted_vta_did_inner());
-        })
-        .expect("spawn the test thread")
-        .join()
-        .expect("the test thread panicked");
+/// Runs on the default libtest stack (~2 MiB) on purpose. This body boots an
+/// entire in-process VTA and drives the whole write family — `services/enable`
+/// and siblings, which fan out to four operations each — through the dispatch
+/// spine, so it exercises some of the heaviest handler futures the VTA has. It
+/// used to need a hand-spawned 32 MiB thread (`RUST_MIN_STACK=16777216` was how
+/// it was diagnosed) because `dispatch_typed` awaited every handler inline,
+/// sizing one dispatch future to the sum-shaped worst case of the table — so it
+/// overflowed the first time a heavy arm (a `rooms/keys/*` pair) was added.
+/// `dispatch_typed` now `Box::pin`s every arm, keeping that frame pointer-sized,
+/// so the default stack is enough. Kept here as the regression guard: unbox the
+/// seam and this overflows again.
+#[tokio::test]
+async fn services_write_paths_against_a_hosted_vta_did() {
+    services_write_paths_against_a_hosted_vta_did_inner().await;
 }
 
 async fn services_write_paths_against_a_hosted_vta_did_inner() {

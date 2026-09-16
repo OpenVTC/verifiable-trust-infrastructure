@@ -258,16 +258,16 @@ pub(super) async fn handle_anchor(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // Boxed, for the reason `dispatch_trust_task` already documents at its own
-    // split: the dispatch table's state machine **inlines every handler's
-    // future**, so a large handler is paid for on the stack of every task that
-    // goes through the dispatcher — not just its own. This one is large (it
-    // presents, calls a host over the network, resolves a DID and publishes a
-    // webvh update), and adding it to the table overflowed the test thread in
-    // `tests/mock_vta.rs::webvh_family_response_shapes` — the same canary that
-    // caught it the last time, in a test that never calls this task.
-    //
-    // Boxing puts this machine on the heap and leaves a pointer in the table.
+    // Boxed as defense-in-depth. `dispatch_typed` now `Box::pin`s every arm at
+    // the dispatch seam, so this handler's future is already heap-allocated
+    // there and no longer summed into the match frame — the reason this box was
+    // originally added (a large handler paid for on the stack of every task
+    // through the dispatcher) is gone. It is kept because this handler is large
+    // (it presents, calls a host over the network, resolves a DID and publishes
+    // a webvh update) and no default-stack test drives it: the canary that
+    // caught it last time, `tests/mock_vta.rs::webvh_family_response_shapes`,
+    // never calls this task. Boxing here caps the momentary construction of its
+    // own future when the seam dispatches it, at no cost worth measuring.
     Box::pin(anchor_inner(state, auth, doc)).await
 }
 

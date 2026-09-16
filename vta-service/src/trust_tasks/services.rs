@@ -311,18 +311,20 @@ fn retype<T: serde::de::DeserializeOwned>(v: impl serde::Serialize) -> Result<T,
         .map_err(|e| AppError::Internal(format!("service result re-type: {e}")))
 }
 
-/// Await a service operation, boxing its future.
+/// Await a service operation, mapping its error to a conflict rejection.
 ///
-/// Not a style choice. These handlers fan out to four operations, each with a
-/// sizeable future of its own, and the dispatch spine awaits the handler inside
-/// a match that already carries every other task's state machine. Inlining them
-/// grew that frame past the default 8 MiB thread stack and aborted an unrelated
-/// mock_vta test with a stack overflow — which reads as infinite recursion and
-/// is not. Boxing moves each operation's state to the heap and keeps the
-/// enclosing future flat.
+/// This used to `Box::pin` the operation future. These handlers fan out to four
+/// operations, each with a sizeable future, and before the dispatch seam was
+/// fixed the spine awaited the whole handler inline in a match that summed every
+/// task's state machine — so inlining these operations too grew that frame past
+/// the thread stack and aborted an unrelated mock_vta test with a stack overflow
+/// (which reads as, but is not, infinite recursion). That boxing now lives at
+/// the dispatch seam itself (`dispatch_typed` `Box::pin`s every arm), which
+/// heap-allocates each handler's whole future once; the per-operation box here
+/// was redundant on top of it and dropped.
 macro_rules! op {
     ($doc:expr, $call:expr) => {
-        match Box::pin($call).await {
+        match $call.await {
             Ok(r) => r,
             Err(e) => return app_error_to_reject($doc, AppError::Conflict(e.to_string())),
         }

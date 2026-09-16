@@ -334,13 +334,14 @@ pub(super) async fn handle_abort(
 // request to a 1.1 initiator is served by the 1.0 path unchanged — the two
 // shapes are wire-identical — and only `chunkedTrustTask` takes the new ops.
 //
-// The heavy awaits below are `Box::pin`ned. `dispatch_typed` matches every
-// handler inline, so its future is as large as its largest arm, and a 1.1
-// handler that awaited the whole 1.0 handler plus a full state export inline
-// became that arm. In a debug build the DIDComm/TSP inbound task — which polls
-// the dispatch future on a 2 MiB worker stack with no box of its own — then
-// overflowed its stack on the first chunked export. Boxing keeps each arm a
-// pointer's worth of future.
+// These handlers await the 1.0 handler (or a full state export) inline. They
+// used to `Box::pin` those awaits, because `dispatch_typed` matched every
+// handler inline and this handler — awaiting the whole 1.0 handler plus a full
+// export — became its largest arm, overflowing the debug worker stack on the
+// first chunked export. That boxing moved to the dispatch seam itself
+// (`dispatch_typed` now `Box::pin`s every arm), so each handler's future is
+// heap-allocated there and no longer sums into the match frame; the
+// per-handler boxes here were redundant once the seam was fixed.
 
 /// Task slug (`vta/backup/<op>`) of the incoming document, so an extended code
 /// is namespaced to whichever task raised it (SPEC §8.5).
@@ -443,20 +444,20 @@ pub(super) async fn handle_initiate_export_1_1(
     if !is_chunked(algorithm) {
         // The recipient returns what was asked for or refuses; a `stream`
         // request never receives a chunked descriptor.
-        return Box::pin(handle_initiate_export(state, auth, doc)).await;
+        return handle_initiate_export(state, auth, doc).await;
     }
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
     let include_audit = req.include_audit.unwrap_or(false);
     let deps = crate::operations::descriptor_deps_from_app_state(state);
-    let bundle = match Box::pin(chunked::initiate_export(
+    let bundle = match chunked::initiate_export(
         &deps,
         auth,
         req.password.as_str(),
         include_audit,
         req.max_chunk_size.map(|s| s.0.max(0) as u64),
-    ))
+    )
     .await
     {
         Ok(b) => b,
@@ -512,7 +513,7 @@ pub(super) async fn handle_initiate_import_1_1(
                 ),
             );
         }
-        return Box::pin(handle_initiate_import(state, auth, doc)).await;
+        return handle_initiate_import(state, auth, doc).await;
     }
     let Some(manifest) = req.chunks else {
         return chunked_reject(
@@ -580,7 +581,7 @@ pub(super) async fn handle_finalize_import_1_1(
     {
         return chunked_reject(&doc, e);
     }
-    Box::pin(handle_finalize_import(state, auth, doc)).await
+    handle_finalize_import(state, auth, doc).await
 }
 
 /// `spec/vta/backup/get-chunk/1.0` — one chunk of a chunked export, by index.
