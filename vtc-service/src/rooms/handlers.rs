@@ -20,13 +20,11 @@
 //! `AuthClaims` parameter here, and its absence is the point rather than an omission.
 
 use serde_json::Value;
-use trust_tasks_rs::TrustTask;
+use trust_tasks_rs::{AsyncDispatcher, TrustTask};
 
 use super::policy as room_policy;
 use crate::server::AppState;
-use crate::trust_tasks::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, success_response,
-};
+use crate::trust_tasks::helpers::{TrustTaskOutcome, app_error_to_reject, success_response};
 use vti_common::audit::{AuditEvent, RoomOperationData};
 use vti_rooms::audit::{self as rooms_audit, RoomOperation};
 use vti_rooms::authz::{self, Action};
@@ -46,6 +44,99 @@ use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
 /// from the document's own `eddsa-jcs-2022` proof — not from any field in the payload —
 /// because a presentation names what may be done, not who is doing it: unbound, it is a
 /// bearer token that anyone observing it inherits.
+/// The rooms routing table, built once.
+///
+/// `registered_uris()` is derived from the registrations, so it cannot disagree
+/// with what is actually served — which is the entire point of building this
+/// rather than keeping a `const` array beside a `match`.
+static ROOMS: std::sync::LazyLock<AsyncDispatcher<RoomCtx, TrustTaskOutcome>> =
+    std::sync::LazyLock::new(dispatcher);
+
+/// Does this service dispatch `type_uri` as a room task?
+///
+/// Asked by the spine to decide whether an inbound document belongs to this
+/// family. Reading it off the dispatcher means adding a task is one
+/// registration: the spine follows automatically, where before it needed an arm
+/// of its own and a matching entry in two URI arrays.
+#[must_use]
+pub(crate) fn serves(type_uri: &str) -> bool {
+    ROOMS.registered_uris().contains(&type_uri)
+}
+
+/// Every URI this family serves — the served list, not a copy of one.
+#[must_use]
+pub(crate) fn served_uris() -> Vec<&'static str> {
+    ROOMS.registered_uris()
+}
+
+/// Dispatch a room task to its handler.
+///
+/// `dispatch_or_reject` builds the framework's own error document when the
+/// payload does not downcast or fails its spec policy, so this never has to
+/// reconstruct one — and never has to clone the document to keep a copy for the
+/// error path.
+pub(crate) async fn dispatch(
+    state: &AppState,
+    doc: TrustTask<Value>,
+    presenter: &str,
+) -> TrustTaskOutcome {
+    let ctx = RoomCtx {
+        state: state.clone(),
+        presenter: presenter.to_string(),
+    };
+    match ROOMS
+        .dispatch_or_reject(doc, ctx, format!("urn:uuid:{}", uuid::Uuid::new_v4()))
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(err_doc) => crate::trust_tasks::helpers::error_response(err_doc),
+    }
+}
+
+/// What a `rooms/*` handler needs that is not in the document.
+///
+/// Owned, not borrowed, because `AsyncDispatcher` requires each handler's future
+/// to be `'static` — a registration cannot close over a borrow of `AppState`.
+/// `AppState` is `Clone` and cheap to clone (it is handles, not data).
+///
+/// Note what is *not* here: no `JoinAuthCtx`, no ACL, no session. A room
+/// operation is authorized by the authority chain the room itself issued —
+/// invariant I5 of `docs/05-design-notes/data-rooms.md` — and `presenter` is a
+/// cryptographic fact about the request, verified by the spine, not an authority
+/// this service confers.
+#[derive(Clone)]
+pub(crate) struct RoomCtx {
+    pub state: AppState,
+    pub presenter: String,
+}
+
+/// Every `rooms/*` task, keyed on the **type** of its payload.
+///
+/// This is the whole routing table, and the reason it is worth building: each
+/// registration names a Rust type, and the framework derives the rest — the type
+/// URI from `Payload::TYPE_URI`, the downcast, version routing, and
+/// `unsupportedType`-vs-`unsupportedVersion`. No URI literal appears here, so a
+/// verb cannot be dispatched under a URI nobody serves, and `registered_uris()`
+/// is the served list rather than a second one kept in step by hand.
+///
+/// That second list is not hypothetical: `rooms/records/curate` was dispatched
+/// and named in neither of the two URI arrays this repo used to keep, so every
+/// version hint the service emitted was wrong about it.
+pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
+    AsyncDispatcher::new()
+        .on_async(handle_create)
+        .on_async(handle_put_record)
+        .on_async(handle_get_record)
+        .on_async(handle_list_records)
+        .on_async(handle_curate_record)
+        .on_async(handle_mint_epoch)
+        .on_async(handle_epoch_chain)
+        .on_async(handle_epoch_prune)
+        .on_async(handle_epoch_commits)
+        .on_async(handle_transfer_owner)
+        .on_async(handle_claim_owner)
+}
+
 fn presenter_and_verifier(state: &AppState, presenter: &str) -> (String, DtgChainVerifier) {
     // `without_zk`: this service has no zero-knowledge profile for a private room's subject
     // binding, and the verifier refuses those rather than serving a pooling defence nobody
@@ -195,14 +286,12 @@ async fn govern_creation(
 /// identified by something its host chose could not move to another host without changing
 /// identity, and portability is the property the whole family rests on.
 pub(crate) async fn handle_create(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<CreateRoomBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: CreateRoomBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     // The one room operation no chain can authorize: the room has issued nothing yet, so all
     // this service has is the proof on the request. That proof is what makes `ownerDid` a
@@ -260,7 +349,7 @@ pub(crate) async fn handle_create(
     success_response(
         &doc,
         CreateRoomResponse {
-            room_id: req.room_id,
+            room_id: req.room_id.clone(),
             epoch: 1,
             // What was recorded, never what was asked: the two differ on a
             // host that predates this member, and echoing the request would
@@ -272,14 +361,12 @@ pub(crate) async fn handle_create(
 
 /// `rooms/records/put/0.1`.
 pub(crate) async fn handle_put_record(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<PutRecordBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: PutRecordBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -365,14 +452,12 @@ pub(crate) async fn handle_put_record(
 /// member identifier on every access, and a period of those records reconstructs the
 /// membership a sealed room exists to withhold — without breaking any cryptography.
 pub(crate) async fn handle_get_record(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<GetRecordBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: GetRecordBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -421,14 +506,12 @@ pub(crate) async fn handle_get_record(
 /// Returns metadata, never bodies — and returns tombstones to a watermark caller, because a
 /// puller that never sees a retraction resurrects the record on its next full rebuild.
 pub(crate) async fn handle_list_records(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<ListRecordsBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: ListRecordsBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -550,14 +633,12 @@ async fn room_head(state: &AppState, room_id: &str) -> Option<vti_rooms::merkle:
 /// action the *room* confers is what makes the restriction enforceable by a service that
 /// knows nothing about the membership.
 pub(crate) async fn handle_mint_epoch(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<MintEpochBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: MintEpochBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -651,14 +732,12 @@ pub(crate) async fn handle_mint_epoch(
 /// what is gone is the ability to derive the keys they were sealed under. Closer
 /// to losing a key than to shredding a document, and irreversible either way.
 pub(crate) async fn handle_epoch_prune(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<PruneBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: PruneBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -712,7 +791,7 @@ pub(crate) async fn handle_epoch_prune(
     success_response(
         &doc,
         PruneResponse {
-            room_id: req.room_id,
+            room_id: req.room_id.clone(),
             pruned: pruned as u32,
             earliest_rung,
         },
@@ -726,14 +805,12 @@ pub(crate) async fn handle_epoch_prune(
 /// difference from a Welcome, and why the host is deliberately off that path and
 /// on this one.
 pub(crate) async fn handle_epoch_commits(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<CommitsBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: CommitsBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -770,7 +847,7 @@ pub(crate) async fn handle_epoch_commits(
     success_response(
         &doc,
         CommitsResponse {
-            room_id: req.room_id,
+            room_id: req.room_id.clone(),
             commits,
             // Read from the room, never computed from the answer. They differ
             // exactly when a commit is missing, and that difference is what
@@ -797,14 +874,12 @@ pub(crate) async fn handle_epoch_commits(
 /// That is the property that lets a *host* answer this at all, rather than requiring the
 /// room's owner to be online whenever somebody joins.
 pub(crate) async fn handle_epoch_chain(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<ChainBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: ChainBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -845,7 +920,7 @@ pub(crate) async fn handle_epoch_chain(
     success_response(
         &doc,
         ChainResponse {
-            room_id: req.room_id,
+            room_id: req.room_id.clone(),
             links,
         },
     )
@@ -871,14 +946,12 @@ pub(crate) async fn handle_epoch_chain(
 /// "could independently establish" it, and this one cannot. What protects the incoming
 /// owner is that the outgoing one holds `admin` and knows the roster.
 pub(crate) async fn handle_transfer_owner(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<TransferOwnerBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: TransferOwnerBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -944,14 +1017,12 @@ pub(crate) async fn handle_transfer_owner(
 /// [`storage::set_owner`] leaves a dormant room dormant. The new owner's first act should
 /// be the one that proves they can perform it; see that function for why.
 pub(crate) async fn handle_claim_owner(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<ClaimOwnerBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: ClaimOwnerBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
@@ -1018,14 +1089,12 @@ pub(crate) async fn handle_claim_owner(
 /// community can hand an agent `write` without handing it the standing to demote what a
 /// person wrote.
 pub(crate) async fn handle_curate_record(
-    state: &AppState,
-    doc: TrustTask<Value>,
-    presenter: &str,
+    doc: TrustTask<CurateRecordBody>,
+    ctx: RoomCtx,
 ) -> TrustTaskOutcome {
-    let req: CurateRecordBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let state = &ctx.state;
+    let presenter = ctx.presenter.as_str();
+    let req = &doc.payload;
     if req.status.is_none() && req.pinned.is_none() {
         return app_error_to_reject(
             &doc,
@@ -1116,47 +1185,53 @@ mod tests {
     }
 
     // Thin shims, deliberately named after the handlers they wrap, so the call
-    // sites below read exactly as they did when the handler verified its own
+    // sites below read exactly as they did when each handler verified its own
     // proof. They shadow the glob-imported originals; `super::` reaches past
     // them.
+    //
+    // They now go through `super::dispatch`, which is the production path: the
+    // document is routed by its own `type` through the registered dispatcher and
+    // downcast to the handler's payload type. So these tests cover the
+    // registration too — a handler registered under the wrong type, or not
+    // registered at all, fails here rather than in a deployment.
     async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
         let presenter = spine_presenter(state, &doc).await;
-        super::handle_create(state, doc, &presenter).await
+        super::dispatch(state, doc, &presenter).await
     }
 
     async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
         let presenter = spine_presenter(state, &doc).await;
-        super::handle_put_record(state, doc, &presenter).await
+        super::dispatch(state, doc, &presenter).await
     }
 
     async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
         let presenter = spine_presenter(state, &doc).await;
-        super::handle_get_record(state, doc, &presenter).await
+        super::dispatch(state, doc, &presenter).await
     }
 
     async fn handle_list_records(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
         let presenter = spine_presenter(state, &doc).await;
-        super::handle_list_records(state, doc, &presenter).await
+        super::dispatch(state, doc, &presenter).await
     }
 
     async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
         let presenter = spine_presenter(state, &doc).await;
-        super::handle_mint_epoch(state, doc, &presenter).await
+        super::dispatch(state, doc, &presenter).await
     }
 
     async fn handle_curate_record(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
         let presenter = spine_presenter(state, &doc).await;
-        super::handle_curate_record(state, doc, &presenter).await
+        super::dispatch(state, doc, &presenter).await
     }
 
     async fn handle_transfer_owner(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
         let presenter = spine_presenter(state, &doc).await;
-        super::handle_transfer_owner(state, doc, &presenter).await
+        super::dispatch(state, doc, &presenter).await
     }
 
     async fn handle_claim_owner(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
         let presenter = spine_presenter(state, &doc).await;
-        super::handle_claim_owner(state, doc, &presenter).await
+        super::dispatch(state, doc, &presenter).await
     }
 
     /// A **signed** room document.
