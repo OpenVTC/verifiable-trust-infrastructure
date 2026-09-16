@@ -29,6 +29,9 @@ proof-verify = [
   "dep:async-trait",
   "dep:affinidi-data-integrity",
   "dep:affinidi-did-resolver-cache-sdk",
+  # `resolver::shared_did_resolver` keys its per-process resolver on the tokio
+  # runtime that built it.
+  "dep:tokio",
   "dep:affinidi-did-resolver-traits",
   "dep:affinidi-did-common",
   "dep:affinidi-secrets-resolver",
@@ -90,6 +93,8 @@ agent-names = [
   "dep:affinidi-did-resolver-traits",
   "dep:affinidi-did-common",
   "affinidi-did-resolver-cache-sdk/agent-names",
+  # `fill_book` resolves through `resolver::shared_did_resolver`.
+  "dep:tokio",
 ]
 client = [
   # A client verifies the responses it receives; see `trust_task_proof`.
@@ -110,7 +115,6 @@ client = [
   # `didcomm_light::pack_anoncrypt` (gated on `client`) names that type,
   # so `client` must pull `affinidi-crypto` in its own right.
   "dep:affinidi-crypto",
-  "dep:didwebvh-rs",
   "dep:tokio",
   "dep:ed25519-dalek",
   "dep:curve25519-dalek",
@@ -315,10 +319,6 @@ sha2 = { workspace = true, optional = true }
 # workspace's pinned DIDComm decrypt path will accept (ECDH-ES+A256KW +
 # A256CBC-HS512). Same pinned version as `vta-service`.
 affinidi-messaging-didcomm = { version = "0.15", optional = true }
-# Used by `client` (didcomm_light::resolve_vta_keyagreement) to resolve
-# `did:webvh:` VTAs without pulling in the heavyweight TDK runtime. Same
-# workspace-pinned version as `vta-service`.
-didwebvh-rs = { workspace = true, optional = true }
 hpke = { version = "0.14", optional = true }
 affinidi-crypto = { workspace = true, optional = true }
 affinidi-vc = { workspace = true, optional = true }
@@ -392,6 +392,9 @@ required-features = ["sealed-transfer", "provision-integration"]
 tokio = { workspace = true }
 tempfile = "3"
 wiremock = "0.6"
+# tests/shared_did_resolver.rs mints a real `did:webvh` log to serve, so the
+# count of `did.jsonl` fetches it asserts is the count a VTA would see.
+didwebvh-rs = { workspace = true }
 # Examples need direct access to crypto primitives the SDK normally
 # encapsulates — pulled into dev-deps only so the published artifact
 # stays slim.

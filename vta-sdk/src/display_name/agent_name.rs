@@ -48,7 +48,7 @@
 //! leads back here. Only the round trip below establishes that.
 
 use affinidi_did_common::Document;
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use agent_names::extract_agent_names;
 
 use super::{DisplayName, NameSource};
@@ -155,14 +155,10 @@ pub async fn lookup(client: &DIDCacheClient, did: &str) -> Option<DisplayName> {
 /// here too. Per-DID failures are skipped, not propagated: an unreachable name
 /// server must degrade a row to its DID, never fail the operator's command.
 pub async fn fill_book<'a>(book: &mut super::NameBook, dids: impl IntoIterator<Item = &'a str>) {
-    let mut builder =
-        DIDCacheConfigBuilder::default().with_host_policy(crate::resolver::webvh_host_policy());
-    if let Ok(url) = std::env::var("PNM_RESOLVER_URL")
-        && !url.is_empty()
-    {
-        builder = builder.with_network_mode(&url);
-    }
-    let Ok(client) = DIDCacheClient::new(builder.build()).await else {
+    // The process-shared resolver: a command that renders names has usually
+    // just resolved some of these DIDs, and a throwaway client would fetch
+    // every one of them again.
+    let Ok(client) = crate::resolver::shared_did_resolver_from_env().await else {
         return;
     };
     for did in dids {

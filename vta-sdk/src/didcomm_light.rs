@@ -137,7 +137,8 @@ pub fn ed25519_seed_to_x25519_secret(seed: &[u8; 32]) -> [u8; 32] {
 ///   - `did:key:` — inlined, no I/O. Only the Ed25519 form; the X25519
 ///     keyAgreement key is derived via the Edwards-to-Montgomery map and
 ///     the kid is `{did}#{x25519_multikey}`.
-///   - `did:webvh:` — fetches and verifies the log via `didwebvh-rs`,
+///   - `did:webvh:` — fetches and verifies the log through the process-shared
+///     resolver ([`crate::resolver::shared_did_resolver`], local mode),
 ///     then walks the DID document to find the first `keyAgreement` with
 ///     an X25519 `publicKeyMultibase`.
 ///
@@ -166,36 +167,28 @@ pub async fn resolve_vta_keyagreement(
 async fn resolve_webvh_keyagreement(
     vta_did: &str,
 ) -> Result<(String, [u8; 32]), Box<dyn std::error::Error>> {
-    use didwebvh_rs::DIDWebVHState;
-    use didwebvh_rs::log_entry::LogEntryMethods;
-    use didwebvh_rs::resolve::{HostPolicy, ResolveOptions};
-
-    // `ResolveOptions::default()` is `HostPolicy::PublicOnly`, which is what
-    // production wants: this fetches a log from a host named by the DID we were
-    // handed, so a DID naming an internal host must not make us dial it. Local
-    // development against `did:webvh:{SCID}:localhost%3A3000` opts in through
-    // the same switch as the rest of the workspace — see
-    // `crate::resolver::allow_private_did_hosts`.
+    // Through the process-shared resolver rather than a bare
+    // `DIDWebVHState::resolve`, which fetched and verified the log on every call
+    // with no cache at all — so packing for a VTA whose DID this process had
+    // already resolved (to find its endpoint, say) fetched `did.jsonl` again.
+    // The cache SDK's `did:webvh` resolver is the same `didwebvh-rs` log
+    // verification, and only a verified document is ever cached.
     //
-    // The bool is mapped here rather than reusing `resolver::webvh_host_policy`
-    // because that returns the resolver-cache's `HostPolicy` re-export, which is
-    // a different type from `didwebvh_rs`' own.
-    let host_policy = if crate::resolver::allow_private_did_hosts() {
-        HostPolicy::AllowPrivate
-    } else {
-        HostPolicy::PublicOnly
-    };
-
-    let mut state = DIDWebVHState::default();
-    let (log_entry, _meta) = state
-        .resolve(
-            vta_did,
-            ResolveOptions::default().with_host_policy(host_policy),
-        )
+    // Local mode (`None`), deliberately not `PNM_RESOLVER_URL`: the key found
+    // here is the one the message is encrypted to, and this path has always
+    // verified the log in-process rather than taking a sidecar's word for it.
+    // Host policy is `resolver::webvh_host_policy` — `PublicOnly` unless the
+    // operator opted in to private hosts (local development against
+    // `did:webvh:{SCID}:localhost%3A3000`), so a DID naming an internal host
+    // still cannot make us dial it.
+    let resolver = crate::resolver::shared_did_resolver(None)
+        .await
+        .map_err(|e| format!("DID resolver init failed: {e}"))?;
+    let resolved = resolver
+        .resolve(vta_did)
         .await
         .map_err(|e| format!("resolve did:webvh {vta_did}: {e}"))?;
-    let did_doc = log_entry
-        .get_did_document()
+    let did_doc = serde_json::to_value(&resolved.doc)
         .map_err(|e| format!("render did:webvh document for {vta_did}: {e}"))?;
     extract_x25519_keyagreement(&did_doc)
 }
