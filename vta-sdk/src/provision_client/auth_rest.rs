@@ -65,7 +65,14 @@ pub async fn challenge_response_di(
         .map_err(|e| format!("could not connect to VTA at {challenge_url}: {e}"))?;
     if !challenge_resp.status().is_success() {
         let status = challenge_resp.status();
+        let headers = challenge_resp.headers().clone();
         let body = challenge_resp.text().await.unwrap_or_default();
+        // A rate limit stays typed: as a string it reads as an auth failure.
+        if let Some(e) =
+            crate::error::VtaError::rate_limited_from_http(status, &headers, &body, &challenge_url)
+        {
+            return Err(e.into());
+        }
         return Err(format!("challenge request failed ({status}): {body}").into());
     }
     let challenge: ChallengeResponse = challenge_resp.json().await.map_err(|e| {
@@ -98,7 +105,13 @@ pub async fn challenge_response_di(
         .map_err(|e| format!("could not connect to VTA at {auth_url}: {e}"))?;
     let status = auth_resp.status();
     if !status.is_success() {
+        let headers = auth_resp.headers().clone();
         let body = auth_resp.text().await.unwrap_or_default();
+        if let Some(e) =
+            crate::error::VtaError::rate_limited_from_http(status, &headers, &body, &auth_url)
+        {
+            return Err(e.into());
+        }
         return Err(format!("authentication failed ({status}): {body}").into());
     }
     let auth_text = auth_resp

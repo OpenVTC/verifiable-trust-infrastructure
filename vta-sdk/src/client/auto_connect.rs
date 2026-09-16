@@ -102,7 +102,12 @@ impl VtaClient {
                     input.vta_did,
                 )
                 .await
-                .map_err(|e| VtaError::Auth(e.to_string()))?;
+                // Keep a typed error typed: a 429 flattened into `Auth` would
+                // tell the operator to re-authenticate.
+                .map_err(|e| match e.downcast::<VtaError>() {
+                    Ok(typed) => *typed,
+                    Err(e) => VtaError::Auth(e.to_string()),
+                })?;
 
                 let client = VtaClient::authenticated(
                     input.vta_url,

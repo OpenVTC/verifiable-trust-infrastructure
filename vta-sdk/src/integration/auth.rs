@@ -290,7 +290,12 @@ async fn try_rest(
                 &credential.vta_did,
             )
             .await
-            .map_err(|e| VtaError::Auth(format!("session challenge-response failed: {e}")))?;
+            // Keep a typed error typed: a 429 flattened into `Auth` would tell
+            // the operator to re-authenticate.
+            .map_err(|e| match e.downcast::<VtaError>() {
+                Ok(typed) => *typed,
+                Err(e) => VtaError::Auth(format!("session challenge-response failed: {e}")),
+            })?;
 
             let client = VtaClient::new(vta_url);
             client.set_token_async(token_result.access_token).await;

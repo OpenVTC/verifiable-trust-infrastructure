@@ -82,6 +82,7 @@
 
 pub mod error;
 pub mod hex;
+pub mod rate_limit;
 // Pure, dependency-light validators shared with clients so they apply the
 // VTA's canonical context-path / identifier rules without mirroring them.
 pub mod acl;
