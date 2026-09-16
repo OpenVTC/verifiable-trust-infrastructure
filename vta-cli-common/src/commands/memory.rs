@@ -84,7 +84,7 @@ pub async fn cmd_memory_recall(
     Ok(())
 }
 
-/// `forget` → `memory_delete` for one key.
+/// `delete` (hidden alias `forget`) → `memory_delete` for one key.
 pub async fn cmd_memory_forget(
     client: &VtaClient,
     context: &str,
@@ -95,7 +95,7 @@ pub async fn cmd_memory_forget(
         print_json(&resp)?;
         return Ok(());
     }
-    println!("{GREEN}\u{2713}{RESET} Forgot {BOLD}{key}{RESET} in context '{context}'.");
+    println!("{GREEN}\u{2713}{RESET} Deleted memory {BOLD}{key}{RESET} in context '{context}'.");
     Ok(())
 }
 

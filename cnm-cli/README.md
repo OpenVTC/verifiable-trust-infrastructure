@@ -129,11 +129,15 @@ cnm -c acme keys list
 cnm community status
 ```
 
-### Remove a community
+### Delete a community
 
 ```sh
-cnm community remove <slug>
+cnm community delete <slug>          # confirms; --yes to skip
 ```
+
+This deletes only the local connection and its stored credential. The
+community's VTA keeps the ACL entry for that credential until you revoke it
+with `cnm acl delete <did>`.
 
 ## Authentication
 
@@ -237,7 +241,7 @@ cnm config update --community-vta-name "My VTA" --public-url "https://vta.exampl
 | `community list`          | List configured communities                |
 | `community use <slug>`    | Set default community                      |
 | `community add`           | Add a new community interactively          |
-| `community remove <slug>` | Remove a community                         |
+| `community delete <slug>` | Delete a local community connection        |
 | `community status`        | Show active community info and auth status |
 
 ### Authentication

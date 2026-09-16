@@ -398,7 +398,7 @@ original from the ACL, same as the classic flow.
 | Flag | Phase | Effect |
 |---|---|---|
 | `--name <human-name>` | 1 | Slugified and used as the VTA identifier. Required in non-interactive mode. |
-| `--overwrite` | 1 | Replace an *existing pending* setup for the same slug. Never overwrites a complete VTA — use `pnm vta remove <slug>` first (`pnm vta remove` confirms interactively; pass `--force` in a script). |
+| `--overwrite` | 1 | Replace an *existing pending* setup for the same slug. Never overwrites a complete VTA — use `pnm vta delete <slug>` first (`pnm vta delete` confirms interactively; pass `--yes` in a script). It deletes only the local connection and credential — the VTA's ACL entry for that credential stays until `pnm acl delete <did>`. |
 | `--vta-did <did:...>` | 2 | Non-interactive VTA DID. Omit for the interactive prompt. |
 
 ### Exit codes
@@ -406,7 +406,7 @@ original from the ACL, same as the classic flow.
 - `0` — success. JSON written to stdout.
 - `2` — input or state error. Targeted message on stderr (e.g.
   "pending setup already exists for slug 'X', pass `--overwrite`" or
-  "'X' is already set up, use `pnm vta remove X` to start over").
+  "'X' is already set up, use `pnm vta delete X` to start over").
 
 ### Idempotency notes
 

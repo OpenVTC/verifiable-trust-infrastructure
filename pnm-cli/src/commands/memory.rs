@@ -22,7 +22,7 @@ pub(crate) async fn run(
         MemoryCommands::Recall { key, context } => {
             memory::cmd_memory_recall(client, &context, key.as_deref()).await
         }
-        MemoryCommands::Forget { key, context } => {
+        MemoryCommands::Delete { key, context } => {
             memory::cmd_memory_forget(client, &context, &key).await
         }
         MemoryCommands::Wipe { context, yes } => {

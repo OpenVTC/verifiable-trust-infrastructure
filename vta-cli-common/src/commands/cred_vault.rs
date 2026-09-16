@@ -102,6 +102,10 @@ pub async fn cmd_cred_delete(
                 "{DIM}Credential {id} soft-deleted — recoverable with `cred-vault restore {id}`.{RESET}"
             ),
         }
+        // A soft delete is not a complete delete: say how to finish it.
+        println!(
+            "{DIM}To delete it immediately and irreversibly, run `cred-vault purge {id}` (or `cred-vault delete {id} --force`).{RESET}"
+        );
     }
     print_result("Result:", &result)
 }
@@ -119,7 +123,7 @@ pub async fn cmd_cred_restore(
 }
 
 /// `cred-vault purge` — irreversibly hard-delete a credential, skipping any
-/// grace window.
+/// grace window. The same operation as `cred-vault delete --force`.
 pub async fn cmd_cred_purge(
     client: &VtaClient,
     id: String,

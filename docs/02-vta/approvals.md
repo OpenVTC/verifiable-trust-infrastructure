@@ -171,7 +171,8 @@ vta approvals remove https://trusttasks.org/spec/policy/upsert/0.2
 
 # Or, when no single rule is identifiable: delete the whole row.
 # Every task goes back to running on the caller's own authority.
-vta approvals disable
+# (Formerly `vta approvals disable`, which still works.)
+vta approvals delete-all
 
 # The hand-authored half — Rego installed with `pnm policy upsert`.
 vta policy list --show-module

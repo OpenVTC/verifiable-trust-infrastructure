@@ -132,7 +132,7 @@ pub(crate) enum Commands {
 
         /// Non-interactive phase 1: overwrite an existing *pending*
         /// setup for the same slug. Never overwrites a complete VTA —
-        /// use `pnm vta remove <slug>` first.
+        /// use `pnm vta delete <slug>` first.
         #[arg(long)]
         overwrite: bool,
     },
@@ -248,7 +248,7 @@ pub(crate) enum Commands {
     /// Manage the controller's DIDs and the DID-hosting servers
     /// they live on.
     ///
-    /// `pnm did-mgmt servers {add,list,update,remove}` manages the
+    /// `pnm did-mgmt servers {add,list,update,delete}` manages the
     /// controller's view of registered DID-hosting servers (the
     /// daemons that publish `did:webvh:*` logs). `pnm did-mgmt
     /// dids {…}` operates on the DIDs themselves (create, edit,
@@ -472,11 +472,12 @@ pub(crate) enum RoomCommands {
 }
 
 /// CRUD over the agent's memory. `plant` creates/updates, `recall` reads,
-/// `forget` deletes one entry, and `wipe` deletes every entry in the context.
+/// `delete` deletes one entry, and `wipe` deletes every entry in the context.
 ///
-/// Each carries a hidden alias under the Trust Task's own verb (`put`,
-/// `list`, `delete`, `clear`) so an operator reading the task names finds the
-/// command they expect.
+/// Each carries a hidden alias so an operator reading the Trust Task names
+/// finds the command they expect (`put`, `list`, `clear`), and `forget` — the
+/// name `delete` had before removal commands were standardised on `delete` —
+/// keeps working.
 #[derive(Subcommand)]
 pub(crate) enum MemoryCommands {
     /// Plant a memory: store `value` under `key` so the agent recalls it.
@@ -505,9 +506,9 @@ pub(crate) enum MemoryCommands {
         context: String,
     },
 
-    /// Forget a single memory by key — the agent loses just that fact.
-    #[command(alias = "delete")]
-    Forget {
+    /// Delete a single memory by key — the agent forgets just that fact.
+    #[command(alias = "forget")]
+    Delete {
         /// The memory key to delete.
         key: String,
         /// TARGET SCOPE: the context whose memory to write.
@@ -515,7 +516,7 @@ pub(crate) enum MemoryCommands {
         context: String,
     },
 
-    /// Wipe every memory in the context. Prompts for confirmation unless
+    /// Delete every memory in the context. Prompts for confirmation unless
     /// `--yes`; requires `--yes` in `--json` mode.
     ///
     /// There is no bulk-delete Trust Task, so this deletes entries one by one
@@ -527,8 +528,9 @@ pub(crate) enum MemoryCommands {
         /// TARGET SCOPE: the context whose memory to wipe.
         #[arg(long = "context", alias = "context-id", value_name = "ID")]
         context: String,
-        /// Skip the confirmation prompt (automation only).
-        #[arg(long = "yes", alias = "force")]
+        /// Skip the confirmation prompt (automation only). `--force` is
+        /// accepted as a hidden alias.
+        #[arg(long = "yes", short = 'y', alias = "force")]
         yes: bool,
     },
 }
@@ -932,12 +934,19 @@ pub(crate) enum VtaCommands {
     List,
     /// Set the default VTA
     Use { slug: String },
-    /// Remove a VTA connection
-    Remove {
+    /// Delete a VTA connection from this machine: its local config entry and
+    /// stored credential.
+    ///
+    /// Local only — the VTA itself, and the ACL entry that authorises this
+    /// credential on it, are untouched. Revoke that with `pnm acl delete`
+    /// before deleting the connection if the credential should stop working.
+    #[command(alias = "remove")]
+    Delete {
         slug: String,
-        /// Skip the confirmation prompt.
-        #[arg(long)]
-        force: bool,
+        /// Skip the confirmation prompt. `--force` is accepted as a hidden
+        /// alias.
+        #[arg(long = "yes", short = 'y', alias = "force")]
+        yes: bool,
     },
     /// Show current VTA details
     Info,
@@ -970,9 +979,9 @@ pub(crate) enum WebvhCommands {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Remove a WebVH server
-    RemoveServer {
-        /// Server identifier to remove
+    /// Delete a WebVH server
+    DeleteServer {
+        /// Server identifier to delete
         id: String,
     },
     /// Create a WebVH DID
@@ -1261,8 +1270,9 @@ pub(crate) enum DidMgmtAgentNameCommands {
     },
     /// Release a name entirely, freeing it for anyone else to claim.
     ///
-    /// To stop a name resolving while keeping it reserved to this DID, use
-    /// `disable` instead.
+    /// Not a delete of anything this DID keeps: once released, the name can be
+    /// claimed by any DID on the hosting domain. To stop a name resolving while
+    /// keeping it reserved to this DID, use `disable` instead.
     Remove {
         #[arg(long)]
         did: String,
@@ -1323,9 +1333,15 @@ pub(crate) enum DidMgmtServerCommands {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Remove a registered DID-hosting server.
-    Remove {
-        /// Server identifier to remove.
+    /// Delete a registered DID-hosting server from the controller's
+    /// registry.
+    ///
+    /// Only the registry row goes. DIDs registered against the server keep
+    /// naming it, and nothing is deleted from the server itself — the command
+    /// lists any such DIDs so they are not left pointing at a missing id.
+    #[command(alias = "remove")]
+    Delete {
+        /// Server identifier to delete.
         id: String,
     },
 }
@@ -1565,7 +1581,7 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 DidMgmtServerCommands::Update { id, label } => {
                     WebvhCommands::UpdateServer { id, label }
                 }
-                DidMgmtServerCommands::Remove { id } => WebvhCommands::RemoveServer { id },
+                DidMgmtServerCommands::Delete { id } => WebvhCommands::DeleteServer { id },
             },
             // Intercepted in `main.rs` before this bridge is reached — agent
             // names are a new surface and deliberately have no legacy
@@ -2000,9 +2016,10 @@ pub(crate) enum ContextCommands {
     Delete {
         /// Context ID
         id: String,
-        /// Skip confirmation and delete immediately
-        #[arg(long, short)]
-        force: bool,
+        /// Skip the confirmation prompt. `--force` / `-f` are accepted as
+        /// hidden aliases.
+        #[arg(long = "yes", short = 'y', alias = "force", short_alias = 'f')]
+        yes: bool,
     },
     /// Create a context and mint a sealed admin credential for its first admin.
     ///
@@ -2535,7 +2552,8 @@ pub(crate) enum VaultCommands {
     },
     /// Delete an entry by id. Default is a RECOVERABLE soft delete (restore
     /// with `vault restore` until the grace window lapses); `--force` makes it
-    /// an immediate, irreversible hard delete. `VaultWrite`.
+    /// an immediate, irreversible hard delete (the same as `vault purge`).
+    /// `VaultWrite`.
     Delete {
         /// The vault entry id.
         id: String,
@@ -2584,8 +2602,9 @@ pub(crate) enum VaultCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Permanently purge an entry, skipping any grace window. IRREVERSIBLE.
-    /// `VaultWrite`.
+    /// Permanently delete an entry, skipping any grace window — the same as
+    /// `vault delete --force`, and the usual way to empty an already
+    /// soft-deleted entry out of the trash. IRREVERSIBLE. `VaultWrite`.
     Purge {
         /// The vault entry id.
         id: String,
@@ -2681,7 +2700,8 @@ pub(crate) enum CredVaultCommands {
     },
     /// Delete a credential. Default is a RECOVERABLE soft delete (restore
     /// with `cred-vault restore` until the grace window lapses); `--force`
-    /// hard-deletes immediately (no recovery). `CredentialWrite`.
+    /// hard-deletes immediately, no recovery (the same as `cred-vault purge`).
+    /// `CredentialWrite`.
     Delete {
         /// The credential id.
         id: String,
@@ -2701,8 +2721,10 @@ pub(crate) enum CredVaultCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Permanently purge a credential (and its index rows), skipping any
-    /// grace window. IRREVERSIBLE. `CredentialWrite`.
+    /// Permanently delete a credential (and its index rows), skipping any
+    /// grace window — the same as `cred-vault delete --force`, and the usual
+    /// way to empty an already soft-deleted credential out of the trash.
+    /// IRREVERSIBLE. `CredentialWrite`.
     Purge {
         /// The credential id.
         id: String,
@@ -3153,7 +3175,7 @@ mod memory_flag_tests {
         for args in [
             vec!["pnm", "memory", "plant", "k", "v"],
             vec!["pnm", "memory", "recall"],
-            vec!["pnm", "memory", "forget", "k"],
+            vec!["pnm", "memory", "delete", "k"],
             vec!["pnm", "memory", "wipe"],
         ] {
             assert!(
@@ -3182,7 +3204,7 @@ mod memory_flag_tests {
     /// to match, with the old spelling kept working.
     #[test]
     fn wipe_takes_yes_and_still_honours_force() {
-        for flag in ["--yes", "--force"] {
+        for flag in ["--yes", "-y", "--force"] {
             let cli =
                 Cli::try_parse_from(["pnm", "memory", "wipe", "--context", "agent", flag]).unwrap();
             let Commands::Memory {
@@ -3211,9 +3233,19 @@ mod memory_flag_tests {
         for alias in ["list", "recall"] {
             assert!(Cli::try_parse_from(["pnm", "memory", alias, "--context", "agent"]).is_ok());
         }
+        // `delete` is the name; `forget` was, before removal commands were
+        // standardised on `delete`, and stays a hidden alias.
         for alias in ["delete", "forget"] {
+            let cli = Cli::try_parse_from(["pnm", "memory", alias, "k", "--context", "agent"])
+                .unwrap_or_else(|e| panic!("{alias}: {e}"));
             assert!(
-                Cli::try_parse_from(["pnm", "memory", alias, "k", "--context", "agent"]).is_ok()
+                matches!(
+                    cli.command,
+                    Commands::Memory {
+                        command: MemoryCommands::Delete { .. }
+                    }
+                ),
+                "{alias} did not parse as memory delete"
             );
         }
         for alias in ["clear", "wipe"] {
@@ -3783,34 +3815,93 @@ pub(crate) enum PersonaLocalBindingCommands {
 }
 
 #[cfg(test)]
-mod vta_remove_flag_tests {
+mod removal_verb_tests {
     use super::*;
     use clap::Parser;
 
-    /// Removal drops the stored credential too, so the confirmation is
-    /// the default and `--force` is the explicit opt-out.
+    /// Deleting a connection drops the stored credential too, so the
+    /// confirmation is the default and `--yes` is the explicit opt-out.
     #[test]
-    fn remove_defaults_to_confirming() {
-        let cli = Cli::try_parse_from(["pnm", "vta", "remove", "my-vta"]).unwrap();
+    fn vta_delete_defaults_to_confirming() {
+        let cli = Cli::try_parse_from(["pnm", "vta", "delete", "my-vta"]).unwrap();
         let Commands::Vta {
-            command: VtaCommands::Remove { slug, force },
+            command: VtaCommands::Delete { slug, yes },
         } = cli.command
         else {
-            panic!("expected `vta remove`");
+            panic!("expected `vta delete`");
         };
         assert_eq!(slug, "my-vta");
-        assert!(!force);
+        assert!(!yes);
+    }
+
+    /// `remove` was the name before removal commands were standardised on
+    /// `delete`, and `--force` was its prompt-skip flag. Both stay accepted so
+    /// no script breaks.
+    #[test]
+    fn vta_delete_keeps_remove_and_force() {
+        for verb in ["delete", "remove"] {
+            for flag in ["--yes", "-y", "--force"] {
+                let cli = Cli::try_parse_from(["pnm", "vta", verb, "my-vta", flag])
+                    .unwrap_or_else(|e| panic!("{verb} {flag}: {e}"));
+                let Commands::Vta {
+                    command: VtaCommands::Delete { yes, .. },
+                } = cli.command
+                else {
+                    panic!("expected `vta delete` from `{verb}`");
+                };
+                assert!(yes, "{verb} {flag} did not set yes");
+            }
+        }
     }
 
     #[test]
-    fn remove_force_parses() {
-        let cli = Cli::try_parse_from(["pnm", "vta", "remove", "my-vta", "--force"]).unwrap();
-        let Commands::Vta {
-            command: VtaCommands::Remove { force, .. },
-        } = cli.command
-        else {
-            panic!("expected `vta remove`");
-        };
-        assert!(force);
+    fn did_mgmt_servers_delete_keeps_remove() {
+        for verb in ["delete", "remove"] {
+            let cli = Cli::try_parse_from(["pnm", "did-mgmt", "servers", verb, "host-1"])
+                .unwrap_or_else(|e| panic!("{verb}: {e}"));
+            let Commands::DidMgmt {
+                command:
+                    DidMgmtCommands::Servers {
+                        command: DidMgmtServerCommands::Delete { id },
+                    },
+            } = cli.command
+            else {
+                panic!("expected `did-mgmt servers delete` from `{verb}`");
+            };
+            assert_eq!(id, "host-1");
+        }
+    }
+
+    /// Prompt-skip on `contexts delete` is `--yes`; the old `--force` / `-f`
+    /// spellings still parse.
+    #[test]
+    fn contexts_delete_takes_yes_and_still_honours_force() {
+        for flag in ["--yes", "-y", "--force", "-f"] {
+            let cli = Cli::try_parse_from(["pnm", "contexts", "delete", "ctx", flag])
+                .unwrap_or_else(|e| panic!("{flag}: {e}"));
+            let Commands::Contexts {
+                command: ContextCommands::Delete { yes, .. },
+            } = cli.command
+            else {
+                panic!("expected contexts delete");
+            };
+            assert!(yes, "{flag} did not set yes");
+        }
+    }
+
+    /// On the vault commands `--force` keeps its one meaning — skip the soft
+    /// delete — and `purge` stays a working synonym for it.
+    #[test]
+    fn vault_delete_force_and_purge_both_parse() {
+        for argv in [
+            vec!["pnm", "vault", "delete", "e1", "--force"],
+            vec!["pnm", "vault", "purge", "e1"],
+            vec!["pnm", "cred-vault", "delete", "c1", "--force"],
+            vec!["pnm", "cred-vault", "purge", "c1"],
+        ] {
+            if let Err(e) = Cli::try_parse_from(&argv) {
+                panic!("{argv:?} should parse: {e}");
+            }
+        }
     }
 }

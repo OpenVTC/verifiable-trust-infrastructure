@@ -129,13 +129,13 @@ async fn an_operator_can_diagnose_and_clear_a_lockout_offline() {
 }
 
 #[tokio::test]
-async fn disable_clears_everything_and_says_so() {
+async fn delete_all_clears_everything_and_says_so() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = write_config(dir.path());
     seed_lockout(&dir.path().join("data")).await;
 
-    let (ok, out) = vta(&config, &["approvals", "disable"]);
-    assert!(ok, "approvals disable failed: {out}");
+    let (ok, out) = vta(&config, &["approvals", "delete-all"]);
+    assert!(ok, "approvals delete-all failed: {out}");
     assert!(
         out.contains("2 rule(s)") && out.contains("1 approver set(s)"),
         "the operator should leave knowing exactly what they switched off: {out}"
@@ -144,6 +144,25 @@ async fn disable_clears_everything_and_says_so() {
         out.contains("caller's own authority"),
         "and that it is a real reduction in control: {out}"
     );
+
+    let (ok, out) = vta(&config, &["approvals", "list"]);
+    assert!(ok);
+    assert!(out.contains("No approval rules"), "{out}");
+}
+
+/// `disable` was this command's name before removal commands were standardised
+/// on `delete`. A break-glass script written against it must keep working —
+/// and the operator running it should learn the name that says what it does.
+#[tokio::test]
+async fn disable_still_deletes_everything_and_names_delete_all() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config(dir.path());
+    seed_lockout(&dir.path().join("data")).await;
+
+    let (ok, out) = vta(&config, &["approvals", "disable"]);
+    assert!(ok, "approvals disable failed: {out}");
+    assert!(out.contains("vta approvals delete-all"), "{out}");
+    assert!(out.contains("2 rule(s)"), "{out}");
 
     let (ok, out) = vta(&config, &["approvals", "list"]);
     assert!(ok);
@@ -165,7 +184,7 @@ async fn policy_delete_redirects_away_from_the_declarative_row() {
         "deleting the declarative row this way must fail: {out}"
     );
     assert!(out.contains("vta approvals remove"), "{out}");
-    assert!(out.contains("vta approvals disable"), "{out}");
+    assert!(out.contains("vta approvals delete-all"), "{out}");
 
     // …and the row is untouched.
     let (ok, out) = vta(&config, &["approvals", "list"]);

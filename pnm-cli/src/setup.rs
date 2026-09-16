@@ -107,7 +107,7 @@ async fn start_non_tee_setup_interactive(
         ExistingState::Complete { vta_did } => {
             return Err(format!(
                 "'{slug}' is already set up (VTA DID: {vta_did}).\n\n\
-                 To replace it, first run: \x1b[1mpnm vta remove {slug}\x1b[0m"
+                 To replace it, first run: \x1b[1mpnm vta delete {slug}\x1b[0m"
             )
             .into());
         }
@@ -226,7 +226,7 @@ pub async fn start_non_tee_setup_non_interactive(
         ExistingState::Complete { vta_did } => {
             return Err(format!(
                 "'{slug}' is already set up (VTA DID: {vta_did}).\n\n\
-                 To replace it, first run: pnm vta remove {slug}"
+                 To replace it, first run: pnm vta delete {slug}"
             )
             .into());
         }
@@ -484,7 +484,7 @@ fn require_pending(
     if vta.vta_did.is_some() {
         return Err(format!(
             "'{slug}' is already set up.\n\n\
-             Use `pnm vta show {slug}` to inspect, or `pnm vta remove {slug}` to start over."
+             Use `pnm --vta {slug} vta info` to inspect, or `pnm vta delete {slug}` to start over."
         )
         .into());
     }
@@ -503,7 +503,7 @@ fn require_pending(
     if info.vta_did.is_some() {
         return Err(format!(
             "'{slug}' keyring entry already has a VTA DID bound — config and keyring are \
-             out of sync. Run `pnm vta remove {slug}` and start over."
+             out of sync. Run `pnm vta delete {slug}` and start over."
         )
         .into());
     }
@@ -691,7 +691,7 @@ mod tests {
         let config = cfg_with("my-vta", Some("did:web:vta.example.com"));
         let err = require_pending(&config, "my-vta", "vta:my-vta").unwrap_err();
         assert!(err.to_string().contains("already set up"));
-        assert!(err.to_string().contains("pnm vta remove"));
+        assert!(err.to_string().contains("pnm vta delete"));
     }
 
     #[test]

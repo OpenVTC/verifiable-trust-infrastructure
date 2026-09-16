@@ -394,10 +394,20 @@ enum CommunityCommands {
     },
     /// Add a new community
     Add,
-    /// Remove a community
-    Remove {
-        /// Community slug to remove
+    /// Delete a community connection from this machine: its local config
+    /// entry and stored credential.
+    ///
+    /// Local only — the community's VTA, and the ACL entry that authorises
+    /// this credential on it, are untouched. Revoke that with `cnm acl delete`
+    /// if the credential should stop working.
+    #[command(alias = "remove")]
+    Delete {
+        /// Community slug to delete
         name: String,
+        /// Skip the confirmation prompt. `--force` is accepted as a hidden
+        /// alias.
+        #[arg(long = "yes", short = 'y', alias = "force")]
+        yes: bool,
     },
     /// Show current community info
     Status,
@@ -514,9 +524,10 @@ enum ContextCommands {
     Delete {
         /// Context ID
         id: String,
-        /// Skip confirmation and delete immediately
-        #[arg(long, short)]
-        force: bool,
+        /// Skip the confirmation prompt. `--force` / `-f` are accepted as
+        /// hidden aliases.
+        #[arg(long = "yes", short = 'y', alias = "force", short_alias = 'f')]
+        yes: bool,
     },
     /// Create a context and mint a sealed admin credential for its first admin.
     ///
@@ -1183,8 +1194,8 @@ async fn main() {
             ContextCommands::UpdateDid { id, did } => {
                 contexts::cmd_context_update_did(&client, &id, &did).await
             }
-            ContextCommands::Delete { id, force } => {
-                contexts::cmd_context_delete(&client, &id, force).await
+            ContextCommands::Delete { id, yes } => {
+                contexts::cmd_context_delete(&client, &id, yes).await
             }
             ContextCommands::Bootstrap {
                 id,
@@ -1456,34 +1467,44 @@ async fn cmd_community(
             Ok(())
         }
         CommunityCommands::Add => setup::add_community().await,
-        CommunityCommands::Remove { name } => {
+        CommunityCommands::Delete { name, yes } => {
             let config = config::load_config()?;
             if !config.communities.contains_key(&name) {
                 return Err(format!("community '{name}' not found.").into());
             }
+            let key = community_keyring_key(&name);
+            // Read before the keyring entry goes: the notice names the DID
+            // whose ACL entry survives on the VTA.
+            let client_did = auth::loaded_session(&key).map(|s| s.client_did);
 
-            let confirm = dialoguer::Confirm::new()
-                .with_prompt(format!(
-                    "Remove community '{name}'? This will delete its stored credentials."
-                ))
-                .default(false)
-                .interact()?;
+            if !yes {
+                print_community_local_only_notice(&name, client_did.as_deref());
+                let confirm = dialoguer::Confirm::new()
+                    .with_prompt(format!(
+                        "Delete community '{name}'? This will delete its stored credentials."
+                    ))
+                    .default(false)
+                    .interact()?;
 
-            if !confirm {
-                println!("Cancelled.");
-                return Ok(());
+                if !confirm {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
             }
 
             let mut config = config;
             config.communities.remove(&name);
-            // Clear default if it was the removed community
+            // Clear default if it was the deleted community
             if config.default_community.as_deref() == Some(&name) {
                 config.default_community = config.communities.keys().next().cloned();
             }
             // Clear the keyring entry
-            auth::logout(&community_keyring_key(&name));
+            auth::logout(&key);
             config::save_config(&config)?;
-            println!("Community '{name}' removed.");
+            println!("{GREEN}✓{RESET} Community '{name}' deleted.");
+            if yes {
+                print_community_local_only_notice(&name, client_did.as_deref());
+            }
             Ok(())
         }
         CommunityCommands::Status => {
@@ -1856,9 +1877,74 @@ async fn print_did_resolution(
     mediator_did
 }
 
+/// `cnm community delete` is not a complete delete: it forgets the community
+/// on this machine, while its VTA keeps the ACL entry that authorises the
+/// credential. Say so, and name the command that revokes it.
+fn print_community_local_only_notice(name: &str, client_did: Option<&str>) {
+    eprintln!(
+        "{YELLOW}⚠{RESET} This deletes only the local connection and credential for '{name}'. \
+         The community's VTA, and its ACL entry for this credential, are untouched."
+    );
+    match client_did {
+        Some(did) => eprintln!(
+            "  To revoke the credential on the VTA as well, run this from an admin \
+             connection to it{DIM} (not if it is that VTA's only admin){RESET}:\n    \
+             cnm acl delete {did}"
+        ),
+        None => eprintln!(
+            "  To revoke a credential on the VTA as well, run `cnm acl delete <did>` from \
+             an admin connection to it."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `community delete` is the name; `remove` stays a hidden alias so
+    /// scripts written against it keep working. `--yes` skips the prompt, and
+    /// `--force` is accepted for parity with the other prompt-skipping deletes.
+    #[test]
+    fn community_delete_parses_with_alias_and_skip_flags() {
+        for verb in ["delete", "remove"] {
+            for (flag, expect_yes) in [
+                (None, false),
+                (Some("--yes"), true),
+                (Some("-y"), true),
+                (Some("--force"), true),
+            ] {
+                let mut argv = vec!["cnm", "community", verb, "home"];
+                argv.extend(flag);
+                let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+                let Commands::Community {
+                    command: CommunityCommands::Delete { name, yes },
+                } = cli.command
+                else {
+                    panic!("{argv:?} did not parse as community delete");
+                };
+                assert_eq!(name, "home");
+                assert_eq!(yes, expect_yes, "{argv:?}");
+            }
+        }
+    }
+
+    /// Prompt-skip on `contexts delete` is `--yes`; the old `--force` / `-f`
+    /// spellings still parse.
+    #[test]
+    fn contexts_delete_takes_yes_and_still_honours_force() {
+        for flag in ["--yes", "-y", "--force", "-f"] {
+            let cli = Cli::try_parse_from(["cnm", "contexts", "delete", "ctx", flag])
+                .unwrap_or_else(|e| panic!("{flag}: {e}"));
+            let Commands::Contexts {
+                command: ContextCommands::Delete { yes, .. },
+            } = cli.command
+            else {
+                panic!("expected contexts delete");
+            };
+            assert!(yes, "{flag} did not set yes");
+        }
+    }
 
     // ── requires_auth ──────────────────────────────────────────────
 

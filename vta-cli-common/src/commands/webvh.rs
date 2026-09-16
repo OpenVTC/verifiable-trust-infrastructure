@@ -11,7 +11,10 @@ use crate::display::{
     name_cell, resolve_agent_names_into,
 };
 
-use crate::render::{is_full_display, print_full_entry_owned, print_full_list_title, print_widget};
+use crate::render::{
+    CYAN, DIM, GREEN, RESET, YELLOW, is_full_display, print_full_entry_owned,
+    print_full_list_title, print_widget,
+};
 
 pub async fn cmd_webvh_server_add(
     client: &VtaClient,
@@ -132,12 +135,63 @@ pub async fn cmd_webvh_server_update(
     Ok(())
 }
 
+/// `did-mgmt servers delete <id>` — delete a server from the VTA's registry.
+///
+/// A complete delete of the registry row, and only of that: DID records that
+/// name the server keep naming it, and nothing hosted on the server is touched.
+/// The operation does not refuse in that case (refusing would change what the
+/// Trust Task does), so the command looks first and says what is left behind
+/// and how to clean it up. The look-up is best-effort — a caller allowed to
+/// delete a server but not to list DIDs still gets the delete.
 pub async fn cmd_webvh_server_remove(
     client: &VtaClient,
     id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let dependents: Option<Vec<String>> = client
+        .list_dids_webvh(None, Some(id))
+        .await
+        .ok()
+        .map(|r| r.dids.into_iter().map(|d| d.did).collect());
+    // Captured before the row goes, so the notice can print the exact
+    // command that puts it back.
+    let server_did = match dependents.as_deref() {
+        Some(dids) if !dids.is_empty() => client
+            .list_webvh_servers()
+            .await
+            .ok()
+            .and_then(|r| r.servers.into_iter().find(|s| s.id == id))
+            .map(|s| s.did),
+        _ => None,
+    };
+
     client.remove_webvh_server(id).await?;
-    println!("WebVH server removed: {id}");
+    println!("{GREEN}\u{2713}{RESET} WebVH server deleted: {CYAN}{id}{RESET}");
+
+    match dependents.as_deref() {
+        Some([]) => {}
+        Some(dids) => {
+            let server_did = server_did.as_deref().unwrap_or("<server-did>");
+            eprintln!(
+                "{YELLOW}\u{26a0}{RESET} Only the registry entry was deleted. {} DID(s) are still \
+                 registered against server '{id}', and their logs are still hosted on it:",
+                dids.len()
+            );
+            for did in dids {
+                eprintln!("    {did}");
+            }
+            eprintln!(
+                "  While the id is unregistered, `did-mgmt dids delete` removes only the local \
+                 record and leaves the hosted log behind. To delete those DIDs completely, \
+                 re-add the server and delete them first:\n    \
+                 did-mgmt servers add --id {id} --did {server_did}\n    \
+                 did-mgmt dids delete <did>"
+            );
+        }
+        None => eprintln!(
+            "{DIM}Could not check for DIDs still registered against '{id}'; \
+             `did-mgmt dids list --server {id}` shows any that remain.{RESET}"
+        ),
+    }
     Ok(())
 }
 

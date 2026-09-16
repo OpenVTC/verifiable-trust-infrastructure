@@ -290,7 +290,8 @@ pub struct VaultWipeArgs {
     /// Without this, the command reports the row count and exits
     /// without writing. Irreversible against the local store; demand
     /// explicit confirmation rather than silently mutating fjall.
-    pub force: bool,
+    /// Set by `--yes` (`--force` is a hidden alias).
+    pub yes: bool,
     /// Optional context filter — wipe only rows whose `entry.context_id`
     /// matches. `None` wipes every row in the keyspace.
     ///
@@ -358,7 +359,7 @@ pub async fn run_vault_wipe(args: VaultWipeArgs) -> Result<(), Box<dyn std::erro
         return Ok(());
     }
 
-    if !args.force {
+    if !args.yes {
         eprintln!(
             "Would delete {} vault row(s){}.",
             to_delete.len(),
@@ -375,7 +376,7 @@ pub async fn run_vault_wipe(args: VaultWipeArgs) -> Result<(), Box<dyn std::erro
         if args.context.is_some() && skipped_other_context > 0 {
             eprintln!("  + {skipped_other_context} row(s) in other contexts would be preserved.");
         }
-        eprintln!("Pass --force to apply.");
+        eprintln!("Pass --yes to apply.");
         return Ok(());
     }
 
