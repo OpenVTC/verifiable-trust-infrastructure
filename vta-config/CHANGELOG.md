@@ -2,6 +2,70 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.4.9...vta-config-v0.5.0) — 2026-09-16
+
+
+### Added
+
+- **vta-service**: Give did.jsonl its own rate limiter and make VTA 429s attributable ([#1510](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1510))
+
+* feat(vta-service)!: give did.jsonl its own rate limiter and make VTA 429s attributable
+
+  One per-IP tower_governor bucket (burst 10, one token every 5 s) guarded the
+  whole unauthenticated branch, including the public did.jsonl routes. A pnm
+  command against a self-hosted VTA DID resolves the log and then runs challenge
+  + authenticate from the same address, so a few commands in a row were refused;
+  the mediator and the VTA's readiness gate fetch the log too. Serving the log is
+  a store read with no crypto.
+
+  - The DID-log routes (/.well-known/did.jsonl, the canonical catch-all,
+    /did/{did}/log, TEE /attestation/did-log) move to their own per-IP limiter,
+    keyed by trust_xff exactly as before, with new [server] keys
+    did_log_rate_limit_interval_secs (default 1) and did_log_rate_limit_burst
+    (default 60). The auth limiter keeps rate_limit_interval_secs /
+    rate_limit_burst. The catch-all stays the only root wildcard, an opaque bare
+    404, rate-limited and body-capped.
+  - Every 429 from a VTA limiter carries x-rate-limit-source: vta,
+    x-rate-limit-scope (auth | did-log | backup-blob), a rounded-up Retry-After
+    and a plain body naming the limiter, with no configuration values.
+  - Public log responses send Cache-Control: public, max-age=60 and a strong
+    sha256 ETag, and answer If-None-Match with 304. 404s carry neither.
+
+
+
+### Fixed
+
+- **vta-service**: Trust a recent self-resolution instead of re-fetching per connect attempt ([#1509](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1509))
+
+The mediator supervisor re-confirmed that the VTA's own DID resolves over the
+  network before every connect attempt, and each confirmation built a throwaway
+  DIDCacheClient and fetched did.jsonl uncached. For a VTA that hosts its own log,
+  those fetches land on its own unauthenticated routes from its own address and
+  share the per-IP rate limiter (10 burst, one token per 5 s by default) with
+  everything else from that address. A run of connects failing for reasons that
+  have nothing to do with resolvability (the mediator's negative cache, a
+  mediator restart) spent that budget at one fetch per attempt, and the check
+  straight after a passed gate fetched the document a second time.
+
+  SelfResolutionProbe, owned by MessagingConnect and shared by the gate and every
+  reconnect, remembers when a real network resolution last succeeded and answers
+  from that for SELF_RESOLUTION_FRESH_FOR (300 s). Each real check is still a
+  fresh resolver built and stopped per check, so the preloaded self-DID entry
+  cannot mask anything and no long-lived socket needs stopping on shutdown. Only
+  successes are remembered: a failure clears the confirmation and the next
+  attempt resolves again on the existing backoff.
+
+  300 s is the default mutable-method TTL of affinidi-did-resolver-cache-sdk, the
+  resolver the mediator authenticates us through, so the mediator already acts on
+  a copy of our document that old. If the document has become unresolvable
+  inside the window, the connect's authcrypt check fails and the backoff governs
+  the retry as before.
+
+  run_gate and self_did_network_resolvable keep their signatures and behaviour;
+  run_gate_with_probe and SelfResolutionProbe are additive.
+
+
+
 ## [0.4.9](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.4.8...vta-config-v0.4.9) — 2026-09-16
 
 

@@ -2,6 +2,78 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.16.6...pnm-cli-v0.16.7) — 2026-09-16
+
+
+### Added
+
+- **cli**: Name removal commands `delete`, and say what a delete leaves behind ([#1513](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1513))
+
+* feat(cli): name removal commands `delete`, and say what a delete leaves behind
+
+  Removal commands across pnm, cnm and the offline vta CLI are named
+  `delete`. Each old name stays accepted as a hidden alias, so no script
+  breaks:
+
+  - `did-mgmt servers remove` -> `did-mgmt servers delete` (pnm + vta)
+  - `pnm vta remove` -> `pnm vta delete`
+  - `cnm community remove` -> `cnm community delete` (gains --yes/-y)
+  - `pnm memory forget` -> `pnm memory delete`
+  - `vta approvals disable` -> `vta approvals delete-all` (`disable` still
+    works and prints a note naming the new command)
+
+  Where a delete is not complete, the command now says what remains and
+  how to remove it: `vta delete` / `community delete` keep the VTA's ACL
+  entry (the notice prints the `acl delete <did>` that revokes it);
+  `servers delete` lists DIDs still registered against the server, whose
+  logs stay hosted there; `vault delete` / `cred-vault delete` without
+  --force name `purge` / `--force`.
+
+
+
+### Fixed
+
+- **backup**: Typed refusals for backup on a DIDComm/TSP-only VTA ([#1516](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1516))
+
+The descriptor flow (`pnm backup export|import`) is REST-only: its
+  `stream` algorithm moves the bytes over the VTA's HTTPS blob endpoint.
+  A DIDComm/TSP-only VTA could not be backed up remotely, and every layer
+  reported that badly.
+
+  - SDK: `post_trust_task` refused DIDComm/TSP clients with `Validation`
+    ("your request is wrong") although the same request succeeds over
+    REST. It now returns `VtaError::UnsupportedTransport` naming
+    `--transport rest`, as do `download_blob`/`upload_blob` when a client
+    has no REST leg (their 429 → `RateLimited` mapping is unchanged). A
+    DIDComm client's `rest_url` is still not used: it can come from the
+    caller rather than from an advertised `VTARest` service, and the flow
+    must not downgrade past what the peer advertises.
+  - Server: a VTA with no `public_url` answered `initiate-*` with an opaque
+    `internalError`, after already staging the bundle. It now refuses up
+    front with the code `vta/backup/initiate-{export,import}/1.0` declare,
+    `<slug>:transportUnavailable`, and the client maps that to
+    `UnsupportedTransport`.
+  - CLI: `--use-rest-legacy` on a DIDComm client silently sent the whole
+    envelope as one mediator message (refused above 1 MiB, seen as a
+    timeout). It now warns with the size caveat and `--transport rest`.
+    Import no longer uploads the bytes twice: the commit finalizes the
+    previewed bundle (new `VtaClient::backup_finalize_import`), and
+    re-uploads only when the slot was already collected (not-found). A
+    conflict is surfaced rather than retried, because it may mean "already
+    committed" and commit is not idempotent.
+  - retry_safety: initiate-export's reply carries the secret
+    `transportToken`, not complete-export's; the classifications were
+    swapped to match (initiate-export → KeyedSecret, complete-export →
+    Keyed) so the token is never cached in the dedup store.
+  - Docs: stale status line, non-existent offline `vta backup` command,
+    the appstate note's claim that blobs work for DIDComm clients, the SDK
+    "works on every transport" claim, and an operator note on backup for a
+    DIDComm/TSP-only VTA. The planned transfer algorithm is renamed
+    `chunkedTrustTask` (SPEC §4.10 casing) and specified upstream in
+    trustoverip/dtgwg-trust-tasks-tf#474.
+
+
+
 ## [0.16.6](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.16.5...pnm-cli-v0.16.6) — 2026-09-16
 
 

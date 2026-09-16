@@ -2,6 +2,50 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.15.5...vta-cli-common-v0.16.0) — 2026-09-16
+
+
+### Added
+
+- **cli**: Name removal commands `delete`, and say what a delete leaves behind ([#1513](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1513))
+
+* feat(cli): name removal commands `delete`, and say what a delete leaves behind
+
+  Removal commands across pnm, cnm and the offline vta CLI are named
+  `delete`. Each old name stays accepted as a hidden alias, so no script
+  breaks:
+
+  - `did-mgmt servers remove` -> `did-mgmt servers delete` (pnm + vta)
+  - `pnm vta remove` -> `pnm vta delete`
+  - `cnm community remove` -> `cnm community delete` (gains --yes/-y)
+  - `pnm memory forget` -> `pnm memory delete`
+  - `vta approvals disable` -> `vta approvals delete-all` (`disable` still
+    works and prints a note naming the new command)
+
+  Where a delete is not complete, the command now says what remains and
+  how to remove it: `vta delete` / `community delete` keep the VTA's ACL
+  entry (the notice prints the `acl delete <did>` that revokes it);
+  `servers delete` lists DIDs still registered against the server, whose
+  logs stay hosted there; `vault delete` / `cred-vault delete` without
+  --force name `purge` / `--force`.
+
+- **sdk**: Type rate-limit refusals and say who sent them ([#1511](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1511))
+
+A 429 became VtaError::Other("429: Too Many Requests"), with no hint and
+  the Retry-After header discarded; through the boxed session auth path it
+  became VtaError::Auth, telling the operator to re-authenticate.
+
+  Add VtaError::RateLimited { limited_by, retry_after, limiter, url } with a
+  non_exhaustive RateLimitSource (Vta, Vtc, Mediator, DidHost, Upstream) read
+  from the x-rate-limit-source header; an unlabelled 429 is Upstream (proxy,
+  load balancer, or older VTA). Every VTA HTTP status mapping in the SDK now
+  reads headers. idempotent retries a rate limit whose wait fits
+  MAX_RETRY_AFTER and surfaces a longer one at once. The CLI renders who
+  refused, how long to wait, and which knob to turn; every key name lives in
+  vta_sdk::rate_limit.
+
+
+
 ## [0.15.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.15.4...vta-cli-common-v0.15.5) — 2026-09-16
 
 

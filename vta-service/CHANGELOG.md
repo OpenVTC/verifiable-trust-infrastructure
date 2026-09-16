@@ -2,6 +2,297 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.29.0...vta-service-v0.30.0) — 2026-09-16
+
+
+### Added
+
+- **cli**: Name removal commands `delete`, and say what a delete leaves behind ([#1513](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1513))
+
+* feat(cli): name removal commands `delete`, and say what a delete leaves behind
+
+  Removal commands across pnm, cnm and the offline vta CLI are named
+  `delete`. Each old name stays accepted as a hidden alias, so no script
+  breaks:
+
+  - `did-mgmt servers remove` -> `did-mgmt servers delete` (pnm + vta)
+  - `pnm vta remove` -> `pnm vta delete`
+  - `cnm community remove` -> `cnm community delete` (gains --yes/-y)
+  - `pnm memory forget` -> `pnm memory delete`
+  - `vta approvals disable` -> `vta approvals delete-all` (`disable` still
+    works and prints a note naming the new command)
+
+  Where a delete is not complete, the command now says what remains and
+  how to remove it: `vta delete` / `community delete` keep the VTA's ACL
+  entry (the notice prints the `acl delete <did>` that revokes it);
+  `servers delete` lists DIDs still registered against the server, whose
+  logs stay hosted there; `vault delete` / `cred-vault delete` without
+  --force name `purge` / `--force`.
+
+- **vta-service**: Give did.jsonl its own rate limiter and make VTA 429s attributable ([#1510](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1510))
+
+* feat(vta-service)!: give did.jsonl its own rate limiter and make VTA 429s attributable
+
+  One per-IP tower_governor bucket (burst 10, one token every 5 s) guarded the
+  whole unauthenticated branch, including the public did.jsonl routes. A pnm
+  command against a self-hosted VTA DID resolves the log and then runs challenge
+  + authenticate from the same address, so a few commands in a row were refused;
+  the mediator and the VTA's readiness gate fetch the log too. Serving the log is
+  a store read with no crypto.
+
+  - The DID-log routes (/.well-known/did.jsonl, the canonical catch-all,
+    /did/{did}/log, TEE /attestation/did-log) move to their own per-IP limiter,
+    keyed by trust_xff exactly as before, with new [server] keys
+    did_log_rate_limit_interval_secs (default 1) and did_log_rate_limit_burst
+    (default 60). The auth limiter keeps rate_limit_interval_secs /
+    rate_limit_burst. The catch-all stays the only root wildcard, an opaque bare
+    404, rate-limited and body-capped.
+  - Every 429 from a VTA limiter carries x-rate-limit-source: vta,
+    x-rate-limit-scope (auth | did-log | backup-blob), a rounded-up Retry-After
+    and a plain body naming the limiter, with no configuration values.
+  - Public log responses send Cache-Control: public, max-age=60 and a strong
+    sha256 ETag, and answer If-None-Match with 304. 404s carry neither.
+
+- **tsp**: Adopt Rev 3, and give a TSP session a way to form a relationship ([#1512](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1512))
+
+* docs(tsp): inventory what Rev 3 costs this repository
+
+  Trust Spanning Protocol Rev 3 changed the crypto mode, the version byte,
+  the long count-code prefix, the ciphertext code and layout, the `-E`
+  count's meaning, the signature code and every payload layout at once.
+  There is no compatibility mode: nothing a Rev 2 peer packs can be
+  unpacked by a Rev 3 one, in either direction. So the stack flips
+  together, and this repository is the last part of it with no plan
+  written down.
+
+  The inventory was produced by reading the `tsp-rev3` branch of
+  affinidi-tdk-rs against this repository's own call sites, so it names
+  files rather than describing intentions. Three things worth knowing
+  without reading it:
+
+  **The functional change is one arm.** §7.2.2 says an endpoint SHOULD
+  drop an application message from a VID it holds no relationship with,
+  and the SDK gates on that by default. SDK 0.22's `unpack_message`
+  returns an `InboundTsp` enum instead of a payload, and its `Control`
+  variant is what `handle_tsp` has to grow: record the invite, then decide
+  whether to accept it. `affinidi-messaging-didcomm-service`'s listener is
+  a worked reference for the shape.
+
+  **It fails silently.** A dropped message answers nothing, so a VTA that
+  does not answer invites looks from every client like a transport that
+  accepts connections and never replies. The wallet already sends the
+  invite and waits five seconds before sending anyway, which means an
+  unmigrated VTA that does not gate keeps working and one that does goes
+  quiet — and neither state produces an error anyone can see. That is the
+  reason this is written down before the work rather than during it.
+
+  **There is an authorization decision to take.** Whether the VTA accepts
+  an invite from any authenticated sender, or only from one the ACL
+  already knows. The narrow reading breaks provisioning — a wallet talks
+  to the VTA *in order to* be provisioned — so the broad one is almost
+  certainly right, but it should be a decision rather than whatever the
+  first implementer assumes.
+
+  No code change. The work is blocked on an `affinidi-tdk` release
+  carrying `affinidi-tsp` 0.2.0, and this workspace deliberately has no
+  `[patch.crates-io]` to get ahead with — the note at the bottom of
+  Cargo.toml records the duplicate-`vta-sdk` incident that removed it.
+
+- **keys**: Derive ML-DSA keys from the BIP-32 chain ([#1505](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1505))
+
+`Bip32Extension` gains `derive_ml_dsa_44` and `derive_ml_dsa_65`, and the five
+  sites that refused post-quantum derivation now do it: key creation, both export
+  paths, and the offline `vta keys secrets` CLI. This is what stands between "a
+  `KeyRecord` can carry a post-quantum key" and "a VTA can mint one".
+
+  ## Domain separation is the whole of it
+
+  `derive_ed25519` hands the SLIP-0010 output straight to the key constructor, and
+  FIPS 204 KeyGen takes a 32-byte seed — so the obvious implementation lines up,
+  compiles, and is wrong: **the ML-DSA seed would equal the Ed25519 private key at
+  the same path**, and compromising either would yield the other. Both values are
+  32 bytes, which is exactly why it reads as correct.
+
+  `derive_p256` already solved this, and these follow its construction exactly —
+  HMAC-SHA512 over the derived signing key and chain code, keyed by a label, first
+  32 bytes taken. The label differs *per parameter set*, because ML-DSA-44 and
+  ML-DSA-65 are different algorithms and a holder of one must not be able to
+  reconstruct the other.
+
+  `ml_dsa_seed_is_independent_of_the_ed25519_key_at_the_same_path` is the test for
+  it, and it is not theoretical: built against the naive version it fails with
+  exactly that message. `the_two_ml_dsa_parameter_sets_get_independent_seeds`
+  covers the second half.
+
+  Simpler than P-256 in one respect — xi is 32 arbitrary bytes with no
+  group-order constraint, so there is no reduction and no retry.
+
+  The shared helper exists because the two derivations differ only in the label,
+  and a second copy is how they would eventually disagree about how a seed is
+  produced. That is unrecoverable rather than merely wrong: the key cannot be
+  re-derived afterwards.
+
+  ## Internal keys still refuse, and the comment now says why
+
+  Not blocked on cryptography any more — `affinidi_crypto::ml_dsa` signs and this
+  change derives. What is missing is a decision. An internal key is deliberately
+  the opposite of a derived one: CSPRNG-generated, no derivation path, absent from
+  the mnemonic, so losing the keyspace loses it and everything it authorises.
+  Whether a VTA should hold an *unrecoverable* post-quantum signing key is a
+  question about that trade, and it should not be inherited from a change whose
+  subject was derivation.
+
+  Enables `affinidi-secrets-resolver`'s `ml-dsa` feature, which nothing in this
+  workspace had turned on — so `Secret::generate_ml_dsa_44` was not compiled here
+  at all.
+
+  121 test suites green under `--no-fail-fast`, clippy clean under `-D warnings`,
+  rustfmt clean.
+
+
+
+### Fixed
+
+- **backup**: Typed refusals for backup on a DIDComm/TSP-only VTA ([#1516](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1516))
+
+The descriptor flow (`pnm backup export|import`) is REST-only: its
+  `stream` algorithm moves the bytes over the VTA's HTTPS blob endpoint.
+  A DIDComm/TSP-only VTA could not be backed up remotely, and every layer
+  reported that badly.
+
+  - SDK: `post_trust_task` refused DIDComm/TSP clients with `Validation`
+    ("your request is wrong") although the same request succeeds over
+    REST. It now returns `VtaError::UnsupportedTransport` naming
+    `--transport rest`, as do `download_blob`/`upload_blob` when a client
+    has no REST leg (their 429 → `RateLimited` mapping is unchanged). A
+    DIDComm client's `rest_url` is still not used: it can come from the
+    caller rather than from an advertised `VTARest` service, and the flow
+    must not downgrade past what the peer advertises.
+  - Server: a VTA with no `public_url` answered `initiate-*` with an opaque
+    `internalError`, after already staging the bundle. It now refuses up
+    front with the code `vta/backup/initiate-{export,import}/1.0` declare,
+    `<slug>:transportUnavailable`, and the client maps that to
+    `UnsupportedTransport`.
+  - CLI: `--use-rest-legacy` on a DIDComm client silently sent the whole
+    envelope as one mediator message (refused above 1 MiB, seen as a
+    timeout). It now warns with the size caveat and `--transport rest`.
+    Import no longer uploads the bytes twice: the commit finalizes the
+    previewed bundle (new `VtaClient::backup_finalize_import`), and
+    re-uploads only when the slot was already collected (not-found). A
+    conflict is surfaced rather than retried, because it may mean "already
+    committed" and commit is not idempotent.
+  - retry_safety: initiate-export's reply carries the secret
+    `transportToken`, not complete-export's; the classifications were
+    swapped to match (initiate-export → KeyedSecret, complete-export →
+    Keyed) so the token is never cached in the dedup store.
+  - Docs: stale status line, non-existent offline `vta backup` command,
+    the appstate note's claim that blobs work for DIDComm clients, the SDK
+    "works on every transport" claim, and an operator note on backup for a
+    DIDComm/TSP-only VTA. The planned transfer algorithm is renamed
+    `chunkedTrustTask` (SPEC §4.10 casing) and specified upstream in
+    trustoverip/dtgwg-trust-tasks-tf#474.
+
+- **vta-service**: Trust a recent self-resolution instead of re-fetching per connect attempt ([#1509](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1509))
+
+The mediator supervisor re-confirmed that the VTA's own DID resolves over the
+  network before every connect attempt, and each confirmation built a throwaway
+  DIDCacheClient and fetched did.jsonl uncached. For a VTA that hosts its own log,
+  those fetches land on its own unauthenticated routes from its own address and
+  share the per-IP rate limiter (10 burst, one token per 5 s by default) with
+  everything else from that address. A run of connects failing for reasons that
+  have nothing to do with resolvability (the mediator's negative cache, a
+  mediator restart) spent that budget at one fetch per attempt, and the check
+  straight after a passed gate fetched the document a second time.
+
+  SelfResolutionProbe, owned by MessagingConnect and shared by the gate and every
+  reconnect, remembers when a real network resolution last succeeded and answers
+  from that for SELF_RESOLUTION_FRESH_FOR (300 s). Each real check is still a
+  fresh resolver built and stopped per check, so the preloaded self-DID entry
+  cannot mask anything and no long-lived socket needs stopping on shutdown. Only
+  successes are remembered: a failure clears the confirmation and the next
+  attempt resolves again on the existing backoff.
+
+  300 s is the default mutable-method TTL of affinidi-did-resolver-cache-sdk, the
+  resolver the mediator authenticates us through, so the mediator already acts on
+  a copy of our document that old. If the document has become unresolvable
+  inside the window, the connect's authcrypt check fails and the backoff governs
+  the retry as before.
+
+  run_gate and self_did_network_resolvable keep their signatures and behaviour;
+  run_gate_with_probe and SelfResolutionProbe are additive.
+
+- **tsp**: One transport for TSP, and it must carry a mediator ([#1507](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1507))
+
+`pnm did-mgmt dids create` against a did-host advertising `#tsp` failed
+  instantly with `trust task failed [internalError]`, and in the VTA's log:
+
+      bad gateway: `did:webvh:...:dids.ic3.dev` could not be reached over TSP:
+      Config error: No Mediator is configured for this Profile
+
+  The VTA held two `ATMProfile`s for its own DID. `server::init_auth` built one
+  with **no mediator** and parked it in `AppState.tsp_profile`, reasoning that
+  unsealing a TSP envelope reads the decryption key from the ATM's secrets
+  resolver and so needs no route. `messaging::service::build_messaging` built the
+  mediator-bearing one and kept it inside `VtaMessaging`, where only the inbound
+  loop could see it.
+
+  That reasoning is false. Every TSP entry point in the messaging SDK resolves the
+  mediator off the profile handed to it: `TspOps::pack` and `unpack_bytes` call
+  `ATMProfile::dids()`, and `send_raw` calls it alongside
+  `get_mediator_rest_endpoint()`. All three answer `ConfigError("No Mediator is
+  configured for this Profile")` without one, before any I/O — so that profile
+  could neither send *nor* unseal, and the vault `tsp-message` path it was built
+  for had never worked either.
+
+  It stayed invisible because a mediator-less profile is selectable: right type,
+  registers on an ATM without complaint, fails only when asked to do work. The VTA
+  answered TSP correctly throughout, because `handle_tsp` seals replies on the
+  other profile. When #1482/#1483 taught the outbound seam to *initiate* over TSP,
+  it sealed on the profile `AppState` held, and every TSP send died inside the SDK.
+
+  Consolidated onto one type, `messaging::tsp_transport::TspTransport`: the ATM,
+  the profile registered on it, and the mediator read off that profile. Its
+  constructor calls `dids()`, so a mediator-less profile cannot become a transport
+  and the defect is no longer expressible.
+
+  - `handle_tsp` uses the session transport `build_messaging` now builds, so
+    `mediator_did` leaves `run_inbound_loop`, `handle_inbound` and `handle_tsp` —
+    it was threaded past a DIDComm arm that discarded it. A session whose profile
+    cannot route fails the connect instead of coming up able to receive and not to
+    answer.
+  - `outbound::TspSender` holds a `TspTransport` instead of a mediator copied out
+    of `AppConfig`: one fact, one source, nothing to disagree.
+  - `step_up::try_push_over_tsp` drops its `mediator_did` argument; the caller's
+    `approver_mediator` still gates whether a push happens and still picks the
+    DIDComm fallback's route.
+  - `operations::vault::upsert::unseal_tsp_secret` takes the transport rather than
+    an ATM and a profile that came from different places.
+  - `AppState.tsp_profile` is removed. `AppState::tsp_transport()` is the only way
+    in, and `None` means no live mediator session — which drops TSP from transport
+    selection rather than choosing it and then failing to send.
+
+  The two ATMs stay, and that is deliberate. `AppState.atm` has no socket and no
+  mediator by design: vault release, proxy-login and the DIDComm-envelope auth path
+  pack and unpack through it with no profile at all, and must keep working on a
+  REST-only VTA and while a session is down. Two ATMs with different lifetimes was
+  never the defect; two profiles, one of which could not work, was.
+
+  Nothing caught this because `MockVta::start_with_transports` reproduced the same
+  split — it ran the inbound loop but left the bridge a placeholder and built its
+  own mediator-less profile, so it could only ever answer. It now publishes the
+  wiring the way `MessagingConnect::connect_once` does, and three tests hold the
+  line:
+
+  - `the_vta_can_initiate_a_tsp_send_not_only_answer_one` drives a real routed send
+    through the embedded mediator, and reproduces the reported error verbatim when
+    the old profile is put back;
+  - `tsp_is_not_offered_before_a_mediator_session_exists` pins selection to the
+    live session rather than to config;
+  - `atm_profile_mediator_census` fails the build on any `ATMProfile::new(...,
+    None)` under `vta-service/src`, with an empty allowlist.
+
+
+
 ## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.28.0...vta-service-v0.29.0) — 2026-09-16
 
 

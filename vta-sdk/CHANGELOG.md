@@ -2,6 +2,116 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.39.0...vta-sdk-v0.40.0) — 2026-09-16
+
+
+### Added
+
+- **tsp**: Adopt Rev 3, and give a TSP session a way to form a relationship ([#1512](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1512))
+
+* docs(tsp): inventory what Rev 3 costs this repository
+
+  Trust Spanning Protocol Rev 3 changed the crypto mode, the version byte,
+  the long count-code prefix, the ciphertext code and layout, the `-E`
+  count's meaning, the signature code and every payload layout at once.
+  There is no compatibility mode: nothing a Rev 2 peer packs can be
+  unpacked by a Rev 3 one, in either direction. So the stack flips
+  together, and this repository is the last part of it with no plan
+  written down.
+
+  The inventory was produced by reading the `tsp-rev3` branch of
+  affinidi-tdk-rs against this repository's own call sites, so it names
+  files rather than describing intentions. Three things worth knowing
+  without reading it:
+
+  **The functional change is one arm.** §7.2.2 says an endpoint SHOULD
+  drop an application message from a VID it holds no relationship with,
+  and the SDK gates on that by default. SDK 0.22's `unpack_message`
+  returns an `InboundTsp` enum instead of a payload, and its `Control`
+  variant is what `handle_tsp` has to grow: record the invite, then decide
+  whether to accept it. `affinidi-messaging-didcomm-service`'s listener is
+  a worked reference for the shape.
+
+  **It fails silently.** A dropped message answers nothing, so a VTA that
+  does not answer invites looks from every client like a transport that
+  accepts connections and never replies. The wallet already sends the
+  invite and waits five seconds before sending anyway, which means an
+  unmigrated VTA that does not gate keeps working and one that does goes
+  quiet — and neither state produces an error anyone can see. That is the
+  reason this is written down before the work rather than during it.
+
+  **There is an authorization decision to take.** Whether the VTA accepts
+  an invite from any authenticated sender, or only from one the ACL
+  already knows. The narrow reading breaks provisioning — a wallet talks
+  to the VTA *in order to* be provisioned — so the broad one is almost
+  certainly right, but it should be a decision rather than whatever the
+  first implementer assumes.
+
+  No code change. The work is blocked on an `affinidi-tdk` release
+  carrying `affinidi-tsp` 0.2.0, and this workspace deliberately has no
+  `[patch.crates-io]` to get ahead with — the note at the bottom of
+  Cargo.toml records the duplicate-`vta-sdk` incident that removed it.
+
+- **sdk**: Type rate-limit refusals and say who sent them ([#1511](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1511))
+
+A 429 became VtaError::Other("429: Too Many Requests"), with no hint and
+  the Retry-After header discarded; through the boxed session auth path it
+  became VtaError::Auth, telling the operator to re-authenticate.
+
+  Add VtaError::RateLimited { limited_by, retry_after, limiter, url } with a
+  non_exhaustive RateLimitSource (Vta, Vtc, Mediator, DidHost, Upstream) read
+  from the x-rate-limit-source header; an unlabelled 429 is Upstream (proxy,
+  load balancer, or older VTA). Every VTA HTTP status mapping in the SDK now
+  reads headers. idempotent retries a rate limit whose wait fits
+  MAX_RETRY_AFTER and surfaces a longer one at once. The CLI renders who
+  refused, how long to wait, and which knob to turn; every key name lives in
+  vta_sdk::rate_limit.
+
+
+
+### Fixed
+
+- **backup**: Typed refusals for backup on a DIDComm/TSP-only VTA ([#1516](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1516))
+
+The descriptor flow (`pnm backup export|import`) is REST-only: its
+  `stream` algorithm moves the bytes over the VTA's HTTPS blob endpoint.
+  A DIDComm/TSP-only VTA could not be backed up remotely, and every layer
+  reported that badly.
+
+  - SDK: `post_trust_task` refused DIDComm/TSP clients with `Validation`
+    ("your request is wrong") although the same request succeeds over
+    REST. It now returns `VtaError::UnsupportedTransport` naming
+    `--transport rest`, as do `download_blob`/`upload_blob` when a client
+    has no REST leg (their 429 → `RateLimited` mapping is unchanged). A
+    DIDComm client's `rest_url` is still not used: it can come from the
+    caller rather than from an advertised `VTARest` service, and the flow
+    must not downgrade past what the peer advertises.
+  - Server: a VTA with no `public_url` answered `initiate-*` with an opaque
+    `internalError`, after already staging the bundle. It now refuses up
+    front with the code `vta/backup/initiate-{export,import}/1.0` declare,
+    `<slug>:transportUnavailable`, and the client maps that to
+    `UnsupportedTransport`.
+  - CLI: `--use-rest-legacy` on a DIDComm client silently sent the whole
+    envelope as one mediator message (refused above 1 MiB, seen as a
+    timeout). It now warns with the size caveat and `--transport rest`.
+    Import no longer uploads the bytes twice: the commit finalizes the
+    previewed bundle (new `VtaClient::backup_finalize_import`), and
+    re-uploads only when the slot was already collected (not-found). A
+    conflict is surfaced rather than retried, because it may mean "already
+    committed" and commit is not idempotent.
+  - retry_safety: initiate-export's reply carries the secret
+    `transportToken`, not complete-export's; the classifications were
+    swapped to match (initiate-export → KeyedSecret, complete-export →
+    Keyed) so the token is never cached in the dedup store.
+  - Docs: stale status line, non-existent offline `vta backup` command,
+    the appstate note's claim that blobs work for DIDComm clients, the SDK
+    "works on every transport" claim, and an operator note on backup for a
+    DIDComm/TSP-only VTA. The planned transfer algorithm is renamed
+    `chunkedTrustTask` (SPEC §4.10 casing) and specified upstream in
+    trustoverip/dtgwg-trust-tasks-tf#474.
+
+
+
 ## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.38.2...vta-sdk-v0.39.0) — 2026-09-16
 
 

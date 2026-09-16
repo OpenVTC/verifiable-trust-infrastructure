@@ -2,6 +2,64 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.5.0...vta-keys-v0.5.1) — 2026-09-16
+
+
+### Added
+
+- **keys**: Derive ML-DSA keys from the BIP-32 chain ([#1505](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1505))
+
+`Bip32Extension` gains `derive_ml_dsa_44` and `derive_ml_dsa_65`, and the five
+  sites that refused post-quantum derivation now do it: key creation, both export
+  paths, and the offline `vta keys secrets` CLI. This is what stands between "a
+  `KeyRecord` can carry a post-quantum key" and "a VTA can mint one".
+
+  ## Domain separation is the whole of it
+
+  `derive_ed25519` hands the SLIP-0010 output straight to the key constructor, and
+  FIPS 204 KeyGen takes a 32-byte seed — so the obvious implementation lines up,
+  compiles, and is wrong: **the ML-DSA seed would equal the Ed25519 private key at
+  the same path**, and compromising either would yield the other. Both values are
+  32 bytes, which is exactly why it reads as correct.
+
+  `derive_p256` already solved this, and these follow its construction exactly —
+  HMAC-SHA512 over the derived signing key and chain code, keyed by a label, first
+  32 bytes taken. The label differs *per parameter set*, because ML-DSA-44 and
+  ML-DSA-65 are different algorithms and a holder of one must not be able to
+  reconstruct the other.
+
+  `ml_dsa_seed_is_independent_of_the_ed25519_key_at_the_same_path` is the test for
+  it, and it is not theoretical: built against the naive version it fails with
+  exactly that message. `the_two_ml_dsa_parameter_sets_get_independent_seeds`
+  covers the second half.
+
+  Simpler than P-256 in one respect — xi is 32 arbitrary bytes with no
+  group-order constraint, so there is no reduction and no retry.
+
+  The shared helper exists because the two derivations differ only in the label,
+  and a second copy is how they would eventually disagree about how a seed is
+  produced. That is unrecoverable rather than merely wrong: the key cannot be
+  re-derived afterwards.
+
+  ## Internal keys still refuse, and the comment now says why
+
+  Not blocked on cryptography any more — `affinidi_crypto::ml_dsa` signs and this
+  change derives. What is missing is a decision. An internal key is deliberately
+  the opposite of a derived one: CSPRNG-generated, no derivation path, absent from
+  the mnemonic, so losing the keyspace loses it and everything it authorises.
+  Whether a VTA should hold an *unrecoverable* post-quantum signing key is a
+  question about that trade, and it should not be inherited from a change whose
+  subject was derivation.
+
+  Enables `affinidi-secrets-resolver`'s `ml-dsa` feature, which nothing in this
+  workspace had turned on — so `Secret::generate_ml_dsa_44` was not compiled here
+  at all.
+
+  121 test suites green under `--no-fail-fast`, clippy clean under `-D warnings`,
+  rustfmt clean.
+
+
+
 ## [0.5.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.4.9...vta-keys-v0.5.0) — 2026-09-16
 
 

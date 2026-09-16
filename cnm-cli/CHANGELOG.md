@@ -2,6 +2,35 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.15.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.15.3...cnm-cli-v0.15.4) — 2026-09-16
+
+
+### Added
+
+- **cli**: Name removal commands `delete`, and say what a delete leaves behind ([#1513](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1513))
+
+* feat(cli): name removal commands `delete`, and say what a delete leaves behind
+
+  Removal commands across pnm, cnm and the offline vta CLI are named
+  `delete`. Each old name stays accepted as a hidden alias, so no script
+  breaks:
+
+  - `did-mgmt servers remove` -> `did-mgmt servers delete` (pnm + vta)
+  - `pnm vta remove` -> `pnm vta delete`
+  - `cnm community remove` -> `cnm community delete` (gains --yes/-y)
+  - `pnm memory forget` -> `pnm memory delete`
+  - `vta approvals disable` -> `vta approvals delete-all` (`disable` still
+    works and prints a note naming the new command)
+
+  Where a delete is not complete, the command now says what remains and
+  how to remove it: `vta delete` / `community delete` keep the VTA's ACL
+  entry (the notice prints the `acl delete <did>` that revokes it);
+  `servers delete` lists DIDs still registered against the server, whose
+  logs stay hosted there; `vault delete` / `cred-vault delete` without
+  --force name `purge` / `--force`.
+
+
+
 ## [0.15.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.15.2...cnm-cli-v0.15.3) — 2026-09-16
 
 
