@@ -7,7 +7,7 @@
 
 use vta_cli_common::render::{DIM, GREEN, RED, RESET};
 use vta_cli_common::secure_file;
-use vta_sdk::client::VtaClient;
+use vta_sdk::client::{SurfaceTransport, VtaClient};
 use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
 use crate::cli::BackupCommands;
@@ -27,6 +27,7 @@ pub(crate) async fn run(
                 secure_file::check_export_path(path, force)?;
             }
             if use_rest_legacy {
+                warn_legacy_over_mediator(client);
                 cmd_backup_export(client, include_audit, output, force).await
             } else {
                 cmd_backup_export_descriptor(client, include_audit, output, force).await
@@ -38,11 +39,43 @@ pub(crate) async fn run(
             use_rest_legacy,
         } => {
             if use_rest_legacy {
+                warn_legacy_over_mediator(client);
                 cmd_backup_import(client, file, preview).await
             } else {
                 cmd_backup_import_descriptor(client, file, preview).await
             }
         }
+    }
+}
+
+/// `--use-rest-legacy` is only REST when the client is.
+///
+/// The legacy calls ride the protocol-message surface, so on a DIDComm client
+/// the flag silently sent the whole backup envelope as one DIDComm message.
+/// A mediator refuses anything over its `message_size` limit (1 MiB by
+/// default, and DIDComm's base64 layers leave roughly half of that for the
+/// envelope), so for any real VTA the reply never arrives and the CLI waits out
+/// its timeout with no explanation. The flag is kept, and a small VTA may still
+/// fit, so this warns rather than refuses — but it says what is actually
+/// happening and how to get what the flag name promises.
+fn warn_legacy_over_mediator(client: &VtaClient) {
+    let surface = client.protocol_message_transport();
+    if let Some(warning) = legacy_over_mediator_warning(surface) {
+        eprintln!("{RED}warning:{RESET} {warning}");
+    }
+}
+
+fn legacy_over_mediator_warning(surface: SurfaceTransport) -> Option<String> {
+    match surface {
+        SurfaceTransport::Rest => None,
+        other => Some(format!(
+            "`--use-rest-legacy` is not using REST: this client reaches the VTA over \
+             {other}, so the whole backup travels as a single mediator message. A \
+             mediator refuses messages over its size limit (1 MiB by default, roughly \
+             half of that usable after DIDComm encoding), so this fails — usually as a \
+             timeout — for all but very small VTAs. Re-run with `--transport rest` for \
+             an actual REST transfer."
+        )),
     }
 }
 
@@ -236,11 +269,9 @@ async fn cmd_backup_import_descriptor(
         .interact()?;
     validate_backup_password(&password)?;
 
-    // Preview run: confirm=false. The descriptor-pattern import
-    // ceremony uploads the bytes once and then re-runs finalize
-    // with confirm=true for the commit. Each finalize call reads
-    // the staged bytes server-side; the state machine allows the
-    // preview → commit sequence.
+    // Preview run: confirm=false. This uploads the bytes; the commit below
+    // re-runs finalize against the same bundle. Each finalize call reads the
+    // staged bytes server-side; the state machine allows preview → commit.
     println!("Validating backup (trust-task descriptor flow)...");
     let preview = client
         .backup_import_via_descriptor(&bytes, &password, false)
@@ -271,16 +302,43 @@ async fn cmd_backup_import_descriptor(
         return Ok(());
     }
 
-    // Commit run: confirm=true. The descriptor-pattern import
-    // ceremony re-runs the full initiate → upload → finalize
-    // sequence because the SDK helper is one-shot per call. This
-    // mirrors the legacy path's "preview then import" idiom; bytes
-    // are uploaded twice but the VTA-side cost is just buffer +
-    // re-decrypt.
+    // Commit run: confirm=true, against the bundle the preview already
+    // uploaded — a previewed bundle accepts the commit, so the bytes do not
+    // cross the wire twice. The slot is short-lived (5 minutes), though, and
+    // the confirmation prompt above waits on a human. A slot the sweeper has
+    // already collected answers not-found, and only then is the full
+    // initiate → upload → finalize sequence re-run.
+    //
+    // A conflict is deliberately NOT retried that way. It covers both an
+    // expired-but-not-yet-collected slot and "already committed", and the two
+    // cannot be told apart without parsing prose. Re-uploading and committing
+    // after the second would apply the backup twice — commit is not idempotent
+    // (`vta/backup/finalize-import` §"Why commit is not idempotent") — so the
+    // operator is told to re-run instead.
     println!("Importing...");
-    let result = client
-        .backup_import_via_descriptor(&bytes, &password, true)
-        .await?;
+    let result = match client
+        .backup_finalize_import(&preview.bundle_id, &password, true)
+        .await
+    {
+        Ok(result) => result,
+        Err(vta_sdk::error::VtaError::NotFound(_)) => {
+            println!("{DIM}  Upload slot expired during confirmation; uploading again...{RESET}");
+            client
+                .backup_import_via_descriptor(&bytes, &password, true)
+                .await?
+        }
+        Err(e @ vta_sdk::error::VtaError::Conflict(_)) => {
+            eprintln!(
+                "{RED}error:{RESET} the previewed bundle can no longer be committed ({e}). \
+                 If the confirmation took longer than the 5-minute upload slot, re-run \
+                 `pnm backup import {}`; nothing was applied by this attempt unless the \
+                 message says the bundle was already committed.",
+                file.display()
+            );
+            return Err(e.into());
+        }
+        Err(e) => return Err(e.into()),
+    };
     println!(
         "{GREEN}✓{RESET} {}",
         result.message.as_deref().unwrap_or("Import complete")
@@ -291,4 +349,23 @@ async fn cmd_backup_import_descriptor(
         println!("  You may need to re-authenticate if the VTA DID changed.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_flag_is_silent_on_a_rest_client() {
+        assert!(legacy_over_mediator_warning(SurfaceTransport::Rest).is_none());
+    }
+
+    #[test]
+    fn legacy_flag_warns_with_the_size_caveat_on_a_mediator_client() {
+        for surface in [SurfaceTransport::Didcomm, SurfaceTransport::Tsp] {
+            let w = legacy_over_mediator_warning(surface).expect("a warning");
+            assert!(w.contains("1 MiB"), "{w}");
+            assert!(w.contains("--transport rest"), "{w}");
+        }
+    }
 }

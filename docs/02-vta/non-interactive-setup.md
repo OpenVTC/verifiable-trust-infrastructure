@@ -478,7 +478,9 @@ deliberately fail-closed with no plaintext fallback, so a VTA started against an
 unconverted store would fail to read every pre-existing row — including its own
 ACL entries, locking you out.
 
-**Take a backup before the first hardened boot** (`vta backup export`). The
+**Take a backup before the first hardened boot** — `pnm backup export`
+against the still-unhardened, running VTA as a super-admin (there is no
+offline `vta backup` command). The
 conversion rewrites every row in place, and the salt plus the seed are jointly
 required to read the result afterwards.
 

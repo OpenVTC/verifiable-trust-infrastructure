@@ -102,6 +102,11 @@ pub async fn initiate_export(
     body: InitiateExportBody,
 ) -> Result<InitiateExportResultBody, AppError> {
     auth.require_super_admin()?;
+    // Before any state is serialized: a descriptor with no fetchable URL is
+    // useless, and discovering that after staging leaves an orphan bundle.
+    if blob_transport_base_url(deps.config).await.is_none() {
+        return Err(transport_unavailable_internal());
+    }
     validate_algorithm(&body.algorithm)?;
     enforce_open_bundle_cap(deps.bundles_ks, &auth.did).await?;
 
@@ -233,6 +238,10 @@ pub async fn initiate_import(
     body: InitiateImportBody,
 ) -> Result<InitiateImportResultBody, AppError> {
     auth.require_super_admin()?;
+    // Before a slot is recorded — see `initiate_export`.
+    if blob_transport_base_url(deps.config).await.is_none() {
+        return Err(transport_unavailable_internal());
+    }
     validate_algorithm(&body.algorithm)?;
     enforce_open_bundle_cap(deps.bundles_ks, &auth.did).await?;
 
@@ -522,13 +531,9 @@ async fn build_descriptor(
     token: BundleToken,
     config: &tokio::sync::RwLock<AppConfig>,
 ) -> Result<BundleDescriptor, AppError> {
-    let public_url = config.read().await.public_url.clone().ok_or_else(|| {
-        AppError::Internal(
-            "VTA `public_url` is not configured; cannot build backup bundle URL. \
-                 Set `public_url` in config (or VTA_PUBLIC_URL env var) and restart."
-                .into(),
-        )
-    })?;
+    let public_url = blob_transport_base_url(config)
+        .await
+        .ok_or_else(transport_unavailable_internal)?;
     let transport_url = build_blob_url(&public_url, &record.bundle_id);
     Ok(BundleDescriptor {
         bundle_id: record.bundle_id.to_string(),
@@ -539,6 +544,42 @@ async fn build_descriptor(
         expected_size_bytes: record.expected_size_bytes,
         expires_at: record.expires_at,
     })
+}
+
+/// What a `transportUnavailable` rejection says on the wire.
+///
+/// Deliberately names no configuration key: framework 0.5.0 forbids a
+/// `message` from revealing consumer-internal state. The operator-facing
+/// cause (`public_url` unset) goes to the log.
+pub const TRANSPORT_UNAVAILABLE_MESSAGE: &str = "this agent publishes no HTTPS address at which backup bytes can be \
+     transferred, so it cannot produce a `stream` descriptor; the fix is on the \
+     agent's configuration, not in the request";
+
+/// The base URL the `stream` algorithm's blob endpoint is published under, or
+/// `None` when the VTA has no public HTTPS address (`public_url` unset or
+/// blank) — the DIDComm/TSP-only deployment.
+///
+/// The `initiate-*` Trust Task handlers call this **before** the op so they
+/// can refuse with the specification's
+/// `vta/backup/initiate-{export,import}:transportUnavailable` code; the ops
+/// check it again up front, before staging anything, so a caller that skips
+/// the handler cannot leave an orphaned bundle behind an unfetchable
+/// descriptor.
+pub async fn blob_transport_base_url(config: &tokio::sync::RwLock<AppConfig>) -> Option<String> {
+    config
+        .read()
+        .await
+        .public_url
+        .clone()
+        .filter(|u| !u.trim().is_empty())
+}
+
+fn transport_unavailable_internal() -> AppError {
+    AppError::Internal(
+        "VTA `public_url` is not configured; cannot build backup bundle URL. \
+         Set `public_url` in config (or VTA_PUBLIC_URL env var) and restart."
+            .into(),
+    )
 }
 
 fn build_blob_url(public_url: &str, bundle_id: &Uuid) -> String {
@@ -867,6 +908,47 @@ mod tests {
         let r2 = require_owned(&bundles_ks, &id, &auth.did).await.unwrap();
         assert!(r2.state.is_terminal());
         let _ = blob_dir;
+    }
+
+    fn config_without_public_url() -> Arc<RwLock<AppConfig>> {
+        let config: AppConfig = toml::from_str(
+            r#"
+            vta_did = "did:key:zTestVTA"
+            [store]
+            data_dir = "/tmp/does-not-matter-for-this-test"
+            [auth]
+            "#,
+        )
+        .expect("parse config");
+        Arc::new(RwLock::new(config))
+    }
+
+    /// A DIDComm/TSP-only VTA has no `public_url`. The `initiate-*` handlers
+    /// key the spec's `transportUnavailable` refusal on this returning `None`
+    /// — including for a blank value, which is no more fetchable than an
+    /// absent one.
+    #[tokio::test]
+    async fn blob_transport_is_unavailable_without_a_public_url() {
+        assert_eq!(
+            blob_transport_base_url(&config_without_public_url()).await,
+            None
+        );
+        assert_eq!(
+            blob_transport_base_url(&config_with_public_url("  ")).await,
+            None,
+            "a blank public_url must read as unavailable"
+        );
+        assert_eq!(
+            blob_transport_base_url(&config_with_public_url("https://vta.example")).await,
+            Some("https://vta.example".to_string())
+        );
+    }
+
+    /// The wire message must not leak the configuration key (framework 0.5.0,
+    /// *What a `message` May Not Say*); the log carries that.
+    #[test]
+    fn transport_unavailable_message_names_no_config_key() {
+        assert!(!TRANSPORT_UNAVAILABLE_MESSAGE.contains("public_url"));
     }
 
     #[test]

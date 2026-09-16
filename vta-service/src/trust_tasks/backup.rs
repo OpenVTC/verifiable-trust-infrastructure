@@ -19,7 +19,53 @@ use crate::auth::AuthClaims;
 use crate::operations::backup::descriptors;
 use crate::server::AppState;
 
-use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
+use super::helpers::{
+    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with_code, success_response,
+};
+
+/// Slugs whose specifications declare `transportUnavailable`.
+const INITIATE_EXPORT_SLUG: &str = "vta/backup/initiate-export";
+const INITIATE_IMPORT_SLUG: &str = "vta/backup/initiate-import";
+
+/// Refuse an `initiate-*` with the specification's own
+/// `<slug>:transportUnavailable` code.
+///
+/// Both `initiate-export/1.0` and `initiate-import/1.0` require it of a
+/// recipient with no address at which the bytes can move — the
+/// DIDComm/TSP-only VTA, whose `public_url` is unset. This used to surface as
+/// `internalError`, which tells the producer "not your fault, retry", when the
+/// only fix is the agent's configuration: the opposite response to the one the
+/// operator needs.
+fn transport_unavailable(doc: &TrustTask<Value>, slug: &str) -> TrustTaskOutcome {
+    tracing::warn!(
+        slug,
+        "backup descriptor refused: `public_url` is not configured, so the `stream` \
+         algorithm has no blob URL to publish"
+    );
+    let code = trust_tasks_rs::TrustTaskCode::new_extended(slug, "transportUnavailable")
+        .expect("backup extended code is grammar-valid");
+    reject_with_code(doc, code, descriptors::TRANSPORT_UNAVAILABLE_MESSAGE, None)
+}
+
+/// The `initiate-*` preconditions the handler must answer itself, in the order
+/// a caller should learn them: entitlement first (an unauthorized caller learns
+/// nothing about this agent's deployment), then whether the transport exists.
+async fn initiate_precheck(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    slug: &str,
+) -> Result<(), TrustTaskOutcome> {
+    auth.require_super_admin()
+        .map_err(|e| app_error_to_reject(doc, e))?;
+    if descriptors::blob_transport_base_url(&state.config)
+        .await
+        .is_none()
+    {
+        return Err(transport_unavailable(doc, slug));
+    }
+    Ok(())
+}
 
 /// Record a backup-lifecycle event against its bundle.
 ///
@@ -80,6 +126,9 @@ pub(super) async fn handle_initiate_export(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Err(resp) = initiate_precheck(state, auth, &doc, INITIATE_EXPORT_SLUG).await {
+        return resp;
+    }
     let deps = crate::operations::descriptor_deps_from_app_state(state);
     // `include_audit` is read BEFORE the request moves into the op: it is the
     // one member that changes what leaves the agent — the trail records the
@@ -149,6 +198,9 @@ pub(super) async fn handle_initiate_import(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Err(resp) = initiate_precheck(state, auth, &doc, INITIATE_IMPORT_SLUG).await {
+        return resp;
+    }
     let deps = crate::operations::descriptor_deps_from_app_state(state);
     match descriptors::initiate_import(&deps, auth, req).await {
         Ok(body) => {
@@ -253,5 +305,56 @@ pub(super) async fn handle_abort(
             success_response(&doc, body)
         }
         Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use trust_tasks_rs::TypeUri;
+
+    fn doc(uri: &str) -> TrustTask<Value> {
+        let uri: TypeUri = uri.parse().expect("backup uri");
+        TrustTask::new("urn:uuid:test", uri, serde_json::json!({}))
+    }
+
+    /// A VTA with no public HTTPS address answers `initiate-*` with the code
+    /// its specification declares, not `internalError`.
+    #[test]
+    fn transport_unavailable_uses_the_specified_extended_code() {
+        for (uri, slug) in [
+            (
+                vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0,
+                INITIATE_EXPORT_SLUG,
+            ),
+            (
+                vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0,
+                INITIATE_IMPORT_SLUG,
+            ),
+        ] {
+            assert!(
+                uri.contains(slug),
+                "{uri}: the slug constant must match the dispatched URI"
+            );
+            let outcome = transport_unavailable(&doc(uri), slug);
+            let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+            assert_eq!(
+                parsed["payload"]["code"],
+                format!("{slug}:transportUnavailable"),
+                "{parsed}"
+            );
+            assert_ne!(
+                outcome.status,
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "transportUnavailable is not an internal error"
+            );
+            assert!(
+                !parsed["payload"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("public_url"),
+                "the wire message must not name configuration: {parsed}"
+            );
+        }
     }
 }
