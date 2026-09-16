@@ -113,10 +113,17 @@ pub async fn generate(
         // the mnemonic), so minting one under a key type this function does not
         // actually implement would strand whatever it was minted for.
         //
-        // ML-DSA lands here. The encoders in `lib.rs` already know its
-        // multicodecs, so a `KeyRecord` can *carry* one — deriving it is the
-        // separate piece of work, and until that exists this is the honest
-        // answer rather than a silent Ed25519 key wearing an ML-DSA label.
+        // ML-DSA lands here, and it is *not* blocked on the cryptography any
+        // more: `Bip32Extension` derives it and `affinidi_crypto::ml_dsa` signs
+        // with it. What is missing is a decision rather than a function.
+        //
+        // An internal key is deliberately the opposite of a derived one — it
+        // comes from the CSPRNG, has no derivation path, and is absent from the
+        // mnemonic, so losing the keyspace loses it and everything it
+        // authorises. Whether a VTA should hold an *unrecoverable* post-quantum
+        // signing key is a question about that trade, not about ML-DSA, and it
+        // should be answered on its own rather than inherited from a PR whose
+        // subject was derivation.
         other => {
             return Err(AppError::Validation(format!(
                 "internal keys do not support {other} yet"

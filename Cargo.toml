@@ -150,7 +150,7 @@ time = "0.3"
 # production tree.
 x509-parser = { version = "0.18", features = ["verify-aws"] }
 affinidi-openid4vci = "0.2"
-affinidi-secrets-resolver = "0.5"
+affinidi-secrets-resolver = { version = "0.5.12", features = ["ml-dsa"] }
 # Reliable messaging delivery layer (durable outbox + drain + §5a confirmation)
 # over the MessageTransport contract — the D1 delivery layer the VTI cut-over
 # (D2) wires in. `VtiOutboxStore` (vti-common) backs its OutboxStore with fjall.
