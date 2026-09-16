@@ -65,17 +65,14 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-use affinidi_messaging_delivery::Delivery;
-use affinidi_messaging_didcomm::Message;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 use tracing::debug;
 use trust_tasks_rs::TrustTask;
-use uuid::Uuid;
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities, select_protocol};
 
-use vti_common::capability_client::{TRUST_TASK_ENVELOPE_TYPE, build_document};
+use vti_common::capability_client::build_document;
 
 use crate::credentials::LocalSigner;
 use crate::hooks::PendingReplies;
@@ -85,14 +82,6 @@ use super::client::{RegistryError, RegistryTransport, TrustRegistryClient};
 use super::model::{RegistryRecord, RegistryStatus};
 use super::upstream::UpstreamRegistryClient;
 use super::{RECOGNISE_ACTION, TRUST_GRAPH_RESOURCE};
-
-/// The `trust-tasks-tsp` binding envelope type.
-///
-/// Mirrored from `trust_tasks_tsp::ENVELOPE_TYPE` rather than depended upon:
-/// pulling the binding crate in would drag a second TSP stack into the build
-/// graph for one constant. [`tsp_envelope_type_matches_the_binding`] pins the
-/// string.
-const TSP_ENVELOPE_TYPE: &str = "https://trusttasks.org/binding/tsp/0.1/envelope";
 
 /// Canonical `registry/*` Trust Task type URIs.
 const RECORD_PUT: &str = "https://trusttasks.org/spec/registry/record/put/0.1";
@@ -376,44 +365,23 @@ impl MessagingRegistryClient {
 
     /// Pack the document in the DIDComm trust-task envelope and hand it to the
     /// delivery layer.
+    ///
+    /// The packing is `crate::outbound`'s, shared with the hook writer, which
+    /// held a byte-identical copy of it until now.
     async fn send_didcomm(
         &self,
         messaging: &VtcMessaging,
         doc: &TrustTask<Value>,
     ) -> Result<(), RegistryError> {
-        let body = serde_json::to_value(doc)
-            .map_err(|e| RegistryError::Transient(format!("serialise envelope body: {e}")))?;
-        let envelope = Message::build(
-            format!("urn:uuid:{}", Uuid::new_v4()),
-            TRUST_TASK_ENVELOPE_TYPE.to_string(),
-            body,
-        )
-        .from(messaging.vtc_did.clone())
-        .to(self.registry_did.clone())
-        .thid(doc.id.clone())
-        .finalize();
-
-        let (packed, _) = messaging
-            .atm
-            .pack_encrypted(
-                &envelope,
-                &self.registry_did,
-                Some(&messaging.vtc_did),
-                Some(&messaging.vtc_did),
-            )
+        use crate::outbound::OutboundError;
+        crate::outbound::send_trust_task_didcomm(messaging, &self.registry_did, doc)
             .await
-            .map_err(|e| RegistryError::Unreachable(format!("pack failed: {e}")))?;
-
-        messaging
-            .service
-            .send(
-                &self.registry_did,
-                packed.into_bytes(),
-                Delivery::BestEffort,
-            )
-            .await
-            .map_err(|e| RegistryError::Unreachable(format!("send failed: {e}")))?;
-        Ok(())
+            .map_err(|e| match e {
+                OutboundError::Serialise(_) => RegistryError::Transient(e.to_string()),
+                OutboundError::Pack(_) | OutboundError::Send(_) => {
+                    RegistryError::Unreachable(e.to_string())
+                }
+            })
     }
 
     /// Seal the document in the `trust-tasks-tsp` binding envelope and route it
@@ -493,10 +461,7 @@ fn classify_no_match(
 
 /// Wrap a document in the `trust-tasks-tsp` binding envelope.
 fn tsp_envelope(doc: &TrustTask<Value>) -> Result<Vec<u8>, RegistryError> {
-    let document = serde_json::to_value(doc)
-        .map_err(|e| RegistryError::Transient(format!("serialise document: {e}")))?;
-    serde_json::to_vec(&json!({ "type": TSP_ENVELOPE_TYPE, "document": document }))
-        .map_err(|e| RegistryError::Transient(format!("serialise TSP envelope: {e}")))
+    crate::outbound::seal_trust_task_tsp(doc).map_err(|e| RegistryError::Transient(e.to_string()))
 }
 
 /// Classify a reply document into "the task succeeded" or a typed failure.
@@ -875,16 +840,13 @@ mod tests {
         )
     }
 
-    #[test]
-    fn tsp_envelope_type_matches_the_binding() {
-        // Pinned against `trust_tasks_tsp::ENVELOPE_TYPE`. A drift here is a
-        // silent interop break: the registry rejects an envelope whose `type`
-        // it does not recognise, and the failure surfaces only as a timeout.
-        assert_eq!(
-            TSP_ENVELOPE_TYPE,
-            "https://trusttasks.org/binding/tsp/0.1/envelope"
-        );
-    }
+    // `tsp_envelope_type_matches_the_binding` is gone, and its absence is the
+    // point. It asserted one local literal equalled another local literal, so it
+    // passed whatever the published binding did — it could never have detected
+    // the drift its own comment described. The envelope type now comes from
+    // `vta_sdk::tsp_binding`, which re-exports `trust_tasks_tsp::ENVELOPE_TYPE`,
+    // so there is no local copy left to drift; `outbound::tests::
+    // the_tsp_seal_is_the_published_envelope` checks the seal against it.
 
     #[test]
     fn tsp_envelope_wraps_the_document() {
@@ -896,7 +858,7 @@ mod tests {
         );
         let bytes = tsp_envelope(&doc).unwrap();
         let parsed: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(parsed["type"], TSP_ENVELOPE_TYPE);
+        assert_eq!(parsed["type"], vta_sdk::tsp_binding::ENVELOPE_TYPE);
         assert_eq!(parsed["document"]["type"], RECORD_QUERY);
     }
 

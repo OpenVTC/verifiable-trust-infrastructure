@@ -10,13 +10,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_messaging_delivery::Delivery;
-use affinidi_messaging_didcomm::Message;
 use async_trait::async_trait;
 use tokio::sync::OnceCell;
-use uuid::Uuid;
 use vti_common::capability_client::{
-    self, TRUST_TASK_ENVELOPE_TYPE, WriteOutcome, build_git_trust_grant, build_git_trust_revoke,
+    self, WriteOutcome, build_git_trust_grant, build_git_trust_revoke,
 };
 
 use crate::credentials::LocalSigner;
@@ -159,44 +156,27 @@ impl DidcommCapabilityWriter {
 
     /// Pack the signed document in the trust-task envelope and hand it to the
     /// delivery layer (`BestEffort` — the hook queue owns durability).
+    ///
+    /// The packing itself is `crate::outbound`'s. This used to be a verbatim
+    /// copy of `registry::messaging::send_didcomm`, differing only in which
+    /// error type it mapped into — and a copy of a carriage is a second place
+    /// the envelope `type` can be got wrong, which fails silently.
     async fn send_envelope(
         &self,
         messaging: &VtcMessaging,
         doc: &trust_tasks_rs::TrustTask<serde_json::Value>,
     ) -> Result<(), HookWriteError> {
-        let body = serde_json::to_value(doc)
-            .map_err(|e| HookWriteError::Transient(format!("serialise envelope body: {e}")))?;
-        let envelope = Message::build(
-            format!("urn:uuid:{}", Uuid::new_v4()),
-            TRUST_TASK_ENVELOPE_TYPE.to_string(),
-            body,
-        )
-        .from(messaging.vtc_did.clone())
-        .to(self.registry_did.clone())
-        .thid(doc.id.clone())
-        .finalize();
-
-        let (packed, _) = messaging
-            .atm
-            .pack_encrypted(
-                &envelope,
-                &self.registry_did,
-                Some(&messaging.vtc_did),
-                Some(&messaging.vtc_did),
-            )
+        use crate::outbound::OutboundError;
+        crate::outbound::send_trust_task_didcomm(messaging, &self.registry_did, doc)
             .await
-            .map_err(|e| HookWriteError::Unreachable(format!("pack failed: {e}")))?;
-
-        messaging
-            .service
-            .send(
-                &self.registry_did,
-                packed.into_bytes(),
-                Delivery::BestEffort,
-            )
-            .await
-            .map_err(|e| HookWriteError::Unreachable(format!("send failed: {e}")))?;
-        Ok(())
+            .map_err(|e| match e {
+                // A document that will not serialise will not serialise on a
+                // retry either; an unreachable peer might become reachable.
+                OutboundError::Serialise(_) => HookWriteError::Transient(e.to_string()),
+                OutboundError::Pack(_) | OutboundError::Send(_) => {
+                    HookWriteError::Unreachable(e.to_string())
+                }
+            })
     }
 }
 
