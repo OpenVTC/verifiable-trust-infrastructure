@@ -803,6 +803,23 @@ impl VtaClient {
                 .await
                 .map_err(|e| VtaError::TspTransport(e.to_string()))?;
 
+        // §7.2.2: the VTA drops an application message from a VID it holds no
+        // relationship with, so the control exchange is a precondition of every
+        // Trust Task this client will send — not an optional courtesy. Doing it
+        // here rather than exposing a `relate()` for callers to remember is the
+        // difference between a client that works and one that times out with
+        // nothing in any log on either side.
+        //
+        // Nothing to await: the VTA records the invite on arrival and
+        // `admits_application_message` is true for any state but `None`, so
+        // traffic flows without waiting for an accept (§3.6). `relate` is
+        // idempotent, so a reconnect against a durable relationship store is a
+        // no-op rather than an `InvalidTransition`.
+        session
+            .relate(vta_did)
+            .await
+            .map_err(|e| VtaError::TspTransport(format!("TSP relationship failed: {e}")))?;
+
         Ok(Self::tsp_transport(
             session,
             vta_did,
@@ -842,6 +859,23 @@ impl VtaClient {
         )
         .await
         .map_err(|e| VtaError::TspTransport(e.to_string()))?;
+
+        // §7.2.2: the VTA drops an application message from a VID it holds no
+        // relationship with, so the control exchange is a precondition of every
+        // Trust Task this client will send — not an optional courtesy. Doing it
+        // here rather than exposing a `relate()` for callers to remember is the
+        // difference between a client that works and one that times out with
+        // nothing in any log on either side.
+        //
+        // Nothing to await: the VTA records the invite on arrival and
+        // `admits_application_message` is true for any state but `None`, so
+        // traffic flows without waiting for an accept (§3.6). `relate` is
+        // idempotent, so a reconnect against a durable relationship store is a
+        // no-op rather than an `InvalidTransition`.
+        session
+            .relate(vta_did)
+            .await
+            .map_err(|e| VtaError::TspTransport(format!("TSP relationship failed: {e}")))?;
 
         Ok(Self::tsp_transport(
             session,
@@ -1047,7 +1081,51 @@ impl VtaClient {
             client.shutdown().await;
             return Err(e);
         }
+
+        // §7.2.2 applies to the Trust-Task leg whichever shape it took: a
+        // multiplexed leg on the DIDComm session's own socket, or a separate
+        // TSP session. Both send application messages to the VTA, and the VTA
+        // drops them without a relationship.
+        //
+        // Failing here tears the client down for the same reason the block
+        // above does: a client that cannot form the relationship cannot send a
+        // Trust Task, and returning it half-working is how a caller discovers
+        // the problem as an unexplained timeout much later.
+        if let Err(e) = client.relate_trust_task_leg(vta_did).await {
+            client.shutdown().await;
+            return Err(e);
+        }
         Ok(client)
+    }
+
+    /// Form the §7.2.2 relationship on whichever leg carries the Trust-Task
+    /// surface, or do nothing when that surface is not on TSP.
+    ///
+    /// Idempotent, because the underlying `relate` is: see
+    /// [`TspSession::relate`](crate::session::TspSession::relate).
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    async fn relate_trust_task_leg(&self, vta_did: &str) -> Result<(), VtaError> {
+        match &self.transport {
+            Transport::Tsp { session, .. } => session
+                .relate(vta_did)
+                .await
+                .map_err(|e| VtaError::TspTransport(format!("TSP relationship failed: {e}"))),
+            Transport::DIDComm { session, tsp, .. } => match tsp {
+                // TSP rides the DIDComm session's own socket, so the
+                // relationship is formed on that session.
+                Some(TspLeg::Multiplexed) => session.relate_tsp(vta_did).await,
+                // The leg owns its own session; relate on that one.
+                Some(TspLeg::Separate { session, .. }) => session
+                    .relate(vta_did)
+                    .await
+                    .map_err(|e| VtaError::TspTransport(format!("TSP relationship failed: {e}"))),
+                // The Trust-Task surface is on DIDComm. Authcrypt carries its
+                // own sender authentication and has no relationship concept,
+                // so there is nothing to form.
+                None => Ok(()),
+            },
+            Transport::Rest { .. } => Ok(()),
+        }
     }
 
     /// Which transport carries the **Trust-Task** surface
