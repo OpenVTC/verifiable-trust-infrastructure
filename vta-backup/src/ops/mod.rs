@@ -15,7 +15,13 @@
 //!   `docs/05-design-notes/backup-descriptor-pattern.md`.
 
 pub mod blob;
+pub mod chunked;
 pub mod descriptors;
+
+/// The `chunkedTrustTask` algorithm name, as the bundle record stores it.
+pub(crate) fn chunked_algorithm() -> &'static str {
+    vta_sdk::protocols::backup_management::chunked::ALGORITHM_CHUNKED
+}
 
 use std::sync::Arc;
 

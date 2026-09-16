@@ -23,20 +23,28 @@
 //!   raw byte transport against the descriptor's
 //!   `transport_url`, carrying the `X-Backup-Token` header.
 //!
-//! REST-only: the `stream` algorithm moves the bytes over HTTPS, and
-//! a client whose Trust-Task surface is DIDComm or TSP is refused with
-//! [`VtaError::UnsupportedTransport`] before anything is sent. The
-//! DIDComm/TSP path is the `chunkedTrustTask` algorithm specified
-//! upstream (`vta/backup/get-chunk` / `put-chunk`), not yet implemented.
-//! The legacy inline protocol message ([`VtaClient::backup_export`])
-//! is not a substitute: its reply carries the whole envelope and is
-//! refused by a mediator's 1 MiB message limit for any real VTA.
+//! The transfer algorithm follows the client's Trust-Task transport, which
+//! is itself chosen from what the VTA's DID document advertises:
+//!
+//! - **REST** → `stream`: the bytes move over the VTA's HTTPS blob
+//!   endpoint (`initiate-*/1.0`, unchanged).
+//! - **DIDComm / TSP** → `chunkedTrustTask`: the bytes move as
+//!   `get-chunk` / `put-chunk` Trust Tasks over the same transport
+//!   (`initiate-*/1.1`; see [`super::backup_chunked`]).
+//!
+//! Neither path falls back to the other. A DIDComm client's optional
+//! `rest_url` is not evidence that the VTA advertises REST, so it is never
+//! used to reach the blob endpoint behind the transport the client chose.
+//! The legacy inline protocol message ([`VtaClient::backup_export`]) is not
+//! a substitute either: its reply carries the whole envelope and is refused
+//! by a mediator's 1 MiB message limit for any real VTA.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use super::VtaClient;
+use super::backup_chunked::TransferProgress;
 use super::{SurfaceTransport, Transport};
 use crate::error::VtaError;
 use crate::protocols::backup_management::descriptors::{
@@ -56,13 +64,41 @@ impl VtaClient {
     /// optionally complete-export. Returns the encrypted `.vtabak`
     /// bytes ready for `std::fs::write` or further processing.
     ///
-    /// REST-only: a DIDComm/TSP client gets
-    /// [`VtaError::UnsupportedTransport`]. See the module docs.
+    /// `stream` on a REST client, `chunkedTrustTask` on a DIDComm/TSP one.
+    /// See the module docs.
     pub async fn backup_export_via_descriptor(
         &self,
         password: &str,
         include_audit: bool,
     ) -> Result<Vec<u8>, VtaError> {
+        self.backup_export_with_progress(password, include_audit, &mut |_| {})
+            .await
+    }
+
+    /// [`Self::backup_export_via_descriptor`], reporting progress after each
+    /// chunk of a chunked transfer. A `stream` transfer is one request and
+    /// reports nothing.
+    pub async fn backup_export_with_progress(
+        &self,
+        password: &str,
+        include_audit: bool,
+        progress: &mut (dyn FnMut(TransferProgress) + Send),
+    ) -> Result<Vec<u8>, VtaError> {
+        if self.trust_task_transport() != SurfaceTransport::Rest {
+            let (bytes, bundle_id) = self
+                .backup_export_chunked(password, include_audit, progress)
+                .await?;
+            // Best-effort, as for stream: it releases the staged copy now rather
+            // than at expiry, and the bytes are already verified and in hand.
+            let _: Result<CompleteExportResultBody, VtaError> = self
+                .post_trust_task(
+                    crate::trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0,
+                    CompleteExportBody { bundle_id },
+                )
+                .await;
+            return Ok(bytes);
+        }
+        descriptor_transport_gate(self.trust_task_transport())?;
         let req = InitiateExportBody {
             password: password.to_string(),
             include_audit,
@@ -128,6 +164,26 @@ impl VtaClient {
         password: &str,
         confirm: bool,
     ) -> Result<FinalizeImportResultBody, VtaError> {
+        self.backup_import_with_progress(bytes, password, confirm, &mut |_| {})
+            .await
+    }
+
+    /// [`Self::backup_import_via_descriptor`], reporting progress after each
+    /// chunk of a chunked transfer.
+    pub async fn backup_import_with_progress(
+        &self,
+        bytes: &[u8],
+        password: &str,
+        confirm: bool,
+        progress: &mut (dyn FnMut(TransferProgress) + Send),
+    ) -> Result<FinalizeImportResultBody, VtaError> {
+        if self.trust_task_transport() != SurfaceTransport::Rest {
+            let bundle_id = self.backup_import_chunked(bytes, progress).await?;
+            return self
+                .backup_finalize_import(&bundle_id, password, confirm)
+                .await;
+        }
+        descriptor_transport_gate(self.trust_task_transport())?;
         let expected_sha256 = sha256_hex(bytes);
         let init_req = InitiateImportBody {
             expected_sha256,
@@ -192,8 +248,16 @@ impl VtaClient {
             password: password.to_string(),
             confirm,
         };
-        self.post_trust_task(crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0, req)
-            .await
+        // 1.1 on a mediator transport, where the bundle is chunked and 1.1 is
+        // what names a missing chunk; 1.0 on REST, so a VTA that predates the
+        // chunked algorithm keeps finalizing stream bundles. The payloads and
+        // responses are identical.
+        let uri = if self.trust_task_transport() == SurfaceTransport::Rest {
+            crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0
+        } else {
+            crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1
+        };
+        self.post_trust_task(uri, req).await
     }
 
     // ─── Low-level: building blocks ─────────────────────────────────────
@@ -221,18 +285,6 @@ impl VtaClient {
         B: Serialize,
         R: DeserializeOwned,
     {
-        // The descriptor pattern is REST-only today: the `stream` algorithm moves
-        // the bytes over the VTA's HTTPS blob endpoint, and there is no chunked
-        // transfer over DIDComm/TSP yet. A client on a mediator transport could
-        // initiate but never move the bytes, so refuse before anything goes out.
-        //
-        // A DIDComm/TSP client may carry a `rest_url`, but it is not proof that
-        // the VTA's DID document advertises `VTARest` — it can come from the
-        // caller — and CLAUDE.md forbids downgrading past what the peer
-        // advertises. So the refusal stands until the chunked-trust-task
-        // algorithm lands.
-        descriptor_transport_gate(self.trust_task_transport())?;
-
         // Delegate to the shared signed-dispatch path. It builds the envelope
         // via `build_task_document` (recipient + issuer from the identity),
         // signs it (item 7a proof), POSTs `<base>/trust-tasks`, parses a
@@ -311,21 +363,21 @@ impl VtaClient {
     }
 }
 
-/// Refuse the descriptor flow on any Trust-Task surface other than REST.
+/// Refuse the `stream` algorithm on any Trust-Task surface other than REST.
 ///
-/// Split out of [`VtaClient::post_trust_task`] so the refusal can be tested
-/// without a live mediator session. [`VtaError::UnsupportedTransport`] rather
-/// than `Validation`: nothing about the request is invalid — the same request
-/// succeeds over REST — and the CLI keys its guidance on the variant.
+/// The high-level methods choose `chunkedTrustTask` on DIDComm/TSP before this
+/// is reached, so it guards the stream path itself: a client whose transport is
+/// a mediator must never have its bytes routed to an HTTPS endpoint behind it.
+/// [`VtaError::UnsupportedTransport`] rather than `Validation`, because nothing
+/// about the request is invalid.
 pub(crate) fn descriptor_transport_gate(surface: SurfaceTransport) -> Result<(), VtaError> {
     match surface {
         SurfaceTransport::Rest => Ok(()),
         other => Err(VtaError::UnsupportedTransport(format!(
-            "backup export/import uses the descriptor pattern, whose `stream` algorithm \
-             moves the bytes over the VTA's HTTPS blob endpoint; this client's Trust-Task \
-             surface is on {other}. Re-run with `--transport rest` against a VTA that \
-             advertises REST. A DIDComm/TSP-only VTA cannot be backed up remotely until \
-             the `chunkedTrustTask` transfer algorithm is implemented"
+            "the backup `stream` algorithm moves the bytes over the VTA's HTTPS blob \
+             endpoint; this client's Trust-Task surface is on {other}, which uses the \
+             `chunkedTrustTask` algorithm instead. Re-run with `--transport rest` to use \
+             `stream` against a VTA that advertises REST"
         ))),
     }
 }

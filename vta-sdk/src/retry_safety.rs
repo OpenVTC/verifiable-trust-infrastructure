@@ -405,6 +405,19 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0, Keyed),
     (trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0, Keyed),
     (trust_tasks::TASK_BACKUP_ABORT_1_0, RetrySafe),
+    // `chunkedTrustTask`. The 1.1 initiators mint a bundle exactly as 1.0 does.
+    // `initiate-export/1.1`'s chunked reply carries no bearer token, but its
+    // `stream` reply does, and one classification covers the URI.
+    (trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1, KeyedSecret),
+    (trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1, Keyed),
+    (trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1, Keyed),
+    // Non-consuming: a repeat returns the same bytes and at most slides the
+    // bundle's expiry again, within its ceiling. Not `ReadOnly` because it does
+    // record the index as served and extend that expiry.
+    (trust_tasks::TASK_BACKUP_GET_CHUNK_1_0, RetrySafe),
+    // Idempotent per index by construction — the manifest fixes each index's
+    // bytes before any arrive, so a repeat stores nothing new (`stored: false`).
+    (trust_tasks::TASK_BACKUP_PUT_CHUNK_1_0, RetrySafe),
     // ── Attestation ─────────────────────────────────────────────────────
     (trust_tasks::TASK_ATTESTATION_STATUS_1_0, ReadOnly),
     (trust_tasks::TASK_ATTESTATION_REPORT_1_0, ReadOnly),

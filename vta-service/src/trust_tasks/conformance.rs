@@ -3487,6 +3487,27 @@ fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)>
     // so that anyone copying it out of here has copied something inert.
     const NOT_A_PASSWORD: &str = "fixture-value-not-a-password";
 
+    const CHUNKED_SHA256: &str = "20111c1d10631a5d6b2e9e06f558cd5c84e841d2bc5758bfda0d3b76bb4927f0";
+    const CHUNK_2_DIGEST: &str = "zQmTcWLvAPe4Txz32vVqZe5jgX4nBPiaBsTTCp4bLXDMzTT";
+    let chunked_descriptor = || {
+        json!({
+            "bundleId": BUNDLE,
+            "algorithm": "chunkedTrustTask",
+            "chunks": {
+                "chunkSize": 262_144,
+                "chunkCount": 3,
+                "chunkDigests": [
+                    "zQmehatQCtXyeV6kFkRVXjhDifqT3qARJ24248K2GJp7iWx",
+                    "zQmaFd25Uf6hJJ8xHX349DLzp4sryKmTGuyaSZWVtwsK5rM",
+                    CHUNK_2_DIGEST
+                ]
+            },
+            "expectedSha256": CHUNKED_SHA256,
+            "expectedSizeBytes": 524_300,
+            "expiresAt": "2026-01-01T00:05:01Z",
+        })
+    };
+
     let descriptor = json!({
         "bundleId": BUNDLE,
         "algorithm": "stream",
@@ -3575,6 +3596,100 @@ fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)>
             (
                 json!({ "bundleId": BUNDLE, "aborted": true }),
                 parses::<specs::vta::backup::abort::v1_0::Response>,
+            ),
+        ),
+        // ── `chunkedTrustTask` ─────────────────────────────────────────
+        // The 1.1 initiators' chunked shapes — the stream shapes are the 1.0
+        // witnesses above, wire-identical — and the two chunk tasks. The manifest
+        // is the specification's own example bundle: 524300 bytes in 256 KiB
+        // chunks, the last a 12-byte remainder.
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1,
+            (
+                json!({ "password": NOT_A_PASSWORD, "algorithm": "chunkedTrustTask" }),
+                parses::<specs::vta::backup::initiate_export::v1_1::Payload>,
+                validates::<specs::vta::backup::initiate_export::v1_1::Payload>,
+            ),
+            (
+                json!({ "descriptor": chunked_descriptor(), "completionHint": "Send get-chunk for indices 0 to 2." }),
+                parses::<specs::vta::backup::initiate_export::v1_1::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1,
+            (
+                json!({
+                    "expectedSha256": CHUNKED_SHA256,
+                    "expectedSizeBytes": 524_300,
+                    "algorithm": "chunkedTrustTask",
+                    "chunks": chunked_descriptor()["chunks"].clone(),
+                }),
+                parses::<specs::vta::backup::initiate_import::v1_1::Payload>,
+                validates::<specs::vta::backup::initiate_import::v1_1::Payload>,
+            ),
+            (
+                json!({ "descriptor": chunked_descriptor() }),
+                parses::<specs::vta::backup::initiate_import::v1_1::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1,
+            (
+                json!({ "bundleId": BUNDLE, "password": NOT_A_PASSWORD, "confirm": false }),
+                parses::<specs::vta::backup::finalize_import::v1_1::Payload>,
+                validates::<specs::vta::backup::finalize_import::v1_1::Payload>,
+            ),
+            (
+                json!({
+                    "bundleId": BUNDLE,
+                    "status": "preview",
+                    "keyCount": 12,
+                    "aclCount": 34,
+                    "contextCount": 3,
+                    "auditCount": 0
+                }),
+                parses::<specs::vta::backup::finalize_import::v1_1::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_GET_CHUNK_1_0,
+            (
+                json!({ "bundleId": BUNDLE, "index": 2 }),
+                parses::<specs::vta::backup::get_chunk::v1_0::Payload>,
+                validates::<specs::vta::backup::get_chunk::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "bundleId": BUNDLE,
+                    "index": 2,
+                    "digestMultibase": CHUNK_2_DIGEST,
+                    "data": "YmFja3VwLXRhaWwh",
+                    "expiresAt": "2026-01-01T00:05:01Z"
+                }),
+                parses::<specs::vta::backup::get_chunk::v1_0::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_PUT_CHUNK_1_0,
+            (
+                json!({
+                    "bundleId": BUNDLE,
+                    "index": 2,
+                    "digestMultibase": CHUNK_2_DIGEST,
+                    "data": "YmFja3VwLXRhaWwh"
+                }),
+                parses::<specs::vta::backup::put_chunk::v1_0::Payload>,
+                validates::<specs::vta::backup::put_chunk::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "bundleId": BUNDLE,
+                    "index": 2,
+                    "stored": true,
+                    "remainingCount": 0,
+                    "expiresAt": "2026-01-01T00:05:01Z"
+                }),
+                parses::<specs::vta::backup::put_chunk::v1_0::Response>,
             ),
         ),
         (

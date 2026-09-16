@@ -203,29 +203,40 @@ The relevant typed errors:
 
 ### Backup on a DIDComm/TSP-only VTA
 
-Disabling REST is allowed, but today it removes the ability to take or
-restore a **remote backup**. `pnm backup export|import` uses the backup
-descriptor pattern, whose only transfer algorithm (`stream`) moves the
-encrypted bytes over the VTA's HTTPS blob endpoint
-(`/backup/blob/{bundle_id}`, published under `public_url`):
+Disabling REST does not remove the ability to take or restore a remote
+backup. `pnm backup export|import` picks the transfer algorithm from the
+transport the client selected, which follows what the VTA's DID document
+advertises:
 
-- A VTA with no `public_url` refuses `initiate-export` / `initiate-import`
-  with `transportUnavailable` — the fix is the VTA's configuration, not
-  the request.
-- A client on DIDComm or TSP is refused locally with an "unsupported
-  transport" error naming `--transport rest`.
+- **REST** — `stream`: the encrypted bytes move over the VTA's HTTPS blob
+  endpoint (`/backup/blob/{bundle_id}`, published under `public_url`).
+- **DIDComm or TSP** — `chunkedTrustTask`: the bytes move as
+  `vta/backup/get-chunk` / `put-chunk` Trust Tasks over the same
+  transport, at most 256 KiB per chunk so each fits a 1 MiB mediator
+  message. `pnm` shows chunk-by-chunk progress. Each chunk is checked
+  against a digest in the signed manifest, and the assembled bundle
+  against the whole-bundle digest, before anything is written.
+
+Neither falls back to the other. A VTA with no `public_url` still refuses
+`stream` with `transportUnavailable`; a DIDComm/TSP client never uses the
+blob endpoint behind its transport.
+
+Things to know:
+
+- A chunked bundle is capped at 1 GiB (4096 chunks of 256 KiB).
+- Its expiry slides forward with each chunk, but never past one hour from
+  when it was minted, so a stalled transfer does not keep a copy of the
+  agent retrievable indefinitely.
+- The VTA limits chunk requests per operator DID — the per-IP REST limiter
+  never sees mediator traffic. A client over the budget is told when to
+  retry and does so automatically.
 - `--use-rest-legacy` on a DIDComm client does not use REST: it sends the
   whole backup as one mediator message, which a mediator refuses above its
-  size limit (1 MiB by default). `pnm` warns when this happens.
+  size limit. `pnm` warns when this happens; drop the flag.
 
-**Before disabling REST, take a backup** (`pnm --transport rest backup
-export`). If REST is already off, re-enable it for the backup window
-(`pnm services rest enable …`) and disable it again afterwards.
-
-A DIDComm/TSP transfer path — the `chunkedTrustTask` algorithm, which
-pulls the bundle as bounded chunks over Trust Tasks — is specified
-upstream ([trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474)) but not yet implemented; see
-`docs/05-design-notes/backup-descriptor-pattern.md`.
+Specified in `vta/backup/initiate-export/1.1` § Chunked transfer
+([trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474)).
+Design: `docs/05-design-notes/backup-descriptor-pattern.md`.
 
 ## Fail-forward rollback
 

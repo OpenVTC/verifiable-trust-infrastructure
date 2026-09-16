@@ -9,18 +9,24 @@
 //! protocol design.
 
 use super::helpers::TrustTaskOutcome;
-use serde_json::Value;
-use trust_tasks_rs::TrustTask;
+use serde_json::{Value, json};
+use trust_tasks_rs::{RejectReason, TrustTask};
+use vta_sdk::protocols::backup_management::chunked::{
+    ALGORITHM_CHUNKED, finalize_import_1_1, get_chunk, initiate_export_1_1, initiate_import_1_1,
+    put_chunk,
+};
 use vta_sdk::protocols::backup_management::descriptors::{
     AbortBundleBody, CompleteExportBody, FinalizeImportBody, InitiateExportBody, InitiateImportBody,
 };
+use vti_common::error::AppError;
 
 use crate::auth::AuthClaims;
-use crate::operations::backup::descriptors;
+use crate::operations::backup::{chunked, descriptors};
 use crate::server::AppState;
 
 use super::helpers::{
-    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with_code, success_response,
+    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, reject_with_code,
+    success_response,
 };
 
 /// Slugs whose specifications declare `transportUnavailable`.
@@ -238,6 +244,20 @@ pub(super) async fn handle_finalize_import(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // A chunked upload is assembled and verified here, before the password is
+    // used; a no-op for a stream bundle. 1.0 declares none of the chunked codes,
+    // so its refusals ride out as general failures — 1.1 renders them properly.
+    if let Err(e) = chunked::finalize_precheck(&state.backup_bundles_ks, auth, &req.bundle_id).await
+    {
+        return match e {
+            chunked::ChunkedError::App(app) => app_error_to_reject(&doc, app),
+            chunked::ChunkedError::NotFound => app_error_to_reject(
+                &doc,
+                AppError::NotFound(format!("bundle not found: {}", req.bundle_id)),
+            ),
+            other => app_error_to_reject(&doc, AppError::Conflict(other.to_string())),
+        };
+    }
     let deps = crate::operations::descriptor_deps_from_app_state(state);
     match descriptors::finalize_import(&deps, auth, req).await {
         Ok(body) => {
@@ -304,6 +324,355 @@ pub(super) async fn handle_abort(
             .await;
             success_response(&doc, body)
         }
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+// ─── The `chunkedTrustTask` algorithm (1.1 initiators, get/put-chunk) ────────
+//
+// Specified in `vta/backup/initiate-export/1.1` § Chunked transfer. A `stream`
+// request to a 1.1 initiator is served by the 1.0 path unchanged — the two
+// shapes are wire-identical — and only `chunkedTrustTask` takes the new ops.
+//
+// The heavy awaits below are `Box::pin`ned. `dispatch_typed` matches every
+// handler inline, so its future is as large as its largest arm, and a 1.1
+// handler that awaited the whole 1.0 handler plus a full state export inline
+// became that arm. In a debug build the DIDComm/TSP inbound task — which polls
+// the dispatch future on a 2 MiB worker stack with no box of its own — then
+// overflowed its stack on the first chunked export. Boxing keeps each arm a
+// pointer's worth of future.
+
+/// Task slug (`vta/backup/<op>`) of the incoming document, so an extended code
+/// is namespaced to whichever task raised it (SPEC §8.5).
+fn backup_slug(doc: &TrustTask<Value>) -> String {
+    doc.type_uri
+        .to_string()
+        .strip_prefix("https://trusttasks.org/spec/")
+        .and_then(|rest| rest.rsplit_once('/'))
+        .map(|(slug, _ver)| slug.to_string())
+        .unwrap_or_else(|| "vta/backup".to_string())
+}
+
+/// Render a [`chunked::ChunkedError`] as the code its specification declares.
+fn chunked_reject(doc: &TrustTask<Value>, err: chunked::ChunkedError) -> TrustTaskOutcome {
+    use chunked::ChunkedError as E;
+    let slug = backup_slug(doc);
+    let message = err.to_string();
+    let (local, details) = match err {
+        E::App(e) => return app_error_to_reject(doc, e),
+        // `unavailable` with a `retryAfter` is what `VtaClient::idempotent`
+        // waits on, so a client over the budget slows down rather than failing.
+        E::RateLimited { retry_after_secs } => {
+            return reject_with(
+                doc,
+                RejectReason::Unavailable {
+                    retry_after: Some(
+                        chrono::Utc::now() + chrono::Duration::seconds(retry_after_secs as i64),
+                    ),
+                },
+            );
+        }
+        E::NotFound => ("notFound", None),
+        E::TerminalState(_) => ("terminalState", None),
+        E::ChunkOutOfRange { .. } => ("chunkOutOfRange", None),
+        E::DigestMismatch {
+            expected_digest_multibase,
+        } => (
+            "digestMismatch",
+            // Declared by put-chunk only; get-chunk never raises it.
+            Some(json!({ "expectedDigestMultibase": expected_digest_multibase })),
+        ),
+        E::ChunkSizeMismatch { .. } => ("chunkSizeMismatch", None),
+        E::IncompleteUpload {
+            missing_count,
+            missing_indices,
+        } => (
+            "incompleteUpload",
+            Some(json!({ "missingCount": missing_count, "missingIndices": missing_indices })),
+        ),
+        E::BundleDigestMismatch => ("bundleDigestMismatch", None),
+        E::BundleTooLarge { .. } => ("bundleTooLarge", None),
+        E::InvalidManifest(_) => ("invalidManifest", None),
+    };
+    let code = trust_tasks_rs::TrustTaskCode::new_extended(&slug, local)
+        .expect("backup extended code is grammar-valid");
+    reject_with_code(doc, code, message, details)
+}
+
+/// Build a generated response type from its JSON form. The generated types are
+/// `#[non_exhaustive]`, so a struct literal is unavailable; deserializing also
+/// runs the members' own pattern and range checks, so a response this agent
+/// could not legally send is caught here rather than by the client.
+fn typed<R: serde::de::DeserializeOwned>(value: Value) -> Result<R, AppError> {
+    serde_json::from_value(value)
+        .map_err(|e| AppError::Internal(format!("backup response does not fit its schema: {e}")))
+}
+
+fn manifest_json(bundle: &chunked::ChunkedBundle) -> Value {
+    json!({
+        "bundleId": bundle.bundle_id.to_string(),
+        "algorithm": ALGORITHM_CHUNKED,
+        "chunks": {
+            "chunkSize": bundle.chunk_size,
+            "chunkCount": bundle.chunk_count,
+            "chunkDigests": bundle.digests,
+        },
+        "expectedSha256": bundle.expected_sha256,
+        "expectedSizeBytes": bundle.expected_size_bytes,
+        "expiresAt": bundle.expires_at,
+    })
+}
+
+fn is_chunked(algorithm: Option<&str>) -> bool {
+    algorithm == Some(ALGORITHM_CHUNKED)
+}
+
+/// `spec/vta/backup/initiate-export/1.1` — `stream` exactly as 1.0, or a
+/// `chunkedTrustTask` bundle whose chunks are pulled with `get-chunk`. The
+/// chunked path needs no `public_url`, which is the point of it.
+pub(super) async fn handle_initiate_export_1_1(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: initiate_export_1_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let algorithm = req.algorithm.as_ref().map(|a| a.as_str());
+    if !is_chunked(algorithm) {
+        // The recipient returns what was asked for or refuses; a `stream`
+        // request never receives a chunked descriptor.
+        return Box::pin(handle_initiate_export(state, auth, doc)).await;
+    }
+    if let Err(e) = auth.require_super_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    let include_audit = req.include_audit.unwrap_or(false);
+    let deps = crate::operations::descriptor_deps_from_app_state(state);
+    let bundle = match Box::pin(chunked::initiate_export(
+        &deps,
+        auth,
+        req.password.as_str(),
+        include_audit,
+        req.max_chunk_size.map(|s| s.0.max(0) as u64),
+    ))
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => return chunked_reject(&doc, e),
+    };
+    record_bundle_event(
+        state,
+        auth,
+        "backup.initiate-export",
+        &bundle.bundle_id.to_string(),
+        format!(
+            "algorithm={ALGORITHM_CHUNKED} includeAudit={include_audit} bytes={} chunks={} expires={}",
+            bundle.expected_size_bytes, bundle.chunk_count, bundle.expires_at
+        ),
+    )
+    .await;
+    match typed::<initiate_export_1_1::Response>(json!({
+        "descriptor": manifest_json(&bundle),
+        "completionHint": format!(
+            "Send get-chunk for indices 0 to {}, verify each, then send complete-export.",
+            bundle.chunk_count - 1
+        ),
+    })) {
+        Ok(r) => success_response(&doc, r),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// `spec/vta/backup/initiate-import/1.1` — `stream` exactly as 1.0, or a
+/// `chunkedTrustTask` slot for the manifest the request pre-commits.
+pub(super) async fn handle_initiate_import_1_1(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: initiate_import_1_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let algorithm = req.algorithm.as_ref().map(|a| a.as_str());
+    if let Err(e) = auth.require_super_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    if !is_chunked(algorithm) {
+        // `chunks` belongs to `chunkedTrustTask` alone (the spec's
+        // `invalidManifest`), so a stream request carrying one is refused rather
+        // than having the manifest silently ignored.
+        if req.chunks.is_some() {
+            return chunked_reject(
+                &doc,
+                chunked::ChunkedError::InvalidManifest(
+                    "`chunks` is only meaningful with algorithm chunkedTrustTask".into(),
+                ),
+            );
+        }
+        return Box::pin(handle_initiate_import(state, auth, doc)).await;
+    }
+    let Some(manifest) = req.chunks else {
+        return chunked_reject(
+            &doc,
+            chunked::ChunkedError::InvalidManifest(
+                "algorithm chunkedTrustTask requires a `chunks` manifest".into(),
+            ),
+        );
+    };
+    let slot = match chunked::initiate_import(
+        &state.backup_bundles_ks,
+        auth,
+        req.expected_sha256.as_str(),
+        req.expected_size_bytes.0.get(),
+        manifest.chunk_size.0.max(0) as u64,
+        manifest.chunk_count.0.get(),
+        manifest
+            .chunk_digests
+            .iter()
+            .map(|d| d.as_str().to_string())
+            .collect(),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return chunked_reject(&doc, e),
+    };
+    record_bundle_event(
+        state,
+        auth,
+        "backup.initiate-import",
+        &slot.bundle_id.to_string(),
+        format!(
+            "algorithm={ALGORITHM_CHUNKED} sha256={} bytes={} chunks={} expires={}",
+            slot.expected_sha256, slot.expected_size_bytes, slot.chunk_count, slot.expires_at
+        ),
+    )
+    .await;
+    match typed::<initiate_import_1_1::Response>(json!({
+        "descriptor": manifest_json(&slot),
+        "completionHint": format!(
+            "Send put-chunk for indices 0 to {}, then send finalize-import.",
+            slot.chunk_count - 1
+        ),
+    })) {
+        Ok(r) => success_response(&doc, r),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// `spec/vta/backup/finalize-import/1.1` — as 1.0, with a chunked upload's
+/// completeness and assembled digest checked first, answered with the codes 1.1
+/// declares, before the password is used.
+pub(super) async fn handle_finalize_import_1_1(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: finalize_import_1_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) =
+        chunked::finalize_precheck(&state.backup_bundles_ks, auth, req.bundle_id.as_str()).await
+    {
+        return chunked_reject(&doc, e);
+    }
+    Box::pin(handle_finalize_import(state, auth, doc)).await
+}
+
+/// `spec/vta/backup/get-chunk/1.0` — one chunk of a chunked export, by index.
+///
+/// Not audited per chunk: the specification's retention section keeps the
+/// durable facts (an export was made; whether it was retrieved) on
+/// `initiate-export` and `complete-export`, and a row per chunk would add
+/// nothing to them but a timeline of the operator's connection. Refusals are
+/// still recorded by the dispatch spine.
+pub(super) async fn handle_get_chunk(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: get_chunk::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let served = match chunked::get_chunk(
+        &state.backup_bundles_ks,
+        chunked::ChunkRateLimiter::global(),
+        auth,
+        req.bundle_id.as_str(),
+        req.index.0.max(0) as u64,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => return chunked_reject(&doc, e),
+    };
+    use base64::Engine;
+    match typed::<get_chunk::Response>(json!({
+        "bundleId": served.bundle_id.to_string(),
+        "index": served.index,
+        "digestMultibase": served.digest_multibase,
+        "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&served.data),
+        "expiresAt": served.expires_at,
+    })) {
+        Ok(r) => success_response(&doc, r),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// `spec/vta/backup/put-chunk/1.0` — write one chunk of a chunked import.
+/// Not audited per chunk, for the reason [`handle_get_chunk`] gives.
+pub(super) async fn handle_put_chunk(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: put_chunk::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    use base64::Engine;
+    let data = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(req.data.as_str()) {
+        Ok(d) => d,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("`data` is not unpadded base64url: {e}"),
+                },
+            );
+        }
+    };
+    let index = req.index.0.max(0) as u64;
+    let outcome = match chunked::put_chunk(
+        &state.backup_bundles_ks,
+        &state.backup_blob_dir,
+        chunked::ChunkRateLimiter::global(),
+        auth,
+        chunked::ChunkWrite {
+            bundle_id: req.bundle_id.as_str(),
+            index,
+            digest_multibase: req.digest_multibase.as_str(),
+            data: &data,
+        },
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => return chunked_reject(&doc, e),
+    };
+    match typed::<put_chunk::Response>(json!({
+        "bundleId": req.bundle_id.as_str(),
+        "index": index,
+        "stored": outcome.stored,
+        "remainingCount": outcome.remaining_count,
+        "expiresAt": outcome.expires_at,
+    })) {
+        Ok(r) => success_response(&doc, r),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }

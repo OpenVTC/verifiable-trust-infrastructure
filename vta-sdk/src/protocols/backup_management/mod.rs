@@ -1,3 +1,4 @@
+pub mod chunked;
 pub mod descriptors;
 pub mod types;
 

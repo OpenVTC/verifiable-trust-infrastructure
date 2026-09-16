@@ -1736,6 +1736,43 @@ pub const TASK_BACKUP_FINALIZE_IMPORT_1_0: &str =
 /// Auth: super-admin (must match the initiator's DID).
 pub const TASK_BACKUP_ABORT_1_0: &str = "https://trusttasks.org/spec/vta/backup/abort/1.0";
 
+/// `spec/vta/backup/initiate-export/1.1` — as 1.0, plus the
+/// `chunkedTrustTask` algorithm: a descriptor carrying a chunk manifest instead
+/// of a blob URL and token, for a VTA reachable only over DIDComm or TSP. A
+/// `stream` request is wire-identical to 1.0. Payload:
+/// [`crate::protocols::backup_management::chunked::initiate_export_1_1::Payload`].
+/// Auth: super-admin.
+pub const TASK_BACKUP_INITIATE_EXPORT_1_1: &str =
+    "https://trusttasks.org/spec/vta/backup/initiate-export/1.1";
+
+/// `spec/vta/backup/initiate-import/1.1` — as 1.0, plus `chunkedTrustTask`: the
+/// request pre-commits a chunk manifest. Payload:
+/// [`crate::protocols::backup_management::chunked::initiate_import_1_1::Payload`].
+/// Auth: super-admin.
+pub const TASK_BACKUP_INITIATE_IMPORT_1_1: &str =
+    "https://trusttasks.org/spec/vta/backup/initiate-import/1.1";
+
+/// `spec/vta/backup/finalize-import/1.1` — as 1.0, and also finalizes a
+/// chunked upload, refusing an incomplete one with the missing indices before
+/// the password is used. Payload:
+/// [`crate::protocols::backup_management::chunked::finalize_import_1_1::Payload`].
+/// Auth: super-admin (must match the initiator's DID).
+pub const TASK_BACKUP_FINALIZE_IMPORT_1_1: &str =
+    "https://trusttasks.org/spec/vta/backup/finalize-import/1.1";
+
+/// `spec/vta/backup/get-chunk/1.0` — one chunk of a `chunkedTrustTask` export,
+/// by index. Non-consuming. Payload:
+/// [`crate::protocols::backup_management::chunked::get_chunk::Payload`].
+/// Auth: super-admin (must match the initiator's DID).
+pub const TASK_BACKUP_GET_CHUNK_1_0: &str = "https://trusttasks.org/spec/vta/backup/get-chunk/1.0";
+
+/// `spec/vta/backup/put-chunk/1.0` — write one chunk of a `chunkedTrustTask`
+/// import, checked against the pre-committed manifest. Idempotent for identical
+/// bytes. Payload:
+/// [`crate::protocols::backup_management::chunked::put_chunk::Payload`].
+/// Auth: super-admin (must match the initiator's DID).
+pub const TASK_BACKUP_PUT_CHUNK_1_0: &str = "https://trusttasks.org/spec/vta/backup/put-chunk/1.0";
+
 // ─── Attestation slice (spec/vta/attestation/*) ──────────────────────────
 //
 // TEE-feature-gated and DELIBERATELY UNAUTHENTICATED on the wire
@@ -2041,6 +2078,12 @@ pub const ALL_URIS: &[&str] = &[
     TASK_BACKUP_INITIATE_IMPORT_1_0,
     TASK_BACKUP_FINALIZE_IMPORT_1_0,
     TASK_BACKUP_ABORT_1_0,
+    // The `chunkedTrustTask` algorithm (1.1 initiators, the two chunk tasks)
+    TASK_BACKUP_INITIATE_EXPORT_1_1,
+    TASK_BACKUP_INITIATE_IMPORT_1_1,
+    TASK_BACKUP_FINALIZE_IMPORT_1_1,
+    TASK_BACKUP_GET_CHUNK_1_0,
+    TASK_BACKUP_PUT_CHUNK_1_0,
     // Attestation slice (REST-routed, unauthenticated)
     TASK_ATTESTATION_STATUS_1_0,
     TASK_ATTESTATION_REPORT_1_0,
