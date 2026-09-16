@@ -107,6 +107,11 @@ async fn a_didcomm_session_receives_tsp_on_its_own_socket() {
     let mediator = TestMediator::builder()
         .local_did(recipient_did.clone())
         .local_did(sender_did.clone())
+        // The §7.2.2 invite each test now sends is a *direct* control message
+        // — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -120,6 +125,13 @@ async fn a_didcomm_session_receives_tsp_on_its_own_socket() {
     let sender = TspSession::connect(&sender_did, &sender_priv, mediator.did())
         .await
         .expect("sender TSP session connects");
+    // §7.2.2: the recipient drops an application message from a VID it holds no
+    // relationship with, which would look identical to the multiplexing break
+    // this test exists to catch.
+    sender
+        .relate(&recipient_did)
+        .await
+        .expect("sender forms a TSP relationship with the recipient");
     sender
         .send_document(
             &recipient_did,
@@ -165,6 +177,11 @@ async fn one_session_carries_both_protocols() {
     let mediator = TestMediator::builder()
         .local_did(client_did.clone())
         .local_did(peer_did.clone())
+        // The §7.2.2 invite each test now sends is a *direct* control message
+        // — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -185,6 +202,12 @@ async fn one_session_carries_both_protocols() {
         )
         .await
         .expect("the DIDComm leg still works");
+
+    // §7.2.2: without a recorded relationship the peer drops what follows.
+    session
+        .relate_tsp(&peer_did)
+        .await
+        .expect("form a TSP relationship with the peer");
 
     session
         .send_tsp_document(&peer_did, &request_doc("urn:uuid:tsp-leg"))
@@ -223,6 +246,11 @@ async fn request_tsp_correlates_its_reply_and_parks_the_push() {
     let mediator = TestMediator::builder()
         .local_did(client_did.clone())
         .local_did(peer_did.clone())
+        // The §7.2.2 invite each test now sends is a *direct* control message
+        // — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -264,6 +292,13 @@ async fn request_tsp_correlates_its_reply_and_parks_the_push() {
     });
 
     let request_id = "urn:uuid:correlated-request";
+    // §7.2.2, and it settles both directions: the peer records the invite and
+    // admits the request, and this side is `Pending`, which admits the reply
+    // and the unrelated push the test then checks is parked.
+    session
+        .relate_tsp(&peer_did)
+        .await
+        .expect("form a TSP relationship with the peer");
     let reply = session
         .request_tsp(&peer_did, &request_doc(request_id), Duration::from_secs(25))
         .await
@@ -315,6 +350,11 @@ async fn a_client_reports_tsp_for_trust_tasks_and_didcomm_for_protocol_messages(
     let mediator = TestMediator::builder()
         .local_did(client_did.clone())
         .local_did(vta_did.clone())
+        // The §7.2.2 invite each test now sends is a *direct* control message
+        // — "routed" names the reply path an invite advertises, not the
+        // carriage of the invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");

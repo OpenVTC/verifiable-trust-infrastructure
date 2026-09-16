@@ -1986,7 +1986,18 @@ impl MockVta {
         // service blocks, so it cannot be minted until the mediator has one.
         // `register_local_did` closes the resulting cycle — the VTA is
         // registered after it exists, rather than at builder time.
-        let mediator = TestMediator::spawn().await.expect("spawn test mediator");
+        // `builder()` rather than `spawn()` for one reason: a TSP §7.2.2
+        // relationship invite is a **direct** control message, and the
+        // fixture default for `local_direct_delivery_allowed` is `false`. A
+        // client that cannot send an invite cannot form the relationship the
+        // VTA now requires before it will admit any application message — and
+        // §7.2.2 says *drop*, so the symptom is a harness that times out with
+        // nothing explaining it.
+        let mediator = TestMediator::builder()
+            .local_direct_delivery(true, false)
+            .spawn()
+            .await
+            .expect("spawn test mediator");
         let mediator_did = mediator.did().to_string();
 
         // The `accept` list is deliberately empty — see MAX_DID_BYTES below. It

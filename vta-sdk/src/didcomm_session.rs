@@ -951,6 +951,33 @@ impl DIDCommSession {
     /// The sender is proven by TSP itself, so the VTA derives authorization from
     /// the sealed `sender_vid` (intrinsic-sender auth) — no bearer token and no
     /// holder proof in the document.
+    /// Form a TSP relationship with `recipient_did` on this session's TSP leg.
+    ///
+    /// **Required before any application message under Rev 3 §7.2.2**: an
+    /// endpoint *drops* an application message from a VID it holds no
+    /// relationship with — drops, not refuses, so the sender sees only a
+    /// timeout and nothing explains it.
+    ///
+    /// Nothing to await. The peer records the invite on arrival, and a recorded
+    /// relationship already admits application messages
+    /// (`admits_application_message` is true for any state but `None`, because
+    /// §3.6 lets a sender pack user data alongside its invite), so traffic
+    /// flows without waiting for an accept.
+    ///
+    /// The invite is a **direct** control message even though everything else
+    /// this session sends is routed — "routed" names the reply path an invite
+    /// advertises (§7.2.4), not the carriage of the invite itself. A mediator
+    /// that refuses direct delivery answers `e.p.direct_delivery.denied`.
+    pub async fn relate_tsp(&self, recipient_did: &str) -> Result<(), VtaError> {
+        self.tsp
+            .atm
+            .tsp()
+            .form_relationship(&self.tsp.profile, recipient_did)
+            .await
+            .map(|_| ())
+            .map_err(|e| VtaError::TspTransport(format!("TSP relationship failed: {e}")))
+    }
+
     pub async fn send_tsp_document(
         &self,
         recipient_did: &str,

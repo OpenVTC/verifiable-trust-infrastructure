@@ -74,6 +74,12 @@ async fn a_stale_inbox_frame_does_not_satisfy_a_ping() {
     let mediator = TestMediator::builder()
         .local_did(client_did.clone())
         .local_did(peer_did.clone())
+        // The §7.2.2 invite below is a *direct* control message — "routed"
+        // names the reply path an invite advertises, not the carriage of the
+        // invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`, so without this the
+        // relationship can never be formed and the ping is dropped.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -137,6 +143,12 @@ async fn a_correlated_reply_satisfies_the_ping() {
     let mediator = TestMediator::builder()
         .local_did(client_did.clone())
         .local_did(peer_did.clone())
+        // The §7.2.2 invite below is a *direct* control message — "routed"
+        // names the reply path an invite advertises, not the carriage of the
+        // invite itself — and the fixture default for
+        // `local_direct_delivery_allowed` is `false`, so without this the
+        // relationship can never be formed and the ping is dropped.
+        .local_direct_delivery(true, false)
         .spawn()
         .await
         .expect("spawn test mediator");
@@ -172,6 +184,15 @@ async fn a_correlated_reply_satisfies_the_ping() {
     let mut prober = TspPingSession::new(&client_did, &client_priv, mediator.did())
         .await
         .expect("prober TSP session connects");
+    // Rev 3 §7.2.2: the ping is an application message, so the peer drops it
+    // unless a relationship is recorded — and drops, not refuses, so the only
+    // symptom is this ping timing out. One invite settles both directions: the
+    // peer records it and admits the ping, and this side is `Pending`, which
+    // admits the reply.
+    prober
+        .relate(&peer_did)
+        .await
+        .expect("prober forms a TSP relationship with the peer");
     let result = prober.ping(&peer_did, Duration::from_secs(20)).await;
     prober.shutdown().await;
     let _ = responder.await;

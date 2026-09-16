@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
+#[cfg(feature = "tsp")]
+use affinidi_messaging_sdk::protocols::tsp::InboundTsp;
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
 use serde::{Deserialize, Serialize};
@@ -2753,6 +2755,19 @@ pub struct TspPingSession {
 
 #[cfg(feature = "tsp")]
 impl TspPingSession {
+    /// Form a TSP relationship with `peer_did`. See [`TspSession::relate`] —
+    /// the prober needs one for the same §7.2.2 reason, in both directions: the
+    /// peer must admit the ping, and this side must admit the reply.
+    pub async fn relate(&self, peer_did: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.identity
+            .hub
+            .atm()
+            .tsp()
+            .form_relationship_routed(&self.identity.profile, peer_did)
+            .await?;
+        Ok(())
+    }
+
     /// Connect the client's TSP websocket to `mediator_did` (the VTA's `#tsp`
     /// service endpoint — the same mediator the VTA is a local account on), on a
     /// private [`SessionHub`](crate::session_hub::SessionHub) of its own.
@@ -3183,6 +3198,43 @@ impl TspSession {
     /// goes out through the ATM's TSP transport, so it can run concurrently with
     /// a blocked `receive_next`. Call it on connect (and periodically) to keep
     /// the VTA's reachability record fresh.
+    /// Form a TSP relationship with `peer_did` by sending it an invite.
+    ///
+    /// **Required before any application message under Rev 3 §7.2.2**: "It is
+    /// not permissible that one endpoint which has learned a VID of the other
+    /// simply starts with an application level message without first having an
+    /// exchange of TSP control messages." Without it the peer *drops* what
+    /// follows — drops, not refuses, so nothing comes back and the sender sees
+    /// only a timeout.
+    ///
+    /// Send-only, and there is nothing to await. The peer records the invite on
+    /// arrival and a recorded relationship already admits application messages
+    /// (`admits_application_message` is true for any state but `None`, because
+    /// §3.6 lets a sender pack user data alongside its invite) — so traffic
+    /// flows without waiting for an accept, and this side is `Pending`, which
+    /// admits the reply.
+    ///
+    /// Not test scaffolding: before Rev 3 a `TspSession` could talk to a peer
+    /// it had never greeted, and now it cannot, so a session with no way to
+    /// send an invite has no way to be used at all.
+    ///
+    /// **Routed, not direct.** Every other frame this session sends goes
+    /// `send_routed([mediator, peer])`, and the invite has to travel the same
+    /// way: a mediator refuses direct delivery unless configured to allow it
+    /// (`e.p.direct_delivery.denied`), so `form_relationship` would fail for a
+    /// mediated session while looking like a protocol problem. The routed form
+    /// also advertises our mediator, which is what lets the peer's accept find
+    /// its way back (§7.2.4).
+    pub async fn relate(&self, peer_did: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.identity
+            .hub
+            .atm()
+            .tsp()
+            .form_relationship_routed(&self.identity.profile, peer_did)
+            .await?;
+        Ok(())
+    }
+
     pub async fn announce(
         &self,
         vta_did: &str,
@@ -3482,15 +3534,53 @@ impl TspSession {
                 Err(_) => return Ok(PumpOutcome::Idle),
             };
 
-            let Ok((payload, _sender)) = self
+            // `unpack_message`, not `unpack_bytes`: the latter returns
+            // `(payload, sender)` and cannot say what kind of frame arrived, so
+            // a control message came back as an error and was skipped by the
+            // `continue` below — **without being recorded**.
+            //
+            // That is the whole §7.2.2 trap. A relationship is established only
+            // by the control exchange, and an unrecorded relationship discards
+            // every application message that follows. The peer is then silent
+            // and says nothing about why, because §7.2.2 drops rather than
+            // refuses. Recording is enough on its own:
+            // `admits_application_message` is true for any state but `None`,
+            // so nothing has to accept for traffic to flow.
+            //
+            // Same defect as affinidi-tdk-rs#800 fixed in the mediator adapter;
+            // this is the second path that had it.
+            let payload = match self
                 .identity
                 .hub
                 .atm()
                 .tsp()
-                .unpack_bytes(&self.identity.profile, &frame)
+                .unpack_message(&self.identity.profile, &frame)
                 .await
-            else {
-                continue; // not sealed to us / TSP control traffic
+            {
+                Ok(InboundTsp::Application { payload, .. }) => payload,
+                Ok(InboundTsp::Control {
+                    control, sender, ..
+                }) => {
+                    if let Err(e) = self
+                        .identity
+                        .hub
+                        .atm()
+                        .tsp()
+                        .record_incoming_control(&self.identity.profile, &sender, &control)
+                        .await
+                    {
+                        // A protocol rule refused it — a cancellation for a
+                        // relationship we do not hold, or the losing side of the
+                        // §7.2.3 invite race. Not a fault, and nothing to answer.
+                        tracing::debug!(%sender, error = %e, "inbound TSP control message not recorded");
+                    }
+                    continue;
+                }
+                // Padding carries nothing (§9.4) and an upper-layer control
+                // message (`XCTL`) is for a layer this session does not serve.
+                // Both are skipped by name rather than as unrecognised data.
+                Ok(_) => continue,
+                Err(_) => continue, // not sealed to us
             };
             // Carriage comes off here, the mirror of `send_document` putting it
             // on. A frame that is not our binding is skipped rather than
