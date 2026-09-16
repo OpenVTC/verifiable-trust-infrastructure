@@ -201,6 +201,32 @@ The relevant typed errors:
 - `ServiceAlreadyEnabled` — the operation would add a kind that's
   already on.
 
+### Backup on a DIDComm/TSP-only VTA
+
+Disabling REST is allowed, but today it removes the ability to take or
+restore a **remote backup**. `pnm backup export|import` uses the backup
+descriptor pattern, whose only transfer algorithm (`stream`) moves the
+encrypted bytes over the VTA's HTTPS blob endpoint
+(`/backup/blob/{bundle_id}`, published under `public_url`):
+
+- A VTA with no `public_url` refuses `initiate-export` / `initiate-import`
+  with `transportUnavailable` — the fix is the VTA's configuration, not
+  the request.
+- A client on DIDComm or TSP is refused locally with an "unsupported
+  transport" error naming `--transport rest`.
+- `--use-rest-legacy` on a DIDComm client does not use REST: it sends the
+  whole backup as one mediator message, which a mediator refuses above its
+  size limit (1 MiB by default). `pnm` warns when this happens.
+
+**Before disabling REST, take a backup** (`pnm --transport rest backup
+export`). If REST is already off, re-enable it for the backup window
+(`pnm services rest enable …`) and disable it again afterwards.
+
+A DIDComm/TSP transfer path — the `chunkedTrustTask` algorithm, which
+pulls the bundle as bounded chunks over Trust Tasks — is specified
+upstream ([trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474)) but not yet implemented; see
+`docs/05-design-notes/backup-descriptor-pattern.md`.
+
 ## Fail-forward rollback
 
 WebVH is an append-only ledger. **Rollback never rewinds the

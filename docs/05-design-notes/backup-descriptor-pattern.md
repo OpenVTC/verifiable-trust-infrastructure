@@ -13,9 +13,16 @@ closes the audit loop.
 Modelled on OCI image distribution (blob upload sessions), Sigstore
 (transparency-log entries), and Git LFS (large-object handoff).
 
-**Status**: spec only — no implementation yet. The 5 trust-task URIs
-under `spec/vta/backup/*` are reserved in
+**Status**: implemented for the `stream` algorithm, and the default
+`pnm backup export|import` path (rollout step 5, #892). The five 1.0
+specifications are published upstream in `dtgwg-trust-tasks-tf`
+(`specs/vta/backup/*`) and listed in
 `docs/05-design-notes/trust-task-uri-registry.md` §"Backup slice".
+**REST-only**: a VTA with no `public_url` answers `initiate-*` with
+`vta/backup/initiate-{export,import}:transportUnavailable`, and a client
+whose Trust-Task surface is DIDComm or TSP is refused locally with
+`VtaError::UnsupportedTransport`. See
+[DIDComm/TSP-only VTAs](#didcommtsp-only-vtas-the-chunkedtrusttask-algorithm).
 
 ## Goals
 
@@ -48,7 +55,7 @@ under `spec/vta/backup/*` are reserved in
   semantics are identical to legacy.
 - **Streaming chunked decryption.** v1 buffers the full backup
   in memory between phases. Streaming is a future optimisation
-  (likely paired with the `chunked-trust-task` algorithm).
+  (likely paired with the `chunkedTrustTask` algorithm).
 - **Cross-VTA migration UX.** The descriptor shape supports it
   (the URL can point at a different VTA) but operator-side
   tooling for cross-VTA flows is out of scope here.
@@ -71,6 +78,60 @@ endpoints for the actual byte transport:
 The blob endpoints are deliberately REST-only, analogous to
 `GET /did/{did}/log`. Bulk bytes are wrong on top of a JSON envelope.
 
+## DIDComm/TSP-only VTAs: the `chunkedTrustTask` algorithm
+
+A VTA that advertises only DIDComm and/or TSP — a supported deployment,
+since runtime service management lets REST be disabled while another
+transport remains — has no HTTPS address to publish a `transportUrl` at.
+Today such a VTA **cannot be backed up remotely**:
+
+- The server answers `initiate-export` / `initiate-import` with the
+  specification's `transportUnavailable` code (previously an opaque
+  `internalError`).
+- The SDK refuses the descriptor flow on a DIDComm/TSP Trust-Task surface
+  with `VtaError::UnsupportedTransport` before sending anything, because
+  it could initiate but never move the bytes. A DIDComm client's optional
+  `rest_url` is not used to get round this: it can come from the caller
+  rather than from a `VTARest` service in the VTA's DID document, and the
+  transport rules forbid downgrading past what the peer advertises.
+- The legacy inline protocol message (`--use-rest-legacy` on a DIDComm
+  client) is no substitute. The whole envelope rides one message, a
+  mediator refuses messages over its `message_size` (1 MiB default, of
+  which DIDComm's nested base64 leaves roughly 500–700 KB), and the
+  refused reply shows up as a timeout. The CLI now warns about this.
+
+The planned path is a second transfer algorithm, specified upstream in
+[trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474). The name was `chunked-trust-task` in earlier
+revisions of this note; it is **`chunkedTrustTask`** in the specification,
+because trusttasks SPEC §4.10 requires lowerCamelCase for values a
+specification defines. In outline:
+
+- `vta/backup/initiate-export/1.1` and `initiate-import/1.1` — a
+  `chunkedTrustTask` descriptor carries a manifest (chunk size, chunk
+  count, per-chunk `DigestMultibase` digests, whole-bundle digest,
+  expiry) instead of `transportUrl` / `transportToken`. Relaxing those
+  required members is published as a MINOR because the 1.0
+  specifications are `draft` (SPEC §5.2).
+- `vta/backup/get-chunk/1.0` — the client **pulls** chunk *i*.
+  Non-consuming, so a lost reply is retried by asking again; the bundle
+  is released by `complete-export`, `abort` or expiry. Pull rather than
+  push because a mediator queue caps at 1000 messages per DID and a
+  send `Ok` is not delivery (R1.1).
+- `vta/backup/put-chunk/1.0` — idempotent for an identical re-put,
+  refused for a mismatched one; `finalize-import/1.1` verifies every
+  index and the whole-bundle digest, naming missing indices so the
+  client resumes by re-sending only those.
+- A raw chunk is at most 256 KiB (262144 bytes), carried base64url
+  without padding, so one chunk survives the payload encoding plus
+  DIDComm's nested base64 layers inside a 1 MiB mediator message.
+- On DIDComm/TSP, intrinsic sender authentication plus the bundle
+  ownership check replace the bearer token; per-requester rate limits
+  replace the per-IP limiter, which does not see mediator traffic.
+
+Implementation waits on that specification merging and reaching VTI
+through a `trust-tasks-rs` release (Trust Task wire types come from
+`trust_tasks_rs::specs`, never hand-written).
+
 ## Wire format
 
 ### `BundleDescriptor`
@@ -85,7 +146,7 @@ pub struct BundleDescriptor {
 
     /// Transport algorithm. v1 supports only `"stream"` (VTA hosts
     /// the bytes on its own blob endpoint). Future: `"s3-presigned"`,
-    /// `"chunked-trust-task"`. The wire shape is forward-compatible
+    /// `"chunkedTrustTask"` (see below). The wire shape is forward-compatible
     /// — unknown algorithms surface as `MalformedRequest` at the
     /// dispatcher.
     pub algorithm: String,
@@ -398,16 +459,17 @@ deprecation warning + removal in a future release.
 Internal flow during transition:
 
 ```
-v1.X  pnm backup save     → legacy /backup/export (inline envelope)
-v1.X  vta-cli-common::cmds::backup → /backup/export (offline path; daemon stopped)
-
-v1.Y  pnm backup save     → spec/vta/backup/initiate-export/1.0 then GET /backup/blob/...
-v1.Y  vta-cli-common      → unchanged (offline; doesn't need descriptor pattern)
+v1.X  pnm backup export   → legacy /backup/export (inline envelope)
+v1.Y  pnm backup export   → spec/vta/backup/initiate-export/1.0 then GET /backup/blob/...
+      pnm backup export --use-rest-legacy → legacy route (REST client), or the
+                            legacy protocol message on a DIDComm client (warned)
 ```
 
-The offline `vta backup` CLI keeps the legacy semantics — there's
-no HTTP server when the daemon is stopped, so the descriptor
-pattern would need a fake transport. Out of scope.
+There is **no offline `vta backup` command** — earlier revisions of this
+note and of the operator docs referred to one, but it was never built.
+Backup and restore always go through a running VTA: `pnm backup export`
+/ `pnm backup import` (with `--transport rest` against a VTA that
+advertises REST).
 
 ## Cross-VTA migration
 

@@ -189,20 +189,20 @@ accidentally drag megabytes through a Trust-Task envelope. The existing
 `backup_export_via_descriptor` → `download_blob` pattern is the right shape.
 
 #1029 flags a caveat — *"that path is documented REST-only, and OpenVTC speaks
-DIDComm"* — and the code says something more precise. From
-`vta-sdk/src/client/backup_descriptors.rs`, `download_blob` matches on the
-transport and a DIDComm or TSP client **can** use it, via an optional
-`rest_client` side-channel:
+DIDComm"* — and the caveat is right. An earlier revision of this section argued
+otherwise: `download_blob` / `upload_blob` do match a DIDComm or TSP client's
+optional `rest_client`, so it concluded blobs were "not closed to DIDComm
+clients". That missed the gate one step earlier. `post_trust_task`, which every
+descriptor task goes through, refuses any client whose Trust-Task surface is not
+REST (now with `VtaError::UnsupportedTransport`), so a DIDComm or TSP client
+never reaches the blob leg at all. The refusal is deliberate: a `rest_url` on a
+DIDComm client can come from the caller rather than from a `VTARest` service in
+the VTA's DID document, and the transport rules forbid downgrading past what the
+peer advertises.
 
-```rust
-Transport::DIDComm { rest_client, .. } => rest_client.as_ref().ok_or_else(|| {
-    VtaError::Validation("DIDComm transport has no REST client for blob download".into())
-})?,
-```
-
-So blobs are not closed to DIDComm clients. They are closed to clients that do
-not know a REST URL — `rest_client` is `Some` exactly when `rest_url` is
-(`client/mod.rs:457`).
+So blobs, as the descriptor pattern implements them today, **require a REST
+client against a VTA that publishes an HTTPS address** (`public_url`; without
+one the VTA answers `initiate-*` with `transportUnavailable`).
 
 **That is the real constraint, and it is sharper than the issue's.** A VTA may
 legitimately stop advertising REST: runtime service management allows disabling
@@ -219,7 +219,10 @@ decision rather than an implementation detail:
    varies by deployment.
 2. **Chunked transfer over the Trust-Task surface.** No REST dependency, and it
    puts large payloads back inside the envelope this design deliberately keeps
-   them out of.
+   them out of. (The backup family is now taking this route for exactly the
+   DIDComm/TSP-only case — the `chunkedTrustTask` algorithm,
+   [trustoverip/dtgwg-trust-tasks-tf#474](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/474) — which would give an appstate blob design a bounded,
+   client-pulled precedent to reuse rather than invent.)
 3. **Defer blobs.** Ship `appstate` without them and let the first real consumer
    requirement decide. Nothing in OpenVTC's stated need — labels, relationships,
    contacts, join history — obviously wants a blob.

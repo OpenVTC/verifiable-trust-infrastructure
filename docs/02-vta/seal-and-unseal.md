@@ -156,8 +156,9 @@ local fjall (only if the VTA itself minted the admin), in a hardware
 token, or in some other signer you trust. If you sealed with an
 externally-supplied `admin_did` (S08-style) **and** then lost the PNM
 keyring on the host that minted it, the only path back is restoring
-from a backup (`vta backup import`) — that path doesn't traverse the
-seal.
+from a backup — `pnm backup import <file>` against the running VTA as a
+super-admin — which doesn't traverse the seal. (There is no offline
+`vta backup` command; restore always goes through a running VTA.)
 
 ### `vta auth sign-challenge` only works for `did:key:` admins minted by this VTA
 

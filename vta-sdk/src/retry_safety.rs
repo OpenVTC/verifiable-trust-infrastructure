@@ -392,11 +392,16 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Render is a pure function of template + variables.
     (trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0, ReadOnly),
     // ── Backup ──────────────────────────────────────────────────────────
-    // The two-phase descriptor flow: initiate allocates a bundle, complete
-    // returns the encrypted state. Both are non-convergent, and the completed
-    // export is the whole VTA under a passphrase.
-    (trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0, Keyed),
-    (trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0, KeyedSecret),
+    // The descriptor flow. `initiate-export` stages the encrypted state and
+    // answers with the descriptor — including `transportToken`, the bearer
+    // credential that fetches the whole VTA under its passphrase — so its reply
+    // is the secret one and must never sit in the dedup store. `complete-export`
+    // only acknowledges: it returns `{bundleId, downloaded}` and no bytes. (This
+    // comment used to say complete returned the encrypted state, and the two
+    // classifications were swapped to match.) All four non-abort verbs are
+    // non-convergent: a repeat mints another bundle or re-commits.
+    (trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0, KeyedSecret),
+    (trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0, Keyed),
     (trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0, Keyed),
     (trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0, Keyed),
     (trust_tasks::TASK_BACKUP_ABORT_1_0, RetrySafe),

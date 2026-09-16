@@ -2174,6 +2174,19 @@ impl VtaClient {
             return Some(VtaError::Forbidden(message.to_string()));
         }
 
+        // `vta/backup/initiate-{export,import}:transportUnavailable` — the VTA
+        // has no HTTPS address to publish the bytes at. Not a fault in the
+        // request and not a failure worth retrying: the transport is missing,
+        // which is exactly what `UnsupportedTransport` names, and the fix is
+        // on the VTA's configuration. Any task whose spec declares the same
+        // local code means the same thing, so match the local part.
+        if code
+            .rsplit_once(':')
+            .is_some_and(|(_, local)| local == "transportUnavailable")
+        {
+            return Some(VtaError::UnsupportedTransport(message.to_string()));
+        }
+
         // `unsupportedType` / `unsupportedVersion` mean "upgrade something",
         // and *which* thing depends on what the peer serves instead — so the
         // peer's own answer travels as data rather than being flattened into a
@@ -2543,6 +2556,29 @@ mod tests {
                 exclude_requester, ..
             }) => assert!(exclude_requester),
             other => panic!("expected ConsentRequired, got {other:?}"),
+        }
+    }
+
+    /// A VTA with no HTTPS address answers the backup descriptor tasks with the
+    /// spec's `transportUnavailable`; the client must surface it as the typed
+    /// transport error rather than a flat protocol string.
+    #[test]
+    fn a_backup_transport_unavailable_is_unsupported_transport() {
+        for code in [
+            "vta/backup/initiate-export:transportUnavailable",
+            "vta/backup/initiate-import:transportUnavailable",
+        ] {
+            let payload = serde_json::json!({
+                "code": code,
+                "message": "this agent publishes no HTTPS address for backup bytes",
+            });
+            assert!(
+                matches!(
+                    VtaClient::trust_task_error(&payload),
+                    Some(VtaError::UnsupportedTransport(_))
+                ),
+                "{code}"
+            );
         }
     }
 

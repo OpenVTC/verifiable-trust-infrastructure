@@ -23,17 +23,21 @@
 //!   raw byte transport against the descriptor's
 //!   `transport_url`, carrying the `X-Backup-Token` header.
 //!
-//! REST-only: the descriptor pattern doesn't have a DIDComm path.
-//! DIDComm clients fall back to the legacy `/backup/{export,import}`
-//! routes via [`VtaClient::backup_export`] +
-//! [`VtaClient::backup_import`].
+//! REST-only: the `stream` algorithm moves the bytes over HTTPS, and
+//! a client whose Trust-Task surface is DIDComm or TSP is refused with
+//! [`VtaError::UnsupportedTransport`] before anything is sent. The
+//! DIDComm/TSP path is the `chunkedTrustTask` algorithm specified
+//! upstream (`vta/backup/get-chunk` / `put-chunk`), not yet implemented.
+//! The legacy inline protocol message ([`VtaClient::backup_export`])
+//! is not a substitute: its reply carries the whole envelope and is
+//! refused by a mediator's 1 MiB message limit for any real VTA.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
-use super::Transport;
 use super::VtaClient;
+use super::{SurfaceTransport, Transport};
 use crate::error::VtaError;
 use crate::protocols::backup_management::descriptors::{
     AbortBundleBody, AbortBundleResultBody, CompleteExportBody, CompleteExportResultBody,
@@ -52,9 +56,8 @@ impl VtaClient {
     /// optionally complete-export. Returns the encrypted `.vtabak`
     /// bytes ready for `std::fs::write` or further processing.
     ///
-    /// REST-only. DIDComm callers should use
-    /// [`Self::backup_export`] (legacy inline path) until a future
-    /// release adds a DIDComm transport for the blob endpoint.
+    /// REST-only: a DIDComm/TSP client gets
+    /// [`VtaError::UnsupportedTransport`]. See the module docs.
     pub async fn backup_export_via_descriptor(
         &self,
         password: &str,
@@ -170,6 +173,29 @@ impl VtaClient {
             .await
     }
 
+    /// Re-run `finalize-import` against a bundle whose bytes are already
+    /// uploaded — typically the commit after a preview from
+    /// [`Self::backup_import_via_descriptor`] with `confirm = false`.
+    ///
+    /// The VTA keeps a previewed bundle in `ImportPreviewed`, which accepts a
+    /// commit, so the bytes do not need to cross the wire a second time. A
+    /// bundle that expired meanwhile (its slot is short-lived) is refused as
+    /// not-found or conflict; the caller decides whether to start over.
+    pub async fn backup_finalize_import(
+        &self,
+        bundle_id: &str,
+        password: &str,
+        confirm: bool,
+    ) -> Result<FinalizeImportResultBody, VtaError> {
+        let req = FinalizeImportBody {
+            bundle_id: bundle_id.to_string(),
+            password: password.to_string(),
+            confirm,
+        };
+        self.post_trust_task(crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0, req)
+            .await
+    }
+
     // ─── Low-level: building blocks ─────────────────────────────────────
 
     /// POST a typed trust-task envelope to `/trust-tasks` and
@@ -195,30 +221,17 @@ impl VtaClient {
         B: Serialize,
         R: DeserializeOwned,
     {
-        // The descriptor pattern is REST-only: the blob download/upload leg has
-        // no DIDComm/TSP transport yet, so a client on a mediator transport
-        // could initiate but never move the bytes. Gate here rather than let the
-        // trust task go out over DIDComm/TSP and then strand the ceremony at
-        // `download_blob`/`upload_blob`.
-        match &self.transport {
-            Transport::Rest { .. } => {}
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => {
-                return Err(VtaError::Validation(
-                    "backup descriptor pattern is REST-only; \
-                     this client is on TSP transport"
-                        .into(),
-                ));
-            }
-            #[cfg(feature = "session")]
-            Transport::DIDComm { .. } => {
-                return Err(VtaError::Validation(
-                    "backup descriptor pattern is REST-only; \
-                     this client is on DIDComm transport"
-                        .into(),
-                ));
-            }
-        }
+        // The descriptor pattern is REST-only today: the `stream` algorithm moves
+        // the bytes over the VTA's HTTPS blob endpoint, and there is no chunked
+        // transfer over DIDComm/TSP yet. A client on a mediator transport could
+        // initiate but never move the bytes, so refuse before anything goes out.
+        //
+        // A DIDComm/TSP client may carry a `rest_url`, but it is not proof that
+        // the VTA's DID document advertises `VTARest` — it can come from the
+        // caller — and CLAUDE.md forbids downgrading past what the peer
+        // advertises. So the refusal stands until the chunked-trust-task
+        // algorithm lands.
+        descriptor_transport_gate(self.trust_task_transport())?;
 
         // Delegate to the shared signed-dispatch path. It builds the envelope
         // via `build_task_document` (recipient + issuer from the identity),
@@ -246,14 +259,12 @@ impl VtaClient {
             Transport::Rest { client, .. } => client,
             #[cfg(feature = "session")]
             Transport::DIDComm { rest_client, .. } => rest_client.as_ref().ok_or_else(|| {
-                VtaError::Validation(
-                    "DIDComm transport has no REST client for blob download".into(),
-                )
+                VtaError::UnsupportedTransport(no_rest_leg("DIDComm", "download"))
             })?,
             #[cfg(feature = "tsp")]
-            Transport::Tsp { rest_client, .. } => rest_client.as_ref().ok_or_else(|| {
-                VtaError::Validation("TSP transport has no REST client for blob download".into())
-            })?,
+            Transport::Tsp { rest_client, .. } => rest_client
+                .as_ref()
+                .ok_or_else(|| VtaError::UnsupportedTransport(no_rest_leg("TSP", "download")))?,
         };
         let resp = client
             .get(transport_url)
@@ -278,13 +289,13 @@ impl VtaClient {
         let client = match &self.transport {
             Transport::Rest { client, .. } => client,
             #[cfg(feature = "session")]
-            Transport::DIDComm { rest_client, .. } => rest_client.as_ref().ok_or_else(|| {
-                VtaError::Validation("DIDComm transport has no REST client for blob upload".into())
-            })?,
+            Transport::DIDComm { rest_client, .. } => rest_client
+                .as_ref()
+                .ok_or_else(|| VtaError::UnsupportedTransport(no_rest_leg("DIDComm", "upload")))?,
             #[cfg(feature = "tsp")]
-            Transport::Tsp { rest_client, .. } => rest_client.as_ref().ok_or_else(|| {
-                VtaError::Validation("TSP transport has no REST client for blob upload".into())
-            })?,
+            Transport::Tsp { rest_client, .. } => rest_client
+                .as_ref()
+                .ok_or_else(|| VtaError::UnsupportedTransport(no_rest_leg("TSP", "upload")))?,
         };
         let resp = client
             .post(transport_url)
@@ -298,6 +309,32 @@ impl VtaClient {
         // 202 Accepted with empty body; nothing to deserialise.
         Ok(())
     }
+}
+
+/// Refuse the descriptor flow on any Trust-Task surface other than REST.
+///
+/// Split out of [`VtaClient::post_trust_task`] so the refusal can be tested
+/// without a live mediator session. [`VtaError::UnsupportedTransport`] rather
+/// than `Validation`: nothing about the request is invalid — the same request
+/// succeeds over REST — and the CLI keys its guidance on the variant.
+pub(crate) fn descriptor_transport_gate(surface: SurfaceTransport) -> Result<(), VtaError> {
+    match surface {
+        SurfaceTransport::Rest => Ok(()),
+        other => Err(VtaError::UnsupportedTransport(format!(
+            "backup export/import uses the descriptor pattern, whose `stream` algorithm \
+             moves the bytes over the VTA's HTTPS blob endpoint; this client's Trust-Task \
+             surface is on {other}. Re-run with `--transport rest` against a VTA that \
+             advertises REST. A DIDComm/TSP-only VTA cannot be backed up remotely until \
+             the `chunkedTrustTask` transfer algorithm is implemented"
+        ))),
+    }
+}
+
+fn no_rest_leg(transport: &str, direction: &str) -> String {
+    format!(
+        "{transport} transport has no REST client for the backup blob {direction}; \
+         re-run with `--transport rest`"
+    )
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -430,5 +467,54 @@ mod descriptor_envelope_tests {
             serde_json::to_value(body).unwrap(),
         )
         .await;
+    }
+}
+
+/// The descriptor flow is REST-only until the `chunkedTrustTask` algorithm
+/// lands. A DIDComm/TSP client used to get `Validation`, which reads as "your
+/// request is wrong" when the same request succeeds over REST.
+#[cfg(test)]
+mod transport_gate_tests {
+    use super::super::{SurfaceTransport, VtaClient};
+    use super::descriptor_transport_gate;
+    use crate::error::VtaError;
+
+    #[test]
+    fn rest_surface_passes_the_gate() {
+        descriptor_transport_gate(SurfaceTransport::Rest).expect("REST is the supported surface");
+    }
+
+    #[test]
+    fn mediator_surfaces_are_unsupported_transport_not_validation() {
+        for surface in [SurfaceTransport::Didcomm, SurfaceTransport::Tsp] {
+            match descriptor_transport_gate(surface) {
+                Err(VtaError::UnsupportedTransport(msg)) => {
+                    assert!(
+                        msg.contains("--transport rest"),
+                        "{surface}: the refusal must name the fix, got: {msg}"
+                    );
+                    assert!(
+                        msg.contains(&surface.to_string()),
+                        "{surface}: the refusal must name the surface, got: {msg}"
+                    );
+                }
+                other => panic!("{surface}: expected UnsupportedTransport, got {other:?}"),
+            }
+        }
+    }
+
+    /// A REST client is let through the gate: the call fails later, on the
+    /// unreachable host, and not with the transport refusal.
+    #[tokio::test]
+    async fn rest_client_is_not_refused_by_the_gate() {
+        let client = VtaClient::new("http://127.0.0.1:9");
+        let err = client
+            .backup_abort_bundle("3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+            .await
+            .expect_err("nothing listens there");
+        assert!(
+            !matches!(err, VtaError::UnsupportedTransport(_)),
+            "a REST client must pass the transport gate, got {err:?}"
+        );
     }
 }
