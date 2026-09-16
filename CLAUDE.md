@@ -911,15 +911,20 @@ These are load-bearing — know they exist before adjusting nearby code.
   built on them — and match on the `ActScope`. Same shape as the
   `ApproveScope` axis beside it in `vta-sdk/src/acl.rs`: act vs confer.
   See `docs/05-design-notes/acl-scope-semantics.md`.
-- **Rate limit** on all unauth routes: `tower-governor` per source IP
-  (`vta-service/src/routes/mod.rs`). Keep JWT-gated routes off the
-  limiter — auth is the gate. **`per_second(n)` is a replenishment
-  *interval*, not a rate** — `(5, 10)` is 10 back-to-back requests then
-  one every 5 s, so a *bigger* number is a *tighter* limit. The VTA's
-  values are `[server] rate_limit_interval_secs` / `rate_limit_burst`
-  (defaults 5 / 10, zero clamped to 1). Prose elsewhere in the repo —
-  including `vtc-service`, which runs the same governor — still says
-  "5 rps"; that phrasing is wrong wherever it appears.
+- **Rate limit** on all unauth routes, per source IP
+  (`vta-service/src/routes/rate_limit.rs`), in separate buckets: `auth`
+  (auth/bootstrap/attestation, `[server] rate_limit_interval_secs` /
+  `rate_limit_burst`, defaults 5 / 10), `did-log` (public `did.jsonl`,
+  `did_log_rate_limit_*`, defaults 1 / 60), `backup-blob` (auth quota). Keep
+  JWT-gated routes off the limiter — auth is the gate. **An interval is
+  seconds per token, not a rate** — `(5, 10)` is 10 back-to-back requests
+  then one every 5 s, so a *bigger* number is a *tighter* limit; zero clamps
+  to 1. The four keys are runtime `config/patch` keys (`pnm config update
+  --rate-limit-burst …`), read live on every request. Every VTA 429 carries
+  `x-rate-limit-source: vta` — a client contract, don't rename it. Prose
+  elsewhere — including `vtc-service`, which runs `tower-governor` — still
+  says "5 rps"; that phrasing is wrong wherever it appears. See
+  `docs/02-vta/rate-limiting.md`.
 - **Request body cap**: 1 MB globally (`MAX_BODY_SIZE`). Matters in TEE
   where memory is tight.
 - **Audience isolation** between VTA and VTC JWTs. Cross-audience tokens

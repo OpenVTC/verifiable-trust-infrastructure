@@ -15,7 +15,19 @@ pub(crate) async fn run(
         ConfigCommands::Update {
             community_vta_name,
             public_url,
-        } => config_cmd::cmd_config_update(client, "", community_vta_name, public_url).await,
+            rate_limit_interval_secs,
+            rate_limit_burst,
+            did_log_rate_limit_interval_secs,
+            did_log_rate_limit_burst,
+        } => {
+            let mut rate_limits = config_cmd::RateLimitOverrides::default();
+            rate_limits.rate_limit_interval_secs = rate_limit_interval_secs;
+            rate_limits.rate_limit_burst = rate_limit_burst;
+            rate_limits.did_log_rate_limit_interval_secs = did_log_rate_limit_interval_secs;
+            rate_limits.did_log_rate_limit_burst = did_log_rate_limit_burst;
+            config_cmd::cmd_config_patch(client, "", community_vta_name, public_url, rate_limits)
+                .await
+        }
         ConfigCommands::ResolverUrl { .. } => {
             // Handled in the pre-auth dispatcher (see `main.rs`) — local
             // config mutation, no VTA round-trip. Reaching here means

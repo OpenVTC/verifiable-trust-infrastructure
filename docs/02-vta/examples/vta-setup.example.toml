@@ -79,6 +79,13 @@ didcomm = true
 [server]
 host = "0.0.0.0"
 port = 8100
+# Per-IP rate limits on unauthenticated routes. Intervals are SECONDS PER
+# TOKEN (lower is looser), not rates. Defaults shown; tunable at runtime with
+# `pnm config update`. See docs/02-vta/rate-limiting.md.
+# rate_limit_interval_secs = 5           # auth / bootstrap / attestation
+# rate_limit_burst = 10
+# did_log_rate_limit_interval_secs = 1   # public did.jsonl
+# did_log_rate_limit_burst = 60
 
 [log]
 level  = "info"   # "trace" | "debug" | "info" | "warn" | "error"

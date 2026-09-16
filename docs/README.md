@@ -94,6 +94,10 @@ How to operate, deploy, and integrate against a VTA.
 - **[Hardened configuration](02-vta/non-interactive-setup.md#hardened-configuration)** —
   enable storage encryption and sealed JWT key management for
   self-hosted (non-TEE) deployments (`[hardened] enabled = true`).
+- **[Rate limiting](02-vta/rate-limiting.md)** — the per-IP limits on
+  unauthenticated routes (auth vs `did.jsonl`), `trust_xff` and the
+  proxy trap, tuning at runtime with `pnm config update`, and telling a
+  VTA 429 from a mediator's or a proxy's.
 - **[Seal and unseal](02-vta/seal-and-unseal.md)** — what the
   seal is, when it's set, how `vta unseal` works.
 - **[Secret-storage backends](02-vta/secret-backends.md)** — AWS,

@@ -4162,6 +4162,76 @@ async fn auth_flood_does_not_spend_did_log_budget() {
     }
 }
 
+/// The rate-limit quotas are runtime config: a super-admin `PATCH /config`
+/// changes what the running router enforces on the very next request, with no
+/// rebuild or restart — tightening and loosening alike.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn rate_limit_config_patch_applies_to_the_running_router() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    let ip = "192.0.2.31";
+
+    async fn admitted(app: &TestApp, ip: &str) -> usize {
+        for i in 0..100 {
+            let (status, _) = app
+                .request(did_log_request("/.well-known/did.jsonl", ip))
+                .await;
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                return i;
+            }
+        }
+        100
+    }
+
+    // Tighten: burst 2, one token an hour.
+    let (status, body) = app
+        .request(patch_auth(
+            "/config",
+            &token,
+            json!({"overrides": {
+                "did_log_rate_limit_burst": 2,
+                "did_log_rate_limit_interval_secs": 3600
+            }}),
+        ))
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(body["rejected"], json!([]), "{body}");
+    assert_eq!(body["pendingRestart"], json!([]), "{body}");
+    assert_eq!(admitted(&app, ip).await, 2);
+
+    // Loosen: burst 5 applies at once (the swap starts every client afresh).
+    let (status, body) = app
+        .request(patch_auth(
+            "/config",
+            &token,
+            json!({"overrides": {"did_log_rate_limit_burst": 5}}),
+        ))
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(admitted(&app, ip).await, 5);
+
+    // Out of range is refused and changes nothing.
+    let (status, body) = app
+        .request(patch_auth(
+            "/config",
+            &token,
+            json!({"overrides": {"did_log_rate_limit_burst": 0}}),
+        ))
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(body["applied"], json!([]), "{body}");
+    assert_eq!(
+        ctx.inner
+            .config
+            .read()
+            .await
+            .server
+            .did_log_rate_limit_burst,
+        5
+    );
+}
+
 /// P0.10: the token-gated backup-blob branch must also be rate-limited.
 /// Without a token the handler rejects the request, but the governor sits
 /// *outside* the handler, so a flood trips 429 before the handler ever

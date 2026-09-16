@@ -38,7 +38,7 @@ use utoipa_axum::routes;
 
 use crate::server::AppState;
 
-pub use rate_limit::{Limiter, Quota, RateLimits};
+pub use rate_limit::{Limiter, Quota, QuotaSource, RateLimits};
 
 /// OpenAPI document root for the VTA REST surface.
 ///
@@ -197,7 +197,7 @@ fn build_cors_layer(allowed_origins: &[String]) -> Option<CorsLayer> {
 }
 
 pub fn router() -> Router<AppState> {
-    router_with_cors(&[], false, RateLimits::default())
+    router_with_cors(&[], false, QuotaSource::Fixed(RateLimits::default()))
 }
 
 /// Assemble the VTA REST surface as an [`OpenApiRouter`] — the single source
@@ -218,11 +218,13 @@ pub fn router() -> Router<AppState> {
 ///   proxy that overwrites or strips these headers from external
 ///   requests. Misconfiguring this is a silent rate-limit bypass.
 ///
-/// `limits` sets the per-IP quotas of the unauthenticated limiters (see
-/// [`rate_limit`] for which routes sit behind which). Read from `[server]`
-/// config at startup; callers that have no config (tests, the OpenAPI spec
-/// builder) pass [`RateLimits::default`].
-fn build_api_router(trust_xff: bool, limits: RateLimits) -> OpenApiRouter<AppState> {
+/// `quotas` is where the per-IP limiters on the unauthenticated endpoints read
+/// their quotas (see [`rate_limit`] for which routes sit behind which). The
+/// running service passes [`QuotaSource::Live`] over the shared config, so a
+/// runtime `config/patch` of a rate-limit key applies without rebuilding this
+/// router; callers with no config (the OpenAPI spec builder) pass
+/// [`QuotaSource::Fixed`].
+fn build_api_router(trust_xff: bool, quotas: QuotaSource) -> OpenApiRouter<AppState> {
     // Per-IP rate limiters on the unauthenticated endpoints, one bucket set
     // per branch: `auth` (crypto on caller input), `did-log` (public log
     // reads), `backup-blob`. Authenticated routes stay unthrottled — JWT auth
@@ -262,7 +264,7 @@ fn build_api_router(trust_xff: bool, limits: RateLimits) -> OpenApiRouter<AppSta
     // globally) so authenticated endpoints keep MAX_BODY_SIZE for backup
     // import etc.
     let unauth = unauth.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
-    let unauth = rate_limit::apply(unauth, Limiter::Auth, trust_xff, limits);
+    let unauth = rate_limit::apply(unauth, Limiter::Auth, trust_xff, &quotas);
 
     // Public DID-log retrieval, on its own per-IP limiter. Resolving the
     // VTA's DID precedes every client command and the mediator + readiness
@@ -301,7 +303,7 @@ fn build_api_router(trust_xff: bool, limits: RateLimits) -> OpenApiRouter<AppSta
     // Same unauth body cap as the auth branch — these are GETs, so any body
     // at all is unexpected.
     let did_log = did_log.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
-    let did_log = rate_limit::apply(did_log, Limiter::DidLog, trust_xff, limits);
+    let did_log = rate_limit::apply(did_log, Limiter::DidLog, trust_xff, &quotas);
 
     // Auth portal — same-origin popup target for cross-origin WebAuthn
     // flows. Sits on its own router branch so:
@@ -552,7 +554,7 @@ fn build_api_router(trust_xff: bool, limits: RateLimits) -> OpenApiRouter<AppSta
         .routes(routes!(backup_blob::get_blob, backup_blob::post_blob))
         .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE));
     let backup_blob_router =
-        rate_limit::apply(backup_blob_router, Limiter::BackupBlob, trust_xff, limits);
+        rate_limit::apply(backup_blob_router, Limiter::BackupBlob, trust_xff, &quotas);
     let router = router.merge(backup_blob_router);
 
     // Authenticated health details.
@@ -576,7 +578,7 @@ fn build_api_router(trust_xff: bool, limits: RateLimits) -> OpenApiRouter<AppSta
 pub fn openapi_spec() -> utoipa::openapi::OpenApi {
     // CORS attribution doesn't affect the documented surface; build with the
     // safe default.
-    build_api_router(false, RateLimits::default())
+    build_api_router(false, QuotaSource::Fixed(RateLimits::default()))
         .split_for_parts()
         .1
 }
@@ -588,13 +590,13 @@ pub fn openapi_spec() -> utoipa::openapi::OpenApi {
 pub fn router_with_cors(
     allowed_origins: &[String],
     trust_xff: bool,
-    limits: RateLimits,
+    quotas: QuotaSource,
 ) -> Router<AppState> {
     // Finalise the OpenAPI document from the assembled router (paths come from
     // the `routes!()` registrations) and recover a plain axum `Router` to layer
     // + serve. Splitting here, *before* the global layers, lets `/openapi.json`
     // be added as a sibling that the same global layers then wrap.
-    let (router, api) = build_api_router(trust_xff, limits).split_for_parts();
+    let (router, api) = build_api_router(trust_xff, quotas).split_for_parts();
     let router = router.route("/openapi.json", get(move || serve_openapi(api.clone())));
 
     // Apply global request body size limit to protect enclave memory,
@@ -772,11 +774,11 @@ mod cors_tests {
         // Constructing with non-default quotas must not panic.
         let _ = build_api_router(
             false,
-            RateLimits::new(Quota::new(50, 100), Quota::new(2, 500)),
+            QuotaSource::Fixed(RateLimits::new(Quota::new(50, 100), Quota::new(2, 500))),
         );
         let _ = build_api_router(
             true,
-            RateLimits::new(Quota::new(1000, 2000), Quota::new(1, 1)),
+            QuotaSource::Fixed(RateLimits::new(Quota::new(1000, 2000), Quota::new(1, 1))),
         );
     }
 
@@ -786,16 +788,17 @@ mod cors_tests {
         let _ = router_with_cors(
             &[],
             false,
-            RateLimits::new(Quota::new(50, 100), Quota::new(3, 30)),
+            QuotaSource::Fixed(RateLimits::new(Quota::new(50, 100), Quota::new(3, 30))),
         );
     }
 
-    /// A `0` in any of the four `[server]` rate-limit keys reaches
-    /// `rate_limit::apply`, whose `GovernorConfigBuilder::finish()` returns
-    /// `None` on a zero period or burst — the `.expect()` there would panic
-    /// the REST thread. This asserts the production clamp (`Quota::new`), not
-    /// a test helper's: it goes through the real router builders on both
-    /// `trust_xff` branches, from a real `ServerConfig`.
+    /// A `0` in any of the four `[server]` rate-limit keys reaches the
+    /// limiters, where a zero period or burst has no governor quota — the
+    /// `.expect()` building one would panic the REST thread. This asserts the
+    /// production clamp (`Quota::new`), not a test helper's: it goes through
+    /// the real router builders on both `trust_xff` branches, from a real
+    /// `ServerConfig`. (The live path re-reads config per request and clamps
+    /// the same way; `rate_limit::tests` covers it.)
     #[test]
     fn zero_rate_limit_config_is_clamped_not_panicked() {
         let server = crate::config::ServerConfig {
@@ -805,9 +808,9 @@ mod cors_tests {
             did_log_rate_limit_burst: 0,
             ..Default::default()
         };
-        let limits = RateLimits::from_server_config(&server);
-        let _ = build_api_router(false, limits);
-        let _ = build_api_router(true, limits);
+        let limits = QuotaSource::Fixed(RateLimits::from_server_config(&server));
+        let _ = build_api_router(false, limits.clone());
+        let _ = build_api_router(true, limits.clone());
         let _ = router_with_cors(&[], false, limits);
     }
 }
@@ -817,8 +820,10 @@ mod cors_tests {
 /// (one token every `n` seconds), and `burst_size(b)` is how many requests
 /// get through back-to-back before throttling starts.
 ///
-/// This exercises the governor directly rather than [`rate_limit::apply`], so
-/// the semantics are pinned independent of our wrapper. The wrapper (branch
+/// This exercises `tower_governor` directly rather than [`rate_limit::apply`]:
+/// the production limiter is now our own middleware over the same `governor`
+/// quota (`Quota::with_period(interval).allow_burst(burst)`), and these pin
+/// the semantics that construction inherits. The wrapper (branch
 /// independence, the 429 contract) is covered in `rate_limit::tests`, the
 /// end-to-end wiring by the harness test
 /// `unauth_endpoint_rate_limit_returns_429_after_burst`, and the clamp by

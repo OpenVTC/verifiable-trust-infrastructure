@@ -1721,6 +1721,24 @@ pub(crate) enum ConfigCommands {
         /// Public URL for this VTA
         #[arg(long)]
         public_url: Option<String>,
+        /// Auth rate limiter (auth, bootstrap, attestation; also sizes the
+        /// backup-blob limiter): SECONDS PER TOKEN, 1-3600. Not a rate —
+        /// lower is looser. Applied live, no restart.
+        #[arg(long, value_name = "SECS")]
+        rate_limit_interval_secs: Option<u64>,
+        /// Auth rate limiter burst: requests one client IP may send
+        /// back-to-back, 1-10000. Applied live; changing it resets that
+        /// limiter's buckets.
+        #[arg(long, value_name = "N")]
+        rate_limit_burst: Option<u32>,
+        /// DID-log rate limiter (public did.jsonl routes): SECONDS PER TOKEN,
+        /// 1-3600. Lower is looser. Applied live, no restart.
+        #[arg(long, value_name = "SECS")]
+        did_log_rate_limit_interval_secs: Option<u64>,
+        /// DID-log rate limiter burst, 1-10000. Applied live; changing it
+        /// resets that limiter's buckets.
+        #[arg(long, value_name = "N")]
+        did_log_rate_limit_burst: Option<u32>,
     },
     /// Manage the remote DID-resolver cache URL stored in
     /// `~/.config/pnm/config.toml`. When set, PNM dispatches every DID
@@ -3087,6 +3105,34 @@ pub(crate) fn install_force_exit_handler() {
             eprintln!("\nShutting down — press Ctrl-C again to force exit.");
         }
     });
+}
+
+#[cfg(test)]
+mod config_update_flag_tests {
+    use super::*;
+
+    /// `vta_sdk::rate_limit` prints `pnm config update --rate-limit-… <N>` as
+    /// the runtime fix for a VTA 429. Parse exactly those flags, so a renamed
+    /// flag fails here rather than in front of an operator.
+    #[test]
+    fn config_update_accepts_the_flags_the_sdk_hint_prints() {
+        for flags in [
+            vta_sdk::rate_limit::VTA_RUNTIME_FLAGS,
+            vta_sdk::rate_limit::VTA_DID_LOG_RUNTIME_FLAGS,
+        ] {
+            let args: Vec<&str> = std::iter::once("pnm")
+                .chain(
+                    flags
+                        .split_whitespace()
+                        .map(|t| if t == "<N>" { "7" } else { t }),
+                )
+                .collect();
+            assert!(
+                Cli::try_parse_from(&args).is_ok(),
+                "pnm must accept the SDK hint `{flags}`"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
