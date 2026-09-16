@@ -44,11 +44,20 @@ pub async fn cmd_verify(
         .send()
         .await?;
     let status = resp.status();
+    // Headers before body: a 429 from the VTC's limiter is typed so the CLI
+    // names the VTC and the wait rather than a bare "verify failed".
+    let headers = resp.headers().clone();
+    let url = format!("{base}/audit/verify");
     let bytes = vta_sdk::http::read_body_capped(resp, MAX_VERIFY_RESPONSE_BYTES)
         .await
         .map_err(|e| format!("VTC audit verify ({status}): {e}"))?;
     let text = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
+        if let Some(rl) =
+            vta_sdk::error::VtaError::rate_limited_from_http(status, &headers, &text, &url)
+        {
+            return Err(rl.into());
+        }
         return Err(format!("VTC audit verify failed ({status}): {text}").into());
     }
     let body: Value = serde_json::from_str(&text)

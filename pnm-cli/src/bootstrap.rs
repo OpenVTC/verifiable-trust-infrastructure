@@ -519,11 +519,28 @@ pub async fn run_connect(
     let client = vta_sdk::http::rest_client();
     let resp = client.post(&url).json(&body).send().await?;
     let status = resp.status();
+    // Capture the headers before the body consumes the response: a 429 from the
+    // VTA's unauth limiter carries `x-rate-limit-source` / `retry-after`, which
+    // `rate_limited_from_http` reads to attribute the refusal.
+    let headers = resp.headers().clone();
     let bytes = vta_sdk::http::read_body_capped(resp, MAX_BOOTSTRAP_RESPONSE_BYTES)
         .await
         .map_err(|e| format!("bootstrap request ({status}): {e}"))?;
     if !status.is_success() {
         let body = String::from_utf8_lossy(&bytes);
+        // A rate limit must stay typed, or its message reads as a bootstrap
+        // failure and sends the operator to check the enclave. The limiter runs
+        // *before* the carve-out is touched, so the one-shot first boot is not
+        // spent — retrying after the wait is safe.
+        if let Some(rl) =
+            vta_sdk::error::VtaError::rate_limited_from_http(status, &headers, &body, &url)
+        {
+            eprintln!(
+                "The rate limit rejected this request before the enclave minted anything, \
+                 so the one-time bootstrap is not spent — retry after the wait."
+            );
+            return Err(rl.into());
+        }
         return Err(format!("bootstrap request failed ({status}): {body}").into());
     }
     let wire: BootstrapResponseWire = serde_json::from_slice(&bytes)?;
