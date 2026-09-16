@@ -1580,25 +1580,23 @@ fn run_rest_thread(
         // service restart (which the operator triggers via
         // /vta/restart after editing the file), so reading the
         // current values here is correct.
-        let (cors_origins, trust_xff, interval_secs, burst) = {
+        let (cors_origins, trust_xff, rate_limits) = {
             let cfg = state.config.read().await;
             (
                 cfg.server.cors_origins.clone(),
                 cfg.server.trust_xff,
-                cfg.server.rate_limit_interval_secs,
-                cfg.server.rate_limit_burst,
+                routes::RateLimits::from_server_config(&cfg.server),
             )
         };
-        let traced_routes =
-            routes::router_with_cors(&cors_origins, trust_xff, interval_secs, burst)
-                .with_state(state.clone())
-                .layer(axum::middleware::from_fn(crate::metrics::track_metrics))
-                .layer(
-                    TraceLayer::new_for_http()
-                        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                        .on_request(DefaultOnRequest::new().level(Level::INFO))
-                        .on_response(DefaultOnResponse::new().level(Level::INFO)),
-                );
+        let traced_routes = routes::router_with_cors(&cors_origins, trust_xff, rate_limits)
+            .with_state(state.clone())
+            .layer(axum::middleware::from_fn(crate::metrics::track_metrics))
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                    .on_request(DefaultOnRequest::new().level(Level::INFO))
+                    .on_response(DefaultOnResponse::new().level(Level::INFO)),
+            );
 
         // `/health` stays out of the trace + metrics layers (it's a
         // high-frequency probe), but still needs the API's CORS policy

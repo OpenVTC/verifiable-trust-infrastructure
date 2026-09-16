@@ -4024,11 +4024,11 @@ async fn unknown_audience_token_rejected_by_vta_route() {
 // silently regress on. One test per bound — burst-then-throttled for the
 // per-IP rate limiter, then >1 MB body returns 413 for the global cap.
 
-/// `tower_governor` is wired at 5 req/sec with a 10-burst per source IP
-/// across every unauthenticated endpoint. Send 12 requests in a tight
-/// loop and assert at least one comes back as 429 — confirming the
-/// layer is wired into the router. Without this test, a future router
-/// refactor that drops the `GovernorLayer` would silently land.
+/// The auth limiter is wired at one token every 5 s with a 10-burst per
+/// source IP across the unauthenticated auth endpoints. Send requests in a
+/// tight loop and assert one comes back as 429 carrying the VTA's 429
+/// contract — confirming the layer is wired into the router. Without this
+/// test, a future router refactor that drops the limiter would silently land.
 #[tokio::test]
 async fn unauth_endpoint_rate_limit_returns_429_after_burst() {
     let (app, _ctx) = TestApp::new().await;
@@ -4041,28 +4041,125 @@ async fn unauth_endpoint_rate_limit_returns_429_after_burst() {
     // extractor reads `X-Forwarded-For` / `X-Real-IP` first, then
     // falls back to the connection. Stamp a stable client IP via
     // `X-Forwarded-For` so every request hashes to the same bucket.
-    let mut saw_429 = false;
+    let mut rejection = None;
     for _ in 0..20 {
-        let req = Request::builder()
-            .method("POST")
-            .uri("/auth/challenge")
-            .header("content-type", "application/json")
-            .header("x-forwarded-for", "192.0.2.1")
-            .body(Body::from(
-                json!({"client_did": "did:key:zTest"}).to_string(),
-            ))
+        let resp = app
+            .router
+            .clone()
+            .oneshot(auth_challenge_request("192.0.2.1"))
+            .await
             .unwrap();
-        let (status, _) = app.request(req).await;
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            saw_429 = true;
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            rejection = Some(resp);
             break;
         }
     }
-    assert!(
-        saw_429,
+    let resp = rejection.expect(
         "expected at least one 429 within 20 sequential POST /auth/challenge calls; \
-         the GovernorLayer (5 rps + 10 burst) appears to be missing"
+         the auth rate limiter (10 burst) appears to be missing",
     );
+    assert_eq!(resp.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vta");
+    assert_eq!(resp.headers()["x-rate-limit-scope"], "auth");
+    assert!(resp.headers().contains_key("retry-after"));
+}
+
+fn auth_challenge_request(ip: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/auth/challenge")
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", ip)
+        .body(Body::from(
+            json!({"client_did": "did:key:zTest"}).to_string(),
+        ))
+        .unwrap()
+}
+
+#[cfg(feature = "webvh")]
+fn did_log_request(uri: &str, ip: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("x-forwarded-for", ip)
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// The public DID-log routes sit on their own limiter. Resolving a
+/// self-hosted VTA DID used to spend the auth budget — a `pnm` command's DID
+/// fetch plus challenge + authenticate is 3 of 10 tokens — so a few commands
+/// in a row were refused. A did.jsonl flood from one IP must leave that IP's
+/// auth budget intact, and trip only the `did-log` limiter.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn did_log_flood_does_not_spend_auth_budget() {
+    let (app, _ctx) = TestApp::new().await;
+    let ip = "192.0.2.21";
+    // Both the fixed well-known route and the canonical catch-all share the
+    // did-log bucket.
+    let mut rejection = None;
+    for i in 0..100 {
+        let uri = if i % 2 == 0 {
+            "/.well-known/did.jsonl"
+        } else {
+            "/tenant/vta/did.jsonl"
+        };
+        let resp = app
+            .router
+            .clone()
+            .oneshot(did_log_request(uri, ip))
+            .await
+            .unwrap();
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            assert!(
+                i >= 60,
+                "did-log limiter tripped after {i}, below its 60 burst"
+            );
+            rejection = Some(resp);
+            break;
+        }
+    }
+    let resp = rejection.expect("100 did.jsonl GETs must trip the did-log limiter");
+    assert_eq!(resp.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vta");
+    assert_eq!(resp.headers()["x-rate-limit-scope"], "did-log");
+
+    // The same IP's auth bucket is untouched: the full burst still passes.
+    for _ in 0..10 {
+        let (status, _) = app.request(auth_challenge_request(ip)).await;
+        assert_ne!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "a did.jsonl flood must not spend the auth budget"
+        );
+    }
+}
+
+/// And the converse: exhausting the auth limiter must not stop the same IP
+/// from resolving the VTA's DID.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn auth_flood_does_not_spend_did_log_budget() {
+    let (app, _ctx) = TestApp::new().await;
+    let ip = "192.0.2.22";
+    let mut tripped = false;
+    for _ in 0..20 {
+        let (status, _) = app.request(auth_challenge_request(ip)).await;
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            tripped = true;
+            break;
+        }
+    }
+    assert!(tripped, "20 challenges must trip the auth limiter");
+    for _ in 0..20 {
+        let (status, _) = app
+            .request(did_log_request("/.well-known/did.jsonl", ip))
+            .await;
+        assert_ne!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "an auth flood must not spend the did-log budget"
+        );
+    }
 }
 
 /// P0.10: the token-gated backup-blob branch must also be rate-limited.
@@ -4072,7 +4169,7 @@ async fn unauth_endpoint_rate_limit_returns_429_after_burst() {
 #[tokio::test]
 async fn backup_blob_branch_is_rate_limited() {
     let (app, _ctx) = TestApp::new().await;
-    let mut saw_429 = false;
+    let mut rejection = None;
     for _ in 0..20 {
         let req = Request::builder()
             .method("GET")
@@ -4080,17 +4177,18 @@ async fn backup_blob_branch_is_rate_limited() {
             .header("x-forwarded-for", "192.0.2.7")
             .body(Body::empty())
             .unwrap();
-        let (status, _) = app.request(req).await;
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            saw_429 = true;
+        let resp = app.router.clone().oneshot(req).await.unwrap();
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            rejection = Some(resp);
             break;
         }
     }
-    assert!(
-        saw_429,
+    let resp = rejection.expect(
         "expected a 429 within 20 GET /backup/blob calls; the backup-blob \
-         branch is missing its GovernorLayer"
+         branch is missing its rate limiter",
     );
+    assert_eq!(resp.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vta");
+    assert_eq!(resp.headers()["x-rate-limit-scope"], "backup-blob");
 }
 
 /// P0.10: the unauthenticated TEE attestation endpoints (`status`,

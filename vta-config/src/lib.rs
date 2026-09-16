@@ -415,23 +415,53 @@ pub struct ServerConfig {
     /// Closes L2 from the May 2026 security review.
     #[serde(default)]
     pub trust_xff: bool,
-    /// Token replenishment interval for the unauth rate limiter, in **seconds
-    /// per token** — not requests per second. One new token every
+    /// Token replenishment interval for the **auth** rate limiter, in
+    /// **seconds per token** — not requests per second. One new token every
     /// `rate_limit_interval_secs`, so *lower is more permissive*. Default: 5.
+    ///
+    /// The auth limiter covers the unauthenticated endpoints that do real
+    /// crypto on caller input: auth challenge / authenticate / refresh,
+    /// passkey login, `/bootstrap/request`, the TEE attestation reports — and,
+    /// as a separate bucket at the same quota, the token-gated
+    /// `/backup/blob/*` branch. The public DID-log routes are *not* on it; see
+    /// `did_log_rate_limit_interval_secs`.
     ///
     /// With the default `rate_limit_burst = 10`: 10 rapid requests, then one
     /// every 5 s. Local dev that fires a bootstrap flow in a burst wants
     /// `rate_limit_interval_secs = 1` and a larger `rate_limit_burst`.
     ///
-    /// Zero is clamped to 1 at router build (`routes::apply_unauth_governor`);
-    /// the limiter cannot be turned off from config.
+    /// Zero is clamped to 1 at router build (`routes::rate_limit`); the
+    /// limiter cannot be turned off from config.
     #[serde(default = "default_rate_limit_interval_secs")]
     pub rate_limit_interval_secs: u64,
-    /// Burst capacity for the unauth rate limiter — how many requests can
+    /// Burst capacity for the auth rate limiter — how many requests can
     /// arrive back-to-back before throttling starts. Default: 10. Zero is
     /// clamped to 1.
     #[serde(default = "default_rate_limit_burst")]
     pub rate_limit_burst: u32,
+    /// Token replenishment interval for the **DID-log** rate limiter, in
+    /// **seconds per token** — not requests per second. One new token every
+    /// `did_log_rate_limit_interval_secs`, so *lower is more permissive*.
+    /// Default: 1.
+    ///
+    /// The DID-log limiter covers the public, unauthenticated `did.jsonl`
+    /// routes (`/.well-known/did.jsonl`, the canonical pathful
+    /// `/<path>/did.jsonl` catch-all, `/did/{did}/log`, and under TEE
+    /// `/attestation/did-log`). It is a separate per-IP bucket from the auth
+    /// limiter because resolving the VTA's DID is the first step of every
+    /// client command, the mediator and the VTA's own readiness gate fetch the
+    /// log too, and serving it is a cheap store read with no crypto — sharing
+    /// the auth budget made a few CLI commands in a row return 429.
+    ///
+    /// With the default `did_log_rate_limit_burst = 60`: 60 rapid fetches,
+    /// then one per second. Zero is clamped to 1.
+    #[serde(default = "default_did_log_rate_limit_interval_secs")]
+    pub did_log_rate_limit_interval_secs: u64,
+    /// Burst capacity for the DID-log rate limiter — how many `did.jsonl`
+    /// fetches can arrive back-to-back from one client IP before throttling
+    /// starts. Default: 60. Zero is clamped to 1.
+    #[serde(default = "default_did_log_rate_limit_burst")]
+    pub did_log_rate_limit_burst: u32,
 }
 
 fn default_host() -> String {
@@ -448,6 +478,14 @@ fn default_rate_limit_interval_secs() -> u64 {
 
 fn default_rate_limit_burst() -> u32 {
     10
+}
+
+fn default_did_log_rate_limit_interval_secs() -> u64 {
+    1
+}
+
+fn default_did_log_rate_limit_burst() -> u32 {
+    60
 }
 
 fn default_server_config() -> ServerConfig {
@@ -469,6 +507,8 @@ impl Default for ServerConfig {
             trust_xff: false,
             rate_limit_interval_secs: default_rate_limit_interval_secs(),
             rate_limit_burst: default_rate_limit_burst(),
+            did_log_rate_limit_interval_secs: default_did_log_rate_limit_interval_secs(),
+            did_log_rate_limit_burst: default_did_log_rate_limit_burst(),
         }
     }
 }
@@ -1419,6 +1459,32 @@ mod validate_tests {
         config
             .validate()
             .expect("unknown keys are advisory, not a hard error");
+    }
+
+    #[test]
+    fn rate_limit_keys_default_and_parse() {
+        // Absent keys take the documented defaults: auth 5 s/token burst 10,
+        // DID log 1 s/token burst 60.
+        let server = cfg("").server;
+        assert_eq!(server.rate_limit_interval_secs, 5);
+        assert_eq!(server.rate_limit_burst, 10);
+        assert_eq!(server.did_log_rate_limit_interval_secs, 1);
+        assert_eq!(server.did_log_rate_limit_burst, 60);
+
+        // Each key is read independently of the others.
+        let (config, _dir) = load(
+            "[server]\nrate_limit_interval_secs = 2\nrate_limit_burst = 20\n\
+             did_log_rate_limit_interval_secs = 3\ndid_log_rate_limit_burst = 200\n",
+        );
+        assert!(
+            config.unknown_keys.is_empty(),
+            "rate-limit keys must be known: {:?}",
+            config.unknown_keys
+        );
+        assert_eq!(config.server.rate_limit_interval_secs, 2);
+        assert_eq!(config.server.rate_limit_burst, 20);
+        assert_eq!(config.server.did_log_rate_limit_interval_secs, 3);
+        assert_eq!(config.server.did_log_rate_limit_burst, 200);
     }
 
     #[test]
