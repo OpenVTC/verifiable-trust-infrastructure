@@ -2,6 +2,140 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.30.0...vta-service-v0.31.0) — 2026-09-16
+
+
+### Added
+
+- **tsp**: Answer an inbound relationship request, instead of recording it and going quiet ([#1525](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1525))
+
+The last functional piece of Rev 3. `affinidi-messaging-sdk` 0.26.4 surfaces a
+  TSP relationship control message as `InboundKind::RelationshipControl` instead
+  of dropping it after recording; `handle_tsp` now answers one.
+
+  A relationship request is not traffic and must not reach the Trust Task spine:
+  it carries no envelope, so dispatching it would answer a perfectly valid
+  control message with "this is not a Trust Task envelope".
+
+  ## The ACL gate is NOT here, and that was decided by building it here first
+
+  The plan recorded this as the open question, and the first implementation put
+  the gate on the invite: a sender with no ACL entry got an explicit
+  `cancel_relationship` (XRFD) rather than §7.2.2's prescribed silent drop. The
+  justification was diagnosability — a silent endpoint is indistinguishable from
+  a broken transport, so an explicit refusal turns silence into an answer.
+
+  Building it showed the argument runs the other way. A peer sends its invite and
+  its first Trust Task together, which §3.6 expressly permits. Refusing the invite
+  means §7.2.2 then drops the Trust Task, so the peer's actual request goes
+  unanswered — and the XRFD it does get is a *control* message its application
+  layer never sees. The gate produced exactly the silence it was meant to prevent.
+
+- **backup**: Back up a DIDComm/TSP-only VTA with the chunkedTrustTask algorithm ([#1522](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1522))
+
+* build(deps): trust-tasks-rs 0.21.1, the release carrying the chunked backup specs
+
+  0.21.1 is the first release with `vta/backup/get-chunk/1.0`,
+  `put-chunk/1.0`, `initiate-{export,import}/1.1` and
+  `finalize-import/1.1` (trustoverip/dtgwg-trust-tasks-tf#474). A
+  dispatched URI the registry has no schema for fails
+  `every_served_uri_has_a_published_spec_or_is_tracked_debt`, so the floor
+  moves with the tasks that need it.
+
+- **vta-service**: Tune the VTA's rate limits at runtime ([#1519](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1519))
+
+* feat(vta-service)!: tune the VTA's rate limits at runtime
+
+  The per-IP limiters were tower_governor layers built once with the router, so
+  changing a quota needed a config edit and a restart — exactly when an operator
+  facing 429s can least afford one.
+
+  The limiters are now our own axum middleware over governor's keyed limiter
+  (already in the graph via tower_governor, whose spoof-safe client-IP key
+  extractors are reused unchanged). The running service reads the four [server]
+  quotas from the shared config on every request and swaps in fresh buckets when
+  a quota changes; a change resets that limiter's buckets, and a patch that
+  leaves a quota alone keeps them. trust_xff stays restart-only. The 429 contract
+  is unchanged.
+
+  rate_limit_interval_secs, rate_limit_burst, did_log_rate_limit_interval_secs
+  and did_log_rate_limit_burst are registered in the config registry as mutable
+  integer keys, applied live and persisted to config.toml: intervals 1-3600,
+  bursts 1-10000, super-admin only, through config/patch like every other key.
+  Their names come from vta_sdk::rate_limit, which the 429 hints also use.
+  pnm and cnm `config update` gain --rate-limit-interval-secs,
+  --rate-limit-burst, --did-log-rate-limit-interval-secs and
+  --did-log-rate-limit-burst; `config get` shows the keys.
+
+  Adds docs/02-vta/rate-limiting.md and links it from the docs index,
+  non-interactive setup and the setup example.
+
+
+
+### Fixed
+
+- **vta-service**: Box handlers at the dispatch seam so debug builds don't overflow ([#1526](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1526))
+
+The macro-generated `dispatch_typed` awaited every Trust-Task handler inline in
+  its match arms, so the single dispatch future — and the enclosing
+  `dispatch_trust_task_core` that the DIDComm and TSP inbound paths both call —
+  was sized to the heaviest handler's future and grew with every heavy arm added.
+  Debug builds don't elide that layout, so the first inbound Trust Task overflowed
+  the worker-thread stack, which reads as (but is not) infinite recursion.
+
+  Box each handler at the dispatch seam (`Box::pin($handler(..)).await`), so every
+  arm is a pointer's worth of future and the match frame stays flat regardless of
+  handler size. The boxed future is a concrete `Pin<Box<_>>`, so it stays `Send`.
+
+  This makes three prior workarounds redundant, all removed:
+  - the four per-handler `Box::pin`s #1522 added inside the backup 1.1 handlers,
+  - the `op!` macro's per-operation boxing in services.rs (simplified to a plain
+    `match $call.await`),
+  - the hand-spawned 32 MiB threads on the two heaviest mock_vta tests, which now
+    run as ordinary `#[tokio::test]`s on the default libtest stack and serve as
+    the regression guards.
+
+  A new mock_vta test, `heavy_trust_task_dispatches_on_default_stack`, drives a
+  chunked `initiate-export/1.1` (a full state export inline — the largest handler
+  #1522 hand-boxed) through the full inbound dispatch spine on the default stack.
+  Unbox the seam and it overflows again.
+
+  `room_owner.rs`'s handler-internal box is kept as defense-in-depth (its comment
+  corrected) because no default-stack test exercises the `anchor` handler.
+
+- **webvh**: Refuse to delete a DID whose hosting server is unregistered ([#1518](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1518))
+
+`dids delete` on a DID whose `server_id` was no longer registered deleted the
+  local record and skipped the delete on the hosting server without reporting
+  it. `get_server` returning `None` set no `daemon_cleanup_error`, so the published
+  did.jsonl stayed live on the host, and the only credentials that could remove
+  it (the record's mnemonic and the DID's keys) were deleted with the record.
+
+  VTI R2.1 (Remote-First): no local commit before the remote effect. The deletion
+  now refuses up front, before revoking or deleting anything, as a `Conflict`
+  blocker on REST, DIDComm and TSP. The message names the fix: re-register the
+  server with `servers add --id <id> --did <server-did>` and retry. The offline
+  preview shows the same blocker. Serverless DIDs are unaffected.
+
+  `vta did-mgmt dids delete --local-only` is the explicit opt-in for a host that
+  is gone for good, where `servers add` cannot succeed because the server DID no
+  longer resolves. It is honoured only for an unregistered server. For a
+  registered or serverless DID it is refused. The result says the host copy
+  remains. It is offline-only because the `vta/webvh/dids/delete/1.0` payload is
+  generated from the specification with `additionalProperties: false`. An online
+  opt-in needs a `localOnly` member in dtgwg-trust-tasks-tf first.
+
+  `pnm did-mgmt dids delete` also discarded `daemonCleanupError`, the partial
+  success the specification says a consumer MUST surface, because the SDK's
+  `delete_did_webvh` returns `()`. The new
+  `VtaClient::delete_did_webvh_with_outcome` returns the generated response type,
+  and the CLI prints the warning.
+
+  Library additions: `DeleteDidOptions`, `delete_did_webvh_with`,
+  `plan_did_deletion_with`, and `MockVta::webvh_host_deletes`.
+
+
+
 ## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.29.0...vta-service-v0.30.0) — 2026-09-16
 
 

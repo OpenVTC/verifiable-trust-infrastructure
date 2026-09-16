@@ -2,6 +2,60 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.16.7...pnm-cli-v0.17.0) — 2026-09-16
+
+
+### Added
+
+- **backup**: Back up a DIDComm/TSP-only VTA with the chunkedTrustTask algorithm ([#1522](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1522))
+
+* build(deps): trust-tasks-rs 0.21.1, the release carrying the chunked backup specs
+
+  0.21.1 is the first release with `vta/backup/get-chunk/1.0`,
+  `put-chunk/1.0`, `initiate-{export,import}/1.1` and
+  `finalize-import/1.1` (trustoverip/dtgwg-trust-tasks-tf#474). A
+  dispatched URI the registry has no schema for fails
+  `every_served_uri_has_a_published_spec_or_is_tracked_debt`, so the floor
+  moves with the tasks that need it.
+
+- **vta-service**: Tune the VTA's rate limits at runtime ([#1519](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1519))
+
+* feat(vta-service)!: tune the VTA's rate limits at runtime
+
+  The per-IP limiters were tower_governor layers built once with the router, so
+  changing a quota needed a config edit and a restart — exactly when an operator
+  facing 429s can least afford one.
+
+  The limiters are now our own axum middleware over governor's keyed limiter
+  (already in the graph via tower_governor, whose spoof-safe client-IP key
+  extractors are reused unchanged). The running service reads the four [server]
+  quotas from the shared config on every request and swaps in fresh buckets when
+  a quota changes; a change resets that limiter's buckets, and a patch that
+  leaves a quota alone keeps them. trust_xff stays restart-only. The 429 contract
+  is unchanged.
+
+  rate_limit_interval_secs, rate_limit_burst, did_log_rate_limit_interval_secs
+  and did_log_rate_limit_burst are registered in the config registry as mutable
+  integer keys, applied live and persisted to config.toml: intervals 1-3600,
+  bursts 1-10000, super-admin only, through config/patch like every other key.
+  Their names come from vta_sdk::rate_limit, which the 429 hints also use.
+  pnm and cnm `config update` gain --rate-limit-interval-secs,
+  --rate-limit-burst, --did-log-rate-limit-interval-secs and
+  --did-log-rate-limit-burst; `config get` shows the keys.
+
+  Adds docs/02-vta/rate-limiting.md and links it from the docs index,
+  non-interactive setup and the setup example.
+
+
+
+### Fixed
+
+- **cli**: Type rate-limit refusals on the hand-rolled bootstrap and VTC paths ([#1521](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1521))
+
+pnm bootstrap connect, cnm backup, and cnm audit verify build their own error strings from the HTTP status instead of going through the SDK client, so a 429 read as a bare "request failed" — the same class #1511 fixed for the SDK paths. Map 429 to VtaError::RateLimited via rate_limited_from_http (headers captured before the body), so print_cli_error names which service limited, the wait, and how to tune it. On pnm bootstrap connect the limiter runs before the carve-out is touched, so a note says the one-shot first boot is not spent and retry after the wait is safe. The header/attribution parsing is covered by vta-sdk's rate_limit tests; this is the call-site wiring.
+
+
+
 ## [0.16.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.16.6...pnm-cli-v0.16.7) — 2026-09-16
 
 
