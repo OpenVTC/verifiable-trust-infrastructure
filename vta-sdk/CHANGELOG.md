@@ -2,6 +2,59 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.41.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.40.0...vta-sdk-v0.41.0) — 2026-09-16
+
+
+### Added
+
+- **backup**: Back up a DIDComm/TSP-only VTA with the chunkedTrustTask algorithm ([#1522](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1522))
+
+* build(deps): trust-tasks-rs 0.21.1, the release carrying the chunked backup specs
+
+  0.21.1 is the first release with `vta/backup/get-chunk/1.0`,
+  `put-chunk/1.0`, `initiate-{export,import}/1.1` and
+  `finalize-import/1.1` (trustoverip/dtgwg-trust-tasks-tf#474). A
+  dispatched URI the registry has no schema for fails
+  `every_served_uri_has_a_published_spec_or_is_tracked_debt`, so the floor
+  moves with the tasks that need it.
+
+
+
+### Fixed
+
+- **webvh**: Refuse to delete a DID whose hosting server is unregistered ([#1518](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1518))
+
+`dids delete` on a DID whose `server_id` was no longer registered deleted the
+  local record and skipped the delete on the hosting server without reporting
+  it. `get_server` returning `None` set no `daemon_cleanup_error`, so the published
+  did.jsonl stayed live on the host, and the only credentials that could remove
+  it (the record's mnemonic and the DID's keys) were deleted with the record.
+
+  VTI R2.1 (Remote-First): no local commit before the remote effect. The deletion
+  now refuses up front, before revoking or deleting anything, as a `Conflict`
+  blocker on REST, DIDComm and TSP. The message names the fix: re-register the
+  server with `servers add --id <id> --did <server-did>` and retry. The offline
+  preview shows the same blocker. Serverless DIDs are unaffected.
+
+  `vta did-mgmt dids delete --local-only` is the explicit opt-in for a host that
+  is gone for good, where `servers add` cannot succeed because the server DID no
+  longer resolves. It is honoured only for an unregistered server. For a
+  registered or serverless DID it is refused. The result says the host copy
+  remains. It is offline-only because the `vta/webvh/dids/delete/1.0` payload is
+  generated from the specification with `additionalProperties: false`. An online
+  opt-in needs a `localOnly` member in dtgwg-trust-tasks-tf first.
+
+  `pnm did-mgmt dids delete` also discarded `daemonCleanupError`, the partial
+  success the specification says a consumer MUST surface, because the SDK's
+  `delete_did_webvh` returns `()`. The new
+  `VtaClient::delete_did_webvh_with_outcome` returns the generated response type,
+  and the CLI prints the warning.
+
+  Library additions: `DeleteDidOptions`, `delete_did_webvh_with`,
+  `plan_did_deletion_with`, and `MockVta::webvh_host_deletes`.
+
+
+
 ## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.39.0...vta-sdk-v0.40.0) — 2026-09-16
 
 

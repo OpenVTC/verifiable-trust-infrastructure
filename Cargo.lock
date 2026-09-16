@@ -2631,7 +2631,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.15.4"
+version = "0.16.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "chrono",
@@ -10898,7 +10898,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -11080,7 +11080,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.40.0"
+version = "0.41.0"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -11278,7 +11278,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sweepers"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "chrono",
  "serde_json",
@@ -11385,7 +11385,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "chrono",
  "reqwest",
@@ -11487,7 +11487,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.18.8"
+version = "0.18.9"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-data-integrity",
@@ -11563,7 +11563,7 @@ dependencies = [
 
 [[package]]
 name = "vti-rooms"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -11666,7 +11666,7 @@ dependencies = [
 
 [[package]]
 name = "vti-webauthn"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
