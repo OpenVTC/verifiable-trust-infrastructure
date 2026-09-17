@@ -2107,6 +2107,12 @@ pub const ALL_URIS: &[&str] = &[
     TASK_DID_TEMPLATES_UPDATE_2_0,
     TASK_DID_TEMPLATES_DELETE_2_0,
     TASK_DID_TEMPLATES_RENDER_2_0,
+    // 3.0: the four that carry a template shape, widened for the `keys`
+    // block. `delete` and `render` carry none, so neither gained one.
+    TASK_DID_TEMPLATES_LIST_3_0,
+    TASK_DID_TEMPLATES_CREATE_3_0,
+    TASK_DID_TEMPLATES_GET_3_0,
+    TASK_DID_TEMPLATES_UPDATE_3_0,
     // Backup slice (descriptor pattern). URIs land in ALL_URIS now
     // that the trust-task slice is wired in vta-service.
     TASK_BACKUP_INITIATE_EXPORT_1_0,

@@ -1058,10 +1058,15 @@ fn template_record_json(name: &str) -> Value {
 /// and the VTA replies with a trust-task document whose `payload` is the result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_did_templates_via_didcomm() {
+    // 3.0, because that is what the client now sends for reads: a 2.0 read
+    // refuses to return a `schemaVersion` 2 template (it cannot express one),
+    // so a client pinned to 2.0 could not see post-quantum templates at all.
+    // A responder still scripted for 2.0 answers `no handler`, which is this
+    // test noticing the client moved.
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_DID_TEMPLATES_LIST_2_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_DID_TEMPLATES_LIST_3_0) {
             tt_ok(
-                trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
+                trust_tasks::TASK_DID_TEMPLATES_LIST_3_0,
                 json!({"templates": [template_record_json("custom-1")]}),
             )
         } else {
