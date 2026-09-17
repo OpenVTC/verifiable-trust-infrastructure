@@ -1170,6 +1170,25 @@ pub async fn run(
                     let outbox_ks = apply_encryption(store.keyspace(crate::keyspaces::OUTBOX)?);
                     let relationships_ks =
                         apply_encryption(store.keyspace(crate::keyspaces::RELATIONSHIPS)?);
+                    // D6/D9: durable-store maintenance — enumerate surviving
+                    // relationships on boot, then periodically sweep idle ones.
+                    // Spawned ONCE here at startup, over its own store handle on
+                    // the same keyspace — not in `build_messaging`, which re-runs
+                    // on every mediator reconnect and would leak a sweep per
+                    // reconnect.
+                    #[cfg(feature = "tsp")]
+                    {
+                        let sweep_store = std::sync::Arc::new(
+                            affinidi_messaging_sdk::PersistentRelationshipStore::new(
+                                crate::messaging::tsp_relationship_store::KeyspaceRelationshipKv::new(
+                                    relationships_ks.clone(),
+                                ),
+                            ),
+                        );
+                        tokio::spawn(crate::messaging::tsp_relationship_store::maintenance_loop(
+                            sweep_store,
+                        ));
+                    }
                     let supervisor = MessagingConnect {
                         app_state: app_state.clone(),
                         vta_did: vta_did.clone(),
