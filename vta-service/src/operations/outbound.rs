@@ -227,8 +227,10 @@ impl TspSender {
     }
 
     /// Shorten the reply timeout — test-only, so a recovery test does not wait
-    /// the full 30s per dropped attempt.
-    #[cfg(test)]
+    /// the full 30s per dropped attempt. Gated on `transport-harness` too,
+    /// because that is where its only callers (the D6 tests) live; a plain
+    /// `cfg(test)` build without the harness feature would see it as dead code.
+    #[cfg(all(test, feature = "transport-harness"))]
     pub(crate) fn with_reply_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.reply_timeout = timeout;
         self
@@ -236,7 +238,7 @@ impl TspSender {
 
     /// The shared recovery coordinator, for asserting attempt/give-up counts in
     /// a test.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "transport-harness"))]
     pub(crate) fn recovery(&self) -> &affinidi_messaging_sdk::RecoveryCoordinator {
         &self.recovery
     }
@@ -244,7 +246,7 @@ impl TspSender {
     /// Drive the D6 recovery for a `recipient` whose send just timed out —
     /// exposed for the recovery test; production reaches it through
     /// [`send_tsp`](Outbound::send_tsp).
-    #[cfg(test)]
+    #[cfg(all(test, feature = "transport-harness"))]
     pub(crate) async fn recover_for_test(
         &self,
         recipient: &str,
