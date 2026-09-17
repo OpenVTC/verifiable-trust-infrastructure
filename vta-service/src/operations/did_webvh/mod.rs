@@ -932,35 +932,36 @@ pub async fn create_did_webvh(
             .map_err(|e| AppError::Internal(format!("{e}")))?;
         signing_secret.id = format!("did:key:{pub_mb}#{pub_mb}");
 
-        let (ka_secret, ka_pub, ka_path, ka_label, ka_key_type) = if let Some(ref ka_key_id) = params.ka_key_id {
-            let (ka_secret, ka_pub, ka_record) = load_key_as_secret(
-                keys_ks,
-                imported_ks,
-                seed_store,
-                ka_key_id,
-                KeyType::X25519,
-                auth,
-            )
-            .await?;
-            (
-                ka_secret,
-                ka_pub,
-                ka_record.derivation_path,
-                ka_record
-                    .label
-                    .unwrap_or_else(|| format!("{label} key-agreement key")),
-                ka_record.key_type,
-            )
-        } else {
-            // No KA key — use dummy values (won't be in the document)
-            (
-                Secret::generate_ed25519(None, None),
-                String::new(),
-                String::new(),
-                String::new(),
-                KeyType::X25519,
-            )
-        };
+        let (ka_secret, ka_pub, ka_path, ka_label, ka_key_type) =
+            if let Some(ref ka_key_id) = params.ka_key_id {
+                let (ka_secret, ka_pub, ka_record) = load_key_as_secret(
+                    keys_ks,
+                    imported_ks,
+                    seed_store,
+                    ka_key_id,
+                    KeyType::X25519,
+                    auth,
+                )
+                .await?;
+                (
+                    ka_secret,
+                    ka_pub,
+                    ka_record.derivation_path,
+                    ka_record
+                        .label
+                        .unwrap_or_else(|| format!("{label} key-agreement key")),
+                    ka_record.key_type,
+                )
+            } else {
+                // No KA key — use dummy values (won't be in the document)
+                (
+                    Secret::generate_ed25519(None, None),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    KeyType::X25519,
+                )
+            };
 
         let derived = keys::DerivedEntityKeys {
             signing_secret,

@@ -307,7 +307,9 @@ pub async fn derive_entity_keys_with_preference(
                 }
                 .map_err(|e| format!("{candidate:?} derivation failed: {e}"))?;
 
-                derived.signing_pub = secret.get_public_keymultibase().map_err(|e| format!("{e}"))?;
+                derived.signing_pub = secret
+                    .get_public_keymultibase()
+                    .map_err(|e| format!("{e}"))?;
                 derived.signing_priv = secret
                     .get_private_keymultibase()
                     .map_err(|e| format!("{e}"))?;
