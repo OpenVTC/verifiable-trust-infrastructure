@@ -1,7 +1,7 @@
 //! Sealed transfer — unified envelope for moving sensitive bundles between
 //! workspace tools.
 //!
-//! See `sealed-bootstrap.md` at the repo root for the full design. The short
+//! See `docs/05-design-notes/sealed-bootstrap.md` for the full design. The short
 //! version: every secret-bearing artifact (admin credentials, context
 //! provisioning bundles, DID secret exports, raw key material) is encrypted
 //! end-to-end to a recipient-chosen ephemeral X25519 public key using HPKE

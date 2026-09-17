@@ -513,7 +513,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   before the POST — a malformed `--expect-pcr0/8` caught at `check_pcrs` is
   caught after the VTA's one and only first boot has been spent.
 - **Code**: `vta-service/src/routes/bootstrap.rs`, `vta-tee/src/`.
-- **Docs**: `sealed-bootstrap.md`, `docs/02-vta/tee-architecture.md`.
+- **Docs**: `docs/05-design-notes/sealed-bootstrap.md`, `docs/02-vta/tee-architecture.md`.
 
 ### DIDComm challenge-response auth
 - **What**: Session initiation for any authenticated call.
