@@ -25,7 +25,7 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 use vta_sdk::did_key::decode_private_key_multibase;
 use vta_sdk::provision_client::ask::ProvisionAsk;
 use vta_sdk::provision_client::provision_via_rest;
-use vta_sdk::provision_client::result::ProvisionResult;
+use vta_sdk::provision_client::result::ProvisionResultV2;
 use vta_sdk::provision_client::setup_key::EphemeralSetupKey;
 use vta_sdk::provision_integration::http::{
     AdminScope, ProvisionIntegrationRequest, ProvisionIntegrationResponse, ProvisionSummary,
@@ -301,7 +301,7 @@ async fn provision_via_rest_didcomm_mediator_round_trip() {
 
     let ask = ProvisionAsk::didcomm_mediator("prod-mediator", "https://m.example.com");
 
-    let result: ProvisionResult = provision_via_rest(
+    let result: ProvisionResultV2 = provision_via_rest(
         &server.uri(),
         &test_vta_did_key(),
         key.did.clone(),
@@ -350,7 +350,7 @@ async fn provision_via_rest_webvh_server_round_trip() {
 
     let ask = ProvisionAsk::did_host_didcomm("prod-webvh", "did:webvh:m.example.com");
 
-    let result: ProvisionResult = provision_via_rest(
+    let result: ProvisionResultV2 = provision_via_rest(
         &server.uri(),
         &test_vta_did_key(),
         key.did.clone(),

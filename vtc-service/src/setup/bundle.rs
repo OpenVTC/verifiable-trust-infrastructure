@@ -65,6 +65,62 @@ pub struct VtcKeyBundle {
     /// Multibase-encoded X25519 private key. Access via
     /// [`Self::x25519_private_zeroizing`].
     pub x25519_private_multibase: String,
+    /// Signing keys beyond `#key-0`, when the VTA minted any.
+    ///
+    /// Every credential this VTC issues carries a proof from each of these as
+    /// well as from the Ed25519 key — one proof per cryptosuite, so a classical
+    /// verifier and a post-quantum one each check the suite they understand.
+    ///
+    /// **Empty is the normal case and always will be for a VTC provisioned
+    /// before the `vtc-host` template declared a post-quantum slot.** An empty
+    /// list means one signing key, which means one proof object rather than an
+    /// array — byte-identical to what this service has always issued. That is
+    /// the whole no-migration property, and it is why this is a list rather
+    /// than a flag.
+    ///
+    /// `#[serde(default)]` is what lets an existing on-disk bundle — written
+    /// before this field existed — still load. The reverse direction does not
+    /// hold: `deny_unknown_fields` means a bundle written *with* extra keys
+    /// cannot be read by an older binary, so rolling vtc-service back past
+    /// this change requires re-provisioning. Stated rather than discovered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_signing_keys: Vec<AdditionalSigningKey>,
+}
+
+/// One signing key beyond `#key-0`, as stored in the secret store.
+///
+/// Carries `key_type` because the private multibase alone is not a safe place
+/// to rediscover it: the boot path feeds this to a signer, and a key fed to the
+/// wrong cryptosuite fails at signing time with a message about an algorithm
+/// nobody chose. The VTA knows the algorithm and says so; this is where it is
+/// written down.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdditionalSigningKey {
+    /// The template key slot this was minted for (`pq-signing`).
+    pub slot: String,
+    /// The algorithm, as `keyType` spells it (`mldsa44`).
+    pub key_type: vta_sdk::keys::KeyType,
+    /// DID URL with fragment — the verification method the published DID
+    /// document carries for this key.
+    pub key_id: String,
+    /// Multibase-encoded public key.
+    pub public_key_multibase: String,
+    /// Multibase-encoded private key.
+    pub private_key_multibase: String,
+}
+
+// Manual Debug — `private_key_multibase` is live key material.
+impl std::fmt::Debug for AdditionalSigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdditionalSigningKey")
+            .field("slot", &self.slot)
+            .field("key_type", &self.key_type)
+            .field("key_id", &self.key_id)
+            .field("public_key_multibase", &self.public_key_multibase)
+            .field("private_key_multibase", &"<redacted>")
+            .finish()
+    }
 }
 
 // Manual Debug — the two `*_private_multibase` fields are live key
@@ -80,6 +136,7 @@ impl std::fmt::Debug for VtcKeyBundle {
             .field("x25519_key_id", &self.x25519_key_id)
             .field("x25519_public_multibase", &self.x25519_public_multibase)
             .field("x25519_private_multibase", &"<redacted>")
+            .field("additional_signing_keys", &self.additional_signing_keys)
             .finish()
     }
 }
@@ -143,6 +200,46 @@ impl VtcKeyBundle {
             x25519_key_id: material.ka_key.key_id.clone(),
             x25519_public_multibase: material.ka_key.public_key_multibase.clone(),
             x25519_private_multibase: material.ka_key.private_key_multibase.clone(),
+            additional_signing_keys: Vec::new(),
+        }
+    }
+
+    /// Construct from the VTA-returned [`DidKeyMaterialV2`], carrying every
+    /// signing key the template asked for.
+    ///
+    /// The V1 constructor above stays because `DidKeyMaterial` is still the
+    /// shape a v1 template's bundle uses; this is the path a `vtc-host`
+    /// declaring a post-quantum slot takes. Both produce the same bundle type,
+    /// differing only in whether `additional_signing_keys` has anything in it.
+    ///
+    /// **Key-agreement keys beyond the first, and anything that is not a
+    /// signing key, are not carried** — the VTC has exactly one keyAgreement
+    /// entry and `select_secret_kid` resolves an inbound JWE against it.
+    /// Nothing here decides what a second one would mean, and the VTA refuses
+    /// to mint one, so there is nothing to drop.
+    pub fn from_did_key_material_v2(
+        integration_did: String,
+        material: &vta_sdk::sealed_transfer::template_bootstrap::DidKeyMaterialV2,
+    ) -> Self {
+        Self {
+            integration_did,
+            ed25519_key_id: material.signing_key.key_id.clone(),
+            ed25519_public_multibase: material.signing_key.public_key_multibase.clone(),
+            ed25519_private_multibase: material.signing_key.private_key_multibase.clone(),
+            x25519_key_id: material.ka_key.key_id.clone(),
+            x25519_public_multibase: material.ka_key.public_key_multibase.clone(),
+            x25519_private_multibase: material.ka_key.private_key_multibase.clone(),
+            additional_signing_keys: material
+                .additional_signing_keys
+                .iter()
+                .map(|k| AdditionalSigningKey {
+                    slot: k.slot.clone(),
+                    key_type: k.key_type.clone(),
+                    key_id: k.key_id.clone(),
+                    public_key_multibase: k.public_key_multibase.clone(),
+                    private_key_multibase: k.private_key_multibase.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -230,6 +327,10 @@ pub fn bundle_from_raw(
         x25519_key_id: format!("{integration_did}#key-1"),
         x25519_public_multibase: encode_public_multibase(&x25519_public, [0xec, 0x01]),
         x25519_private_multibase: encode_private_multibase(x25519_priv, X25519_PRIV_CODEC),
+        // The raw-bytes fixture path carries the historical pair only — it
+        // exists for tests and the legacy bootstrap, neither of which mints a
+        // post-quantum key.
+        additional_signing_keys: Vec::new(),
     }
 }
 
@@ -257,6 +358,49 @@ fn encode_public_multibase(bytes: &[u8; 32], codec: [u8; 2]) -> String {
 /// the heap-without-wipe path. The error is a display `String` because both
 /// call sites only surface it (a warning log / a `Box<dyn Error>` bubble),
 /// never match on it.
+/// Every signing key the bundle holds, as [`Secret`]s ready for a signer.
+///
+/// The first is always the Ed25519 `#key-0`, which keeps
+/// [`crate::credentials::LocalSigner`]'s primary — the assertion method every
+/// existing consumer expects, and the key whose seed the install-token, audit
+/// and storage derivations use.
+///
+/// Returns an error rather than skipping a key it cannot decode. A
+/// post-quantum key the VTA minted, published in the DID document and sealed
+/// into the bundle, that this binary then quietly dropped, would leave the VTC
+/// issuing classical-only credentials against a document advertising two
+/// assertion methods — and nothing would say so. That is the "key added for
+/// post-quantum protection that quietly did nothing" outcome
+/// `with_additional_key` already refuses at the other end.
+pub fn additional_signing_secrets(
+    bundle: &VtcKeyBundle,
+) -> Result<Vec<affinidi_secrets_resolver::secrets::Secret>, AppError> {
+    use affinidi_secrets_resolver::secrets::Secret;
+
+    bundle
+        .additional_signing_keys
+        .iter()
+        .map(|key| {
+            // `from_multibase` dispatches on the multicodec, so an ML-DSA seed
+            // becomes an ML-DSA secret without this code knowing the parameter
+            // sets. The declared `key_type` is checked against what came back
+            // rather than used to drive the decode: the prefix and the field
+            // come from the same producer, so a disagreement is a bug worth
+            // failing on, not a choice to arbitrate.
+            let secret = Secret::from_multibase(&key.private_key_multibase, Some(&key.key_id))
+                .map_err(|e| {
+                    AppError::Config(format!(
+                        "signing key '{}' ({}) could not be decoded: {e}. The VTA minted it and \
+                         the DID document publishes it, so refusing to boot rather than issue \
+                         credentials without it",
+                        key.slot, key.key_id
+                    ))
+                })?;
+            Ok(secret)
+        })
+        .collect()
+}
+
 pub fn decode_secret_store_value(
     vtc_did: &str,
     stored: &[u8],
@@ -401,6 +545,231 @@ mod tests {
         assert!(
             err.contains("does not match"),
             "expected DID-mismatch error, got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hybrid_tests {
+    use super::*;
+    use affinidi_secrets_resolver::secrets::Secret;
+
+    const DID: &str = "did:webvh:vtc.example.com:abc";
+
+    fn pq_key() -> AdditionalSigningKey {
+        let secret = Secret::generate_ml_dsa_44(None, Some(&[0x33; 32]));
+        AdditionalSigningKey {
+            slot: "pq-signing".into(),
+            key_type: vta_sdk::keys::KeyType::MlDsa44,
+            key_id: format!("{DID}#key-2"),
+            public_key_multibase: secret.get_public_keymultibase().expect("public"),
+            private_key_multibase: secret.get_private_keymultibase().expect("private"),
+        }
+    }
+
+    fn hybrid_bundle() -> VtcKeyBundle {
+        let mut b = bundle_from_raw(DID, &[0x11; 32], &[0x22; 32]);
+        b.additional_signing_keys = vec![pq_key()];
+        b
+    }
+
+    /// **An existing on-disk bundle still loads.**
+    ///
+    /// Every VTC in the field was provisioned before this field existed, and
+    /// its stored JSON has no `additional_signing_keys`. `serde(default)` is
+    /// what makes that a non-event — without it the daemon refuses to boot on
+    /// an identity that is perfectly valid, which is the worst possible way to
+    /// ship a feature nobody asked that deployment to use.
+    #[test]
+    fn a_bundle_written_before_this_field_existed_still_loads() {
+        let legacy = serde_json::json!({
+            "integration_did": DID,
+            "ed25519_key_id": format!("{DID}#key-0"),
+            "ed25519_public_multibase": "z6MkPub",
+            "ed25519_private_multibase": "zPriv0",
+            "x25519_key_id": format!("{DID}#key-1"),
+            "x25519_public_multibase": "z6LSPub",
+            "x25519_private_multibase": "zPriv1",
+        });
+        let bundle =
+            VtcKeyBundle::from_secret_store_bytes(&serde_json::to_vec(&legacy).expect("serialize"))
+                .expect("a pre-existing bundle must still load");
+        assert!(bundle.additional_signing_keys.is_empty());
+    }
+
+    /// And the converse, stated because it is the cost of this change rather
+    /// than something to discover in an incident: `deny_unknown_fields` means a
+    /// bundle written *with* extra keys cannot be read by an older binary, so
+    /// rolling vtc-service back past this change requires re-provisioning.
+    #[test]
+    fn a_bundle_with_extra_keys_is_not_readable_by_an_older_shape() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct OldShape {
+            integration_did: String,
+            ed25519_key_id: String,
+            ed25519_public_multibase: String,
+            ed25519_private_multibase: String,
+            x25519_key_id: String,
+            x25519_public_multibase: String,
+            x25519_private_multibase: String,
+        }
+
+        let bytes = hybrid_bundle().to_secret_store_bytes().expect("serialize");
+        let err = serde_json::from_slice::<OldShape>(&bytes)
+            .expect_err("an older binary cannot read a bundle carrying extra keys");
+        assert!(
+            err.to_string().contains("additional_signing_keys"),
+            "got: {err}"
+        );
+    }
+
+    /// An empty list is absent from the stored JSON, so a VTC with one signing
+    /// key writes exactly the bytes it always did.
+    #[test]
+    fn an_empty_list_does_not_appear_in_the_stored_bundle() {
+        let bytes = bundle_from_raw(DID, &[0x11; 32], &[0x22; 32])
+            .to_secret_store_bytes()
+            .expect("serialize");
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            !text.contains("additional_signing_keys"),
+            "an unchanged VTC must write an unchanged bundle: {text}"
+        );
+    }
+
+    #[test]
+    fn a_hybrid_bundle_round_trips_with_its_key_type() {
+        let bytes = hybrid_bundle().to_secret_store_bytes().expect("serialize");
+        let back = VtcKeyBundle::from_secret_store_bytes(&bytes).expect("deserialize");
+        assert_eq!(back.additional_signing_keys.len(), 1);
+        assert_eq!(back.additional_signing_keys[0].slot, "pq-signing");
+        assert_eq!(
+            back.additional_signing_keys[0].key_type,
+            vta_sdk::keys::KeyType::MlDsa44,
+            "the algorithm must survive storage as a value, not be re-derived at boot"
+        );
+    }
+
+    /// The constructor that carries the VTA's bundle into storage.
+    ///
+    /// Tested separately from the round-trip because a constructor that dropped
+    /// the extra keys would leave every other test in this module passing: they
+    /// build the bundle directly, so nothing else would notice the material
+    /// never arriving from the wire shape.
+    #[test]
+    fn the_v2_constructor_carries_every_signing_key_into_the_bundle() {
+        use vta_sdk::sealed_transfer::template_bootstrap::{DidKeyMaterialV2, SlotKeyPair};
+
+        let pq = pq_key();
+        let material = DidKeyMaterialV2 {
+            did: DID.into(),
+            signing_key: SlotKeyPair {
+                slot: "signing".into(),
+                key_type: vta_sdk::keys::KeyType::Ed25519,
+                key_id: format!("{DID}#key-0"),
+                public_key_multibase: "z6MkPub".into(),
+                private_key_multibase: "zPriv0".into(),
+            },
+            ka_key: SlotKeyPair {
+                slot: "ka".into(),
+                key_type: vta_sdk::keys::KeyType::X25519,
+                key_id: format!("{DID}#key-1"),
+                public_key_multibase: "z6LSPub".into(),
+                private_key_multibase: "zPriv1".into(),
+            },
+            additional_signing_keys: vec![SlotKeyPair {
+                slot: pq.slot.clone(),
+                key_type: pq.key_type.clone(),
+                key_id: pq.key_id.clone(),
+                public_key_multibase: pq.public_key_multibase.clone(),
+                private_key_multibase: pq.private_key_multibase.clone(),
+            }],
+        };
+
+        let bundle = VtcKeyBundle::from_did_key_material_v2(DID.into(), &material);
+        assert_eq!(bundle.ed25519_key_id, format!("{DID}#key-0"));
+        assert_eq!(
+            bundle.additional_signing_keys.len(),
+            1,
+            "the post-quantum key the VTA sealed must reach the stored bundle"
+        );
+        assert_eq!(bundle.additional_signing_keys[0].slot, "pq-signing");
+        assert_eq!(
+            bundle.additional_signing_keys[0].private_key_multibase, pq.private_key_multibase,
+            "the private half must be carried verbatim, not re-encoded"
+        );
+    }
+
+    /// **The last link, exercised rather than asserted.**
+    ///
+    /// A stored bundle carrying a post-quantum key produces a signer that puts
+    /// a post-quantum proof on a credential. Everything before this — the
+    /// template slot, the mint, the sealed variant, the bundle field — exists
+    /// only to reach this, and every one of those pieces could be in place
+    /// while the credential still came out classical-only.
+    #[tokio::test]
+    async fn a_stored_post_quantum_key_reaches_the_issued_credential() {
+        let bytes = hybrid_bundle().to_secret_store_bytes().expect("serialize");
+        let bundle = VtcKeyBundle::from_secret_store_bytes(&bytes).expect("deserialize");
+
+        let extra = additional_signing_secrets(&bundle).expect("the stored key decodes");
+        assert_eq!(extra.len(), 1);
+
+        let ed = bundle.ed25519_private_bytes().expect("ed25519 bytes");
+        let signer = extra.into_iter().fold(
+            crate::credentials::LocalSigner::from_ed25519_seed(DID.into(), &ed),
+            |s, secret| s.with_additional_key(secret),
+        );
+        assert_eq!(signer.key_count(), 2);
+
+        let mut doc = serde_json::json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "id": "urn:uuid:hybrid-probe",
+            "type": ["VerifiableCredential"],
+            "issuer": DID,
+            "credentialSubject": { "id": "did:key:z6MkHolder" },
+        });
+        signer
+            .sign_doc(&mut doc)
+            .await
+            .expect("signs with both keys");
+
+        let proofs = doc
+            .get("proof")
+            .and_then(|p| p.as_array())
+            .expect("two keys must produce a proof array");
+        let suites: Vec<&str> = proofs
+            .iter()
+            .filter_map(|p| p.get("cryptosuite").and_then(|s| s.as_str()))
+            .collect();
+        assert!(
+            suites.contains(&"eddsa-jcs-2022"),
+            "the classical proof must remain, or every existing verifier breaks: {suites:?}"
+        );
+        assert!(
+            suites.contains(&"mldsa44-jcs-2024"),
+            "the post-quantum proof is the entire point of the workstream: {suites:?}"
+        );
+    }
+
+    /// A key that cannot be decoded fails the boot instead of being skipped.
+    ///
+    /// The DID document publishes it as an assertion method, so a VTC that
+    /// dropped it would issue credentials a verifier expecting two proofs reads
+    /// as incomplete — with nothing anywhere saying why.
+    #[test]
+    fn an_undecodable_extra_key_refuses_rather_than_being_dropped() {
+        let mut bundle = hybrid_bundle();
+        bundle.additional_signing_keys[0].private_key_multibase = "znot-a-real-key".into();
+
+        let err = additional_signing_secrets(&bundle)
+            .expect_err("an undecodable signing key must not be silently skipped");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pq-signing") && msg.contains("refusing to boot"),
+            "the refusal must name the slot and say what it is refusing: {msg}"
         );
     }
 }

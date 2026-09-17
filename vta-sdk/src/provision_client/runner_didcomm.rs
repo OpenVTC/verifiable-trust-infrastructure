@@ -25,7 +25,7 @@ use super::error::ProvisionError;
 use super::event::{AttemptOutcome, VtaEvent};
 use super::intent::{AdminCredentialReply, VtaIntent, VtaReply};
 use super::messages::OperatorMessages;
-use super::result::{ProvisionResult, decode_nonce_b64url, response_to_result};
+use super::result::{ProvisionResultV2, decode_nonce_b64url, response_to_result_v2};
 
 /// Drive a one-shot `provision-integration` round-trip over DIDComm.
 ///
@@ -46,7 +46,7 @@ pub async fn provision_via_didcomm(
     vta_did: &str,
     mediator_did: &str,
     ask: &ProvisionAsk,
-) -> Result<ProvisionResult, ProvisionError> {
+) -> Result<ProvisionResultV2, ProvisionError> {
     let seed = decode_private_key_multibase(setup_private_key_mb)
         .map_err(|e| ProvisionError::SetupKeyMalformed(e.to_string()))?;
 
@@ -70,7 +70,7 @@ pub async fn provision_via_didcomm(
             ProvisionSpecVersion::CURRENT,
         )
         .await?;
-        response_to_result(&seed, nonce, response)
+        response_to_result_v2(&seed, nonce, response)
     }
     .await;
     session.shutdown().await;

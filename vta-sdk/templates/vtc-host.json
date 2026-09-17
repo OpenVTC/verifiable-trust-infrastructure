@@ -1,15 +1,41 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "vtc-host",
   "kind": "vtc-host",
-  "description": "Verifiable Trust Community (VTC) service identity. Provisions the did:webvh that a vtc-service binary operates under. The document advertises the VTC's REST endpoint and the URL where its BitstringStatusList credentials will be hosted (populated in Phase 2 of the VTC MVP — the endpoint is gracefully present in the DID document from day one so external verifiers can pre-cache the resolution). Optionally advertises a TrustRegistry referral naming the registry authoritative for this community by DID, so a client holding only the community's DID can resolve one hop to its registry (TRQP v2 §'machine-discoverable via the authority_id'); supply SERVICE_TRUST_REGISTRY, built by vta_sdk::did_templates::referral_service, and omit it for a community with no registry. Messaging transports are chosen at setup and rendered here: supply SERVICE_TSP and/or SERVICE_DIDCOMM (built by vta_sdk::did_templates::tsp_service / didcomm_service) to advertise them, and omit either to prune it. Both name the SAME mediator DID — the transport URL lives in the mediator's own document. This must be decided at mint: a VTC serves a write-once did.jsonl and cannot re-sign its own log, so adding a transport later means a VTA-side `dids edit` plus redelivering the log by hand. Advertise both when you advertise either — the stack prefers TSP over DIDComm over REST, so a document offering TSP alone leaves every peer that does not speak TSP with no messaging route in. Advertising a transport the named mediator does not actually route produces an entry clients will choose and cannot use; the mediator's own services are its controller's responsibility and nothing here can verify them. Emitted service order is canonical (TSP, DIDComm, then REST). The URL variable must not end with a trailing slash to avoid double-slash artefacts in the status-list endpoint.",
-  "methods": ["webvh", "web"],
-  "requiredVars": ["URL"],
+  "description": "Verifiable Trust Community (VTC) service identity. Declares three keys: an Ed25519 signing key (#key-0), an X25519 key-agreement key (#key-1), and an ML-DSA-44 post-quantum signing key (#key-2). Both signing keys are assertion methods, so every credential this VTC issues carries a proof from each \u2014 a verifier that has not migrated checks the eddsa-jcs-2022 proof and one that has checks the mldsa44-jcs-2024 proof, neither needing to know about the other. The primary signing key is Ed25519 and cannot be otherwise: it signs the did:webvh log, and didwebvh 1.0 mandates eddsa-jcs-2022 for log-entry proofs. The post-quantum key falls back to ed25519 on a VTA that cannot mint ML-DSA, so one template serves a fleet mid-migration. Provisions the did:webvh that a vtc-service binary operates under. The document advertises the VTC's REST endpoint and the URL where its BitstringStatusList credentials will be hosted (populated in Phase 2 of the VTC MVP \u2014 the endpoint is gracefully present in the DID document from day one so external verifiers can pre-cache the resolution). Optionally advertises a TrustRegistry referral naming the registry authoritative for this community by DID, so a client holding only the community's DID can resolve one hop to its registry (TRQP v2 \u00a7'machine-discoverable via the authority_id'); supply SERVICE_TRUST_REGISTRY, built by vta_sdk::did_templates::referral_service, and omit it for a community with no registry. Messaging transports are chosen at setup and rendered here: supply SERVICE_TSP and/or SERVICE_DIDCOMM (built by vta_sdk::did_templates::tsp_service / didcomm_service) to advertise them, and omit either to prune it. Both name the SAME mediator DID \u2014 the transport URL lives in the mediator's own document. This must be decided at mint: a VTC serves a write-once did.jsonl and cannot re-sign its own log, so adding a transport later means a VTA-side `dids edit` plus redelivering the log by hand. Advertise both when you advertise either \u2014 the stack prefers TSP over DIDComm over REST, so a document offering TSP alone leaves every peer that does not speak TSP with no messaging route in. Advertising a transport the named mediator does not actually route produces an entry clients will choose and cannot use; the mediator's own services are its controller's responsibility and nothing here can verify them. Emitted service order is canonical (TSP, DIDComm, then REST). The URL variable must not end with a trailing slash to avoid double-slash artefacts in the status-list endpoint.",
+  "methods": [
+    "webvh",
+    "web"
+  ],
+  "requiredVars": [
+    "URL"
+  ],
   "optionalVars": {
     "STATUS_LIST_PATH": "/v1/status-lists",
     "SERVICE_TRUST_REGISTRY": null,
     "SERVICE_DIDCOMM": null,
     "SERVICE_TSP": null
+  },
+  "keys": {
+    "signing": {
+      "purpose": "signing",
+      "algorithms": [
+        "ed25519"
+      ]
+    },
+    "ka": {
+      "purpose": "keyAgreement",
+      "algorithms": [
+        "x25519"
+      ]
+    },
+    "pq-signing": {
+      "purpose": "signing",
+      "algorithms": [
+        "mldsa44",
+        "ed25519"
+      ]
+    }
   },
   "defaults": {
     "preRotationCount": 2,
@@ -34,11 +60,24 @@
         "type": "Multikey",
         "controller": "{DID}",
         "publicKeyMultibase": "{KA_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-2",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{PQ_SIGNING_KEY_MB}"
       }
     ],
-    "assertionMethod": ["{DID}#key-0"],
-    "authentication": ["{DID}#key-0"],
-    "keyAgreement": ["{DID}#key-1"],
+    "assertionMethod": [
+      "{DID}#key-0",
+      "{DID}#key-2"
+    ],
+    "authentication": [
+      "{DID}#key-0"
+    ],
+    "keyAgreement": [
+      "{DID}#key-1"
+    ],
     "service": [
       "{SERVICE_TSP}",
       "{SERVICE_DIDCOMM}",

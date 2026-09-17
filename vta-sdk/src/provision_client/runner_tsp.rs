@@ -454,9 +454,9 @@ async fn provision_over(
     setup_did: &str,
     setup_privkey_mb: &str,
     ask: &ProvisionAsk,
-) -> Result<super::result::ProvisionResult, super::error::ProvisionError> {
+) -> Result<super::result::ProvisionResultV2, super::error::ProvisionError> {
     use super::error::ProvisionError;
-    use super::result::{decode_nonce_b64url, response_to_result};
+    use super::result::{decode_nonce_b64url, response_to_result_v2};
 
     let seed = crate::did_key::decode_private_key_multibase(setup_privkey_mb)
         .map_err(|e| ProvisionError::SetupKeyMalformed(e.to_string()))?;
@@ -464,7 +464,7 @@ async fn provision_over(
     let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
     let request = vp.to_signed_wire_value()?;
     let response = dispatch_provision_integration(client, request, ask).await?;
-    response_to_result(&seed, nonce, response)
+    response_to_result_v2(&seed, nonce, response)
 }
 
 /// [`provision_over`] for the `AdminRotation` ask — same round-trip,
@@ -551,7 +551,7 @@ pub async fn provision_via_tsp(
     vta_did: &str,
     tsp_mediator_did: &str,
     ask: &ProvisionAsk,
-) -> Result<super::result::ProvisionResult, super::error::ProvisionError> {
+) -> Result<super::result::ProvisionResultV2, super::error::ProvisionError> {
     use super::error::ProvisionError;
 
     let client = crate::client::VtaClient::connect_tsp(
