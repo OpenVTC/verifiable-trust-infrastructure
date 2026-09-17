@@ -164,6 +164,46 @@ pub struct DerivedEntityKeys {
     pub ka_label: String,
     /// The algorithm actually minted for the key-agreement slot.
     pub ka_key_type: KeyType,
+    /// Signing keys beyond the primary, one per extra slot the template
+    /// declared.
+    ///
+    /// Empty for every v1 template, which is all of them today — so this costs
+    /// nothing until something asks for it, and the two fixed slots keep saying
+    /// what they always said.
+    ///
+    /// **This is the third slot Phase 2 deferred**, and the reason for deferring
+    /// it was that no consumer existed. Hybrid credentials are that consumer: an
+    /// issuer signs with *every* key it holds, one proof per cryptosuite, so a
+    /// classical verifier and a post-quantum one each check the suite they
+    /// understand. That needs the classical key and the post-quantum one at
+    /// once, which no arity of two can express.
+    ///
+    /// Not a slot map, for the reason Phase 2 gave: the arity of the first two
+    /// is a true property worth keeping in the type, and a map would make all 53
+    /// readers of them a lookup that can fail. This is additive to that arity,
+    /// not a replacement for it.
+    pub additional_signing: Vec<DerivedSlotKey>,
+}
+
+/// One signing key minted for a named template slot beyond the primary.
+///
+/// Carries its slot name because that is the join back to what was asked for:
+/// the template declares `pq-signing`, the renderer substitutes
+/// `{PQ_SIGNING_KEY_MB}`, and the bundle handed to the integration says which
+/// slot each key came from. Losing the name means the consumer has to infer
+/// intent from the algorithm, which is the same "asserted rather than carried"
+/// mistake one level up.
+#[derive(Debug, Clone)]
+pub struct DerivedSlotKey {
+    /// The template slot this key was minted for, e.g. `pq-signing`.
+    pub slot: String,
+    pub secret: Secret,
+    pub path: String,
+    pub public_multibase: String,
+    pub private_multibase: String,
+    pub label: String,
+    /// The algorithm actually minted. Carried, never assumed.
+    pub key_type: KeyType,
 }
 
 /// Pre-rotation key data returned from derivation (stored after DID creation).
@@ -395,7 +435,73 @@ pub async fn derive_entity_keys(
         ka_priv,
         ka_label: ka_label.to_string(),
         ka_key_type: KeyType::X25519,
+        additional_signing: Vec::new(),
     })
+}
+
+/// Mint one signing key for a template slot beyond the primary, at its own
+/// BIP-32 path.
+///
+/// `preference` is most-preferred first, exactly as the slot declares it, and is
+/// resolved by the same rule [`derive_entity_keys_with_preference`] uses: the
+/// first algorithm this build can mint wins, an unavailable one is skipped, and
+/// running out is an error naming what was asked for. An extra slot that
+/// silently fell back would be worse than one that failed, because the whole
+/// reason to declare a second signing key is that the first one is not
+/// post-quantum.
+///
+/// A fresh path per slot is the point. Sharing the primary's path would make the
+/// second key a deterministic function of the first at the same index — which is
+/// precisely the cross-algorithm reuse `derive_ml_dsa_44`'s domain separation
+/// exists to prevent, reintroduced one layer up.
+pub async fn derive_additional_signing_key(
+    seed: &[u8],
+    base: &str,
+    slot: &str,
+    label: &str,
+    keys_ks: &KeyspaceHandle,
+    preference: &[KeyType],
+) -> Result<DerivedSlotKey, Box<dyn std::error::Error>> {
+    use crate::derivation::Bip32Extension;
+
+    let path = paths::allocate_path(keys_ks, base)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let root = ExtendedSigningKey::from_seed(seed)
+        .map_err(|e| format!("Failed to create BIP-32 root key: {e}"))?;
+
+    for candidate in preference {
+        let secret = match candidate {
+            KeyType::Ed25519 => root.derive_ed25519(&path),
+            KeyType::MlDsa44 => root.derive_ml_dsa_44(&path),
+            KeyType::MlDsa65 => root.derive_ml_dsa_65(&path),
+            // Not a signing algorithm, or one this build cannot mint. Skipped
+            // rather than refused — the next entry is what a fallback is for.
+            _ => continue,
+        }
+        .map_err(|e| format!("slot '{slot}': {candidate:?} derivation failed: {e}"))?;
+
+        return Ok(DerivedSlotKey {
+            slot: slot.to_string(),
+            public_multibase: secret
+                .get_public_keymultibase()
+                .map_err(|e| format!("{e}"))?,
+            private_multibase: secret
+                .get_private_keymultibase()
+                .map_err(|e| format!("{e}"))?,
+            secret,
+            path,
+            label: label.to_string(),
+            key_type: candidate.clone(),
+        });
+    }
+
+    Err(format!(
+        "key slot '{slot}' names no signing algorithm this build can mint (asked for \
+         {preference:?}); the template's preference list must include at least one \
+         supported algorithm"
+    )
+    .into())
 }
 
 /// Store entity key records under the default verification-method ids.
@@ -450,7 +556,16 @@ pub async fn save_entity_key_records_with_ids(
         keys_ks,
         signing_vm_id,
         &derived.signing_path,
-        KeyType::Ed25519,
+        // Carried from the derivation, not asserted here. The literal
+        // `KeyType::Ed25519` that stood here was correct only while nothing
+        // else could be minted — and this is the **VTA-derived** branch, the
+        // one a template's `keys` block steers, so it is exactly where a
+        // post-quantum key arrives. A record naming Ed25519 for an ML-DSA key
+        // sends a later signing operation to a suite the key cannot work in,
+        // and that failure surfaces far from here. `DerivedEntityKeys` grew
+        // `signing_key_type` for this; the caller-supplied-keys branch already
+        // reads it, and this one was missed.
+        derived.signing_key_type.clone(),
         &derived.signing_pub,
         signing_vm_id,
         context_id,
@@ -461,7 +576,7 @@ pub async fn save_entity_key_records_with_ids(
         keys_ks,
         ka_vm_id,
         &derived.ka_path,
-        KeyType::X25519,
+        derived.ka_key_type.clone(),
         &derived.ka_pub,
         ka_vm_id,
         context_id,
@@ -469,6 +584,32 @@ pub async fn save_entity_key_records_with_ids(
     )
     .await?;
     Ok(())
+}
+
+/// Store the key record for one additional signing slot, under the
+/// verification-method id the published document gives it.
+///
+/// Separate from [`save_entity_key_records_with_ids`] for the same reason
+/// `save_sealed_transfer_key_record` is: the id comes from reading the document
+/// back, and only the caller has it.
+pub async fn save_additional_signing_key_record(
+    vm_id: &str,
+    key: &DerivedSlotKey,
+    keys_ks: &KeyspaceHandle,
+    context_id: Option<&str>,
+    seed_id: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    save_key_record(
+        keys_ks,
+        vm_id,
+        &key.path,
+        key.key_type.clone(),
+        &key.public_multibase,
+        vm_id,
+        context_id,
+        seed_id,
+    )
+    .await
 }
 
 // ===========================================================================
@@ -593,6 +734,133 @@ mod tests {
         assert!(
             err.to_string().contains("no signing algorithm"),
             "the error must say the list could not be satisfied: {err}"
+        );
+    }
+
+    /// An extra slot is minted at its **own** path, with its own algorithm.
+    ///
+    /// The separate path is the security property. Deriving it at the primary's
+    /// index would make the second key a deterministic function of the first —
+    /// the cross-algorithm reuse `derive_ml_dsa_44`'s domain separation exists
+    /// to prevent, reintroduced a layer up where that separation cannot see it.
+    #[tokio::test]
+    async fn an_additional_slot_is_minted_at_its_own_path() {
+        let seed = test_seed();
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace(vta_keyspaces::KEYS).expect("keyspace");
+
+        let primary = derive_entity_keys(&seed, "m/26'/3'/0'", "signing", "ka", &ks)
+            .await
+            .expect("primary");
+        let extra = derive_additional_signing_key(
+            &seed,
+            "m/26'/3'/0'",
+            "pq-signing",
+            "post-quantum signing",
+            &ks,
+            &[KeyType::MlDsa44, KeyType::Ed25519],
+        )
+        .await
+        .expect("ML-DSA-44 is mintable in this build");
+
+        assert_eq!(extra.slot, "pq-signing");
+        assert_eq!(extra.key_type, KeyType::MlDsa44);
+        assert_ne!(
+            extra.path, primary.signing_path,
+            "an extra slot must not share the primary's derivation path"
+        );
+
+        let (_b, bytes) = multibase::decode(&extra.public_multibase).expect("valid multibase");
+        assert!(
+            bytes.len() > 1000,
+            "key_type says ML-DSA-44 but the key is {} bytes",
+            bytes.len()
+        );
+    }
+
+    /// The fallback rule is the same one the primary slot follows, so one
+    /// template serves a fleet where not every VTA can mint every algorithm.
+    #[tokio::test]
+    async fn an_additional_slot_falls_back_and_refuses_an_empty_list() {
+        let seed = test_seed();
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace(vta_keyspaces::KEYS).expect("keyspace");
+
+        let fell_back = derive_additional_signing_key(
+            &seed,
+            "m/26'/3'/1'",
+            "extra",
+            "extra",
+            &ks,
+            // X25519 cannot sign, so it is skipped rather than refused.
+            &[KeyType::X25519, KeyType::Ed25519],
+        )
+        .await
+        .expect("an unusable first choice falls through");
+        assert_eq!(fell_back.key_type, KeyType::Ed25519);
+
+        let err = derive_additional_signing_key(
+            &seed,
+            "m/26'/3'/2'",
+            "extra",
+            "extra",
+            &ks,
+            &[KeyType::X25519],
+        )
+        .await
+        .expect_err("a list naming no signing algorithm cannot be satisfied");
+        assert!(
+            err.to_string().contains("extra"),
+            "the error must name the slot that could not be satisfied: {err}"
+        );
+    }
+
+    /// **A stored record must name the algorithm the key actually is.**
+    ///
+    /// `save_entity_key_records_with_ids` passed `KeyType::Ed25519` as a
+    /// literal for the signing key, even though `DerivedEntityKeys` grew
+    /// `signing_key_type` (#1532) to stop exactly that. It is the VTA-derived
+    /// branch, which is the one a template's `keys` block steers — so it is
+    /// where a post-quantum key would arrive.
+    ///
+    /// Nothing mislabels a key *today*: a `did:webvh` primary signing key must
+    /// be Ed25519, because the log entry is signed with it and didwebvh 1.0
+    /// mandates `eddsa-jcs-2022`. So this is a latent defect, not a live one,
+    /// and this test is what keeps it that way — the first DID method that can
+    /// carry a post-quantum primary key would otherwise store a record saying
+    /// Ed25519 and send every later signing operation to a suite the key cannot
+    /// work in, far from here.
+    #[tokio::test]
+    async fn a_saved_record_names_the_algorithm_the_key_is() {
+        let seed = test_seed();
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace(vta_keyspaces::KEYS).expect("keyspace");
+        let did = "did:example:pq";
+
+        let derived = derive_entity_keys_with_preference(
+            &seed,
+            "m/26'/4'/0'",
+            "signing",
+            "ka",
+            &ks,
+            &[KeyType::MlDsa44],
+        )
+        .await
+        .expect("derive");
+
+        save_entity_key_records(did, &derived, &ks, Some("vta"), Some(0))
+            .await
+            .expect("save");
+
+        let record: KeyRecord = ks
+            .get(format!("key:{did}#key-0"))
+            .await
+            .expect("read")
+            .expect("a record was stored for #key-0");
+        assert_eq!(
+            record.key_type,
+            KeyType::MlDsa44,
+            "the record must carry the minted algorithm, not a literal"
         );
     }
 

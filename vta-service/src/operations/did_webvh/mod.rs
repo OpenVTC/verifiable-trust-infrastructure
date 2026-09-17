@@ -377,6 +377,141 @@ pub(crate) async fn refresh_resolver_doc_from_log(
 ///
 /// Context-scoped templates therefore naturally shadow global ones with the
 /// same name; global templates shadow built-ins.
+/// What a template's `keys` block asks the minting flow to derive.
+///
+/// The template speaks in algorithm *names* (`"mldsa44"`), because a template is
+/// a JSON document an operator authors. Derivation speaks in [`KeyType`]. This
+/// is the one place the two meet, so a name this build does not know is refused
+/// here with the slot that named it — rather than in `derive_*`, which would
+/// only know the algorithm.
+#[derive(Debug)]
+struct KeySlotPlan {
+    /// Signing-key preference, most preferred first. Never empty.
+    signing: Vec<KeyType>,
+    /// Extra signing slots, in the template's own (sorted) slot order.
+    additional_signing: Vec<(String, Vec<KeyType>)>,
+}
+
+impl Default for KeySlotPlan {
+    /// No template means the pair this stack has always minted.
+    fn default() -> Self {
+        Self {
+            signing: vec![KeyType::Ed25519],
+            additional_signing: Vec::new(),
+        }
+    }
+}
+
+/// Narrow a primary-signing preference list to the algorithms that can sign a
+/// `did:webvh` **log entry**.
+///
+/// This is not our rule and not a capability gap we can close by minting
+/// differently. `didwebvh` 1.0 mandates JCS canonicalization and
+/// `eddsa-jcs-2022` for log-entry proofs; `didwebvh-rs` enforces it, and its
+/// `experimental-pqc` build flag — which would widen the set to
+/// `mldsa44-jcs-2024` — is opt-in precisely because a log signed that way is
+/// unverifiable by any conformant resolver. Turning it on would trade "cannot
+/// mint" for "mints a DID nobody else can resolve", which is worse.
+///
+/// So a `did:webvh` DID's **primary** signing key is Ed25519, and post-quantum
+/// signing arrives as an *additional* slot published alongside it. That is not
+/// a workaround: an issuer that signs a credential with every key it holds
+/// needs both keys anyway, and one of them has to be the one the log is signed
+/// with.
+///
+/// A list is filtered rather than rejected outright, because that is what a
+/// preference list is for — `["mldsa44", "ed25519"]` is a template written for
+/// a fleet where some VTAs can do more than others, and it falls back here
+/// exactly as it would for an algorithm this build could not mint. A list with
+/// no usable entry is refused, naming what it asked for and what to do instead;
+/// silently substituting Ed25519 for a list that never mentioned it is the
+/// quiet downgrade the whole `keys` block exists to prevent.
+fn log_entry_capable_signing(preference: &[KeyType]) -> Result<Vec<KeyType>, AppError> {
+    let usable: Vec<KeyType> = preference
+        .iter()
+        .filter(|k| matches!(k, KeyType::Ed25519))
+        .cloned()
+        .collect();
+    if usable.is_empty() {
+        return Err(AppError::Validation(format!(
+            "the template's `signing` slot names {preference:?}, and a did:webvh log entry can \
+             only be signed with ed25519 (didwebvh 1.0 mandates eddsa-jcs-2022). Add `ed25519` \
+             to that slot's algorithms and declare the post-quantum key as an additional \
+             signing slot — a DID publishing both is what lets its holder issue a credential \
+             carrying one proof each verifier can check."
+        )));
+    }
+    Ok(usable)
+}
+
+/// Turn the template's declared slots into a [`KeySlotPlan`].
+///
+/// The key-agreement slot takes no preference: X25519 is the only algorithm
+/// that can serve it in a DID document, and template validation already refuses
+/// a `keyAgreement` slot naming anything else. An *additional* key-agreement
+/// slot is refused here instead of silently ignored — a second `keyAgreement`
+/// entry changes which key an inbound JWE resolves to
+/// (`did_secrets::select_secret_kid`), and minting one without answering that is
+/// how a message becomes undecryptable at a mediator rather than here.
+fn plan_key_slots(
+    slots: &std::collections::BTreeMap<String, vta_sdk::did_templates::KeySlot>,
+) -> Result<KeySlotPlan, AppError> {
+    use vta_sdk::did_templates::{KeyPurpose, SLOT_KA, SLOT_SIGNING};
+
+    if slots.is_empty() {
+        return Ok(KeySlotPlan::default());
+    }
+
+    let parse =
+        |slot: &str, spec: &vta_sdk::did_templates::KeySlot| -> Result<Vec<KeyType>, AppError> {
+            spec.algorithms
+                .iter()
+                .map(|a| {
+                    serde_json::from_value::<KeyType>(serde_json::Value::String(a.clone())).map_err(
+                    |_| {
+                        AppError::Validation(format!(
+                            "key slot '{slot}' names algorithm '{a}', which this build does not \
+                             know"
+                        ))
+                    },
+                )
+                })
+                .collect()
+        };
+
+    let mut plan = KeySlotPlan {
+        signing: Vec::new(),
+        additional_signing: Vec::new(),
+    };
+
+    for (slot, spec) in slots {
+        match (slot.as_str(), spec.purpose) {
+            (SLOT_SIGNING, _) => plan.signing = parse(slot, spec)?,
+            (SLOT_KA, _) => {}
+            (_, KeyPurpose::Signing) => {
+                plan.additional_signing
+                    .push((slot.clone(), parse(slot, spec)?));
+            }
+            (_, KeyPurpose::KeyAgreement) => {
+                return Err(AppError::Validation(format!(
+                    "key slot '{slot}' declares a second key-agreement key, which this VTA \
+                     cannot mint. One key-agreement key per DID: a second `keyAgreement` entry \
+                     changes which secret an inbound encrypted message resolves to, and nothing \
+                     here decides that. Declare it as `{SLOT_KA}` if it is the DID's only one."
+                )));
+            }
+        }
+    }
+
+    if plan.signing.is_empty() {
+        return Err(AppError::Validation(format!(
+            "the template declares key slots but none named '{SLOT_SIGNING}'; every DID this \
+             VTA mints needs a primary signing key"
+        )));
+    }
+    Ok(plan)
+}
+
 async fn resolve_template_for_render(
     did_templates_ks: &KeyspaceHandle,
     name: &str,
@@ -895,6 +1030,59 @@ pub async fn create_did_webvh(
     // Track whether keys were user-specified (affects key record saving)
     let user_specified_keys = params.signing_key_id.is_some();
 
+    // ── The template is resolved *before* the keys, because it says what
+    //    keys to mint ────────────────────────────────────────────────────
+    //
+    // It used to be resolved after, at render time, which is why a `keys` block
+    // could declare `algorithms: ["mldsa44", "ed25519"]` and get Ed25519: by the
+    // time anything read the block, the keys existed. `derive_entity_keys_with_
+    // preference` (#1532) was written for exactly this and had no caller.
+    //
+    // Resolution is a pure keyspace lookup, so moving it earlier changes nothing
+    // but the order.
+    let template_record = match params.template {
+        Some(ref template_name) => Some(
+            resolve_template_for_render(
+                did_templates_ks,
+                template_name,
+                params.template_context.as_deref(),
+            )
+            .await?,
+        ),
+        None => None,
+    };
+
+    // What the template asks each slot to be minted as. A v1 template answers
+    // with the historical Ed25519/X25519 pair (`key_slots`), so this is the same
+    // question for both schema versions and there is no branch on version here.
+    let key_slots = template_record
+        .as_ref()
+        .map(|r| r.template.key_slots())
+        .unwrap_or_default();
+    let slot_plan = plan_key_slots(&key_slots)?;
+
+    // Extra slots are minted from the VTA's own seed. When the caller brings its
+    // own keys — `signing_key_id` or `pre_derived` — there is nothing to mint
+    // them from and nothing that may invent one on the caller's behalf, so the
+    // combination is refused by name. Without this the render fails anyway (the
+    // slot's placeholder goes unresolved) but says only that a token was left
+    // over, which does not point at the template/caller mismatch that caused it.
+    if !slot_plan.additional_signing.is_empty()
+        && (user_specified_keys || params.pre_derived.is_some())
+    {
+        let slots: Vec<&str> = slot_plan
+            .additional_signing
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect();
+        return Err(AppError::Validation(format!(
+            "template declares key slot(s) {slots:?} beyond the signing/key-agreement pair, but \
+             this request supplies its own keys. The VTA mints an extra slot from its own seed; \
+             it cannot do that for a DID whose keys you brought. Either drop the caller-supplied \
+             key ids and let the VTA derive, or use a template without the extra slot."
+        )));
+    }
+
     // Load or derive entity keys
     let (derived, active_seed_id) = if let Some(mut pre) = params.pre_derived.take() {
         // ── Caller-derived keys ─────────────────────────────────────
@@ -982,6 +1170,11 @@ pub async fn create_did_webvh(
             // here would mislabel an imported ML-DSA key at the one moment the
             // system is being told what it is.
             ka_key_type,
+            // Caller-supplied keys: the caller brought what it brought, and
+            // nothing here may mint a key it did not ask for. A template
+            // declaring extra slots against caller-supplied keys is refused
+            // below, where the document is about to be rendered without them.
+            additional_signing: Vec::new(),
         };
 
         // seed_id from the signing key record (may be None for imported)
@@ -995,15 +1188,33 @@ pub async fn create_did_webvh(
             .await
             .map_err(|e| AppError::Internal(format!("{e}")))?;
 
-        let mut derived = keys::derive_entity_keys(
+        let mut derived = keys::derive_entity_keys_with_preference(
             &seed,
             &ctx.base_path,
             &format!("{label} signing key"),
             &format!("{label} key-agreement key"),
             keys_ks,
+            &log_entry_capable_signing(&slot_plan.signing)?,
         )
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        // Slots beyond the pair — a post-quantum signing key alongside the
+        // classical one, which is what lets the holder issue a credential
+        // carrying a proof from each.
+        for (slot, preference) in &slot_plan.additional_signing {
+            let key = keys::derive_additional_signing_key(
+                &seed,
+                &ctx.base_path,
+                slot,
+                &format!("{label} {slot} key"),
+                keys_ks,
+                preference,
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+            derived.additional_signing.push(key);
+        }
 
         // Convert signing key ID to did:key format (required by didwebvh-rs)
         let pub_mb = derived
@@ -1108,19 +1319,23 @@ pub async fn create_did_webvh(
     //
     // `{DID}` is passed through as a sentinel — `didwebvh-rs` substitutes
     // it with the computed DID after SCID generation.
-    if let Some(ref template_name) = params.template {
-        let record = resolve_template_for_render(
-            did_templates_ks,
-            template_name,
-            params.template_context.as_deref(),
-        )
-        .await?;
-
+    if let (Some(template_name), Some(record)) = (params.template.as_ref(), template_record) {
         let mut vars = vta_sdk::did_templates::TemplateVars::new();
         vars.insert_string("DID", "{DID}");
         vars.insert_string("SIGNING_KEY_MB", derived.signing_pub.clone());
         if has_ka {
             vars.insert_string("KA_KEY_MB", derived.ka_pub.clone());
+        }
+        // One placeholder per additional slot, under `slot_var`'s mechanical
+        // `{SLOT}_KEY_MB` name — the same rule the two above already follow.
+        // Not supplying it is not a quiet omission: the renderer refuses an
+        // unresolved placeholder, so a slot minted and not substituted fails
+        // here rather than publishing a hole.
+        for key in &derived.additional_signing {
+            vars.insert_string(
+                vta_sdk::did_templates::DidTemplate::slot_var(&key.slot),
+                key.public_multibase.clone(),
+            );
         }
         if let Some(ref vta_did) = config.vta_did {
             vars.insert_string("VTA_DID", vta_did.clone());
@@ -1271,6 +1486,11 @@ pub async fn create_did_webvh(
     // differently — `room` and `room-host` number from `#key-1` — stored records
     // under names its own document does not carry. See `document::minted_vm_ids`
     // for what that costs.
+    let additional_pubs: Vec<(String, String)> = derived
+        .additional_signing
+        .iter()
+        .map(|k| (k.slot.clone(), k.public_multibase.clone()))
+        .collect();
     let vm_ids = document::minted_vm_ids(
         &did_document,
         &final_did,
@@ -1280,6 +1500,7 @@ pub async fn create_did_webvh(
         } else {
             None
         },
+        &additional_pubs,
     );
     let ka_vm_id = vm_ids
         .key_agreement
@@ -1299,6 +1520,32 @@ pub async fn create_did_webvh(
         )
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        // Records for the extra signing slots, under the ids the published
+        // document gives them. A slot the document does not carry is a template
+        // that minted a key it never published — `check_key_slots` refuses that
+        // shape at authoring time, so reaching it here means the rendered
+        // document and the template disagree, and storing the key under a
+        // guessed id would hide that. Fail instead.
+        for key in &derived.additional_signing {
+            let vm_id = vm_ids.additional_signing.get(&key.slot).ok_or_else(|| {
+                AppError::Internal(format!(
+                    "key slot '{}' was minted but the published document for '{final_did}' has \
+                     no verificationMethod carrying its public key — the template and the \
+                     rendered document disagree about where that key goes",
+                    key.slot
+                ))
+            })?;
+            keys::save_additional_signing_key_record(
+                vm_id,
+                key,
+                keys_ks,
+                Some(&params.context_id),
+                active_seed_id,
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        }
 
         // Persist `#sealed-transfer-0` alongside `#key-0`/`#key-1`. Only
         // populated when this DID is the VTA's own identity (see the
@@ -2818,6 +3065,155 @@ mod delete_cascade_tests {
                 .await
                 .expect("revoke"),
             0
+        );
+    }
+}
+
+#[cfg(test)]
+mod key_slot_plan_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use vta_sdk::did_templates::{KeyPurpose, KeySlot};
+
+    fn slot(purpose: KeyPurpose, algorithms: &[&str]) -> KeySlot {
+        KeySlot {
+            purpose,
+            algorithms: algorithms.iter().map(|a| (*a).to_string()).collect(),
+        }
+    }
+
+    /// No template, or a v1 one, means the pair this stack has always minted.
+    /// `key_slots()` answers for both, so there is no schema-version branch —
+    /// and if this drifts, every v1 template starts minting something its
+    /// document does not describe.
+    #[test]
+    fn no_slots_means_the_historical_pair() {
+        let plan = plan_key_slots(&BTreeMap::new()).expect("empty is the default");
+        assert_eq!(plan.signing, vec![KeyType::Ed25519]);
+        assert!(plan.additional_signing.is_empty());
+    }
+
+    #[test]
+    fn a_signing_slot_keeps_its_declared_order() {
+        let slots = BTreeMap::from([
+            (
+                "signing".to_string(),
+                slot(KeyPurpose::Signing, &["mldsa44", "ed25519"]),
+            ),
+            (
+                "ka".to_string(),
+                slot(KeyPurpose::KeyAgreement, &["x25519"]),
+            ),
+        ]);
+        let plan = plan_key_slots(&slots).expect("valid");
+        assert_eq!(plan.signing, vec![KeyType::MlDsa44, KeyType::Ed25519]);
+        assert!(plan.additional_signing.is_empty());
+    }
+
+    #[test]
+    fn an_extra_signing_slot_is_planned_separately() {
+        let slots = BTreeMap::from([
+            (
+                "signing".to_string(),
+                slot(KeyPurpose::Signing, &["ed25519"]),
+            ),
+            (
+                "ka".to_string(),
+                slot(KeyPurpose::KeyAgreement, &["x25519"]),
+            ),
+            (
+                "pq-signing".to_string(),
+                slot(KeyPurpose::Signing, &["mldsa44"]),
+            ),
+        ]);
+        let plan = plan_key_slots(&slots).expect("valid");
+        assert_eq!(plan.signing, vec![KeyType::Ed25519]);
+        assert_eq!(
+            plan.additional_signing,
+            vec![("pq-signing".to_string(), vec![KeyType::MlDsa44])]
+        );
+    }
+
+    /// A second key-agreement key is refused rather than ignored. Minting one
+    /// would put a second `keyAgreement` entry in the document, which changes
+    /// which secret an inbound encrypted message resolves to
+    /// (`did_secrets::select_secret_kid`) — and nothing here decides that. The
+    /// failure would surface at a mediator as an undecryptable message, a long
+    /// way from the template that caused it.
+    #[test]
+    fn a_second_key_agreement_slot_is_refused() {
+        let slots = BTreeMap::from([
+            (
+                "signing".to_string(),
+                slot(KeyPurpose::Signing, &["ed25519"]),
+            ),
+            (
+                "ka".to_string(),
+                slot(KeyPurpose::KeyAgreement, &["x25519"]),
+            ),
+            (
+                "ka-2".to_string(),
+                slot(KeyPurpose::KeyAgreement, &["x25519"]),
+            ),
+        ]);
+        let err = plan_key_slots(&slots).expect_err("a second KA slot cannot be minted");
+        assert!(
+            err.to_string().contains("ka-2"),
+            "the refusal must name the slot: {err}"
+        );
+    }
+
+    /// An algorithm name this build does not know is refused **with the slot
+    /// that named it**. The derivation functions only see a `KeyType`, so by
+    /// the time one of them could complain the slot is gone — and "unknown
+    /// algorithm" without a slot is not actionable in a template with several.
+    #[test]
+    fn an_unknown_algorithm_is_refused_with_its_slot() {
+        let slots = BTreeMap::from([(
+            "signing".to_string(),
+            slot(KeyPurpose::Signing, &["falcon512"]),
+        )]);
+        let err = plan_key_slots(&slots).expect_err("unknown algorithm");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("signing") && msg.contains("falcon512"),
+            "must name both the slot and the algorithm: {msg}"
+        );
+    }
+
+    /// Declaring slots but omitting the primary is refused: every DID this VTA
+    /// mints needs one, and `{SIGNING_KEY_MB}` has nothing to render from.
+    #[test]
+    fn slots_without_a_primary_signing_slot_are_refused() {
+        let slots = BTreeMap::from([(
+            "ka".to_string(),
+            slot(KeyPurpose::KeyAgreement, &["x25519"]),
+        )]);
+        let err = plan_key_slots(&slots).expect_err("no primary signing slot");
+        assert!(err.to_string().contains("signing"), "{err}");
+    }
+
+    /// The webvh log-entry constraint, at the level it is decided.
+    ///
+    /// `didwebvh` 1.0 mandates `eddsa-jcs-2022` for log-entry proofs, so a
+    /// preference list falls back past every post-quantum entry — exactly as it
+    /// would for an algorithm this build could not mint. A list with no
+    /// classical entry is refused rather than silently substituted: a template
+    /// authored to be post-quantum, minting classical and saying nothing, is
+    /// the failure the `keys` block exists to prevent.
+    #[test]
+    fn a_webvh_primary_signing_preference_falls_back_to_ed25519() {
+        assert_eq!(
+            log_entry_capable_signing(&[KeyType::MlDsa44, KeyType::Ed25519]).expect("falls back"),
+            vec![KeyType::Ed25519]
+        );
+
+        let err = log_entry_capable_signing(&[KeyType::MlDsa44, KeyType::MlDsa65])
+            .expect_err("no algorithm here can sign a log entry");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ed25519") && msg.contains("additional signing slot"),
+            "the refusal must say why and what to do instead: {msg}"
         );
     }
 }

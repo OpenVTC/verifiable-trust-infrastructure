@@ -409,6 +409,16 @@ pub(crate) struct MintedVmIds {
     /// One past the highest `#key-N` the document declares — what a rotation
     /// may allocate from without colliding with a published method.
     pub next_fragment_id: u32,
+    /// The id each additional signing slot is published under, by slot name.
+    ///
+    /// Found the same way as the other two — by matching `publicKeyMultibase`,
+    /// not by position or by a `#key-N` shape — so a template that numbers its
+    /// methods any way it likes still gets records named what its own document
+    /// says. A slot the document does not carry is absent here rather than
+    /// falling back to a guessed fragment: there is no historical name for a
+    /// slot that has no history, and storing a record under an id nothing
+    /// publishes is the exact failure this function exists to prevent.
+    pub additional_signing: std::collections::BTreeMap<String, String>,
 }
 
 /// Read [`MintedVmIds`] out of a document, substituting `{DID}` for `did`.
@@ -420,6 +430,7 @@ pub(crate) fn minted_vm_ids(
     did: &str,
     signing_pub: &str,
     ka_pub: Option<&str>,
+    additional_signing: &[(String, String)],
 ) -> MintedVmIds {
     let methods = document
         .get("verificationMethod")
@@ -450,6 +461,10 @@ pub(crate) fn minted_vm_ids(
         // to collide with, so this stays as it was rather than inventing a
         // number from the method count.
         next_fragment_id: highest.map_or(2, |n| n + 1),
+        additional_signing: additional_signing
+            .iter()
+            .filter_map(|(slot, public_key)| id_carrying(public_key).map(|id| (slot.clone(), id)))
+            .collect(),
     }
 }
 
@@ -480,6 +495,7 @@ mod tests {
             ka_label: "ka".into(),
             signing_key_type: vta_sdk::keys::KeyType::Ed25519,
             ka_key_type: vta_sdk::keys::KeyType::X25519,
+            additional_signing: Vec::new(),
         }
     }
 
@@ -765,7 +781,7 @@ mod tests {
         let config = crate::test_support::test_app_config(std::path::PathBuf::from("/tmp/x"));
         let doc = build_did_document(&derived, &config, false, &None);
 
-        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub));
+        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub), &[]);
         assert_eq!(ids.signing, format!("{DID}#key-0"));
         assert_eq!(ids.key_agreement.as_deref(), Some(&*format!("{DID}#key-1")));
         assert_eq!(ids.next_fragment_id, 2);
@@ -780,7 +796,7 @@ mod tests {
         let derived = fake_keys();
         for template in ["room", "room-host"] {
             let doc = rendered(template, &derived);
-            let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub));
+            let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub), &[]);
 
             // Read off the document rather than asserted as `#key-1`: the point
             // is that the records follow whatever it says, so renumbering the
@@ -819,7 +835,7 @@ mod tests {
     fn next_fragment_id_clears_every_method_the_document_published() {
         let derived = fake_keys();
         let doc = rendered("room-host", &derived);
-        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub));
+        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub), &[]);
 
         let highest = doc["verificationMethod"]
             .as_array()
@@ -844,7 +860,7 @@ mod tests {
     fn a_method_named_by_its_own_key_is_still_found() {
         let derived = fake_keys();
         let doc = rendered("vta-admin", &derived);
-        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, None);
+        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, None, &[]);
 
         assert_eq!(ids.signing, format!("{DID}#{}", derived.signing_pub));
         assert_eq!(
@@ -864,7 +880,7 @@ mod tests {
     fn a_document_that_names_neither_key_falls_back_to_the_old_pair() {
         let derived = fake_keys();
         let doc = json!({ "id": "{DID}", "verificationMethod": [] });
-        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub));
+        let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub), &[]);
 
         assert_eq!(ids.signing, format!("{DID}#key-0"));
         assert_eq!(ids.key_agreement, None);
