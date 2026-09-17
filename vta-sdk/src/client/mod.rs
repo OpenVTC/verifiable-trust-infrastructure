@@ -1133,6 +1133,26 @@ impl VtaClient {
         }
     }
 
+    /// Form the Rev 3 §7.2.2 relationship for the TSP Trust-Task leg, for a
+    /// caller that attached the leg with
+    /// [`enable_tsp_trust_tasks`](Self::enable_tsp_trust_tasks) — the
+    /// `connect_auto` + enable two-step — rather than
+    /// [`connect_didcomm_with_tsp`](Self::connect_didcomm_with_tsp), which
+    /// already relates internally.
+    ///
+    /// Without this step a Rev 3 VTA drops the leg's first Trust Task: the
+    /// relationship is what authorises the session to send application
+    /// messages, and the VTA silently discards messages that arrive without
+    /// one.
+    ///
+    /// Idempotent — the underlying relate is state-read guarded — so calling it
+    /// after `enable_tsp_trust_tasks` is safe, and a no-op when the Trust-Task
+    /// surface is not on TSP.
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    pub async fn relate_tsp_trust_task_leg(&self, vta_did: &str) -> Result<(), VtaError> {
+        self.relate_trust_task_leg(vta_did).await
+    }
+
     /// Revert this client to pure DIDComm, dropping any Trust-Task TSP leg that
     /// [`enable_tsp_trust_tasks`](Self::enable_tsp_trust_tasks) or
     /// [`attach_tsp_leg`](Self::attach_tsp_leg) put in place.
