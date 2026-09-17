@@ -483,12 +483,23 @@ async fn tsp_probe(
                     }
                 }
             } else {
-                // Warm-up ping (pays the first-send VID/route resolution), then a
-                // measured one — a steady-state latency comparable to the DIDComm
-                // probe. A warm-up failure is reported straight away.
+                // §7.2.2: the VTA drops an application-level ping from a VID it
+                // holds no relationship with — which, for a session-identity
+                // probe, is every fresh run. Form the relationship first (the
+                // VTA's answering arm accepts it, and an invite already admits
+                // the messages that follow it, §3.6). `relate` is idempotent by
+                // state read, so a persisted relationship is a no-op.
+                //
+                // Then a warm-up ping (pays the first-send VID/route resolution)
+                // and a measured one — a steady-state latency comparable to the
+                // DIDComm probe. A relate or warm-up failure is reported straight
+                // away.
                 let ping_timeout = std::time::Duration::from_secs(10);
-                let measured = match session.ping(vta_did, ping_timeout).await {
-                    Ok(_) => session.ping(vta_did, ping_timeout).await,
+                let measured = match session.relate(vta_did).await {
+                    Ok(()) => match session.ping(vta_did, ping_timeout).await {
+                        Ok(_) => session.ping(vta_did, ping_timeout).await,
+                        Err(e) => Err(e),
+                    },
                     Err(e) => Err(e),
                 };
                 match measured {
