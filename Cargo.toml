@@ -99,7 +99,13 @@ affinidi-crypto = "0.2"
 # provision-integration flow (VP-framed bootstrap request, VC-issued
 # admin authorization). See CLAUDE.md "Authorization claims" principle.
 affinidi-vc = "0.2"
-affinidi-data-integrity = "0.7"
+# `ml-dsa` compiles the ML-DSA-44 cryptosuites (mldsa44-jcs-2024 /
+# -rdfc-2024). Without it `CryptoSuite::default_for_key_type` has no arm for
+# an ML-DSA key, returns `None`, and the signer falls back to Ed25519 — so a
+# post-quantum key cannot sign a credential at all, and says so by naming
+# Ed25519. The same trap was caught for `affinidi-secrets-resolver` (which
+# carries the feature below) and missed here.
+affinidi-data-integrity = { version = "0.7", features = ["ml-dsa"] }
 affinidi-status-list = "0.1.3"
 
 # Credential formats for the credential-centric VTI architecture
