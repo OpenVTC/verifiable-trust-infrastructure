@@ -42,7 +42,7 @@
 //!    edge that already exists. See [`attach_persona`] for the
 //!    binding argument and for what upstream has not settled.
 
-use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+use affinidi_data_integrity::VerifyOptions;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
 use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
@@ -1602,14 +1602,16 @@ async fn verify_di_proof(
     let proof_value = vrc
         .get("proof")
         .ok_or_else(|| "document missing proof".to_string())?;
-    let proof: DataIntegrityProof =
-        serde_json::from_value(proof_value.clone()).map_err(|e| format!("parse proof: {e}"))?;
+    // A proof SET. As elsewhere, `verificationMethod` was read off the raw
+    // JSON, which is `None` for an array — so the binding check was
+    // unreachable for a hybrid document rather than merely unperformed.
+    let proofs = crate::credentials::proof_set::proof_set(proof_value)
+        .map_err(|e| format!("parse proof: {e}"))?;
 
-    let verification_method = proof_value
-        .get("verificationMethod")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "proof missing verificationMethod".to_string())?;
-    check_issuer_binding(verification_method, controller_did).map_err(|e| e.to_string())?;
+    for proof in &proofs {
+        check_issuer_binding(&proof.verification_method, controller_did)
+            .map_err(|e| e.to_string())?;
+    }
 
     let mut vrc_without_proof = vrc.clone();
     if let Some(obj) = vrc_without_proof.as_object_mut() {
@@ -1617,10 +1619,17 @@ async fn verify_di_proof(
     }
 
     let vm_resolver = DidVmResolver::new(Some(resolver.clone()));
-    proof
-        .verify(&vrc_without_proof, &vm_resolver, VerifyOptions::new())
-        .await
-        .map_err(|e| format!("verify: {e}"))?;
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
+    for proof in &proofs {
+        let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
+        let r = proof
+            .verify(&vrc_without_proof, &vm_resolver, VerifyOptions::new())
+            .await
+            .map_err(|e| e.to_string());
+        outcomes.push((did, r));
+    }
+
+    crate::credentials::proof_set::accept_any(&outcomes).map_err(|e| format!("verify: {e}"))?;
     Ok(())
 }
 

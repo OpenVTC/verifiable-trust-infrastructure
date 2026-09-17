@@ -430,28 +430,44 @@ async fn verify_di_vp(
     let proof_val = vp
         .get("proof")
         .ok_or_else(|| AppError::Validation("DI VP has no `proof` (holder binding)".into()))?;
-    let proof: DataIntegrityProof = serde_json::from_value(proof_val.clone()).map_err(|e| {
+    // A proof SET: a holder with both a classical and a post-quantum key signs
+    // the presentation with each.
+    let proofs = crate::credentials::proof_set::proof_set(proof_val).map_err(|e| {
         AppError::Validation(format!("DI VP proof is not a Data-Integrity proof: {e}"))
     })?;
-    if proof.proof_purpose != "authentication" {
-        return Err(AppError::Validation(format!(
-            "DI VP holder proof purpose is `{}`, expected `authentication`",
-            proof.proof_purpose
-        )));
+    // Purpose is checked on EVERY proof. A presentation carrying one
+    // `authentication` proof beside an `assertionMethod` one is not a holder
+    // binding with something extra attached — it is ambiguous about what the
+    // holder was attesting, and the permissive reading is the dangerous one.
+    for proof in &proofs {
+        if proof.proof_purpose != "authentication" {
+            return Err(AppError::Validation(format!(
+                "DI VP holder proof purpose is `{}`, expected `authentication`",
+                proof.proof_purpose
+            )));
+        }
     }
-    let holder_did = proof
-        .verification_method
-        .split('#')
-        .next()
-        .unwrap_or_default()
-        .to_string();
+
     let mut vp_unsigned = vp.clone();
     if let Some(obj) = vp_unsigned.as_object_mut() {
         obj.remove("proof");
     }
-    proof
-        .verify(&vp_unsigned, &resolver, VerifyOptions::new())
-        .await
+
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
+    for proof in &proofs {
+        let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
+        let r = proof
+            .verify(&vp_unsigned, &resolver, VerifyOptions::new())
+            .await
+            .map_err(|e| e.to_string());
+        outcomes.push((did, r));
+    }
+
+    // The holder DID comes from the acceptance rule rather than from whichever
+    // proof happened to be first: `accept_any` has already refused a set whose
+    // verifying proofs disagree about who signed, so there is exactly one
+    // answer to return here.
+    let holder_did = crate::credentials::proof_set::accept_any(&outcomes)
         .map_err(|e| AppError::Validation(format!("DI VP holder proof did not verify: {e}")))?;
 
     // 2. Freshness + audience binding (both are top-level VP fields, signed).

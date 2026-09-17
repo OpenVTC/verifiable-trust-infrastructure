@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 
-use affinidi_data_integrity::{DataIntegrityProof, VerificationMethodResolver, VerifyOptions};
+use affinidi_data_integrity::{VerificationMethodResolver, VerifyOptions};
 use affinidi_vc::VerifiableCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -274,27 +274,37 @@ async fn verify_proof(
         .proof
         .as_ref()
         .ok_or_else(|| RecognitionError::ProofInvalid(format!("{label} has no proof")))?;
-    let proof: DataIntegrityProof = serde_json::from_value(proof_value.clone())
+    // A proof SET: a hybrid credential carries one per suite. Reading
+    // `verificationMethod` off the raw JSON, as this did, returns `None` for an
+    // array — so the binding check below could not even be reached. It now
+    // reads each parsed proof's own field, which is also the more direct
+    // source.
+    let proofs = crate::credentials::proof_set::proof_set(proof_value)
         .map_err(|e| RecognitionError::ProofInvalid(format!("{label} parse proof: {e}")))?;
 
-    let verification_method = proof_value
-        .get("verificationMethod")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            RecognitionError::ProofInvalid(format!("{label} proof missing verificationMethod"))
-        })?;
     // The signing key must sit under the foreign issuer (a key controlled by
-    // some other DID must not sign this credential). The library `verify` then
-    // resolves it + checks the signature.
-    check_issuer_binding(verification_method, issuer_did)
-        .map_err(|e| RecognitionError::ProofInvalid(format!("{label}: {e}")))?;
+    // some other DID must not sign this credential), and that holds for EVERY
+    // proof — a credential is not made acceptable by carrying one correctly
+    // bound proof beside one that names somebody else.
+    for proof in &proofs {
+        check_issuer_binding(&proof.verification_method, issuer_did)
+            .map_err(|e| RecognitionError::ProofInvalid(format!("{label}: {e}")))?;
+    }
 
     let mut vc_without_proof = vc.clone();
     vc_without_proof.proof = None;
 
-    proof
-        .verify(&vc_without_proof, resolver, VerifyOptions::new())
-        .await
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
+    for proof in &proofs {
+        let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
+        let r = proof
+            .verify(&vc_without_proof, resolver, VerifyOptions::new())
+            .await
+            .map_err(|e| e.to_string());
+        outcomes.push((did, r));
+    }
+
+    crate::credentials::proof_set::accept_any(&outcomes)
         .map_err(|e| RecognitionError::ProofInvalid(format!("{label}: {e}")))?;
     Ok(())
 }
@@ -528,34 +538,44 @@ async fn verify_status_list_signature(
     let proof_value = list_credential.get("proof").ok_or_else(|| {
         RecognitionError::StatusListFailed(format!("status list {url} has no proof to verify"))
     })?;
-    let proof: DataIntegrityProof = serde_json::from_value(proof_value.clone()).map_err(|e| {
+    // A proof SET: a status list is a credential like any other and a hybrid
+    // issuer will sign it with every suite it holds. Note this read
+    // `verificationMethod` off the raw JSON, which is `None` for an array — so
+    // the binding check could not be reached at all.
+    let proofs = crate::credentials::proof_set::proof_set(proof_value).map_err(|e| {
         RecognitionError::StatusListFailed(format!("status list {url} unparseable proof: {e}"))
     })?;
-    let vm = proof_value
-        .get("verificationMethod")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| {
-            RecognitionError::StatusListFailed(format!(
-                "status list {url} proof missing verificationMethod"
-            ))
-        })?;
-    // The signing key must belong to the list's own issuer.
-    check_issuer_binding(vm, &list_issuer)
-        .map_err(|e| RecognitionError::StatusListFailed(format!("status list {url} {e}")))?;
+
+    // The signing key must belong to the list's own issuer — on every proof.
+    // This one carries weight beyond tidiness: a status list decides whether a
+    // credential is revoked, so a list whose proof set mixes issuers is exactly
+    // the substitution the check above it refuses by URL.
+    for proof in &proofs {
+        check_issuer_binding(&proof.verification_method, &list_issuer)
+            .map_err(|e| RecognitionError::StatusListFailed(format!("status list {url} {e}")))?;
+    }
 
     // JCS is presence-sensitive: strip `proof` exactly as signing did.
     let mut signing_doc = list_credential.clone();
     if let Some(obj) = signing_doc.as_object_mut() {
         obj.remove("proof");
     }
-    proof
-        .verify(&signing_doc, resolver, VerifyOptions::new())
-        .await
-        .map_err(|e| {
-            RecognitionError::StatusListFailed(format!(
-                "status list {url} issuer signature did not verify: {e}"
-            ))
-        })?;
+
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
+    for proof in &proofs {
+        let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
+        let r = proof
+            .verify(&signing_doc, resolver, VerifyOptions::new())
+            .await
+            .map_err(|e| e.to_string());
+        outcomes.push((did, r));
+    }
+
+    crate::credentials::proof_set::accept_any(&outcomes).map_err(|e| {
+        RecognitionError::StatusListFailed(format!(
+            "status list {url} issuer signature did not verify: {e}"
+        ))
+    })?;
     Ok(())
 }
 
