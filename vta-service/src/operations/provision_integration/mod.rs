@@ -80,7 +80,8 @@ use vta_sdk::provision_integration::{
 use vta_sdk::sealed_transfer::{
     SealedPayloadV1,
     template_bootstrap::{
-        DidKeyMaterial, KeyPair, TemplateBootstrapConfig, TemplateBootstrapPayload, TemplateOutput,
+        DidKeyMaterial, DidKeyMaterialV2, KeyPair, SlotKeyPair, TemplateBootstrapConfig,
+        TemplateBootstrapPayload, TemplateBootstrapPayloadV2, TemplateOutput,
     },
 };
 
@@ -409,145 +410,160 @@ pub async fn provision_integration(
     // `get_key_secret` on those branches.
     let mut did_key_material: Option<DidKeyMaterial> = None;
 
-    let (integration_did, signing_key_id, ka_key_id, did_document, did_log) = if use_did_peer {
-        // did:peer path — self-contained. Mint an Ed25519 signing key +
-        // X25519 key-agreement key and encode them into a did:peer:2 with
-        // a DIDCommMessaging service on MEDIATOR_DID (matching how the
-        // `ai-agent` did:webvh template advertises DIDComm), so the agent
-        // reaches the VTA over the mediator identically. `WEBVH_SERVER` /
-        // `WEBVH_PATH` / `URL` are forbidden — there is nothing to host.
-        let (did, skid, kkid, doc, material) = provision_did_peer(state, &template_vars).await?;
-        did_key_material = Some(material);
-        (did, skid, kkid, doc, None)
-    } else if use_did_key {
-        // did:key path — no webvh publication. `WEBVH_SERVER` /
-        // `WEBVH_PATH` / `URL` are all irrelevant here; the template's
-        // `methods: ["key"]` is load-bearing metadata, not the URL.
-        let (did, skid, kkid, doc, log, material) = mint::mint_integration_via_did_key_template(
-            state,
-            &context,
-            &client_did,
-            &template_name,
-            &template_vars,
-        )
-        .await?;
-        did_key_material = Some(material);
-        (did, skid, kkid, doc, log)
-    } else {
-        // did:webvh path — `create_did_webvh` takes exactly one of
-        // `server_id` / `url`.
-        // - WEBVH_SERVER set → `server_id` wins; `url` is unused by that
-        //   path, so we drop it even if supplied.
-        // - WEBVH_SERVER unset → serverless mode; we need a `url`. This is
-        //   the only path where an absent URL is a hard error; surface it
-        //   with guidance naming the `WEBVH_SERVER` alternative.
+    let (integration_did, signing_key_id, ka_key_id, additional_key_ids, did_document, did_log) =
+        if use_did_peer {
+            // did:peer path — self-contained. Mint an Ed25519 signing key +
+            // X25519 key-agreement key and encode them into a did:peer:2 with
+            // a DIDCommMessaging service on MEDIATOR_DID (matching how the
+            // `ai-agent` did:webvh template advertises DIDComm), so the agent
+            // reaches the VTA over the mediator identically. `WEBVH_SERVER` /
+            // `WEBVH_PATH` / `URL` are forbidden — there is nothing to host.
+            let (did, skid, kkid, doc, material) =
+                provision_did_peer(state, &template_vars).await?;
+            did_key_material = Some(material);
+            // did:peer mints its own fixed pair; a template declaring extra slots
+            // is refused before reaching here (`plan_key_slots` runs on the webvh
+            // path, and these branches have no seed-derived slot to mint from).
+            (
+                did,
+                skid,
+                kkid,
+                std::collections::BTreeMap::new(),
+                doc,
+                None,
+            )
+        } else if use_did_key {
+            // did:key path — no webvh publication. `WEBVH_SERVER` /
+            // `WEBVH_PATH` / `URL` are all irrelevant here; the template's
+            // `methods: ["key"]` is load-bearing metadata, not the URL.
+            let (did, skid, kkid, doc, log, material) =
+                mint::mint_integration_via_did_key_template(
+                    state,
+                    &context,
+                    &client_did,
+                    &template_name,
+                    &template_vars,
+                )
+                .await?;
+            did_key_material = Some(material);
+            (did, skid, kkid, std::collections::BTreeMap::new(), doc, log)
+        } else {
+            // did:webvh path — `create_did_webvh` takes exactly one of
+            // `server_id` / `url`.
+            // - WEBVH_SERVER set → `server_id` wins; `url` is unused by that
+            //   path, so we drop it even if supplied.
+            // - WEBVH_SERVER unset → serverless mode; we need a `url`. This is
+            //   the only path where an absent URL is a hard error; surface it
+            //   with guidance naming the `WEBVH_SERVER` alternative.
 
-        // Resolve the path request into the explicit, total path mode, and
-        // reject an explicit root request on a shared server before any
-        // state is written (see `reject_root_on_shared_server`).
-        let path_mode = vta_sdk::protocols::did_management::create::WebvhPathMode::from(webvh_path);
-        webvh::reject_root_on_shared_server(&path_mode, webvh_server_id.is_some())?;
+            // Resolve the path request into the explicit, total path mode, and
+            // reject an explicit root request on a shared server before any
+            // state is written (see `reject_root_on_shared_server`).
+            let path_mode =
+                vta_sdk::protocols::did_management::create::WebvhPathMode::from(webvh_path);
+            webvh::reject_root_on_shared_server(&path_mode, webvh_server_id.is_some())?;
 
-        let (params_server_id, params_url) = match &webvh_server_id {
-            Some(id) => (Some(id.clone()), None),
-            None => {
-                let url = integration_url.clone().ok_or_else(|| {
-                    AppError::Validation(format!(
-                        "webvh DIDs need a publication target. Template '{template_name}' \
+            let (params_server_id, params_url) = match &webvh_server_id {
+                Some(id) => (Some(id.clone()), None),
+                None => {
+                    let url = integration_url.clone().ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "webvh DIDs need a publication target. Template '{template_name}' \
                          resolved without a 'URL' or 'WEBVH_SERVER' template var. Pass either \
                          `--var URL=https://...` (serverless mode — you publish did.jsonl \
                          yourself) or `--var WEBVH_SERVER=<id>` (route through a webvh \
                          hosting server registered with `vta webvh add-server`). At least one \
                          is required for any webvh-method built-in (did-hosting-control, \
                          did-hosting-daemon, did-hosting-server)."
-                    ))
-                })?;
-                (None, Some(url))
-            }
+                        ))
+                    })?;
+                    (None, Some(url))
+                }
+            };
+
+            let template_vars_hashmap: std::collections::HashMap<String, Value> =
+                template_vars.clone().into_iter().collect();
+
+            let config = state.config.read().await;
+            let did_resolver = state
+                .did_resolver
+                .as_ref()
+                .ok_or_else(|| AppError::Internal("DID resolver not initialized".into()))?;
+            // `state` is a `ProvisionIntegrationDeps`, not an `AppState`, so build
+            // the create-deps by hand (it carries all the fields).
+            let create_deps = super::did_webvh::CreateDidWebvhDeps {
+                keys_ks: &state.keys_ks,
+                imported_ks: &state.imported_ks,
+                contexts_ks: &state.contexts_ks,
+                webvh_ks: &state.webvh_ks,
+                did_templates_ks: &state.did_templates_ks,
+                audit: &state.audit,
+                seed_store: &*state.seed_store,
+                config: &config,
+                did_resolver,
+                didcomm_bridge: &state.didcomm_bridge,
+                auth_locks: &state.webvh_auth_locks,
+                // `ProvisionIntegrationDeps` carries no mediator socket, so the
+                // seam falls to DIDComm here. Provisioning is also the one moment
+                // the VTA has not yet learned anything about the host, so there is
+                // nothing this could be built from opportunistically.
+                #[cfg(feature = "tsp")]
+                tsp: None,
+            };
+            let create_result = super::did_webvh::create_did_webvh(
+                &create_deps,
+                auth,
+                super::did_webvh::CreateDidWebvhParams {
+                    context_id: context.clone(),
+                    server_id: params_server_id,
+                    url: params_url,
+                    // Absent `WEBVH_PATH` → `AutoAssign` (server mints a
+                    // random path); `.well-known` → `WellKnown` (root, already
+                    // rejected above on shared servers); a label → `Explicit`.
+                    path_mode,
+                    // Explicit tenant domain when the caller set
+                    // `WEBVH_DOMAIN` (multi-tenant hosting server); `None`
+                    // lets the remote resolve to its caller-default / system
+                    // default.
+                    domain: webvh_domain,
+                    label: Some(client_did.clone()),
+                    portable: true,
+                    add_mediator_service: false,
+                    add_tsp_service: false,
+                    additional_services: None,
+                    pre_rotation_count: 0,
+                    did_document: None,
+                    did_log: None,
+                    set_primary,
+                    // Template rendering happens inside the operation, from the
+                    // keys it derives — nothing out here needs the document
+                    // first, so there is nothing to share.
+                    pre_derived: None,
+                    signing_key_id: None,
+                    ka_key_id: None,
+                    template: Some(template_name.clone()),
+                    template_context: None,
+                    template_vars: template_vars_hashmap,
+                    // provision-integration always creates an integration DID,
+                    // never the VTA's own identity.
+                    is_vta_identity: false,
+                },
+                "provision-integration",
+            )
+            .await?;
+
+            let did_document = create_result.did_document.clone().ok_or_else(|| {
+                AppError::Internal("create_did_webvh did not return did_document".into())
+            })?;
+            (
+                create_result.did.clone(),
+                create_result.signing_key_id.clone(),
+                create_result.ka_key_id.clone(),
+                create_result.additional_key_ids.clone(),
+                did_document,
+                create_result.log_entry.clone(),
+            )
         };
-
-        let template_vars_hashmap: std::collections::HashMap<String, Value> =
-            template_vars.clone().into_iter().collect();
-
-        let config = state.config.read().await;
-        let did_resolver = state
-            .did_resolver
-            .as_ref()
-            .ok_or_else(|| AppError::Internal("DID resolver not initialized".into()))?;
-        // `state` is a `ProvisionIntegrationDeps`, not an `AppState`, so build
-        // the create-deps by hand (it carries all the fields).
-        let create_deps = super::did_webvh::CreateDidWebvhDeps {
-            keys_ks: &state.keys_ks,
-            imported_ks: &state.imported_ks,
-            contexts_ks: &state.contexts_ks,
-            webvh_ks: &state.webvh_ks,
-            did_templates_ks: &state.did_templates_ks,
-            audit: &state.audit,
-            seed_store: &*state.seed_store,
-            config: &config,
-            did_resolver,
-            didcomm_bridge: &state.didcomm_bridge,
-            auth_locks: &state.webvh_auth_locks,
-            // `ProvisionIntegrationDeps` carries no mediator socket, so the
-            // seam falls to DIDComm here. Provisioning is also the one moment
-            // the VTA has not yet learned anything about the host, so there is
-            // nothing this could be built from opportunistically.
-            #[cfg(feature = "tsp")]
-            tsp: None,
-        };
-        let create_result = super::did_webvh::create_did_webvh(
-            &create_deps,
-            auth,
-            super::did_webvh::CreateDidWebvhParams {
-                context_id: context.clone(),
-                server_id: params_server_id,
-                url: params_url,
-                // Absent `WEBVH_PATH` → `AutoAssign` (server mints a
-                // random path); `.well-known` → `WellKnown` (root, already
-                // rejected above on shared servers); a label → `Explicit`.
-                path_mode,
-                // Explicit tenant domain when the caller set
-                // `WEBVH_DOMAIN` (multi-tenant hosting server); `None`
-                // lets the remote resolve to its caller-default / system
-                // default.
-                domain: webvh_domain,
-                label: Some(client_did.clone()),
-                portable: true,
-                add_mediator_service: false,
-                add_tsp_service: false,
-                additional_services: None,
-                pre_rotation_count: 0,
-                did_document: None,
-                did_log: None,
-                set_primary,
-                // Template rendering happens inside the operation, from the
-                // keys it derives — nothing out here needs the document
-                // first, so there is nothing to share.
-                pre_derived: None,
-                signing_key_id: None,
-                ka_key_id: None,
-                template: Some(template_name.clone()),
-                template_context: None,
-                template_vars: template_vars_hashmap,
-                // provision-integration always creates an integration DID,
-                // never the VTA's own identity.
-                is_vta_identity: false,
-            },
-            "provision-integration",
-        )
-        .await?;
-
-        let did_document = create_result.did_document.clone().ok_or_else(|| {
-            AppError::Internal("create_did_webvh did not return did_document".into())
-        })?;
-        (
-            create_result.did.clone(),
-            create_result.signing_key_id.clone(),
-            create_result.ka_key_id.clone(),
-            did_document,
-            create_result.log_entry.clone(),
-        )
-    };
 
     // did:key / did:peer paths: set the minted DID as primary when the
     // context has none. The webvh path already handles this inside
@@ -571,6 +587,11 @@ pub async fn provision_integration(
     // case; the webvh branch still goes through `get_key_secret` so it
     // exercises the same authz surface as any admin-triggered read.
     let mut secrets = BTreeMap::new();
+    // Extra signing keys, and the slot-tagged view of the pair they sit beside.
+    // Both stay empty on the did:key / did:peer branches and for every v1
+    // template — which is what decides the sealed variant below.
+    let mut additional_material: Vec<SlotKeyPair> = Vec::new();
+    let mut primary_slots: Option<(SlotKeyPair, SlotKeyPair)> = None;
     if let Some(material) = did_key_material {
         secrets.insert(material.did.clone(), material);
     } else {
@@ -623,6 +644,54 @@ pub async fn provision_integration(
                      references a different KA_KEY_MB binding"
                 ))
             })?;
+
+        // Signing keys beyond the primary, when the template declared extra
+        // slots. Read back the same way as the pair — through `get_key_secret`,
+        // so an extra key crosses exactly the authorization surface the other
+        // two do rather than a quieter one.
+        //
+        // The ids come from `create`, which read them off the *published*
+        // document. Deriving them here would be guessing at the fragment the
+        // template chose.
+        for (slot, key_id) in &additional_key_ids {
+            let resp = super::keys::get_key_secret(
+                &state.keys_ks,
+                &state.imported_ks,
+                &state.seed_store,
+                &state.audit,
+                auth,
+                key_id,
+                "provision-integration",
+            )
+            .await?;
+            additional_material.push(SlotKeyPair {
+                slot: slot.clone(),
+                // Carried from the stored record, not inferred from the
+                // multicodec. The record is where the truth about a key's
+                // algorithm lives.
+                key_type: resp.key_type.clone(),
+                key_id: key_id.clone(),
+                public_key_multibase: resp.public_key_multibase.clone(),
+                private_key_multibase: resp.private_key_multibase.clone(),
+            });
+        }
+
+        primary_slots = Some((
+            SlotKeyPair {
+                slot: vta_sdk::did_templates::SLOT_SIGNING.to_string(),
+                key_type: signing_secret_resp.key_type.clone(),
+                key_id: signing_kid.clone(),
+                public_key_multibase: signing_secret_resp.public_key_multibase.clone(),
+                private_key_multibase: signing_secret_resp.private_key_multibase.clone(),
+            },
+            SlotKeyPair {
+                slot: vta_sdk::did_templates::SLOT_KA.to_string(),
+                key_type: ka_secret_resp.key_type.clone(),
+                key_id: ka_kid.clone(),
+                public_key_multibase: ka_secret_resp.public_key_multibase.clone(),
+                private_key_multibase: ka_secret_resp.private_key_multibase.clone(),
+            },
+        ));
 
         secrets.insert(
             integration_did.clone(),
@@ -779,17 +848,67 @@ pub async fn provision_integration(
     let secret_count = secrets.len();
     let output_count = outputs.len();
 
-    let payload = TemplateBootstrapPayload {
-        authorization: vc_value,
-        secrets,
-        config: TemplateBootstrapConfig {
-            template_name: template_name.clone(),
-            template_kind: template_kind.clone(),
-            did_document,
-            outputs,
-            vta_url: state.config.read().await.public_url.clone(),
-            vta_trust,
-        },
+    let config = TemplateBootstrapConfig {
+        template_name: template_name.clone(),
+        template_kind: template_kind.clone(),
+        did_document,
+        outputs,
+        vta_url: state.config.read().await.public_url.clone(),
+        vta_trust,
+    };
+
+    // ── The sealed shape follows the template ───────────────────────
+    //
+    // V2 only when this DID actually holds a signing key beyond the primary —
+    // which only a template declaring an extra slot produces. Every v1
+    // template, which is every built-in, keeps emitting `TemplateBootstrap`
+    // byte-identically, so no existing opener is affected until someone
+    // deliberately provisions from a template asking for keys that opener
+    // cannot install. It is then told so by name (`unknown variant
+    // template_bootstrap_v2`) rather than by a field error that reads like a
+    // corrupted bundle.
+    //
+    // The same no-migration property the proof rule has one layer up: the wire
+    // shape follows what is there, and nothing has a flag to set.
+    let payload = match (additional_material.is_empty(), primary_slots) {
+        (false, Some((signing_key, ka_key))) => {
+            let mut v2_secrets = BTreeMap::new();
+            v2_secrets.insert(
+                integration_did.clone(),
+                DidKeyMaterialV2 {
+                    did: integration_did.clone(),
+                    signing_key,
+                    ka_key,
+                    additional_signing_keys: additional_material,
+                },
+            );
+            // A rolled-over admin DID keeps the historical pair — admin
+            // authentication is not issuance, and nothing has asked it for a
+            // post-quantum key. Carried across so the bundle is still complete.
+            for (did, material) in &secrets {
+                if did == &integration_did {
+                    continue;
+                }
+                let lifted = DidKeyMaterialV2::from_v1(material).ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "key material for '{did}' carries a public key whose multicodec names \
+                         no algorithm this build knows — refusing to seal a bundle whose keys \
+                         cannot be classified"
+                    ))
+                })?;
+                v2_secrets.insert(did.clone(), lifted);
+            }
+            SealedPayloadV1::TemplateBootstrapV2(Box::new(TemplateBootstrapPayloadV2 {
+                authorization: vc_value,
+                secrets: v2_secrets,
+                config,
+            }))
+        }
+        _ => SealedPayloadV1::TemplateBootstrap(Box::new(TemplateBootstrapPayload {
+            authorization: vc_value,
+            secrets,
+            config,
+        })),
     };
 
     // ── 8. Seal ─────────────────────────────────────────────────────
@@ -803,7 +922,7 @@ pub async fn provision_integration(
         assertion_mode,
         bundle_id,
         &client_x25519_pub,
-        SealedPayloadV1::TemplateBootstrap(Box::new(payload)),
+        payload,
     )
     .await?;
     let bundle_id_hex = hex_lower(&bundle_id);
@@ -2052,6 +2171,195 @@ mod tests {
         assert!(err.to_string().contains("URL"), "got: {err}");
     }
 
+    // ── The sealed shape follows the template ───────────────────────────────
+    //
+    // These mint through the real flow and open the real bundle, because the
+    // contract is *which variant the VTA chose* — which no amount of testing
+    // the payload types in isolation can show.
+
+    /// A hybrid `vtc-host`-shaped template: the historical pair plus a
+    /// post-quantum signing slot, published as a second assertion method.
+    fn hybrid_template() -> vta_sdk::did_templates::DidTemplate {
+        vta_sdk::did_templates::DidTemplate::from_json(serde_json::json!({
+            "schemaVersion": 2,
+            "name": "hybrid-host",
+            "kind": "vtc-host",
+            "methods": ["webvh"],
+            "requiredVars": ["URL"],
+            "keys": {
+                "signing":    { "purpose": "signing",      "algorithms": ["ed25519"] },
+                "ka":         { "purpose": "keyAgreement", "algorithms": ["x25519"] },
+                "pq-signing": { "purpose": "signing",      "algorithms": ["mldsa44"] },
+            },
+            "document": {
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": "{DID}",
+                "verificationMethod": [
+                    { "id": "{DID}#key-0", "type": "Multikey", "controller": "{DID}",
+                      "publicKeyMultibase": "{SIGNING_KEY_MB}" },
+                    { "id": "{DID}#key-1", "type": "Multikey", "controller": "{DID}",
+                      "publicKeyMultibase": "{KA_KEY_MB}" },
+                    { "id": "{DID}#key-2", "type": "Multikey", "controller": "{DID}",
+                      "publicKeyMultibase": "{PQ_SIGNING_KEY_MB}" },
+                ],
+                "assertionMethod": ["{DID}#key-0", "{DID}#key-2"],
+                "authentication": ["{DID}#key-0"],
+                "keyAgreement": ["{DID}#key-1"],
+                "service": [{ "id": "{DID}#rest", "type": "VTCRest", "serviceEndpoint": "{URL}" }],
+            }
+        }))
+        .expect("the hybrid template is valid")
+    }
+
+    /// **The bundle carries the post-quantum key, under the new variant.**
+    ///
+    /// This is the last link of the chain: template -> provisioning ->
+    /// sealed payload. Before it, nothing could hand a consumer a second
+    /// signing key at all — `DidKeyMaterial` has two fixed slots and
+    /// `deny_unknown_fields`, so there was no field to put one in and no way to
+    /// add one without breaking every existing opener.
+    #[tokio::test]
+    async fn a_template_with_an_extra_slot_seals_the_v2_variant() {
+        use super::sealed_transfer_open::open_raw_for_test;
+        use vta_sdk::sealed_transfer::SealedPayloadV1;
+
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "hybrid", "Hybrid")
+            .await
+            .expect("create context");
+        vta_support::did_templates::store_global_template(
+            &ts.did_templates_ks,
+            &vta_sdk::did_templates::DidTemplateRecord {
+                template: hybrid_template(),
+                scope: vta_sdk::did_templates::Scope::Global,
+                created_at: 0,
+                updated_at: 0,
+                created_by: "test".into(),
+            },
+        )
+        .await
+        .expect("store template");
+
+        let mut vars = BTreeMap::new();
+        vars.insert("URL".into(), Value::String("https://vtc.test".into()));
+        let request = signed_request_with_vars("hybrid-host", "hybrid", vars).await;
+
+        let output = provision_integration(
+            &deps,
+            &super_admin_claims(),
+            ProvisionIntegrationParams {
+                request,
+                context: "hybrid".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .expect("provision_integration");
+
+        let payload = open_raw_for_test(&output.armored, &output.digest, &[7u8; 32]);
+        let SealedPayloadV1::TemplateBootstrapV2(p) = payload else {
+            panic!("a template with an extra key slot must seal TemplateBootstrapV2");
+        };
+
+        let integration_did = output
+            .summary
+            .integration_did
+            .as_deref()
+            .expect("integration DID");
+        let material = p.secrets.get(integration_did).expect("integration secrets");
+
+        assert_eq!(
+            material.additional_signing_keys.len(),
+            1,
+            "the bundle must carry the post-quantum key the template asked for"
+        );
+        let pq = &material.additional_signing_keys[0];
+        assert_eq!(pq.slot, "pq-signing", "the slot names what asked for it");
+        assert_eq!(
+            pq.key_type,
+            vta_sdk::keys::KeyType::MlDsa44,
+            "carried from the stored record, not inferred"
+        );
+
+        // The kid must be a verification method the published document
+        // actually carries, or the holder installs a key nothing can address.
+        let published: Vec<&str> = p.config.did_document["verificationMethod"]
+            .as_array()
+            .expect("verificationMethod array")
+            .iter()
+            .filter_map(|vm| vm["id"].as_str())
+            .collect();
+        assert!(
+            published.contains(&pq.key_id.as_str()),
+            "the post-quantum kid {} is not published in {published:?}",
+            pq.key_id
+        );
+
+        // And the private half is really an ML-DSA seed, not an Ed25519 key
+        // relabelled: the `mldsa-44-priv-seed` multicodec is 0x9a 0x26.
+        let (_b, priv_bytes) =
+            multibase::decode(&pq.private_key_multibase).expect("private multibase");
+        assert_eq!(
+            &priv_bytes[..2],
+            &[0x9a, 0x26],
+            "the private half must carry the ML-DSA-44 seed multicodec"
+        );
+
+        // The classical key is untouched and still primary.
+        assert_eq!(material.signing_key.slot, "signing");
+        assert_eq!(
+            material.signing_key.key_type,
+            vta_sdk::keys::KeyType::Ed25519
+        );
+        assert_eq!(material.ka_key.key_type, vta_sdk::keys::KeyType::X25519);
+    }
+
+    /// **And the no-migration half: a v1 template still seals V1.**
+    ///
+    /// This is what contains the blast radius to zero. `didcomm-mediator` is
+    /// v1, so `mediator-setup` in affinidi-tdk-rs — a real cross-repo opener
+    /// that has never heard of the new variant — keeps receiving exactly what
+    /// it always did. If this ever flips, that tool breaks on its next
+    /// provisioning run with no other signal.
+    #[tokio::test]
+    async fn a_v1_template_still_seals_the_v1_variant() {
+        use super::sealed_transfer_open::open_raw_for_test;
+        use vta_sdk::sealed_transfer::SealedPayloadV1;
+
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "classic", "Classic")
+            .await
+            .expect("create context");
+
+        let request =
+            signed_request_with_vars("didcomm-mediator", "classic", mediator_template_vars()).await;
+
+        let output = provision_integration(
+            &deps,
+            &super_admin_claims(),
+            ProvisionIntegrationParams {
+                request,
+                context: "classic".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .expect("provision_integration");
+
+        let payload = open_raw_for_test(&output.armored, &output.digest, &[7u8; 32]);
+        assert!(
+            matches!(payload, SealedPayloadV1::TemplateBootstrap(_)),
+            "a v1 template must keep sealing TemplateBootstrap, or every existing \
+             opener breaks on its next provisioning run"
+        );
+    }
+
     #[tokio::test]
     async fn provision_integration_bundle_kids_match_published_did_document() {
         // Regression test for the kid-numbering mismatch. The canonical
@@ -2473,5 +2781,21 @@ mod sealed_transfer_open {
             SealedPayloadV1::TemplateBootstrap(boxed) => *boxed,
             other => panic!("expected TemplateBootstrap, got {other:?}"),
         }
+    }
+
+    /// As [`open_for_test`], but returning the raw payload so a test can assert
+    /// **which variant** the VTA chose. That choice is the contract this
+    /// workstream added, and a helper that unwraps one variant cannot check it.
+    pub fn open_raw_for_test(
+        armored: &str,
+        digest: &str,
+        holder_seed: &[u8; 32],
+    ) -> SealedPayloadV1 {
+        let bundles = armor::decode(armored).expect("armor decode");
+        assert_eq!(bundles.len(), 1, "expected single bundle");
+        let x_secret = ed25519_seed_to_x25519_secret(holder_seed);
+        open_bundle(&x_secret, &bundles[0], Some(digest))
+            .expect("open bundle")
+            .payload
     }
 }

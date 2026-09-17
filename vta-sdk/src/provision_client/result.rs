@@ -15,6 +15,7 @@ use crate::provision_integration::http::{ProvisionIntegrationResponse, Provision
 use crate::provision_integration::payload::{
     DidKeyMaterial, TemplateBootstrapPayload, TemplateOutput,
 };
+use crate::sealed_transfer::template_bootstrap::{DidKeyMaterialV2, TemplateBootstrapPayloadV2};
 use crate::sealed_transfer::{SealedPayloadV1, armor, open_bundle};
 
 use super::error::ProvisionError;
@@ -107,19 +108,134 @@ impl ProvisionResult {
     }
 }
 
-/// Translate a [`ProvisionIntegrationResponse`] (from either DIDComm or
-/// REST) into a [`ProvisionResult`]. Decodes the armored sealed bundle,
-/// verifies the bundle id matches the originating VP nonce (so a swapped
-/// bundle is rejected), opens the payload with the setup key's X25519
-/// secret, and lifts the template-bootstrap payload into the result shape.
+/// A provisioning result whose key material may include a signing key beyond
+/// the primary one.
 ///
-/// Shared by both transport runners — the wire payload is identical
-/// across them.
-pub fn response_to_result(
+/// Separate from [`ProvisionResult`] rather than a change to it: that type's
+/// `payload` field is public API a consumer in another repository already
+/// reads, and widening its type would break them for a capability they have not
+/// asked for. A consumer opts in by calling [`response_to_result_v2`].
+///
+/// **Both sealed variants arrive here as one shape.** A `TemplateBootstrap`
+/// payload is lifted through [`DidKeyMaterialV2::from_v1`], so a caller that
+/// has learned V2 never has to ask which variant it got — only whether any DID
+/// carries extra keys, which is the question it actually has.
+#[derive(Debug, Clone)]
+pub struct ProvisionResultV2 {
+    /// Hex-encoded `bundle_id` (16 bytes), matching the originating VP nonce.
+    pub bundle_id_hex: String,
+    /// SHA-256 digest of the armored ciphertext, as returned by the VTA.
+    pub digest: String,
+    /// Summary block the VTA includes on the response.
+    pub summary: ProvisionSummary,
+    /// Full payload, in the shape that can carry more than one signing key.
+    pub payload: TemplateBootstrapPayloadV2,
+}
+
+impl ProvisionResultV2 {
+    /// Long-term admin DID the integration should authenticate as.
+    pub fn admin_did(&self) -> &str {
+        &self.summary.admin_did
+    }
+
+    /// The integration's own DID, rendered from the integration template.
+    pub fn integration_did(&self) -> Option<&str> {
+        self.summary.integration_did.as_deref()
+    }
+
+    /// Key material for the integration DID — the primary signing key, the
+    /// key-agreement key, and any additional signing keys the template asked
+    /// for.
+    pub fn integration_key(&self) -> Option<&DidKeyMaterialV2> {
+        self.payload.secrets.get(self.integration_did()?)
+    }
+
+    /// Key material for the admin DID, when the VTA rolled it over.
+    pub fn admin_key(&self) -> Option<&DidKeyMaterialV2> {
+        self.payload.secrets.get(self.admin_did())
+    }
+
+    /// `did.jsonl` content for the integration DID when its template targets
+    /// webvh.
+    pub fn webvh_log(&self) -> Option<&str> {
+        let integration_did = self.integration_did()?;
+        self.payload
+            .config
+            .outputs
+            .iter()
+            .find_map(|out| match out {
+                TemplateOutput::WebvhLog { did, log } if did == integration_did => {
+                    Some(log.as_str())
+                }
+                _ => None,
+            })
+    }
+
+    /// The authorization VC. Opaque JSON.
+    pub fn authorization_vc(&self) -> &Value {
+        &self.payload.authorization
+    }
+}
+
+/// As [`response_to_result`], but accepting **either** template-bootstrap
+/// variant and returning the shape that can hold more than one signing key.
+///
+/// A consumer whose template may declare extra key slots calls this; one whose
+/// template cannot keeps calling [`response_to_result`] and is unaffected. A
+/// `TemplateBootstrap` payload lifts losslessly, so this is also the right call
+/// for a consumer that simply wants one code path across both.
+pub fn response_to_result_v2(
     seed: &[u8; 32],
     vp_nonce: [u8; 16],
     response: ProvisionIntegrationResponse,
-) -> Result<ProvisionResult, ProvisionError> {
+) -> Result<ProvisionResultV2, ProvisionError> {
+    let (bundle_id_hex, digest, opened_payload) = open_provision_bundle(seed, vp_nonce, &response)?;
+
+    let payload = match opened_payload {
+        SealedPayloadV1::TemplateBootstrapV2(boxed) => *boxed,
+        SealedPayloadV1::TemplateBootstrap(boxed) => {
+            let v1 = *boxed;
+            let mut secrets = std::collections::BTreeMap::new();
+            for (did, material) in &v1.secrets {
+                // A key whose multicodec names no algorithm this build knows is
+                // refused rather than defaulted. Installing a key one cannot
+                // classify is how a bundle's contents and a DID document come
+                // apart, and a default here would be invisible.
+                let lifted = DidKeyMaterialV2::from_v1(material).ok_or_else(|| {
+                    ProvisionError::Armor(format!(
+                        "key material for '{did}' carries a public key whose multicodec names \
+                         no algorithm this build knows"
+                    ))
+                })?;
+                secrets.insert(did.clone(), lifted);
+            }
+            TemplateBootstrapPayloadV2 {
+                authorization: v1.authorization,
+                secrets,
+                config: v1.config,
+            }
+        }
+        _ => return Err(ProvisionError::WrongPayload),
+    };
+
+    Ok(ProvisionResultV2 {
+        bundle_id_hex,
+        digest,
+        summary: response.summary,
+        payload,
+    })
+}
+
+/// Decode the armor, check the bundle id against the VP nonce, and open.
+///
+/// Shared by both `response_to_result` entry points so the checks that make the
+/// bundle trustworthy — the nonce binding and the digest pin — cannot come to
+/// differ between them.
+fn open_provision_bundle(
+    seed: &[u8; 32],
+    vp_nonce: [u8; 16],
+    response: &ProvisionIntegrationResponse,
+) -> Result<(String, String, SealedPayloadV1), ProvisionError> {
     let bundles =
         armor::decode(&response.bundle).map_err(|e| ProvisionError::Armor(e.to_string()))?;
     if bundles.len() != 1 {
@@ -136,10 +252,6 @@ pub fn response_to_result(
     }
 
     let x_secret = crate::sealed_transfer::ed25519_seed_to_x25519_secret(seed);
-    // Decoded back to hex for the comparison: the pin travels as a multibase
-    // multihash from 0.3 on, but `open_bundle` compares the hex it computes.
-    // `None` is a real answer — the member is OPTIONAL, and a holder that does
-    // not pin the bundle out of band sends no digest to check against.
     let expected = response
         .digest_multibase
         .as_deref()
@@ -148,14 +260,41 @@ pub fn response_to_result(
         .map_err(|e| ProvisionError::Armor(e.to_string()))?;
     let opened = open_bundle(&x_secret, bundle, expected.as_deref())?;
 
-    let payload = match opened.payload {
+    Ok((
+        hex_lower(&opened.bundle_id),
+        expected.unwrap_or_default(),
+        opened.payload,
+    ))
+}
+
+/// Translate a [`ProvisionIntegrationResponse`] (from either DIDComm or
+/// REST) into a [`ProvisionResult`]. Decodes the armored sealed bundle,
+/// verifies the bundle id matches the originating VP nonce (so a swapped
+/// bundle is rejected), opens the payload with the setup key's X25519
+/// secret, and lifts the template-bootstrap payload into the result shape.
+///
+/// Shared by both transport runners — the wire payload is identical
+/// across them.
+pub fn response_to_result(
+    seed: &[u8; 32],
+    vp_nonce: [u8; 16],
+    response: ProvisionIntegrationResponse,
+) -> Result<ProvisionResult, ProvisionError> {
+    let (bundle_id_hex, digest, opened_payload) = open_provision_bundle(seed, vp_nonce, &response)?;
+
+    let payload = match opened_payload {
         SealedPayloadV1::TemplateBootstrap(boxed) => *boxed,
+        // A `TemplateBootstrapV2` bundle reaches here only when the VTA minted
+        // a key this caller has no field to put. `WrongPayload` is right: the
+        // caller asked for the shape it can install and got another, and
+        // silently dropping the extra key would defeat the point of having
+        // asked for it. `response_to_result_v2` is the call that takes both.
         _ => return Err(ProvisionError::WrongPayload),
     };
 
     Ok(ProvisionResult {
-        bundle_id_hex: hex_lower(&opened.bundle_id),
-        digest: expected.unwrap_or_default(),
+        bundle_id_hex,
+        digest,
         summary: response.summary,
         payload,
     })

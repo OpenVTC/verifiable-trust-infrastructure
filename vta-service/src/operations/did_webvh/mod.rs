@@ -1016,6 +1016,9 @@ pub async fn create_did_webvh(
             portable: params.portable,
             signing_key_id: String::new(),
             ka_key_id: String::new(),
+            // Final mode publishes a document the caller already built from
+            // keys it already holds — nothing was minted here to report.
+            additional_key_ids: std::collections::BTreeMap::new(),
             pre_rotation_key_count: 0,
             created_at: now,
             did_document: Some(final_did_document),
@@ -1722,6 +1725,7 @@ pub async fn create_did_webvh(
             portable: params.portable,
             signing_key_id: vm_ids.signing.clone(),
             ka_key_id: ka_vm_id.clone(),
+            additional_key_ids: vm_ids.additional_signing.clone(),
             pre_rotation_key_count: pre_rotation_keys.len() as u32,
             created_at: now,
             did_document: Some(final_did_document),
@@ -1805,6 +1809,7 @@ pub async fn create_did_webvh(
             portable: params.portable,
             signing_key_id: vm_ids.signing.clone(),
             ka_key_id: ka_vm_id.clone(),
+            additional_key_ids: vm_ids.additional_signing.clone(),
             pre_rotation_key_count: pre_rotation_keys.len() as u32,
             created_at: now,
             did_document: Some(final_did_document),
