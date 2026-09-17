@@ -563,7 +563,7 @@ cargo run --package vta-service \
 
 ## Further reading
 
-- [`sealed-bootstrap.md`](../../sealed-bootstrap.md) — design doc for
+- [`sealed-bootstrap.md`](../05-design-notes/sealed-bootstrap.md) — design doc for
   the sealed-transfer primitive used by complex-client provisioning.
 - [`bip32-paths.md`](../04-reference/bip32-paths.md) — how contexts
   map to BIP-32 derivation paths.
