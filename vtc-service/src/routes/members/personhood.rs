@@ -64,7 +64,7 @@
 
 use std::sync::Arc;
 
-use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+use affinidi_data_integrity::VerifyOptions;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_vc::VerifiableCredential;
 use axum::Json;
@@ -686,8 +686,9 @@ async fn verify_vp_proof(
     let proof_value = vp
         .get("proof")
         .ok_or_else(|| "missing proof block".to_string())?;
-    let proof: DataIntegrityProof =
-        serde_json::from_value(proof_value.clone()).map_err(|e| format!("parse proof: {e}"))?;
+    // A proof SET.
+    let proofs = crate::credentials::proof_set::proof_set(proof_value)
+        .map_err(|e| format!("parse proof: {e}"))?;
 
     // Strip the proof for verification (data-integrity
     // canonicalises over the doc-without-proof).
@@ -696,30 +697,41 @@ async fn verify_vp_proof(
         obj.remove("proof");
     }
 
-    // Resolve `{did}#key-0` (or whatever verificationMethod
-    // the proof names) to public bytes.
-    let verification_method = proof_value
-        .get("verificationMethod")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "proof missing verificationMethod".to_string())?;
-
+    // The holder's DID document is resolved ONCE and each proof's own
+    // verificationMethod looked up in it — so a hybrid holder's two keys are
+    // both found, and neither proof can name a method belonging to some other
+    // DID, because the document searched is always the holder's.
     let resolved = resolver
         .resolve(holder_did)
         .await
         .map_err(|e| format!("DID resolve: {e}"))?;
-    let vm = resolved
-        .doc
-        .verification_method
-        .iter()
-        .find(|m| m.id.as_str() == verification_method)
-        .ok_or_else(|| format!("verificationMethod {verification_method} not on {holder_did}"))?;
-    let pubkey = vm
-        .get_public_key_bytes()
-        .map_err(|e| format!("extract pubkey: {e}"))?;
 
-    proof
-        .verify_with_public_key(&vp_without_proof, &pubkey, VerifyOptions::new())
-        .map_err(|e| format!("verify: {e}"))?;
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
+    for proof in &proofs {
+        let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
+        let r = (|| {
+            let vm = resolved
+                .doc
+                .verification_method
+                .iter()
+                .find(|m| m.id.as_str() == proof.verification_method)
+                .ok_or_else(|| {
+                    format!(
+                        "verificationMethod {} not on {holder_did}",
+                        proof.verification_method
+                    )
+                })?;
+            let pubkey = vm
+                .get_public_key_bytes()
+                .map_err(|e| format!("extract pubkey: {e}"))?;
+            proof
+                .verify_with_public_key(&vp_without_proof, &pubkey, VerifyOptions::new())
+                .map_err(|e| e.to_string())
+        })();
+        outcomes.push((did, r));
+    }
+
+    crate::credentials::proof_set::accept_any(&outcomes).map_err(|e| format!("verify: {e}"))?;
     Ok(())
 }
 

@@ -17,7 +17,7 @@
 //! reciprocal half of the join, superseding the retired
 //! `join-requests/accept/0.1` task (one credential-delivery path, not two).
 
-use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+use affinidi_data_integrity::VerifyOptions;
 use serde_json::Value as JsonValue;
 use tracing::info;
 use uuid::Uuid;
@@ -345,22 +345,36 @@ async fn verify_member_vmc(
     let proof_value = obj
         .get("proof")
         .ok_or_else(|| AppError::Validation("member vmc has no issuer `proof`".into()))?;
-    let proof: DataIntegrityProof = serde_json::from_value(proof_value.clone()).map_err(|e| {
+    // A proof SET: a hybrid VMC carries one per suite.
+    let proofs = crate::credentials::proof_set::proof_set(proof_value).map_err(|e| {
         AppError::Validation(format!("member vmc proof is not Data-Integrity: {e}"))
     })?;
-    check_issuer_binding(&proof.verification_method, member_did)?;
+    // Bound to the member on EVERY proof, before any signature is checked — a
+    // proof naming another DID is a credential claiming the wrong author, not a
+    // signature that failed.
+    for proof in &proofs {
+        check_issuer_binding(&proof.verification_method, member_did)?;
+    }
 
     let resolver = DidVmResolver::new(state.did_resolver.clone());
     let mut unsigned = vc.clone();
     if let Some(o) = unsigned.as_object_mut() {
         o.remove("proof");
     }
-    proof
-        .verify(&unsigned, &resolver, VerifyOptions::new())
-        .await
-        .map_err(|e| {
-            AppError::Validation(format!("member vmc issuer proof did not verify: {e}"))
-        })?;
+
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
+    for proof in &proofs {
+        let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
+        let r = proof
+            .verify(&unsigned, &resolver, VerifyOptions::new())
+            .await
+            .map_err(|e| e.to_string());
+        outcomes.push((did, r));
+    }
+
+    crate::credentials::proof_set::accept_any(&outcomes).map_err(|e| {
+        AppError::Validation(format!("member vmc issuer proof did not verify: {e}"))
+    })?;
 
     obj.get("id")
         .and_then(JsonValue::as_str)
