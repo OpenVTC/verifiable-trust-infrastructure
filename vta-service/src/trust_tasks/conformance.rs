@@ -2468,6 +2468,9 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 defaults: [("preRotationCount".to_string(), json!(2))]
                     .into_iter()
                     .collect(),
+                // v1: the keys are the implicit Ed25519/X25519 pair. See
+                // `DidTemplate::key_slots`, which is what reads this.
+                keys: None,
                 document: json!({
                     "id": "{DID}",
                     "service": [{

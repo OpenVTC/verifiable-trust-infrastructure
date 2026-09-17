@@ -1413,3 +1413,220 @@ fn did_host_tsp_builtin_missing_mediator_did_errors() {
         "got: {err}"
     );
 }
+
+// ── schemaVersion 2: the `keys` block ────────────────────────────────────────
+
+/// **The compatibility guarantee.** Every built-in is v1 and must keep the
+/// exact key pair it has always had.
+///
+/// `key_slots()` is what makes a v1 and a v2 template one code path, and it can
+/// only do that if a v1 template's implicit answer is right. If this ever
+/// drifts, every existing DID document starts being minted with different keys
+/// than the template says — and nothing else in the suite would notice, because
+/// the templates themselves do not mention algorithms at all.
+#[test]
+fn every_builtin_still_declares_the_historical_key_pair() {
+    for name in BUILTIN_NAMES {
+        let tpl = builtin::load_embedded(name).expect("builtin loads");
+        assert_eq!(
+            tpl.schema_version, 1,
+            "{name} is no longer v1; this test's premise needs revisiting"
+        );
+
+        let slots = tpl.key_slots();
+        assert_eq!(
+            slots.len(),
+            2,
+            "{name}: a v1 template means exactly the signing + key-agreement pair"
+        );
+        assert_eq!(
+            slots[SLOT_SIGNING].algorithms,
+            vec!["ed25519".to_string()],
+            "{name}: the v1 signing key is Ed25519"
+        );
+        assert_eq!(
+            slots[SLOT_KA].algorithms,
+            vec!["x25519".to_string()],
+            "{name}: the v1 key-agreement key is X25519"
+        );
+    }
+}
+
+/// The slot-to-placeholder rule reproduces the two names v1 already uses,
+/// rather than special-casing them.
+#[test]
+fn the_v1_placeholders_fall_out_of_the_slot_naming_rule() {
+    assert_eq!(DidTemplate::slot_var(SLOT_SIGNING), "SIGNING_KEY_MB");
+    assert_eq!(DidTemplate::slot_var(SLOT_KA), "KA_KEY_MB");
+    // And both are already reserved, so a template cannot declare them as vars.
+    assert!(RESERVED_VARS.contains(&"SIGNING_KEY_MB"));
+    assert!(RESERVED_VARS.contains(&"KA_KEY_MB"));
+}
+
+/// A document publishing exactly the slots a v2 fixture declares.
+///
+/// Built from the slot names rather than hardcoded, because validation now
+/// refuses a declared-but-unpublished slot — and a fixture that quietly went
+/// out of step with that rule would make these tests fail for a reason that
+/// has nothing to do with what they assert.
+fn doc_publishing(slots: &Value) -> Value {
+    let vms: Vec<Value> = slots
+        .as_object()
+        .expect("slots is an object")
+        .keys()
+        .map(|slot| {
+            let var = DidTemplate::slot_var(slot);
+            json!({
+                "id": format!("{{DID}}#{slot}"),
+                "type": "Multikey",
+                "controller": "{DID}",
+                "publicKeyMultibase": format!("{{{var}}}"),
+            })
+        })
+        .collect();
+    json!({ "id": "{DID}", "verificationMethod": vms })
+}
+
+fn v2_template(keys: Value) -> Value {
+    json!({
+        "schemaVersion": 2,
+        "name": "pq-admin",
+        "kind": "admin",
+        "document": doc_publishing(&keys),
+        "keys": keys,
+    })
+}
+
+/// A declared slot the document never publishes is refused.
+///
+/// The failure it prevents is the quiet one: the template announces a
+/// post-quantum key, the VTA mints it, the document does not publish it — so
+/// every verifier still sees only the classical key while the deployment
+/// believes it has migrated. (It also burns a derivation path forever.)
+#[test]
+fn a_declared_slot_the_document_never_publishes_is_refused() {
+    let err = DidTemplate::from_json(json!({
+        "schemaVersion": 2,
+        "name": "pq-admin",
+        "kind": "admin",
+        "keys": {
+            "signing": { "purpose": "signing", "algorithms": ["mldsa44"] },
+            "ka": { "purpose": "keyAgreement", "algorithms": ["x25519"] },
+        },
+        // Publishes the signing key only.
+        "document": {
+            "id": "{DID}",
+            "verificationMethod": [{
+                "id": "{DID}#key-1",
+                "publicKeyMultibase": "{SIGNING_KEY_MB}",
+            }],
+        },
+    }))
+    .expect_err("a slot that is minted and never published is refused");
+    assert!(
+        err.to_string().contains("never appears"),
+        "the error must say the key would be minted and not published: {err}"
+    );
+}
+
+/// The converse: a slot placeholder the document uses but no slot declares.
+#[test]
+fn an_undeclared_slot_placeholder_is_refused() {
+    let err = DidTemplate::from_json(json!({
+        "schemaVersion": 2,
+        "name": "pq-admin",
+        "kind": "admin",
+        "keys": { "signing": { "purpose": "signing", "algorithms": ["ed25519"] } },
+        "document": {
+            "id": "{DID}",
+            "verificationMethod": [
+                { "id": "{DID}#s", "publicKeyMultibase": "{SIGNING_KEY_MB}" },
+                { "id": "{DID}#k", "publicKeyMultibase": "{KA_KEY_MB}" },
+            ],
+        },
+    }))
+    .expect_err("an undeclared slot placeholder is refused");
+    assert!(err.to_string().contains("no key slot"), "got: {err}");
+}
+
+/// A post-quantum signing slot with a classical fallback — the shape a fleet
+/// mid-migration needs from one template.
+#[test]
+fn a_pqc_first_slot_with_a_fallback_parses() {
+    let tpl = DidTemplate::from_json(v2_template(json!({
+        "signing": { "purpose": "signing", "algorithms": ["mldsa44", "ed25519"] },
+        "ka": { "purpose": "keyAgreement", "algorithms": ["x25519"] },
+    })))
+    .expect("a v2 template with a PQC-first signing slot is valid");
+
+    assert_eq!(
+        tpl.key_slots()[SLOT_SIGNING].algorithms,
+        vec!["mldsa44".to_string(), "ed25519".to_string()],
+        "preference order is the declared order, highest first"
+    );
+}
+
+/// The `keys` block is refused on a v1 template rather than silently ignored.
+///
+/// Ignoring it is the dangerous reading: a template that asks for ML-DSA and
+/// gets Ed25519 without complaint is a deployment that believes it is
+/// post-quantum and is not.
+#[test]
+fn a_keys_block_on_a_v1_template_is_refused() {
+    let mut raw = v2_template(json!({
+        "signing": { "purpose": "signing", "algorithms": ["mldsa44"] },
+    }));
+    raw["schemaVersion"] = json!(1);
+
+    let err = DidTemplate::from_json(raw).expect_err("v1 cannot carry a keys block");
+    assert!(
+        err.to_string().contains("schemaVersion"),
+        "the error must name the version, since that is the fix: {err}"
+    );
+}
+
+/// An empty algorithm list is refused rather than read as "anything".
+#[test]
+fn a_slot_naming_no_algorithm_is_refused() {
+    let err = DidTemplate::from_json(v2_template(json!({
+        "signing": { "purpose": "signing", "algorithms": [] },
+    })))
+    .expect_err("an empty preference list is not a preference");
+    assert!(
+        err.to_string().contains("no algorithms"),
+        "unexpected error: {err}"
+    );
+}
+
+/// A signing slot cannot name X25519, and a key-agreement slot cannot name a
+/// signing algorithm.
+///
+/// Caught at validation because the alternative is a DID document that looks
+/// well-formed and whose `keyAgreement` entry nothing can actually use.
+#[test]
+fn a_slot_cannot_name_an_algorithm_that_cannot_serve_its_purpose() {
+    let err = DidTemplate::from_json(v2_template(json!({
+        "signing": { "purpose": "signing", "algorithms": ["x25519"] },
+    })))
+    .expect_err("X25519 cannot sign");
+    assert!(err.to_string().contains("cannot serve"), "got: {err}");
+
+    let err = DidTemplate::from_json(v2_template(json!({
+        "ka": { "purpose": "keyAgreement", "algorithms": ["mldsa44"] },
+    })))
+    .expect_err("ML-DSA cannot agree a key");
+    assert!(err.to_string().contains("cannot serve"), "got: {err}");
+}
+
+/// An algorithm this build does not know is named, not ignored.
+#[test]
+fn an_unknown_algorithm_is_named() {
+    let err = DidTemplate::from_json(v2_template(json!({
+        "signing": { "purpose": "signing", "algorithms": ["falcon512"] },
+    })))
+    .expect_err("an unknown algorithm is refused");
+    assert!(
+        err.to_string().contains("falcon512"),
+        "the error must name the algorithm so the author can fix it: {err}"
+    );
+}
