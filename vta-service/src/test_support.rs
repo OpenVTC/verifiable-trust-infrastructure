@@ -2120,6 +2120,7 @@ impl MockVta {
             &mediator_did,
             ctx.outbox_ks.clone(),
             ctx.relationships_ks.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ctx.state.did_resolver.as_ref(),
             None,
         )

@@ -80,6 +80,7 @@ pub async fn build_messaging(
     mediator_did: &str,
     outbox_ks: KeyspaceHandle,
     relationships_ks: KeyspaceHandle,
+    relationship_drop_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
     did_resolver: Option<&DIDCacheClient>,
     resolver_url: Option<&str>,
 ) -> Result<VtaMessaging, String> {
@@ -113,13 +114,19 @@ pub async fn build_messaging(
     // does not use the keyspace.
     let atm_config_builder = ATMConfig::builder();
     #[cfg(feature = "tsp")]
-    let atm_config_builder = atm_config_builder.with_relationship_store(Arc::new(
-        affinidi_messaging_sdk::PersistentRelationshipStore::new(
-            crate::messaging::tsp_relationship_store::KeyspaceRelationshipKv::new(relationships_ks),
-        ),
-    ));
+    let atm_config_builder = atm_config_builder
+        .with_relationship_store(Arc::new(
+            affinidi_messaging_sdk::PersistentRelationshipStore::new(
+                crate::messaging::tsp_relationship_store::KeyspaceRelationshipKv::new(
+                    relationships_ks,
+                ),
+            ),
+        ))
+        // D8: the gate increments this on every §7.2.2 drop; a startup task
+        // samples it into the telemetry sink (`drop_telemetry_loop`).
+        .with_relationship_drop_counter(relationship_drop_counter.clone());
     #[cfg(not(feature = "tsp"))]
-    let _ = relationships_ks; // consumed only by the `tsp` build above
+    let _ = (relationships_ks, &relationship_drop_counter); // used only by `tsp`
 
     let atm = Arc::new(
         ATM::new(
