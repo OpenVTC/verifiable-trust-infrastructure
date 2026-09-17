@@ -2,6 +2,172 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.31.0...vta-service-v0.32.0) — 2026-09-17
+
+
+### Added
+
+- **tsp**: Surface §7.2.2 relationship-gate drops as telemetry (D8) ([#1536](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1536))
+
+The event that was invisible when the recovery workstream's incident happened — an inbound TSP application message dropped because the VTA holds no relationship with the sender — is now a queryable telemetry event, so a spike is an operational alarm rather than a scatter of error logs (design note tsp-relationship-recovery.md, D8).
+
+  - vti-common: new TelemetryKind::TspRelationshipDropped (BREAKING — the enum is not non_exhaustive; carries a count field). No internal exhaustive match breaks — all sites construct.
+
+  - vta-service build_messaging injects an Arc<AtomicU64> into the ATM via with_relationship_drop_counter (affinidi-messaging-sdk 0.26.7); the SDK gate increments it on every drop.
+
+  - A drop_telemetry_loop spawned ONCE at server startup samples the counter each minute and records a TspRelationshipDropped event with the delta. Spawned beside the eviction sweep, not in build_messaging (which re-runs per reconnect).
+
+  tsp-gated; non-tsp build unaffected. release-plz owns the version bump (the semver-report red is expected for the breaking variant).
+
+- **tsp**: Durable-store maintenance — boot enumerate + idle eviction sweep (D6/D9) ([#1534](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1534))
+
+Wires the D6/D9 SDK cores (affinidi-messaging-sdk 0.26.6) into the VTA:
+
+  - KeyspaceRelationshipKv gains scan_prefix over the keyspace's prefix_iter_raw (keys are plaintext, values decrypted — the invariant the sweep relies on).
+
+  - maintenance_loop logs how many TSP relationships survived a restart (D9 observability) then periodically evicts idle ones (D6/D5, 7-day default).
+
+  - Spawned ONCE at server startup over its own store handle on the relationships keyspace — deliberately NOT in build_messaging, which re-runs per mediator reconnect and would leak a sweep task per reconnect.
+
+  Bumps the sdk lock to 0.26.6 (affinidi/affinidi-tdk-rs#815). tsp-gated; non-tsp build unaffected. Design: docs/05-design-notes/tsp-relationship-recovery.md (D6/D9).
+
+- **keys**: A derived key carries the algorithm it was minted with ([#1532](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1532))
+
+* feat(keys)!: a derived key carries the algorithm it was minted with
+
+  `DerivedEntityKeys` gains `signing_key_type` / `ka_key_type`, and
+  `derive_entity_keys_with_preference` mints the first algorithm a template's
+  `keys` block asks for that this build can produce.
+
+  ## The defect this closes
+
+  Every `save_key_record` call for a signing key passed the algorithm as a
+  literal:
+
+      save_key_record(ks, &vm_ids.signing, &derived.signing_path,
+                      SdkKeyType::Ed25519,        // asserted, not carried
+                      &derived.signing_pub, ...)
+
+  Correct only while nothing else could be minted. The moment a template can ask
+  for ML-DSA, that record names an algorithm the key is not — and a later signing
+  operation reaches for a suite the key cannot work in, failing somewhere far from
+  the place that decided wrongly. Same shape as the verificationMethod
+  mislabelling fixed in #1528, one layer down: a type asserted where it should
+  have been carried.
+
+  The imported-key path reads the type from the stored `KeyRecord` rather than
+  assuming, because for an imported key the record is where the truth about its
+  algorithm lives — assuming Ed25519 there would mislabel an imported ML-DSA key
+  at the one moment the system is being told what it is.
+
+  ## Deviation from the plan, deliberately
+
+  The plan said `DerivedEntityKeys` grows "from two fixed fields to a slot map".
+  Counting the call sites changed the answer: the two slots are used in 53 places,
+  and a map turns every one into a lookup that can fail while *removing* a
+  property that is true and worth holding in the type — a DID document has exactly
+  one signing key and at most one key-agreement key. `slots["signing"]` returning
+  `Option` is a worse description of reality than a field that cannot be absent.
+
+  What the plan was really asking is that a slot's **algorithm** stop being
+  implied, which is what the two new fields do. A third slot — two signing keys at
+  once, for hybrid credentials — has no consumer until Phase 3, and an empty map
+  now would be a mechanism with no users, the thing this plan criticises elsewhere
+  about `sign_multi`. The reasoning is recorded on the struct.
+
+  ## Preference semantics
+
+  An algorithm this build cannot mint is **skipped**, not refused — that is what a
+  fallback is for, and refusing would make `["mldsa44", "ed25519"]` useless on a
+  VTA without post-quantum support. Running out is an error naming what was asked
+  for, never a quiet downgrade to Ed25519: the quiet downgrade is the whole
+  hazard, because a deployment meant to be post-quantum would ship classical keys
+  and nothing would say so.
+
+  The key-agreement slot takes no preference. X25519 is the only algorithm that
+  can serve it in a DID document; ML-KEM key agreement is TSP's hybrid KEM, not a
+  verification method.
+
+  ## Breaking
+
+  `DerivedEntityKeys` gains two fields, so struct literals no longer compile —
+  two in `vta-service`, fixed here.
+
+  Three tests. The one that matters asserts the recorded type and the actual key
+  **agree**, and was checked for non-vacuity by making them diverge: it fails with
+  "signing_key_type says ML-DSA-44 but the key is 34 bytes".
+
+- **tsp**: Persist TSP relationship state across restarts ([#1531](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1531))
+
+* feat(tsp): persist TSP relationship state across restarts
+
+  Rev 3 §7.2.2 has an endpoint silently drop application traffic from a VID it holds no relationship with. Every VTA ATM::new builds ATMConfig::builder().build() with no relationship store, so it gets the SDK's in-memory default — wiped on restart. A restarted VTA therefore forgets every TSP peer and drops their traffic until each re-handshakes, with no visible error (the failure that started this workstream).
+
+  This injects a durable RelationshipStore backed by an encrypted fjall keyspace:
+
+  - vta-keyspaces: a 'relationships' keyspace, added to ALL, EXCLUDED_FROM_BACKUP (re-establishable and DID-scoped, like sessions) and classified Cascade for DID deletion (protocol state keyed by the VID, like cache/outbox). Both census tests pass.
+
+  - KeyspaceRelationshipKv (messaging/tsp_relationship_store.rs): a RelationshipKv over one KeyspaceHandle. Encryption-at-rest is uniform — the handle is opened via the same apply_encryption(store.keyspace(..)) as every other keyspace.
+
+  - build_messaging (the long-lived TSP listener) injects PersistentRelationshipStore over that adapter via with_relationship_store, #[cfg(feature = tsp)]. The keyspace is opened beside outbox_ks in server.rs and threaded through MessagingConnect; both build_messaging callers pass it.
+
+  Blocked on an affinidi-messaging-sdk release carrying the durable-store types (RelationshipKv, PersistentRelationshipStore) — affinidi/affinidi-tdk-rs#814. cargo check -p vta-service --features tsp fails on exactly those two symbols; everything else type-checks. Draft until that release lands. Design: docs/05-design-notes/tsp-relationship-recovery.md.
+
+- **did-templates**: A template declares which algorithms its keys use ([#1530](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1530))
+
+`schemaVersion` 2 adds a `keys` block: each slot says what it is for and which
+  algorithms are acceptable, most preferred first.
+
+      "keys": {
+        "signing": { "purpose": "signing", "algorithms": ["mldsa44", "ed25519"] },
+        "ka":      { "purpose": "keyAgreement", "algorithms": ["x25519"] }
+      }
+
+  A list rather than one algorithm because a fleet does not migrate atomically:
+  this says *mint ML-DSA-44 if this VTA can, otherwise Ed25519*, so one template
+  serves a VTA with post-quantum support and one without, and stops being a
+  fallback the day the fleet finishes upgrading.
+
+  ## v1 is v2 with the historical keys block
+
+  The idea the whole change rests on. A `schemaVersion` 1 template has no `keys`
+  block and is not thereby key-less — it means the pair this stack has always
+  minted, which is exactly what its `{SIGNING_KEY_MB}` and `{KA_KEY_MB}`
+  placeholders refer to. `DidTemplate::key_slots()` returns that, so a v1 and a v2
+  template take one code path and raising `SCHEMA_VERSION_MAX` cannot change how a
+  v1 template renders. A test asserts every built-in still declares exactly the
+  Ed25519/X25519 pair, and fails by name when the default is perturbed.
+
+  The slot-to-placeholder rule is mechanical — `{SLOT_UPPERCASE}_KEY_MB` — and was
+  chosen so `signing` and `ka` produce the two names v1 already uses rather than
+  being special-cased.
+
+  ## What validation refuses, and why each would otherwise be silent
+
+  - **A `keys` block on a v1 template.** Ignoring it means a template asking for
+    ML-DSA gets Ed25519 without complaint — a deployment that believes it is
+    post-quantum and is not.
+  - **An empty algorithm list.** "No preference" would inherit whatever the
+    implementation defaulted to, which is the same failure by another route.
+  - **An algorithm that cannot serve its purpose** (X25519 signing, ML-DSA
+    agreeing). The alternative is a well-formed DID document whose `keyAgreement`
+    entry nothing can use.
+  - **A declared slot the document never publishes.** The key is minted and not
+    published, so every verifier still sees only the classical key while the
+    operator believes otherwise — and a derivation path is consumed forever. This
+    check caught this PR's own test fixture, which is the best argument for it.
+  - **A slot placeholder no slot declares**, which would render as a literal.
+
+  ## Breaking
+
+  `DidTemplate` gains a field, so a struct literal no longer compiles — one
+  conformance fixture in `vta-service`, fixed here. `DidTemplate` is deliberately
+  NOT marked `#[non_exhaustive]`: that would break every external literal
+  permanently to save one in-workspace call site, and templates are authored as
+  JSON rather than built by hand.
+
+
+
 ## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.30.0...vta-service-v0.31.0) — 2026-09-16
 
 

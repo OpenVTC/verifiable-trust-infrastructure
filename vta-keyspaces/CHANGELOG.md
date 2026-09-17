@@ -2,6 +2,29 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.9](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.8...vta-keyspaces-v0.2.9) — 2026-09-17
+
+
+### Added
+
+- **tsp**: Persist TSP relationship state across restarts ([#1531](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1531))
+
+* feat(tsp): persist TSP relationship state across restarts
+
+  Rev 3 §7.2.2 has an endpoint silently drop application traffic from a VID it holds no relationship with. Every VTA ATM::new builds ATMConfig::builder().build() with no relationship store, so it gets the SDK's in-memory default — wiped on restart. A restarted VTA therefore forgets every TSP peer and drops their traffic until each re-handshakes, with no visible error (the failure that started this workstream).
+
+  This injects a durable RelationshipStore backed by an encrypted fjall keyspace:
+
+  - vta-keyspaces: a 'relationships' keyspace, added to ALL, EXCLUDED_FROM_BACKUP (re-establishable and DID-scoped, like sessions) and classified Cascade for DID deletion (protocol state keyed by the VID, like cache/outbox). Both census tests pass.
+
+  - KeyspaceRelationshipKv (messaging/tsp_relationship_store.rs): a RelationshipKv over one KeyspaceHandle. Encryption-at-rest is uniform — the handle is opened via the same apply_encryption(store.keyspace(..)) as every other keyspace.
+
+  - build_messaging (the long-lived TSP listener) injects PersistentRelationshipStore over that adapter via with_relationship_store, #[cfg(feature = tsp)]. The keyspace is opened beside outbox_ks in server.rs and threaded through MessagingConnect; both build_messaging callers pass it.
+
+  Blocked on an affinidi-messaging-sdk release carrying the durable-store types (RelationshipKv, PersistentRelationshipStore) — affinidi/affinidi-tdk-rs#814. cargo check -p vta-service --features tsp fails on exactly those two symbols; everything else type-checks. Draft until that release lands. Design: docs/05-design-notes/tsp-relationship-recovery.md.
+
+
+
 ## [0.2.8](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.7...vta-keyspaces-v0.2.8) — 2026-09-10
 
 

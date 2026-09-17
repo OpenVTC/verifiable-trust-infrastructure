@@ -2,6 +2,79 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.5.2...vta-keys-v0.6.0) — 2026-09-17
+
+
+### Added
+
+- **keys**: A derived key carries the algorithm it was minted with ([#1532](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1532))
+
+* feat(keys)!: a derived key carries the algorithm it was minted with
+
+  `DerivedEntityKeys` gains `signing_key_type` / `ka_key_type`, and
+  `derive_entity_keys_with_preference` mints the first algorithm a template's
+  `keys` block asks for that this build can produce.
+
+  ## The defect this closes
+
+  Every `save_key_record` call for a signing key passed the algorithm as a
+  literal:
+
+      save_key_record(ks, &vm_ids.signing, &derived.signing_path,
+                      SdkKeyType::Ed25519,        // asserted, not carried
+                      &derived.signing_pub, ...)
+
+  Correct only while nothing else could be minted. The moment a template can ask
+  for ML-DSA, that record names an algorithm the key is not — and a later signing
+  operation reaches for a suite the key cannot work in, failing somewhere far from
+  the place that decided wrongly. Same shape as the verificationMethod
+  mislabelling fixed in #1528, one layer down: a type asserted where it should
+  have been carried.
+
+  The imported-key path reads the type from the stored `KeyRecord` rather than
+  assuming, because for an imported key the record is where the truth about its
+  algorithm lives — assuming Ed25519 there would mislabel an imported ML-DSA key
+  at the one moment the system is being told what it is.
+
+  ## Deviation from the plan, deliberately
+
+  The plan said `DerivedEntityKeys` grows "from two fixed fields to a slot map".
+  Counting the call sites changed the answer: the two slots are used in 53 places,
+  and a map turns every one into a lookup that can fail while *removing* a
+  property that is true and worth holding in the type — a DID document has exactly
+  one signing key and at most one key-agreement key. `slots["signing"]` returning
+  `Option` is a worse description of reality than a field that cannot be absent.
+
+  What the plan was really asking is that a slot's **algorithm** stop being
+  implied, which is what the two new fields do. A third slot — two signing keys at
+  once, for hybrid credentials — has no consumer until Phase 3, and an empty map
+  now would be a mechanism with no users, the thing this plan criticises elsewhere
+  about `sign_multi`. The reasoning is recorded on the struct.
+
+  ## Preference semantics
+
+  An algorithm this build cannot mint is **skipped**, not refused — that is what a
+  fallback is for, and refusing would make `["mldsa44", "ed25519"]` useless on a
+  VTA without post-quantum support. Running out is an error naming what was asked
+  for, never a quiet downgrade to Ed25519: the quiet downgrade is the whole
+  hazard, because a deployment meant to be post-quantum would ship classical keys
+  and nothing would say so.
+
+  The key-agreement slot takes no preference. X25519 is the only algorithm that
+  can serve it in a DID document; ML-KEM key agreement is TSP's hybrid KEM, not a
+  verification method.
+
+  ## Breaking
+
+  `DerivedEntityKeys` gains two fields, so struct literals no longer compile —
+  two in `vta-service`, fixed here.
+
+  Three tests. The one that matters asserts the recorded type and the actual key
+  **agree**, and was checked for non-vacuity by making them diverge: it fails with
+  "signing_key_type says ML-DSA-44 but the key is 34 bytes".
+
+
+
 ## [0.5.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.5.1...vta-keys-v0.5.2) — 2026-09-16
 
 
