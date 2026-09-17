@@ -1663,6 +1663,42 @@ pub const TASK_DID_TEMPLATES_GET_2_0: &str =
 pub const TASK_DID_TEMPLATES_UPDATE_2_0: &str =
     "https://trusttasks.org/spec/vta/did-templates/update/2.0";
 
+// ─── did-templates 3.0 ────────────────────────────────────────────────
+//
+// 3.0 differs from 2.0 in exactly one way: its `DidTemplate` comes from
+// `vta/_shared/0.2`, which allows `schemaVersion` 2 and the `keys` block
+// that declares each key slot's algorithms. Everything else — the scope
+// selector, the authorization, the response shape — is unchanged.
+//
+// 2.0 is NOT retired here. It has no defect; it is simply unable to
+// express a post-quantum template, and remains a correct way to manage a
+// v1 one. It is registered in `SUPERSEDED_TASKS` so a 2.0 caller is told
+// its successor and the usage counter can gate removal on an observed
+// zero — the same evidence rule the rest of that table uses, rather than
+// a guessed date. (The 1.0 URIs were cut over instead, because they
+// carried two competing scope hierarchies and keeping them meant keeping
+// the ambiguity.)
+
+/// `spec/vta/did-templates/list/3.0` — as 2.0, but the returned records
+/// may carry a `keys` block.
+pub const TASK_DID_TEMPLATES_LIST_3_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/list/3.0";
+
+/// `spec/vta/did-templates/create/3.0` — as 2.0, but the template may
+/// declare `schemaVersion` 2 and a `keys` block.
+pub const TASK_DID_TEMPLATES_CREATE_3_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/create/3.0";
+
+/// `spec/vta/did-templates/get/3.0` — as 2.0, but the returned record may
+/// carry a `keys` block.
+pub const TASK_DID_TEMPLATES_GET_3_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/get/3.0";
+
+/// `spec/vta/did-templates/update/3.0` — as 2.0, but the template may
+/// declare `schemaVersion` 2 and a `keys` block.
+pub const TASK_DID_TEMPLATES_UPDATE_3_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/update/3.0";
+
 /// `spec/vta/did-templates/delete/2.0` — delete a template from one
 /// scope. Payload:
 /// [`crate::protocols::did_template_management::delete::DeleteDidTemplateBody`].

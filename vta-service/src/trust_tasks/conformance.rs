@@ -2482,6 +2482,89 @@ fn table() -> Vec<(&'static str, Conformance)> {
             }
         }
 
+        /// The `schemaVersion` 2 form, declaring its keys explicitly.
+        ///
+        /// The 3.0 witnesses use **this**, not `template()`. A witness that
+        /// carried a v1 template through the 3.0 URIs would pass while proving
+        /// nothing about the only thing 3.0 exists for — and would keep passing
+        /// if the `keys` block were dropped from the published schema
+        /// altogether.
+        ///
+        /// The document publishes both slots, because validation refuses a
+        /// declared slot whose placeholder never appears (the key would be
+        /// minted and never published).
+        fn template_v2() -> DidTemplate {
+            use std::collections::BTreeMap;
+            use vta_sdk::did_templates::{KeyPurpose, KeySlot};
+
+            DidTemplate {
+                schema_version: 2,
+                name: TPL_NAME.into(),
+                kind: "mediator".into(),
+                description: Some("DIDComm mediator, post-quantum signing".into()),
+                methods: vec!["webvh".into()],
+                required_vars: vec!["SERVICE_ENDPOINT".into()],
+                optional_vars: [("LABEL".to_string(), json!("mediator"))]
+                    .into_iter()
+                    .collect(),
+                defaults: [("preRotationCount".to_string(), json!(2))]
+                    .into_iter()
+                    .collect(),
+                keys: Some(BTreeMap::from([
+                    (
+                        "signing".to_string(),
+                        KeySlot {
+                            purpose: KeyPurpose::Signing,
+                            // PQC-first with a classical fallback — the shape a
+                            // fleet mid-migration needs from one template.
+                            algorithms: vec!["mldsa44".into(), "ed25519".into()],
+                        },
+                    ),
+                    (
+                        "ka".to_string(),
+                        KeySlot {
+                            purpose: KeyPurpose::KeyAgreement,
+                            algorithms: vec!["x25519".into()],
+                        },
+                    ),
+                ])),
+                document: json!({
+                    "id": "{DID}",
+                    "verificationMethod": [
+                        {
+                            "id": "{DID}#signing",
+                            "type": "Multikey",
+                            "controller": "{DID}",
+                            "publicKeyMultibase": "{SIGNING_KEY_MB}",
+                        },
+                        {
+                            "id": "{DID}#ka",
+                            "type": "Multikey",
+                            "controller": "{DID}",
+                            "publicKeyMultibase": "{KA_KEY_MB}",
+                        },
+                    ],
+                    "service": [{
+                        "id": "{DID}#didcomm",
+                        "type": "DIDCommMessaging",
+                        "serviceEndpoint": "{SERVICE_ENDPOINT}",
+                    }],
+                }),
+            }
+        }
+
+        fn record_v2() -> DidTemplateRecord {
+            DidTemplateRecord {
+                template: template_v2(),
+                scope: Scope::Context {
+                    context_id: CTX.into(),
+                },
+                created_at: EPOCH,
+                updated_at: EPOCH,
+                created_by: "did:key:z6MkAdmin".into(),
+            }
+        }
+
         /// The persisted record `create`/`get`/`update` return — the
         /// authored template flattened under the resolved scope and
         /// provenance metadata.
@@ -2622,6 +2705,63 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         template: template(),
                     }),
                     to_v(record())
+                ),
+            ),
+            // ── 3.0: the same four ops carrying a `schemaVersion` 2 template ──
+            //
+            // Each witness uses `template_v2()` / `record_v2()` rather than the
+            // v1 fixtures. That is the point: a 3.0 witness carrying a v1
+            // template would pass while proving nothing about the `keys` block
+            // 3.0 exists to carry, and would go on passing if that block were
+            // removed from the published schema.
+            (
+                uris::TASK_DID_TEMPLATES_LIST_3_0,
+                checked!(
+                    specs::vta::did_templates::list::v3_0::Payload,
+                    specs::vta::did_templates::list::v3_0::Response,
+                    to_v(tpl::list::ListDidTemplatesBody {
+                        context_id: Some(CTX.into()),
+                    }),
+                    to_v(tpl::list::ListDidTemplatesResultBody {
+                        templates: vec![record_v2()],
+                    })
+                ),
+            ),
+            (
+                uris::TASK_DID_TEMPLATES_CREATE_3_0,
+                checked!(
+                    specs::vta::did_templates::create::v3_0::Payload,
+                    specs::vta::did_templates::create::v3_0::Response,
+                    to_v(tpl::create::CreateDidTemplateBody {
+                        context_id: Some(CTX.into()),
+                        template: template_v2(),
+                    }),
+                    to_v(record_v2())
+                ),
+            ),
+            (
+                uris::TASK_DID_TEMPLATES_GET_3_0,
+                checked!(
+                    specs::vta::did_templates::get::v3_0::Payload,
+                    specs::vta::did_templates::get::v3_0::Response,
+                    to_v(tpl::get::GetDidTemplateBody {
+                        context_id: Some(CTX.into()),
+                        name: TPL_NAME.into(),
+                    }),
+                    to_v(record_v2())
+                ),
+            ),
+            (
+                uris::TASK_DID_TEMPLATES_UPDATE_3_0,
+                checked!(
+                    specs::vta::did_templates::update::v3_0::Payload,
+                    specs::vta::did_templates::update::v3_0::Response,
+                    to_v(tpl::update::UpdateDidTemplateBody {
+                        context_id: Some(CTX.into()),
+                        name: TPL_NAME.into(),
+                        template: template_v2(),
+                    }),
+                    to_v(record_v2())
                 ),
             ),
             (

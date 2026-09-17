@@ -656,6 +656,42 @@ pub struct SupersededTask {
 /// counter inside those two handlers, which is its own change.
 #[allow(deprecated)] // names the deprecated 0.1 URIs on purpose — that is the point
 const SUPERSEDED_TASKS: &[SupersededTask] = &[
+    // ── did-templates ───────────────────────────────────────────────────
+    //
+    // 3.0 exists because 2.0's template schema pins `schemaVersion` to
+    // `const: 1` and so cannot express a `keys` block at all. 2.0 has no
+    // defect and stays dispatched: it remains a correct way to manage a v1
+    // template, and the service holds a 2.0 caller to exactly that (see
+    // `did_templates::max_template_schema_version`). These rows are what tell
+    // such a caller where to go, and let removal wait on the usage counter
+    // reaching zero rather than a guessed date.
+    //
+    // `delete` and `render` are absent deliberately — neither carries a
+    // template shape, so neither gained a 3.0.
+    SupersededTask {
+        uri: trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
+        successor: trust_tasks::TASK_DID_TEMPLATES_LIST_3_0,
+        reason: "3.0 returns records that may carry a `keys` block; 2.0's schema cannot \
+                 express one, so a post-quantum template is unreadable through it",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+        successor: trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0,
+        reason: "3.0 accepts a template declaring `schemaVersion` 2 and a `keys` block, \
+                 which names each key slot's algorithms",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+        successor: trust_tasks::TASK_DID_TEMPLATES_GET_3_0,
+        reason: "3.0 returns a record that may carry a `keys` block; 2.0's schema cannot \
+                 express one, so a post-quantum template is unreadable through it",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
+        successor: trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0,
+        reason: "3.0 accepts a template declaring `schemaVersion` 2 and a `keys` block, \
+                 which names each key slot's algorithms",
+    },
     // ── auth ────────────────────────────────────────────────────────────
     SupersededTask {
         uri: trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,

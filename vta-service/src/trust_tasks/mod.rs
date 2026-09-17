@@ -2066,6 +2066,19 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0 => did_templates::handle_render
         [ None Metadata false ],
+    // ─── DID-templates 3.0 — same handlers, wider template schema ──
+    //
+    // Only the four that carry a template shape. `delete` takes a name and
+    // `render` returns a rendered document, so neither is affected by the
+    // `keys` block and neither gained a 3.0 spec.
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_0 => did_templates::handle_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0 => did_templates::handle_create
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_0 => did_templates::handle_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0 => did_templates::handle_update
+        [ Mutating None false ],
     // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
     //
     // Canonical 0.1 only — the pre-spec 1.0 aliases were removed (the browser
