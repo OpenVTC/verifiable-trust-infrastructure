@@ -2,6 +2,186 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.32.0...vta-service-v0.33.0) — 2026-09-17
+
+
+### Added
+
+- **vta-sdk**: A TSP client re-forms a dropped relationship and retries a safe task ([#1544](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1544))
+
+TSP Rev 3 §7.2.2 is symmetric and silent: if the VTA loses its half of a
+  relationship (idle eviction, key rotation, a fresh redeploy) it *drops* the
+  peer's next frame with no reply. A fresh `pnm` process recovers on its own
+  because it re-invites every run ([#1540](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1540)). A client whose relationship store still
+  reads "related" — a long-lived process, or a durable store — never re-invites
+  (`relate` short-circuits on the local state) and just times out, forever.
+
+  This wires the client-side send-path self-repair — the first consumer of
+  `affinidi-messaging-sdk`'s `reset_relationship` in this workspace, and design
+  note `tsp-relationship-recovery.md`'s D4. `VtaClient::dispatch_trust_task` now
+  treats a TSP reply-timeout as a possible §7.2.2 drop and, across all three leg
+  shapes (pure, multiplexed, separate), re-forms the relationship — reset the
+  local half to `None`, re-invite through the existing `relate` — leaning on D2's
+  reconcile transition so the reset is safe even when the peer had not actually
+  forgotten.
+
+  The resend is gated on `vta_sdk::retry_safety`, because a §7.2.2 drop is
+  indistinguishable from a lost reply and a blind resend is only safe when a second
+  execution does no harm: a `ReadOnly`/`RetrySafe` task is resent once here; a
+  `Keyed`/`KeyedSecret`/unknown task is *healed* (so the next attempt lands) but
+  its resend is left to `VtaClient::idempotent`, the one retry owner that holds a
+  stable key. So this never double-executes a mutation and never stacks a second
+  retry loop on the idempotency one. It is the synchronous, per-call form — a
+  single inline retry, no single-flight/backoff coordinator (that stays for the
+  D6 outbox integration).
+
+- **tsp**: The VTC persists + answers TSP relationships and relates before sending to the registry (Rev 3 §7.2.2) ([#1543](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1543))
+
+The VTC is a server like the VTA, but its TSP was half-wired: it drove the
+  delivery layer yet built the ATM with a bare `ATMConfig::builder().build()`
+  (in-memory relationship store, wiped on restart), its `handle_tsp` had no
+  relationship-control answering arm, and `MessagingRegistryClient` sent Trust
+  Tasks to the trust-registry with a plain `send_routed` and no relationship. So
+  the registry §7.2.2-dropped every frame ("no relationship with ...trust-registry"),
+  and a VTC restart would have dropped the registry's replies too.
+
+  Bring the VTC to VTA parity:
+
+    - Lift the durable relationship-store adapter (`KeyspaceRelationshipKv` +
+      `maintenance_loop`) out of `vta-service` into a shared, feature-gated
+      `vti_common::relationship_store`, alongside `VtiOutboxStore`. `vta-service`
+      now re-exports it and keeps only its VTA-specific §7.2.2 drop telemetry.
+    - Inject the store into the VTC ATM (`with_relationship_store`) over a new
+      `tsp_relationships` keyspace — distinct from the VTC's social-graph
+      `relationships`, and excluded from backup (transport state). Spawn the
+      boot-enumerate + idle-eviction maintenance loop once at startup.
+    - `handle_tsp` now answers `InboundKind::RelationshipControl` via a
+      `decide_control` policy (accept an invite, record an accept, answer a
+      cancel) — the ACL gate stays at the Trust Task layer.
+    - `MessagingRegistryClient` sends over `send_reestablishing`: it forms the
+      relationship (sends an invite) when readiness demands, then sends the
+      payload (§3.6). A `TODO(D4)` marks the reply-timeout reset that belongs at
+      the correlated-reply wait site.
+
+  This is the sender-and-responder half of the same recovery work already landed
+  in `vta-service` and the trust-registry. The `VtaClient`/`SessionStore` Auto
+  path is a different client and was handled separately ([#1540](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1540)).
+
+- **did-templates**: Clients carry a post-quantum template on the task version that can hold it ([#1542](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1542))
+
+The last piece of Phase 2. A `keys` block now travels end to end: authored by an
+  operator, sent on a task version that can express it, accepted by the VTA,
+  minted with the right algorithm, recorded as what it is, published in the
+  document, and read correctly by a verifier.
+
+  ## The task version follows the template version
+
+  `create` and `update` pick their URI from `template.schema_version` rather than
+  always sending 3.0.
+
+  Always sending 3.0 would break this client against every VTA deployed before
+  3.0 existed, for templates those VTAs serve perfectly well. A `schemaVersion` 1
+  template has nothing 2.0 cannot express, so demanding 3.0 buys nothing and costs
+  compatibility. A `schemaVersion` 2 template genuinely cannot travel on 2.0, so
+  demanding 3.0 turns a silent failure into `UnsupportedType` naming the version —
+  and an older VTA could not mint the keys that template asks for either, so the
+  refusal is the correct answer rather than an obstacle.
+
+  Reads go to 3.0 unconditionally, because a 2.0 read now refuses to return a v2
+  record: a client pinned to 2.0 could not see post-quantum templates at all.
+
+  ## A gap #1538 left, closed here
+
+  That PR's ceiling guarded what a caller could SEND and not what the service
+  would RETURN. A `schemaVersion` 2 template fetched through a 2.0 read came back
+  carrying a `keys` block, under a response schema that pins `schemaVersion` to
+  `const: 1` and sets `additionalProperties: false` — the caller received a
+  document its own specification says cannot exist.
+
+  `list` refuses the whole listing rather than filtering. Quietly dropping v2
+  templates would be worse than an error: an operator would see a list with the
+  post-quantum templates missing and conclude they had never been created.
+
+  ## Censuses, again
+
+  `retry_safety` required the new URIs classified, and `ALL_URIS` required them
+  registered before a classification was allowed to name them. Both are
+  mechanical; recording them because the pair together is what stops a URI being
+  served, retried or classified without the other two knowing.
+
+  One e2e test failed correctly: its scripted responder answered `list/2.0` while
+  the client had moved to 3.0, so it returned `no handler`. Moved, with a note —
+  a future reader hitting that should find the reason rather than assume the
+  responder is broken.
+
+  Workspace and VTC suites clean; clippy clean under `-D warnings`; rustfmt clean.
+
+- **did-templates**: The VTA accepts did-templates 3.0 alongside 2.0 ([#1538](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1538))
+
+Registers `create`, `update`, `get` and `list` at 3.0 — the versions whose
+  template schema can carry a `keys` block — and bumps `trust-tasks-rs` to 0.21.3,
+  which is the release that publishes them.
+
+  `delete` and `render` are deliberately absent. Neither carries a template shape,
+  so neither gained a 3.0.
+
+  ## Not a cutover, and not an ad-hoc dual-accept
+
+  This surface's precedent is a clean cutover: the twelve 1.0 URIs were dropped in
+  the change that introduced 2.0. That was right there — 1.0 carried two competing
+  scope hierarchies, so keeping it meant keeping the ambiguity.
+
+  It is wrong here. 2.0 has no defect; it simply cannot express a post-quantum
+  template, and remains a correct way to manage a v1 one. A cutover would force
+  every client to update in lockstep with the VTA for no safety gain.
+
+  So this uses the mechanism the repository already has for exactly this:
+  `SUPERSEDED_TASKS`. Both versions dispatch, a 2.0 response carries
+  `supersededBy` so the caller learns where to go, and the usage counter lets
+  removal wait on an observed zero rather than a guessed date. `every_dual_accepted_spec_marks_its_older_forms_superseded`
+  already enforces the invariant I was otherwise about to assert by hand.
+
+  ## The ceiling, which is the part nothing else would catch
+
+  `parse_payload` is plain serde on a hand-rolled body type — there is no
+  per-version schema validation at runtime, so the task URI is the ONLY thing
+  carrying the spec version. Once 2.0 and 3.0 reach one handler they are
+  indistinguishable inside it, and a 2.0 caller could send a `schemaVersion` 2
+  template with a `keys` block that `vta/_shared/0.1` forbids by pinning
+  `schemaVersion` to `const: 1`.
+
+  That would leave this service quietly more permissive than the specification it
+  publishes, and nothing would notice: the conformance fixtures check payload
+  shapes, not which URI dispatched them.
+
+  So the handler reads its own dispatching URI and holds the template to what that
+  version can express. An unrecognised version gets the NARROW ceiling — defaulting
+  permissive would mean a future version silently accepting templates it never
+  promised to, invisibly.
+
+  ## Three things the conformance census caught
+
+  Worth recording, because each would have shipped:
+
+  1. **Serving 3.0 URIs against a registry that did not know them.** VTI pinned
+     `trust-tasks-rs` 0.21.1; the 3.0 specs are in 0.21.3.
+  2. **A made-up spec URI in my own test fixture** — twice, including the bare
+     stem, because the produced-URI census greps source for spec-URI literals. It
+     is now derived from `TASK_DID_TEMPLATES_CREATE_3_0` by stripping the version,
+     so no literal exists and the test survives the URI moving.
+  3. **Four dispatched URIs with no witness.**
+
+  On the third: the new witnesses carry a `schemaVersion` 2 template, not the
+  existing v1 fixture. A 3.0 witness carrying a v1 template would pass while
+  proving nothing about the `keys` block 3.0 exists for — and would keep passing if
+  that block were dropped from the published schema. The fixture publishes both key
+  slots, so it also exercises the rule that a declared slot whose placeholder never
+  appears is refused.
+
+  Workspace and VTC suites clean; clippy clean under `-D warnings`; rustfmt clean.
+
+
+
 ## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.31.0...vta-service-v0.32.0) — 2026-09-17
 
 

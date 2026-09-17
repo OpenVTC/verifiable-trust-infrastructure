@@ -2,6 +2,45 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.19.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.19.0...vti-common-v0.19.1) — 2026-09-17
+
+
+### Added
+
+- **tsp**: The VTC persists + answers TSP relationships and relates before sending to the registry (Rev 3 §7.2.2) ([#1543](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1543))
+
+The VTC is a server like the VTA, but its TSP was half-wired: it drove the
+  delivery layer yet built the ATM with a bare `ATMConfig::builder().build()`
+  (in-memory relationship store, wiped on restart), its `handle_tsp` had no
+  relationship-control answering arm, and `MessagingRegistryClient` sent Trust
+  Tasks to the trust-registry with a plain `send_routed` and no relationship. So
+  the registry §7.2.2-dropped every frame ("no relationship with ...trust-registry"),
+  and a VTC restart would have dropped the registry's replies too.
+
+  Bring the VTC to VTA parity:
+
+    - Lift the durable relationship-store adapter (`KeyspaceRelationshipKv` +
+      `maintenance_loop`) out of `vta-service` into a shared, feature-gated
+      `vti_common::relationship_store`, alongside `VtiOutboxStore`. `vta-service`
+      now re-exports it and keeps only its VTA-specific §7.2.2 drop telemetry.
+    - Inject the store into the VTC ATM (`with_relationship_store`) over a new
+      `tsp_relationships` keyspace — distinct from the VTC's social-graph
+      `relationships`, and excluded from backup (transport state). Spawn the
+      boot-enumerate + idle-eviction maintenance loop once at startup.
+    - `handle_tsp` now answers `InboundKind::RelationshipControl` via a
+      `decide_control` policy (accept an invite, record an accept, answer a
+      cancel) — the ACL gate stays at the Trust Task layer.
+    - `MessagingRegistryClient` sends over `send_reestablishing`: it forms the
+      relationship (sends an invite) when readiness demands, then sends the
+      payload (§3.6). A `TODO(D4)` marks the reply-timeout reset that belongs at
+      the correlated-reply wait site.
+
+  This is the sender-and-responder half of the same recovery work already landed
+  in `vta-service` and the trust-registry. The `VtaClient`/`SessionStore` Auto
+  path is a different client and was handled separately ([#1540](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1540)).
+
+
+
 ## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.18.9...vti-common-v0.19.0) — 2026-09-17
 
 
