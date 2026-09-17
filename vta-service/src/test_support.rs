@@ -1879,6 +1879,10 @@ struct MockVtaTransports {
     /// mediator permits one socket per DID, and an abandoned one keeps
     /// auto-reconnecting (vta-sdk #830).
     atm: Arc<affinidi_tdk::messaging::ATM>,
+    /// The VTA's own messaging profile — the handle a TSP relationship op needs
+    /// alongside the ATM. Held so a test can reach the VTA-side relationship
+    /// store (see [`MockVta::forget_tsp_relationship`]).
+    profile: Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
 }
 
 impl MockVta {
@@ -2127,6 +2131,7 @@ impl MockVta {
         .await
         .expect("build VTA messaging over the test mediator");
         let atm = messaging.atm.clone();
+        let messaging_profile = messaging.profile.clone();
 
         // Publish the wiring, exactly as `server::MessagingConnect::connect_once`
         // does. Without this the harness was receive-only: the inbound loop ran,
@@ -2163,8 +2168,28 @@ impl MockVta {
             shutdown,
             loop_handle: Some(loop_handle),
             atm,
+            profile: messaging_profile,
         });
         mock
+    }
+
+    /// Test seam: make the VTA **forget** its TSP relationship with `peer_did`,
+    /// resetting its local half to `None` as if the relationship had been
+    /// idle-evicted or lost to a redeploy. The peer still believes it is
+    /// related, so its next Trust Task is dropped at the VTA's §7.2.2 gate with
+    /// no reply — which is exactly the D4 "self-repair on drop" scenario. Pairs
+    /// with `VtaClient`'s reply-timeout self-repair.
+    #[cfg(feature = "transport-harness")]
+    pub async fn forget_tsp_relationship(&self, peer_did: &str) {
+        let t = self
+            .transports
+            .as_ref()
+            .expect("forget_tsp_relationship() requires start_with_transports()");
+        t.atm
+            .tsp()
+            .reset_relationship(&t.profile, peer_did)
+            .await
+            .expect("reset the VTA-side TSP relationship");
     }
 
     /// The embedded mediator's DID — both advertised services route through it.

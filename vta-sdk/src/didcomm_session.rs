@@ -994,6 +994,29 @@ impl DIDCommSession {
             .map_err(|e| VtaError::TspTransport(format!("TSP relationship failed: {e}")))
     }
 
+    /// Force-re-form the TSP relationship after a reply-timeout that may be a
+    /// §7.2.2 silent drop: reset the local half to `None` (clearing thread
+    /// digests), then re-invite. [`relate_tsp`](Self::relate_tsp) short-circuits
+    /// when the local state already admits, so a stale `Bidirectional` the peer
+    /// has since forgotten would never re-invite without this reset —
+    /// `SendInvite` is a valid transition only from `None`.
+    ///
+    /// Safe against a false positive: if the peer *did* keep the relationship,
+    /// the fresh invite arrives over its live one and the D2 reconcile
+    /// transition has it re-accept rather than error. Design note
+    /// `tsp-relationship-recovery.md`, D4.
+    pub async fn force_relate_tsp(&self, recipient_did: &str) -> Result<(), VtaError> {
+        self.tsp
+            .atm
+            .tsp()
+            .reset_relationship(&self.tsp.profile, recipient_did)
+            .await
+            .map_err(|e| {
+                VtaError::TspTransport(format!("could not reset the TSP relationship: {e}"))
+            })?;
+        self.relate_tsp(recipient_did).await
+    }
+
     pub async fn send_tsp_document(
         &self,
         recipient_did: &str,
@@ -1117,7 +1140,8 @@ impl DIDCommSession {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return Err(format!(
-                    "timed out waiting for the TSP reply to request '{request_id}'"
+                    "{} to request '{request_id}'",
+                    crate::error::TSP_REPLY_TIMEOUT_PREFIX
                 ));
             }
 
@@ -1151,7 +1175,8 @@ impl DIDCommSession {
 
                 () = tokio::time::sleep(remaining) => {
                     return Err(format!(
-                        "timed out waiting for the TSP reply to request '{request_id}'"
+                        "{} to request '{request_id}'",
+                        crate::error::TSP_REPLY_TIMEOUT_PREFIX
                     ));
                 }
             }
