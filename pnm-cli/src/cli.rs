@@ -2838,7 +2838,8 @@ pub(crate) enum KeyCommands {
     /// identical arguments). Use `pnm keys list` to discover existing keys
     /// in a context first if you're trying to avoid duplicates.
     Create {
-        /// Key type: ed25519, x25519, or p256
+        /// Key type: ed25519, x25519, p256, mldsa44 or mldsa65 (the last two are
+        /// post-quantum signing, FIPS 204)
         #[arg(long)]
         key_type: String,
         /// BIP-32 derivation path (auto-derived from context if omitted)
@@ -2870,7 +2871,8 @@ pub(crate) enum KeyCommands {
     },
     /// Import an externally-created private key
     Import {
-        /// Key type: ed25519, x25519, or p256
+        /// Key type: ed25519, x25519, or p256 (post-quantum keys cannot be
+        /// imported — use `keys create` to have the VTA derive one)
         #[arg(long)]
         key_type: String,
         /// Multibase-encoded private key

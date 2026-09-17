@@ -27,6 +27,82 @@ pub enum KeyType {
     MlDsa65,
 }
 
+/// Which of the two independent quantum-resistance questions a key answers, and
+/// how.
+///
+/// # Why two axes and not one label
+///
+/// "Is this system post-quantum?" has no single answer, and answering it as
+/// though it did is the failure mode worth designing against. **Signature
+/// resistance and confidentiality resistance are separate facts**, they migrate
+/// on different timetables, and today the second is false almost everywhere:
+/// an identity can sign with ML-DSA-44 while still agreeing keys with X25519.
+///
+/// Collapsing that into one badge produces a claim that is wrong in the
+/// direction that matters. A reader shown "post-quantum" for an identity whose
+/// key agreement is classical has been told its recorded traffic is safe from
+/// harvest-now-decrypt-later, which it is not. The console's own `NamedDid`
+/// states the principle for a different case in the same words: being told it
+/// **is** would be a lie.
+///
+/// So a renderer shows both axes or names the one it is showing. A key answers
+/// exactly one of them — the axis is decided by what the algorithm can do — and
+/// [`KeyType::posture`] returns that answer for a single key. Describing a whole
+/// identity means asking every key it publishes, and saying so per axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuantumPosture {
+    /// Signs, and a cryptographically relevant quantum computer does not break
+    /// it (FIPS 204 ML-DSA).
+    PostQuantumSigning,
+    /// Signs, and Shor's algorithm breaks it.
+    ClassicalSigning,
+    /// Agrees a shared secret, and Shor's algorithm breaks it.
+    ///
+    /// There is deliberately no post-quantum counterpart here yet: the hybrid
+    /// KEM this stack uses for confidentiality (MLKEM768-X25519) lives in the
+    /// TSP transport, not in a DID document's verification methods, so no
+    /// `KeyType` a DID publishes can currently answer this axis in the
+    /// affirmative. A variant added before that is true would let a renderer
+    /// claim something nothing can yet do.
+    ClassicalKeyAgreement,
+}
+
+impl QuantumPosture {
+    /// A short phrase for an operator-facing surface, naming the **axis** as
+    /// well as the answer so it cannot be read as a claim about the other one.
+    pub fn label(&self) -> &'static str {
+        match self {
+            QuantumPosture::PostQuantumSigning => "post-quantum signing",
+            QuantumPosture::ClassicalSigning => "classical signing",
+            QuantumPosture::ClassicalKeyAgreement => "classical key agreement",
+        }
+    }
+
+    /// Whether this posture is quantum-resistant **on its own axis**.
+    ///
+    /// Never sufficient on its own to describe an identity: a `true` here says
+    /// nothing about key agreement.
+    pub fn is_quantum_resistant(&self) -> bool {
+        matches!(self, QuantumPosture::PostQuantumSigning)
+    }
+}
+
+impl KeyType {
+    /// Which axis this key answers, and how. See [`QuantumPosture`].
+    pub fn posture(&self) -> QuantumPosture {
+        match self {
+            KeyType::Ed25519 | KeyType::P256 => QuantumPosture::ClassicalSigning,
+            KeyType::X25519 => QuantumPosture::ClassicalKeyAgreement,
+            KeyType::MlDsa44 | KeyType::MlDsa65 => QuantumPosture::PostQuantumSigning,
+            // No wildcard: `#[non_exhaustive]` binds other crates, not this one.
+            // A new key type must state its axis rather than inherit a default,
+            // because the default that would be chosen ("classical") is a claim
+            // about security, and the wrong one for the next PQC algorithm
+            // added.
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -320,5 +396,61 @@ mod tests {
     fn the_two_ml_dsa_parameter_sets_are_distinct() {
         assert_ne!(KeyType::MlDsa44, KeyType::MlDsa65);
         assert_ne!(KeyType::MlDsa44.to_string(), KeyType::MlDsa65.to_string());
+    }
+}
+
+#[cfg(test)]
+mod posture_tests {
+    use super::{KeyType, QuantumPosture};
+
+    /// Every key type answers exactly one axis, and the answer is right.
+    ///
+    /// Pinned as a table because the mapping is a security claim: an entry that
+    /// drifts does not fail anything at compile time, it just tells an operator
+    /// their classical key is post-quantum.
+    #[test]
+    fn each_key_type_answers_the_axis_it_can() {
+        for (key_type, expected) in [
+            (KeyType::Ed25519, QuantumPosture::ClassicalSigning),
+            (KeyType::P256, QuantumPosture::ClassicalSigning),
+            (KeyType::X25519, QuantumPosture::ClassicalKeyAgreement),
+            (KeyType::MlDsa44, QuantumPosture::PostQuantumSigning),
+            (KeyType::MlDsa65, QuantumPosture::PostQuantumSigning),
+        ] {
+            assert_eq!(key_type.posture(), expected, "{key_type:?}");
+        }
+    }
+
+    /// Only the ML-DSA types are quantum-resistant, and X25519 in particular is
+    /// not — it is the key-agreement half that makes "is this identity
+    /// post-quantum?" unanswerable with one word.
+    #[test]
+    fn only_ml_dsa_is_quantum_resistant() {
+        assert!(KeyType::MlDsa44.posture().is_quantum_resistant());
+        assert!(KeyType::MlDsa65.posture().is_quantum_resistant());
+        assert!(!KeyType::Ed25519.posture().is_quantum_resistant());
+        assert!(!KeyType::P256.posture().is_quantum_resistant());
+        assert!(!KeyType::X25519.posture().is_quantum_resistant());
+    }
+
+    /// Every label names its axis.
+    ///
+    /// A bare "post-quantum" would be read as a claim about the identity, and
+    /// for an identity signing with ML-DSA over X25519 key agreement that claim
+    /// is false in the direction that matters — it says recorded traffic is safe
+    /// from harvest-now-decrypt-later when it is not.
+    #[test]
+    fn every_label_names_its_axis() {
+        for posture in [
+            QuantumPosture::PostQuantumSigning,
+            QuantumPosture::ClassicalSigning,
+            QuantumPosture::ClassicalKeyAgreement,
+        ] {
+            let label = posture.label();
+            assert!(
+                label.contains("signing") || label.contains("key agreement"),
+                "'{label}' does not say which axis it is about"
+            );
+        }
     }
 }
