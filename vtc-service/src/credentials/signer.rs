@@ -157,14 +157,31 @@ impl LocalSigner {
             .proof
             .as_ref()
             .ok_or_else(|| AppError::Validation("VC has no proof to verify".into()))?;
-        let proof: DataIntegrityProof = serde_json::from_value(proof_value.clone())
+        // A proof *set*, because a hybrid credential carries several — one per
+        // suite — and reading only the first would make the check depend on
+        // which order the issuer happened to emit them in.
+        let proofs = super::proof_set::proof_set(proof_value)
             .map_err(|e| AppError::Validation(format!("parse VC proof: {e}")))?;
 
         let mut vc_without_proof = vc.clone();
         vc_without_proof.proof = None;
 
-        proof
-            .verify_with_public_key(&vc_without_proof, self.public_bytes(), VerifyOptions::new())
+        let outcomes: Vec<(String, Result<(), String>)> = proofs
+            .iter()
+            .map(|proof| {
+                let did = super::proof_set::proof_signer_did(proof).to_string();
+                let r = proof
+                    .verify_with_public_key(
+                        &vc_without_proof,
+                        self.public_bytes(),
+                        VerifyOptions::new(),
+                    )
+                    .map_err(|e| e.to_string());
+                (did, r)
+            })
+            .collect();
+
+        super::proof_set::accept_any(&outcomes)
             .map_err(|e| AppError::Forbidden(format!("verify VC: {e}")))?;
         Ok(())
     }
