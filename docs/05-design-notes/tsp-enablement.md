@@ -394,7 +394,8 @@ Behind the existing seams only:
   `send_routed(our_vid, final_vid = member_did, intermediaries = [member_mediator_did],
   payload)`. The inner is sealed end-to-end to the member; the outer routing hop is sealed
   to the mediator VID (whose `TSPTransport` URL is the actual delivery target). `send_nested`
-  adds metadata-private wrapping where wanted.
+  adds metadata-private wrapping where wanted — but **only across a mediator boundary**;
+  it is a no-op-that-refuses on the single-mediator reference topology (see §7.2).
 - For a **TSP→DIDComm-only peer**, use the upstream **opaque-carry bridge** (SDD D3): the
   inner blob is a DIDComm `forward` to the final recipient, carried opaque inside TSP to
   the bridge mediator; content stays E2E, the bridge sees only routing metadata.
@@ -441,6 +442,39 @@ mediator-DID convention work, and the constraints to honour when building routes
 3. VTI's capability layer (§3) still branches DID-vs-URL when reading a peer `#tsp`:
    a DID → use as `route[0]` intermediary; a URL → a directly-reachable Direct-Mode
    peer (the reference-impl shape). Both are valid inputs.
+
+### 7.2 Nesting is cross-mediator-only — verified against the send seams (2026-09-17)
+
+`send_nested`'s metadata privacy is realised **only** when the recipient sits behind a
+*different* mediator from the sender's. Confirmed empirically: flipping the
+single-intermediary seam to `atm.tsp().send_nested_routed(route = [mediator], to_did =
+recipient, payload)` and running `tsp_round_trip` fails at pack time with
+**`"a routed message requires at least one onward hop"`**. `send_nested_routed` requires a
+route of **≥2 hops** (`[our_mediator, recipient_mediator]`), because the privacy it buys is
+"an intermediary *before* the recipient's mediator never learns the recipient." On one
+shared mediator there are no such earlier intermediaries — there is nothing to hide, and
+the API rightly refuses it. This is the same conclusion
+`tsp-vs-didcomm-trust-task-surface.md` reached from first principles: **the
+metadata-privacy benefit is multi-hop-only.** (The earlier "smallest increment: flip
+single-mediator seams to `send_nested`" framing is therefore wrong — recorded here so it
+is not retried.)
+
+Consequences for the send-seam work:
+
+- The **single-mediator reference topology** (every current seam, every test) stays on
+  `send_routed(&[mediator, recipient])`. It cannot nest and gains nothing by trying.
+- The real increment is **topology-aware**: at the send seam, resolve the peer's mediator
+  DID (already exposed as `ResolvedVta::tsp_mediator_did`, §3.1); when it differs from our
+  own mediator, build `route = [our_mediator, peer_mediator]` and call
+  `send_nested_routed(route, recipient, payload)` — the recipient is then sealed inside the
+  Nested inner and is never a hop our mediator records. When the mediators match, keep
+  `send_routed`.
+- It **must land with a two-mediator test**. A single-mediator test would silently take the
+  `send_routed` branch and prove nothing; the cross-mediator path needs a two-mediator
+  harness (the current `MockVta` embeds one mediator) plus the §7.1 preconditions (the
+  peer's mediator trusts ours as a relay; its own `#tsp` is a URL). Deferred until that
+  topology exists — untested cross-mediator code is the exact anti-pattern the
+  relationship-recovery series was built to avoid.
 
 ---
 
