@@ -231,6 +231,25 @@ impl DidTemplate {
         ])
     }
 
+    /// The placeholder names this template's key slots occupy.
+    ///
+    /// A slot's public key is substituted by the minting flow from the key it
+    /// actually minted — never by a template author, who has no way to know it.
+    /// That makes these names **ambient**, exactly like `{DID}`: usable in the
+    /// document without being declared, and not declarable as a variable.
+    ///
+    /// The two a v1 template uses are in [`RESERVED_VARS`] already, and this is
+    /// built from [`Self::key_slots`] rather than from a second fixed list, so
+    /// a v2 template declaring a third slot gets the same treatment without its
+    /// name having to be added anywhere. That is the whole point: `slot_var`'s
+    /// rule is mechanical, and before this existed it was mechanical in only
+    /// one direction — a third slot's placeholder was rejected as undeclared,
+    /// and declaring it was worse than being rejected (see
+    /// `validate::check_slot_vars_not_declared`).
+    pub fn slot_vars(&self) -> std::collections::BTreeSet<String> {
+        self.key_slots().keys().map(|s| Self::slot_var(s)).collect()
+    }
+
     /// The placeholder a slot's public key is rendered into.
     ///
     /// `signing` -> `SIGNING_KEY_MB`, `ka` -> `KA_KEY_MB`. The rule is

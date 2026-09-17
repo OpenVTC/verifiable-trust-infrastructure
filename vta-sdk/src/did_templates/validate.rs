@@ -19,6 +19,7 @@ pub(super) fn validate(tpl: &DidTemplate) -> Result<(), TemplateError> {
     check_kind(&tpl.kind)?;
     check_reserved_vars(tpl)?;
     check_var_overlap(tpl)?;
+    check_slot_vars_not_declared(tpl)?;
     check_document_has_id_placeholder(&tpl.document)?;
     check_placeholders_declared(tpl)?;
     check_key_slots(tpl)?;
@@ -178,6 +179,46 @@ fn check_reserved_vars(tpl: &DidTemplate) -> Result<(), TemplateError> {
     Ok(())
 }
 
+/// A key slot's placeholder must not also be declared as a template variable.
+///
+/// Declaring it is worse than any error it replaces, and the failure is silent
+/// and permanent. `optionalVars` supplies a *default*, and the renderer
+/// substitutes a default for any name the caller did not supply — so a slot var
+/// with a default renders that literal wherever the document publishes the key.
+/// The result is a `verificationMethod` whose `publicKeyMultibase` is the
+/// author's placeholder string, inside `assertionMethod`, written into a
+/// write-once `did:webvh` log that cannot afterwards be corrected.
+///
+/// `check_key_slots` already refuses a slot the document never publishes — the
+/// converse failure, a key minted and thrown away. This is the same failure
+/// wearing the other hat: a key published and never minted. Both exist so that
+/// what the template declares and what the DID document carries cannot come
+/// apart.
+///
+/// For a v1 template this is unreachable: `SIGNING_KEY_MB` and `KA_KEY_MB` are
+/// in [`RESERVED_VARS`], so `check_reserved_vars` — which runs first — refuses
+/// them with `ReservedVar` and that error is unchanged.
+fn check_slot_vars_not_declared(tpl: &DidTemplate) -> Result<(), TemplateError> {
+    let slots = tpl.key_slots();
+    for slot in slots.keys() {
+        let var = DidTemplate::slot_var(slot);
+        let declared_required = tpl.required_vars.contains(&var);
+        let declared_optional = tpl.optional_vars.contains_key(&var);
+        if !declared_required && !declared_optional {
+            continue;
+        }
+        let where_ = if declared_required {
+            "requiredVars"
+        } else {
+            "optionalVars"
+        };
+        return Err(TemplateError::Invalid(format!(
+            "key slot '{slot}' supplies `{{{var}}}`, so `{var}` must not also appear in              {where_}. The minting flow substitutes the key it actually minted; a declared              value shadows it, and the DID document then publishes that literal as a              verification method — in a log that cannot be re-signed. Remove it: a slot's              placeholder needs no declaration."
+        )));
+    }
+    Ok(())
+}
+
 fn check_var_overlap(tpl: &DidTemplate) -> Result<(), TemplateError> {
     let required: HashSet<&str> = tpl.required_vars.iter().map(String::as_str).collect();
     for k in tpl.optional_vars.keys() {
@@ -214,19 +255,44 @@ fn check_placeholders_declared(tpl: &DidTemplate) -> Result<(), TemplateError> {
         .cloned()
         .chain(tpl.optional_vars.keys().cloned())
         .chain(RESERVED_VARS.iter().map(|s| s.to_string()))
+        // A declared key slot's placeholder is ambient — the minting flow
+        // supplies it, so requiring the author to declare it would be asking
+        // them to declare a value they cannot know. For a v1 template these
+        // are `SIGNING_KEY_MB` / `KA_KEY_MB`, already in `RESERVED_VARS`, so
+        // this adds nothing there; it is what lets a v2 template name a third
+        // slot at all.
+        .chain(tpl.slot_vars())
         .collect();
 
     let mut found = HashSet::new();
     walk_placeholders(&tpl.document, &mut found);
 
-    let undeclared: Vec<String> = found.difference(&declared).cloned().collect();
-    if !undeclared.is_empty() {
-        let mut names = undeclared;
-        names.sort();
+    let mut undeclared: Vec<String> = found.difference(&declared).cloned().collect();
+    if undeclared.is_empty() {
+        return Ok(());
+    }
+    undeclared.sort();
+
+    // A name shaped like a key slot's is not a missing variable declaration —
+    // it is a missing *slot*, and the generic advice below would send the
+    // author to declare it, which `check_slot_vars_not_declared` refuses and
+    // which used to publish the declared literal as a verification method.
+    // `check_key_slots` says this properly, but only for a template that has a
+    // `keys` block at all and only after this check has already run, so the
+    // author would read the wrong advice first.
+    if let Some(var) = undeclared.iter().find(|v| v.ends_with("_KEY_MB")) {
+        let slot = var
+            .trim_end_matches("_KEY_MB")
+            .to_ascii_lowercase()
+            .replace('_', "-");
         return Err(TemplateError::Invalid(format!(
-            "undeclared placeholder(s) {{ {} }} in document — add them to requiredVars or optionalVars",
-            names.join(", ")
+            "document uses `{{{var}}}` but no key slot '{slot}' is declared. Declare it in              `keys` (schemaVersion {}+) — not in requiredVars or optionalVars, where a value              would shadow the key the VTA mints.",
+            super::SCHEMA_VERSION_KEYS_BLOCK,
         )));
     }
-    Ok(())
+
+    Err(TemplateError::Invalid(format!(
+        "undeclared placeholder(s) {{ {} }} in document — add them to requiredVars or optionalVars",
+        undeclared.join(", ")
+    )))
 }

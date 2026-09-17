@@ -1630,3 +1630,197 @@ fn an_unknown_algorithm_is_named() {
         "the error must name the algorithm so the author can fix it: {err}"
     );
 }
+
+// ── schemaVersion 2: a key slot beyond the historical pair ───────────────────
+//
+// `slot_var`'s `{SLOT}_KEY_MB` rule was mechanical in one direction only. A
+// template could *declare* a third slot, but the placeholder that slot's rule
+// produces was rejected as undeclared — and the workaround for that rejection
+// published a literal string as a verification method. These pin both halves.
+
+/// A template with a third key slot: post-quantum signing alongside the
+/// classical pair, which is the shape a hybrid-credential issuer needs.
+fn three_slot_template(optional_vars: Value) -> Value {
+    json!({
+        "schemaVersion": 2,
+        "name": "three-slot",
+        "kind": "vtc-host",
+        "requiredVars": [],
+        "optionalVars": optional_vars,
+        "keys": {
+            "signing": { "purpose": "signing",      "algorithms": ["ed25519"] },
+            "ka":      { "purpose": "keyAgreement", "algorithms": ["x25519"] },
+            "pq-signing": { "purpose": "signing",   "algorithms": ["mldsa44"] }
+        },
+        "document": {
+            "id": "{DID}",
+            "verificationMethod": [
+                { "id": "{DID}#key-0", "type": "Multikey", "controller": "{DID}",
+                  "publicKeyMultibase": "{SIGNING_KEY_MB}" },
+                { "id": "{DID}#key-1", "type": "Multikey", "controller": "{DID}",
+                  "publicKeyMultibase": "{KA_KEY_MB}" },
+                { "id": "{DID}#key-2", "type": "Multikey", "controller": "{DID}",
+                  "publicKeyMultibase": "{PQ_SIGNING_KEY_MB}" }
+            ],
+            "assertionMethod": ["{DID}#key-0", "{DID}#key-2"],
+            "keyAgreement": ["{DID}#key-1"]
+        }
+    })
+}
+
+/// The first half: a third slot is expressible at all.
+///
+/// Its placeholder is ambient, like `{DID}` — the minting flow supplies it from
+/// the key it minted, so an author has nothing to declare and no way to know
+/// the value. Before `slot_vars()` fed `check_placeholders_declared`, this
+/// failed with "undeclared placeholder(s) { PQ_SIGNING_KEY_MB }", which is how
+/// a v2 template could declare a post-quantum slot and never be loadable.
+#[test]
+fn a_third_key_slot_needs_no_placeholder_declaration() {
+    let tpl = DidTemplate::from_json(three_slot_template(json!({})))
+        .expect("a declared slot's placeholder is ambient");
+
+    assert_eq!(tpl.key_slots().len(), 3);
+    assert!(
+        tpl.slot_vars().contains("PQ_SIGNING_KEY_MB"),
+        "the slot's ambient name follows `slot_var`, got {:?}",
+        tpl.slot_vars()
+    );
+}
+
+/// The second half, and the defect that mattered: the obvious way round the
+/// rejection above was to declare `PQ_SIGNING_KEY_MB` in `optionalVars`. That
+/// passed validation **and rendered** — publishing the author's default string
+/// as a `publicKeyMultibase` inside `assertionMethod`, into a `did:webvh` log
+/// that is written once and cannot be re-signed.
+///
+/// A key minted and never published is what `check_key_slots` refuses. This is
+/// the converse: a key published and never minted.
+#[test]
+fn a_key_slot_placeholder_cannot_be_given_a_default() {
+    let err = DidTemplate::from_json(three_slot_template(
+        json!({ "PQ_SIGNING_KEY_MB": "PLACEHOLDER-NEVER-SUBSTITUTED" }),
+    ))
+    .expect_err("a slot's placeholder must not be declarable");
+
+    let TemplateError::Invalid(msg) = &err else {
+        panic!("expected Invalid, got {err:?}");
+    };
+    assert!(
+        msg.contains("pq-signing") && msg.contains("optionalVars"),
+        "the error must name the slot and where it was declared: {msg}"
+    );
+}
+
+/// `requiredVars` is the same hole with a different lid — the caller supplies
+/// the value instead of the author, but it still shadows the minted key.
+#[test]
+fn a_key_slot_placeholder_cannot_be_a_required_var() {
+    let mut raw = three_slot_template(json!({}));
+    raw.as_object_mut()
+        .unwrap()
+        .insert("requiredVars".into(), json!(["PQ_SIGNING_KEY_MB"]));
+
+    let err = DidTemplate::from_json(raw).expect_err("a slot's placeholder must not be declarable");
+    let TemplateError::Invalid(msg) = &err else {
+        panic!("expected Invalid, got {err:?}");
+    };
+    assert!(
+        msg.contains("pq-signing") && msg.contains("requiredVars"),
+        "the error must name the slot and where it was declared: {msg}"
+    );
+}
+
+/// With the default route closed, a slot the minting flow has not yet learned
+/// to supply fails **loudly at render** rather than publishing something.
+///
+/// This is the state between this change and the one that wires derivation to
+/// the `keys` block: a third slot is expressible, and a VTA that cannot yet
+/// mint for it refuses to render rather than emitting a document with a hole
+/// in it. `Unresolved` naming the placeholder is the whole safety property.
+#[test]
+fn an_unsupplied_slot_key_is_unresolved_not_defaulted() {
+    let tpl = DidTemplate::from_json(three_slot_template(json!({}))).unwrap();
+
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:abc:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkSigning");
+    vars.insert_string("KA_KEY_MB", "z6LSka");
+    // PQ_SIGNING_KEY_MB deliberately absent — what the VTA does today.
+
+    let err = tpl
+        .render(&vars)
+        .expect_err("an unminted slot must not render");
+    assert!(
+        matches!(&err, TemplateError::Unresolved(names) if names.contains("PQ_SIGNING_KEY_MB")),
+        "expected Unresolved naming the slot placeholder, got {err:?}"
+    );
+}
+
+/// And the positive case: supplied, it renders as the key.
+#[test]
+fn a_supplied_slot_key_renders_into_its_verification_method() {
+    let tpl = DidTemplate::from_json(three_slot_template(json!({}))).unwrap();
+
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:abc:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkSigning");
+    vars.insert_string("KA_KEY_MB", "z6LSka");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqMlDsa44Public");
+
+    let doc = tpl.render(&vars).expect("renders");
+    assert_eq!(
+        doc["verificationMethod"][2]["publicKeyMultibase"],
+        "zPqMlDsa44Public"
+    );
+    // Published where a hybrid issuer needs it: a second assertion method, so
+    // a credential can carry a proof from each key.
+    assert_eq!(doc["assertionMethod"][1], "did:webvh:abc:example.com#key-2");
+}
+
+/// A v1 template's two slot names are in `RESERVED_VARS`, so they are refused
+/// by `check_reserved_vars` — which runs first — with the error it always gave.
+/// Pinning it so the new check cannot quietly take over that case and change
+/// the error type every v1 author sees.
+#[test]
+fn a_v1_slot_var_is_still_refused_as_reserved() {
+    let raw = base_template(json!({ "optionalVars": { "SIGNING_KEY_MB": "z6Mk" } }));
+    let err = DidTemplate::from_json(raw).unwrap_err();
+    assert!(
+        matches!(&err, TemplateError::ReservedVar(v) if v == "SIGNING_KEY_MB"),
+        "expected ReservedVar, got {err:?}"
+    );
+}
+
+/// A slot-shaped placeholder with no slot behind it must be told to declare a
+/// **slot**. The generic "add them to requiredVars or optionalVars" advice
+/// points at exactly what `check_slot_vars_not_declared` refuses — and at what,
+/// before that check existed, published the author's literal as a verification
+/// method. An error that recommends the defect is worse than no error.
+#[test]
+fn a_slot_shaped_placeholder_with_no_slot_is_told_to_declare_a_slot() {
+    let err = DidTemplate::from_json(json!({
+        "schemaVersion": 2,
+        "name": "no-such-slot",
+        "kind": "custom",
+        "keys": { "signing": { "purpose": "signing", "algorithms": ["ed25519"] } },
+        "document": {
+            "id": "{DID}",
+            "verificationMethod": [
+                { "id": "{DID}#key-0", "publicKeyMultibase": "{SIGNING_KEY_MB}" },
+                { "id": "{DID}#key-2", "publicKeyMultibase": "{PQ_SIGNING_KEY_MB}" },
+            ],
+        },
+    }))
+    .expect_err("a slot-shaped placeholder with no slot is refused");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no key slot 'pq-signing' is declared"),
+        "must name the missing slot: {msg}"
+    );
+    assert!(
+        msg.contains("not in requiredVars or optionalVars"),
+        "must steer away from declaring it as a variable: {msg}"
+    );
+}
