@@ -1395,6 +1395,10 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         // transport. A test agent with no registry would dispatch a reply as a
         // request, which is the defect the registry exists to prevent.
         pending_replies: crate::trust_tasks::pending_replies::PendingReplies::new(),
+        #[cfg(feature = "tsp")]
+        tsp_recovery: std::sync::Arc::new(affinidi_messaging_sdk::RecoveryCoordinator::new(
+            affinidi_messaging_sdk::BackoffPolicy::default(),
+        )),
         jwt_keys: Some(jwt_keys.clone()),
         atm: transport.atm.or(opts.atm),
         tee: None,
@@ -2560,6 +2564,109 @@ mod transport_harness_tests {
             sent.is_ok(),
             "the VTA could not put a TSP frame on the wire: {:?}",
             sent.err()
+        );
+
+        mock.shutdown().await;
+    }
+
+    /// A routable-but-silent peer: a `did:key` with a mediator account (so a send
+    /// seals and is accepted for delivery) whose inbox nobody reads, so a Trust
+    /// Task sent to it never gets a reply — the §7.2.2 silent-drop shape a D6
+    /// recovery is meant to detect.
+    fn orphan_did(seed: u8) -> String {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let pk = sk.verifying_key().to_bytes();
+        format!(
+            "did:key:{}",
+            vta_sdk::did_key::ed25519_multibase_pubkey(&pk)
+        )
+    }
+
+    /// D6: a reply-timeout **drives** the coordinator-gated self-repair — the
+    /// stale relationship is reset and re-established — even against a peer that
+    /// never answers.
+    ///
+    /// `acl/grant` is `RetrySafe`, so on the timeout the driver resets and
+    /// re-establishing-resends; the orphan still never answers, so it settles as
+    /// exactly one failed attempt. The point pinned here is that the coordinator
+    /// was consulted and the recovery actually ran — the novel D6 behaviour over
+    /// the client-side per-call self-repair (#1544). A short reply timeout keeps
+    /// the dropped attempt fast.
+    #[tokio::test]
+    async fn d6_drives_recovery_on_a_reply_timeout() {
+        let mock = MockVta::start_with_transports().await;
+        let orphan = orphan_did(0x9a);
+        mock.register_mediator_account(&orphan).await;
+
+        let tsp = crate::operations::outbound::TspSender::from_app_state(&mock.ctx.state)
+            .expect("a mediator-connected VTA has a TSP transport")
+            .with_reply_timeout(std::time::Duration::from_millis(600));
+
+        let framed = vta_sdk::tsp_binding::wrap_envelope(br#"{"probe":true}"#);
+        let out = tsp
+            .recover_for_test(
+                &orphan,
+                "thread-d6-1",
+                &framed,
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+            )
+            .await;
+
+        assert!(
+            out.is_err(),
+            "the orphan never answers, so recovery cannot complete: {out:?}"
+        );
+        assert_eq!(
+            tsp.recovery().metrics().attempts,
+            1,
+            "the coordinator recorded exactly one recovery attempt"
+        );
+
+        mock.shutdown().await;
+    }
+
+    /// D6 single-flight: two concurrent recoveries for the **same** peer coalesce
+    /// onto one attempt — the second gets `InFlight` — so a lost peer is not
+    /// invite-stormed. Both senders share the one coordinator on `AppState`.
+    #[tokio::test]
+    async fn d6_coalesces_concurrent_recoveries() {
+        let mock = MockVta::start_with_transports().await;
+        let orphan = orphan_did(0x9b);
+        mock.register_mediator_account(&orphan).await;
+
+        let mk = || {
+            crate::operations::outbound::TspSender::from_app_state(&mock.ctx.state)
+                .expect("a mediator-connected VTA has a TSP transport")
+                .with_reply_timeout(std::time::Duration::from_millis(800))
+        };
+        let a = mk();
+        let b = mk();
+        let framed = vta_sdk::tsp_binding::wrap_envelope(br#"{"probe":true}"#);
+
+        let (ra, rb) = tokio::join!(
+            a.recover_for_test(
+                &orphan,
+                "t-a",
+                &framed,
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+            ),
+            b.recover_for_test(
+                &orphan,
+                "t-b",
+                &framed,
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+            ),
+        );
+
+        assert!(
+            ra.is_err() && rb.is_err(),
+            "neither recovery can complete against a silent peer"
+        );
+        assert_eq!(
+            a.recovery().metrics().attempts,
+            1,
+            "two concurrent recoveries for one peer coalesce onto a single attempt \
+             (single-flight); a second concurrent send gets InFlight"
         );
 
         mock.shutdown().await;
