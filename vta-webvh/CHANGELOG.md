@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.13](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.2.12...vta-webvh-v0.2.13) — 2026-09-17
+
+
 ## [0.2.12](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.2.11...vta-webvh-v0.2.12) — 2026-09-16
 
 

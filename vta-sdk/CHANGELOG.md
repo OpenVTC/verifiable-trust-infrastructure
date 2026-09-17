@@ -2,6 +2,154 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.42.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.41.1...vta-sdk-v0.42.0) — 2026-09-17
+
+
+### Added
+
+- **keys**: An operator can create a post-quantum key, and see which axis it protects ([#1535](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1535))
+
+Two gaps, one of which made everything upstream unusable in practice.
+
+  ## `keys create` could not make a PQC key
+
+  The VTA has been able to derive ML-DSA-44 and ML-DSA-65 since the BIP-32 work
+  landed, and since the derived key started carrying its own algorithm it records
+  them correctly too. But the CLI matched exactly three strings:
+
+      "ed25519" | "x25519" | "p256" => ..., other => Err("unknown key type")
+
+  So every post-quantum capability in the stack sat behind a front door that could
+  not ask for it. `--key-type mldsa44` now works.
+
+  `keys import` deliberately still refuses them, and says why. The VTA validates
+  imported key material per algorithm and has no ML-DSA checker, so offering it
+  here would take an operator's private key and fail at the far end. The refusal
+  names the gap and points at `keys create`, rather than the generic "expected
+  ed25519, x25519, or p256" — which reads as "no such algorithm" and would send
+  someone looking in the wrong place.
+
+  ## "Is this post-quantum?" has no single answer
+
+  `QuantumPosture` makes that structural rather than a matter of remembering.
+  Signature resistance and confidentiality resistance are separate facts, they
+  migrate on different timetables, and today the second is false almost
+  everywhere: an identity can sign with ML-DSA-44 while still agreeing keys with
+  X25519.
+
+  Collapsing those into one badge is wrong in the direction that matters. A reader
+  shown "post-quantum" for such an identity has been told its recorded traffic is
+  safe from harvest-now-decrypt-later, and it is not. So every label names its
+  axis — `mldsa44 (post-quantum signing)`, `x25519 (classical key agreement)` —
+  and a test holds them to it.
+
+  There is deliberately no `PostQuantumKeyAgreement` variant. Nothing a DID
+  document publishes can answer that axis affirmatively today: the hybrid KEM this
+  stack uses lives in the TSP transport, not in a verification method. Adding the
+  variant before that is true would let a renderer claim something nothing can do.
+
+- **did-templates**: A template declares which algorithms its keys use ([#1530](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1530))
+
+`schemaVersion` 2 adds a `keys` block: each slot says what it is for and which
+  algorithms are acceptable, most preferred first.
+
+      "keys": {
+        "signing": { "purpose": "signing", "algorithms": ["mldsa44", "ed25519"] },
+        "ka":      { "purpose": "keyAgreement", "algorithms": ["x25519"] }
+      }
+
+  A list rather than one algorithm because a fleet does not migrate atomically:
+  this says *mint ML-DSA-44 if this VTA can, otherwise Ed25519*, so one template
+  serves a VTA with post-quantum support and one without, and stops being a
+  fallback the day the fleet finishes upgrading.
+
+  ## v1 is v2 with the historical keys block
+
+  The idea the whole change rests on. A `schemaVersion` 1 template has no `keys`
+  block and is not thereby key-less — it means the pair this stack has always
+  minted, which is exactly what its `{SIGNING_KEY_MB}` and `{KA_KEY_MB}`
+  placeholders refer to. `DidTemplate::key_slots()` returns that, so a v1 and a v2
+  template take one code path and raising `SCHEMA_VERSION_MAX` cannot change how a
+  v1 template renders. A test asserts every built-in still declares exactly the
+  Ed25519/X25519 pair, and fails by name when the default is perturbed.
+
+  The slot-to-placeholder rule is mechanical — `{SLOT_UPPERCASE}_KEY_MB` — and was
+  chosen so `signing` and `ka` produce the two names v1 already uses rather than
+  being special-cased.
+
+  ## What validation refuses, and why each would otherwise be silent
+
+  - **A `keys` block on a v1 template.** Ignoring it means a template asking for
+    ML-DSA gets Ed25519 without complaint — a deployment that believes it is
+    post-quantum and is not.
+  - **An empty algorithm list.** "No preference" would inherit whatever the
+    implementation defaulted to, which is the same failure by another route.
+  - **An algorithm that cannot serve its purpose** (X25519 signing, ML-DSA
+    agreeing). The alternative is a well-formed DID document whose `keyAgreement`
+    entry nothing can use.
+  - **A declared slot the document never publishes.** The key is minted and not
+    published, so every verifier still sees only the classical key while the
+    operator believes otherwise — and a derivation path is consumed forever. This
+    check caught this PR's own test fixture, which is the best argument for it.
+  - **A slot placeholder no slot declares**, which would render as a literal.
+
+  ## Breaking
+
+  `DidTemplate` gains a field, so a struct literal no longer compiles — one
+  conformance fixture in `vta-service`, fixed here. `DidTemplate` is deliberately
+  NOT marked `#[non_exhaustive]`: that would break every external literal
+  permanently to save one in-workspace call site, and templates are authored as
+  JSON rather than built by hand.
+
+
+
+### Fixed
+
+- **proof**: A verification method's key type is read, not assumed ([#1528](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1528))
+
+`TrustTaskVmResolver` ended both of its resolution paths with
+
+      Ok(ResolvedKey::new(KeyType::Ed25519, bytes))
+
+  regardless of what the DID document declared. That was never wrong, because
+  every key this stack minted was Ed25519 — and it stops being true the moment a
+  DID carries an ML-DSA key.
+
+  The failure it produces is the bad kind. A PQC key is not rejected: it is
+  extracted successfully and handed to the verifier **labelled Ed25519**, so
+  "this proof uses a suite I must check differently" presents as "this Ed25519
+  signature does not verify". That points an investigator at the signature, which
+  is fine, rather than at the key, which is not. A hardcoded type cannot be wrong
+  in a way anyone notices until it is wrong in a way nobody can debug.
+
+  `get_public_key_bytes` cannot answer the question — it decodes the multikey and
+  returns the payload, dropping the prefix that names the algorithm — so
+  `declared_key_type` reads the `publicKeyMultibase` and matches its multicodec
+  prefix against `KeyType::multicodec_public()`. That is this workspace's single
+  codec table (VTI#1502), pinned against a named revision of the multicodec
+  registry by affinidi-tdk-rs#798, so a wrong prefix is wrong in exactly one
+  place and a test already says so.
+
+  The match has no wildcard, deliberately. `#[non_exhaustive]` binds other
+  crates, not the one defining the type, and this module is inside it — so adding
+  a `KeyType` variant breaks this match on purpose, and whoever adds a key type
+  is made to say how a verifier should read it rather than having it fall to a
+  default. Defaulting is what caused this.
+
+  ## The VTC half is a message, not a check
+
+  `resolve_verifying_key`'s `[u8; 32]` coercion stays: that path builds an
+  Ed25519 `VerifyingKey` and nothing else will do. What changed is what it says.
+
+  "key is not 32 bytes" names the symptom and hides the cause. The realistic way
+  to reach it is a verification method carrying a post-quantum key — ML-DSA-44 is
+  1312 bytes, ML-DSA-65 is 1952 — and an operator reading "not 32 bytes" has
+  every reason to suspect a truncated or corrupt key and none to suspect the
+  algorithm. It now reports the actual length, names the likely algorithm, and
+  says which path refused it.
+
+
+
 ## [0.41.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.41.0...vta-sdk-v0.41.1) — 2026-09-16
 
 

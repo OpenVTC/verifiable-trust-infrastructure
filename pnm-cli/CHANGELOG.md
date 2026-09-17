@@ -2,6 +2,64 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.17.0...pnm-cli-v0.17.1) — 2026-09-17
+
+
+### Added
+
+- **keys**: An operator can create a post-quantum key, and see which axis it protects ([#1535](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1535))
+
+Two gaps, one of which made everything upstream unusable in practice.
+
+  ## `keys create` could not make a PQC key
+
+  The VTA has been able to derive ML-DSA-44 and ML-DSA-65 since the BIP-32 work
+  landed, and since the derived key started carrying its own algorithm it records
+  them correctly too. But the CLI matched exactly three strings:
+
+      "ed25519" | "x25519" | "p256" => ..., other => Err("unknown key type")
+
+  So every post-quantum capability in the stack sat behind a front door that could
+  not ask for it. `--key-type mldsa44` now works.
+
+  `keys import` deliberately still refuses them, and says why. The VTA validates
+  imported key material per algorithm and has no ML-DSA checker, so offering it
+  here would take an operator's private key and fail at the far end. The refusal
+  names the gap and points at `keys create`, rather than the generic "expected
+  ed25519, x25519, or p256" — which reads as "no such algorithm" and would send
+  someone looking in the wrong place.
+
+  ## "Is this post-quantum?" has no single answer
+
+  `QuantumPosture` makes that structural rather than a matter of remembering.
+  Signature resistance and confidentiality resistance are separate facts, they
+  migrate on different timetables, and today the second is false almost
+  everywhere: an identity can sign with ML-DSA-44 while still agreeing keys with
+  X25519.
+
+  Collapsing those into one badge is wrong in the direction that matters. A reader
+  shown "post-quantum" for such an identity has been told its recorded traffic is
+  safe from harvest-now-decrypt-later, and it is not. So every label names its
+  axis — `mldsa44 (post-quantum signing)`, `x25519 (classical key agreement)` —
+  and a test holds them to it.
+
+  There is deliberately no `PostQuantumKeyAgreement` variant. Nothing a DID
+  document publishes can answer that axis affirmatively today: the hybrid KEM this
+  stack uses lives in the TSP transport, not in a verification method. Adding the
+  variant before that is true would let a renderer claim something nothing can do.
+
+
+
+### Fixed
+
+- **tsp**: Form a relationship before the health Trust-Ping ([#1537](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1537))
+
+The session-identity TSP probe sent the ping application message with no prior relationship, so the VTA correctly dropped it under Rev 3 §7.2.2 ("discarded: no relationship") and the ping timed out — the failure that opened this workstream, still live because the client never invited.
+
+  Call the already-present (but unwired) TspPingSession::relate before the pings. The VTA's answering arm (VTI#1525) accepts the invite, and an invite already admits the messages that follow it (§3.6), so the ping is admitted and the pong returns. relate is idempotent by state read, and on repeat runs the client's fresh invite over the VTA's persisted relationship (VTI#1531) is handled by the D2 reconcile transition (affinidi-tsp 0.2.1). The cold --fresh probe is unchanged (it deliberately tests the relationship-free §3 send via probe_send).
+
+
+
 ## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.16.7...pnm-cli-v0.17.0) — 2026-09-16
 
 

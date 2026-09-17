@@ -2,6 +2,54 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.16.1...cnm-cli-v0.16.2) — 2026-09-17
+
+
+### Added
+
+- **keys**: An operator can create a post-quantum key, and see which axis it protects ([#1535](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1535))
+
+Two gaps, one of which made everything upstream unusable in practice.
+
+  ## `keys create` could not make a PQC key
+
+  The VTA has been able to derive ML-DSA-44 and ML-DSA-65 since the BIP-32 work
+  landed, and since the derived key started carrying its own algorithm it records
+  them correctly too. But the CLI matched exactly three strings:
+
+      "ed25519" | "x25519" | "p256" => ..., other => Err("unknown key type")
+
+  So every post-quantum capability in the stack sat behind a front door that could
+  not ask for it. `--key-type mldsa44` now works.
+
+  `keys import` deliberately still refuses them, and says why. The VTA validates
+  imported key material per algorithm and has no ML-DSA checker, so offering it
+  here would take an operator's private key and fail at the far end. The refusal
+  names the gap and points at `keys create`, rather than the generic "expected
+  ed25519, x25519, or p256" — which reads as "no such algorithm" and would send
+  someone looking in the wrong place.
+
+  ## "Is this post-quantum?" has no single answer
+
+  `QuantumPosture` makes that structural rather than a matter of remembering.
+  Signature resistance and confidentiality resistance are separate facts, they
+  migrate on different timetables, and today the second is false almost
+  everywhere: an identity can sign with ML-DSA-44 while still agreeing keys with
+  X25519.
+
+  Collapsing those into one badge is wrong in the direction that matters. A reader
+  shown "post-quantum" for such an identity has been told its recorded traffic is
+  safe from harvest-now-decrypt-later, and it is not. So every label names its
+  axis — `mldsa44 (post-quantum signing)`, `x25519 (classical key agreement)` —
+  and a test holds them to it.
+
+  There is deliberately no `PostQuantumKeyAgreement` variant. Nothing a DID
+  document publishes can answer that axis affirmatively today: the hybrid KEM this
+  stack uses lives in the TSP transport, not in a verification method. Adding the
+  variant before that is true would let a renderer claim something nothing can do.
+
+
+
 ## [0.16.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.16.0...cnm-cli-v0.16.1) — 2026-09-16
 
 

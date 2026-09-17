@@ -2,6 +2,25 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.18.9...vti-common-v0.19.0) — 2026-09-17
+
+
+### Added
+
+- **tsp**: Surface §7.2.2 relationship-gate drops as telemetry (D8) ([#1536](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1536))
+
+The event that was invisible when the recovery workstream's incident happened — an inbound TSP application message dropped because the VTA holds no relationship with the sender — is now a queryable telemetry event, so a spike is an operational alarm rather than a scatter of error logs (design note tsp-relationship-recovery.md, D8).
+
+  - vti-common: new TelemetryKind::TspRelationshipDropped (BREAKING — the enum is not non_exhaustive; carries a count field). No internal exhaustive match breaks — all sites construct.
+
+  - vta-service build_messaging injects an Arc<AtomicU64> into the ATM via with_relationship_drop_counter (affinidi-messaging-sdk 0.26.7); the SDK gate increments it on every drop.
+
+  - A drop_telemetry_loop spawned ONCE at server startup samples the counter each minute and records a TspRelationshipDropped event with the delta. Spawned beside the eviction sweep, not in build_messaging (which re-runs per reconnect).
+
+  tsp-gated; non-tsp build unaffected. release-plz owns the version bump (the semver-report red is expected for the breaking variant).
+
+
+
 ## [0.18.9](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.18.8...vti-common-v0.18.9) — 2026-09-16
 
 
