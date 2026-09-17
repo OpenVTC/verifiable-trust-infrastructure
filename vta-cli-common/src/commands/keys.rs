@@ -9,6 +9,24 @@ use vta_sdk::prelude::*;
 use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
 
 #[allow(clippy::too_many_arguments)]
+/// Render a key type with the quantum-resistance axis it answers.
+///
+/// Says which axis, always. "post-quantum" alone would invite the reading that
+/// the *identity* is post-quantum, and an identity that signs with ML-DSA while
+/// agreeing keys with X25519 is not — its recorded traffic is still exposed to
+/// harvest-now-decrypt-later. An operator reading a key row should come away
+/// knowing one fact about one key, not a conclusion about a system.
+///
+/// See [`vta_sdk::keys::QuantumPosture`] for why the two axes are never
+/// collapsed.
+fn key_type_with_posture(key_type: &KeyType) -> String {
+    let rendered = serde_json::to_value(key_type)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("{key_type:?}"));
+    format!("{rendered} ({})", key_type.posture().label())
+}
+
 pub async fn cmd_key_create(
     client: &VtaClient,
     key_type: &str,
@@ -23,10 +41,16 @@ pub async fn cmd_key_create(
         "ed25519" => KeyType::Ed25519,
         "x25519" => KeyType::X25519,
         "p256" => KeyType::P256,
+        // Post-quantum signing (FIPS 204). The VTA has been able to derive
+        // these since the BIP-32 work landed; this match was the only thing
+        // standing between an operator and a PQC key.
+        "mldsa44" => KeyType::MlDsa44,
+        "mldsa65" => KeyType::MlDsa65,
         other => {
-            return Err(
-                format!("unknown key type '{other}', expected ed25519, x25519, or p256").into(),
-            );
+            return Err(format!(
+                "unknown key type '{other}', expected ed25519, x25519, p256, mldsa44 or mldsa65"
+            )
+            .into());
         }
     };
     // An internal key is the one thing this CLI can create that cannot be
@@ -87,7 +111,10 @@ pub async fn cmd_key_create(
     let resp = client.create_key(req).await?;
     println!("Key created:");
     println!("  Key ID:          {}", resp.key_id);
-    println!("  Key Type:        {}", resp.key_type);
+    println!(
+        "  Key Type:        {}",
+        key_type_with_posture(&resp.key_type)
+    );
     println!("  Derivation Path: {}", resp.derivation_path);
     println!("  Public Key:      {}", resp.public_key);
     println!("  Status:          {}", resp.status);
@@ -119,6 +146,21 @@ pub async fn cmd_key_import(
         "ed25519" => KeyType::Ed25519,
         "x25519" => KeyType::X25519,
         "p256" => KeyType::P256,
+        // Deliberately NOT offered here, though `keys create` accepts them.
+        // The VTA's import path validates a supplied private key against its
+        // algorithm and refuses any type it cannot check, ML-DSA included —
+        // offering it here would take the operator's key material and fail at
+        // the far end. Named explicitly so the refusal reads as "not supported
+        // yet" rather than "no such algorithm", which is what the generic
+        // message would imply.
+        "mldsa44" | "mldsa65" => {
+            return Err(format!(
+                "importing a post-quantum key ('{key_type}') is not supported yet — the VTA \
+                 validates imported key material per algorithm and has no checker for ML-DSA. \
+                 Use `keys create --type {key_type}` to have the VTA derive one instead."
+            )
+            .into());
+        }
         other => {
             return Err(
                 format!("unknown key type '{other}', expected ed25519, x25519, or p256").into(),
@@ -173,7 +215,7 @@ pub async fn cmd_key_import(
 
     println!("Key imported successfully:");
     println!("  Key ID:     {}", resp.key_id);
-    println!("  Key Type:   {}", resp.key_type);
+    println!("  Key Type:   {}", key_type_with_posture(&resp.key_type));
     println!("  Public Key: {}", resp.public_key);
     println!("  Status:     {}", resp.status);
     println!("  Origin:     imported");
@@ -246,13 +288,16 @@ pub async fn cmd_key_get(
     if secret {
         let resp = client.get_key_secret(key_id).await?;
         println!("Key ID:               {}", resp.key_id);
-        println!("Key Type:             {}", resp.key_type);
+        println!(
+            "Key Type:             {}",
+            key_type_with_posture(&resp.key_type)
+        );
         println!("Public Key Multibase: {}", resp.public_key_multibase);
         println!("Secret Key Multibase: {}", resp.private_key_multibase);
     } else {
         let resp = client.get_key(key_id).await?;
         println!("Key ID:          {}", resp.key_id);
-        println!("Key Type:        {}", resp.key_type);
+        println!("Key Type:        {}", key_type_with_posture(&resp.key_type));
         println!("Derivation Path: {}", resp.derivation_path);
         println!("Public Key:      {}", resp.public_key);
         println!("Status:          {}", resp.status);
@@ -528,7 +573,10 @@ pub async fn cmd_key_secrets(
         }
         let resp = client.get_key_secret(key_id).await?;
         println!("Key ID:               {}", resp.key_id);
-        println!("Key Type:             {}", resp.key_type);
+        println!(
+            "Key Type:             {}",
+            key_type_with_posture(&resp.key_type)
+        );
         println!("Public Key Multibase: {}", resp.public_key_multibase);
         println!("Secret Key Multibase: {}", resp.private_key_multibase);
     }
