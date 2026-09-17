@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use affinidi_data_integrity::{DataIntegrityProof, VerificationMethodResolver, VerifyOptions};
+use affinidi_data_integrity::{VerificationMethodResolver, VerifyOptions};
 use affinidi_vc::{SubjectValue, VerifiableCredential};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -409,13 +409,20 @@ async fn verify_invitation_proof(
     let proof_value = vic_json
         .get("proof")
         .ok_or_else(|| forbidden("invitation has no proof".into()))?;
-    let proof: DataIntegrityProof = serde_json::from_value(proof_value.clone())
+    // A proof *set*: a hybrid invitation carries one proof per suite, and this
+    // read used to take the whole block as a single proof — so an array failed
+    // to parse and the invitation was refused as malformed rather than checked.
+    let proofs = crate::credentials::proof_set::proof_set(proof_value)
         .map_err(|e| forbidden(format!("invitation proof did not parse: {e}")))?;
-    let vm = proof_value
-        .get("verificationMethod")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| forbidden("invitation proof missing verificationMethod".into()))?;
-    check_issuer_binding(vm, issuer_did).map_err(|e| forbidden(e.to_string()))?;
+
+    // Every proof must be bound to the issuer, checked BEFORE any signature is
+    // verified. A proof naming someone else is not a failed signature, it is a
+    // document claiming the wrong author, and it must not be reachable by
+    // simply being the one that happens to verify.
+    for proof in &proofs {
+        check_issuer_binding(&proof.verification_method, issuer_did)
+            .map_err(|e| forbidden(e.to_string()))?;
+    }
 
     let mut unsigned = vic_json.clone();
     unsigned
@@ -423,9 +430,17 @@ async fn verify_invitation_proof(
         .ok_or_else(|| forbidden("invitation is not a JSON object".into()))?
         .remove("proof");
 
-    proof
-        .verify(&unsigned, resolver, VerifyOptions::new())
-        .await
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
+    for proof in &proofs {
+        let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
+        let r = proof
+            .verify(&unsigned, resolver, VerifyOptions::new())
+            .await
+            .map_err(|e| e.to_string());
+        outcomes.push((did, r));
+    }
+
+    crate::credentials::proof_set::accept_any(&outcomes)
         .map_err(|e| forbidden(format!("invitation signature did not verify: {e}")))?;
     Ok(())
 }

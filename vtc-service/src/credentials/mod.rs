@@ -54,6 +54,7 @@ pub mod invitation_registry;
 pub mod invitation_verify;
 pub mod lifecycle;
 pub mod present_challenge;
+pub(crate) mod proof_set;
 pub mod signer;
 pub mod task_context;
 pub mod vec;
