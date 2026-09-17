@@ -41,7 +41,24 @@ pub const ASSERTION_KEY_FRAGMENT: &str = "key-0";
 #[derive(Debug, Clone)]
 pub struct LocalSigner {
     issuer_did: String,
-    secret: Secret,
+    /// The signing keys, primary first.
+    ///
+    /// A `Vec` rather than one `Secret` because the post-quantum transition
+    /// wants a credential signed by **every** key the issuer holds — one proof
+    /// per cryptosuite, so a classical verifier and a post-quantum one can each
+    /// check the suite it understands without either needing to know about the
+    /// other.
+    ///
+    /// The first is the primary: it supplies `public_bytes()` and the
+    /// conventional `#key-0` assertion method, so every existing caller sees
+    /// exactly what it saw before.
+    ///
+    /// **This is why the change needs no migration.** A VTC provisioned before
+    /// post-quantum keys existed holds one secret here and emits one proof, in
+    /// the same wire shape as always; one provisioned after holds two and emits
+    /// two. There is no flag to set and no stored bundle to rewrite — the
+    /// number of proofs simply follows the number of keys.
+    secrets: Vec<Secret>,
 }
 
 impl LocalSigner {
@@ -52,7 +69,41 @@ impl LocalSigner {
     /// did the work (e.g. the boot path that read the secret
     /// out of [`affinidi_secrets_resolver::ThreadedSecretsResolver`]).
     pub fn new(issuer_did: String, secret: Secret) -> Self {
-        Self { issuer_did, secret }
+        Self {
+            issuer_did,
+            secrets: vec![secret],
+        }
+    }
+
+    /// Add a second signing key, so every credential this signer issues carries
+    /// a proof from it as well.
+    ///
+    /// Intended for a post-quantum key alongside the classical one. The added
+    /// key's cryptosuite is chosen from its own type, so an ML-DSA-44 secret
+    /// produces an `mldsa44-jcs-2024` proof beside the `eddsa-jcs-2022` one
+    /// without either being named here.
+    ///
+    /// A key whose type has no Data Integrity cryptosuite — ML-DSA-65 and -87,
+    /// which W3C Quantum-Resistant Cryptosuites v1.0 does not define suites for
+    /// — will fail at signing time with a message saying exactly that
+    /// (affinidi-tdk-rs#818), rather than being silently dropped here. Failing
+    /// loudly is right: a key added for post-quantum protection that quietly
+    /// did nothing is the worst outcome available.
+    #[must_use]
+    pub fn with_additional_key(mut self, secret: Secret) -> Self {
+        self.secrets.push(secret);
+        self
+    }
+
+    /// How many keys sign each credential.
+    pub fn key_count(&self) -> usize {
+        self.secrets.len()
+    }
+
+    /// The primary signing key.
+    fn primary(&self) -> &Secret {
+        // Non-empty by construction: every constructor pushes at least one.
+        &self.secrets[0]
     }
 
     /// Construct from 32 raw Ed25519 seed bytes. The resulting
@@ -61,7 +112,42 @@ impl LocalSigner {
     pub fn from_ed25519_seed(issuer_did: String, seed: &[u8; 32]) -> Self {
         let assertion_id = assertion_method_id(&issuer_did);
         let secret = Secret::generate_ed25519(Some(&assertion_id), Some(seed));
-        Self { issuer_did, secret }
+        Self {
+            issuer_did,
+            secrets: vec![secret],
+        }
+    }
+
+    /// Sign `doc` with every key this signer holds and return the value to put
+    /// in its `proof` member.
+    ///
+    /// **One key produces a proof object; several produce an array.** Emitting a
+    /// bare object for the single-key case is deliberate: it is byte-identical
+    /// to what this service has always issued, so a VTC that has not been given
+    /// a post-quantum key changes nothing about its output, and no verifier
+    /// anywhere needs to have been updated first.
+    async fn proof_value_for(
+        &self,
+        doc: &(impl serde::Serialize + Sync),
+    ) -> Result<serde_json::Value, AppError> {
+        let signers: Vec<&dyn affinidi_data_integrity::signer::Signer> = self
+            .secrets
+            .iter()
+            .map(|s| s as &dyn affinidi_data_integrity::signer::Signer)
+            .collect();
+
+        // `sign_multi` is fail-fast and pins one `created` across the batch, so
+        // the proofs on a credential cannot disagree about when it was signed.
+        let proofs = DataIntegrityProof::sign_multi(doc, &signers, SignOptions::new())
+            .await
+            .map_err(|e| AppError::Internal(format!("sign: {e}")))?;
+
+        let value = if proofs.len() == 1 {
+            serde_json::to_value(&proofs[0])
+        } else {
+            serde_json::to_value(&proofs)
+        };
+        value.map_err(|e| AppError::Internal(format!("serialize proof: {e}")))
     }
 
     /// VTC issuer DID — stamped on every credential's `issuer`
@@ -72,14 +158,14 @@ impl LocalSigner {
 
     /// `verificationMethod` URI the proof carries.
     pub fn assertion_method_id(&self) -> &str {
-        &self.secret.id
+        &self.primary().id
     }
 
     /// Bytes-on-the-wire public key, useful to tests that want
     /// to verify a freshly-signed VC without going through the
     /// did resolver.
     pub fn public_bytes(&self) -> &[u8] {
-        self.secret.get_public_bytes()
+        self.primary().get_public_bytes()
     }
 
     /// The raw Ed25519 signing key behind this signer.
@@ -97,7 +183,7 @@ impl LocalSigner {
     ///
     /// `None` if the underlying secret is not a 32-byte Ed25519 key.
     pub fn ed25519_signing_key(&self) -> Option<ed25519_dalek::SigningKey> {
-        let bytes = self.secret.get_private_bytes();
+        let bytes = self.primary().get_private_bytes();
         <[u8; 32]>::try_from(bytes)
             .ok()
             .map(|b| ed25519_dalek::SigningKey::from_bytes(&b))
@@ -110,13 +196,7 @@ impl LocalSigner {
     /// (wrong key type, canonicalisation crash, etc.) rather
     /// than operator input.
     pub async fn sign(&self, vc: &mut VerifiableCredential) -> Result<(), AppError> {
-        let proof = DataIntegrityProof::sign(vc, &self.secret, SignOptions::new())
-            .await
-            .map_err(|e| AppError::Internal(format!("sign VC: {e}")))?;
-        vc.proof = Some(
-            serde_json::to_value(&proof)
-                .map_err(|e| AppError::Internal(format!("serialize VC proof: {e}")))?,
-        );
+        vc.proof = Some(self.proof_value_for(vc).await?);
         Ok(())
     }
 
@@ -135,13 +215,9 @@ impl LocalSigner {
             .as_object_mut()
             .ok_or_else(|| AppError::Internal("credential document is not a JSON object".into()))?;
         obj.remove("proof");
-        let proof = DataIntegrityProof::sign(&*doc, &self.secret, SignOptions::new())
-            .await
-            .map_err(|e| AppError::Internal(format!("sign VC doc: {e}")))?;
-        let proof_value = serde_json::to_value(&proof)
-            .map_err(|e| AppError::Internal(format!("serialize VC doc proof: {e}")))?;
+        let proof_value = self.proof_value_for(&*doc).await?;
         doc.as_object_mut()
-            .expect("doc was an object above")
+            .expect("checked above")
             .insert("proof".into(), proof_value);
         Ok(())
     }
@@ -228,5 +304,116 @@ mod tests {
             assertion_method_id("did:key:zX"),
             "did:key:zX#key-0".to_string()
         );
+    }
+}
+
+#[cfg(test)]
+mod multi_key_tests {
+    use super::*;
+    use affinidi_secrets_resolver::secrets::Secret;
+
+    const DID: &str = "did:webvh:vtc.example.com:multi";
+
+    fn vc() -> serde_json::Value {
+        serde_json::json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "id": "urn:uuid:multi-key-probe",
+            "type": ["VerifiableCredential"],
+            "issuer": DID,
+            "credentialSubject": { "id": "did:example:subject" },
+        })
+    }
+
+    /// **The backward-compatibility guarantee.** One key still emits a bare
+    /// proof object.
+    ///
+    /// This is what makes the change need no migration and no coordinated
+    /// deploy: a VTC that has never been given a post-quantum key issues
+    /// byte-identically to before, so no verifier anywhere had to be updated
+    /// first. If this ever starts emitting a single-element array, every
+    /// existing consumer of a VTC credential is affected at once.
+    #[tokio::test]
+    async fn one_key_emits_a_proof_object_not_an_array() {
+        let signer = LocalSigner::from_ed25519_seed(DID.into(), &[0x11; 32]);
+        assert_eq!(signer.key_count(), 1);
+
+        let mut doc = vc();
+        signer.sign_doc(&mut doc).await.expect("signs");
+
+        let proof = doc.get("proof").expect("proof present");
+        assert!(
+            proof.is_object(),
+            "a single-key signer must emit the historical shape, not a one-element array: {proof}"
+        );
+    }
+
+    /// Two keys emit a proof set — one per key, so a verifier can check the
+    /// suite it understands.
+    #[tokio::test]
+    async fn two_keys_emit_one_proof_each() {
+        let pq = Secret::generate_ml_dsa_44(Some(&format!("{DID}#key-pq")), None);
+        let signer =
+            LocalSigner::from_ed25519_seed(DID.into(), &[0x11; 32]).with_additional_key(pq);
+        assert_eq!(signer.key_count(), 2);
+
+        let mut doc = vc();
+        signer.sign_doc(&mut doc).await.expect("signs with both");
+
+        let proofs = doc
+            .get("proof")
+            .and_then(|p| p.as_array())
+            .expect("two keys produce an array");
+        assert_eq!(proofs.len(), 2);
+
+        // Each key picks its own suite from its own type — neither is named at
+        // the call site, which is what lets a fleet add a post-quantum key
+        // without touching issuance code.
+        let suites: Vec<&str> = proofs
+            .iter()
+            .filter_map(|p| p.get("cryptosuite").and_then(|s| s.as_str()))
+            .collect();
+        assert!(suites.contains(&"eddsa-jcs-2022"), "suites: {suites:?}");
+        assert!(suites.contains(&"mldsa44-jcs-2024"), "suites: {suites:?}");
+    }
+
+    /// The proofs on one credential agree about when it was signed.
+    ///
+    /// `sign_multi` pins `created` once for the batch. Without that the first
+    /// proof could carry t0 and the second t0+ms, which is a gift to anyone
+    /// diffing two proofs that are supposed to describe one signing event.
+    #[tokio::test]
+    async fn every_proof_carries_the_same_created() {
+        let pq = Secret::generate_ml_dsa_44(Some(&format!("{DID}#key-pq")), None);
+        let signer =
+            LocalSigner::from_ed25519_seed(DID.into(), &[0x11; 32]).with_additional_key(pq);
+
+        let mut doc = vc();
+        signer.sign_doc(&mut doc).await.expect("signs");
+
+        let proofs = doc.get("proof").and_then(|p| p.as_array()).expect("array");
+        let created: Vec<&str> = proofs
+            .iter()
+            .filter_map(|p| p.get("created").and_then(|c| c.as_str()))
+            .collect();
+        assert_eq!(created.len(), 2);
+        assert_eq!(created[0], created[1], "one signing event, one timestamp");
+    }
+
+    /// A hybrid credential verifies — the round trip this whole phase is for.
+    #[tokio::test]
+    async fn a_two_key_credential_verifies() {
+        let pq = Secret::generate_ml_dsa_44(Some(&format!("{DID}#key-pq")), None);
+        let signer =
+            LocalSigner::from_ed25519_seed(DID.into(), &[0x11; 32]).with_additional_key(pq);
+
+        let mut vc: VerifiableCredential =
+            serde_json::from_value(vc()).expect("fixture is a credential");
+        signer.sign(&mut vc).await.expect("signs");
+
+        // `verify` checks against the PRIMARY key's public bytes, so this also
+        // pins that a proof set does not have to be verifiable in its entirety
+        // by one verifier — RequireAny is the rule, and the classical half is
+        // what this caller can check.
+        signer.verify(&vc).expect("the Ed25519 proof verifies");
     }
 }
