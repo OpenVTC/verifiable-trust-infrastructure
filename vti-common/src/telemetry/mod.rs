@@ -81,6 +81,13 @@ impl TelemetryEvent {
 pub enum TelemetryKind {
     DidcommInbound,
     DidcommResponseDropped,
+    /// An inbound TSP application message dropped by the Rev 3 §7.2.2
+    /// relationship gate — the sender holds a relationship this endpoint has
+    /// lost (a restart onto a fresh store, or a peer we never related with).
+    /// Carries a `count` field: the number dropped since the previous event.
+    /// A rising count is the "peers are arriving whose relationship we lost"
+    /// alarm (design note `tsp-relationship-recovery.md`, D8).
+    TspRelationshipDropped,
     MediatorHandshakeOk,
     MediatorHandshakeFailed,
     MediatorHandshakeBypassed,

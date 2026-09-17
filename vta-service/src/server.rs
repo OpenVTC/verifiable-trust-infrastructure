@@ -1170,12 +1170,17 @@ pub async fn run(
                     let outbox_ks = apply_encryption(store.keyspace(crate::keyspaces::OUTBOX)?);
                     let relationships_ks =
                         apply_encryption(store.keyspace(crate::keyspaces::RELATIONSHIPS)?);
+                    // D8: counter the SDK gate increments on every §7.2.2 drop.
+                    // Created here so build_messaging can inject it into the ATM
+                    // and a startup task can sample it into telemetry.
+                    let relationship_drop_counter =
+                        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
                     // D6/D9: durable-store maintenance — enumerate surviving
                     // relationships on boot, then periodically sweep idle ones.
-                    // Spawned ONCE here at startup, over its own store handle on
-                    // the same keyspace — not in `build_messaging`, which re-runs
-                    // on every mediator reconnect and would leak a sweep per
-                    // reconnect.
+                    // D8: sample the drop counter into the telemetry sink.
+                    // Both spawned ONCE here at startup, over their own handles —
+                    // not in `build_messaging`, which re-runs on every mediator
+                    // reconnect and would leak a task per reconnect.
                     #[cfg(feature = "tsp")]
                     {
                         let sweep_store = std::sync::Arc::new(
@@ -1188,6 +1193,12 @@ pub async fn run(
                         tokio::spawn(crate::messaging::tsp_relationship_store::maintenance_loop(
                             sweep_store,
                         ));
+                        tokio::spawn(
+                            crate::messaging::tsp_relationship_store::drop_telemetry_loop(
+                                relationship_drop_counter.clone(),
+                                app_state.telemetry.clone(),
+                            ),
+                        );
                     }
                     let supervisor = MessagingConnect {
                         app_state: app_state.clone(),
@@ -1197,6 +1208,7 @@ pub async fn run(
                         resolver_url: config.resolver_url.clone(),
                         outbox_ks,
                         relationships_ks,
+                        relationship_drop_counter,
                         flush_queues,
                         shutdown: didcomm_shutdown.clone(),
                         fatal_shutdown: shutdown_tx.clone(),
@@ -2162,6 +2174,7 @@ struct MessagingConnect {
     resolver_url: Option<String>,
     outbox_ks: KeyspaceHandle,
     relationships_ks: KeyspaceHandle,
+    relationship_drop_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
     flush_queues: bool,
     shutdown: CancellationToken,
     /// Brings the whole process down when the readiness gate's `fail` policy
@@ -2402,6 +2415,7 @@ impl MessagingConnect {
                 &messaging_config.mediator_did,
                 self.outbox_ks.clone(),
                 self.relationships_ks.clone(),
+                self.relationship_drop_counter.clone(),
                 app_state.did_resolver.as_ref(),
                 self.resolver_url.as_deref(),
             )
