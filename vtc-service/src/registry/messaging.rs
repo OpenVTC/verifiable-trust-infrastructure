@@ -397,10 +397,22 @@ impl MessagingRegistryClient {
         // through the same profile the pickup socket is bound to — no second
         // websocket (the mediator permits one per DID).
         let route = vec![messaging.mediator_did.clone(), self.registry_did.clone()];
+        // Recovery-aware send (Rev 3 §7.2.2). The registry drops an application
+        // frame from a VID it holds no relationship with, so a bare send is
+        // silently discarded on first contact — or after the registry restarts
+        // and forgets its half. `send_reestablishing` forms the relationship
+        // (sends an invite) when readiness says we must; the payload rides after
+        // it (§3.6) rather than waiting for the accept. Idempotent once related.
+        //
+        // TODO(D4): on a *reply* timeout (a silent §7.2.2 drop on the peer looks
+        // exactly like a lost network round-trip), the caller's correlated-reply
+        // waiter should `reset_relationship` and retry through here, so a stale
+        // local half re-invites. Wired at the wait site, not here, where there is
+        // no reply to time out.
         messaging
             .atm
             .tsp()
-            .send_routed(&messaging.profile, &route, &body)
+            .send_reestablishing(&messaging.profile, &self.registry_did, &route, &body)
             .await
             .map_err(|e| RegistryError::Unreachable(format!("TSP send failed: {e}")))?;
         Ok(())

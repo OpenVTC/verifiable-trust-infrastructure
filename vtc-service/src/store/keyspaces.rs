@@ -73,6 +73,12 @@ pub const INVITATIONS: &str = "invitations";
 /// `Guaranteed` sends so delivery-critical work survives a restart.
 /// Ephemeral, re-driven from live state — excluded from backup.
 pub const OUTBOX: &str = "outbox";
+
+/// Durable TSP relationship state (`vti_common::relationship_store`) — the Rev 3
+/// §7.2.2 recovery store, keyed and serialised by the SDK. Transport state, not
+/// community data: excluded from backup, like [`OUTBOX`]. Distinct from
+/// [`RELATIONSHIPS`], which is the community's social graph.
+pub const TSP_RELATIONSHIPS: &str = "tsp_relationships";
 /// Vetting statement withdrawal notices (`vtc/vetting/revoke-statement/0.1`):
 /// one row per (issuer, statement id, statement digest), written when a vetter
 /// withdraws a statement and read whenever presented statements are counted.
@@ -102,6 +108,7 @@ pub const ALL: &[&str] = &[
     SYNC_CURSOR,
     RELATIONSHIPS,
     RELATIONSHIPS_BY_DID,
+    TSP_RELATIONSHIPS,
     ENDORSEMENT_TYPES,
     SCHEMAS,
     ENDORSEMENTS,
@@ -180,6 +187,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // Delivery-layer outbox — re-driven from live state; a restore must not
     // resurrect stale in-flight sends.
     OUTBOX,
+    // TSP relationship state is transport recovery state, local to this
+    // deployment's mediator socket — a restore into a different environment
+    // must not resurrect handshakes; peers re-relate on demand.
+    TSP_RELATIONSHIPS,
 ];
 
 #[cfg(test)]
@@ -191,7 +202,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 30, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 31, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

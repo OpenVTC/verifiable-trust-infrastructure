@@ -40,6 +40,7 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
 |---------|---------|
 | `encryption` | AES-256-GCM encryption for `KeyspaceHandle.with_encryption()` |
 | `vsock-store` | `VsockStore` + `VsockKeyspaceHandle` (Linux only — requires `tokio-vsock`) |
+| `tsp` | `relationship_store` — the durable TSP relationship store (`KeyspaceRelationshipKv` + `maintenance_loop`) shared by the VTA and VTC for Rev 3 §7.2.2 recovery. Pulls `affinidi-messaging-sdk`, so only the TSP-speaking services enable it. |
 
 ## Key modules
 

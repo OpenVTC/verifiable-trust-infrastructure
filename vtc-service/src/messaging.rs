@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-use affinidi_messaging_core::{Inbound, MessageTransport, Protocol};
+use affinidi_messaging_core::{Inbound, InboundKind, MessageTransport, Protocol};
 use affinidi_messaging_delivery::{Delivery, MessagingService, OutboxStore};
 use affinidi_messaging_didcomm::Message;
 use affinidi_tdk::common::TDKSharedState;
@@ -168,6 +168,7 @@ async fn build_messaging(
     vtc_did: &str,
     mediator_did: &str,
     outbox_ks: KeyspaceHandle,
+    tsp_relationships_ks: KeyspaceHandle,
 ) -> Result<(Arc<MessagingService>, Arc<ATM>, Arc<ATMProfile>), String> {
     let tdk = TDKSharedState::new(
         TDKConfig::builder()
@@ -180,8 +181,21 @@ async fn build_messaging(
         tdk.secrets_resolver().insert(secret).await;
     }
 
+    // Persist TSP relationship state in the `tsp_relationships` keyspace so it
+    // survives a restart. Without it a restarted VTC forgets every peer and — by
+    // Rev 3 §7.2.2 — silently drops their traffic (and its own replies) until
+    // each re-handshakes. Only the `tsp` build has a relationship store to
+    // configure; the shared adapter lives in `vti_common::relationship_store`.
+    let atm_config_builder = ATMConfig::builder();
+    #[cfg(feature = "tsp")]
+    let atm_config_builder = atm_config_builder.with_relationship_store(
+        vti_common::relationship_store::build_relationship_store(tsp_relationships_ks.clone()),
+    );
+    #[cfg(not(feature = "tsp"))]
+    let _ = &tsp_relationships_ks; // consumed only by the `tsp` build above
+
     let atm = ATM::new(
-        ATMConfig::builder()
+        atm_config_builder
             .build()
             .map_err(|e| format!("build ATM config: {e}"))?,
         Arc::new(tdk),
@@ -376,15 +390,32 @@ pub async fn run_didcomm_service(
         "starting VTC messaging listener"
     );
 
-    let (service, atm, profile) =
-        match build_messaging(secrets, vtc_did, &mediator_did, state.outbox_ks.clone()).await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("failed to start VTC messaging: {e}");
-                let _ = shutdown_rx.changed().await;
-                return;
-            }
-        };
+    let (service, atm, profile) = match build_messaging(
+        secrets,
+        vtc_did,
+        &mediator_did,
+        state.outbox_ks.clone(),
+        state.tsp_relationships_ks.clone(),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("failed to start VTC messaging: {e}");
+            let _ = shutdown_rx.changed().await;
+            return;
+        }
+    };
+
+    // Boot-enumerate the durable TSP relationships (D9) and sweep idle ones
+    // (D6). Spawned once, here — not in `build_messaging` — so it does not
+    // depend on the mediator socket and cannot leak a task per reconnect.
+    #[cfg(feature = "tsp")]
+    tokio::spawn(vti_common::relationship_store::maintenance_loop(
+        vti_common::relationship_store::build_relationship_store(
+            state.tsp_relationships_ks.clone(),
+        ),
+    ));
 
     // Publish the handle so any VTC component can send to a member over this
     // one connection (`AppState::send_to_member`). Set-once; it persists across
@@ -594,6 +625,30 @@ async fn handle_tsp(
         return;
     };
 
+    // A relationship request is not traffic: it carries no envelope, and the
+    // transport has already RECORDED it (which is what admits the application
+    // messages that follow, Rev 3 §7.2.2). What is left is the answer, and that
+    // is this VTC's — it must not reach the Trust-Task spine, which would answer
+    // a valid control message with "this is not a Trust Task".
+    if let InboundKind::RelationshipControl {
+        request,
+        thread_digest,
+        reply_expected,
+        ..
+    } = inbound.kind
+    {
+        handle_tsp_control(
+            &messaging.atm,
+            &messaging.profile,
+            &sender_vid,
+            request,
+            thread_digest,
+            reply_expected,
+        )
+        .await;
+        return;
+    }
+
     // A reply to a task *we* sent (a trust-registry record write, say) arrives
     // on this socket like any other frame. Complete its waiter instead of
     // dispatching it: the spine would answer a `#response` with an
@@ -665,6 +720,152 @@ async fn handle_tsp(
         .await
     {
         warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
+    }
+}
+
+/// What to do about one inbound TSP relationship request.
+#[cfg(feature = "tsp")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ControlDecision {
+    /// Send an accept. The transport has already recorded the relationship;
+    /// this completes it.
+    Accept,
+    /// Send a cancellation, carrying why. Named for the wire action rather than
+    /// the intent, because it serves **answering** a peer's cancellation of a
+    /// mutual relationship (§7.3), not refusing anything.
+    Cancel(&'static str),
+    /// Record only — no reply is due.
+    Nothing,
+}
+
+/// Decide how to answer an inbound TSP relationship request — a pure function,
+/// tested without a socket, mirroring `vta-service`'s. It performs **no ACL
+/// check**: the ACL gate lives at the Trust Task layer.
+#[cfg(feature = "tsp")]
+fn decide_control(
+    request: affinidi_messaging_core::RelationshipRequest,
+    reply_expected: bool,
+) -> ControlDecision {
+    use affinidi_messaging_core::RelationshipRequest;
+    match request {
+        // §7.2.5: an invite may introduce a VID, whose signature the transport
+        // verified before this was reached. Not gated here — the introduced VID
+        // gains a relationship and no authority, and its own tasks meet the same
+        // ACL at the Trust Task layer.
+        RelationshipRequest::Invite => ControlDecision::Accept,
+        // The peer accepted an invite this VTC sent. The transport recorded the
+        // state change; answering an accept would start a loop.
+        RelationshipRequest::Accept => ControlDecision::Nothing,
+        // §7.3: a cancellation for a relationship held in both directions is
+        // answered with one of our own before forgetting it. `reply_expected`
+        // is the transport's reading of that condition, not re-derived here.
+        RelationshipRequest::Cancel => {
+            if reply_expected {
+                ControlDecision::Cancel("the peer cancelled a mutual relationship (§7.3)")
+            } else {
+                ControlDecision::Nothing
+            }
+        }
+        // `RelationshipRequest` is `#[non_exhaustive]`: a request type this build
+        // does not know is one upstream minor release away. Record and say
+        // nothing rather than guess — the transport has already recorded whatever
+        // state change the message implied.
+        _ => ControlDecision::Nothing,
+    }
+}
+
+/// Answer one inbound TSP relationship request (§7.2), or decline to.
+///
+/// Nothing here can fail the listener: a reply that cannot be sent is logged and
+/// dropped, because the alternative is a VTC that stops receiving because one
+/// peer became unreachable mid-answer. The relationship is already recorded, so
+/// traffic still flows even when the answer does not land.
+#[cfg(feature = "tsp")]
+async fn handle_tsp_control(
+    atm: &Arc<ATM>,
+    profile: &Arc<ATMProfile>,
+    sender_vid: &str,
+    request: affinidi_messaging_core::RelationshipRequest,
+    thread_digest: [u8; 32],
+    reply_expected: bool,
+) {
+    match decide_control(request, reply_expected) {
+        ControlDecision::Accept => {
+            match atm
+                .tsp()
+                .accept_relationship(profile, sender_vid, thread_digest)
+                .await
+            {
+                Ok(state) => info!(
+                    sender = %sender_vid, ?request, ?state,
+                    "accepted an inbound TSP relationship request",
+                ),
+                Err(e) => warn!(
+                    sender = %sender_vid, error = %e,
+                    "could not send a TSP relationship accept; the relationship stays recorded, \
+                     so traffic still flows, but the peer sees no answer",
+                ),
+            }
+        }
+        ControlDecision::Cancel(why) => {
+            match atm
+                .tsp()
+                .cancel_relationship(profile, sender_vid, thread_digest)
+                .await
+            {
+                Ok(state) => info!(
+                    sender = %sender_vid, ?request, ?state, reason = %why,
+                    "answered an inbound TSP relationship request with a cancellation",
+                ),
+                Err(e) => warn!(
+                    sender = %sender_vid, reason = %why, error = %e,
+                    "could not send a TSP relationship cancellation",
+                ),
+            }
+        }
+        ControlDecision::Nothing => info!(
+            sender = %sender_vid, ?request,
+            "recorded an inbound TSP relationship request; no answer is due",
+        ),
+    }
+}
+
+#[cfg(all(test, feature = "tsp"))]
+mod tsp_control_tests {
+    use super::{ControlDecision, decide_control};
+    use affinidi_messaging_core::RelationshipRequest;
+
+    #[test]
+    fn an_invite_is_accepted() {
+        assert_eq!(
+            decide_control(RelationshipRequest::Invite, false),
+            ControlDecision::Accept
+        );
+        // `reply_expected` does not change the answer to an invite.
+        assert_eq!(
+            decide_control(RelationshipRequest::Invite, true),
+            ControlDecision::Accept
+        );
+    }
+
+    #[test]
+    fn an_accept_is_recorded_only() {
+        assert_eq!(
+            decide_control(RelationshipRequest::Accept, true),
+            ControlDecision::Nothing
+        );
+    }
+
+    #[test]
+    fn a_cancel_is_answered_only_when_a_reply_is_expected() {
+        assert!(matches!(
+            decide_control(RelationshipRequest::Cancel, true),
+            ControlDecision::Cancel(_)
+        ));
+        assert_eq!(
+            decide_control(RelationshipRequest::Cancel, false),
+            ControlDecision::Nothing
+        );
     }
 }
 

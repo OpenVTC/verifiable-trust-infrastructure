@@ -140,6 +140,10 @@ pub struct AppState {
     /// restart. Opened alongside the other keyspaces and handed to
     /// [`crate::messaging::run_didcomm_service`].
     pub outbox_ks: KeyspaceHandle,
+    /// Durable TSP relationship state ([`vti_common::relationship_store`]) so a
+    /// restart does not §7.2.2-drop every peer's traffic. Injected into the ATM
+    /// by [`crate::messaging::build_messaging`] and swept by its maintenance loop.
+    pub tsp_relationships_ks: KeyspaceHandle,
     /// Single-use ledger for redeemed Invitation Credentials (VICs).
     /// Written when a VIC-driven join is admitted; read at verify
     /// time so a consumed invite can't be replayed.
@@ -482,6 +486,7 @@ pub async fn run(
     let consumed_invitations_ks = store.keyspace(keyspaces::CONSUMED_INVITATIONS)?;
     let invitations_ks = store.keyspace(keyspaces::INVITATIONS)?;
     let outbox_ks = store.keyspace(keyspaces::OUTBOX)?;
+    let tsp_relationships_ks = store.keyspace(keyspaces::TSP_RELATIONSHIPS)?;
 
     // M2.5: install the workspace-shipped default policies for any
     // PolicyPurpose that lacks an active row. Idempotent — operator
@@ -752,6 +757,7 @@ pub async fn run(
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
         outbox_ks,
+        tsp_relationships_ks,
         consumed_invitations_ks,
         invitations_ks,
         registry_client: registry_client.clone(),
