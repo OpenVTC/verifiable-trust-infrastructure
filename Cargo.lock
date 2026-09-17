@@ -496,9 +496,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.26.4"
+version = "0.26.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "962802b3900a4ba365e7470c1393d82342646f5d6ce3352c599fb61d0408e0b5"
+checksum = "3a084da77f2113c6bd42c59079d21befa96d55699cda025f1d58104f709298fc"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -778,9 +778,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-tsp"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32049a0b3373d56d281438370530812d494b4d35d457e8872a979b9dedc0c915"
+checksum = "7fdae229d6b5b9494afa1263d9b43dd905edf5b2460523802e24b5f3ecac1200"
 dependencies = [
  "affinidi-cesr",
  "affinidi-did-common",
