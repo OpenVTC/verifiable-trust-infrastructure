@@ -1026,6 +1026,7 @@ impl SessionStore {
                                 &mut client,
                                 &session.client_did,
                                 &session.private_key,
+                                &vta_did,
                                 &didcomm,
                                 &mediator_did,
                             )
@@ -2088,6 +2089,7 @@ async fn attach_tsp_leg_bounded(
     client: &mut crate::client::VtaClient,
     client_did: &str,
     private_key: &str,
+    vta_did: &str,
     didcomm_mediator_did: &str,
     tsp_mediator_did: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2102,21 +2104,41 @@ async fn attach_tsp_leg_bounded(
     }
     #[cfg(feature = "tsp")]
     {
+        // Attach the leg: multiplexed on the DIDComm socket for the reference
+        // topology, or a separate session when the VTA advertises a distinct TSP
+        // mediator.
         if didcomm_mediator_did == tsp_mediator_did {
             client.enable_tsp_trust_tasks(tsp_mediator_did)?;
-            return Ok(());
+        } else {
+            let timeout = tsp_connect_timeout();
+            let tsp_session = match tokio::time::timeout(
+                timeout,
+                TspSession::connect(client_did, private_key, tsp_mediator_did),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => return Err(tsp_unreachable_error(tsp_mediator_did, timeout).into()),
+            };
+            client.attach_tsp_leg(std::sync::Arc::new(tsp_session), tsp_mediator_did)?;
         }
-        let timeout = tsp_connect_timeout();
-        let tsp_session = match tokio::time::timeout(
-            timeout,
-            TspSession::connect(client_did, private_key, tsp_mediator_did),
-        )
-        .await
-        {
-            Ok(result) => result?,
-            Err(_) => return Err(tsp_unreachable_error(tsp_mediator_did, timeout).into()),
-        };
-        client.attach_tsp_leg(std::sync::Arc::new(tsp_session), tsp_mediator_did)?;
+
+        // §7.2.2: the VTA drops an application message from a VID it holds no
+        // relationship with. This client's relationship store is in-memory and
+        // fresh every process, so the relationship must be formed now — exactly
+        // as `connect_didcomm_with_tsp` does. Attaching the leg without it is
+        // how a Trust Task times out with nothing in either log: the request may
+        // still land (the VTA's *durable* store can remember an earlier
+        // handshake) while the client drops the VTA's reply as "no relationship".
+        //
+        // On failure, revert to a pure DIDComm client so the caller's `Auto`
+        // fallback ("trust tasks stay on DIDComm") is real — a half-attached,
+        // relationship-less leg would keep routing Trust Tasks over TSP and drop
+        // every reply.
+        if let Err(e) = client.relate_trust_task_leg(vta_did).await {
+            client.disable_tsp_trust_tasks().await;
+            return Err(e.into());
+        }
         Ok(())
     }
 }
