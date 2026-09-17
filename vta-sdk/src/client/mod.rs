@@ -1842,6 +1842,22 @@ impl VtaClient {
             .await
     }
 
+    /// After a TSP reply-timeout has re-formed the relationship, whether to
+    /// blind-resend the Trust Task once (`true`) or heal-only (`false`).
+    ///
+    /// A §7.2.2 drop is indistinguishable from a lost reply, so a blind resend
+    /// is safe only when a second execution does no harm — exactly what
+    /// `retry_safety` classifies. A `ReadOnly`/`RetrySafe` task is resent; a
+    /// `Keyed`/`KeyedSecret`/unknown task is left to [`idempotent`](Self::idempotent),
+    /// the one retry owner that holds a stable key, so this never double-executes
+    /// a mutation and never stacks a second retry loop on the idempotency one.
+    ///
+    /// Design note `tsp-relationship-recovery.md`, D4.
+    #[cfg(feature = "tsp")]
+    fn tsp_resend_after_reform(type_uri: &str) -> bool {
+        crate::retry_safety::retry_safety(type_uri).is_some_and(|c| c.is_blind_retry_safe())
+    }
+
     pub async fn dispatch_trust_task(
         &self,
         type_uri: &str,
@@ -1935,16 +1951,29 @@ impl VtaClient {
                 ..
             } => {
                 let body = Self::address_trust_task(doc, session.client_did(), vta_did)?;
-                let reply = session
-                    .request(
-                        vta_did,
-                        mediator_did,
-                        &body,
-                        std::time::Duration::from_secs(timeout),
-                    )
+                let timeout = std::time::Duration::from_secs(timeout);
+                let mut reply = session
+                    .request(vta_did, mediator_did, &body, timeout)
                     .await
-                    .map_err(|e| VtaError::TspTransport(e.to_string()))?;
-                self.finish_reply(Self::decode_trust_task_reply(&reply)?)
+                    .map_err(|e| VtaError::TspTransport(e.to_string()));
+                // §7.2.2 D4 self-repair: a reply-timeout may be a silent drop
+                // from a peer that lost the relationship. Re-form it (safe vs a
+                // false positive via the peer's reconcile transition); resend
+                // once only for a retry-safe task — a keyed one is healed for the
+                // next attempt but its resend is left to `idempotent`'s key.
+                if reply
+                    .as_ref()
+                    .err()
+                    .is_some_and(VtaError::is_tsp_reply_timeout)
+                    && session.force_relate(vta_did).await.is_ok()
+                    && Self::tsp_resend_after_reform(type_uri)
+                {
+                    reply = session
+                        .request(vta_did, mediator_did, &body, timeout)
+                        .await
+                        .map_err(|e| VtaError::TspTransport(e.to_string()));
+                }
+                self.finish_reply(Self::decode_trust_task_reply(&reply?)?)
                     .await
             }
             #[cfg(feature = "session")]
@@ -1964,21 +1993,49 @@ impl VtaClient {
                     let body =
                         Self::address_trust_task(doc, session.client_did(), &session.vta_did)?;
                     let timeout = std::time::Duration::from_secs(timeout);
+                    // §7.2.2 D4 self-repair on each leg shape: a reply-timeout may
+                    // be a silent drop from a peer that lost the relationship.
+                    // Re-form it and, for a retry-safe task, resend once; a keyed
+                    // task is healed but its resend is left to `idempotent`.
                     let reply = match leg {
                         // Rides the DIDComm session's own socket — no second
                         // websocket for this DID (#803).
                         TspLeg::Multiplexed => {
-                            session
-                                .request_tsp(&session.vta_did, &body, timeout)
-                                .await?
+                            let mut reply =
+                                session.request_tsp(&session.vta_did, &body, timeout).await;
+                            if reply
+                                .as_ref()
+                                .err()
+                                .is_some_and(VtaError::is_tsp_reply_timeout)
+                                && session.force_relate_tsp(&session.vta_did).await.is_ok()
+                                && Self::tsp_resend_after_reform(type_uri)
+                            {
+                                reply = session.request_tsp(&session.vta_did, &body, timeout).await;
+                            }
+                            reply?
                         }
                         TspLeg::Separate {
                             session: tsp_session,
                             mediator_did,
-                        } => tsp_session
-                            .request(&session.vta_did, mediator_did, &body, timeout)
-                            .await
-                            .map_err(|e| VtaError::TspTransport(e.to_string()))?,
+                        } => {
+                            let mut reply = tsp_session
+                                .request(&session.vta_did, mediator_did, &body, timeout)
+                                .await
+                                .map_err(|e| VtaError::TspTransport(e.to_string()));
+                            if reply
+                                .as_ref()
+                                .err()
+                                .is_some_and(VtaError::is_tsp_reply_timeout)
+                                && tsp_session.force_relate(&session.vta_did).await.is_ok()
+                                && Self::tsp_resend_after_reform(type_uri)
+                            {
+                                reply = tsp_session
+                                    .request(&session.vta_did, mediator_did, &body, timeout)
+                                    .await
+                                    .map_err(|e| VtaError::TspTransport(e.to_string()));
+                            }
+                            reply?
+                        }
                     };
                     return self
                         .finish_reply(Self::decode_trust_task_reply(&reply)?)

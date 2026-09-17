@@ -5,13 +5,15 @@
 `tsp-rev3-migration.md`); the gating rule this note recovers from is live only
 once `affinidi-tsp` 0.2.0 is in place, and the VTA wiring compiles only once an
 SDK release carries D1–D5. Runtime integration (D6) and hardening (D7–D9) remain.
+Client-side send-path self-repair — the first consumer of `reset_relationship` —
+is now wired into `vta-sdk`'s `VtaClient::dispatch_trust_task` (see D4 below).
 
 | Item | What | Status |
 | --- | --- | --- |
 | D1 | Durable `RelationshipStore` | core in SDK + VTA wiring (gated on SDK publish) |
 | D2 | Idempotent re-establish transition | done in `affinidi-tsp` |
 | D3 | Recovery-aware send readiness | core in SDK |
-| D4 | Bounded, single-flight, jittered recovery | core in SDK |
+| D4 | Bounded, single-flight, jittered recovery | core in SDK; client-side reply-timeout self-repair wired in `vta-sdk` (per-call, no coordinator yet) |
 | D5 | Idle eviction (7-day) | core in SDK |
 | D6 | Single-flight coordinator + eviction sweep + enumerate | core in SDK (`RecoveryCoordinator`, `evict_idle`, `scan_prefix`); service wiring pending |
 | D7 | Inbound-invite rate limit (re-resolve keys / ACL still pending) | limiter core in SDK (`InviteRateLimiter`) |
@@ -308,6 +310,23 @@ send feeds `begin`; a background task holds the per-peer `RecoveryState` behind 
 lock and runs `reset_relationship` → `send_reestablishing` on `Start`) is the
 outbox integration below (D6), kept out of the unit-tested surface exactly as
 the D3 network orchestration was.
+
+**Wired in `vta-sdk` (client-side self-repair) — done.** `VtaClient::dispatch_trust_task`
+is the first consumer of `reset_relationship` in this workspace. On a TSP
+reply-timeout (`VtaError::is_tsp_reply_timeout`) it re-forms the relationship —
+reset the local half to `None`, then re-invite through the existing `relate`,
+leaning on D2's reconcile for the false-positive case — and, for a Trust Task
+classified blind-retry-safe in `vta_sdk::retry_safety`, resends once. A
+`Keyed`/`KeyedSecret`/unknown task is healed but its resend is left to
+`VtaClient::idempotent`, the one retry owner that holds a stable key, so this
+never double-executes a mutation and never stacks a second retry loop on the
+idempotency one. This is the **synchronous, per-call** form — a single inline
+retry across all three TSP leg shapes (pure, multiplexed, separate) via
+`force_relate` / `force_relate_tsp` — so it does not yet use the single-flight /
+backoff `RecoveryState` above; that stays for the outbox integration (D6).
+Regression test: `tests/e2e/tests/tsp_self_repair_on_drop.rs` — a client whose
+VTA has forgotten its half recovers a `RetrySafe` grant in one call (non-vacuous:
+neutering the self-repair reproduces the bare timeout).
 
 ### D5 — Idle eviction (the 7-day cache) — **core prototyped**
 

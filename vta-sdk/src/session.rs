@@ -3307,6 +3307,21 @@ impl TspSession {
         Ok(())
     }
 
+    /// Force-re-form the relationship after a §7.2.2 reply-timeout drop: reset
+    /// the local half to `None`, then re-invite. Mirrors
+    /// [`DIDCommSession::force_relate_tsp`](crate::didcomm_session::DIDCommSession::force_relate_tsp)
+    /// for a separate / standalone TSP session — same D4 rationale, and safe
+    /// against a false positive via the peer's reconcile transition.
+    pub async fn force_relate(&self, peer_did: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.identity
+            .hub
+            .atm()
+            .tsp()
+            .reset_relationship(&self.identity.profile, peer_did)
+            .await?;
+        self.relate(peer_did).await
+    }
+
     pub async fn announce(
         &self,
         vta_did: &str,
@@ -3523,7 +3538,8 @@ impl TspSession {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(format!(
-                    "timed out waiting for the TSP reply to request '{request_id}'"
+                    "{} to request '{request_id}'",
+                    crate::error::TSP_REPLY_TIMEOUT_PREFIX
                 ));
             }
 
@@ -3560,7 +3576,8 @@ impl TspSession {
 
                 () = tokio::time::sleep(remaining) => {
                     return Err(format!(
-                        "timed out waiting for the TSP reply to request '{request_id}'"
+                        "{} to request '{request_id}'",
+                        crate::error::TSP_REPLY_TIMEOUT_PREFIX
                     ));
                 }
             }

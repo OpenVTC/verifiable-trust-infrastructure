@@ -307,7 +307,23 @@ pub enum TypedErrorPayload {
     UnsupportedTransport { detail: String },
 }
 
+/// The message prefix every TSP reply-timeout carries. Shared between the
+/// producers (`DIDCommSession::await_tsp_reply` / `TspSession::await_reply`) and
+/// [`VtaError::is_tsp_reply_timeout`], so the self-repair path recognises a
+/// §7.2.2 silent drop without a brittle literal repeated in three places.
+#[cfg(feature = "tsp")]
+pub(crate) const TSP_REPLY_TIMEOUT_PREFIX: &str = "timed out waiting for the TSP reply";
+
 impl VtaError {
+    /// True for a TSP request that timed out waiting for its reply — the
+    /// signature of a §7.2.2 silent drop (the peer dropped our frame because it
+    /// holds no relationship with us). The self-repair path in
+    /// `dispatch_trust_task` keys on this to re-form the relationship and retry.
+    #[cfg(feature = "tsp")]
+    pub(crate) fn is_tsp_reply_timeout(&self) -> bool {
+        matches!(self, VtaError::TspTransport(msg) if msg.starts_with(TSP_REPLY_TIMEOUT_PREFIX))
+    }
+
     /// Create from an HTTP response status and error body.
     ///
     /// Public so a downstream SDK consumer wiring its own HTTP transport
