@@ -65,7 +65,14 @@ pub use trust_registry::{
 /// Minimum supported template `schemaVersion`.
 pub const SCHEMA_VERSION_MIN: u32 = 1;
 /// Maximum supported template `schemaVersion`.
-pub const SCHEMA_VERSION_MAX: u32 = 1;
+///
+/// **2** adds the `keys` block — see [`KeySlot`]. A v1 template is exactly a v2
+/// template whose `keys` block is the historical default, so raising this
+/// changes nothing about how a v1 template renders.
+pub const SCHEMA_VERSION_MAX: u32 = 2;
+
+/// The `schemaVersion` at which the `keys` block became expressible.
+pub const SCHEMA_VERSION_KEYS_BLOCK: u32 = 2;
 
 /// Placeholder names supplied automatically by the renderer. They cannot
 /// appear in a template's `requiredVars` or `optionalVars` — callers and
@@ -80,6 +87,54 @@ pub const RESERVED_VARS: &[&str] = &[
     "CONTEXT_DID",
     "NOW",
 ];
+
+/// What a declared key slot is *for*, which decides the verification
+/// relationships a renderer may put it in.
+///
+/// Deliberately coarser than DID Core's five relationships: a template says
+/// what the key is, and the document body says where it appears. Encoding the
+/// relationship here as well would let the two disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum KeyPurpose {
+    /// Signs. Authentication, assertion, capability invocation/delegation.
+    Signing,
+    /// Agrees a shared secret. `keyAgreement` only — a signing algorithm
+    /// cannot serve here, which is why the two are separate slots rather than
+    /// one key used twice.
+    KeyAgreement,
+}
+
+/// One declared key in a template: what it is for, and which algorithms are
+/// acceptable for it in preference order.
+///
+/// # Why a list rather than one algorithm
+///
+/// A fleet does not migrate atomically. `["mldsa44", "ed25519"]` says *mint
+/// ML-DSA-44 if this VTA can, otherwise Ed25519* — so one template serves a
+/// VTA that has post-quantum support and one that does not, and the same
+/// template stops being a fallback the day the fleet finishes upgrading.
+///
+/// The order is the preference, highest first. An empty list is refused rather
+/// than treated as "anything": a template that expresses no preference would
+/// silently inherit whatever the implementation happened to default to, which
+/// is how a post-quantum deployment quietly mints classical keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct KeySlot {
+    pub purpose: KeyPurpose,
+    /// Acceptable algorithms, most preferred first. Names match
+    /// `vta_sdk::keys::KeyType`'s serde spelling (`ed25519`, `x25519`, `p256`,
+    /// `mldsa44`, `mldsa65`).
+    pub algorithms: Vec<String>,
+}
+
+/// The slot name a v1 template's `{SIGNING_KEY_MB}` refers to.
+pub const SLOT_SIGNING: &str = "signing";
+/// The slot name a v1 template's `{KA_KEY_MB}` refers to.
+pub const SLOT_KA: &str = "ka";
 
 /// Storage scope for a template. `Builtin` is in-memory only (never written
 /// to the VTA); `Global` and `Context` are persisted by the VTA in Phase 2+.
@@ -132,11 +187,61 @@ pub struct DidTemplate {
     #[serde(default)]
     pub defaults: serde_json::Map<String, Value>,
 
+    /// The keys this template needs, by slot name (`schemaVersion` 2+).
+    ///
+    /// Absent means the historical pair — see [`DidTemplate::key_slots`], which
+    /// is what every consumer should read rather than this field, so a v1 and a
+    /// v2 template are handled by one code path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<std::collections::BTreeMap<String, KeySlot>>,
+
     /// The DID document with `{TOKEN}` placeholders.
     pub document: Value,
 }
 
 impl DidTemplate {
+    /// The keys this template needs, whatever `schemaVersion` it declares.
+    ///
+    /// **Read this, not the `keys` field.** A v1 template has no `keys` block
+    /// and is not thereby key-less: it means the pair this stack has always
+    /// minted, an Ed25519 signing key and an X25519 key-agreement key, which is
+    /// exactly what its `{SIGNING_KEY_MB}` and `{KA_KEY_MB}` placeholders refer
+    /// to. Returning that here is what lets a v1 and a v2 template take one
+    /// code path — and is why raising `SCHEMA_VERSION_MAX` cannot change how a
+    /// v1 template renders.
+    pub fn key_slots(&self) -> std::collections::BTreeMap<String, KeySlot> {
+        if let Some(declared) = &self.keys {
+            return declared.clone();
+        }
+        std::collections::BTreeMap::from([
+            (
+                SLOT_SIGNING.to_string(),
+                KeySlot {
+                    purpose: KeyPurpose::Signing,
+                    algorithms: vec!["ed25519".to_string()],
+                },
+            ),
+            (
+                SLOT_KA.to_string(),
+                KeySlot {
+                    purpose: KeyPurpose::KeyAgreement,
+                    algorithms: vec!["x25519".to_string()],
+                },
+            ),
+        ])
+    }
+
+    /// The placeholder a slot's public key is rendered into.
+    ///
+    /// `signing` -> `SIGNING_KEY_MB`, `ka` -> `KA_KEY_MB`. The rule is
+    /// mechanical (`{SLOT_UPPERCASE}_KEY_MB`) and chosen so the two names v1
+    /// already uses fall out of it rather than being special-cased — a v2
+    /// template declaring `signing` and `ka` renders against exactly the
+    /// placeholders a v1 template does.
+    pub fn slot_var(slot: &str) -> String {
+        format!("{}_KEY_MB", slot.to_ascii_uppercase().replace('-', "_"))
+    }
+
     /// Parse a template from its JSON representation.
     pub fn from_json(value: Value) -> Result<Self, TemplateError> {
         let tpl: DidTemplate = serde_json::from_value(value)?;

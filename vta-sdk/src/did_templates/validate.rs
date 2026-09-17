@@ -21,6 +21,110 @@ pub(super) fn validate(tpl: &DidTemplate) -> Result<(), TemplateError> {
     check_var_overlap(tpl)?;
     check_document_has_id_placeholder(&tpl.document)?;
     check_placeholders_declared(tpl)?;
+    check_key_slots(tpl)?;
+    Ok(())
+}
+
+/// The `keys` block: only at `schemaVersion` 2+, and every slot must name at
+/// least one algorithm this build recognises.
+fn check_key_slots(tpl: &DidTemplate) -> Result<(), TemplateError> {
+    let Some(declared) = &tpl.keys else {
+        return Ok(());
+    };
+
+    if tpl.schema_version < super::SCHEMA_VERSION_KEYS_BLOCK {
+        return Err(TemplateError::Invalid(format!(
+            "`keys` requires schemaVersion {} or later, but this template declares {}; a v1 \
+             template's keys are the implicit Ed25519/X25519 pair",
+            super::SCHEMA_VERSION_KEYS_BLOCK,
+            tpl.schema_version,
+        )));
+    }
+
+    let mut used = HashSet::new();
+    walk_placeholders(&tpl.document, &mut used);
+
+    for (slot, spec) in declared {
+        if slot.is_empty()
+            || !slot
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(TemplateError::Invalid(format!(
+                "key slot '{slot}' must match [a-z0-9-]+ — the name becomes the placeholder \
+                 `{{{}}}`",
+                DidTemplate::slot_var(slot),
+            )));
+        }
+
+        // An empty list is refused rather than read as "anything". A template
+        // expressing no preference would inherit whatever the implementation
+        // defaulted to, which is how a deployment meant to be post-quantum
+        // quietly mints classical keys.
+        if spec.algorithms.is_empty() {
+            return Err(TemplateError::Invalid(format!(
+                "key slot '{slot}' names no algorithms; list them most-preferred first"
+            )));
+        }
+
+        for algorithm in &spec.algorithms {
+            let parsed: Result<crate::keys::KeyType, _> =
+                serde_json::from_value(serde_json::Value::String(algorithm.clone()));
+            let Ok(key_type) = parsed else {
+                return Err(TemplateError::Invalid(format!(
+                    "key slot '{slot}' names algorithm '{algorithm}', which this build does not \
+                     know"
+                )));
+            };
+
+            // A signing algorithm cannot agree a key and vice versa. Caught
+            // here because the alternative is a DID document that looks
+            // well-formed and whose `keyAgreement` entry nothing can use.
+            let usable = match spec.purpose {
+                super::KeyPurpose::Signing => !matches!(key_type, crate::keys::KeyType::X25519),
+                super::KeyPurpose::KeyAgreement => {
+                    matches!(key_type, crate::keys::KeyType::X25519)
+                }
+            };
+            if !usable {
+                return Err(TemplateError::Invalid(format!(
+                    "key slot '{slot}' is declared for {:?} but names '{algorithm}', which \
+                     cannot serve that purpose",
+                    spec.purpose,
+                )));
+            }
+        }
+
+        // A declared slot that the document never uses is the failure this
+        // block exists to prevent, wearing a different hat: the template
+        // announces a post-quantum key, the VTA mints one, and the DID document
+        // does not publish it — so every verifier still sees only the classical
+        // key and the deployment believes it migrated.
+        //
+        // Minting a key nothing publishes is also a silent cost: it consumes a
+        // derivation path forever.
+        let var = DidTemplate::slot_var(slot);
+        if !used.contains(&var) {
+            return Err(TemplateError::Invalid(format!(
+                "key slot '{slot}' is declared but `{{{var}}}` never appears in the document, \
+                 so the key would be minted and never published"
+            )));
+        }
+    }
+
+    // And the converse: a slot placeholder in the document that no slot
+    // declares would render as an unsubstituted literal.
+    for var in &used {
+        let Some(slot) = var.strip_suffix("_KEY_MB") else {
+            continue;
+        };
+        let slot = slot.to_ascii_lowercase().replace('_', "-");
+        if !declared.contains_key(&slot) {
+            return Err(TemplateError::Invalid(format!(
+                "document uses `{{{var}}}` but no key slot '{slot}' is declared"
+            )));
+        }
+    }
     Ok(())
 }
 
