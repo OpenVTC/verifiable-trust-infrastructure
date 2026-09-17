@@ -1168,6 +1168,8 @@ pub async fn run(
                     // the whole gate + connect + reconnect loop to the background
                     // supervisor.
                     let outbox_ks = apply_encryption(store.keyspace(crate::keyspaces::OUTBOX)?);
+                    let relationships_ks =
+                        apply_encryption(store.keyspace(crate::keyspaces::RELATIONSHIPS)?);
                     let supervisor = MessagingConnect {
                         app_state: app_state.clone(),
                         vta_did: vta_did.clone(),
@@ -1175,6 +1177,7 @@ pub async fn run(
                         readiness: config.mediator_readiness.clone(),
                         resolver_url: config.resolver_url.clone(),
                         outbox_ks,
+                        relationships_ks,
                         flush_queues,
                         shutdown: didcomm_shutdown.clone(),
                         fatal_shutdown: shutdown_tx.clone(),
@@ -2139,6 +2142,7 @@ struct MessagingConnect {
     readiness: crate::config::MediatorReadinessConfig,
     resolver_url: Option<String>,
     outbox_ks: KeyspaceHandle,
+    relationships_ks: KeyspaceHandle,
     flush_queues: bool,
     shutdown: CancellationToken,
     /// Brings the whole process down when the readiness gate's `fail` policy
@@ -2378,6 +2382,7 @@ impl MessagingConnect {
                 vta_did,
                 &messaging_config.mediator_did,
                 self.outbox_ks.clone(),
+                self.relationships_ks.clone(),
                 app_state.did_resolver.as_ref(),
                 self.resolver_url.as_deref(),
             )
