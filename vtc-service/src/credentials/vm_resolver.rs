@@ -83,8 +83,30 @@ impl DidVmResolver {
     /// SD-JWT issuer-signature path.
     pub(crate) async fn resolve_verifying_key(&self, vm: &str) -> Result<VerifyingKey, AppError> {
         let bytes = self.resolve_ed25519(vm).await?;
+        // The length check stays — this path builds an Ed25519 `VerifyingKey`
+        // and nothing else will do. What changed is what it says when it
+        // fails.
+        //
+        // "not 32 bytes" names the symptom and hides the cause. The realistic
+        // way to reach it is a DID whose verification method carries a
+        // post-quantum key: ML-DSA-44 is 1312 bytes, ML-DSA-65 is 1952. An
+        // operator reading "not 32 bytes" has no reason to suspect the
+        // algorithm, and every reason to suspect a truncated or corrupt key —
+        // so the message now identifies the likely algorithm by length and
+        // says which path refused it.
         let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
-            AppError::Validation(format!("verificationMethod `{vm}` key is not 32 bytes"))
+            let guess = match bytes.len() {
+                1312 => " (an ML-DSA-44 public key)",
+                1952 => " (an ML-DSA-65 public key)",
+                2592 => " (an ML-DSA-87 public key)",
+                32 => "",
+                _ => "",
+            };
+            AppError::Validation(format!(
+                "verificationMethod `{vm}` is {} bytes{guess}; this path verifies Ed25519 \
+                 signatures and needs a 32-byte key",
+                bytes.len(),
+            ))
         })?;
         VerifyingKey::from_bytes(&arr).map_err(|e| {
             AppError::Validation(format!(

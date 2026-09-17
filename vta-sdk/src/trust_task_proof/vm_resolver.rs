@@ -158,7 +158,7 @@ impl TrustTaskVmResolver {
                 "verificationMethod `{vm}` public key could not be extracted: {e}"
             ))
         })?;
-        Ok(ResolvedKey::new(KeyType::Ed25519, bytes))
+        Ok(ResolvedKey::new(declared_key_type(entry, vm)?, bytes))
     }
 }
 
@@ -203,7 +203,86 @@ fn resolve_did_peer(vm: &str, base_did: &str) -> Result<ResolvedKey, DataIntegri
             "verificationMethod `{vm}` public key could not be extracted: {e}"
         ))
     })?;
-    Ok(ResolvedKey::new(KeyType::Ed25519, bytes))
+    Ok(ResolvedKey::new(declared_key_type(entry, vm)?, bytes))
+}
+
+/// The key type a verification method actually declares, read from its
+/// `publicKeyMultibase` multicodec prefix.
+///
+/// # Why this is not `KeyType::Ed25519`
+///
+/// It was. Both resolution paths ended `ResolvedKey::new(KeyType::Ed25519,
+/// bytes)` regardless of what the document said, because every key this stack
+/// minted was Ed25519 and the type was therefore never wrong.
+///
+/// That stops being true the moment a DID carries an ML-DSA key, and the
+/// failure is the bad kind: the key is extracted successfully and handed to the
+/// verifier **labelled Ed25519**, so what should be "this proof uses a suite I
+/// must check differently" becomes "this Ed25519 signature does not verify".
+/// A hardcoded type cannot be wrong in a way anyone notices until it is wrong
+/// in a way nobody can debug.
+///
+/// `get_public_key_bytes` cannot answer this — it decodes the multikey and
+/// returns the payload, dropping the prefix that names the algorithm — so the
+/// multibase string is read directly.
+fn declared_key_type(
+    entry: &affinidi_did_common::verification_method::VerificationMethod,
+    vm: &str,
+) -> Result<KeyType, DataIntegrityError> {
+    let multibase = entry
+        .property_set
+        .get("publicKeyMultibase")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            DataIntegrityError::Resolver(format!(
+                "verificationMethod `{vm}` has no `publicKeyMultibase`, so its algorithm cannot \
+                 be read; a PQC key must be published as a Multikey (the JWK path does not \
+                 express ML-DSA)"
+            ))
+        })?;
+
+    let (_base, bytes) = multibase::decode(multibase).map_err(|e| {
+        DataIntegrityError::Resolver(format!(
+            "verificationMethod `{vm}` public key is not valid multibase: {e}"
+        ))
+    })?;
+
+    // Matched against this workspace's own codec table rather than a second
+    // copy of the prefixes. `multicodec_public()` is the one place these bytes
+    // are written down, and `affinidi-tdk-rs#798` pins it against a named
+    // revision of the multicodec registry — so a prefix that is wrong here is
+    // wrong in exactly one place, and a test already says so.
+    for candidate in [
+        crate::keys::KeyType::Ed25519,
+        crate::keys::KeyType::X25519,
+        crate::keys::KeyType::P256,
+        crate::keys::KeyType::MlDsa44,
+        crate::keys::KeyType::MlDsa65,
+    ] {
+        if bytes.starts_with(candidate.multicodec_public()) {
+            return Ok(match candidate {
+                crate::keys::KeyType::Ed25519 => KeyType::Ed25519,
+                crate::keys::KeyType::X25519 => KeyType::X25519,
+                crate::keys::KeyType::P256 => KeyType::P256,
+                crate::keys::KeyType::MlDsa44 => KeyType::MlDsa44,
+                crate::keys::KeyType::MlDsa65 => KeyType::MlDsa65,
+                // No wildcard: `#[non_exhaustive]` binds other crates, not the
+                // one that defines the type, and this module is inside it. So
+                // adding a `KeyType` variant breaks this match on purpose —
+                // whoever adds a key type is made to say how a verifier should
+                // read it, rather than having it silently fall to a default.
+            });
+        }
+    }
+
+    // Named rather than silently defaulted. A verifier that cannot check a
+    // suite must say so, because the operator's next step is to publish a key
+    // this build understands — and "signature did not verify" does not lead
+    // there.
+    Err(DataIntegrityError::Resolver(format!(
+        "verificationMethod `{vm}` carries a key whose multicodec prefix this build does not \
+         recognise, so its signature suite cannot be determined"
+    )))
 }
 
 #[async_trait::async_trait]
@@ -215,6 +294,85 @@ impl VerificationMethodResolver for TrustTaskVmResolver {
 
 #[cfg(test)]
 mod tests {
+    use super::declared_key_type;
+    use crate::keys::KeyType as LocalKeyType;
+    use affinidi_did_common::verification_method::VerificationMethod;
+    use affinidi_secrets_resolver::secrets::KeyType;
+
+    /// A verification method carrying `key_type`'s public multicodec prefix.
+    fn vm_with(key_type: LocalKeyType, payload_len: usize) -> VerificationMethod {
+        let mut bytes = key_type.multicodec_public().to_vec();
+        bytes.extend(std::iter::repeat_n(0x42u8, payload_len));
+        let mb = multibase::encode(multibase::Base::Base58Btc, &bytes);
+
+        let mut vm: VerificationMethod = serde_json::from_value(serde_json::json!({
+            "id": "did:example:alice#key-0",
+            "type": "Multikey",
+            "controller": "did:example:alice",
+        }))
+        .expect("a Multikey verification method");
+        vm.property_set
+            .insert("publicKeyMultibase".to_string(), serde_json::json!(mb));
+        vm
+    }
+
+    /// **The regression this exists for.** An ML-DSA key must not come back
+    /// labelled Ed25519.
+    ///
+    /// Both resolution paths used to end `ResolvedKey::new(KeyType::Ed25519,
+    /// bytes)` unconditionally. That is not a rejection — the key is extracted
+    /// successfully and handed to the verifier under the wrong algorithm, so a
+    /// "this suite needs different checking" problem presents as "this Ed25519
+    /// signature is invalid", which points at the signature rather than the
+    /// key.
+    #[test]
+    fn an_ml_dsa_key_is_not_reported_as_ed25519() {
+        // FIPS 204 public key sizes, so the fixture is the real shape.
+        let vm44 = vm_with(LocalKeyType::MlDsa44, 1312);
+        assert_eq!(
+            declared_key_type(&vm44, "did:example:alice#key-0").expect("ML-DSA-44 is recognised"),
+            KeyType::MlDsa44,
+        );
+
+        let vm65 = vm_with(LocalKeyType::MlDsa65, 1952);
+        assert_eq!(
+            declared_key_type(&vm65, "did:example:alice#key-0").expect("ML-DSA-65 is recognised"),
+            KeyType::MlDsa65,
+        );
+    }
+
+    /// The common case still reads as it always did.
+    #[test]
+    fn an_ed25519_key_is_still_ed25519() {
+        let vm = vm_with(LocalKeyType::Ed25519, 32);
+        assert_eq!(
+            declared_key_type(&vm, "did:example:alice#key-0").expect("Ed25519 is recognised"),
+            KeyType::Ed25519,
+        );
+    }
+
+    /// An unrecognised suite is named, not defaulted.
+    ///
+    /// Defaulting is what produced the original defect. The operator's next
+    /// step is to publish a key this build understands, and only an error that
+    /// says "I cannot determine the suite" leads there.
+    #[test]
+    fn an_unknown_prefix_is_refused_rather_than_assumed() {
+        let mut vm = vm_with(LocalKeyType::Ed25519, 32);
+        // A prefix belonging to no key type this build knows.
+        let mb = multibase::encode(multibase::Base::Base58Btc, [0xff, 0xfe, 0x01, 0x02]);
+        vm.property_set
+            .insert("publicKeyMultibase".to_string(), serde_json::json!(mb));
+
+        let err = declared_key_type(&vm, "did:example:alice#key-0")
+            .expect_err("an unknown suite must not resolve");
+        let text = err.to_string();
+        assert!(
+            text.contains("suite cannot be determined") || text.contains("does not recognise"),
+            "the error must say the suite is undetermined, not blame the signature: {text}"
+        );
+    }
+
     use super::*;
 
     /// `did:key` never needs the network, so the `did:key`-only resolver and a
