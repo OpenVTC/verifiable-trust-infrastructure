@@ -13,10 +13,10 @@ SDK release carries D1–D5. Runtime integration (D6) and hardening (D7–D9) re
 | D3 | Recovery-aware send readiness | core in SDK |
 | D4 | Bounded, single-flight, jittered recovery | core in SDK |
 | D5 | Idle eviction (7-day) | core in SDK |
-| D6 | Outbox integration + timeout runtime + eviction sweep | not started |
-| D7 | Re-resolve keys / ACL / rate-limit on re-establish | not started |
-| D8 | §7.2.2 drop counter + recovery metrics | not started |
-| D9 | Proactive startup reconcile | not started |
+| D6 | Single-flight coordinator + eviction sweep + enumerate | core in SDK (`RecoveryCoordinator`, `evict_idle`, `scan_prefix`); service wiring pending |
+| D7 | Inbound-invite rate limit (re-resolve keys / ACL still pending) | limiter core in SDK (`InviteRateLimiter`) |
+| D8 | Recovery metrics (§7.2.2 drop counter pending) | `RecoveryMetrics` in SDK; drop counter is service-side |
+| D9 | Enumerate established relationships for startup reconcile | core in SDK (`established_relationships`); service wiring pending |
 
 ## The problem
 
@@ -337,7 +337,7 @@ work (D6).
 Correctness holds; the only cost is one extra handshake. Expose the TTL as
 config; 7 days is the default, not a constant.
 
-### D6 — Drive recovery through the existing outbox
+### D6 — Single-flight coordinator + eviction sweep — **cores prototyped**
 
 The D1 delivery layer (`affinidi-messaging-delivery`) already has
 outbox-drain and escalate-on-expiry. A gated/timed-out send should **feed the
@@ -345,6 +345,30 @@ outbox and let it retry** once the relationship is up, rather than spawning a
 second, competing retry loop. `ensure_relationship` raises the relationship;
 the outbox owns redelivery and the expiry escalation. One retry system, not
 two.
+
+**Prototype (in `affinidi-messaging-sdk`):** the two pieces that are pure/testable:
+
+- `RecoveryCoordinator` — async single-flight over `RecoveryState` + a
+  `BackoffPolicy`, clock-injected: `begin` gives one caller `Start` and coalesces
+  the rest to `InFlight`; `settle_success`/`settle_failure` advance the backoff;
+  `metrics()` exposes D8's counters. This is the object the timeout runtime calls.
+- The eviction sweep: `RelationshipKv::scan_prefix` (default no-op),
+  `PersistentRelationshipStore::evict_idle` (sweep idle pairs, `forget` the whole
+  record) and `established_relationships` (D9's candidates).
+
+**Service wiring (pending), and where it lives:** the timeout→recovery loop
+belongs where correlated sends *originate* — the **client** (`vta-sdk` /
+`pnm-cli`), which is exactly where the original bug appeared (a `pnm health` TSP
+ping timing out). A responder VTA rarely initiates a correlated TSP round-trip,
+so its recovery is mostly D1 (durable store, done) + D2 (auto re-accept on a
+re-invite, done). The VTA's own D6 wiring is the **eviction sweep** — and it must
+be spawned **once at server startup, not inside `build_messaging`**, which
+re-runs on every mediator reconnect: a sweep task holds the store `Arc` and does
+not depend on the socket, so spawning it per-reconnect would leak one sweep per
+reconnect (the same task-lifecycle trap the mediator-connection note warns
+about). It needs a **concrete** `Arc<PersistentRelationshipStore<..>>` handle
+kept beside the `Arc<dyn RelationshipStore>` handed to the ATM (the sweep/
+enumerate methods are on the concrete type, not the trait).
 
 ### D7 — Security invariants for re-establishment
 
@@ -357,29 +381,42 @@ Recovery is the moment an attacker would try a key-swap or downgrade, so:
   silently re-form a relationship. The throwaway-VID probe already shows the VTA
   403s unknown VIDs; recovery respects that, it does not bypass it.
 - **Rate-limit inbound invites**, not just outbound — an invite flood is a DoS
-  and D2 makes invites cheap to accept.
+  and D2 makes invites cheap to accept. **Prototyped:** `InviteRateLimiter`
+  (SDK) — one accepted invite per interval per peer; the receiver's invite
+  handler consults `allow` before acting on a fresh invite. Re-resolve-keys and
+  ACL-re-run remain to wire into the SDK recovery path and the VTA admission.
 - **Do not add a "relationship required" signal back to the sender.** It would
   defeat §7.2.2's silent-drop security property. Detection stays sender-local
   (C2).
 
-### D8 — Observability
+### D8 — Observability — **recovery metrics prototyped**
 
 The failure that started this note was invisible except in one log line. Add:
 
 - A **§7.2.2 drop counter** on the receiving side, labelled by peer. A spike
-  *is* "a peer lost its state" — this is the alarm.
-- Recovery metrics: attempts, successes, latency, exhaustions; live
-  relationship count; eviction count. Alert on a **re-establishment storm**
-  (many peers recovering at once ⇒ a service lost its store, e.g. a durable
-  store misconfigured back to in-memory).
+  *is* "a peer lost its state" — this is the alarm. **Service-side** — the drop
+  happens at the VTA's inbound TSP handler / transport adapter, so the counter is
+  wired there to the telemetry sink; no SDK change needed.
+- Recovery metrics: attempts, successes, exhaustions. **Prototyped** as
+  `RecoveryMetrics { attempts, successes, give_ups }` on `RecoveryCoordinator`;
+  a service reads `metrics()` on an interval into its sink. A **give-up spike**
+  is the "peer durably unreachable" alarm; an **attempt storm** (many peers at
+  once) means a service lost its store, e.g. a durable store misconfigured back
+  to in-memory.
 
-### D9 — Proactive reconcile on startup (optional, recommended)
+### D9 — Proactive reconcile on startup — **enumerate prototyped**
 
 With a durable store (D1), a service can on startup **re-assert** its stored
 relationships — a lightweight keepalive/refresh — instead of waiting for the
 first real message to fail. Turns a user-visible timeout into a background
 reconcile. Cheap given D2/D3 already exist; gate it behind the same herd
 controls (D4) so a fleet-wide restart doesn't self-DoS.
+
+**Prototyped:** `PersistentRelationshipStore::established_relationships` returns
+the `Bidirectional` pairs to re-assert (a half-open handshake is excluded — it is
+already in flight). The re-assertion itself is a keepalive round-trip per pair,
+so it is the client-side timeout-loop work (D6) applied proactively at boot
+rather than reactively on first failure.
 
 ## Where the changes land
 
