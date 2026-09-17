@@ -48,6 +48,9 @@ tsp = [
     # `affinidi-tdk` (already a dependency, and where `ATM` comes from) rather
     # than adding a direct `affinidi-messaging-sdk` dependency.
     "affinidi-tdk/tsp",
+    # The shared durable relationship store (`vti_common::relationship_store`) the
+    # VTC injects into its ATM so a restart does not §7.2.2-drop every peer.
+    "vti-common/tsp",
 ]
 # Test-harness surface: the `test_support` module (in-process `TestVtc`
 # builder, `MockVtc` listening server, JWT/session minting). Enabled by

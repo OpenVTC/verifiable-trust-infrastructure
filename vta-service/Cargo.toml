@@ -52,6 +52,8 @@ tsp = [
     "vta-sdk/tsp",
     "dep:affinidi-messaging-sdk",
     "affinidi-messaging-sdk/tsp",
+    # The shared durable relationship store (`vti_common::relationship_store`).
+    "vti-common/tsp",
 ]
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest", "dep:vta-webvh", "vta-vault/webvh", "vta-keyspaces/webvh", "vta-backup/webvh"]
 setup = ["webvh", "dep:tempfile"]
