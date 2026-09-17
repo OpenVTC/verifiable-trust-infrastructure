@@ -932,7 +932,7 @@ pub async fn create_did_webvh(
             .map_err(|e| AppError::Internal(format!("{e}")))?;
         signing_secret.id = format!("did:key:{pub_mb}#{pub_mb}");
 
-        let (ka_secret, ka_pub, ka_path, ka_label) = if let Some(ref ka_key_id) = params.ka_key_id {
+        let (ka_secret, ka_pub, ka_path, ka_label, ka_key_type) = if let Some(ref ka_key_id) = params.ka_key_id {
             let (ka_secret, ka_pub, ka_record) = load_key_as_secret(
                 keys_ks,
                 imported_ks,
@@ -949,6 +949,7 @@ pub async fn create_did_webvh(
                 ka_record
                     .label
                     .unwrap_or_else(|| format!("{label} key-agreement key")),
+                ka_record.key_type,
             )
         } else {
             // No KA key — use dummy values (won't be in the document)
@@ -957,6 +958,7 @@ pub async fn create_did_webvh(
                 String::new(),
                 String::new(),
                 String::new(),
+                KeyType::X25519,
             )
         };
 
@@ -968,11 +970,17 @@ pub async fn create_did_webvh(
             signing_label: signing_record
                 .label
                 .unwrap_or_else(|| format!("{label} signing key")),
+            signing_key_type: signing_record.key_type.clone(),
             ka_secret,
             ka_path,
             ka_pub,
             ka_priv: String::new(),
             ka_label,
+            // From the stored records, because for an imported key the record
+            // is where the truth about its algorithm lives — assuming Ed25519
+            // here would mislabel an imported ML-DSA key at the one moment the
+            // system is being told what it is.
+            ka_key_type,
         };
 
         // seed_id from the signing key record (may be None for imported)
@@ -1311,7 +1319,10 @@ pub async fn create_did_webvh(
             keys_ks,
             &vm_ids.signing,
             &derived.signing_path,
-            SdkKeyType::Ed25519,
+            // Carried from the derivation, not asserted here. A record that
+            // names the wrong algorithm sends a later signing operation to a
+            // suite the key cannot work in.
+            derived.signing_key_type.clone(),
             &derived.signing_pub,
             &derived.signing_label,
             Some(&params.context_id),
@@ -1325,7 +1336,7 @@ pub async fn create_did_webvh(
                 keys_ks,
                 &ka_vm_id,
                 &derived.ka_path,
-                SdkKeyType::X25519,
+                derived.ka_key_type.clone(),
                 &derived.ka_pub,
                 &derived.ka_label,
                 Some(&params.context_id),

@@ -126,6 +126,22 @@ pub async fn derive_and_store_did_key(
 }
 
 /// Derived signing + key-agreement key data, before DID creation.
+///
+/// # Why two named slots rather than a map
+///
+/// The Phase 2 plan called for a slot map. Counting the call sites changed the
+/// answer: the two slots are used in 53 places, and a map would turn every one
+/// into a lookup that can fail — while *removing* a property that is actually
+/// true and worth holding in the type, namely that a DID document always has
+/// exactly one signing key and at most one key-agreement key. A
+/// `slots["signing"]` that can be `None` is a worse description of reality than
+/// a field that cannot.
+///
+/// What the plan was really asking for is that a slot's **algorithm** stop
+/// being implied, and that is what `signing_key_type` / `ka_key_type` do. A
+/// third slot — two signing keys at once, for hybrid credentials — has no
+/// consumer until Phase 3, and adding an empty map now would be a mechanism
+/// with no users, which is the thing this plan criticises elsewhere.
 #[allow(dead_code)]
 pub struct DerivedEntityKeys {
     pub signing_secret: Secret,
@@ -133,11 +149,21 @@ pub struct DerivedEntityKeys {
     pub signing_pub: String,
     pub signing_priv: String,
     pub signing_label: String,
+    /// The algorithm actually minted for the signing slot.
+    ///
+    /// Carried rather than assumed. Every `save_key_record` call for a signing
+    /// key used to pass `KeyType::Ed25519` as a literal, which was correct only
+    /// because nothing else could be minted — the moment a template can ask for
+    /// ML-DSA, a record claiming Ed25519 sends a later signing operation to the
+    /// wrong algorithm with a key that cannot work in it.
+    pub signing_key_type: KeyType,
     pub ka_secret: Secret,
     pub ka_path: String,
     pub ka_pub: String,
     pub ka_priv: String,
     pub ka_label: String,
+    /// The algorithm actually minted for the key-agreement slot.
+    pub ka_key_type: KeyType,
 }
 
 /// Pre-rotation key data returned from derivation (stored after DID creation).
@@ -234,6 +260,75 @@ pub async fn save_sealed_transfer_key_record(
 ///
 /// Allocates derivation-path counters but does **not** store key records —
 /// callers must call [`save_entity_key_records`] after the DID is known.
+/// Derive an entity's keys, choosing the signing algorithm from a template's
+/// declared preference list.
+///
+/// `signing_preference` is most-preferred first, as a `keys` block declares it
+/// (`["mldsa44", "ed25519"]` means *ML-DSA-44 if this build can, otherwise
+/// Ed25519*). The first algorithm this build can mint wins.
+///
+/// # Why a preference list is honoured rather than just taking the first
+///
+/// A fleet does not migrate atomically, and the whole point of the list is that
+/// one template serves a VTA that has post-quantum support and one that does
+/// not. Refusing outright when the first choice is unavailable would make the
+/// fallback pointless; silently ignoring the list would make the preference
+/// pointless. So an unavailable algorithm is skipped, the chosen one is
+/// recorded on the result, and running out is an error naming what was asked
+/// for — never a quiet downgrade to Ed25519, which is how a deployment meant to
+/// be post-quantum ships classical keys.
+///
+/// The key-agreement slot takes no preference: X25519 is the only algorithm
+/// that can serve it here, and ML-KEM key agreement is TSP's hybrid KEM rather
+/// than a DID-document verification method.
+pub async fn derive_entity_keys_with_preference(
+    seed: &[u8],
+    base: &str,
+    signing_label: &str,
+    ka_label: &str,
+    keys_ks: &KeyspaceHandle,
+    signing_preference: &[KeyType],
+) -> Result<DerivedEntityKeys, Box<dyn std::error::Error>> {
+    // Everything but the signing key is unchanged, so the common path stays in
+    // one place rather than being duplicated for the PQC case.
+    let mut derived = derive_entity_keys(seed, base, signing_label, ka_label, keys_ks).await?;
+
+    for candidate in signing_preference {
+        match candidate {
+            // Already minted by the call above.
+            KeyType::Ed25519 => return Ok(derived),
+            KeyType::MlDsa44 | KeyType::MlDsa65 => {
+                use crate::derivation::Bip32Extension;
+                let root = ExtendedSigningKey::from_seed(seed)
+                    .map_err(|e| format!("Failed to create BIP-32 root key: {e}"))?;
+                let secret = match candidate {
+                    KeyType::MlDsa44 => root.derive_ml_dsa_44(&derived.signing_path),
+                    _ => root.derive_ml_dsa_65(&derived.signing_path),
+                }
+                .map_err(|e| format!("{candidate:?} derivation failed: {e}"))?;
+
+                derived.signing_pub = secret.get_public_keymultibase().map_err(|e| format!("{e}"))?;
+                derived.signing_priv = secret
+                    .get_private_keymultibase()
+                    .map_err(|e| format!("{e}"))?;
+                derived.signing_secret = secret;
+                derived.signing_key_type = candidate.clone();
+                return Ok(derived);
+            }
+            // Not a signing algorithm, or one this build cannot mint. Skipped
+            // rather than refused: the next entry is exactly what a fallback is
+            // for.
+            _ => continue,
+        }
+    }
+
+    Err(format!(
+        "no signing algorithm in {signing_preference:?} can be minted by this build; the \
+         template's preference list must name at least one supported algorithm"
+    )
+    .into())
+}
+
 pub async fn derive_entity_keys(
     seed: &[u8],
     base: &str,
@@ -291,11 +386,13 @@ pub async fn derive_entity_keys(
         signing_pub,
         signing_priv,
         signing_label: signing_label.to_string(),
+        signing_key_type: KeyType::Ed25519,
         ka_secret,
         ka_path,
         ka_pub,
         ka_priv,
         ka_label: ka_label.to_string(),
+        ka_key_type: KeyType::X25519,
     })
 }
 
@@ -397,6 +494,104 @@ mod tests {
         };
         let store = Store::open(&config).expect("failed to open store");
         (store, dir)
+    }
+
+    /// A preference list picks its first minitable algorithm, and the result
+    /// says which one it was.
+    ///
+    /// The `signing_key_type` is the point. Every `save_key_record` call for a
+    /// signing key used to pass `Ed25519` as a literal — correct only while
+    /// nothing else could be minted. A record naming the wrong algorithm sends
+    /// a later signing operation to a suite the key cannot work in, and that
+    /// failure surfaces far from here.
+    #[tokio::test]
+    async fn a_preference_list_mints_its_first_choice_and_says_so() {
+        let seed = test_seed();
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace(vta_keyspaces::KEYS).expect("keyspace");
+
+        let pq = derive_entity_keys_with_preference(
+            &seed,
+            "m/26'/1'/0'",
+            "signing",
+            "ka",
+            &ks,
+            &[KeyType::MlDsa44, KeyType::Ed25519],
+        )
+        .await
+        .expect("ML-DSA-44 is the first choice and this build can mint it");
+
+        assert_eq!(pq.signing_key_type, KeyType::MlDsa44);
+        assert_eq!(
+            pq.ka_key_type,
+            KeyType::X25519,
+            "the key-agreement slot takes no preference — X25519 is the only \
+             algorithm that can serve it in a DID document"
+        );
+
+        // The public key must actually be the post-quantum one, not an Ed25519
+        // key wearing the label. ML-DSA-44 public keys are 1312 bytes, so the
+        // multibase is far longer than Ed25519's 32.
+        let (_b, bytes) = multibase::decode(&pq.signing_pub).expect("valid multibase");
+        assert!(
+            bytes.len() > 1000,
+            "signing_key_type says ML-DSA-44 but the key is {} bytes — the label \
+             and the key have come apart, which is the exact defect this carries \
+             the type to prevent",
+            bytes.len(),
+        );
+    }
+
+    /// A fallback is taken when the preferred algorithm cannot be minted — that
+    /// is what the list is for.
+    #[tokio::test]
+    async fn a_preference_list_falls_back_and_records_what_it_took() {
+        let seed = test_seed();
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace(vta_keyspaces::KEYS).expect("keyspace");
+
+        // X25519 cannot sign, so it is skipped rather than refused.
+        let classical = derive_entity_keys_with_preference(
+            &seed,
+            "m/26'/1'/1'",
+            "signing",
+            "ka",
+            &ks,
+            &[KeyType::X25519, KeyType::Ed25519],
+        )
+        .await
+        .expect("an unusable first choice falls through to the next");
+
+        assert_eq!(classical.signing_key_type, KeyType::Ed25519);
+    }
+
+    /// Running out of candidates is an error naming what was asked for, never a
+    /// quiet downgrade to Ed25519.
+    ///
+    /// The quiet downgrade is the whole hazard: a deployment meant to be
+    /// post-quantum would ship classical keys and nothing would say so.
+    #[tokio::test]
+    async fn an_unsatisfiable_preference_is_an_error_not_a_downgrade() {
+        let seed = test_seed();
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace(vta_keyspaces::KEYS).expect("keyspace");
+
+        let err = derive_entity_keys_with_preference(
+            &seed,
+            "m/26'/1'/2'",
+            "signing",
+            "ka",
+            &ks,
+            &[KeyType::X25519],
+        )
+        .await
+        .err()
+        .expect("a list naming no signing algorithm cannot be satisfied");
+
+        assert!(
+            err.to_string().contains("no signing algorithm"),
+            "the error must say the list could not be satisfied: {err}"
+        );
     }
 
     /// Full lifecycle test: derive_entity_keys → save_entity_key_records →
