@@ -292,6 +292,14 @@ pub struct AppState {
     /// correlation is a property of the document layer, so the spine consults it
     /// on every transport. TSP is only the first that needed it.
     pub pending_replies: crate::trust_tasks::pending_replies::PendingReplies,
+    /// D6 single-flight recovery of §7.2.2 TSP relationships on the outbound send
+    /// path: concurrent sends to one peer coalesce onto one re-invite, and a
+    /// genuinely-down peer is capped rather than invite-flooded. Shared across
+    /// every server-initiated send — they all funnel through
+    /// [`TspTransport::send_to`](crate::messaging::tsp_transport::TspTransport::send_to).
+    /// Design note `tsp-relationship-recovery.md`, D6.
+    #[cfg(feature = "tsp")]
+    pub tsp_recovery: Arc<affinidi_messaging_sdk::RecoveryCoordinator>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     pub tee: Option<TeeContext>,
@@ -596,6 +604,10 @@ pub async fn build_app_state(
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
         pending_replies: crate::trust_tasks::pending_replies::PendingReplies::new(),
+        #[cfg(feature = "tsp")]
+        tsp_recovery: Arc::new(affinidi_messaging_sdk::RecoveryCoordinator::new(
+            affinidi_messaging_sdk::BackoffPolicy::default(),
+        )),
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
         tee: tee_context,

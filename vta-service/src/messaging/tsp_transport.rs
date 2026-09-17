@@ -141,4 +141,62 @@ impl TspTransport {
             )
             .await
     }
+
+    /// This VTA's own VID — the first of the profile's `dids()`. Keys the D6
+    /// recovery coordinator's per-peer single-flight state. `None` only if the
+    /// profile somehow lost its mediator between construction and here.
+    pub fn our_vid(&self) -> Option<String> {
+        self.profile.dids().ok().map(|(ours, _)| ours.to_string())
+    }
+
+    /// Force our local half of the relationship with `recipient` back to `None`,
+    /// clearing thread digests — the D4 "stale local half" reset for use on a
+    /// reply-timeout that may be a §7.2.2 silent drop. Safe against a false
+    /// positive: if the peer kept the relationship, the fresh invite that
+    /// follows reconciles (D2) rather than errors.
+    pub async fn reset_relationship(
+        &self,
+        recipient: &str,
+    ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
+        self.atm
+            .tsp()
+            .reset_relationship(&self.profile, recipient)
+            .await
+    }
+
+    /// Re-invite `recipient` if our half is `None`/stale, then send `body` — the
+    /// readiness-gated re-establishing send. Pair with [`reset_relationship`](Self::reset_relationship)
+    /// first so a stale `Bidirectional` local half actually re-invites rather
+    /// than sending straight into the drop again.
+    pub async fn send_reestablishing(
+        &self,
+        recipient: &str,
+        body: &[u8],
+    ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
+        self.atm
+            .tsp()
+            .send_reestablishing(
+                &self.profile,
+                recipient,
+                &[self.mediator_did.clone(), recipient.to_string()],
+                body,
+            )
+            .await
+    }
+
+    /// Re-invite `recipient` **without** sending a payload — heal the
+    /// relationship for a later send. Used on the recovery path for a task that
+    /// is not safe to blind-resend, where re-forming the relationship (so the
+    /// caller's retry lands) is right but re-sending the Trust Task could
+    /// double-execute. Valid only from `None`, so callers reset first.
+    pub async fn relate(
+        &self,
+        recipient: &str,
+    ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
+        self.atm
+            .tsp()
+            .form_relationship_routed(&self.profile, recipient)
+            .await
+            .map(|_| ())
+    }
 }

@@ -163,10 +163,52 @@ pub enum ReplyTrust {
 /// carry its own copy out of `AppConfig`, which was a second source for one fact
 /// with nothing checking that the two agreed.
 #[cfg(feature = "tsp")]
+use affinidi_messaging_sdk::RecoveryAction;
+
+/// The outcome of one send-and-await-reply over TSP.
+#[cfg(feature = "tsp")]
+enum TspAttempt {
+    /// The peer answered; the reply document.
+    Reply(Value),
+    /// No answer within the window — the §7.2.2 silent-drop signature.
+    Timeout,
+    /// The reply waiter was cancelled (the registry was cleared) — not a timeout.
+    Cancelled,
+    /// The seal/route failed before the frame left; carries the reason.
+    SendFailed(String),
+}
+
+/// Whether a Trust Task is safe to blind-resend after re-forming a relationship.
+/// A §7.2.2 drop is indistinguishable from a lost reply, so only a task whose
+/// second execution does no harm is resent; the rest are healed and surfaced.
+/// Same gate as the client-side self-repair (vta-sdk #1544).
+#[cfg(feature = "tsp")]
+fn resend_after_reform(type_uri: &str) -> bool {
+    vta_sdk::retry_safety::retry_safety(type_uri).is_some_and(|c| c.is_blind_retry_safe())
+}
+
+/// Wall-clock milliseconds for the recovery coordinator's clock.
+#[cfg(feature = "tsp")]
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(feature = "tsp")]
 #[derive(Clone)]
 pub struct TspSender {
     transport: crate::messaging::tsp_transport::TspTransport,
     replies: crate::trust_tasks::pending_replies::PendingReplies,
+    /// Shared D6 single-flight/backoff recovery, owned by `AppState`. Cloned in
+    /// (an `Arc`) rather than rebuilt per sender so concurrent sends to one peer
+    /// coalesce onto a single re-invite.
+    recovery: std::sync::Arc<affinidi_messaging_sdk::RecoveryCoordinator>,
+    /// How long to wait for a reply before treating a send as a §7.2.2 drop.
+    /// A field rather than the bare [`TSP_REPLY_TIMEOUT_SECS`] const only so a
+    /// test can shorten it — production always gets the const default.
+    reply_timeout: std::time::Duration,
 }
 
 #[cfg(feature = "tsp")]
@@ -179,7 +221,177 @@ impl TspSender {
         Some(Self {
             transport: state.tsp_transport()?,
             replies: state.pending_replies.clone(),
+            recovery: state.tsp_recovery.clone(),
+            reply_timeout: std::time::Duration::from_secs(TSP_REPLY_TIMEOUT_SECS),
         })
+    }
+
+    /// Shorten the reply timeout — test-only, so a recovery test does not wait
+    /// the full 30s per dropped attempt. Gated on `transport-harness` too,
+    /// because that is where its only callers (the D6 tests) live; a plain
+    /// `cfg(test)` build without the harness feature would see it as dead code.
+    #[cfg(all(test, feature = "transport-harness"))]
+    pub(crate) fn with_reply_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.reply_timeout = timeout;
+        self
+    }
+
+    /// The shared recovery coordinator, for asserting attempt/give-up counts in
+    /// a test.
+    #[cfg(all(test, feature = "transport-harness"))]
+    pub(crate) fn recovery(&self) -> &affinidi_messaging_sdk::RecoveryCoordinator {
+        &self.recovery
+    }
+
+    /// Drive the D6 recovery for a `recipient` whose send just timed out —
+    /// exposed for the recovery test; production reaches it through
+    /// [`send_tsp`](Outbound::send_tsp).
+    #[cfg(all(test, feature = "transport-harness"))]
+    pub(crate) async fn recover_for_test(
+        &self,
+        recipient: &str,
+        thread: &str,
+        framed: &[u8],
+        type_uri: &str,
+    ) -> Result<Value, AppError> {
+        self.recover_send_tsp(recipient, thread, framed, type_uri)
+            .await
+    }
+
+    /// Register a reply waiter for `thread`, send `framed` to `recipient`, and
+    /// await the reply within the TSP window. One attempt, no recovery.
+    /// `reestablish` picks the re-inviting send (`send_reestablishing`) over the
+    /// plain routed send — the recovery path uses it after a reset.
+    async fn send_and_await(
+        &self,
+        recipient: &str,
+        thread: &str,
+        framed: &[u8],
+        reestablish: bool,
+    ) -> TspAttempt {
+        // Registered before the frame leaves: a reply that arrived between
+        // sending and registering would find nothing waiting.
+        let waiting = self.replies.register(thread);
+        let sent = if reestablish {
+            self.transport.send_reestablishing(recipient, framed).await
+        } else {
+            self.transport.send_to(recipient, framed).await
+        };
+        if let Err(e) = sent {
+            self.replies.abandon(thread);
+            return TspAttempt::SendFailed(e.to_string());
+        }
+        match tokio::time::timeout(self.reply_timeout, waiting).await {
+            Ok(Ok(reply)) => match serde_json::to_value(reply) {
+                Ok(v) => TspAttempt::Reply(v),
+                Err(e) => TspAttempt::SendFailed(format!("re-serialise the reply: {e}")),
+            },
+            Ok(Err(_)) => {
+                self.replies.abandon(thread);
+                TspAttempt::Cancelled
+            }
+            Err(_elapsed) => {
+                self.replies.abandon(thread);
+                TspAttempt::Timeout
+            }
+        }
+    }
+
+    /// D6 self-repair on a reply-timeout (design note `tsp-relationship-recovery.md`).
+    ///
+    /// A §7.2.2 drop is silent, so a reply-timeout may mean the peer lost its
+    /// half of the relationship. Ask the shared [`RecoveryCoordinator`] whether
+    /// to act: `Start` gives this call the single-flight token (a concurrent send
+    /// to the same peer gets `InFlight` and coalesces, so one lost peer is not
+    /// invite-flooded); `Backoff`/`GiveUp` cap a genuinely-down peer. On `Start`
+    /// we reset our stale half (safe against a false positive via D2 reconcile),
+    /// then for a retry-safe task re-invite-and-resend once — recovering in this
+    /// call — while a task that could double-execute is only healed, its resend
+    /// left to the caller.
+    async fn recover_send_tsp(
+        &self,
+        recipient: &str,
+        thread: &str,
+        framed: &[u8],
+        type_uri: &str,
+    ) -> Result<Value, AppError> {
+        let timed_out = || {
+            bad_gateway_error(format!(
+                "`{recipient}` did not answer over TSP within {TSP_REPLY_TIMEOUT_SECS}s"
+            ))
+        };
+        let Some(our) = self.transport.our_vid() else {
+            return Err(timed_out());
+        };
+        let now = now_ms();
+
+        // One jittered base-backoff hold-off per failed attempt; the coordinator
+        // still caps the peer at `max_attempts` (GiveUp). Growing the delay with
+        // the attempt count needs an accessor the coordinator does not expose, so
+        // this first increment uses the base delay — single-flight and the cap
+        // are the herd-control properties that matter here.
+        let backoff = || {
+            self.recovery
+                .retry_delay(0, 1.0)
+                .unwrap_or(std::time::Duration::from_secs(1))
+        };
+
+        match self.recovery.begin(&our, recipient, now).await {
+            RecoveryAction::Start => {
+                if let Err(e) = self.transport.reset_relationship(recipient).await {
+                    self.recovery
+                        .settle_failure(&our, recipient, now, backoff())
+                        .await;
+                    return Err(bad_gateway_error(format!(
+                        "could not re-establish the TSP relationship with `{recipient}`: {e}"
+                    )));
+                }
+                if resend_after_reform(type_uri) {
+                    match self.send_and_await(recipient, thread, framed, true).await {
+                        TspAttempt::Reply(v) => {
+                            self.recovery.settle_success(&our, recipient).await;
+                            Ok(v)
+                        }
+                        _ => {
+                            self.recovery
+                                .settle_failure(&our, recipient, now, backoff())
+                                .await;
+                            Err(bad_gateway_error(format!(
+                                "`{recipient}` did not answer over TSP after re-establishing the \
+                                 relationship"
+                            )))
+                        }
+                    }
+                } else {
+                    // Not safe to blind-resend — a duplicate could double-execute.
+                    // Re-invite so the caller's retry lands, then report.
+                    if let Err(e) = self.transport.relate(recipient).await {
+                        self.recovery
+                            .settle_failure(&our, recipient, now, backoff())
+                            .await;
+                        return Err(bad_gateway_error(format!(
+                            "could not re-establish the TSP relationship with `{recipient}`: {e}"
+                        )));
+                    }
+                    self.recovery.settle_success(&our, recipient).await;
+                    Err(bad_gateway_error(format!(
+                        "`{recipient}` did not answer over TSP; the relationship was re-established \
+                         — retry the operation"
+                    )))
+                }
+            }
+            RecoveryAction::InFlight => Err(bad_gateway_error(format!(
+                "re-establishing the TSP relationship with `{recipient}` is already in flight — retry"
+            ))),
+            RecoveryAction::Backoff(_) => Err(bad_gateway_error(format!(
+                "backing off before re-establishing the TSP relationship with `{recipient}` — retry \
+                 later"
+            ))),
+            RecoveryAction::GiveUp => Err(bad_gateway_error(format!(
+                "gave up re-establishing the TSP relationship with `{recipient}` after repeated \
+                 failures"
+            ))),
+        }
     }
 }
 
@@ -440,42 +652,28 @@ impl Outbound<'_> {
             })?
             .to_string();
 
+        let type_uri = document
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         let body = serde_json::to_vec(&document)
             .map_err(|e| AppError::Internal(format!("serialise the request: {e}")))?;
         let framed = vta_sdk::tsp_binding::wrap_envelope(&body);
 
-        let waiting = tsp.replies.register(&thread);
-
-        if let Err(e) = tsp.transport.send_to(recipient, &framed).await {
-            tsp.replies.abandon(&thread);
-            return Err(bad_gateway_error(format!(
+        match tsp.send_and_await(recipient, &thread, &framed, false).await {
+            TspAttempt::Reply(v) => Ok(v),
+            TspAttempt::SendFailed(e) => Err(bad_gateway_error(format!(
                 "`{recipient}` could not be reached over TSP: {e}"
-            )));
-        }
-
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(TSP_REPLY_TIMEOUT_SECS),
-            waiting,
-        )
-        .await
-        {
-            Ok(Ok(reply)) => serde_json::to_value(reply)
-                .map_err(|e| AppError::Internal(format!("re-serialise the reply: {e}"))),
-            // The sender was dropped without sending — the registry was cleared
-            // from under us. Not a timeout and not an answer.
-            Ok(Err(_)) => {
-                tsp.replies.abandon(&thread);
-                Err(bad_gateway_error(format!(
-                    "the wait for `{recipient}`'s reply was cancelled"
-                )))
-            }
-            Err(_elapsed) => {
-                // Abandoned on the way out, or the entry outlives the process:
-                // a reply arriving later would find a receiver nobody reads.
-                tsp.replies.abandon(&thread);
-                Err(bad_gateway_error(format!(
-                    "`{recipient}` did not answer over TSP within {TSP_REPLY_TIMEOUT_SECS}s"
-                )))
+            ))),
+            TspAttempt::Cancelled => Err(bad_gateway_error(format!(
+                "the wait for `{recipient}`'s reply was cancelled"
+            ))),
+            // §7.2.2 D6: a silent reply-timeout may mean the peer lost the
+            // relationship. Hand off to the coordinator-gated self-repair.
+            TspAttempt::Timeout => {
+                tsp.recover_send_tsp(recipient, &thread, &framed, &type_uri)
+                    .await
             }
         }
     }
