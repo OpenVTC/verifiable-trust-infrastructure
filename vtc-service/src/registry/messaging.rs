@@ -330,6 +330,11 @@ impl MessagingRegistryClient {
         // Register before sending: a reply can land while the send is still
         // returning.
         let receiver = self.replies.register(&doc.id);
+        // Whether this send rode TSP — read before the move-y `match protocol`
+        // below, and used by the D4 reply-timeout reset (§7.2.2 recovery). Only
+        // the `tsp` build has a relationship to repair.
+        #[cfg(feature = "tsp")]
+        let is_tsp = matches!(&protocol, Protocol::Tsp);
         let send = match protocol {
             Protocol::Tsp => self.send_tsp(messaging, &doc).await,
             Protocol::Didcomm => self.send_didcomm(messaging, &doc).await,
@@ -352,6 +357,34 @@ impl MessagingRegistryClient {
             }
             Err(_elapsed) => {
                 self.replies.abandon(&doc.id);
+                // D4 (design note `tsp-relationship-recovery.md`): a §7.2.2 drop
+                // by the registry — it holds no relationship with us after a
+                // fresh/reset store — is silent and looks exactly like a lost
+                // round-trip. When we sent over TSP, reset our local half so the
+                // syncer's *next* attempt re-invites (`send_tsp`'s
+                // `send_reestablishing` then reads `SendReadiness::Reestablish`
+                // and forms the relationship before sending). Without this a
+                // durable "related" half never re-invites and every send times
+                // out forever. The reset is safe against a false positive — if
+                // the registry actually kept its half, our fresh invite
+                // reconciles via D2 rather than erroring. This is the registry
+                // client's analogue of `VtaClient`'s self-repair (#1544), which
+                // does not reach this client. We only repair state and never
+                // resend here — the syncer's backoff stays the one retry owner,
+                // so a mutation is never double-executed.
+                #[cfg(feature = "tsp")]
+                if is_tsp
+                    && let Err(e) = messaging
+                        .atm
+                        .tsp()
+                        .reset_relationship(&messaging.profile, &self.registry_did)
+                        .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "could not reset the TSP relationship after a registry reply timeout",
+                    );
+                }
                 // The registry may simply be slow, or the frame may have been
                 // dropped in a reconnect. Either way the syncer's backoff owns
                 // the retry — this is never a delivery confirmation.
