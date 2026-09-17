@@ -1103,8 +1103,13 @@ impl VtaClient {
     ///
     /// Idempotent, because the underlying `relate` is: see
     /// [`TspSession::relate`](crate::session::TspSession::relate).
+    ///
+    /// `pub(crate)` so the session-layer `Auto` connect path can form the
+    /// relationship on the leg it just attached, exactly as this constructor
+    /// does — without it that path returns a client that sends Trust Tasks over
+    /// TSP but drops every reply under §7.2.2.
     #[cfg(all(feature = "session", feature = "tsp"))]
-    async fn relate_trust_task_leg(&self, vta_did: &str) -> Result<(), VtaError> {
+    pub(crate) async fn relate_trust_task_leg(&self, vta_did: &str) -> Result<(), VtaError> {
         match &self.transport {
             Transport::Tsp { session, .. } => session
                 .relate(vta_did)
@@ -1125,6 +1130,27 @@ impl VtaClient {
                 None => Ok(()),
             },
             Transport::Rest { .. } => Ok(()),
+        }
+    }
+
+    /// Revert this client to pure DIDComm, dropping any Trust-Task TSP leg that
+    /// [`enable_tsp_trust_tasks`](Self::enable_tsp_trust_tasks) or
+    /// [`attach_tsp_leg`](Self::attach_tsp_leg) put in place.
+    ///
+    /// A `Separate` leg owns its own socket, so it is shut down (the same
+    /// one-websocket-per-DID contract [`shutdown`](Self::shutdown) honours); a
+    /// `Multiplexed` leg shares the DIDComm socket and only needs clearing.
+    ///
+    /// Used by the `Auto` connect path to fall back cleanly when the §7.2.2
+    /// relationship cannot be formed: a leg left attached would keep routing
+    /// Trust Tasks over a relationship-less TSP session and drop every reply,
+    /// which is worse than never having advertised TSP at all.
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    pub(crate) async fn disable_tsp_trust_tasks(&mut self) {
+        if let Transport::DIDComm { tsp, .. } = &mut self.transport
+            && let Some(TspLeg::Separate { session, .. }) = tsp.take()
+        {
+            session.shutdown().await;
         }
     }
 
