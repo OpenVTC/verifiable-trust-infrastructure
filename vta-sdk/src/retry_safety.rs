@@ -391,6 +391,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0, RetrySafe),
     // Render is a pure function of template + variables.
     (trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0, ReadOnly),
+    // 3.0 carries the same operations with a wider template schema, so the
+    // retry properties are identical — a create is still addressed by name and
+    // still overwrites rather than duplicates.
+    (trust_tasks::TASK_DID_TEMPLATES_LIST_3_0, ReadOnly),
+    (trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0, RetrySafe),
+    (trust_tasks::TASK_DID_TEMPLATES_GET_3_0, ReadOnly),
+    (trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0, RetrySafe),
     // ── Backup ──────────────────────────────────────────────────────────
     // The descriptor flow. `initiate-export` stages the encrypted state and
     // answers with the descriptor — including `transportToken`, the bearer

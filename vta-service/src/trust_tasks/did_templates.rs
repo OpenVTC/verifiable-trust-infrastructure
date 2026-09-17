@@ -71,7 +71,19 @@ pub(super) async fn handle_list(
         }
     };
     match result {
-        Ok(templates) => success_response(&doc, ListDidTemplatesResultBody { templates }),
+        Ok(templates) => {
+            // The whole listing is refused rather than filtered. A list with
+            // the post-quantum templates quietly missing would read as "none
+            // were created", which is a worse answer than an error naming the
+            // version that can show them.
+            if let Some(reject) = check_record_schema_version(
+                &doc,
+                templates.iter().map(|t| t.template.schema_version),
+            ) {
+                return reject;
+            }
+            success_response(&doc, ListDidTemplatesResultBody { templates })
+        }
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
@@ -118,6 +130,41 @@ fn check_template_schema_version(
                  — send it to the 3.0 task URI, which is the version that can express it",
                 template.schema_version, ceiling,
             ),
+        },
+    ))
+}
+
+/// Refuse to return a record the dispatching spec version cannot express.
+///
+/// The mirror of [`check_template_schema_version`], and a gap that PR #1538
+/// left: the ceiling guarded what a caller could *send*, not what the service
+/// would *return*. A `schemaVersion` 2 template fetched through a 2.0 read
+/// comes back carrying a `keys` block, under a response schema that pins
+/// `schemaVersion` to `const: 1` and sets `additionalProperties: false`. The
+/// caller gets a document its own spec says cannot exist.
+///
+/// Refusing is deliberately preferred to the two alternatives. Returning it
+/// anyway makes the service non-conformant in a way no fixture checks. Silently
+/// omitting v2 templates from a listing is worse still: an operator would see a
+/// list with the post-quantum templates missing and conclude they were never
+/// created.
+fn check_record_schema_version(
+    doc: &TrustTask<Value>,
+    records: impl IntoIterator<Item = u32>,
+) -> Option<TrustTaskOutcome> {
+    let ceiling = max_template_schema_version(&doc.type_uri.to_string());
+    let highest = records.into_iter().max().unwrap_or(0);
+    if highest <= ceiling {
+        return None;
+    }
+    Some(reject_with(
+        doc,
+        RejectReason::TaskFailed {
+            reason: format!(
+                "a stored template declares schemaVersion {highest}, which this task version \
+                 cannot return — read it through the 3.0 task URI, which can"
+            ),
+            details: Some(serde_json::json!({ "reason": "schemaVersionTooHigh" })),
         },
     ))
 }
@@ -197,7 +244,14 @@ pub(super) async fn handle_get(
         }
     };
     match result {
-        Ok(record) => success_response(&doc, record),
+        Ok(record) => {
+            if let Some(reject) =
+                check_record_schema_version(&doc, [record.template.schema_version])
+            {
+                return reject;
+            }
+            success_response(&doc, record)
+        }
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
