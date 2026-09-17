@@ -478,6 +478,8 @@ mod tests {
             ka_path: "m/26'/2'/0'/1'".into(),
             ka_priv: String::new(),
             ka_label: "ka".into(),
+            signing_key_type: vta_sdk::keys::KeyType::Ed25519,
+            ka_key_type: vta_sdk::keys::KeyType::X25519,
         }
     }
 
