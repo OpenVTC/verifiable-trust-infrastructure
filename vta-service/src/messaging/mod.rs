@@ -42,4 +42,6 @@ pub mod tsp_inbound;
 #[cfg(feature = "tsp")]
 pub mod tsp_reach;
 #[cfg(feature = "tsp")]
+pub mod tsp_relationship_store;
+#[cfg(feature = "tsp")]
 pub mod tsp_transport;

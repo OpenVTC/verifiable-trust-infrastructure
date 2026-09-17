@@ -833,6 +833,9 @@ pub struct TestAppContext {
     /// [`crate::messaging::service::build_messaging`] requires one, and a
     /// mediator-backed harness has to build the listener itself.
     pub outbox_ks: KeyspaceHandle,
+    /// The durable TSP relationship keyspace — `build_messaging` requires it too,
+    /// for the same reason.
+    pub relationships_ks: KeyspaceHandle,
     /// The app's `AppState`. Exposed so a harness can run the **production**
     /// inbound loop against the very state the HTTP router serves — the same
     /// reason `vtc-service`'s `TestVtc` exposes its own.
@@ -1432,6 +1435,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         vta_did,
         config,
         outbox_ks: store.keyspace(crate::keyspaces::OUTBOX).unwrap(),
+        relationships_ks: store.keyspace(crate::keyspaces::RELATIONSHIPS).unwrap(),
         state: state_for_ctx,
         _dir: dir,
     };
@@ -2115,6 +2119,7 @@ impl MockVta {
             &vta_did,
             &mediator_did,
             ctx.outbox_ks.clone(),
+            ctx.relationships_ks.clone(),
             ctx.state.did_resolver.as_ref(),
             None,
         )

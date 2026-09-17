@@ -79,6 +79,7 @@ pub async fn build_messaging(
     vta_did: &str,
     mediator_did: &str,
     outbox_ks: KeyspaceHandle,
+    relationships_ks: KeyspaceHandle,
     did_resolver: Option<&DIDCacheClient>,
     resolver_url: Option<&str>,
 ) -> Result<VtaMessaging, String> {
@@ -104,9 +105,25 @@ pub async fn build_messaging(
         tdk.secrets_resolver().insert(secret).await;
     }
 
+    // Persist TSP relationship state in the encrypted `relationships` keyspace so
+    // it survives a restart. Without it, a restarted VTA forgets every peer and
+    // — by Rev 3 §7.2.2 — silently drops their traffic until each re-handshakes
+    // (design note `docs/05-design-notes/tsp-relationship-recovery.md`, D1). Only
+    // the `tsp` build has a relationship store to configure; a DIDComm-only build
+    // does not use the keyspace.
+    let atm_config_builder = ATMConfig::builder();
+    #[cfg(feature = "tsp")]
+    let atm_config_builder = atm_config_builder.with_relationship_store(Arc::new(
+        affinidi_messaging_sdk::PersistentRelationshipStore::new(
+            crate::messaging::tsp_relationship_store::KeyspaceRelationshipKv::new(relationships_ks),
+        ),
+    ));
+    #[cfg(not(feature = "tsp"))]
+    let _ = relationships_ks; // consumed only by the `tsp` build above
+
     let atm = Arc::new(
         ATM::new(
-            ATMConfig::builder()
+            atm_config_builder
                 .build()
                 .map_err(|e| format!("build ATM config: {e}"))?,
             Arc::new(tdk),

@@ -251,6 +251,20 @@ pub const OUTBOX: &str = "outbox";
 /// `vta_sweepers::idempotency_sweeper`. Runtime state, not backed up.
 pub const IDEMPOTENCY: &str = "idempotency";
 
+/// Durable TSP relationship state, backing the SDK's `RelationshipStore` for the
+/// TSP transport. One record per facet per `(our_vid, their_vid)` pair — the
+/// relationship FSM state, thread digests, reply path and learned capability.
+///
+/// Persistent because Rev 3 §7.2.2 has an endpoint silently drop application
+/// traffic from a VID it holds no relationship with: an in-memory store wiped on
+/// restart makes every established peer's messages vanish until each
+/// re-handshakes. Persisting the state turns a restart transparent (design note
+/// `docs/05-design-notes/tsp-relationship-recovery.md`, D1). Runtime state, not
+/// backed up — a relationship is re-establishable (D2/D3), and like [`SESSIONS`]
+/// it is scoped to this VTA's DIDs, so a restore re-drives it rather than
+/// carrying it.
+pub const RELATIONSHIPS: &str = "relationships";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -287,6 +301,7 @@ pub const ALL: &[&str] = &[
     TASK_CONSENT,
     OUTBOX,
     IDEMPOTENCY,
+    RELATIONSHIPS,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
@@ -361,6 +376,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // request — restoring one elsewhere would claim to have already performed
     // operations that instance never did.
     IDEMPOTENCY,
+    // TSP relationship state: durable across a restart, but re-establishable by
+    // a re-handshake (design note D2/D3) and scoped to this VTA's DIDs — so a
+    // restore re-drives it, like [`SESSIONS`], rather than carrying it.
+    RELATIONSHIPS,
 ];
 
 #[cfg(test)]
@@ -451,6 +470,13 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         b"keys" | b"internal_keys" | b"imported_secrets" | b"webvh" => Cascade,
         // Resolution + protocol caches keyed by DID: stale the moment it goes.
         b"cache" | b"outbox" => Cascade,
+        // TSP relationships name this VTA's DID as one half of each `(our_vid,
+        // their_vid)` pair; with that VID gone the relationship can neither send
+        // nor be sent to, so its rows go with it — the same reasoning as the
+        // protocol caches above. (The cascade removes rows keyed on the deleted
+        // VID as `our_vid`; a peer VID appearing as `their_vid` of a *surviving*
+        // local VID is a different pair and stays.)
+        b"relationships" => Cascade,
 
         // ---- Names the DID as a subject of authorization -----------------
         // An ACL entry outliving its DID is the worst of the orphans: live
