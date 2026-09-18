@@ -492,12 +492,22 @@ impl<'a> Outbound<'a> {
 
 /// The highest-preference protocol both this VTA and `peer` can do, with the
 /// endpoint to reach it on.
+///
+/// `initiable` is the set this agent can start a conversation on **right now**,
+/// which is narrower than the build's [`OUTBOUND_SUPPORTED`] whenever a
+/// transport the build compiled is not actually wired on the sender — see
+/// [`Outbound::initiable_protocols`]. Reading it here rather than the const is
+/// the fix for #1483's regression: a build with the `tsp` feature named TSP in
+/// `OUTBOUND_SUPPORTED`, so a TSP-advertising peer was *selected* over TSP even
+/// when this sender held no `TspSender`, and the send then failed with an
+/// internal error instead of falling to the next shared transport.
 pub fn pick_transport(
     caps: &ServiceCapabilities,
+    initiable: &[Protocol],
     peer: &str,
 ) -> Result<(Protocol, String), AppError> {
     for protocol in Protocol::PREFERENCE_ORDER {
-        if !OUTBOUND_SUPPORTED.contains(&protocol) {
+        if !initiable.contains(&protocol) {
             continue;
         }
         if let Some(endpoint) = caps.endpoint(protocol) {
@@ -510,7 +520,7 @@ pub fn pick_transport(
         .filter(|p| caps.endpoint(**p).is_some())
         .map(|p| p.as_str())
         .collect();
-    let ours: Vec<&str> = OUTBOUND_SUPPORTED.iter().map(|p| p.as_str()).collect();
+    let ours: Vec<&str> = initiable.iter().map(|p| p.as_str()).collect();
 
     Err(AppError::Validation(format!(
         "no transport in common with `{peer}`: it advertises [{}] and this agent can \
@@ -525,7 +535,39 @@ pub fn pick_transport(
     )))
 }
 
+/// The pure core of [`Outbound::initiable_protocols`]: [`OUTBOUND_SUPPORTED`]
+/// with TSP dropped unless this sender has a live [`TspSender`] (`has_tsp`).
+///
+/// Factored out from the method so the runtime gate can be tested without
+/// standing up an `Outbound` (which needs a resolver and a bridge). In a build
+/// without the `tsp` feature `OUTBOUND_SUPPORTED` names no TSP, so `has_tsp` is
+/// moot and the set is returned unchanged.
+fn initiable_from(has_tsp: bool) -> Vec<Protocol> {
+    OUTBOUND_SUPPORTED
+        .iter()
+        .copied()
+        .filter(|p| *p != Protocol::Tsp || has_tsp)
+        .collect()
+}
+
 impl Outbound<'_> {
+    /// The protocols this `Outbound` can **initiate** right now.
+    ///
+    /// Narrower than [`OUTBOUND_SUPPORTED`] exactly when a compiled transport is
+    /// not wired on this instance. TSP is the live case: `WebvhDeps::
+    /// from_vta_state` (the DIDComm handler's state) holds no TSP socket and so
+    /// constructs the seam with `tsp: None`, yet a `tsp`-feature build still
+    /// names TSP in `OUTBOUND_SUPPORTED`. Consulting this before selecting means
+    /// a TSP-advertising peer reached from such a sender falls to the next
+    /// shared transport instead of erroring in [`Outbound::send_tsp`].
+    fn initiable_protocols(&self) -> Vec<Protocol> {
+        #[cfg(feature = "tsp")]
+        let has_tsp = self.tsp.is_some();
+        #[cfg(not(feature = "tsp"))]
+        let has_tsp = false;
+        initiable_from(has_tsp)
+    }
+
     /// Send an already-signed Trust-Task `document` to `recipient` and return
     /// the reply document, verified per `trust`.
     ///
@@ -575,7 +617,7 @@ impl Outbound<'_> {
         let doc_value = serde_json::to_value(&resolved.doc)
             .map_err(|e| AppError::Internal(format!("serialise the peer's DID document: {e}")))?;
         let caps = ServiceCapabilities::from_did_document(&doc_value);
-        let (protocol, endpoint) = pick_transport(&caps, recipient)?;
+        let (protocol, endpoint) = pick_transport(&caps, &self.initiable_protocols(), recipient)?;
 
         let reply = match protocol {
             Protocol::Rest => self.send_rest(recipient, &endpoint, &document).await?,
@@ -866,7 +908,8 @@ mod tests {
         let caps = caps_from(serde_json::json!([{
             "id": "#rest", "type": "VTARest", "serviceEndpoint": "https://host.example"
         }]));
-        let (protocol, endpoint) = pick_transport(&caps, "did:example:peer").expect("reachable");
+        let (protocol, endpoint) =
+            pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
         assert_eq!(protocol, Protocol::Rest);
         assert_eq!(endpoint, "https://host.example");
     }
@@ -881,7 +924,8 @@ mod tests {
             "type": "DIDCommMessaging",
             "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }]
         }]));
-        let (protocol, _) = pick_transport(&caps, "did:example:peer").expect("reachable");
+        let (protocol, _) =
+            pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
         assert_eq!(protocol, Protocol::Didcomm);
     }
 
@@ -894,7 +938,8 @@ mod tests {
             { "id": "#didcomm", "type": "DIDCommMessaging",
               "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }] }
         ]));
-        let (protocol, _) = pick_transport(&caps, "did:example:peer").expect("reachable");
+        let (protocol, _) =
+            pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
         assert_eq!(
             protocol,
             Protocol::Didcomm,
@@ -943,7 +988,7 @@ mod tests {
     #[test]
     fn a_tsp_only_peer_is_refused_naming_both_sides() {
         let caps = tsp_only_peer();
-        let msg = pick_transport(&caps, "did:example:peer")
+        let msg = pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer")
             .expect_err("no common transport")
             .to_string();
         assert!(
@@ -966,8 +1011,9 @@ mod tests {
     #[cfg(feature = "tsp")]
     #[test]
     fn a_tsp_only_peer_is_reached_over_tsp_when_this_build_can_initiate_it() {
-        let (protocol, endpoint) = pick_transport(&tsp_only_peer(), "did:example:peer")
-            .expect("TSP is in the intersection when this build can initiate it");
+        let (protocol, endpoint) =
+            pick_transport(&tsp_only_peer(), OUTBOUND_SUPPORTED, "did:example:peer")
+                .expect("TSP is in the intersection when this build can initiate it");
 
         assert_eq!(
             protocol,
@@ -980,10 +1026,77 @@ mod tests {
         );
     }
 
+    /// The runtime gate. A `tsp`-feature build names TSP in
+    /// [`OUTBOUND_SUPPORTED`], but a sender with no live [`TspSender`] cannot
+    /// start one, so [`initiable_from`] must drop it — and keep it once a sender
+    /// is present.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn initiable_drops_tsp_without_a_live_sender_and_keeps_it_with_one() {
+        assert!(
+            !initiable_from(false).contains(&Protocol::Tsp),
+            "TSP must not be initiable without a live sender"
+        );
+        assert!(
+            initiable_from(false).contains(&Protocol::Didcomm)
+                && initiable_from(false).contains(&Protocol::Rest),
+            "dropping TSP must not disturb the transports that remain"
+        );
+        assert!(
+            initiable_from(true).contains(&Protocol::Tsp),
+            "TSP is initiable once a sender is wired"
+        );
+    }
+
+    /// #1483's regression, at the selector. A did-hosting server advertises both
+    /// TSP and DIDComm; a `tsp`-feature VTA answering from its DIDComm handler
+    /// (`WebvhDeps::from_vta_state`, `tsp: None`) has no TSP sender. Before the
+    /// fix, `pick_transport` read the build const, selected TSP, and the send
+    /// failed with "TSP was selected but this node has no TSP transport". It must
+    /// now fall to the DIDComm the two genuinely share.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn a_tsp_and_didcomm_peer_is_reached_over_didcomm_when_this_sender_has_no_tsp() {
+        let caps = caps_from(serde_json::json!([
+            { "id": "#tsp", "type": "TSPTransport", "serviceEndpoint": "did:example:mediator" },
+            { "id": "#didcomm", "type": "DIDCommMessaging",
+              "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }] }
+        ]));
+        let (protocol, _) = pick_transport(&caps, &initiable_from(false), "did:example:peer")
+            .expect("DIDComm is shared, so the peer is reachable");
+        assert_eq!(
+            protocol,
+            Protocol::Didcomm,
+            "a sender with no TSP must fall to the shared DIDComm, not select TSP"
+        );
+    }
+
+    /// And where TSP is the *only* thing in common, a sender without it gets the
+    /// honest refusal naming both sets — not the internal error the field saw.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn a_tsp_only_peer_is_refused_not_errored_when_this_sender_has_no_tsp() {
+        let err = pick_transport(&tsp_only_peer(), &initiable_from(false), "did:example:peer")
+            .expect_err("TSP is the only shared transport and this sender cannot start it");
+        let msg = err.to_string();
+        assert!(
+            matches!(err, AppError::Validation(_)),
+            "must be a caller-facing validation refusal, not an internal error: {msg}"
+        );
+        assert!(
+            msg.contains("tsp") && msg.contains("didcomm") && msg.contains("rest"),
+            "must name what the peer offers and what this sender can start: {msg}"
+        );
+    }
+
     #[test]
     fn a_peer_advertising_nothing_says_so() {
-        let err = pick_transport(&caps_from(serde_json::json!([])), "did:example:peer")
-            .expect_err("nothing advertised");
+        let err = pick_transport(
+            &caps_from(serde_json::json!([])),
+            OUTBOUND_SUPPORTED,
+            "did:example:peer",
+        )
+        .expect_err("nothing advertised");
         assert!(err.to_string().contains("nothing"));
     }
 
