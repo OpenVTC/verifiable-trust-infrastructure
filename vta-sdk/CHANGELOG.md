@@ -2,6 +2,257 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.42.1...vta-sdk-v0.43.0) — 2026-09-18
+
+
+### Added
+
+- **vtc**: A VTC provisioned from the v2 template issues hybrid credentials ([#1557](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1557))
+
+* fix(did-templates): a key slot beyond the historical pair, and the literal it used to publish
+
+  `slot_var`'s `{SLOT}_KEY_MB` rule is mechanical, and before this it was
+  mechanical in one direction only. A `schemaVersion` 2 template could *declare* a
+  third key slot — a post-quantum signing key beside the classical pair, which is
+  the shape a hybrid-credential issuer needs — and then could not be loaded,
+  because the placeholder that slot's own rule produces was rejected:
+
+      Invalid("undeclared placeholder(s) { PQ_SIGNING_KEY_MB } in document
+               — add them to requiredVars or optionalVars")
+
+  Only `SIGNING_KEY_MB` and `KA_KEY_MB` were ambient, because only those two are
+  in `RESERVED_VARS`. So `keys` at schemaVersion 2 ([#1530](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1530)) could express exactly
+  the pair it was introduced to move beyond.
+
+  ## Following the error's advice published a literal into a write-once log
+
+  The advice is the defect. `optionalVars` supplies a **default**, and the
+  renderer substitutes a default for any name the caller did not supply — and the
+  minting flow does not supply a slot's key under a name it has never heard of.
+  So declaring `PQ_SIGNING_KEY_MB` to get past the rejection passed validation
+  *and rendered*:
+
+      {
+        "id": "did:webvh:x#key-2",
+        "type": "Multikey",
+        "publicKeyMultibase": "PLACEHOLDER-NEVER-SUBSTITUTED"
+      }
+
+  — inside `assertionMethod`, in a `did:webvh` log that is signed once and cannot
+  be re-signed. `check_key_slots` already refuses a slot the document never
+  publishes: a key minted and thrown away. This is the same failure wearing the
+  other hat, a key published and never minted, and it arrived through the one door
+  that check does not watch.
+
+  ## What changes
+
+  - `DidTemplate::slot_vars()` — the placeholder names the declared slots occupy,
+    built from `key_slots()` rather than a second fixed list. For a v1 template it
+    is exactly the two already in `RESERVED_VARS`, so v1 behaviour is untouched;
+    it is what lets a v2 template name a third slot at all.
+  - `check_placeholders_declared` treats those names as ambient. An author cannot
+    declare a value they have no way to know.
+  - `check_slot_vars_not_declared` refuses the reverse — a slot's placeholder in
+    `requiredVars` or `optionalVars` — naming the slot and saying why. A v1
+    template still gets `ReservedVar` from the check that runs first, unchanged.
+  - An undeclared placeholder that is *shaped* like a slot's is told to declare a
+    **slot**, not a variable. The generic advice pointed at exactly what the new
+    check refuses; an error that recommends the defect is worse than no error.
+
+  ## The state this leaves
+
+  A third slot is expressible, and a VTA that cannot yet mint for it fails at
+  render with `Unresolved` naming the placeholder — rather than emitting a
+  document with a hole in it. Wiring derivation to the `keys` block is the next
+  change; until then the loud failure is the correct one.
+
+  Found while tracing what stands between a VTC and a second signing key: nothing
+  in the chain from template to `LocalSigner::with_additional_key` could carry one.
+
+- **sealed-transfer**: A template-bootstrap variant that can carry a second signing key ([#1556](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1556))
+
+* fix(did-templates): a key slot beyond the historical pair, and the literal it used to publish
+
+  `slot_var`'s `{SLOT}_KEY_MB` rule is mechanical, and before this it was
+  mechanical in one direction only. A `schemaVersion` 2 template could *declare* a
+  third key slot — a post-quantum signing key beside the classical pair, which is
+  the shape a hybrid-credential issuer needs — and then could not be loaded,
+  because the placeholder that slot's own rule produces was rejected:
+
+      Invalid("undeclared placeholder(s) { PQ_SIGNING_KEY_MB } in document
+               — add them to requiredVars or optionalVars")
+
+  Only `SIGNING_KEY_MB` and `KA_KEY_MB` were ambient, because only those two are
+  in `RESERVED_VARS`. So `keys` at schemaVersion 2 ([#1530](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1530)) could express exactly
+  the pair it was introduced to move beyond.
+
+  ## Following the error's advice published a literal into a write-once log
+
+  The advice is the defect. `optionalVars` supplies a **default**, and the
+  renderer substitutes a default for any name the caller did not supply — and the
+  minting flow does not supply a slot's key under a name it has never heard of.
+  So declaring `PQ_SIGNING_KEY_MB` to get past the rejection passed validation
+  *and rendered*:
+
+      {
+        "id": "did:webvh:x#key-2",
+        "type": "Multikey",
+        "publicKeyMultibase": "PLACEHOLDER-NEVER-SUBSTITUTED"
+      }
+
+  — inside `assertionMethod`, in a `did:webvh` log that is signed once and cannot
+  be re-signed. `check_key_slots` already refuses a slot the document never
+  publishes: a key minted and thrown away. This is the same failure wearing the
+  other hat, a key published and never minted, and it arrived through the one door
+  that check does not watch.
+
+  ## What changes
+
+  - `DidTemplate::slot_vars()` — the placeholder names the declared slots occupy,
+    built from `key_slots()` rather than a second fixed list. For a v1 template it
+    is exactly the two already in `RESERVED_VARS`, so v1 behaviour is untouched;
+    it is what lets a v2 template name a third slot at all.
+  - `check_placeholders_declared` treats those names as ambient. An author cannot
+    declare a value they have no way to know.
+  - `check_slot_vars_not_declared` refuses the reverse — a slot's placeholder in
+    `requiredVars` or `optionalVars` — naming the slot and saying why. A v1
+    template still gets `ReservedVar` from the check that runs first, unchanged.
+  - An undeclared placeholder that is *shaped* like a slot's is told to declare a
+    **slot**, not a variable. The generic advice pointed at exactly what the new
+    check refuses; an error that recommends the defect is worse than no error.
+
+  ## The state this leaves
+
+  A third slot is expressible, and a VTA that cannot yet mint for it fails at
+  render with `Unresolved` naming the placeholder — rather than emitting a
+  document with a hole in it. Wiring derivation to the `keys` block is the next
+  change; until then the loud failure is the correct one.
+
+  Found while tracing what stands between a VTC and a second signing key: nothing
+  in the chain from template to `LocalSigner::with_additional_key` could carry one.
+
+
+
+### Fixed
+
+- **sealed-transfer**: A V1 bundle must still open, whatever its keys decode to ([#1561](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1561))
+
+#1556 made the V1 -> V2 key-material lift **refuse** any key whose multicodec it
+  could not classify, and argued for it: a key this build cannot classify is one it
+  should not install. #1557 then pointed every runner at the V2 path.
+
+  Together those apply the strictness to **every V1 bundle from every existing
+  VTA** — rejecting, at open time, what the V1 path had always accepted, over a
+  field the V1 path did not even have:
+
+      WorkflowFailed("could not open returned bundle: sealed reply could not be
+      decoded: key material for 'did:key:z6MkAdminMediator' carries a public key
+      whose multicodec names no algorithm this build knows")
+
+  This blocks the open Release PR ([#1552](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1552)), which is the only thing standing between
+  `main` and a published `vta-sdk`.
+
+  ## The reversal
+
+  Each key's type now comes from its multicodec prefix when that classifies — the
+  bytes are the ground truth about the bytes — and from what the V1 format
+  **defines** the slot to be when it does not.
+
+  That is not a default. `DidKeyMaterial` documents its two slots as an Ed25519
+  signing keypair and an X25519 key-agreement keypair, and the format admits
+  nothing else; "V1" *means* that pair. Reading the multicodec was only ever a
+  cross-check on a format that already states the answer, and failing closed on it
+  bought nothing:
+
+  - Nobody acts on `key_type` for the classical pair. The consumer decodes the
+    private half with its own explicit codec check
+    (`VtcKeyBundle::ed25519_private_bytes`), so a mislabelled pair cannot reach a
+    signer.
+  - Refusing, by contrast, could fail provisioning outright for a bundle that
+    worked yesterday.
+
+  **An additional signing key is still never inferred.** Those exist only in a V2
+  bundle, where the producer stated the algorithm outright — and there `key_type`
+  *is* load-bearing, because it selects the cryptosuite. The inference is confined
+  to the one place the format fixes the answer.
+
+  ## How it was missed, which is the more useful half
+
+  `cargo test -p vta-sdk --all-features` is a Feature combos step. It was not in
+  the CI command list I worked from, so it was never run: `cargo test --workspace`
+  takes default features and never compiles `provision_client_e2e` at all.
+  `--all-features` was run for *clippy* only, which compiles the tests but does not
+  execute them — so the regression was invisible to everything that did run.
+
+  This is the trap CLAUDE.md and the PQC plan both name — "a feature-gated module
+  is silently not compiled" — reached from the one angle neither spells out: the
+  gate hiding a *test*, not a module.
+
+  All fourteen Feature combos commands now pass locally, not just the two that
+  failed.
+
+- **did-templates**: A key slot beyond the historical pair, and the literal it used to publish ([#1554](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1554))
+
+`slot_var`'s `{SLOT}_KEY_MB` rule is mechanical, and before this it was
+  mechanical in one direction only. A `schemaVersion` 2 template could *declare* a
+  third key slot — a post-quantum signing key beside the classical pair, which is
+  the shape a hybrid-credential issuer needs — and then could not be loaded,
+  because the placeholder that slot's own rule produces was rejected:
+
+      Invalid("undeclared placeholder(s) { PQ_SIGNING_KEY_MB } in document
+               — add them to requiredVars or optionalVars")
+
+  Only `SIGNING_KEY_MB` and `KA_KEY_MB` were ambient, because only those two are
+  in `RESERVED_VARS`. So `keys` at schemaVersion 2 ([#1530](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1530)) could express exactly
+  the pair it was introduced to move beyond.
+
+  ## Following the error's advice published a literal into a write-once log
+
+  The advice is the defect. `optionalVars` supplies a **default**, and the
+  renderer substitutes a default for any name the caller did not supply — and the
+  minting flow does not supply a slot's key under a name it has never heard of.
+  So declaring `PQ_SIGNING_KEY_MB` to get past the rejection passed validation
+  *and rendered*:
+
+      {
+        "id": "did:webvh:x#key-2",
+        "type": "Multikey",
+        "publicKeyMultibase": "PLACEHOLDER-NEVER-SUBSTITUTED"
+      }
+
+  — inside `assertionMethod`, in a `did:webvh` log that is signed once and cannot
+  be re-signed. `check_key_slots` already refuses a slot the document never
+  publishes: a key minted and thrown away. This is the same failure wearing the
+  other hat, a key published and never minted, and it arrived through the one door
+  that check does not watch.
+
+  ## What changes
+
+  - `DidTemplate::slot_vars()` — the placeholder names the declared slots occupy,
+    built from `key_slots()` rather than a second fixed list. For a v1 template it
+    is exactly the two already in `RESERVED_VARS`, so v1 behaviour is untouched;
+    it is what lets a v2 template name a third slot at all.
+  - `check_placeholders_declared` treats those names as ambient. An author cannot
+    declare a value they have no way to know.
+  - `check_slot_vars_not_declared` refuses the reverse — a slot's placeholder in
+    `requiredVars` or `optionalVars` — naming the slot and saying why. A v1
+    template still gets `ReservedVar` from the check that runs first, unchanged.
+  - An undeclared placeholder that is *shaped* like a slot's is told to declare a
+    **slot**, not a variable. The generic advice pointed at exactly what the new
+    check refuses; an error that recommends the defect is worse than no error.
+
+  ## The state this leaves
+
+  A third slot is expressible, and a VTA that cannot yet mint for it fails at
+  render with `Unresolved` naming the placeholder — rather than emitting a
+  document with a hole in it. Wiring derivation to the `keys` block is the next
+  change; until then the loud failure is the correct one.
+
+  Found while tracing what stands between a VTC and a second signing key: nothing
+  in the chain from template to `LocalSigner::with_additional_key` could carry one.
+
+
+
 ## [0.42.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.42.0...vta-sdk-v0.42.1) — 2026-09-17
 
 

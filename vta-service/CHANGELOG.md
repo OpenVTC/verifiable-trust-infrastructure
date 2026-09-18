@@ -2,6 +2,293 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.33.0...vta-service-v0.34.0) — 2026-09-18
+
+
+### Added
+
+- **vta-service**: Route a cross-mediator TSP send nested for metadata privacy ([#1559](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1559))
+
+TSP's metadata-privacy benefit is realised only across mediators: with a nested
+  send each intermediary sees only the next hop, never the final recipient. Until
+  now every VTA outbound TSP send used the single-intermediary
+  `send_routed([our_mediator, recipient])`, which names the recipient as a visible
+  route hop — so a peer on a different mediator was either unreachable or reached
+  with no privacy gain.
+
+  Add `TspTransport::send_metadata_private(recipient, peer_mediator, body)`, which
+  mirrors the SDK's own `ATM::send_to` gate: when the peer's mediator differs from
+  ours, seal the inner message end-to-end to the recipient, wrap it in a Nested
+  envelope sealed to the peer's mediator, and route `[our_mediator, peer_mediator]`
+  so our mediator (the only intermediary before the peer's) never learns the
+  recipient; when they share a mediator — the reference single-mediator topology —
+  fall back to the unchanged direct routed send, since there is no intermediary to
+  hide the recipient from.
+
+  The peer's mediator DID needs no extra resolution: it is the `#tsp` service
+  endpoint the outbound path already read when selecting TSP, so `Outbound::send`
+  threads that `endpoint` down through `send_tsp` -> `send_and_await` ->
+  `send_metadata_private`. The recovery/re-establish path stays a direct routed send
+  (the SDK has no nested re-establishing form, and a §7.2.2 drop recovery values
+  getting the reply through over metadata privacy) — the steady-state send is the
+  one that nests.
+
+  Covered by two `transport-harness` tests over a two-mediator `TestTopology`: a
+  cross-mediator send is received and unpacked by a peer on the other mediator
+  (delivery proves nesting — a direct route could not cross), and a same-mediator
+  send still delivers over the direct fallback.
+
+- **sealed-transfer**: A template-bootstrap variant that can carry a second signing key ([#1556](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1556))
+
+* fix(did-templates): a key slot beyond the historical pair, and the literal it used to publish
+
+  `slot_var`'s `{SLOT}_KEY_MB` rule is mechanical, and before this it was
+  mechanical in one direction only. A `schemaVersion` 2 template could *declare* a
+  third key slot — a post-quantum signing key beside the classical pair, which is
+  the shape a hybrid-credential issuer needs — and then could not be loaded,
+  because the placeholder that slot's own rule produces was rejected:
+
+      Invalid("undeclared placeholder(s) { PQ_SIGNING_KEY_MB } in document
+               — add them to requiredVars or optionalVars")
+
+  Only `SIGNING_KEY_MB` and `KA_KEY_MB` were ambient, because only those two are
+  in `RESERVED_VARS`. So `keys` at schemaVersion 2 ([#1530](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1530)) could express exactly
+  the pair it was introduced to move beyond.
+
+  ## Following the error's advice published a literal into a write-once log
+
+  The advice is the defect. `optionalVars` supplies a **default**, and the
+  renderer substitutes a default for any name the caller did not supply — and the
+  minting flow does not supply a slot's key under a name it has never heard of.
+  So declaring `PQ_SIGNING_KEY_MB` to get past the rejection passed validation
+  *and rendered*:
+
+      {
+        "id": "did:webvh:x#key-2",
+        "type": "Multikey",
+        "publicKeyMultibase": "PLACEHOLDER-NEVER-SUBSTITUTED"
+      }
+
+  — inside `assertionMethod`, in a `did:webvh` log that is signed once and cannot
+  be re-signed. `check_key_slots` already refuses a slot the document never
+  publishes: a key minted and thrown away. This is the same failure wearing the
+  other hat, a key published and never minted, and it arrived through the one door
+  that check does not watch.
+
+  ## What changes
+
+  - `DidTemplate::slot_vars()` — the placeholder names the declared slots occupy,
+    built from `key_slots()` rather than a second fixed list. For a v1 template it
+    is exactly the two already in `RESERVED_VARS`, so v1 behaviour is untouched;
+    it is what lets a v2 template name a third slot at all.
+  - `check_placeholders_declared` treats those names as ambient. An author cannot
+    declare a value they have no way to know.
+  - `check_slot_vars_not_declared` refuses the reverse — a slot's placeholder in
+    `requiredVars` or `optionalVars` — naming the slot and saying why. A v1
+    template still gets `ReservedVar` from the check that runs first, unchanged.
+  - An undeclared placeholder that is *shaped* like a slot's is told to declare a
+    **slot**, not a variable. The generic advice pointed at exactly what the new
+    check refuses; an error that recommends the defect is worse than no error.
+
+  ## The state this leaves
+
+  A third slot is expressible, and a VTA that cannot yet mint for it fails at
+  render with `Unresolved` naming the placeholder — rather than emitting a
+  document with a hole in it. Wiring derivation to the `keys` block is the next
+  change; until then the loud failure is the correct one.
+
+  Found while tracing what stands between a VTC and a second signing key: nothing
+  in the chain from template to `LocalSigner::with_additional_key` could carry one.
+
+- **did-webvh**: Mint the keys a template's `keys` block asks for ([#1555](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1555))
+
+* fix(did-templates): a key slot beyond the historical pair, and the literal it used to publish
+
+  `slot_var`'s `{SLOT}_KEY_MB` rule is mechanical, and before this it was
+  mechanical in one direction only. A `schemaVersion` 2 template could *declare* a
+  third key slot — a post-quantum signing key beside the classical pair, which is
+  the shape a hybrid-credential issuer needs — and then could not be loaded,
+  because the placeholder that slot's own rule produces was rejected:
+
+      Invalid("undeclared placeholder(s) { PQ_SIGNING_KEY_MB } in document
+               — add them to requiredVars or optionalVars")
+
+  Only `SIGNING_KEY_MB` and `KA_KEY_MB` were ambient, because only those two are
+  in `RESERVED_VARS`. So `keys` at schemaVersion 2 ([#1530](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1530)) could express exactly
+  the pair it was introduced to move beyond.
+
+  ## Following the error's advice published a literal into a write-once log
+
+  The advice is the defect. `optionalVars` supplies a **default**, and the
+  renderer substitutes a default for any name the caller did not supply — and the
+  minting flow does not supply a slot's key under a name it has never heard of.
+  So declaring `PQ_SIGNING_KEY_MB` to get past the rejection passed validation
+  *and rendered*:
+
+      {
+        "id": "did:webvh:x#key-2",
+        "type": "Multikey",
+        "publicKeyMultibase": "PLACEHOLDER-NEVER-SUBSTITUTED"
+      }
+
+  — inside `assertionMethod`, in a `did:webvh` log that is signed once and cannot
+  be re-signed. `check_key_slots` already refuses a slot the document never
+  publishes: a key minted and thrown away. This is the same failure wearing the
+  other hat, a key published and never minted, and it arrived through the one door
+  that check does not watch.
+
+  ## What changes
+
+  - `DidTemplate::slot_vars()` — the placeholder names the declared slots occupy,
+    built from `key_slots()` rather than a second fixed list. For a v1 template it
+    is exactly the two already in `RESERVED_VARS`, so v1 behaviour is untouched;
+    it is what lets a v2 template name a third slot at all.
+  - `check_placeholders_declared` treats those names as ambient. An author cannot
+    declare a value they have no way to know.
+  - `check_slot_vars_not_declared` refuses the reverse — a slot's placeholder in
+    `requiredVars` or `optionalVars` — naming the slot and saying why. A v1
+    template still gets `ReservedVar` from the check that runs first, unchanged.
+  - An undeclared placeholder that is *shaped* like a slot's is told to declare a
+    **slot**, not a variable. The generic advice pointed at exactly what the new
+    check refuses; an error that recommends the defect is worse than no error.
+
+  ## The state this leaves
+
+  A third slot is expressible, and a VTA that cannot yet mint for it fails at
+  render with `Unresolved` naming the placeholder — rather than emitting a
+  document with a hole in it. Wiring derivation to the `keys` block is the next
+  change; until then the loud failure is the correct one.
+
+  Found while tracing what stands between a VTC and a second signing key: nothing
+  in the chain from template to `LocalSigner::with_additional_key` could carry one.
+
+- **vta-service**: Re-form a dropped TSP relationship on the outbound send path (D6) ([#1549](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1549))
+
+* feat(vta-service): re-form a dropped TSP relationship on the outbound send path (D6)
+
+  Wires the upstream single-flight `RecoveryCoordinator` into the VTA's
+  server-initiated TSP sends — the coordinator-grade counterpart to the client-side
+  per-call self-repair ([#1544](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1544)), and design note `tsp-relationship-recovery.md`'s D6.
+
+  Every VTA-initiated TSP send funnels through `operations::outbound::send_tsp`. On
+  a reply-timeout — the §7.2.2 silent-drop signature — it now asks one shared
+  `RecoveryCoordinator` (on `AppState`, keyed by `(our_vid, their_vid)`) whether to
+  act: `Start` gives the call the single-flight token, so concurrent sends to one
+  lost peer coalesce onto a single re-invite rather than storming it; `Backoff` /
+  `GiveUp` cap a genuinely-down peer. On `Start` it resets our stale local half
+  (safe against a false positive via D2's reconcile) and, for a task classified
+  blind-retry-safe in `vta_sdk::retry_safety`, re-invites and resends once via
+  `send_reestablishing`; a task that could double-execute is only healed
+  (re-invited, no resend), matching the #1544 gate.
+
+  New on `TspTransport`: `reset_relationship`, `send_reestablishing`, `relate`
+  (re-invite only), `our_vid`. The reply timeout becomes a `TspSender` field
+  (default the 30s const) only so a test can shorten it.
+
+  Tests (`test_support::transport_harness_tests`): `d6_drives_recovery_on_a_reply_timeout`
+  asserts the coordinator is consulted and one recovery runs against a
+  routable-but-silent orphan peer; `d6_coalesces_concurrent_recoveries` asserts two
+  concurrent recoveries for one peer record a single attempt (single-flight). Both
+  are non-vacuous by construction — no coordinator call means zero attempts, no
+  coalescing means two.
+
+  Scope note: this is the coordinator wiring for the VTA outbound seam. The VTC
+  registry seam is handled separately (reset-only) by feat/vtc-tsp-d4-reset. A full
+  end-to-end success-path test (a responding peer that recovers a reply) needs a
+  responding-peer harness and is a noted follow-up; the reply-success arm here is
+  the trivial passthrough over the SDK-tested `send_reestablishing`.
+
+
+
+### Fixed
+
+- **sealed-transfer**: A V1 bundle must still open, whatever its keys decode to ([#1561](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1561))
+
+#1556 made the V1 -> V2 key-material lift **refuse** any key whose multicodec it
+  could not classify, and argued for it: a key this build cannot classify is one it
+  should not install. #1557 then pointed every runner at the V2 path.
+
+  Together those apply the strictness to **every V1 bundle from every existing
+  VTA** — rejecting, at open time, what the V1 path had always accepted, over a
+  field the V1 path did not even have:
+
+      WorkflowFailed("could not open returned bundle: sealed reply could not be
+      decoded: key material for 'did:key:z6MkAdminMediator' carries a public key
+      whose multicodec names no algorithm this build knows")
+
+  This blocks the open Release PR ([#1552](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1552)), which is the only thing standing between
+  `main` and a published `vta-sdk`.
+
+  ## The reversal
+
+  Each key's type now comes from its multicodec prefix when that classifies — the
+  bytes are the ground truth about the bytes — and from what the V1 format
+  **defines** the slot to be when it does not.
+
+  That is not a default. `DidKeyMaterial` documents its two slots as an Ed25519
+  signing keypair and an X25519 key-agreement keypair, and the format admits
+  nothing else; "V1" *means* that pair. Reading the multicodec was only ever a
+  cross-check on a format that already states the answer, and failing closed on it
+  bought nothing:
+
+  - Nobody acts on `key_type` for the classical pair. The consumer decodes the
+    private half with its own explicit codec check
+    (`VtcKeyBundle::ed25519_private_bytes`), so a mislabelled pair cannot reach a
+    signer.
+  - Refusing, by contrast, could fail provisioning outright for a bundle that
+    worked yesterday.
+
+  **An additional signing key is still never inferred.** Those exist only in a V2
+  bundle, where the producer stated the algorithm outright — and there `key_type`
+  *is* load-bearing, because it selects the cryptosuite. The inference is confined
+  to the one place the format fixes the answer.
+
+  ## How it was missed, which is the more useful half
+
+  `cargo test -p vta-sdk --all-features` is a Feature combos step. It was not in
+  the CI command list I worked from, so it was never run: `cargo test --workspace`
+  takes default features and never compiles `provision_client_e2e` at all.
+  `--all-features` was run for *clippy* only, which compiles the tests but does not
+  execute them — so the regression was invisible to everything that did run.
+
+  This is the trap CLAUDE.md and the PQC plan both name — "a feature-gated module
+  is silently not compiled" — reached from the one angle neither spells out: the
+  gate hiding a *test*, not a module.
+
+  All fourteen Feature combos commands now pass locally, not just the two that
+  failed.
+
+- **webvh**: Select a transport by the sender's live capability, not the build feature ([#1560](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1560))
+
+VTC setup began failing after Dogwood with an opaque `internalError`
+  ("the consumer could not complete this task; the request itself was
+  accepted"). The real cause, in the VTA log:
+
+      trust task failed with an internal error
+      cause=TSP was selected but this node has no TSP transport;
+            it should not have been offered
+
+  During provisioning the VTA publishes the new DID to its did-hosting
+  server. That server advertises TSP, so the transport seam selected TSP —
+  but the request arrived over the DIDComm handler, whose `WebvhDeps::
+  from_vta_state` constructs the seam with `tsp: None` (it holds no TSP
+  socket). `send_tsp` then hit its "no TSP sender" guard and turned the
+  whole provision into an internal error instead of falling to the DIDComm
+  the two parties genuinely share.
+
+  The defect: `pick_transport` decided selectability from the compile-time
+  `OUTBOUND_SUPPORTED` const, which names TSP in any `tsp`-feature build,
+  and never consulted the runtime `Outbound.tsp`. `TspSender::
+  from_app_state`'s own doc comment promised "absence here removes TSP from
+  selection rather than failing at send time" — but nothing implemented it.
+
+  This is the tail of #1483, which unified onto the seam so a TSP did-host
+  is reached over TSP, but left `from_vta_state` passing `tsp: None` while
+  the seam kept reading the static const. Before #1483 the webvh selector
+  ignored TSP, so `tsp: None` was harmless; after it, it is a live fault.
+
+
+
 ## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.32.0...vta-service-v0.33.0) — 2026-09-17
 
 
