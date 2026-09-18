@@ -26,7 +26,7 @@
 //! Offline / sealed-handoff variants are out of scope for this module —
 //! see the workspace `vta bootstrap` CLI for that flow.
 
-use super::result::ProvisionResult;
+use super::result::ProvisionResultV2;
 
 /// What the operator wants the VTA to do during setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,7 +60,14 @@ pub enum VtaReply {
     /// Full template-bootstrap reply. The VTA minted the integration's
     /// DID, (optionally) rolled over an admin DID, and returned the
     /// complete trust bundle.
-    Full(Box<ProvisionResult>),
+    ///
+    /// Carries [`ProvisionResultV2`] so **one reply shape covers both sealed
+    /// variants**: a `TemplateBootstrap` bundle lifts into it losslessly, and a
+    /// `TemplateBootstrapV2` one arrives with its extra signing keys intact.
+    /// A second variant here would have meant two names for the same event, and
+    /// every consumer branching on which bundle the VTA happened to seal — a
+    /// question none of them actually has.
+    Full(Box<ProvisionResultV2>),
     /// Admin-credential-only reply. The integration keeps its own DID;
     /// the VTA supplied an admin identity it authenticates as against
     /// the VTA's admin APIs.

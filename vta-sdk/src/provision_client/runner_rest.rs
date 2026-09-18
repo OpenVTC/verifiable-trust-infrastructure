@@ -15,7 +15,7 @@ use super::ask::ProvisionAsk;
 use super::diagnostics::{DiagCheck, DiagStatus};
 use super::event::{AttemptOutcome, VtaEvent};
 use super::intent::{AdminCredentialReply, VtaReply};
-use super::result::{admin_rotation_response_to_reply, decode_nonce_b64url, response_to_result};
+use super::result::{admin_rotation_response_to_reply, decode_nonce_b64url, response_to_result_v2};
 
 /// Run the REST leg of the AdminOnly auth check.
 ///
@@ -283,7 +283,7 @@ pub(crate) async fn run_rest_attempt_full_setup(
         }
     };
 
-    let result = match response_to_result(&seed, nonce, response) {
+    let result = match response_to_result_v2(&seed, nonce, response) {
         Ok(r) => r,
         Err(e) => {
             let msg = e.to_string();

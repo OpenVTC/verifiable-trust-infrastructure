@@ -44,7 +44,7 @@ use vta_sdk::did_templates::{
     referral_service, tsp_service,
 };
 use vta_sdk::provision_client::{
-    EphemeralSetupKey, OperatorMessages, ProvisionAsk, ProvisionResult, ResolvedVta, VtaEvent,
+    EphemeralSetupKey, OperatorMessages, ProvisionAsk, ProvisionResultV2, ResolvedVta, VtaEvent,
     VtaIntent, VtaReply, resolve_vta, run_connection_test, run_provision_flight,
 };
 
@@ -198,7 +198,7 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
                 .into(),
         )
     })?;
-    let bundle = VtcKeyBundle::from_did_key_material(integration_did.clone(), integration_key);
+    let bundle = VtcKeyBundle::from_did_key_material_v2(integration_did.clone(), integration_key);
 
     // 5. Persist the did.jsonl log so the daemon's `GET
     //    /.well-known/did.jsonl` route can serve it after restart.
@@ -1329,7 +1329,7 @@ async fn run_provision_quietly(
     // structs would let them drift.
     messaging: Option<&MessagingConfig>,
     setup_key: &EphemeralSetupKey,
-) -> Result<ProvisionResult, AppError> {
+) -> Result<ProvisionResultV2, AppError> {
     let mut vars = BTreeMap::new();
     // The template appends `STATUS_LIST_PATH` (default `/v1/status-lists`)
     // to `URL`, so `URL` must be the host base — passing the API base

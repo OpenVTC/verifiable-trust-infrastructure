@@ -848,6 +848,7 @@ fn vtc_host_renders_with_minimal_vars() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     vars.insert_string("URL", "https://vtc.example.com");
 
     let out = tpl.render(&vars).unwrap();
@@ -904,6 +905,7 @@ fn vtc_host_advertises_a_trust_registry_referral_when_given_one() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     vars.insert_string("URL", "https://vtc.example.com");
     vars.insert(
         TRUST_REGISTRY_SERVICE_VAR,
@@ -942,6 +944,7 @@ fn vtc_host_omits_the_referral_when_no_registry_is_named() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     vars.insert_string("URL", "https://vtc.example.com");
 
     let out = tpl.render(&vars).unwrap();
@@ -972,6 +975,7 @@ fn vtc_host_advertises_both_transports_in_canonical_order() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     vars.insert_string("URL", "https://vtc.example.com");
     vars.insert(TSP_SERVICE_VAR, tsp_service(MEDIATOR).unwrap());
     vars.insert(DIDCOMM_SERVICE_VAR, didcomm_service(MEDIATOR).unwrap());
@@ -1008,6 +1012,7 @@ fn vtc_host_advertises_didcomm_alone_when_tsp_is_not_selected() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     vars.insert_string("URL", "https://vtc.example.com");
     vars.insert(DIDCOMM_SERVICE_VAR, didcomm_service(MEDIATOR).unwrap());
 
@@ -1031,6 +1036,7 @@ fn vtc_host_advertises_no_messaging_when_neither_transport_is_selected() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     vars.insert_string("URL", "https://vtc.example.com");
 
     let out = tpl.render(&vars).unwrap();
@@ -1052,6 +1058,7 @@ fn transport_and_registry_slots_prune_independently() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     vars.insert_string("URL", "https://vtc.example.com");
     vars.insert(TSP_SERVICE_VAR, tsp_service(MEDIATOR).unwrap());
     vars.insert(
@@ -1082,6 +1089,7 @@ fn vtc_host_status_list_path_override() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     vars.insert_string("URL", "https://vtc.example.com");
     vars.insert_string("STATUS_LIST_PATH", "/custom/status");
 
@@ -1097,6 +1105,7 @@ fn vtc_host_requires_url() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
     vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
     // URL deliberately omitted.
 
     let err = tpl.render(&vars).expect_err("URL is required");
@@ -1416,24 +1425,63 @@ fn did_host_tsp_builtin_missing_mediator_did_errors() {
 
 // ── schemaVersion 2: the `keys` block ────────────────────────────────────────
 
-/// **The compatibility guarantee.** Every built-in is v1 and must keep the
-/// exact key pair it has always had.
+/// **The compatibility guarantee.** A v1 built-in must keep the exact key pair
+/// it has always had.
 ///
 /// `key_slots()` is what makes a v1 and a v2 template one code path, and it can
 /// only do that if a v1 template's implicit answer is right. If this ever
 /// drifts, every existing DID document starts being minted with different keys
 /// than the template says — and nothing else in the suite would notice, because
-/// the templates themselves do not mention algorithms at all.
+/// a v1 template does not mention algorithms at all.
+///
+/// `vtc-host` is v2 (it declares a post-quantum signing slot), so it is checked
+/// against what it declares rather than against the v1 default. Listing it by
+/// name rather than skipping every v2 template keeps this test honest: a
+/// built-in that quietly moved to v2 would otherwise stop being checked at all.
 #[test]
 fn every_builtin_still_declares_the_historical_key_pair() {
+    /// Built-ins that have deliberately moved past the implicit pair.
+    const V2_BUILTINS: &[&str] = &["vtc-host"];
+
     for name in BUILTIN_NAMES {
         let tpl = builtin::load_embedded(name).expect("builtin loads");
+        let slots = tpl.key_slots();
+
+        if V2_BUILTINS.contains(name) {
+            assert_eq!(
+                tpl.schema_version, 2,
+                "{name} is listed as a v2 built-in but declares schemaVersion {}",
+                tpl.schema_version
+            );
+            // The two historical slots must survive unchanged even here. The
+            // post-quantum key is an *addition*: `#key-0` still signs the
+            // did:webvh log (didwebvh 1.0 mandates eddsa-jcs-2022 there) and
+            // the VTC still derives its install-token, audit and storage keys
+            // from that Ed25519 seed.
+            assert_eq!(
+                slots[SLOT_SIGNING].algorithms,
+                vec!["ed25519".to_string()],
+                "{name}: the primary signing key must stay Ed25519 — it signs the DID log"
+            );
+            assert_eq!(
+                slots[SLOT_KA].algorithms,
+                vec!["x25519".to_string()],
+                "{name}: the key-agreement key is X25519"
+            );
+            assert!(
+                slots.len() > 2,
+                "{name} is listed as v2 but declares only the historical pair — either the \
+                 extra slot was dropped or it should not be in V2_BUILTINS"
+            );
+            continue;
+        }
+
         assert_eq!(
             tpl.schema_version, 1,
-            "{name} is no longer v1; this test's premise needs revisiting"
+            "{name} moved to schemaVersion {} — add it to V2_BUILTINS and state what it \
+             declares, rather than letting it fall out of this check",
+            tpl.schema_version
         );
-
-        let slots = tpl.key_slots();
         assert_eq!(
             slots.len(),
             2,

@@ -31,7 +31,7 @@ use super::event::{AttemptOutcome, AttemptResultKind, VtaEvent};
 use super::intent::{AdminCredentialReply, VtaIntent, VtaReply};
 use super::messages::OperatorMessages;
 use super::resolve::{ResolvedVta, resolve_vta};
-use super::result::ProvisionResult;
+use super::result::ProvisionResultV2;
 use super::runner_didcomm::{run_didcomm_attempt, run_provision_flight};
 use super::runner_rest::{
     run_rest_attempt_admin_only, run_rest_attempt_admin_rotated, run_rest_attempt_full_setup,
@@ -724,7 +724,7 @@ pub async fn provision_via_rest(
     setup_did: String,
     setup_privkey_mb: String,
     ask: ProvisionAsk,
-) -> Result<ProvisionResult, ProvisionError> {
+) -> Result<ProvisionResultV2, ProvisionError> {
     let (tx, _rx) = mpsc::unbounded_channel();
     let outcome =
         run_rest_attempt_full_setup(rest_url, vta_did, setup_did, setup_privkey_mb, ask, &tx).await;

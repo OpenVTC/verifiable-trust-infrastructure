@@ -1734,6 +1734,24 @@ async fn init_auth(
         }
     };
 
+    // The post-quantum signing keys the bundle holds, if any. Read before the
+    // pair because a bundle whose extra key cannot be decoded must fail the
+    // boot, not be booted past: the DID document publishes that key as an
+    // assertion method, so issuing without it produces credentials a verifier
+    // expecting two proofs will read as incomplete — silently.
+    //
+    // Empty for every VTC provisioned from a v1 `vtc-host`, which is every one
+    // that exists today, and for the legacy raw-bytes shape below.
+    let additional_secrets =
+        match crate::setup::bundle::VtcKeyBundle::from_secret_store_bytes(&stored) {
+            Ok(bundle) => crate::setup::bundle::additional_signing_secrets(&bundle)?,
+            // Not a bundle at all — the legacy 64-raw-byte fixture shape, which
+            // `decode_secret_store_value` accepts just below and which cannot carry
+            // extra keys. Its own error is the one worth surfacing, so say nothing
+            // here.
+            Err(_) => Vec::new(),
+        };
+
     let (ed25519_bytes, x25519_bytes) =
         match crate::setup::bundle::decode_secret_store_value(&vtc_did, &stored) {
             Ok(pair) => pair,
@@ -1759,9 +1777,22 @@ async fn init_auth(
     // seed in a [`LocalSigner`] handle so VMC / VEC / status-list
     // credential builders can sign without round-tripping through
     // the secret store on every call.
-    let credential_signer = Some(Arc::new(
+    //
+    // Every additional signing key the VTA minted is added here, so each
+    // credential carries one proof per key — the classical one a verifier that
+    // has not migrated checks, the post-quantum one a verifier that has. A VTC
+    // holding only `#key-0` adds nothing and issues exactly what it always did:
+    // one key emits a proof object, several emit an array.
+    let signer = additional_secrets.into_iter().fold(
         crate::credentials::LocalSigner::from_ed25519_seed(vtc_did.clone(), &ed25519_bytes),
-    ));
+        |signer, secret| signer.with_additional_key(secret),
+    );
+    info!(
+        vtc_did = %vtc_did,
+        signing_keys = signer.key_count(),
+        "credential signer ready"
+    );
+    let credential_signer = Some(Arc::new(signer));
 
     // Derive the install-token signer from the 32-byte Ed25519
     // private. HKDF info is `vtc-install-jwt-key/v2` — bumped from
