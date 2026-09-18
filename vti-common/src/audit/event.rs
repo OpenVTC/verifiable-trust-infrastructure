@@ -411,6 +411,15 @@ pub enum AuditEvent {
     /// which `join-requests/manifest/0.2` publishes.
     CommunityBrandingUpdated(CommunityBrandingUpdatedData),
 
+    /// An admin changed whether the join manifest answers a caller the
+    /// community cannot identify (`PUT /v1/community/join-discovery`).
+    ///
+    /// Worth its own event rather than a line in a profile diff: it changes
+    /// who can read the community's admission criteria, and "when did we stop
+    /// publishing those, and who decided?" is a question an operator is later
+    /// asked.
+    CommunityJoinDiscoveryUpdated(CommunityJoinDiscoveryUpdatedData),
+
     /// An operator registered a new custom endorsement type
     /// via `POST /v1/endorsement-types`. Phase 4 M4.8.1 (D4
     /// review). The actor is the admin; the `type_uri` field
@@ -586,6 +595,7 @@ impl AuditEvent {
             Self::VetterAutoGrantConfigured(..) => "VetterAutoGrantConfigured",
             Self::VetterAutoGrantSwept(..) => "VetterAutoGrantSwept",
             Self::CommunityBrandingUpdated(..) => "CommunityBrandingUpdated",
+            Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
             Self::EndorsementTypeDeleted(..) => "EndorsementTypeDeleted",
             Self::WebsiteFileWritten(..) => "WebsiteFileWritten",
@@ -1470,6 +1480,14 @@ pub struct VetterAutoGrantSweptData {
 pub struct CommunityBrandingUpdatedData {
     /// The branding members that changed, by wire name.
     pub fields_changed: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::CommunityJoinDiscoveryUpdated`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityJoinDiscoveryUpdatedData {
+    /// What it was set to: whether an unidentified caller is answered.
+    pub public: bool,
 }
 
 /// Payload for [`AuditEvent::EndorsementTypeRegistered`].

@@ -91,6 +91,20 @@ Applicants read the requirements from `vtc/join-requests/manifest/0.2`, which
 adds `vetting` and a `requirementsDigest` to each criterion. `manifest/0.1` is
 unchanged.
 
+The manifest is served over `POST /v1/trust-tasks` with no session, so someone
+considering applying can read it before they have any relationship with the
+community — including on their first join, when they have no messaging channel
+to ask over. That is deliberate: informed non-application needs the applicant
+to know what is asked of them *before* they disclose anything.
+
+A community that would rather not answer anonymously sets `public: false` on
+`GET`/`PUT /v1/community/join-discovery` ("Joining" on the console's Community
+profile page). That does **not** make the manifest secret — an identified
+caller still gets the same answer, whether it signed its request or sent it
+over DIDComm — it makes the answer attributable. Refusing identified callers
+would break the join ceremony rather than close anything. The default is
+`true`, which is what every community did before the setting existed.
+
 ### 3. Name your vetters
 
 A vetter is a **member the community has named a vetter**. An admin does it

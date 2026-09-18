@@ -297,9 +297,11 @@ async fn dispatch_typed(
 
     match type_uri {
         jr::JOIN_REQUEST_SUBMIT_TYPE => handle_submit(state, ctx, doc).await,
-        jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, doc, ManifestVersion::V0_1).await,
+        jr::JOIN_REQUEST_MANIFEST_TYPE => {
+            handle_manifest(state, ctx, doc, ManifestVersion::V0_1).await
+        }
         jr::JOIN_REQUEST_MANIFEST_0_2_TYPE => {
-            handle_manifest(state, doc, ManifestVersion::V0_2).await
+            handle_manifest(state, ctx, doc, ManifestVersion::V0_2).await
         }
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
@@ -845,16 +847,64 @@ async fn handle_vetter_resend(
     }
 }
 
-// ─── manifest (public) ─────────────────────────────────────────────────────
+// ─── manifest (public by default) ──────────────────────────────────────────
+
+/// Whether this caller is one the community can name.
+///
+/// Either proof of identity will do, because the two transports prove it
+/// differently and both are real: over REST a signed document names its signer
+/// (`verified_signer`), over DIDComm the authcrypt envelope names its sender
+/// (`sender_did`). Requiring the REST form on a DIDComm caller — or the reverse
+/// — would refuse a party the transport has already identified.
+fn caller_is_identified(ctx: &JoinAuthCtx) -> bool {
+    ctx.verified_signer.is_some() || ctx.sender_did.is_some()
+}
 
 /// Both manifest versions share one read; the version the document names
 /// decides the shape of the answer.
+///
+/// Public unless the community has turned public discovery off, in which case
+/// an unidentified caller is refused and an identified one is answered exactly
+/// as before — see [`JoinDiscovery`](crate::community::profile::JoinDiscovery).
+/// The refusal is `permissionDenied` with a sentence saying *how* to ask rather
+/// than only that this failed: a client that reads "not public" and stops has
+/// been told the wrong thing, because the same question over an identified
+/// transport still answers.
 async fn handle_manifest(
     state: &AppState,
+    ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
     version: ManifestVersion,
 ) -> TrustTaskOutcome {
     use crate::routes::join_requests::manifest::{manifest_v0_1, manifest_v0_2};
+    if !caller_is_identified(ctx) {
+        let public = match crate::community::join_discovery::load_join_discovery(
+            &state.community_ks,
+        )
+        .await
+        {
+            Ok(setting) => setting.public,
+            // A setting that cannot be read is not a reason to stop answering a
+            // question that has always been public: failing open keeps a
+            // storage fault from looking like a closed community, and the
+            // manifest carries nothing that was not already published.
+            Err(e) => {
+                tracing::warn!(error = %e, "join discovery unreadable; answering the manifest");
+                true
+            }
+        };
+        if !public {
+            return reject_with(
+                &doc,
+                RejectReason::PermissionDenied {
+                    reason: "this community does not publish its join requirements to callers \
+                             it cannot identify — ask over DIDComm, or with a signed Trust Task \
+                             document"
+                        .to_string(),
+                },
+            );
+        }
+    }
     let answer = match version {
         ManifestVersion::V0_1 => manifest_v0_1(state)
             .await
@@ -1564,5 +1614,39 @@ mod tests {
                 "expected the subject-binding refusal, got: {body}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod join_discovery_tests {
+    //! The predicate the manifest gate rests on.
+    use super::*;
+
+    fn ctx(sender: Option<&str>, signer: Option<&str>) -> JoinAuthCtx {
+        JoinAuthCtx {
+            transport: JoinTransport::Rest,
+            sender_did: sender.map(str::to_string),
+            verified_signer: signer.map(str::to_string),
+        }
+    }
+
+    /// Both transports prove who is asking, in their own way, and either is
+    /// enough. Requiring the REST form of the proof from a DIDComm caller
+    /// would refuse a party the envelope already named.
+    #[test]
+    fn either_transports_proof_of_who_is_asking_counts() {
+        assert!(caller_is_identified(&ctx(None, Some("did:key:zSigner"))));
+        assert!(caller_is_identified(&ctx(Some("did:peer:sender"), None)));
+        assert!(caller_is_identified(&ctx(
+            Some("did:peer:sender"),
+            Some("did:key:zSigner")
+        )));
+    }
+
+    /// The anonymous read — no signature, no envelope — is the only one the
+    /// setting can turn off, and the only one it needs to.
+    #[test]
+    fn a_caller_that_proves_nothing_is_unidentified() {
+        assert!(!caller_is_identified(&ctx(None, None)));
     }
 }

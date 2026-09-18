@@ -470,6 +470,14 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             community::branding::get_branding,
             community::branding::put_branding
         ))
+        // Whether the join manifest answers a caller this community cannot
+        // identify. Admin REST with no Trust Task of its own — and not a
+        // member of the profile, whose `show` response is a published schema
+        // that permits no new ones.
+        .routes(routes!(
+            community::join_discovery::get_join_discovery,
+            community::join_discovery::put_join_discovery
+        ))
         // Admin config (M0.8). GET and PATCH share a path but carry
         // *separate* canonical tasks — `task_routes` layers the method
         // router and axum merges same-path routers per method, so each

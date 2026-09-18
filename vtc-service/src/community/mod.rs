@@ -8,6 +8,7 @@
 //! under the stable key `community/profile`.
 
 pub mod branding;
+pub mod join_discovery;
 pub mod profile;
 
 pub use branding::{BRANDING_STORAGE_KEY, load_branding, store_branding};

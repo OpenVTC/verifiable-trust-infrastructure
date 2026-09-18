@@ -1507,6 +1507,78 @@
         ]
       }
     },
+    "/v1/community/join-discovery": {
+      "get": {
+        "tags": [
+          "community"
+        ],
+        "summary": "Whether the join manifest answers an unidentified caller.",
+        "operationId": "communityJoinDiscoveryShow",
+        "responses": {
+          "200": {
+            "description": "The community's join-discovery setting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinDiscovery"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "community"
+        ],
+        "summary": "Replace the setting.",
+        "operationId": "communityJoinDiscoveryUpdate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinDiscovery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The stored setting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinDiscovery"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "503": {
+            "description": "Audit writer not configured — change refused"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/community/profile": {
       "get": {
         "tags": [
@@ -7363,6 +7435,16 @@
               "null"
             ],
             "description": "Optional elaboration — the policy's `reason`, or the operator's\nwords. Absent when the decider supplied none."
+          }
+        }
+      },
+      "JoinDiscovery": {
+        "type": "object",
+        "description": "Whether the join manifest answers an unidentified caller.",
+        "properties": {
+          "public": {
+            "type": "boolean",
+            "description": "Answer the manifest to a caller this community cannot identify.\n\nDefaults to **true**, which is what every community did before this\nsetting existed. A default of `false` would stop answering applicants\nthat were being answered yesterday, for operators who never chose it —\na setting that changes behaviour nobody opted into is not a setting,\nit is a regression with a checkbox."
           }
         }
       },
