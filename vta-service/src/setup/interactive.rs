@@ -1203,6 +1203,7 @@ async fn gather_inputs(
             did_log_rate_limit_interval_secs: ServerConfig::default()
                 .did_log_rate_limit_interval_secs,
             did_log_rate_limit_burst: ServerConfig::default().did_log_rate_limit_burst,
+            trust_xff: (),
         },
         log: LogConfig {
             level: log_level,

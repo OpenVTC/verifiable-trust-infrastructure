@@ -1073,10 +1073,10 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
     // KiB cap apply. The admin GET list + show + POST decide and the
     // public GET manifest stay on the `api` chain.
 
-    // L2: rate-limiter key extractor honours `trust_xff_cidrs`. The
-    // governor is applied in the routing chain below via a
-    // branched `apply_governor` helper so the two key extractors'
-    // distinct generic types don't pollute the variable's signature.
+    // Rate-limiter key extractor honours `trust_xff_cidrs`. The
+    // governor is applied in the routing chain below so the two
+    // key extractors' distinct generic types don't pollute the
+    // variable's signature.
     let _ = trust_xff_cidrs;
 
     // Both `PeerIpKeyExtractor` and `TrustedProxyKeyExtractor` need

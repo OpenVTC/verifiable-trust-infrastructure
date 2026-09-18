@@ -446,6 +446,32 @@ pub struct ServerConfig {
     /// starts. Default: 60. Zero is clamped to 1.
     #[serde(default = "default_did_log_rate_limit_burst")]
     pub did_log_rate_limit_burst: u32,
+    /// Retired: `trust_xff`. Present only to **refuse** a config that still
+    /// declares it — replaced by `trust_xff_cidrs`, an explicit trusted-proxy
+    /// CIDR allowlist. Absent (the only accepted state) deserializes to `()`
+    /// via `default`.
+    #[serde(
+        default,
+        deserialize_with = "refuse_retired_trust_xff",
+        skip_serializing
+    )]
+    pub trust_xff: (),
+}
+
+/// Reject `trust_xff` with the migration the operator needs.
+///
+/// Only ever called when the key is present — `#[serde(default)]` covers its
+/// absence — so reaching this function *is* the error.
+fn refuse_retired_trust_xff<'de, D>(_: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(
+        "`trust_xff` has been retired. Replace it with `trust_xff_cidrs = [\"<cidr>\", ...]` \
+         — the addresses of the reverse proxies actually in front of this VTA. A `true` \
+         config silently keying the rate limiter on the socket peer after this change \
+         collapses every client behind that proxy into one shared bucket.",
+    ))
 }
 
 fn default_host() -> String {
@@ -493,6 +519,7 @@ impl Default for ServerConfig {
             rate_limit_burst: default_rate_limit_burst(),
             did_log_rate_limit_interval_secs: default_did_log_rate_limit_interval_secs(),
             did_log_rate_limit_burst: default_did_log_rate_limit_burst(),
+            trust_xff: (),
         }
     }
 }
@@ -1342,6 +1369,19 @@ mod validate_tests {
         cfg("")
             .validate()
             .expect("a fully-defaulted config must validate");
+    }
+
+    #[test]
+    fn retired_trust_xff_key_is_refused() {
+        let err = toml::from_str::<AppConfig>("[server]\ntrust_xff = true\n")
+            .expect_err("retired trust_xff key must be rejected");
+        assert!(format!("{err}").contains("trust_xff_cidrs"), "{err}");
+    }
+
+    #[test]
+    fn trust_xff_cidrs_still_parses() {
+        let config = cfg("[server]\ntrust_xff_cidrs = [\"127.0.0.1/32\"]\n");
+        assert_eq!(config.server.trust_xff_cidrs.len(), 1);
     }
 
     #[test]
