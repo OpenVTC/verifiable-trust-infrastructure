@@ -69,27 +69,17 @@ struct KmsConfig {
 
 impl ProxyConfig {
     pub fn load(config_path: &Path, cli: &super::Cli) -> Self {
-        // Parse VTA config.toml (best-effort — proxy still works without it)
+        // Absence is best-effort (the proxy still works without it), but a
+        // file the operator put there and got wrong is a misconfiguration,
+        // not an absence — fail loudly rather than silently running with
+        // trust_xff_cidrs defaulted to empty (a byte-for-byte revert to the
+        // one-shared-bucket behavior this proxy exists to fix, with nothing
+        // in the logs saying why).
         let vta_config = if config_path.exists() {
-            match std::fs::read_to_string(config_path) {
-                Ok(contents) => match toml::from_str::<VtaConfig>(&contents) {
-                    Ok(cfg) => cfg,
-                    Err(e) => {
-                        tracing::warn!(
-                            "failed to parse {}: {e} — using defaults",
-                            config_path.display()
-                        );
-                        VtaConfig::default()
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        "failed to read {}: {e} — using defaults",
-                        config_path.display()
-                    );
-                    VtaConfig::default()
-                }
-            }
+            let contents = std::fs::read_to_string(config_path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", config_path.display()));
+            toml::from_str::<VtaConfig>(&contents)
+                .unwrap_or_else(|e| panic!("failed to parse {}: {e}", config_path.display()))
         } else {
             tracing::warn!(
                 "config file not found: {} — using defaults",
@@ -359,11 +349,15 @@ mod tests {
         assert!(config.trusted_upstream_cidrs.is_empty());
     }
 
-    /// A config file that exists but fails to parse (bad TOML syntax, here)
-    /// must still yield safe defaults rather than panicking — matching the
-    /// missing-file case above, just reached through a different branch.
+    /// A config file that *exists* but fails to parse (bad TOML syntax, here)
+    /// is a misconfiguration the operator can fix, not an absence — it must
+    /// panic rather than silently fall back to defaults (which would revert
+    /// `trusted_upstream_cidrs` to empty with nothing in the logs saying why).
+    /// Only a genuinely missing file (see the test above) gets the soft
+    /// default.
     #[test]
-    fn unparseable_config_file_yields_safe_defaults_not_a_panic() {
+    #[should_panic(expected = "failed to parse")]
+    fn unparseable_config_file_panics_rather_than_silently_defaulting() {
         let dir = std::env::temp_dir().join(format!(
             "enclave-proxy-config-test-unparseable-{}",
             std::process::id()
@@ -373,9 +367,6 @@ mod tests {
         std::fs::write(&config_path, "this is not valid toml [[[").unwrap();
 
         let cli = crate::Cli::parse_from(["enclave-proxy"]);
-        let config = ProxyConfig::load(&config_path, &cli);
-        assert!(config.trusted_upstream_cidrs.is_empty());
-
-        std::fs::remove_dir_all(&dir).ok();
+        let _ = ProxyConfig::load(&config_path, &cli);
     }
 }
