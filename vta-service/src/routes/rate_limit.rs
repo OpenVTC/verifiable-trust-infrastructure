@@ -586,19 +586,28 @@ mod tests {
         assert_eq!(admitted(&app, "/auth", "198.51.100.8", 20).await, 1);
     }
 
+    /// A request with no `ConnectInfo` has no un-spoofable anchor, so it must
+    /// be refused rather than charged to a placeholder. Asserted on **both**
+    /// attribution modes: the trusted-CIDR mode is the one that matters, since
+    /// a placeholder peer inside a trusted CIDR would let the request name its
+    /// own bucket through `x-forwarded-for`.
     #[tokio::test]
     async fn no_attributable_client_is_refused_not_unlimited() {
-        // Empty trust_xff_cidrs keys on the socket peer; a request without
-        // ConnectInfo has none, and must not pass unmetered.
-        let router = apply(
-            OpenApiRouter::<()>::new().route("/auth", get(ok)),
-            Limiter::Auth,
-            &[],
-            &QuotaSource::Fixed(RateLimits::default()),
-        );
-        let (app, _) = router.split_for_parts();
-        let resp = get_from(&app, "/auth", "198.51.100.9").await;
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        for cidrs in [vec![], trusted_loopback()] {
+            let router = apply(
+                OpenApiRouter::<()>::new().route("/auth", get(ok)),
+                Limiter::Auth,
+                &cidrs,
+                &QuotaSource::Fixed(RateLimits::default()),
+            );
+            let (app, _) = router.split_for_parts();
+            let resp = get_from(&app, "/auth", "198.51.100.9").await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "cidrs={cidrs:?}"
+            );
+        }
     }
 
     #[test]

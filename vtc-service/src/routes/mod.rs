@@ -1073,24 +1073,25 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
     // KiB cap apply. The admin GET list + show + POST decide and the
     // public GET manifest stay on the `api` chain.
 
-    // Rate-limiter key extractor honours `trust_xff_cidrs`. The
-    // governor is applied in the routing chain below so the two
-    // key extractors' distinct generic types don't pollute the
-    // variable's signature.
-    let _ = trust_xff_cidrs;
-
-    // Both `PeerIpKeyExtractor` and `TrustedProxyKeyExtractor` need
-    // `ConnectInfo` to identify the real peer. In production the
-    // `axum::serve` call in `server.rs` wires
+    // `TrustedProxyKeyExtractor` needs `ConnectInfo` to identify the peer. In
+    // production the `axum::serve` call in `server.rs` wires
     // `into_make_service_with_connect_info` so it's always present; in
-    // integration tests built on `Router::oneshot`, neither headers nor
-    // `ConnectInfo` are present and the extractor errors out. This
-    // synthetic-`ConnectInfo` middleware inserts a `127.0.0.1` placeholder
-    // **only when missing** so test calls take the peer-IP fallback path —
-    // production traffic (which already carries `ConnectInfo` from the
-    // service factory) is untouched.
-    let synth_connect_info =
-        axum::middleware::from_fn(vti_common::rate_limit::insert_default_connect_info_if_missing);
+    // integration tests built on `Router::oneshot` it is not, and the
+    // extractor refuses every request. A synthetic-`ConnectInfo` middleware
+    // inserts a `127.0.0.1` placeholder **only when missing** so those calls
+    // take the peer-IP path.
+    //
+    // It is layered **only when nothing is trusted**, and that condition is
+    // the whole safety argument: a synthesised peer is a manufactured anchor,
+    // and with a non-empty trust list it could land *inside* a trusted CIDR —
+    // at which point a request with no peer at all would be allowed to name
+    // its own rate-limit bucket through `X-Forwarded-For`. With an empty list
+    // no address is trusted, so the placeholder can only ever be keyed on
+    // directly. A configured VTC therefore keeps the fail-closed behaviour
+    // (no peer → refused), which is what production sees anyway.
+    let synth_connect_info = trust_xff_cidrs.is_empty().then(|| {
+        axum::middleware::from_fn(vti_common::rate_limit::insert_default_connect_info_if_missing)
+    });
 
     let unauth_router = OpenApiRouter::<AppState>::new()
         .routes(tt(
@@ -1176,38 +1177,26 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         .routes(routes!(trust_tasks::dispatch))
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
 
-    // Apply the per-IP rate limiter in a branch so the two
-    // key-extractor generic types don't leak into the variable's
-    // type. The layered router is type-erased on the axum side
-    // once we hand it back.
-    let unauth_router = if trust_xff_cidrs.is_empty() {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(5)
-                .burst_size(10)
-                .key_extractor(tower_governor::key_extractor::PeerIpKeyExtractor)
-                .finish()
-                .expect("governor config values are static and non-zero"),
-        );
-        unauth_router.layer(
-            GovernorLayer::new(cfg)
-                .error_handler(crate::routing::rate_limit::governor_error_response),
-        )
-    } else {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(5)
-                .burst_size(10)
-                .key_extractor(TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()))
-                .finish()
-                .expect("governor config values are static and non-zero"),
-        );
-        unauth_router.layer(
-            GovernorLayer::new(cfg)
-                .error_handler(crate::routing::rate_limit::governor_error_response),
-        )
-    };
-    unauth_router.layer(synth_connect_info)
+    // One extractor covers both cases: with an empty CIDR list
+    // `TrustedProxyKeyExtractor` trusts nothing and so keys on the socket
+    // peer, which is exactly `PeerIpKeyExtractor`. Branching on the list only
+    // to pick between two behaviours that already coincide is a chance to get
+    // the arms the wrong way round for no gain.
+    let cfg = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(5)
+            .burst_size(10)
+            .key_extractor(TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()))
+            .finish()
+            .expect("governor config values are static and non-zero"),
+    );
+    let unauth_router = unauth_router.layer(
+        GovernorLayer::new(cfg).error_handler(crate::routing::rate_limit::governor_error_response),
+    );
+    match synth_connect_info {
+        Some(layer) => unauth_router.layer(layer),
+        None => unauth_router,
+    }
 }
 
 /// Build the public router from the API sub-router + placeholder

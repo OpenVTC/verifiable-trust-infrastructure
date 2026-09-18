@@ -208,6 +208,23 @@ pub fn router() -> Router<AppState> {
 /// layers (body cap, timeout, CORS) and the `/openapi.json` route are applied
 /// by [`router_with_cors`] after splitting.
 ///
+/// `trust_xff_cidrs` selects the rate limiter's IP-attribution strategy. Empty
+/// (the default) keys on the socket peer — spoof-proof, and correct whenever
+/// clients reach the VTA directly. A non-empty list names the reverse proxies
+/// in front of the VTA, and only for a request whose peer is one of them does
+/// the limiter read `X-Forwarded-For`; see
+/// [`vti_common::rate_limit::TrustedProxyKeyExtractor`] for what that list
+/// asserts about the deployment, and `docs/02-vta/rate-limiting.md` for the
+/// operator view.
+///
+/// The router assembled here deliberately carries **no** synthetic-`ConnectInfo`
+/// middleware. A request with no peer has no un-spoofable anchor and must be
+/// refused, not attributed to a placeholder — a placeholder inside a trusted
+/// CIDR would hand the request its own `X-Forwarded-For`. `server::run` serves
+/// through `into_make_service_with_connect_info`, so a real peer is always
+/// present; only `tower::oneshot` test callers need one synthesised, and they
+/// layer it themselves (`test_support::build_test_app_with`).
+///
 /// `quotas` is where the per-IP limiters on the unauthenticated endpoints read
 /// their quotas (see [`rate_limit`] for which routes sit behind which). The
 /// running service passes [`QuotaSource::Live`] over the shared config, so a
@@ -255,9 +272,6 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // import etc.
     let unauth = unauth.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
     let unauth = rate_limit::apply(unauth, Limiter::Auth, trust_xff_cidrs, &quotas);
-    let unauth = unauth.layer(axum::middleware::from_fn(
-        vti_common::rate_limit::insert_default_connect_info_if_missing,
-    ));
 
     // Public DID-log retrieval, on its own per-IP limiter. Resolving the
     // VTA's DID precedes every client command and the mediator + readiness
@@ -297,9 +311,6 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // at all is unexpected.
     let did_log = did_log.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
     let did_log = rate_limit::apply(did_log, Limiter::DidLog, trust_xff_cidrs, &quotas);
-    let did_log = did_log.layer(axum::middleware::from_fn(
-        vti_common::rate_limit::insert_default_connect_info_if_missing,
-    ));
 
     // Auth portal — same-origin popup target for cross-origin WebAuthn
     // flows. Sits on its own router branch so:
@@ -555,9 +566,6 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         trust_xff_cidrs,
         &quotas,
     );
-    let backup_blob_router = backup_blob_router.layer(axum::middleware::from_fn(
-        vti_common::rate_limit::insert_default_connect_info_if_missing,
-    ));
     let router = router.merge(backup_blob_router);
 
     // Authenticated health details.
