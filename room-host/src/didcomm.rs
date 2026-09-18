@@ -294,46 +294,63 @@ pub async fn serve(
 
     let mut inbound = transport.inbound();
     while let Some(frame) = inbound.next().await {
-        // A frame with no authenticated sender has nobody to answer. It is not a refusal —
-        // the sender is not who a request is authorized by — but a reply needs a recipient,
-        // and there is none.
-        let Some(sender) = frame.message.sender.clone() else {
-            continue;
-        };
-        if !frame.message.verified {
-            continue;
-        }
-
-        let Some(Request { envelope, thread }) =
-            unwrap_request(frame.message.protocol, &frame.message.payload)
-        else {
-            continue;
-        };
-        let reply_thread = thread;
-
-        let answer = crate::dispatch(&state, &envelope).await;
-        // The document is the answer, and it is self-describing. The status `dispatch`
-        // derived is HTTP's way of saying the same thing and is dropped here.
-        let reply = answer.document;
-
-        let sent = match frame.message.protocol {
-            Protocol::TSP => send_tsp(&atm, &profile, &mediator_did, &sender, &reply).await,
-            _ => {
-                send_didcomm(
-                    &atm,
-                    &profile,
-                    &identity.did,
-                    &mediator_did,
-                    &sender,
-                    reply,
-                    &reply_thread,
-                )
-                .await
+        // Handling is its own scope so that every way out of it — answered,
+        // refused, unreadable — reaches the ack below. It used to `continue`
+        // past the ack on three of them, and an unacked frame is not dropped:
+        // the mediator keeps its copy and re-pushes the whole undelivered inbox
+        // on every live-delivery activation and every socket replacement. One
+        // frame this host would never accept therefore came back on every
+        // reconnect, forever, and the deletes that would have ended it are the
+        // traffic that gets a node rate-limited.
+        //
+        // Nothing here is a reason to keep a frame: a refusal is this host's
+        // final answer to it, and redelivery cannot change that.
+        async {
+            // A frame with no authenticated sender has nobody to answer. It is not a refusal —
+            // the sender is not who a request is authorized by — but a reply needs a recipient,
+            // and there is none.
+            let Some(sender) = frame.message.sender.clone() else {
+                tracing::debug!("inbound frame has no authenticated sender — nothing to answer");
+                return;
+            };
+            if !frame.message.verified {
+                tracing::debug!(from = %sender, "inbound frame failed verification — refused");
+                return;
             }
-        };
-        if let Err(e) = sent {
-            tracing::warn!(to = %sender, error = %e, "could not return an answer");
+
+            let Some(Request { envelope, thread }) =
+                unwrap_request(frame.message.protocol, &frame.message.payload)
+            else {
+                tracing::debug!(from = %sender, "inbound frame is not a request this host serves");
+                return;
+            };
+            let reply_thread = thread;
+
+            let answer = crate::dispatch(&state, &envelope).await;
+            // The document is the answer, and it is self-describing. The status `dispatch`
+            // derived is HTTP's way of saying the same thing and is dropped here.
+            let reply = answer.document;
+
+            let sent = match frame.message.protocol {
+                Protocol::TSP => send_tsp(&atm, &profile, &mediator_did, &sender, &reply).await,
+                _ => {
+                    send_didcomm(
+                        &atm,
+                        &profile,
+                        &identity.did,
+                        &mediator_did,
+                        &sender,
+                        reply,
+                        &reply_thread,
+                    )
+                    .await
+                }
+            };
+            if let Err(e) = sent {
+                tracing::warn!(to = %sender, error = %e, "could not return an answer");
+            }
         }
+        .await;
 
         // Acked after the answer is away, never before: the ack is what makes the mediator
         // drop its copy, so acking first would lose a request whose answer never left.
