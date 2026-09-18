@@ -95,7 +95,7 @@ How to operate, deploy, and integrate against a VTA.
   enable storage encryption and sealed JWT key management for
   self-hosted (non-TEE) deployments (`[hardened] enabled = true`).
 - **[Rate limiting](02-vta/rate-limiting.md)** — the per-IP limits on
-  unauthenticated routes (auth vs `did.jsonl`), `trust_xff` and the
+  unauthenticated routes (auth vs `did.jsonl`), `trust_xff_cidrs` and the
   proxy trap, tuning at runtime with `pnm config update`, and telling a
   VTA 429 from a mediator's or a proxy's.
 - **[Seal and unseal](02-vta/seal-and-unseal.md)** — what the

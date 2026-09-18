@@ -1121,9 +1121,10 @@ async fn gather_inputs(
             .map(String::from)
             .collect();
         let cidrs_raw = p.text(
-            "Trusted proxy CIDRs (comma-separated, e.g. 10.0.0.0/24 — only the \
-             reverse proxy actually in front of this VTA; leave empty to key \
-             the rate limiter on the raw peer IP)",
+            "Trusted proxy CIDRs (comma-separated, e.g. 10.0.0.0/24 — every \
+             reverse proxy in front of this VTA, and only ones that rewrite \
+             X-Forwarded-For; a plain TCP forwarder listed here is a \
+             rate-limit bypass. Leave empty to key on the raw peer IP)",
             None,
             true,
             Some(&|s: &str| {
