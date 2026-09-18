@@ -160,6 +160,10 @@ pub mod retry_safety;
 // `retry_safety` is: `vta-service` reads the shared timeout constant from here
 // rather than keeping a second copy that can drift.
 pub mod budget;
+// What an inbound Trust Task document is — request, response, or terminal
+// error — and what each permits. Always-on and dependency-free: a peer on the
+// other end of the wire needs the same answer, and two copies of it drift.
+pub mod inbound;
 // `resolver` wraps `affinidi-did-resolver-cache-sdk`. The cfg lists every
 // feature that adds that dependency, not just `didcomm`: this module now also
 // owns the loopback-host decision (`webvh_host_policy`), and each of these

@@ -30,7 +30,6 @@
 use affinidi_messaging_core::RelationshipRequest;
 use tracing::info;
 
-use crate::messaging::auth::auth_for_trust_task_envelope;
 use crate::server::AppState;
 use vta_sdk::tsp_binding::{open_envelope, wrap_envelope};
 
@@ -59,12 +58,6 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // transport fact, and only DIDs we later push to are ever queried.
     app_state.tsp_reach.record(sender_vid);
     tracing::debug!(sender = %sender_vid, "recorded TSP reachability (learn-from-inbound)");
-    // `auth_for_trust_task_envelope`, not the bare ACL lookup: a ceremony task
-    // (`task-consent/decision`, step-up `approve-response`) is authorized by the
-    // document's own proof, so an approver with no ACL standing is dispatched on
-    // a zero-authority claim rather than refused. Kept identical to the DIDComm
-    // bridge — an approver must not be able to reach the VTA over one transport
-    // and not the other.
     // The binding envelope comes off first: everything below — authorization,
     // dispatch, the reply — works on the Trust-Task document, exactly as the
     // REST and DIDComm paths do. Carriage is opened here and nowhere else.
@@ -82,29 +75,32 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     };
     let payload = document.as_slice();
 
-    let outcome = match auth_for_trust_task_envelope(app_state, sender_vid, payload).await {
-        // TSP seals to the recipient VID, same guarantee as authcrypt.
-        Ok(auth) => {
-            crate::trust_tasks::dispatch_trust_task_core(
-                app_state,
-                &auth,
-                payload,
-                crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
-            )
-            .await
-        }
-        Err(e) => crate::trust_tasks::reject_trust_task(
-            payload,
-            trust_tasks_rs::RejectReason::PermissionDenied {
-                reason: e.to_string(),
-            },
-        ),
-    };
+    // The document and the VID we proved, and no decision of our own. Whether
+    // this is a request to authorize, a response to deliver, or an error to stop
+    // at is a fact about the document, so the spine reads it —
+    // `accept_from_proven_sender` explains why that is not the transport's call
+    // to make, and what it cost when it was. TSP seals to the recipient VID,
+    // same guarantee as authcrypt.
+    let outcome = crate::trust_tasks::accept_from_proven_sender(
+        app_state,
+        sender_vid,
+        payload,
+        crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+    )
+    .await;
     info!(
         sender = %sender_vid,
         status = %outcome.status,
         "TSP trust-task dispatched"
     );
+    // "Nothing goes back" has to survive the wrapper. An empty body is the
+    // signal `handle_tsp` reads to drop the reply rather than seal one, and
+    // wrapping it unconditionally produced `{"type":…,"document":}` — a
+    // malformed frame in place of silence. Only reachable since responses and
+    // errors became outcomes that answer nothing.
+    if outcome.body.is_empty() {
+        return Vec::new();
+    }
     // Sealed back in the same envelope it arrived in. A reply that dropped the
     // wrapper would make this binding asymmetric — conformant one way and not
     // the other — which is harder to notice than being wrong in both.
@@ -297,6 +293,102 @@ mod tests {
         assert!(
             doc.get("type").is_some() && doc.get("payload").is_some(),
             "reply should be a trust-task error document, got: {doc}"
+        );
+    }
+
+    /// The live failure, pinned: a DID hosting server answering a task the VTA
+    /// had itself sent came back and was ACL-refused as an unsolicited request,
+    /// because the transport authorized before the spine could see it was a
+    /// reply. It read as a missing ACL entry — and the fix that suggests itself,
+    /// granting the peer standing, would hand it the right to send *requests*
+    /// when all it ever needed was to answer.
+    ///
+    /// The sender has no ACL entry on purpose. A waiter is holding the thread,
+    /// so the answer must reach it and nothing may go back.
+    #[tokio::test]
+    async fn a_reply_reaches_its_waiter_without_the_sender_needing_acl_standing() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+
+        const THREAD: &str = "urn:uuid:11111111-1111-1111-1111-111111111111";
+        let mut waiting = app_state.pending_replies.register(THREAD);
+
+        let response = serde_json::json!({
+            "id": "urn:uuid:22222222-2222-2222-2222-222222222222",
+            "threadId": THREAD,
+            "type": "https://trusttasks.org/spec/did-management/did/problem-report/0.1",
+            "payload": {},
+        })
+        .to_string();
+
+        let body = dispatch_one(
+            &app_state,
+            &framed(&response),
+            "did:webvh:zHostingServerWithNoAclEntry",
+        )
+        .await;
+
+        assert!(
+            body.is_empty(),
+            "a reply is delivered to its waiter, never answered — got: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert!(
+            waiting.try_recv().is_ok(),
+            "the waiting request must receive the answer it asked for"
+        );
+    }
+
+    /// The other half of that rule, and the reason threading alone cannot settle
+    /// it: a step-up `approve-response` and a `task-consent/decision` thread to
+    /// the request that provoked them and are still *requests* — they carry the
+    /// approval. With nobody waiting on the thread this must reach the normal
+    /// pipeline, not be swallowed as a reply, or every ceremony waiting on a
+    /// human would strand.
+    #[tokio::test]
+    async fn a_threaded_document_with_no_waiter_is_still_dispatched() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+
+        let threaded = serde_json::json!({
+            "id": "urn:uuid:44444444-4444-4444-4444-444444444444",
+            "threadId": "urn:uuid:nobody-is-waiting-on-this",
+            "type": "https://trusttasks.org/spec/keys/create/0.1",
+            "payload": {},
+        })
+        .to_string();
+
+        let body = dispatch_one(&app_state, &framed(&threaded), "did:key:zSomeApprover").await;
+
+        assert!(
+            !body.is_empty(),
+            "a threaded document nobody is waiting for is an ordinary request \
+             and must still be answered"
+        );
+    }
+
+    /// The loop: an error dispatched as a request, refused, and answered with
+    /// another error — which the peer then does too. Neither side recognised the
+    /// other's error as terminal, so one failure became a permanent exchange
+    /// that stopped only when the mediator began rate-limiting.
+    ///
+    /// Nothing may go back here, whatever the sender's ACL standing.
+    #[tokio::test]
+    async fn an_inbound_error_is_terminal_and_is_never_answered() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+
+        let error_doc = serde_json::json!({
+            "id": "urn:uuid:33333333-3333-3333-3333-333333333333",
+            "threadId": "urn:uuid:11111111-1111-1111-1111-111111111111",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "payload": {"code": "e.p.did.validation-error", "message": "nope"},
+        })
+        .to_string();
+
+        let body = dispatch_one(&app_state, &framed(&error_doc), "did:key:zAnyPeer").await;
+
+        assert!(
+            body.is_empty(),
+            "answering an error is the loop — got: {}",
+            String::from_utf8_lossy(&body)
         );
     }
 
