@@ -633,6 +633,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/community/join-discovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whether the join manifest answers an unidentified caller. */
+        get: operations["communityJoinDiscoveryShow"];
+        /** Replace the setting. */
+        put: operations["communityJoinDiscoveryUpdate"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/community/profile": {
         parameters: {
             query?: never;
@@ -3247,6 +3265,19 @@ export interface components {
              *     words. Absent when the decider supplied none.
              */
             reason?: string | null;
+        };
+        /** @description Whether the join manifest answers an unidentified caller. */
+        JoinDiscovery: {
+            /**
+             * @description Answer the manifest to a caller this community cannot identify.
+             *
+             *     Defaults to **true**, which is what every community did before this
+             *     setting existed. A default of `false` would stop answering applicants
+             *     that were being answered yesterday, for operators who never chose it —
+             *     a setting that changes behaviour nobody opted into is not a setting,
+             *     it is a regression with a checkbox.
+             */
+            public?: boolean;
         };
         /** @description One join request. Stored under `join_requests:<id>`. */
         JoinRequest: {
@@ -7052,6 +7083,78 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audit writer not configured — change refused */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    communityJoinDiscoveryShow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The community's join-discovery setting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinDiscovery"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    communityJoinDiscoveryUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JoinDiscovery"];
+            };
+        };
+        responses: {
+            /** @description The stored setting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinDiscovery"];
+                };
             };
             /** @description Missing or invalid bearer token */
             401: {
