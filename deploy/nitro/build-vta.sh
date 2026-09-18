@@ -38,6 +38,10 @@
 #   VTA_ENCLAVE_MEM     Enclave memory MiB (default: 512)
 #   VTA_KEY_ARN         Existing KMS key ARN (skip creation if set)
 #   VTA_BUILD_ADMIN     ARN of build role to grant KMS admin (optional)
+#   VTA_SIGNING_KEY_ARN KMS asymmetric signing key ARN for the EIF (private key
+#                       never leaves KMS). When set, no local signing key is
+#                       generated; the PCR8 cert is minted from the KMS key and
+#                       the EIF is signed via deploy/nitro/kms-signer.
 #   VTA_SKIP_IAM        Set to "true" to skip IAM role creation
 #   VTA_BUILD_DIR       Output directory for the bundle (default: .deploy-nitro)
 # =============================================================================
@@ -58,7 +62,7 @@ for arg in "$@"; do
     case "$arg" in
         --non-interactive) INTERACTIVE=false ;;
         --help|-h)
-            sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
     esac
@@ -76,6 +80,24 @@ BUILD_DIR="${VTA_BUILD_DIR:-$REPO_ROOT/.deploy-nitro}"
 #          a tenant-overlay-template.json for that path (a per-tenant file is
 #          produced by render-tenant-overlay.sh).
 BAKE_CONFIG="${VTA_BAKE_CONFIG:-true}"
+
+# KMS-backed EIF signing (optional). When VTA_SIGNING_KEY_ARN is set, the EIF is
+# signed with a non-exportable KMS key instead of a local private key.
+SIGNING_KEY_ARN="${VTA_SIGNING_KEY_ARN:-}"
+USE_KMS=false
+KMS_SIGNER_BIN=""
+
+# Resolve (building if needed) the kms-signer binary used for KMS signing.
+resolve_kms_signer() {
+    local dir="$SCRIPT_DIR/kms-signer"
+    if [ -x "$dir/target/release/kms-signer" ]; then
+        KMS_SIGNER_BIN="$dir/target/release/kms-signer"
+    else
+        info "Building kms-signer (release)..."
+        (cd "$dir" && cargo build --release)
+        KMS_SIGNER_BIN="$dir/target/release/kms-signer"
+    fi
+}
 
 # =============================================================================
 # Step 1: Prerequisites
@@ -214,7 +236,25 @@ ask "Signing key directory" "${VTA_SIGNING_DIR:-./signing}" SIGNING_DIR
 # =============================================================================
 step 4 "EIF signing key"
 
-if [ -f "$SIGNING_DIR/signing-key.pem" ] && [ -f "$SIGNING_DIR/signing-cert.pem" ]; then
+if [ -n "$SIGNING_KEY_ARN" ]; then
+    # ── KMS-backed signing: the private key never leaves KMS ──
+    USE_KMS=true
+    mkdir -p "$SIGNING_DIR"
+    resolve_kms_signer
+
+    if [ -f "$SIGNING_DIR/signing-cert.pem" ]; then
+        ok "Reusing signing cert in $SIGNING_DIR (PCR8 is pinned to this cert)"
+    else
+        info "Minting PCR8 certificate from KMS key $SIGNING_KEY_ARN..."
+        "$KMS_SIGNER_BIN" mint-cert --key-arn "$SIGNING_KEY_ARN" \
+            --region "$REGION" --out "$SIGNING_DIR/signing-cert.pem"
+        ok "Certificate minted"
+    fi
+    PCR8=$(nitro-cli pcr --signing-certificate "$SIGNING_DIR/signing-cert.pem" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['PCR8'])")
+    echo "$PCR8" > "$SIGNING_DIR/pcr8.txt"
+    ok "PCR8: ${PCR8:0:32}... (KMS key)"
+elif [ -f "$SIGNING_DIR/signing-key.pem" ] && [ -f "$SIGNING_DIR/signing-cert.pem" ]; then
     ok "Existing signing key found in $SIGNING_DIR"
     if [ -f "$SIGNING_DIR/pcr8.txt" ]; then
         PCR8=$(cat "$SIGNING_DIR/pcr8.txt")
@@ -363,23 +403,33 @@ step 8 "Build and sign Enclave Image File"
 
 EIF_PATH="$BUILD_DIR/vta.eif"
 
-BUILD_OUTPUT=$(nitro-cli build-enclave \
-    --docker-uri vta-nitro \
-    --output-file "$EIF_PATH" \
-    --signing-certificate "$SIGNING_DIR/signing-cert.pem" \
-    --private-key "$SIGNING_DIR/signing-key.pem")
-
-echo "$BUILD_OUTPUT" | jq .
-
-PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
-BUILD_PCR8=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR8')
-
-ok "EIF built: $EIF_PATH"
-ok "PCR0: ${PCR0:0:32}..."
-if [ "$BUILD_PCR8" = "$PCR8" ]; then
-    ok "PCR8 matches signing key"
+if [ "$USE_KMS" = true ]; then
+    # Build unsigned, then sign the EIF with the KMS key.
+    BUILD_OUTPUT=$(nitro-cli build-enclave --docker-uri vta-nitro --output-file "$EIF_PATH")
+    PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
+    "$KMS_SIGNER_BIN" sign-eif --key "$SIGNING_KEY_ARN" \
+        --cert "$SIGNING_DIR/signing-cert.pem" --eif "$EIF_PATH"
+    ok "EIF built and KMS-signed: $EIF_PATH"
+    ok "PCR0: ${PCR0:0:32}..."
 else
-    warn "PCR8 mismatch! Build=$BUILD_PCR8, Expected=$PCR8"
+    BUILD_OUTPUT=$(nitro-cli build-enclave \
+        --docker-uri vta-nitro \
+        --output-file "$EIF_PATH" \
+        --signing-certificate "$SIGNING_DIR/signing-cert.pem" \
+        --private-key "$SIGNING_DIR/signing-key.pem")
+
+    echo "$BUILD_OUTPUT" | jq .
+
+    PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
+    BUILD_PCR8=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR8')
+
+    ok "EIF built: $EIF_PATH"
+    ok "PCR0: ${PCR0:0:32}..."
+    if [ "$BUILD_PCR8" = "$PCR8" ]; then
+        ok "PCR8 matches signing key"
+    else
+        warn "PCR8 mismatch! Build=$BUILD_PCR8, Expected=$PCR8"
+    fi
 fi
 echo "$PCR0" > "$BUILD_DIR/pcr0.txt"
 
@@ -485,12 +535,19 @@ docker build -f "$REPO_ROOT/Dockerfile.nitro" \
 ok "Docker image rebuilt"
 
 info "Rebuilding EIF..."
-BUILD_OUTPUT=$(nitro-cli build-enclave \
-    --docker-uri vta-nitro \
-    --output-file "$EIF_PATH" \
-    --signing-certificate "$SIGNING_DIR/signing-cert.pem" \
-    --private-key "$SIGNING_DIR/signing-key.pem")
-NEW_PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
+if [ "$USE_KMS" = true ]; then
+    BUILD_OUTPUT=$(nitro-cli build-enclave --docker-uri vta-nitro --output-file "$EIF_PATH")
+    NEW_PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
+    "$KMS_SIGNER_BIN" sign-eif --key "$SIGNING_KEY_ARN" \
+        --cert "$SIGNING_DIR/signing-cert.pem" --eif "$EIF_PATH"
+else
+    BUILD_OUTPUT=$(nitro-cli build-enclave \
+        --docker-uri vta-nitro \
+        --output-file "$EIF_PATH" \
+        --signing-certificate "$SIGNING_DIR/signing-cert.pem" \
+        --private-key "$SIGNING_DIR/signing-key.pem")
+    NEW_PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
+fi
 ok "EIF rebuilt"
 
 if [ "$NEW_PCR0" != "$PCR0" ]; then
