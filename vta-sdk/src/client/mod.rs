@@ -1886,6 +1886,23 @@ impl VtaClient {
     ) -> Result<serde_json::Value, VtaError> {
         Self::check_payload_conforms(type_uri, &payload)?;
 
+        // Raise the budget to clear the VTA's own worst case when this is a
+        // task it answers by calling a third party (`budget::RELAYS_ONWARD`).
+        //
+        // Here rather than at the ~66 call sites because this is the one point
+        // every transport and every caller passes through — including a
+        // consumer outside this workspace calling `dispatch_trust_task`
+        // directly, which no amount of editing literals in `client/*.rs` would
+        // have reached. The literals stay as each caller's own floor; this only
+        // ever raises.
+        //
+        // Without it, `create_did_webvh`'s 60s sat below the VTA's ~60.5s and
+        // the caller stopped listening a few hundred milliseconds before the
+        // real error arrived — every time, on every attempt, so the operator
+        // saw a bare timeout and no diagnosis. Every other webvh verb carried
+        // the same latent inversion at 30s or 60s.
+        let timeout = crate::budget::client_budget_secs(type_uri, timeout);
+
         // Ahead of the transport: a loopback client answers the Trust-Task
         // surface in-process. See `client::loopback`.
         #[cfg(feature = "test-loopback")]

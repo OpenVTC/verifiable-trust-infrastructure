@@ -118,8 +118,15 @@ pub const OUTBOUND_SUPPORTED: &[Protocol] = &[
 ///
 /// The same window DIDComm gets. TSP delivers through the same mediator socket,
 /// so the thing being waited on is the peer's processing time either way.
+///
+/// Re-exported from [`vta_sdk::budget`] rather than defined here. It used to be
+/// a private const, which made the window a fact only this end knew — and a
+/// client sized its own budget from a different literal in a different crate,
+/// until the two crossed and `create_did_webvh` could no longer see the errors
+/// this function produces. Whoever changes this number changes what callers
+/// must allow, so it belongs where both ends read it.
 #[cfg(feature = "tsp")]
-const TSP_REPLY_TIMEOUT_SECS: u64 = 30;
+use vta_sdk::budget::TSP_REPLY_TIMEOUT_SECS;
 
 /// What makes a reply believable.
 ///
