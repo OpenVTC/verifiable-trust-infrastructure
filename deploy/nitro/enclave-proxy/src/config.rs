@@ -71,8 +71,25 @@ impl ProxyConfig {
     pub fn load(config_path: &Path, cli: &super::Cli) -> Self {
         // Parse VTA config.toml (best-effort — proxy still works without it)
         let vta_config = if config_path.exists() {
-            let contents = std::fs::read_to_string(config_path).unwrap_or_default();
-            toml::from_str::<VtaConfig>(&contents).unwrap_or_default()
+            match std::fs::read_to_string(config_path) {
+                Ok(contents) => match toml::from_str::<VtaConfig>(&contents) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to parse {}: {e} — using defaults",
+                            config_path.display()
+                        );
+                        VtaConfig::default()
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to read {}: {e} — using defaults",
+                        config_path.display()
+                    );
+                    VtaConfig::default()
+                }
+            }
         } else {
             tracing::warn!(
                 "config file not found: {} — using defaults",
@@ -340,5 +357,25 @@ mod tests {
         let cli = crate::Cli::parse_from(["enclave-proxy"]);
         let config = ProxyConfig::load(std::path::Path::new("/nonexistent"), &cli);
         assert!(config.trusted_upstream_cidrs.is_empty());
+    }
+
+    /// A config file that exists but fails to parse (bad TOML syntax, here)
+    /// must still yield safe defaults rather than panicking — matching the
+    /// missing-file case above, just reached through a different branch.
+    #[test]
+    fn unparseable_config_file_yields_safe_defaults_not_a_panic() {
+        let dir = std::env::temp_dir().join(format!(
+            "enclave-proxy-config-test-unparseable-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, "this is not valid toml [[[").unwrap();
+
+        let cli = crate::Cli::parse_from(["enclave-proxy"]);
+        let config = ProxyConfig::load(&config_path, &cli);
+        assert!(config.trusted_upstream_cidrs.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

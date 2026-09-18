@@ -126,16 +126,8 @@ pub fn sanitise_forwarding_headers<B>(
         .any(|cidr| cidr.contains(peer));
 
     // Read the existing chain before any header is touched — extending it
-    // requires knowing what it was. Multiple `X-Forwarded-For` lines
-    // concatenate in the order they arrived.
-    let existing_chain = trusted.then(|| {
-        req.headers()
-            .get_all("x-forwarded-for")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .collect::<Vec<_>>()
-            .join(", ")
-    });
+    // requires knowing what it was.
+    let existing_chain = trusted.then(|| existing_forwarded_entries(req)).flatten();
 
     let headers = req.headers_mut();
     for name in CLIENT_IDENTITY_HEADERS {
@@ -146,7 +138,7 @@ pub fn sanitise_forwarding_headers<B>(
     }
 
     let value = match existing_chain {
-        Some(chain) if !chain.is_empty() => format!("{chain}, {peer}"),
+        Some(entries) if !entries.is_empty() => format!("{}, {peer}", entries.join(", ")),
         _ => peer.to_string(),
     };
     // A comma-joined list of values that were already valid headers, plus an
@@ -154,9 +146,48 @@ pub fn sanitise_forwarding_headers<B>(
     // always a valid header value — the only way this can fail is a bug in
     // `std`, and dropping the header would silently fall the limiter back to
     // one shared bucket, so assert instead.
-    let value = HeaderValue::from_str(&value)
-        .expect("a joined chain of valid header values is itself a valid header value");
+    let value = HeaderValue::from_str(&value).expect(
+        "a joined chain of valid header values plus an IpAddr is itself a valid header value",
+    );
     headers.insert(HeaderName::from_static("x-forwarded-for"), value);
+}
+
+/// Upper bound on entries read from the existing chain before this proxy's
+/// own peer is appended below.
+///
+/// Mirrors `vti_common::rate_limit::MAX_FORWARDED_ENTRIES` (a separate crate
+/// this one does not depend on — consistent by convention) minus one: the
+/// receiver falls back to the peer once a chain exceeds that many entries,
+/// and inside the enclave the peer is always the trusted loopback address, so
+/// an unbounded extend here would let a client force itself into that shared
+/// fallback bucket by sending enough entries. Truncating to one less than the
+/// receiver's cap leaves room for the peer this function appends.
+const MAX_EXISTING_ENTRIES: usize = 63;
+
+/// The existing `X-Forwarded-For` chain as individual entries, in the order
+/// the receiver's own chain-walk will see them, capped to
+/// `MAX_EXISTING_ENTRIES` by dropping the leftmost (oldest, most
+/// attacker-adjacent) entries — the receiver walks from the right, so nothing
+/// it would ever reach is lost.
+///
+/// `None` if any header line isn't valid header text (obs-text, 0x80-0xFF):
+/// the receiver's own walk aborts the same way on the same byte, and joining
+/// around just the bad line here would let a client pair a claim with a byte
+/// it knows fails `to_str()` and keep the claim anyway — the same escape as
+/// leaving the chain unbounded.
+fn existing_forwarded_entries<B>(req: &Request<B>) -> Option<Vec<String>> {
+    let mut entries = Vec::new();
+    for value in req.headers().get_all("x-forwarded-for") {
+        let value = value.to_str().ok()?;
+        for entry in value.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+            entries.push(entry.to_string());
+        }
+    }
+    if entries.len() > MAX_EXISTING_ENTRIES {
+        let excess = entries.len() - MAX_EXISTING_ENTRIES;
+        entries.drain(..excess);
+    }
+    Some(entries)
 }
 
 /// Serve one accepted client connection, forwarding every request on it to
@@ -236,6 +267,61 @@ mod tests {
             .unwrap();
         sanitise_forwarding_headers(&mut req, peer(), &[]);
         assert_eq!(header_values(&req, "x-forwarded-for"), ["203.0.113.9"]);
+    }
+
+    /// Mirrors `vti_common::rate_limit::MAX_FORWARDED_ENTRIES` (a separate
+    /// crate this one does not depend on) — the receiver falls back to the
+    /// peer once a chain exceeds this many entries, and inside the enclave
+    /// the peer is always the trusted loopback address. An unbounded extend
+    /// here would let a client force itself into that shared fallback bucket
+    /// by sending enough junk entries.
+    #[test]
+    fn extended_chain_is_capped_so_the_receiver_never_falls_back_to_peer() {
+        const RECEIVER_MAX_ENTRIES: usize = 64;
+
+        let trusted_peer: IpAddr = "10.0.1.50".parse().unwrap();
+        let junk_chain = (0..200)
+            .map(|i| format!("1.2.3.{}", i % 256))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut req = Request::builder()
+            .uri("/")
+            .header("x-forwarded-for", junk_chain)
+            .body(())
+            .unwrap();
+        sanitise_forwarding_headers(&mut req, trusted_peer, &["10.0.0.0/8".parse().unwrap()]);
+
+        let seen = header_values(&req, "x-forwarded-for");
+        assert_eq!(seen.len(), 1);
+        let entry_count = seen[0].split(',').count();
+        assert!(
+            entry_count <= RECEIVER_MAX_ENTRIES,
+            "emitted {entry_count} entries, receiver caps at {RECEIVER_MAX_ENTRIES} \
+             and falls back to the (trusted, shared) peer beyond it"
+        );
+    }
+
+    /// A line that fails `to_str()` (obs-text, 0x80-0xFF) must make the whole
+    /// existing chain unusable, not just that line — otherwise a client pairs
+    /// a chosen claim with a byte it knows the parser rejects and keeps the
+    /// claim anyway, the same escape as an unbounded chain (#1 above), on a
+    /// path the receiver's own chain-walk closes by aborting on the same byte.
+    #[test]
+    fn a_line_that_fails_to_str_discards_the_whole_chain_not_just_that_line() {
+        let trusted_peer: IpAddr = "10.0.1.50".parse().unwrap();
+        let mut req = Request::builder().uri("/").body(()).unwrap();
+        req.headers_mut().append(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_str("203.0.113.9").unwrap(),
+        );
+        req.headers_mut().append(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_bytes(&[0x80, 0x81]).unwrap(),
+        );
+
+        sanitise_forwarding_headers(&mut req, trusted_peer, &["10.0.0.0/8".parse().unwrap()]);
+
+        assert_eq!(header_values(&req, "x-forwarded-for"), ["10.0.1.50"]);
     }
 
     /// A single `remove` would leave the second line in place, and the VTA
