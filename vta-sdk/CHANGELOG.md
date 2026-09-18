@@ -2,6 +2,78 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.43.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.43.0...vta-sdk-v0.43.1) — 2026-09-18
+
+
+### Fixed
+
+- **trust-tasks**: Let the spine decide what an inbound document is ([#1567](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1567))
+
+* fix(trust-tasks): let the spine decide what an inbound document is
+
+  Authorization happened in each transport, before the spine saw the
+  document. That defeated the ordering the spine documents and relies on --
+  'a reply carries no authority and asks for nothing' -- because a reply
+  was already refused at the door by the time the spine could recognise it
+  as one.
+
+  Under DIDComm the transport's own thid correlation hid it. Under TSP,
+  whose binding has no request/response of its own, a DID hosting server's
+  answer to a task the VTA had itself sent came back and was ACL-refused as
+  though it were unsolicited. From the outside that reads as a missing ACL
+  entry, and granting one would hand a peer standing to send requests when
+  all it ever needed was to answer.
+
+  A second failure was the same missing idea: an error document was
+  dispatched as a request, failed validation, and was answered with another
+  error -- which the peer then did too. Neither side recognised the other's
+  error as terminal, so one failure became a permanent exchange that
+  stopped only when the mediator began rate-limiting.
+
+  So a transport now hands over two things, the document and the VID it
+  proved, and makes no policy decision at all. accept_from_proven_sender
+  asks what the document is and only then decides: an error is terminal and
+  answered with nothing; a threaded document goes to its waiter if one
+  holds that thread; everything else reaches the ACL as a request.
+
+  Threading alone deliberately does not make a reply. A step-up
+  approve-response and a task-consent/decision both thread to the request
+  that provoked them and are still requests -- they carry the approval --
+  so the waiter decides, and with nobody waiting the document falls through
+  to the normal pipeline. Treating threading as proof would have stranded
+  every ceremony waiting on a human.
+
+- **budget**: Derive a client's Trust Task budget from the VTA's own timeout ([#1566](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1566))
+
+A client's budget and the VTA's were two unrelated literals in two crates,
+  and they inverted. create_did_webvh allowed 60s; the VTA, relaying the mint
+  to a DID hosting server, spends up to TSP_REPLY_TIMEOUT_SECS on the first
+  send and the same again on the 7.2.2 self-repair resend. Observed live:
+  60.27s and 60.58s. The caller stopped listening a few hundred milliseconds
+  before the real error arrived, on every attempt, so the operator saw a bare
+  timeout and never the diagnosis.
+
+  Neither number was wrong alone. What was missing was anything relating them,
+  so nothing could notice they had crossed.
+
+  vta-sdk gains a budget module holding the shared TSP_REPLY_TIMEOUT_SECS --
+  vta-service now reads it instead of keeping a second copy that can drift --
+  plus the derived floor and the list of tasks the VTA answers by calling a
+  third party. dispatch_trust_task raises a relaying task's budget to clear
+  that floor, at the one point every transport and every caller passes
+  through, including consumers outside this workspace.
+
+  The list is conservative: a task that relays under any payload is listed,
+  because a URI cannot tell that services/enable is didcomm-kind or that a
+  webvh DID is server-managed. Over-listing costs a slower report of a peer
+  that is gone; under-listing costs the silent timeout this exists to prevent.
+
+  create was not alone -- every webvh verb shipped at 30s or 60s, all below
+  the floor, so delete, update, rotate-keys, register-with-server and the
+  agent-name ops all carried the same latent inversion.
+
+
+
 ## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.42.1...vta-sdk-v0.43.0) — 2026-09-18
 
 

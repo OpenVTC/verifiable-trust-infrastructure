@@ -2,6 +2,51 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.19.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.19.2...vti-common-v0.19.3) — 2026-09-18
+
+
+### Added
+
+- **vtc**: Let a community choose whether it answers the join manifest publicly ([#1563](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1563))
+
+The join manifest is a public read by design — an applicant has to know
+  what is asked of them before they disclose anything, which is the whole of
+  informed non-application — and `POST /v1/trust-tasks` answers it with no
+  session at all. That is what lets someone read a community's admission
+  criteria on their very first join, when they have no messaging channel to
+  ask over.
+
+  It was also unconditional. A closed or invite-only community had no way to
+  say "you can learn what we require once you are talking to us", short of
+  not running the endpoint.
+
+  `GET`/`PUT /v1/community/join-discovery` is that choice, with a "Joining"
+  card on the console's Community profile page. Off refuses only a caller the
+  community cannot name: an identified one — a signed Trust Task document
+  over REST, or an authcrypt DIDComm sender — is answered exactly as before,
+  because refusing those would break the join ceremony rather than close
+  anything. The refusal says how to ask rather than only that it failed.
+
+  The default is `true`. Every community answered before this existed, and a
+  default of `false` would stop answering applicants who were being answered
+  yesterday, for operators who never chose it — a setting that changes
+  behaviour nobody opted into is a regression with a checkbox.
+
+  Its own keyspace row, beside `branding`, rather than a member of the
+  community profile: `vtc/community/profile/show/0.1` is a published schema
+  with `additionalProperties: false` and `ProfileWithStatus` flattens the
+  profile into its response, so a new profile member is a new member of a
+  canonical answer this service is not the place to add. The conformance
+  witness caught exactly that on the first attempt, which is what it is for.
+  The profile is a published description of the community; this is an
+  operational choice about how one endpoint behaves.
+
+  Turning it off is its own audit event. "When did we stop publishing our
+  admission criteria, and who decided?" is a question an operator is later
+  asked, and a line in a profile field-diff is a poor answer.
+
+
+
 ## [0.19.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.19.1...vti-common-v0.19.2) — 2026-09-18
 
 
