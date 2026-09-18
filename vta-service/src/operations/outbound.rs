@@ -260,11 +260,17 @@ impl TspSender {
 
     /// Register a reply waiter for `thread`, send `framed` to `recipient`, and
     /// await the reply within the TSP window. One attempt, no recovery.
+    ///
     /// `reestablish` picks the re-inviting send (`send_reestablishing`) over the
-    /// plain routed send — the recovery path uses it after a reset.
+    /// plain routed send — the recovery path uses it after a reset. `peer_mediator`
+    /// is the recipient's advertised TSP mediator DID, used only on the ordinary
+    /// (non-reestablish) send to route nested for metadata privacy when the peer
+    /// is on a different mediator; `None` keeps the direct route. The reestablish
+    /// send stays direct regardless — see [`recover_send_tsp`](Self::recover_send_tsp).
     async fn send_and_await(
         &self,
         recipient: &str,
+        peer_mediator: Option<&str>,
         thread: &str,
         framed: &[u8],
         reestablish: bool,
@@ -275,7 +281,9 @@ impl TspSender {
         let sent = if reestablish {
             self.transport.send_reestablishing(recipient, framed).await
         } else {
-            self.transport.send_to(recipient, framed).await
+            self.transport
+                .send_metadata_private(recipient, peer_mediator, framed)
+                .await
         };
         if let Err(e) = sent {
             self.replies.abandon(thread);
@@ -347,7 +355,17 @@ impl TspSender {
                     )));
                 }
                 if resend_after_reform(type_uri) {
-                    match self.send_and_await(recipient, thread, framed, true).await {
+                    // `None` peer-mediator: the re-establishing resend stays a
+                    // direct routed send even to a cross-mediator peer. Recovery
+                    // is the rare §7.2.2 drop path where re-forming the
+                    // relationship and getting the reply through matters more than
+                    // metadata privacy, and the SDK has no nested re-establishing
+                    // send to nest it with. The steady-state send above is the one
+                    // that nests.
+                    match self
+                        .send_and_await(recipient, None, thread, framed, true)
+                        .await
+                    {
                         TspAttempt::Reply(v) => {
                             self.recovery.settle_success(&our, recipient).await;
                             Ok(v)
@@ -561,8 +579,11 @@ impl Outbound<'_> {
 
         let reply = match protocol {
             Protocol::Rest => self.send_rest(recipient, &endpoint, &document).await?,
+            // `endpoint` for TSP is the peer's advertised mediator DID (its
+            // `#tsp` service endpoint) — the second hop for a metadata-private
+            // nested route when it differs from ours.
             #[cfg(feature = "tsp")]
-            Protocol::Tsp => self.send_tsp(recipient, document).await?,
+            Protocol::Tsp => self.send_tsp(recipient, &endpoint, document).await?,
             #[cfg(not(feature = "tsp"))]
             Protocol::Tsp => {
                 return Err(AppError::Internal(
@@ -631,7 +652,12 @@ impl Outbound<'_> {
     /// it timed out. The window is small and the mediator is fast, which is
     /// exactly the combination that makes it rare enough to survive testing.
     #[cfg(feature = "tsp")]
-    async fn send_tsp(&self, recipient: &str, document: Value) -> Result<Value, AppError> {
+    async fn send_tsp(
+        &self,
+        recipient: &str,
+        peer_mediator: &str,
+        document: Value,
+    ) -> Result<Value, AppError> {
         let tsp = self.tsp.as_ref().ok_or_else(|| {
             AppError::Internal(
                 "TSP was selected but this node has no TSP transport; it should not have been \
@@ -661,7 +687,10 @@ impl Outbound<'_> {
             .map_err(|e| AppError::Internal(format!("serialise the request: {e}")))?;
         let framed = vta_sdk::tsp_binding::wrap_envelope(&body);
 
-        match tsp.send_and_await(recipient, &thread, &framed, false).await {
+        match tsp
+            .send_and_await(recipient, Some(peer_mediator), &thread, &framed, false)
+            .await
+        {
             TspAttempt::Reply(v) => Ok(v),
             TspAttempt::SendFailed(e) => Err(bad_gateway_error(format!(
                 "`{recipient}` could not be reached over TSP: {e}"

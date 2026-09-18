@@ -2694,6 +2694,170 @@ mod transport_harness_tests {
             "TSP must drop out of transport selection until a session can carry it"
         );
     }
+
+    /// Poll a node's mailbox until a TSP frame lands (cross-mediator forwarding is
+    /// asynchronous). Mirrors the test-mediator's own `poll_inbox` helper.
+    async fn poll_tsp_inbox(
+        env: &affinidi_messaging_test_mediator::TestEnvironment,
+        profile: &std::sync::Arc<affinidi_messaging_sdk::profiles::ATMProfile>,
+    ) -> String {
+        use affinidi_messaging_sdk::messages::fetch::FetchOptions;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
+            let fetched = env
+                .atm
+                .fetch_messages(profile, &FetchOptions::default())
+                .await
+                .expect("fetch messages");
+            if let Some(msg) = fetched.success.first().and_then(|e| e.msg.as_ref()) {
+                return msg.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        panic!("no TSP message received within the deadline");
+    }
+
+    /// Metadata-private cross-mediator routing — the topology-aware increment.
+    /// When the peer is on a **different** mediator,
+    /// [`TspTransport::send_metadata_private`](crate::messaging::tsp_transport::TspTransport::send_metadata_private)
+    /// nests the send so the recipient rides inside the sealed envelope rather
+    /// than as a visible route hop, and our mediator (the only intermediary
+    /// before the peer's) never learns it.
+    ///
+    /// **Delivery is the proof of nesting.** A plain `send_routed([our_mediator,
+    /// recipient])` cannot reach a peer our mediator does not host — the route
+    /// carries no hop to the peer's mediator — so a message that *arrives* at a
+    /// peer on another mediator can only have travelled the nested
+    /// `[our_mediator, peer_mediator]` route. Two in-process relay-enabled
+    /// mediators (`TestTopology`) stand in for a real cross-mediator topology.
+    #[tokio::test]
+    async fn send_metadata_private_reaches_a_cross_mediator_peer() {
+        use affinidi_messaging_test_mediator::topology::TestTopology;
+
+        let topology = TestTopology::builder()
+            .mediators(2)
+            .spawn()
+            .await
+            .expect("spawn a two-mediator topology");
+        let mediator_b = topology
+            .mediator_did(1)
+            .expect("mediator B DID")
+            .to_string();
+        let alice = topology
+            .add_user(0, "alice")
+            .await
+            .expect("alice on mediator A");
+        let bob = topology
+            .add_user(1, "bob")
+            .await
+            .expect("bob on mediator B");
+        // §7.2.2 gates application traffic on an existing relationship; each side's
+        // SDK holds its own store, so seed it on every node.
+        topology
+            .relate_directly(&alice, &bob)
+            .await
+            .expect("seed the TSP relationship both ways");
+
+        // The VTA's own send seam, built on alice's mediator-A profile — so its
+        // own mediator is A and `mediator_b` differs, selecting the nested route.
+        let transport = crate::messaging::tsp_transport::TspTransport::new(
+            topology.node(0).expect("node A").atm.clone(),
+            alice.profile.clone(),
+        )
+        .expect("alice's profile carries a mediator, so a transport can be built");
+        assert_ne!(
+            transport.mediator_did(),
+            mediator_b,
+            "the peer must be on a different mediator for this to exercise nesting"
+        );
+
+        let body = vta_sdk::tsp_binding::wrap_envelope(br#"{"probe":"cross-mediator"}"#);
+        transport
+            .send_metadata_private(&bob.did, Some(&mediator_b), &body)
+            .await
+            .expect("the nested routed send is accepted for delivery");
+
+        // Bob is on mediator B; a delivered, unpackable message proves the send
+        // nested — a direct route could not have crossed.
+        let bob_env = topology.node(1).expect("node B");
+        let stored = poll_tsp_inbox(bob_env, &bob.profile).await;
+        let (recovered, sender) = bob_env
+            .atm
+            .tsp()
+            .unpack(&bob.profile, &stored)
+            .await
+            .expect("bob unpacks the nested message");
+        assert_eq!(recovered, body, "bob receives the framed body intact");
+        assert_eq!(sender, alice.did, "and TSP proves alice as the sender");
+
+        topology.shutdown().await.expect("shutdown the topology");
+    }
+
+    /// The same-mediator path stays the plain routed send: when the peer shares
+    /// our mediator there is no intermediary to hide it from, so
+    /// `send_metadata_private` must **not** nest — it falls back to the direct
+    /// [`send_to`](crate::messaging::tsp_transport::TspTransport::send_to), the
+    /// unchanged reference behaviour. Delivery to a same-mediator peer confirms
+    /// the fallback carries (and that the equal-mediator case is not accidentally
+    /// nesting a `[A, A]` route).
+    #[tokio::test]
+    async fn send_metadata_private_stays_direct_for_a_same_mediator_peer() {
+        use affinidi_messaging_test_mediator::topology::TestTopology;
+
+        let topology = TestTopology::builder()
+            .mediators(1)
+            .spawn()
+            .await
+            .expect("spawn a one-mediator topology");
+        let mediator_a = topology
+            .mediator_did(0)
+            .expect("mediator A DID")
+            .to_string();
+        let alice = topology
+            .add_user(0, "alice")
+            .await
+            .expect("alice on mediator A");
+        let carol = topology
+            .add_user(0, "carol")
+            .await
+            .expect("carol on mediator A");
+        topology
+            .relate_directly(&alice, &carol)
+            .await
+            .expect("seed the TSP relationship both ways");
+
+        let transport = crate::messaging::tsp_transport::TspTransport::new(
+            topology.node(0).expect("node A").atm.clone(),
+            alice.profile.clone(),
+        )
+        .expect("alice's profile carries a mediator");
+        assert_eq!(
+            transport.mediator_did(),
+            mediator_a,
+            "alice and carol share this mediator"
+        );
+
+        let body = vta_sdk::tsp_binding::wrap_envelope(br#"{"probe":"same-mediator"}"#);
+        // `Some(mediator_a)` equals our own mediator, so the nesting gate declines
+        // and this is the direct routed send.
+        transport
+            .send_metadata_private(&carol.did, Some(&mediator_a), &body)
+            .await
+            .expect("the direct routed send is accepted for delivery");
+
+        let carol_env = topology.node(0).expect("node A");
+        let stored = poll_tsp_inbox(carol_env, &carol.profile).await;
+        let (recovered, sender) = carol_env
+            .atm
+            .tsp()
+            .unpack(&carol.profile, &stored)
+            .await
+            .expect("carol unpacks the direct message");
+        assert_eq!(recovered, body);
+        assert_eq!(sender, alice.did);
+
+        topology.shutdown().await.expect("shutdown the topology");
+    }
 }
 
 // ── Soft WebAuthn authenticator ──────────────────────────────────────────────
