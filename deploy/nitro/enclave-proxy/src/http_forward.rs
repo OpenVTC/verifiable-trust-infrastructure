@@ -303,7 +303,11 @@ mod tests {
         let seen = header_values(&req, "x-forwarded-for");
         assert_eq!(seen.len(), 1);
         let entries: Vec<&str> = seen[0].split(", ").collect();
-        assert_eq!(entries.len(), 64, "63 kept from the incoming chain + this proxy's own peer");
+        assert_eq!(
+            entries.len(),
+            64,
+            "63 kept from the incoming chain + this proxy's own peer"
+        );
         assert_eq!(
             entries.last().copied(),
             Some("10.0.1.50"),
