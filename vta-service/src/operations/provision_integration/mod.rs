@@ -889,14 +889,7 @@ pub async fn provision_integration(
                 if did == &integration_did {
                     continue;
                 }
-                let lifted = DidKeyMaterialV2::from_v1(material).ok_or_else(|| {
-                    AppError::Internal(format!(
-                        "key material for '{did}' carries a public key whose multicodec names \
-                         no algorithm this build knows — refusing to seal a bundle whose keys \
-                         cannot be classified"
-                    ))
-                })?;
-                v2_secrets.insert(did.clone(), lifted);
+                v2_secrets.insert(did.clone(), DidKeyMaterialV2::from_v1(material));
             }
             SealedPayloadV1::TemplateBootstrapV2(Box::new(TemplateBootstrapPayloadV2 {
                 authorization: vc_value,
