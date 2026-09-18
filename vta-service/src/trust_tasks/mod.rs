@@ -697,6 +697,12 @@ pub(crate) async fn attach_proof_in_place(
 ///
 /// Every intrinsic-sender transport gets that at once, which is the property a
 /// per-transport copy kept failing to have.
+///
+/// Gated exactly as [`reject_trust_task`] and `crate::messaging` are, and for
+/// the same reason: the only callers are the two transports that prove their
+/// own sender. A `rest`-only build has neither, and an ungated function
+/// referencing them does not compile there.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 pub(crate) async fn accept_from_proven_sender(
     state: &AppState,
     sender_vid: &str,
