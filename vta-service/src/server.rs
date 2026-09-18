@@ -1629,15 +1629,18 @@ fn run_rest_thread(
         //
         // The rate-limit *quotas* are the exception: the limiters read them
         // from the shared config on every request (`QuotaSource::Live`), so a
-        // runtime `config/patch` applies without a rebuild. `trust_xff` picks
-        // the key extractor here and stays restart-only.
-        let (cors_origins, trust_xff) = {
+        // runtime `config/patch` applies without a rebuild. `trust_xff_cidrs`
+        // picks the key extractor here and stays restart-only.
+        let (cors_origins, trust_xff_cidrs) = {
             let cfg = state.config.read().await;
-            (cfg.server.cors_origins.clone(), cfg.server.trust_xff)
+            (
+                cfg.server.cors_origins.clone(),
+                cfg.server.trust_xff_cidrs.clone(),
+            )
         };
         let traced_routes = routes::router_with_cors(
             &cors_origins,
-            trust_xff,
+            &trust_xff_cidrs,
             routes::QuotaSource::Live(state.config.clone()),
         )
         .with_state(state.clone())

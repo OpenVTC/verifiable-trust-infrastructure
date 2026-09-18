@@ -36,6 +36,7 @@ passkey = ["dep:webauthn-rs", "dep:url"]
 # `dialoguer` + its console deps. The prompts return services'
 # own config shapes (each service has its own `SecretsConfig`).
 setup = ["dep:dialoguer"]
+rate-limit = ["dep:tower_governor", "dep:client-ip", "dep:ipnetwork"]
 # OpenAPI schema generation: derives `utoipa::ToSchema` on the shared wire
 # types the VTA + VTC services expose through their `OpenApiRouter` (the ACL
 # `Role`, session `SessionState`). Off by default and zero-cost when off —
@@ -129,6 +130,10 @@ url = { workspace = true, optional = true }
 # Setup feature: shared dialoguer prompts for VTA + VTC `vtc setup` /
 # `vta setup` interactive wizards.
 dialoguer = { workspace = true, optional = true }
+
+tower_governor = { version = "0.8", features = ["axum"], optional = true }
+client-ip = { version = "0.2", optional = true }
+ipnetwork = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Parses the config fixtures in the VaultConfig tests.

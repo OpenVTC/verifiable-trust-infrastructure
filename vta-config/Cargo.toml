@@ -37,6 +37,7 @@ serde_ignored = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
+ipnetwork = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

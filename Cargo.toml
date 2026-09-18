@@ -421,6 +421,8 @@ axum = "0.8"
 tower-http = "0.7"
 tokio-util = "0.7"
 
+ipnetwork = { version = "0.21", features = ["serde"] }
+
 # OpenAPI 3.1 generation. `utoipa` derives schemas (ToSchema) + per-handler
 # path metadata; `utoipa-axum` (`OpenApiRouter`) makes the router the single
 # source of truth so the served `/openapi.json` can't drift from the routes.

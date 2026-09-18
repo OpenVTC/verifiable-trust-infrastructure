@@ -1583,11 +1583,11 @@ fn run_rest_thread(
         #[cfg(feature = "website")]
         let website_state = build_website_state(&state.config).await;
 
-        let trust_xff = state.config.read().await.server.trust_xff;
+        let trust_xff_cidrs = state.config.read().await.server.trust_xff_cidrs.clone();
         // `TimeoutLayer` is the outermost layer so the whole-request budget
         // (P0.10) covers every inner middleware + the handler.
         #[cfg(feature = "website")]
-        let app = routes::router_with_xff(&routing, website_state, trust_xff)
+        let app = routes::router_with_xff(&routing, website_state, &trust_xff_cidrs)
             .with_state(state)
             .layer(host_layer)
             .layer(cors_layer)
@@ -1597,7 +1597,7 @@ fn run_rest_thread(
                 REST_REQUEST_TIMEOUT,
             ));
         #[cfg(not(feature = "website"))]
-        let app = routes::router_with_xff(&routing, trust_xff)
+        let app = routes::router_with_xff(&routing, &trust_xff_cidrs)
             .with_state(state)
             .layer(host_layer)
             .layer(cors_layer)

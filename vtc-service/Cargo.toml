@@ -134,6 +134,7 @@ vti-common = { path = "../vti-common", version = "0.19", features = [
   # `openapi` gates ToSchema on shared wire types (Role, SessionState) +
   # the OpenAPI-aware Trust-Task route helpers (`task_routes`/`task_layer`).
   "openapi",
+  "rate-limit",
 ] }
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
@@ -244,6 +245,7 @@ fjall = { workspace = true }
 toml = { workspace = true }
 tower-http = { workspace = true, features = ["cors", "trace", "timeout"] }
 tower_governor = "0.8"
+ipnetwork = { workspace = true }
 mime_guess = { version = "2", optional = true }
 unicode-normalization = { version = "0.1", optional = true }
 tar = { version = "0.4", optional = true }

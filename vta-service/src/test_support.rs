@@ -1406,19 +1406,12 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         metrics_handle: None,
     };
 
-    // Test harness uses `trust_xff = true` so the per-IP rate
-    // limiter falls back to `X-Forwarded-For` when there's no
-    // socket peer-IP (tower::oneshot doesn't carry one). The
-    // existing rate-limit regression test
-    // (`unauth_endpoint_rate_limit_returns_429_after_burst`)
-    // sets `x-forwarded-for: 192.0.2.1` so all calls hash to the
-    // same bucket and trip the burst within 20 requests.
     let state_for_ctx = state.clone();
     // Quotas are read live from the harness config, as in production, so a
     // test that patches a rate-limit key sees it applied.
     let router = crate::routes::router_with_cors(
         &[],
-        true,
+        &["127.0.0.1/32".parse().unwrap()],
         crate::routes::QuotaSource::Live(state.config.clone()),
     )
     .with_state(state.clone())

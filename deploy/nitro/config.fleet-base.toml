@@ -78,6 +78,7 @@ mediator_did = "OVERLAY_PLACEHOLDER_MEDIATOR_DID"
 [server]
 host = "127.0.0.1"
 port = 8100
+trust_xff_cidrs = ["127.0.0.1/32"]
 
 [log]
 level = "info"
