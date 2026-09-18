@@ -984,6 +984,363 @@ mod tests {
         );
     }
 
+    // ── The `keys` block, end to end ─────────────────────────────────────────
+    //
+    // These mint a DID and then read the **stored key record** back, rather
+    // than asserting that a preference list reaches a derivation function.
+    // `derive_entity_keys_with_preference` existed, was tested, and had no
+    // production caller: a template could declare `["mldsa44", "ed25519"]` and
+    // this VTA would mint Ed25519 and say nothing. A test that stopped at the
+    // plumbing would have passed throughout.
+
+    /// Run a serverless create against a template already in the store.
+    ///
+    /// Returns the `Result` rather than unwrapping, because half of what these
+    /// tests check is which requests are *refused* and what the refusal says.
+    async fn run_create_from_stored_template(
+        config: &crate::config::AppConfig,
+        store: &Store,
+        template_name: &str,
+    ) -> Result<(String, serde_json::Value), vti_common::error::AppError> {
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
+        let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
+        let seed_store = create_seed_store(config).unwrap();
+
+        let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .unwrap();
+        let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
+            Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
+        let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
+        let deps = operations::did_webvh::CreateDidWebvhDeps {
+            keys_ks: &keys_ks,
+            imported_ks: &imported_ks,
+            contexts_ks: &contexts_ks,
+            webvh_ks: &webvh_ks,
+            did_templates_ks: &did_templates_ks,
+            audit: &audit,
+            seed_store: &*seed_store,
+            config,
+            did_resolver: &did_resolver,
+            didcomm_bridge: &no_bridge,
+            auth_locks: &auth_locks,
+            #[cfg(feature = "tsp")]
+            tsp: None,
+        };
+
+        let result = operations::did_webvh::create_did_webvh(
+            &deps,
+            &cli_super_admin(),
+            CreateDidWebvhParams {
+                context_id: "test-ctx".to_string(),
+                server_id: None,
+                url: Some("https://example.com/pqc".to_string()),
+                path_mode: WebvhPathMode::default(),
+                domain: None,
+                label: Some("pqc".to_string()),
+                portable: true,
+                add_mediator_service: false,
+                add_tsp_service: false,
+                additional_services: None,
+                pre_rotation_count: 0,
+                did_document: None,
+                did_log: None,
+                set_primary: true,
+                pre_derived: None,
+                signing_key_id: None,
+                ka_key_id: None,
+                template: Some(template_name.to_string()),
+                template_context: None,
+                template_vars: std::collections::HashMap::new(),
+                is_vta_identity: false,
+            },
+            "test",
+        )
+        .await?;
+
+        let document = result
+            .did_document
+            .clone()
+            .expect("create returns the published document");
+        Ok((result.did.clone(), document))
+    }
+
+    /// Store a template, mint a DID from it, and hand back the created DID,
+    /// its published document, and the keyspace to read records out of.
+    async fn create_from_template(
+        dir: &tempfile::TempDir,
+        template: vta_sdk::did_templates::DidTemplate,
+    ) -> (String, serde_json::Value, vti_common::store::KeyspaceHandle) {
+        let (config, _config_path) = setup_seeded_store(dir, None).await;
+        let store = Store::open(&config.store).expect("open store");
+        let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+
+        let name = template.name.clone();
+        vta_support::did_templates::store_global_template(
+            &did_templates_ks,
+            &vta_sdk::did_templates::DidTemplateRecord {
+                template,
+                scope: vta_sdk::did_templates::Scope::Global,
+                created_at: 0,
+                updated_at: 0,
+                created_by: "test".into(),
+            },
+        )
+        .await
+        .expect("store template");
+
+        let (did, document) = run_create_from_stored_template(&config, &store, &name)
+            .await
+            .expect("create_did_webvh");
+        (did, document, keys_ks)
+    }
+
+    /// A template whose slots are the historical pair plus one post-quantum
+    /// signing slot, published as a second `assertionMethod`.
+    fn pqc_template(name: &str, signing: Vec<&str>) -> vta_sdk::did_templates::DidTemplate {
+        use std::collections::BTreeMap;
+        use vta_sdk::did_templates::{KeyPurpose, KeySlot};
+
+        let mut keys = BTreeMap::from([
+            (
+                "signing".to_string(),
+                KeySlot {
+                    purpose: KeyPurpose::Signing,
+                    algorithms: signing.iter().map(|s| (*s).to_string()).collect(),
+                },
+            ),
+            (
+                "ka".to_string(),
+                KeySlot {
+                    purpose: KeyPurpose::KeyAgreement,
+                    algorithms: vec!["x25519".into()],
+                },
+            ),
+        ]);
+        let mut methods = vec![
+            serde_json::json!({
+                "id": "{DID}#key-0", "type": "Multikey", "controller": "{DID}",
+                "publicKeyMultibase": "{SIGNING_KEY_MB}"
+            }),
+            serde_json::json!({
+                "id": "{DID}#key-1", "type": "Multikey", "controller": "{DID}",
+                "publicKeyMultibase": "{KA_KEY_MB}"
+            }),
+        ];
+        let mut assertion = vec![serde_json::json!("{DID}#key-0")];
+
+        if name.contains("hybrid") {
+            keys.insert(
+                "pq-signing".to_string(),
+                KeySlot {
+                    purpose: KeyPurpose::Signing,
+                    algorithms: vec!["mldsa44".into()],
+                },
+            );
+            methods.push(serde_json::json!({
+                "id": "{DID}#key-2", "type": "Multikey", "controller": "{DID}",
+                "publicKeyMultibase": "{PQ_SIGNING_KEY_MB}"
+            }));
+            assertion.push(serde_json::json!("{DID}#key-2"));
+        }
+
+        vta_sdk::did_templates::DidTemplate::from_json(serde_json::json!({
+            "schemaVersion": 2,
+            "name": name,
+            "kind": "vtc-host",
+            "methods": ["webvh"],
+            "keys": keys,
+            "document": {
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": "{DID}",
+                "verificationMethod": methods,
+                "assertionMethod": assertion,
+                "authentication": ["{DID}#key-0"],
+                "keyAgreement": ["{DID}#key-1"],
+            }
+        }))
+        .expect("template is valid")
+    }
+
+    /// Read the stored record for a verification-method id.
+    async fn stored_key_type(
+        keys_ks: &vti_common::store::KeyspaceHandle,
+        vm_id: &str,
+    ) -> vta_sdk::keys::KeyType {
+        operations::keys::get_key(keys_ks, &cli_super_admin(), vm_id, "test")
+            .await
+            .unwrap_or_else(|e| panic!("no key record stored for {vm_id}: {e}"))
+            .key_type
+    }
+
+    /// **A `did:webvh` primary signing key cannot be post-quantum, and the
+    /// preference list is how a template survives that.**
+    ///
+    /// `didwebvh` 1.0 mandates `eddsa-jcs-2022` for log-entry proofs, and the
+    /// primary signing key is what signs the log. So a template asking for
+    /// ML-DSA *first* falls back to the Ed25519 it also named — the same
+    /// behaviour as an algorithm this build could not mint, which is exactly
+    /// what a preference list is for.
+    ///
+    /// This is the constraint that makes the additional-slot shape the only
+    /// one available, rather than a convenience: post-quantum signing on a
+    /// `did:webvh` is a *second* key, never a replacement for the first.
+    #[tokio::test]
+    async fn a_webvh_primary_signing_key_falls_back_past_ml_dsa_to_ed25519() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (did, document, keys_ks) =
+            create_from_template(&dir, pqc_template("pq-primary", vec!["mldsa44", "ed25519"]))
+                .await;
+
+        assert_eq!(
+            stored_key_type(&keys_ks, &format!("{did}#key-0")).await,
+            vta_sdk::keys::KeyType::Ed25519,
+            "a did:webvh log entry can only be signed with ed25519, so the primary slot must \
+             fall back to it rather than minting a key the log cannot be signed with"
+        );
+
+        // 32 bytes + the 2-byte multicodec prefix: an Ed25519 key, not the
+        // 1312-byte ML-DSA-44 one the template preferred.
+        let published = document["verificationMethod"][0]["publicKeyMultibase"]
+            .as_str()
+            .expect("publicKeyMultibase");
+        let (_, bytes) = multibase::decode(published).expect("decode");
+        assert_eq!(
+            bytes.len(),
+            34,
+            "expected an Ed25519 key, got {} bytes",
+            bytes.len()
+        );
+    }
+
+    /// And the other half: a primary slot naming **only** post-quantum
+    /// algorithms is refused here, by name, rather than failing inside
+    /// `didwebvh-rs` with a message about that crate's build features.
+    ///
+    /// Silently substituting Ed25519 for a list that never mentioned it would
+    /// be the quiet downgrade the `keys` block exists to prevent — a template
+    /// authored to be post-quantum, minting classical, saying nothing.
+    #[tokio::test]
+    async fn a_primary_slot_with_no_classical_fallback_is_refused_with_guidance() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (config, _config_path) = setup_seeded_store(&dir, None).await;
+        let store = Store::open(&config.store).expect("open store");
+        let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
+
+        let template = pqc_template("pq-only", vec!["mldsa44"]);
+        vta_support::did_templates::store_global_template(
+            &did_templates_ks,
+            &vta_sdk::did_templates::DidTemplateRecord {
+                template,
+                scope: vta_sdk::did_templates::Scope::Global,
+                created_at: 0,
+                updated_at: 0,
+                created_by: "test".into(),
+            },
+        )
+        .await
+        .expect("store template");
+
+        let err = run_create_from_stored_template(&config, &store, "pq-only")
+            .await
+            .expect_err("a webvh DID cannot have a post-quantum primary signing key");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ed25519") && msg.contains("additional signing slot"),
+            "the refusal must say why and what to do instead, got: {msg}"
+        );
+    }
+
+    /// The fallback half of the same list: an algorithm this build cannot mint
+    /// is skipped, not fatal, and the next one wins. One template has to serve
+    /// a fleet mid-migration or the list means nothing.
+    #[tokio::test]
+    async fn a_classical_only_preference_still_mints_ed25519() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (did, _document, keys_ks) =
+            create_from_template(&dir, pqc_template("classical", vec!["ed25519"])).await;
+
+        assert_eq!(
+            stored_key_type(&keys_ks, &format!("{did}#key-0")).await,
+            vta_sdk::keys::KeyType::Ed25519
+        );
+    }
+
+    /// **The whole point of the workstream: two signing keys on one DID.**
+    ///
+    /// A third slot is minted at its own derivation path, published as a second
+    /// `assertionMethod`, and stored under the id the document gives it. That
+    /// is what lets the holder sign a credential with both keys — one proof a
+    /// classical verifier checks, one a post-quantum verifier checks.
+    #[tokio::test]
+    async fn a_third_slot_mints_a_second_signing_key_and_publishes_it() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (did, document, keys_ks) =
+            create_from_template(&dir, pqc_template("hybrid", vec!["ed25519"])).await;
+
+        // The classical key is untouched — it must be, since the VTC derives
+        // its storage, install-token and audit keys from this seed.
+        assert_eq!(
+            stored_key_type(&keys_ks, &format!("{did}#key-0")).await,
+            vta_sdk::keys::KeyType::Ed25519
+        );
+        assert_eq!(
+            stored_key_type(&keys_ks, &format!("{did}#key-2")).await,
+            vta_sdk::keys::KeyType::MlDsa44
+        );
+
+        // Published, not just minted. A key the document does not carry is
+        // invisible to every verifier, which is the failure `check_key_slots`
+        // refuses at authoring time and this confirms at mint time.
+        let pq_published = document["verificationMethod"][2]["publicKeyMultibase"]
+            .as_str()
+            .expect("the third slot must be published");
+        let (_, bytes) = multibase::decode(pq_published).expect("decode");
+        assert!(
+            bytes.len() > 1000,
+            "not an ML-DSA-44 key: {} bytes",
+            bytes.len()
+        );
+
+        assert_eq!(
+            document["assertionMethod"][1],
+            format!("{did}#key-2"),
+            "the post-quantum key must be an assertion method, or a credential cannot carry a \
+             proof from it"
+        );
+
+        // Separate derivation paths. Sharing one would make the second key a
+        // deterministic function of the first at that index — the cross-
+        // algorithm reuse `derive_ml_dsa_44`'s domain separation exists to
+        // prevent, reintroduced one layer up.
+        let primary = operations::keys::get_key(
+            &keys_ks,
+            &cli_super_admin(),
+            &format!("{did}#key-0"),
+            "test",
+        )
+        .await
+        .unwrap();
+        let pq = operations::keys::get_key(
+            &keys_ks,
+            &cli_super_admin(),
+            &format!("{did}#key-2"),
+            "test",
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            primary.derivation_path, pq.derivation_path,
+            "the two signing keys must not share a derivation path"
+        );
+    }
+
     /// The same DID, minted with no `[messaging]` configured, must advertise
     /// no DIDComm service — the VTA cannot serve a transport it has no
     /// mediator for, and advertising one fails two layers down.
