@@ -275,30 +275,79 @@ mod tests {
     /// the peer is always the trusted loopback address. An unbounded extend
     /// here would let a client force itself into that shared fallback bucket
     /// by sending enough junk entries.
+    ///
+    /// Pins the *direction* of truncation, not just the count: the real
+    /// client's claim sits at the rightmost end of the junk, exactly where a
+    /// genuine multi-hop chain would put it. Keeping the wrong end (the
+    /// leftmost, most attacker-adjacent entries) instead would still pass a
+    /// bare length check while handing the receiver's chain-walk an
+    /// attacker-chosen entry to land on — the same bug this proxy exists to
+    /// fix, just relocated. A length-only assertion here does not catch that;
+    /// verified by mutating `drain(..excess)` to `truncate(MAX_EXISTING_ENTRIES)`
+    /// (keep-leftmost) and confirming this version of the test fails while a
+    /// bare-count version does not.
     #[test]
-    fn extended_chain_is_capped_so_the_receiver_never_falls_back_to_peer() {
-        const RECEIVER_MAX_ENTRIES: usize = 64;
-
+    fn extended_chain_is_capped_keeping_the_rightmost_entries() {
         let trusted_peer: IpAddr = "10.0.1.50".parse().unwrap();
-        let junk_chain = (0..200)
-            .map(|i| format!("1.2.3.{}", i % 256))
+        let junk = (0..200)
+            .map(|i| format!("1.2.3.{i}"))
             .collect::<Vec<_>>()
             .join(", ");
         let mut req = Request::builder()
             .uri("/")
-            .header("x-forwarded-for", junk_chain)
+            .header("x-forwarded-for", format!("{junk}, 203.0.113.42"))
             .body(())
             .unwrap();
         sanitise_forwarding_headers(&mut req, trusted_peer, &["10.0.0.0/8".parse().unwrap()]);
 
         let seen = header_values(&req, "x-forwarded-for");
         assert_eq!(seen.len(), 1);
-        let entry_count = seen[0].split(',').count();
-        assert!(
-            entry_count <= RECEIVER_MAX_ENTRIES,
-            "emitted {entry_count} entries, receiver caps at {RECEIVER_MAX_ENTRIES} \
-             and falls back to the (trusted, shared) peer beyond it"
+        let entries: Vec<&str> = seen[0].split(", ").collect();
+        assert_eq!(entries.len(), 64, "63 kept from the incoming chain + this proxy's own peer");
+        assert_eq!(
+            entries.last().copied(),
+            Some("10.0.1.50"),
+            "this proxy's own peer is always the last (newest) entry"
         );
+        assert_eq!(
+            entries[entries.len() - 2],
+            "203.0.113.42",
+            "the real client's claim — rightmost of the incoming chain — must survive truncation"
+        );
+        assert!(
+            !entries.contains(&"1.2.3.0"),
+            "the leftmost (oldest, attacker-adjacent) junk must be what gets dropped"
+        );
+    }
+
+    /// Exact boundary behaviour of the cap: no truncation up to and including
+    /// `MAX_EXISTING_ENTRIES`, then exactly one entry dropped per entry over
+    /// it — including the exact edge (`MAX_EXISTING_ENTRIES + 1`) where
+    /// truncation first kicks in.
+    #[test]
+    fn extended_chain_boundary_cases() {
+        let trusted_peer: IpAddr = "10.0.1.50".parse().unwrap();
+        for incoming_len in [62, 63, 64, 65, 200] {
+            let chain = (0..incoming_len)
+                .map(|i| format!("1.2.3.{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut req = Request::builder()
+                .uri("/")
+                .header("x-forwarded-for", chain)
+                .body(())
+                .unwrap();
+            sanitise_forwarding_headers(&mut req, trusted_peer, &["10.0.0.0/8".parse().unwrap()]);
+
+            let seen = header_values(&req, "x-forwarded-for");
+            let emitted = seen[0].split(", ").count();
+            // +1 for this proxy's own peer, appended after truncation.
+            let expected = incoming_len.min(MAX_EXISTING_ENTRIES) + 1;
+            assert_eq!(
+                emitted, expected,
+                "incoming_len={incoming_len}: expected {expected} emitted entries, got {emitted}"
+            );
+        }
     }
 
     /// A line that fails `to_str()` (obs-text, 0x80-0xFF) must make the whole
