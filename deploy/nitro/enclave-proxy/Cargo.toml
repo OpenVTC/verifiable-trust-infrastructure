@@ -51,6 +51,7 @@ fjall = "3"
 # from disagreeing about where a request ends.
 hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+ipnetwork = "0.21"
 
 [dev-dependencies]
 # The end-to-end forwarding tests stand a hyper echo server up behind the

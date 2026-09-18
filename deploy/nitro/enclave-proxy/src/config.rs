@@ -1,3 +1,4 @@
+use ipnetwork::IpNetwork;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,12 @@ pub struct ProxyConfig {
     pub vsock_storage_port: u32,
     /// Directory for the persistent key-value store (on parent EBS).
     pub storage_data_dir: PathBuf,
+    /// Proxies whose connections to this listener are themselves trusted —
+    /// the same `[server] trust_xff_cidrs` the enclave VTA reads. When the
+    /// TCP peer is in this list, its `X-Forwarded-For` is a claim made by a
+    /// declared proxy (e.g. an ALB) and is extended, not discarded. See
+    /// `http_forward` for what this changes.
+    pub trusted_upstream_cidrs: Vec<IpNetwork>,
 }
 
 /// Partial VTA config — only the fields we need.
@@ -34,6 +41,13 @@ pub struct ProxyConfig {
 struct VtaConfig {
     messaging: Option<MessagingConfig>,
     tee: Option<TeeConfig>,
+    server: Option<ServerConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ServerConfig {
+    #[serde(default)]
+    trust_xff_cidrs: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +128,20 @@ impl ProxyConfig {
             }
         }
 
+        let trusted_upstream_cidrs = vta_config
+            .server
+            .map(|s| s.trust_xff_cidrs)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|entry| match entry.parse::<IpNetwork>() {
+                Ok(cidr) => Some(cidr),
+                Err(e) => {
+                    tracing::warn!("trust_xff_cidrs entry {entry:?} is not a valid CIDR: {e}");
+                    None
+                }
+            })
+            .collect();
+
         ProxyConfig {
             mediator_did,
             mediator_host_override,
@@ -128,6 +156,7 @@ impl ProxyConfig {
             allowlist_hosts,
             vsock_storage_port: cli.vsock_storage,
             storage_data_dir: cli.storage_data_dir.clone(),
+            trusted_upstream_cidrs,
         }
     }
 
@@ -209,6 +238,7 @@ fn parse_host_port(s: &str) -> (String, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use std::path::PathBuf;
 
     /// A minimal ProxyConfig for allowlist tests: a region, no mediator, no extras.
@@ -227,6 +257,7 @@ mod tests {
             allowlist_hosts: Vec::new(),
             vsock_storage_port: 5500,
             storage_data_dir: PathBuf::from("/tmp/vta-store"),
+            trusted_upstream_cidrs: Vec::new(),
         }
     }
 
@@ -251,5 +282,63 @@ mod tests {
         let allow = proxy_config("us-east-1").build_allowlist();
         assert!(allow.contains(&("kms.us-east-1.amazonaws.com".to_string(), 443)));
         assert!(allow.contains(&("dynamodb.us-east-1.amazonaws.com".to_string(), 443)));
+    }
+
+    /// `trusted_upstream_cidrs` is read from the same `[server] trust_xff_cidrs`
+    /// the enclave VTA itself trusts — one declaration, not two.
+    #[test]
+    fn trusted_upstream_cidrs_read_from_vta_server_config() {
+        let dir =
+            std::env::temp_dir().join(format!("enclave-proxy-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[server]\ntrust_xff_cidrs = [\"127.0.0.1/32\", \"10.0.0.0/8\"]\n",
+        )
+        .unwrap();
+
+        let cli = crate::Cli::parse_from(["enclave-proxy"]);
+        let config = ProxyConfig::load(&config_path, &cli);
+        assert_eq!(
+            config.trusted_upstream_cidrs,
+            vec![
+                "127.0.0.1/32".parse::<IpNetwork>().unwrap(),
+                "10.0.0.0/8".parse::<IpNetwork>().unwrap(),
+            ]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_cidr_entries_are_skipped_not_fatal() {
+        let dir = std::env::temp_dir().join(format!(
+            "enclave-proxy-config-test-invalid-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[server]\ntrust_xff_cidrs = [\"not-a-cidr\", \"127.0.0.1/32\"]\n",
+        )
+        .unwrap();
+
+        let cli = crate::Cli::parse_from(["enclave-proxy"]);
+        let config = ProxyConfig::load(&config_path, &cli);
+        assert_eq!(
+            config.trusted_upstream_cidrs,
+            vec!["127.0.0.1/32".parse::<IpNetwork>().unwrap()]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_server_section_yields_no_trusted_upstreams() {
+        let cli = crate::Cli::parse_from(["enclave-proxy"]);
+        let config = ProxyConfig::load(std::path::Path::new("/nonexistent"), &cli);
+        assert!(config.trusted_upstream_cidrs.is_empty());
     }
 }

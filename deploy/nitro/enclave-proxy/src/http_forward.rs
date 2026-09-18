@@ -23,9 +23,27 @@
 //! bucket it was meant to fix.
 //!
 //! This module is that something. It terminates HTTP/1.1 here, strips every
-//! header a client could use to claim an identity, sets `X-Forwarded-For` to
-//! the address we actually accepted the connection from, and forwards the
-//! request over vsock unchanged in every other respect.
+//! header a client could use to claim an identity, and then either sets
+//! `X-Forwarded-For` to the address we actually accepted the connection from,
+//! or — when that address is itself a declared trusted upstream — extends the
+//! chain that upstream already sent.
+//!
+//! # A trusted upstream in front of this proxy
+//!
+//! `enclave-proxy` is not always the first hop. Behind an HTTP-aware load
+//! balancer (an AWS ALB, say) that already appends the real client's address,
+//! discarding what it sent and substituting the balancer's own node address
+//! reproduces the one-shared-bucket problem this proxy exists to fix — every
+//! client behind that node collapses into one identity, just one hop further
+//! out. `trusted_upstream_cidrs` (read from the same `[server] trust_xff_cidrs`
+//! the enclave VTA trusts — one declaration, not two) names the peers entitled
+//! to make that claim. When the TCP peer is one of them, [`sanitise_forwarding_headers`]
+//! *extends* the existing `X-Forwarded-For` with that peer instead of replacing
+//! it, mirroring `vti_common::rate_limit::TrustedProxyKeyExtractor`'s chain
+//! walk on the receiving end (a separate crate this proxy does not depend on —
+//! the two are consistent by convention, not by shared code). An untrusted
+//! peer's claim is still discarded
+//! outright — trusting a hop is an explicit, per-CIDR decision, never assumed.
 //!
 //! # What this does and does not assume about the parent
 //!
@@ -60,6 +78,7 @@ use std::sync::Arc;
 use hyper::Request;
 use hyper::body::Incoming;
 use hyper::header::{HeaderName, HeaderValue};
+use ipnetwork::IpNetwork;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -85,13 +104,39 @@ const CLIENT_IDENTITY_HEADERS: &[&str] = &[
     "cloudfront-viewer-address",
 ];
 
-/// Replace every client-supplied identity header with a single
-/// `X-Forwarded-For` naming the peer we accepted the connection from.
+/// Replace or extend `X-Forwarded-For` depending on whether `peer` is a
+/// declared trusted upstream, after stripping every other identity header
+/// unconditionally.
 ///
-/// This *sets* rather than appends. Appending preserves a chain the client
-/// wrote, and this proxy is the outermost hop — there is no upstream chain to
-/// preserve, only attacker input to discard.
-pub fn sanitise_forwarding_headers<B>(req: &mut Request<B>, peer: IpAddr) {
+/// An untrusted peer's claim is attacker input with no more standing than any
+/// other header it sent, so it is discarded and replaced with `peer` alone —
+/// unchanged from treating this proxy as the outermost hop. A trusted peer
+/// (named in `trusted_upstream_cidrs`) has already appended a claim this
+/// proxy did not originate; extending it preserves that claim instead of
+/// overwriting it with the peer's own address, which is what let a
+/// legitimate load balancer's real-client attribution silently collapse into
+/// one bucket per balancer node.
+pub fn sanitise_forwarding_headers<B>(
+    req: &mut Request<B>,
+    peer: IpAddr,
+    trusted_upstream_cidrs: &[IpNetwork],
+) {
+    let trusted = trusted_upstream_cidrs
+        .iter()
+        .any(|cidr| cidr.contains(peer));
+
+    // Read the existing chain before any header is touched — extending it
+    // requires knowing what it was. Multiple `X-Forwarded-For` lines
+    // concatenate in the order they arrived.
+    let existing_chain = trusted.then(|| {
+        req.headers()
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
+
     let headers = req.headers_mut();
     for name in CLIENT_IDENTITY_HEADERS {
         let name = HeaderName::from_static(name);
@@ -100,11 +145,17 @@ pub fn sanitise_forwarding_headers<B>(req: &mut Request<B>, peer: IpAddr) {
         while headers.remove(&name).is_some() {}
     }
 
-    // An `IpAddr` always renders as a valid header value, so the only way
-    // this can fail is a bug in `std`; dropping the header would silently
-    // fall the limiter back to one shared bucket, so assert instead.
-    let value = HeaderValue::from_str(&peer.to_string())
-        .expect("an IpAddr always renders as a valid header value");
+    let value = match existing_chain {
+        Some(chain) if !chain.is_empty() => format!("{chain}, {peer}"),
+        _ => peer.to_string(),
+    };
+    // A comma-joined list of values that were already valid headers, plus an
+    // `IpAddr` (which always renders as a valid header value), is itself
+    // always a valid header value — the only way this can fail is a bug in
+    // `std`, and dropping the header would silently fall the limiter back to
+    // one shared bucket, so assert instead.
+    let value = HeaderValue::from_str(&value)
+        .expect("a joined chain of valid header values is itself a valid header value");
     headers.insert(HeaderName::from_static("x-forwarded-for"), value);
 }
 
@@ -120,6 +171,7 @@ pub async fn serve_sanitised<C, U>(
     client: C,
     upstream: U,
     peer: IpAddr,
+    trusted_upstream_cidrs: Arc<Vec<IpNetwork>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -142,8 +194,9 @@ where
     let sender = Arc::new(Mutex::new(sender));
     let service = hyper::service::service_fn(move |mut req: Request<Incoming>| {
         let sender = Arc::clone(&sender);
+        let trusted_upstream_cidrs = Arc::clone(&trusted_upstream_cidrs);
         async move {
-            sanitise_forwarding_headers(&mut req, peer);
+            sanitise_forwarding_headers(&mut req, peer, &trusted_upstream_cidrs);
             let mut sender = sender.lock().await;
             sender.ready().await?;
             sender.send_request(req).await
@@ -181,7 +234,7 @@ mod tests {
             .header("x-forwarded-for", "9.9.9.9, 10.0.0.1")
             .body(())
             .unwrap();
-        sanitise_forwarding_headers(&mut req, peer());
+        sanitise_forwarding_headers(&mut req, peer(), &[]);
         assert_eq!(header_values(&req, "x-forwarded-for"), ["203.0.113.9"]);
     }
 
@@ -196,7 +249,7 @@ mod tests {
             .header("x-forwarded-for", "8.8.8.8")
             .body(())
             .unwrap();
-        sanitise_forwarding_headers(&mut req, peer());
+        sanitise_forwarding_headers(&mut req, peer(), &[]);
         assert_eq!(header_values(&req, "x-forwarded-for"), ["203.0.113.9"]);
     }
 
@@ -207,7 +260,7 @@ mod tests {
             builder = builder.header(*name, "9.9.9.9");
         }
         let mut req = builder.body(()).unwrap();
-        sanitise_forwarding_headers(&mut req, peer());
+        sanitise_forwarding_headers(&mut req, peer(), &[]);
         for name in CLIENT_IDENTITY_HEADERS {
             if *name == "x-forwarded-for" {
                 continue;
@@ -224,7 +277,7 @@ mod tests {
             .header("content-type", "application/json")
             .body(())
             .unwrap();
-        sanitise_forwarding_headers(&mut req, peer());
+        sanitise_forwarding_headers(&mut req, peer(), &[]);
         assert_eq!(header_values(&req, "authorization"), ["Bearer token"]);
         assert_eq!(header_values(&req, "content-type"), ["application/json"]);
     }
@@ -232,7 +285,7 @@ mod tests {
     #[test]
     fn a_request_with_no_forwarding_headers_gains_one() {
         let mut req = Request::builder().uri("/").body(()).unwrap();
-        sanitise_forwarding_headers(&mut req, "2001:db8::1".parse().unwrap());
+        sanitise_forwarding_headers(&mut req, "2001:db8::1".parse().unwrap(), &[]);
         assert_eq!(header_values(&req, "x-forwarded-for"), ["2001:db8::1"]);
     }
 
@@ -282,14 +335,26 @@ mod tests {
     /// The proxy under test, with `peer` standing for the address it accepted
     /// the client connection from.
     async fn spawn_proxy(upstream: SocketAddr, peer: IpAddr) -> SocketAddr {
+        spawn_proxy_trusting(upstream, peer, Vec::new()).await
+    }
+
+    /// Like [`spawn_proxy`], but with an explicit trusted-upstream CIDR list —
+    /// for the tests exercising the append-not-replace path.
+    async fn spawn_proxy_trusting(
+        upstream: SocketAddr,
+        peer: IpAddr,
+        trusted_upstream_cidrs: Vec<IpNetwork>,
+    ) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let trusted_upstream_cidrs = Arc::new(trusted_upstream_cidrs);
         tokio::spawn(async move {
             loop {
                 let (client, _) = listener.accept().await.unwrap();
+                let trusted_upstream_cidrs = Arc::clone(&trusted_upstream_cidrs);
                 tokio::spawn(async move {
                     let up = TcpStream::connect(upstream).await.unwrap();
-                    let _ = serve_sanitised(client, up, peer).await;
+                    let _ = serve_sanitised(client, up, peer, trusted_upstream_cidrs).await;
                 });
             }
         });
@@ -356,5 +421,57 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             assert_eq!(seen, "198.51.100.7", "forged={forged:?}");
         }
+    }
+
+    /// A trusted upstream (e.g. an AWS ALB naming the real client) has its
+    /// claim extended, not discarded — the fix for the one-bucket-per-balancer-
+    /// node collapse this proxy would otherwise reproduce behind a real load
+    /// balancer.
+    #[tokio::test]
+    async fn a_trusted_upstreams_header_is_extended_not_discarded() {
+        let upstream = spawn_echo_upstream().await;
+        // Stands in for the ALB node's own address — what this proxy's
+        // `listener.accept()` actually reports as the peer.
+        let alb_node_peer: IpAddr = "10.0.1.50".parse().unwrap();
+        let proxy =
+            spawn_proxy_trusting(upstream, alb_node_peer, vec!["10.0.0.0/8".parse().unwrap()])
+                .await;
+
+        let stream = TcpStream::connect(proxy).await.unwrap();
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
+        tokio::spawn(conn);
+
+        // Not attacker input — what a real ALB sets by default: the actual
+        // client's public IP, already correctly appended.
+        let (status, seen) = get_with_forged_xff(&mut sender, &["203.0.113.42"]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen, "203.0.113.42, 10.0.1.50");
+    }
+
+    /// An untrusted peer's claim still gets no benefit of the doubt just
+    /// because *some* CIDR is configured elsewhere — trust is per-CIDR, not
+    /// "any list is set".
+    #[tokio::test]
+    async fn an_untrusted_peer_is_unaffected_by_an_unrelated_trusted_cidr() {
+        let upstream = spawn_echo_upstream().await;
+        let untrusted_peer: IpAddr = "198.51.100.7".parse().unwrap();
+        let proxy = spawn_proxy_trusting(
+            upstream,
+            untrusted_peer,
+            vec!["10.0.0.0/8".parse().unwrap()],
+        )
+        .await;
+
+        let stream = TcpStream::connect(proxy).await.unwrap();
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
+        tokio::spawn(conn);
+
+        let (status, seen) = get_with_forged_xff(&mut sender, &["203.0.113.42"]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen, "198.51.100.7");
     }
 }

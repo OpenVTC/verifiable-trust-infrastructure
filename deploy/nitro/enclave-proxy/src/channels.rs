@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use ipnetwork::IpNetwork;
 use tokio::io::AsyncBufReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
@@ -27,7 +28,12 @@ use crate::bridge::bridge;
 /// [`crate::http_forward`] explains why that makes this function — not the
 /// enclave — the place `X-Forwarded-For` has to be set, and why forwarding the
 /// client's own copy of that header instead would be a rate-limit bypass.
-pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
+pub async fn run_inbound(
+    listen_port: u16,
+    enclave_cid: u32,
+    vsock_port: u32,
+    trusted_upstream_cidrs: Arc<Vec<IpNetwork>>,
+) {
     let listener = match TcpListener::bind(format!("0.0.0.0:{listen_port}")).await {
         Ok(l) => l,
         Err(e) => {
@@ -60,13 +66,18 @@ pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
         };
         debug!("[inbound] connection from {peer}");
 
+        let trusted_upstream_cidrs = Arc::clone(&trusted_upstream_cidrs);
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
             match VsockStream::connect(VsockAddr::new(enclave_cid, vsock_port)).await {
                 Ok(vsock_stream) => {
-                    if let Err(e) =
-                        crate::http_forward::serve_sanitised(tcp_stream, vsock_stream, peer.ip())
-                            .await
+                    if let Err(e) = crate::http_forward::serve_sanitised(
+                        tcp_stream,
+                        vsock_stream,
+                        peer.ip(),
+                        trusted_upstream_cidrs,
+                    )
+                    .await
                     {
                         debug!("[inbound] forward error: {e}");
                     }
