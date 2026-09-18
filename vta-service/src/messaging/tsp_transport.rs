@@ -142,6 +142,51 @@ impl TspTransport {
             .await
     }
 
+    /// Route `body` to `recipient` with **metadata privacy** when the topology
+    /// allows it, and by the plain routed send when it does not.
+    ///
+    /// TSP's privacy is against the intermediaries a message crosses *before* the
+    /// recipient's own mediator: with a nested send, each hop sees only the next
+    /// hop, never the final recipient. That is worth something only when the peer
+    /// is on a *different* mediator — so:
+    ///
+    /// - `peer_mediator` differs from ours → nest: seal the inner message
+    ///   end-to-end to `recipient`, wrap it in a Nested envelope sealed to
+    ///   `peer_mediator`, and route `[our_mediator, peer_mediator]`. The peer is
+    ///   carried inside the sealed envelope, not as a visible route hop, so our
+    ///   mediator (the only intermediary before the peer's) never learns it.
+    /// - same mediator, or `peer_mediator` unknown (`None`) → the direct routed
+    ///   [`send_to`](Self::send_to). A shared mediator is the sole intermediary
+    ///   and already terminates the route, so there is no one to hide the
+    ///   recipient from; nesting there would only add per-hop overhead. This is
+    ///   the reference single-mediator topology, and its behaviour is unchanged.
+    ///
+    /// `peer_mediator` is the recipient's `#tsp` (`TSPTransport`) service endpoint
+    /// — its mediator DID — which the caller already has from selecting TSP for
+    /// this peer, so nothing is resolved again here. Mirrors the SDK's own
+    /// `ATM::send_to` gate (nest iff the peer's mediator differs from ours).
+    pub async fn send_metadata_private(
+        &self,
+        recipient: &str,
+        peer_mediator: Option<&str>,
+        body: &[u8],
+    ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
+        match peer_mediator {
+            Some(peer_mediator) if peer_mediator != self.mediator_did => {
+                self.atm
+                    .tsp()
+                    .send_nested_routed(
+                        &self.profile,
+                        &[self.mediator_did.clone(), peer_mediator.to_string()],
+                        recipient,
+                        body,
+                    )
+                    .await
+            }
+            _ => self.send_to(recipient, body).await,
+        }
+    }
+
     /// This VTA's own VID — the first of the profile's `dids()`. Keys the D6
     /// recovery coordinator's per-peer single-flight state. `None` only if the
     /// profile somehow lost its mediator between construction and here.
