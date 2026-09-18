@@ -228,6 +228,35 @@ pub async fn run_open(
             println!();
             println!("Install via the provision-integration flow on the integration host.");
         }
+        SealedPayloadV1::TemplateBootstrapV2(p) => {
+            println!("Payload: TemplateBootstrapV2");
+            println!("  Template:     {}", p.config.template_name);
+            println!("  Kind:         {}", p.config.template_kind);
+            println!("  Secrets for:  {} DID(s)", p.secrets.len());
+            println!("  Outputs:      {}", p.config.outputs.len());
+            // The reason this variant exists — say what each DID actually
+            // holds, so an operator can see that the post-quantum key is there
+            // before installing, rather than discovering it by its absence.
+            for (did, material) in &p.secrets {
+                println!("  {did}");
+                println!(
+                    "    {} (signing, {:?})",
+                    material.signing_key.slot, material.signing_key.key_type
+                );
+                for extra in &material.additional_signing_keys {
+                    println!("    {} (signing, {:?})", extra.slot, extra.key_type);
+                }
+                println!(
+                    "    {} (key agreement, {:?})",
+                    material.ka_key.slot, material.ka_key.key_type
+                );
+            }
+            if let Some(ref u) = p.config.vta_url {
+                println!("  VTA URL:      {u}");
+            }
+            println!();
+            println!("Install via the provision-integration flow on the integration host.");
+        }
         SealedPayloadV1::AdminRotation(p) => {
             println!("Payload: AdminRotation");
             println!("  Admin DID:    {}", p.admin.did);
@@ -862,6 +891,7 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::AdminKeySet(_) => "AdminKeySet",
         SealedPayloadV1::RawPrivateKey(_) => "RawPrivateKey",
         SealedPayloadV1::TemplateBootstrap(_) => "TemplateBootstrap",
+        SealedPayloadV1::TemplateBootstrapV2(_) => "TemplateBootstrapV2",
         SealedPayloadV1::AdminRotation(_) => "AdminRotation",
         SealedPayloadV1::IssuedCredential(_) => "IssuedCredential",
         SealedPayloadV1::MessagingBridgeCredentials(_) => "MessagingBridgeCredentials",

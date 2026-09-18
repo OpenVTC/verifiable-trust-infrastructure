@@ -359,6 +359,12 @@ pub fn extract_admin_credential(
              flow to install"
                 .into(),
         ),
+        SealedPayloadV1::TemplateBootstrapV2(_) => Err(
+            "TemplateBootstrapV2 payloads carry a VC-issued admin authorization, not a \
+             CredentialBundle — open via `pnm bootstrap open` and use the provision-integration \
+             flow to install"
+                .into(),
+        ),
         SealedPayloadV1::AdminRotation(_) => Err(
             "AdminRotation payloads carry a VC-issued admin authorization, not a \
              CredentialBundle — open via `pnm bootstrap open` and use the provision-integration \

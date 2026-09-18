@@ -47,6 +47,23 @@ pub enum SealedPayloadV1 {
     ///
     /// See `docs/02-vta/provision-integration.md` for the full design.
     TemplateBootstrap(Box<super::template_bootstrap::TemplateBootstrapPayload>),
+    /// As [`Self::TemplateBootstrap`], for a DID that holds more than one
+    /// signing key.
+    ///
+    /// A separate variant rather than a field on the existing payload because
+    /// both `TemplateBootstrapPayload` and `DidKeyMaterial` carry
+    /// `#[serde(deny_unknown_fields)]`: a new key field makes every existing
+    /// opener reject the payload with `unknown field ...`, which reads as a
+    /// corrupted bundle. An unknown *variant* names itself, which is the
+    /// failure a consumer can act on — and is why CLAUDE.md's sealed-transfer
+    /// rule says never to reshape an existing variant.
+    ///
+    /// **A producer emits this only when the rendered template declares a key
+    /// slot beyond `signing` / `ka`.** Every v1 template keeps producing
+    /// [`Self::TemplateBootstrap`] byte-identically, so no existing opener sees
+    /// this until someone deliberately provisions from a template asking for
+    /// keys that opener cannot install.
+    TemplateBootstrapV2(Box<super::template_bootstrap::TemplateBootstrapPayloadV2>),
     /// Admin-DID rotation only — no integration DID. Carries the
     /// VTA-issued admin authorization VC + freshly-minted admin DID
     /// key material + VTA trust anchor. Produced by the

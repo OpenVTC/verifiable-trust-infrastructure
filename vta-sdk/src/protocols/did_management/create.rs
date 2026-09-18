@@ -240,6 +240,20 @@ pub struct CreateDidWebvhResultBody {
     pub signing_key_id: String,
     #[serde(alias = "ka_key_id")]
     pub ka_key_id: String,
+    /// Verification-method id of each signing key beyond the primary, by the
+    /// template slot that asked for it (`pq-signing` -> `did:webvh:…#key-2`).
+    ///
+    /// Empty for every v1 template, and skipped on the wire when empty, so an
+    /// existing consumer's parse is unchanged. Present so the provisioning flow
+    /// can read those keys back out of the keystore without re-deriving which
+    /// document method each one is — the ids come from the published document,
+    /// and only create has read it.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        alias = "additional_key_ids"
+    )]
+    pub additional_key_ids: std::collections::BTreeMap<String, String>,
     #[serde(alias = "pre_rotation_key_count")]
     pub pre_rotation_key_count: u32,
     #[serde(alias = "created_at")]
@@ -269,6 +283,7 @@ impl std::fmt::Debug for CreateDidWebvhResultBody {
             .field("portable", &self.portable)
             .field("signing_key_id", &self.signing_key_id)
             .field("ka_key_id", &self.ka_key_id)
+            .field("additional_key_ids", &self.additional_key_ids)
             .field("pre_rotation_key_count", &self.pre_rotation_key_count)
             .field("created_at", &self.created_at)
             .field("did_document", &self.did_document)

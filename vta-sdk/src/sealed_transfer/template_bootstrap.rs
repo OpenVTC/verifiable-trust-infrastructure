@@ -115,6 +115,188 @@ impl KeyPair {
     }
 }
 
+/// Top-level payload for `SealedPayloadV1::TemplateBootstrapV2`.
+///
+/// Identical to [`TemplateBootstrapPayload`] except that each DID's key
+/// material is a [`DidKeyMaterialV2`], which can carry a signing key beyond the
+/// primary one.
+///
+/// # Why a new variant rather than a field on the old one
+///
+/// [`DidKeyMaterial`] and [`TemplateBootstrapPayload`] both carry
+/// `#[serde(deny_unknown_fields)]`, so adding a key field to either makes every
+/// existing opener reject the whole payload:
+///
+/// ```text
+/// unknown field `pq_signing_key`, expected one of `did`, `signing_key`, `ka_key`
+/// ```
+///
+/// A message that reads like a corrupted payload of a format the opener
+/// believes it understands. The workspace rule (CLAUDE.md, "Sealed-transfer is
+/// the only secret-bearing wire format") says to add a variant instead, and the
+/// failure that produces is the better one — it names what the opener does not
+/// know:
+///
+/// ```text
+/// unknown variant `template_bootstrap_v2`, expected one of `admin_credential`, …
+/// ```
+///
+/// # When a producer emits this instead of [`TemplateBootstrapPayload`]
+///
+/// **The shape follows the template.** V2 only when the rendered template
+/// declares a key slot beyond `signing` / `ka`; every v1 template — which is
+/// every built-in — keeps producing `TemplateBootstrap` byte-identically. So an
+/// opener that has not been updated is unaffected until someone deliberately
+/// provisions it from a template that asks for more keys than it can install,
+/// and is then told so by name.
+///
+/// This is the same no-migration property as the proof rule one layer up: one
+/// key emits a proof object, several emit an array. The wire shape follows what
+/// is actually there, and nothing has a flag to set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateBootstrapPayloadV2 {
+    /// VTA-issued `VtaAuthorizationCredential`. Short-lived; verified at
+    /// bundle open; never re-verified after that (ACL is the steady-state
+    /// authority).
+    pub authorization: serde_json::Value,
+
+    /// Private key material for DIDs the VTA minted on the integration's
+    /// behalf, keyed by DID URI.
+    pub secrets: BTreeMap<String, DidKeyMaterialV2>,
+
+    /// Non-credential first-boot configuration. Unchanged from V1 — nothing
+    /// about extra keys touches it, and reusing the type means a consumer that
+    /// already reads a `TemplateBootstrapConfig` reads this one.
+    pub config: TemplateBootstrapConfig,
+}
+
+/// Key material for a single DID, able to carry more than one signing key.
+///
+/// # Why the pair stays structural
+///
+/// The primary signing key is not one entry among several, and making it one
+/// would lose two facts that are true and load-bearing:
+///
+/// - **A `did:webvh`'s primary signing key is what signs its log**, and
+///   didwebvh 1.0 mandates `eddsa-jcs-2022` for log-entry proofs. It is
+///   Ed25519 and cannot be otherwise.
+/// - **The VTC derives its storage key, install-token signer and audit key from
+///   that same Ed25519 seed** (`vtc-service/src/server.rs`). A bundle able to
+///   omit it is a bundle able to brick the consumer.
+///
+/// So post-quantum signing arrives as an *addition*, never a substitution —
+/// which is also the shape `LocalSigner` already has (primary first, then the
+/// rest), so the chain from template to signature is one idea end to end.
+///
+/// A flat slot list was the alternative. It is the slot map Phase 2
+/// deliberately rejected for `DerivedEntityKeys`: the arity of the first two is
+/// a true property worth keeping in the type rather than making every reader a
+/// lookup that can fail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DidKeyMaterialV2 {
+    /// The DID this material is for.
+    pub did: String,
+    /// The primary signing keypair — `#key-0` by convention, and the key the
+    /// DID's log is signed with.
+    pub signing_key: SlotKeyPair,
+    /// The key-agreement keypair.
+    pub ka_key: SlotKeyPair,
+    /// Signing keys beyond the primary — a post-quantum one, so the holder can
+    /// issue a credential carrying one proof each verifier can check.
+    ///
+    /// Empty on a classical-only DID, and skipped on the wire when empty, so a
+    /// V2 payload for such a DID differs from a V1 one only in its variant tag.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_signing_keys: Vec<SlotKeyPair>,
+}
+
+/// A keypair together with the template slot it was minted for and the
+/// algorithm it actually is.
+///
+/// # Why `slot` and `key_type` are carried
+///
+/// `slot` is the join back to what was asked for: the template declares
+/// `pq-signing`, the renderer substitutes `{PQ_SIGNING_KEY_MB}`, and this says
+/// which declaration each key answers. Without it a consumer has to infer
+/// intent from the algorithm.
+///
+/// `key_type` is carried rather than derived from the multicodec prefix for the
+/// reason Phase 2 arrived at the hard way: *a type asserted where it should
+/// have been carried* was the shape of almost every defect in that phase. The
+/// prefix and this field must agree, and a consumer that can check should —
+/// they come from the same producer, so disagreement means a bug, not an
+/// attack.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlotKeyPair {
+    /// The template key slot this key was minted for: `signing`, `ka`,
+    /// `pq-signing`, …
+    pub slot: String,
+    /// The algorithm this key is, as the `keyType` vocabulary spells it
+    /// (`ed25519`, `x25519`, `mldsa44`, …).
+    pub key_type: crate::keys::KeyType,
+    /// DID URL with fragment. Matches the `id` of the corresponding
+    /// verification method in the published DID document.
+    pub key_id: String,
+    /// Multibase-encoded public key.
+    pub public_key_multibase: String,
+    /// Multibase-encoded private key. Wrap in [`Zeroizing`] via
+    /// [`Self::private_zeroizing`] when loading into live memory.
+    pub private_key_multibase: String,
+}
+
+impl DidKeyMaterialV2 {
+    /// Read a V1 [`DidKeyMaterial`] as the V2 shape.
+    ///
+    /// Total, and not a guess. V1 has exactly two slots, which are
+    /// [`SLOT_SIGNING`] and [`SLOT_KA`] by the format's definition, and no
+    /// additional keys — that is what "V1" *means*. The one thing V1 does not
+    /// state is each key's algorithm, so it is read from the multicodec prefix
+    /// of the public key, which is the only carrier V1 has and is authoritative
+    /// (see [`crate::keys::KeyType::from_public_multibase`]).
+    ///
+    /// `None` when a key's prefix names no algorithm this build knows. That is
+    /// the right answer rather than a default: a key this build cannot
+    /// classify is a key it should not install, and defaulting to Ed25519 here
+    /// would reintroduce exactly the mislabelling the `key_type` field exists
+    /// to prevent — one layer further down, where nothing would catch it.
+    ///
+    /// Lets a consumer that has learned V2 read both shapes through one path,
+    /// so "which variant arrived" stops being a question above this line.
+    pub fn from_v1(v1: &DidKeyMaterial) -> Option<Self> {
+        use crate::did_templates::{SLOT_KA, SLOT_SIGNING};
+        Some(Self {
+            did: v1.did.clone(),
+            signing_key: SlotKeyPair::from_v1_pair(SLOT_SIGNING, &v1.signing_key)?,
+            ka_key: SlotKeyPair::from_v1_pair(SLOT_KA, &v1.ka_key)?,
+            additional_signing_keys: Vec::new(),
+        })
+    }
+}
+
+impl SlotKeyPair {
+    /// Read a V1 [`KeyPair`] into a slot-tagged one. See
+    /// [`DidKeyMaterialV2::from_v1`] for why the algorithm comes from the
+    /// multicodec here and from a field everywhere else.
+    fn from_v1_pair(slot: &str, pair: &KeyPair) -> Option<Self> {
+        Some(Self {
+            slot: slot.to_string(),
+            key_type: crate::keys::KeyType::from_public_multibase(&pair.public_key_multibase)?,
+            key_id: pair.key_id.clone(),
+            public_key_multibase: pair.public_key_multibase.clone(),
+            private_key_multibase: pair.private_key_multibase.clone(),
+        })
+    }
+
+    /// Take the private key out into a [`Zeroizing`] buffer, at the moment it
+    /// is used.
+    pub fn private_zeroizing(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.private_key_multibase.clone())
+    }
+}
+
 /// First-boot configuration carried alongside the authorization VC.
 /// Non-credential data: template metadata, rendered DID document,
 /// template-declared side outputs, connect URL, VTA trust material.
@@ -411,5 +593,231 @@ mod tests {
             TemplateOutput::Generic { kind, .. } => assert_eq!(kind, "oob-invitation"),
             other => panic!("expected Generic at index 1, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod v2_tests {
+    use super::*;
+    use crate::keys::KeyType;
+    use crate::sealed_transfer::SealedPayloadV1;
+    use serde_json::json;
+
+    fn config() -> TemplateBootstrapConfig {
+        TemplateBootstrapConfig {
+            template_name: "vtc-host".into(),
+            template_kind: "vtc-host".into(),
+            did_document: json!({ "id": "did:webvh:vtc.example" }),
+            outputs: vec![],
+            vta_url: None,
+            vta_trust: VtaTrustBundle {
+                vta_did: "did:webvh:vta.example".into(),
+                vta_did_document: json!({ "id": "did:webvh:vta.example" }),
+                vta_did_log: None,
+            },
+        }
+    }
+
+    fn hybrid_material() -> DidKeyMaterialV2 {
+        DidKeyMaterialV2 {
+            did: "did:webvh:vtc.example".into(),
+            signing_key: SlotKeyPair {
+                slot: "signing".into(),
+                key_type: KeyType::Ed25519,
+                key_id: "did:webvh:vtc.example#key-0".into(),
+                public_key_multibase: "z6MkSigning".into(),
+                private_key_multibase: "zPrivSigning".into(),
+            },
+            ka_key: SlotKeyPair {
+                slot: "ka".into(),
+                key_type: KeyType::X25519,
+                key_id: "did:webvh:vtc.example#key-1".into(),
+                public_key_multibase: "z6LSka".into(),
+                private_key_multibase: "zPrivKa".into(),
+            },
+            additional_signing_keys: vec![SlotKeyPair {
+                slot: "pq-signing".into(),
+                key_type: KeyType::MlDsa44,
+                key_id: "did:webvh:vtc.example#key-2".into(),
+                public_key_multibase: "zPqPublic".into(),
+                private_key_multibase: "zPqPrivate".into(),
+            }],
+        }
+    }
+
+    /// **The reason this is a variant and not a field.**
+    ///
+    /// Both V1 payload types carry `deny_unknown_fields`, so a third key field
+    /// makes an existing opener reject the whole bundle — with a message that
+    /// reads as a corrupted payload of a format it thinks it understands. The
+    /// variant's failure names what the opener does not know instead, which is
+    /// the difference between a diagnosable error and a mysterious one.
+    ///
+    /// Both halves are pinned because either one changing would quietly remove
+    /// the argument for the design.
+    #[test]
+    fn a_field_addition_would_have_been_rejected_as_corruption() {
+        let with_extra_field = json!({
+            "did": "did:webvh:x",
+            "signing_key": {"key_id":"did:webvh:x#key-0","public_key_multibase":"z1","private_key_multibase":"z2"},
+            "ka_key": {"key_id":"did:webvh:x#key-1","public_key_multibase":"z3","private_key_multibase":"z4"},
+            "pq_signing_key": {"key_id":"did:webvh:x#key-2","public_key_multibase":"z5","private_key_multibase":"z6"},
+        });
+        let err = serde_json::from_value::<DidKeyMaterial>(with_extra_field)
+            .expect_err("deny_unknown_fields refuses a third key field");
+        assert!(
+            err.to_string().contains("unknown field `pq_signing_key`"),
+            "got: {err}"
+        );
+
+        // The other half — what an opener that does *not* have this variant
+        // sees — cannot be asserted from inside a build that has it. It was
+        // measured on `main` before the variant existed:
+        //
+        //     unknown variant `template_bootstrap_v2`, expected one of
+        //     `admin_credential`, ... `messaging_bridge_credentials`
+        //
+        // What is testable here is the property that message depends on: the
+        // enum is externally tagged, so an unrecognised tag is reported *as a
+        // variant name*, not as a malformed field of a variant serde picked.
+        // If this ever became untagged or `other`-defaulted, the diagnosable
+        // failure would silently become an undiagnosable one.
+        let future_variant = json!({ "template_bootstrap_v9": { "anything": 1 } });
+        let err = serde_json::from_value::<SealedPayloadV1>(future_variant)
+            .expect_err("an opener cannot read a variant it does not have");
+        assert!(
+            err.to_string()
+                .contains("unknown variant `template_bootstrap_v9`"),
+            "an unrecognised payload must fail by naming the variant: {err}"
+        );
+    }
+
+    #[test]
+    fn the_v2_payload_round_trips_through_the_sealed_envelope() {
+        let payload = SealedPayloadV1::TemplateBootstrapV2(Box::new(TemplateBootstrapPayloadV2 {
+            authorization: json!({ "type": ["VerifiableCredential"] }),
+            secrets: BTreeMap::from([("did:webvh:vtc.example".to_string(), hybrid_material())]),
+            config: config(),
+        }));
+
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(
+            json.contains("\"template_bootstrap_v2\""),
+            "the wire tag must be snake_case, matching every other variant: {json}"
+        );
+
+        let parsed: SealedPayloadV1 = serde_json::from_str(&json).unwrap();
+        let SealedPayloadV1::TemplateBootstrapV2(p) = parsed else {
+            panic!("expected TemplateBootstrapV2");
+        };
+        let material = &p.secrets["did:webvh:vtc.example"];
+        assert_eq!(material.additional_signing_keys.len(), 1);
+        assert_eq!(material.additional_signing_keys[0].slot, "pq-signing");
+        assert_eq!(
+            material.additional_signing_keys[0].key_type,
+            KeyType::MlDsa44,
+            "the algorithm must survive the wire as a value, not be re-inferred"
+        );
+    }
+
+    /// With no extra keys, a V2 payload's key material is V1's content under a
+    /// different tag — `additional_signing_keys` is skipped entirely. Pinned
+    /// because it is what makes the variant cheap: a consumer reading V2 does
+    /// not pay for a field nobody filled in.
+    #[test]
+    fn an_empty_additional_list_is_absent_from_the_wire() {
+        let mut material = hybrid_material();
+        material.additional_signing_keys.clear();
+        let json = serde_json::to_string(&material).unwrap();
+        assert!(
+            !json.contains("additional_signing_keys"),
+            "an empty list must not appear on the wire: {json}"
+        );
+        let parsed: DidKeyMaterialV2 = serde_json::from_str(&json).unwrap();
+        assert!(parsed.additional_signing_keys.is_empty());
+    }
+
+    /// The V1 lift reads each key's algorithm from its multicodec prefix — the
+    /// only carrier V1 has — rather than assuming the pair.
+    #[test]
+    fn a_v1_payload_lifts_with_its_algorithms_read_from_the_keys() {
+        // Real multibase: ed25519-pub (0xed 0x01) and x25519-pub (0xec 0x01).
+        let ed = multibase::encode(
+            multibase::Base::Base58Btc,
+            [&[0xed, 0x01][..], &[7u8; 32][..]].concat(),
+        );
+        let x = multibase::encode(
+            multibase::Base::Base58Btc,
+            [&[0xec, 0x01][..], &[9u8; 32][..]].concat(),
+        );
+
+        let v1 = DidKeyMaterial {
+            did: "did:webvh:x".into(),
+            signing_key: KeyPair {
+                key_id: "did:webvh:x#key-0".into(),
+                public_key_multibase: ed,
+                private_key_multibase: "zPriv0".into(),
+            },
+            ka_key: KeyPair {
+                key_id: "did:webvh:x#key-1".into(),
+                public_key_multibase: x,
+                private_key_multibase: "zPriv1".into(),
+            },
+        };
+
+        let lifted = DidKeyMaterialV2::from_v1(&v1).expect("a V1 pair lifts");
+        assert_eq!(lifted.signing_key.slot, "signing");
+        assert_eq!(lifted.signing_key.key_type, KeyType::Ed25519);
+        assert_eq!(lifted.ka_key.slot, "ka");
+        assert_eq!(lifted.ka_key.key_type, KeyType::X25519);
+        assert!(lifted.additional_signing_keys.is_empty());
+    }
+
+    /// A key this build cannot classify is refused, not defaulted.
+    ///
+    /// Defaulting to Ed25519 here would put the mislabelling that `key_type`
+    /// exists to prevent one layer further down, where nothing would catch it —
+    /// the bundle would install a key under an algorithm it is not.
+    #[test]
+    fn a_v1_key_with_an_unknown_multicodec_does_not_lift() {
+        let junk = multibase::encode(
+            multibase::Base::Base58Btc,
+            [&[0xff, 0xff][..], &[1u8; 32][..]].concat(),
+        );
+        let v1 = DidKeyMaterial {
+            did: "did:webvh:x".into(),
+            signing_key: KeyPair {
+                key_id: "did:webvh:x#key-0".into(),
+                public_key_multibase: junk,
+                private_key_multibase: "zPriv0".into(),
+            },
+            ka_key: KeyPair {
+                key_id: "did:webvh:x#key-1".into(),
+                public_key_multibase: "z6LSka".into(),
+                private_key_multibase: "zPriv1".into(),
+            },
+        };
+        assert!(
+            DidKeyMaterialV2::from_v1(&v1).is_none(),
+            "an unclassifiable key must not be installed under a guessed algorithm"
+        );
+    }
+
+    /// The V1 payload's own shape is unchanged — pinned here rather than only
+    /// in the V1 tests, because the whole no-migration claim rests on a V1
+    /// producer and a V1 opener being untouched by this variant existing.
+    #[test]
+    fn the_v1_variant_is_byte_identical_to_what_it_always_was() {
+        let payload = SealedPayloadV1::TemplateBootstrap(Box::new(TemplateBootstrapPayload {
+            authorization: json!({}),
+            secrets: BTreeMap::new(),
+            config: config(),
+        }));
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains("\"template_bootstrap\""));
+        assert!(
+            !json.contains("template_bootstrap_v2"),
+            "a V1 payload must not acquire the V2 tag: {json}"
+        );
     }
 }

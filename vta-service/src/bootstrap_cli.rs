@@ -301,6 +301,33 @@ fn print_opened(
         SealedPayloadV1::RawPrivateKey(k) => {
             println!("Payload: RawPrivateKey ({})", k.key_type);
         }
+        SealedPayloadV1::TemplateBootstrapV2(p) => {
+            println!("Payload: TemplateBootstrapV2");
+            println!("  Template:     {}", p.config.template_name);
+            println!("  Kind:         {}", p.config.template_kind);
+            println!("  Secrets for:  {} DID(s)", p.secrets.len());
+            println!("  Outputs:      {}", p.config.outputs.len());
+            // Name every key held, because the extra one is the whole reason
+            // this variant exists — an operator should see it before
+            // installing, not infer it from its absence.
+            for (did, material) in &p.secrets {
+                println!("  {did}");
+                println!(
+                    "    {} (signing, {:?})",
+                    material.signing_key.slot, material.signing_key.key_type
+                );
+                for extra in &material.additional_signing_keys {
+                    println!("    {} (signing, {:?})", extra.slot, extra.key_type);
+                }
+                println!(
+                    "    {} (key agreement, {:?})",
+                    material.ka_key.slot, material.ka_key.key_type
+                );
+            }
+            if let Some(ref u) = p.config.vta_url {
+                println!("  VTA URL:      {u}");
+            }
+        }
         SealedPayloadV1::TemplateBootstrap(p) => {
             println!("Payload: TemplateBootstrap");
             println!("  Template:     {}", p.config.template_name);

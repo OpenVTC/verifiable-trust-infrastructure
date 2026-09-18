@@ -71,6 +71,7 @@ fn create_did_webvh_result_body_debug_redacts_mnemonic() {
         portable: false,
         signing_key_id: "k0".into(),
         ka_key_id: "k1".into(),
+        additional_key_ids: Default::default(),
         pre_rotation_key_count: 0,
         created_at: Utc::now(),
         did_document: None,

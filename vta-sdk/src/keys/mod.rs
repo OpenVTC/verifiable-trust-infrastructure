@@ -253,6 +253,35 @@ impl KeyType {
             KeyType::MlDsa65 => &[0x9b, 0x26], // mldsa-65-priv-seed (0x131b)
         }
     }
+
+    /// The key type a multibase-encoded **public** key declares, by its
+    /// multicodec prefix.
+    ///
+    /// The inverse of [`Self::multicodec_public`], and built from the same
+    /// match so the two cannot drift: a new `KeyType` is a compile error in the
+    /// table above, and this follows automatically.
+    ///
+    /// **Use this only where the key type is genuinely not carried** — reading
+    /// a wire format that predates carrying it, for instance. Where a producer
+    /// knows the algorithm, it should say so; the prefix is evidence, but a
+    /// field is a statement, and Phase 2's recurring defect was exactly a type
+    /// asserted where it should have been carried.
+    ///
+    /// `None` for a string that is not valid multibase, or whose prefix is not
+    /// one this build knows. Both are answers a caller must handle: a key it
+    /// cannot classify is not a key it should install.
+    pub fn from_public_multibase(multibase_str: &str) -> Option<Self> {
+        let (_base, bytes) = multibase::decode(multibase_str).ok()?;
+        [
+            KeyType::Ed25519,
+            KeyType::X25519,
+            KeyType::P256,
+            KeyType::MlDsa44,
+            KeyType::MlDsa65,
+        ]
+        .into_iter()
+        .find(|k| bytes.starts_with(k.multicodec_public()))
+    }
 }
 
 impl std::fmt::Display for KeyType {
