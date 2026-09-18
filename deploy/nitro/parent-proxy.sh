@@ -12,6 +12,12 @@
 # store and no enclave logs on the parent. Use it for bring-up and debugging;
 # use enclave-proxy for anything real.
 #
+# It also cannot be the trust boundary for client-IP attribution. socat bridges
+# bytes, so it forwards the client's own `X-Forwarded-For` untouched — which is
+# why this script refuses to start against a config that sets
+# `[server] trust_xff_cidrs` (see the check below). enclave-proxy terminates
+# HTTP and rewrites that header; this does not.
+#
 # It manages the following channels for the enclave:
 #
 #   1. INBOUND:   External clients → TCP:8443 → vsock:5100 → Enclave VTA
@@ -154,6 +160,39 @@ print(running[0]['EnclaveCID'])
     echo "  nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512"
     exit 1
 }
+
+# ---------------------------------------------------------------------------
+# Refuse to pair a byte bridge with a trusted-proxy rate-limit config
+# ---------------------------------------------------------------------------
+# The enclave VTA's `[server] trust_xff_cidrs` names the proxies whose
+# `X-Forwarded-For` it will believe. The inbound channel below is socat: a
+# layer-4 byte bridge that forwards the client's own headers untouched while
+# making every request arrive from 127.0.0.1. Pair the two and any client can
+# set `X-Forwarded-For` to whatever it likes and get a fresh rate-limit bucket
+# per request — a total bypass of the /auth, /bootstrap and did.jsonl limits.
+#
+# The Rust `enclave-proxy` terminates HTTP and rewrites the header, which is
+# what makes that config safe; this script cannot. So it refuses rather than
+# starting an exposed listener. Override only for a deployment where nothing
+# untrusted can reach ${LISTEN_PORT} at all.
+CONFIG_TRUST_XFF_CIDRS=$(read_config_value "trust_xff_cidrs" "")
+if [ -n "${CONFIG_TRUST_XFF_CIDRS}" ] && \
+   [ "${CONFIG_TRUST_XFF_CIDRS}" != "[]" ] && \
+   [ -z "${ALLOW_UNSANITISED_XFF:-}" ]; then
+    echo "ERROR: ${CONFIG_FILE} sets trust_xff_cidrs = ${CONFIG_TRUST_XFF_CIDRS}," >&2
+    echo "       but this script bridges bytes and cannot rewrite X-Forwarded-For." >&2
+    echo "       Every client could then choose its own rate-limit bucket." >&2
+    echo "" >&2
+    echo "  Fix (either one):" >&2
+    echo "    - run deploy/nitro/enclave-proxy instead, which terminates HTTP" >&2
+    echo "      and sets X-Forwarded-For from the real peer; or" >&2
+    echo "    - remove trust_xff_cidrs from the config, leaving the limiter on" >&2
+    echo "      peer-IP keying (one shared bucket, but not spoofable)." >&2
+    echo "" >&2
+    echo "  ALLOW_UNSANITISED_XFF=1 overrides, for a listener nothing" >&2
+    echo "  untrusted can reach." >&2
+    exit 1
+fi
 
 echo ""
 echo "========================================="

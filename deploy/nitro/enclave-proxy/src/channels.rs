@@ -19,6 +19,14 @@ use crate::bridge::bridge;
 // [1] Inbound: TCP → vsock (clients → enclave REST API)
 // ---------------------------------------------------------------------------
 
+/// Inbound REST, terminated as HTTP/1.1 rather than bridged as bytes.
+///
+/// This is the last hop that knows the client's address: from here on the
+/// request travels vsock and then `socat … TCP-CONNECT:127.0.0.1:8100` inside
+/// the enclave, so the VTA's socket peer is loopback for every client alike.
+/// [`crate::http_forward`] explains why that makes this function — not the
+/// enclave — the place `X-Forwarded-For` has to be set, and why forwarding the
+/// client's own copy of that header instead would be a rate-limit bypass.
 pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
     let listener = match TcpListener::bind(format!("0.0.0.0:{listen_port}")).await {
         Ok(l) => l,
@@ -56,8 +64,11 @@ pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
             let _permit = permit; // held until task completes
             match VsockStream::connect(VsockAddr::new(enclave_cid, vsock_port)).await {
                 Ok(vsock_stream) => {
-                    if let Err(e) = bridge(tcp_stream, vsock_stream).await {
-                        debug!("[inbound] bridge error: {e}");
+                    if let Err(e) =
+                        crate::http_forward::serve_sanitised(tcp_stream, vsock_stream, peer.ip())
+                            .await
+                    {
+                        debug!("[inbound] forward error: {e}");
                     }
                 }
                 Err(e) => {

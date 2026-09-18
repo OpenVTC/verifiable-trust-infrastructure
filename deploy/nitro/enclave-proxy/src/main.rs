@@ -2,6 +2,7 @@ mod bridge;
 mod channels;
 mod config;
 mod detect;
+mod http_forward;
 #[allow(dead_code)] // Protocol functions used by vsock client (different crate)
 mod protocol;
 mod resolve;

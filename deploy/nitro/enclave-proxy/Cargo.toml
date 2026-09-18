@@ -44,3 +44,16 @@ serde_json = "1"
 # did:webvh DID naming an internal host would be fetched from.
 affinidi-did-resolver-cache-sdk = "0.8.37"
 fjall = "3"
+# The inbound channel terminates HTTP/1.1 so it can replace the client's
+# `X-Forwarded-For` with the address it actually accepted the connection from
+# — see `src/http_forward.rs`. hyper specifically, because it is also the
+# VTA's own server: one parser on both ends of the hop is what keeps the two
+# from disagreeing about where a request ends.
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+
+[dev-dependencies]
+# The end-to-end forwarding tests stand a hyper echo server up behind the
+# proxy and read back the header the enclave would have seen.
+http-body-util = "0.1"
+bytes = "1"
