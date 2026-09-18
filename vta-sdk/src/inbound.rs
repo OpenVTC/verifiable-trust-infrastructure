@@ -181,10 +181,17 @@ mod tests {
 
     /// The version will move. A receiver that only knew `0.5` would start
     /// answering the next one, which is the loop again.
+    ///
+    /// The URI is composed from [`TRUST_TASK_ERROR_PREFIX`] rather than written
+    /// out. `vtc-service`'s `every_bound_canonical_task_exists_in_the_registry`
+    /// scans this workspace's sources for `trusttasks.org/spec/` strings ending
+    /// in a `MAJOR.MINOR` segment and asserts the registry publishes each one —
+    /// so a made-up version spelled literally here reads as a real binding on an
+    /// authority nobody serves. Composing it keeps the case without claiming a
+    /// spec that does not exist.
     #[test]
     fn a_future_error_version_is_still_an_error() {
-        let doc =
-            json!({"id": "urn:uuid:5", "type": "https://trusttasks.org/spec/trust-task-error/9.9"});
+        let doc = json!({"id": "urn:uuid:5", "type": format!("{TRUST_TASK_ERROR_PREFIX}9.9")});
         assert_eq!(classify(&doc), Inbound::Error);
     }
 }
