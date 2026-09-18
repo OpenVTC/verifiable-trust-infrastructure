@@ -251,43 +251,61 @@ impl DidKeyMaterialV2 {
     /// Read a V1 [`DidKeyMaterial`] as the V2 shape.
     ///
     /// Total, and not a guess. V1 has exactly two slots, which are
-    /// [`SLOT_SIGNING`] and [`SLOT_KA`] by the format's definition, and no
-    /// additional keys — that is what "V1" *means*. The one thing V1 does not
-    /// state is each key's algorithm, so it is read from the multicodec prefix
-    /// of the public key, which is the only carrier V1 has and is authoritative
-    /// (see [`crate::keys::KeyType::from_public_multibase`]).
+    /// [`SLOT_SIGNING`](crate::did_templates::SLOT_SIGNING) and
+    /// [`SLOT_KA`](crate::did_templates::SLOT_KA) by the format's definition,
+    /// and no additional keys — that is what "V1" *means*. Its two algorithms
+    /// are equally definitional: [`DidKeyMaterial`] documents them as an Ed25519
+    /// signing keypair and an X25519 key-agreement keypair, and the format
+    /// admits nothing else.
     ///
-    /// `None` when a key's prefix names no algorithm this build knows. That is
-    /// the right answer rather than a default: a key this build cannot
-    /// classify is a key it should not install, and defaulting to Ed25519 here
-    /// would reintroduce exactly the mislabelling the `key_type` field exists
-    /// to prevent — one layer further down, where nothing would catch it.
+    /// So each key's type comes from its multicodec prefix when that classifies
+    /// — the bytes are the ground truth about the bytes — and from the format's
+    /// contract when it does not.
     ///
-    /// Lets a consumer that has learned V2 read both shapes through one path,
-    /// so "which variant arrived" stops being a question above this line.
-    pub fn from_v1(v1: &DidKeyMaterial) -> Option<Self> {
+    /// # Why an unclassifiable key is not refused
+    ///
+    /// It was, briefly. The round-trips in `tests/provision_client_e2e.rs`
+    /// caught why that was wrong: every runner opens through
+    /// `response_to_result_v2` now, so the strictness applied to **every** V1
+    /// bundle from **every** existing VTA — rejecting at open time what the V1
+    /// path had always accepted, over a field the V1 path did not even have.
+    ///
+    /// That bought nothing. For the classical pair nobody acts on `key_type`:
+    /// the consumer decodes the private half with its own explicit codec check
+    /// (`VtcKeyBundle::ed25519_private_bytes`), so a mislabelled pair cannot
+    /// reach a signer. The inference is confined to the one place it is safe —
+    /// V1's two slots, whose algorithms the format fixes.
+    ///
+    /// An **additional** signing key is never inferred. It exists only in a V2
+    /// bundle, where the producer stated its algorithm outright, and there
+    /// `key_type` *is* load-bearing because it selects the cryptosuite.
+    pub fn from_v1(v1: &DidKeyMaterial) -> Self {
         use crate::did_templates::{SLOT_KA, SLOT_SIGNING};
-        Some(Self {
+        use crate::keys::KeyType;
+        Self {
             did: v1.did.clone(),
-            signing_key: SlotKeyPair::from_v1_pair(SLOT_SIGNING, &v1.signing_key)?,
-            ka_key: SlotKeyPair::from_v1_pair(SLOT_KA, &v1.ka_key)?,
+            signing_key: SlotKeyPair::from_v1_pair(SLOT_SIGNING, &v1.signing_key, KeyType::Ed25519),
+            ka_key: SlotKeyPair::from_v1_pair(SLOT_KA, &v1.ka_key, KeyType::X25519),
             additional_signing_keys: Vec::new(),
-        })
+        }
     }
 }
 
 impl SlotKeyPair {
-    /// Read a V1 [`KeyPair`] into a slot-tagged one. See
-    /// [`DidKeyMaterialV2::from_v1`] for why the algorithm comes from the
-    /// multicodec here and from a field everywhere else.
-    fn from_v1_pair(slot: &str, pair: &KeyPair) -> Option<Self> {
-        Some(Self {
+    /// Read a V1 [`KeyPair`] into a slot-tagged one.
+    ///
+    /// `contract` is what the V1 format says this slot is, used when the public
+    /// key's multicodec does not classify. See [`DidKeyMaterialV2::from_v1`]
+    /// for why that fallback exists and why it is safe only here.
+    fn from_v1_pair(slot: &str, pair: &KeyPair, contract: crate::keys::KeyType) -> Self {
+        Self {
             slot: slot.to_string(),
-            key_type: crate::keys::KeyType::from_public_multibase(&pair.public_key_multibase)?,
+            key_type: crate::keys::KeyType::from_public_multibase(&pair.public_key_multibase)
+                .unwrap_or(contract),
             key_id: pair.key_id.clone(),
             public_key_multibase: pair.public_key_multibase.clone(),
             private_key_multibase: pair.private_key_multibase.clone(),
-        })
+        }
     }
 
     /// Take the private key out into a [`Zeroizing`] buffer, at the moment it
@@ -765,7 +783,7 @@ mod v2_tests {
             },
         };
 
-        let lifted = DidKeyMaterialV2::from_v1(&v1).expect("a V1 pair lifts");
+        let lifted = DidKeyMaterialV2::from_v1(&v1);
         assert_eq!(lifted.signing_key.slot, "signing");
         assert_eq!(lifted.signing_key.key_type, KeyType::Ed25519);
         assert_eq!(lifted.ka_key.slot, "ka");
@@ -773,13 +791,20 @@ mod v2_tests {
         assert!(lifted.additional_signing_keys.is_empty());
     }
 
-    /// A key this build cannot classify is refused, not defaulted.
+    /// A key whose multicodec does not classify falls back to what the V1
+    /// format **defines** the slot to be — it is not refused.
     ///
-    /// Defaulting to Ed25519 here would put the mislabelling that `key_type`
-    /// exists to prevent one layer further down, where nothing would catch it —
-    /// the bundle would install a key under an algorithm it is not.
+    /// This reverses the first version of this lift, and the reversal is the
+    /// point. Refusing here rejected, at open time, V1 bundles that the V1 path
+    /// had always accepted — for every existing VTA, since every runner now
+    /// opens through the V2 path — over a field the V1 path did not even have.
+    ///
+    /// Nothing acts on `key_type` for the classical pair: the consumer decodes
+    /// the private half with its own explicit codec check. So the fallback
+    /// cannot mislead a signer, while refusing could break provisioning
+    /// outright.
     #[test]
-    fn a_v1_key_with_an_unknown_multicodec_does_not_lift() {
+    fn a_v1_key_the_multicodec_cannot_classify_takes_the_formats_word() {
         let junk = multibase::encode(
             multibase::Base::Base58Btc,
             [&[0xff, 0xff][..], &[1u8; 32][..]].concat(),
@@ -788,22 +813,62 @@ mod v2_tests {
             did: "did:webvh:x".into(),
             signing_key: KeyPair {
                 key_id: "did:webvh:x#key-0".into(),
-                public_key_multibase: junk,
+                public_key_multibase: junk.clone(),
                 private_key_multibase: "zPriv0".into(),
             },
             ka_key: KeyPair {
                 key_id: "did:webvh:x#key-1".into(),
-                public_key_multibase: "z6LSka".into(),
+                // Not even valid multibase — the shape a synthetic test fixture
+                // has, and what `provision_client_e2e`'s round-trips carry.
+                public_key_multibase: "z6LSNotARealKey".into(),
                 private_key_multibase: "zPriv1".into(),
             },
         };
-        assert!(
-            DidKeyMaterialV2::from_v1(&v1).is_none(),
-            "an unclassifiable key must not be installed under a guessed algorithm"
+
+        let lifted = DidKeyMaterialV2::from_v1(&v1);
+        assert_eq!(
+            lifted.signing_key.key_type,
+            KeyType::Ed25519,
+            "V1's signing slot is Ed25519 by definition of the format"
+        );
+        assert_eq!(
+            lifted.ka_key.key_type,
+            KeyType::X25519,
+            "V1's key-agreement slot is X25519 by definition of the format"
         );
     }
 
-    /// The V1 payload's own shape is unchanged — pinned here rather than only
+    /// And the precedence: a multicodec that *does* classify wins over the
+    /// contract. The bytes are the ground truth about the bytes, so a V1 bundle
+    /// carrying something other than the pair is reported as what it is rather
+    /// than as what the format expected.
+    #[test]
+    fn a_readable_multicodec_beats_the_format_contract() {
+        let pq = multibase::encode(
+            multibase::Base::Base58Btc,
+            [KeyType::MlDsa44.multicodec_public(), &[7u8; 32][..]].concat(),
+        );
+        let v1 = DidKeyMaterial {
+            did: "did:webvh:x".into(),
+            signing_key: KeyPair {
+                key_id: "did:webvh:x#key-0".into(),
+                public_key_multibase: pq,
+                private_key_multibase: "zPriv0".into(),
+            },
+            ka_key: KeyPair {
+                key_id: "did:webvh:x#key-1".into(),
+                public_key_multibase: "zJunk".into(),
+                private_key_multibase: "zPriv1".into(),
+            },
+        };
+        assert_eq!(
+            DidKeyMaterialV2::from_v1(&v1).signing_key.key_type,
+            KeyType::MlDsa44,
+            "a readable prefix must not be overridden by the contract"
+        );
+    }
+
+    /// The V1 payload's own shape is unchanged    /// The V1 payload's own shape is unchanged — pinned here rather than only
     /// in the V1 tests, because the whole no-migration claim rests on a V1
     /// producer and a V1 opener being untouched by this variant existing.
     #[test]

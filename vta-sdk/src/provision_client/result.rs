@@ -197,17 +197,11 @@ pub fn response_to_result_v2(
             let v1 = *boxed;
             let mut secrets = std::collections::BTreeMap::new();
             for (did, material) in &v1.secrets {
-                // A key whose multicodec names no algorithm this build knows is
-                // refused rather than defaulted. Installing a key one cannot
-                // classify is how a bundle's contents and a DID document come
-                // apart, and a default here would be invisible.
-                let lifted = DidKeyMaterialV2::from_v1(material).ok_or_else(|| {
-                    ProvisionError::Armor(format!(
-                        "key material for '{did}' carries a public key whose multicodec names \
-                         no algorithm this build knows"
-                    ))
-                })?;
-                secrets.insert(did.clone(), lifted);
+                // Total — see `DidKeyMaterialV2::from_v1`. A V1 bundle that
+                // opened before this variant existed must still open now: every
+                // runner comes through here, so anything refused at this line is
+                // refused for every existing VTA.
+                secrets.insert(did.clone(), DidKeyMaterialV2::from_v1(material));
             }
             TemplateBootstrapPayloadV2 {
                 authorization: v1.authorization,
