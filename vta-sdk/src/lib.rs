@@ -155,6 +155,11 @@ pub mod prelude;
 // classifies `trust_tasks`' URI catalog), so a retry layer can consult it
 // without pulling in the client machinery.
 pub mod retry_safety;
+// How long a caller must wait for a Trust Task, given what the VTA may do with
+// it on the way. Always-on and dependency-free for the same reason
+// `retry_safety` is: `vta-service` reads the shared timeout constant from here
+// rather than keeping a second copy that can drift.
+pub mod budget;
 // `resolver` wraps `affinidi-did-resolver-cache-sdk`. The cfg lists every
 // feature that adds that dependency, not just `didcomm`: this module now also
 // owns the loopback-host decision (`webvh_host_policy`), and each of these
