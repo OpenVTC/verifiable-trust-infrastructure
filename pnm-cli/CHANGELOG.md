@@ -2,6 +2,75 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.17.2...pnm-cli-v0.17.3) — 2026-09-18
+
+
+### Added
+
+- **sealed-transfer**: A template-bootstrap variant that can carry a second signing key ([#1556](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1556))
+
+* fix(did-templates): a key slot beyond the historical pair, and the literal it used to publish
+
+  `slot_var`'s `{SLOT}_KEY_MB` rule is mechanical, and before this it was
+  mechanical in one direction only. A `schemaVersion` 2 template could *declare* a
+  third key slot — a post-quantum signing key beside the classical pair, which is
+  the shape a hybrid-credential issuer needs — and then could not be loaded,
+  because the placeholder that slot's own rule produces was rejected:
+
+      Invalid("undeclared placeholder(s) { PQ_SIGNING_KEY_MB } in document
+               — add them to requiredVars or optionalVars")
+
+  Only `SIGNING_KEY_MB` and `KA_KEY_MB` were ambient, because only those two are
+  in `RESERVED_VARS`. So `keys` at schemaVersion 2 ([#1530](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1530)) could express exactly
+  the pair it was introduced to move beyond.
+
+  ## Following the error's advice published a literal into a write-once log
+
+  The advice is the defect. `optionalVars` supplies a **default**, and the
+  renderer substitutes a default for any name the caller did not supply — and the
+  minting flow does not supply a slot's key under a name it has never heard of.
+  So declaring `PQ_SIGNING_KEY_MB` to get past the rejection passed validation
+  *and rendered*:
+
+      {
+        "id": "did:webvh:x#key-2",
+        "type": "Multikey",
+        "publicKeyMultibase": "PLACEHOLDER-NEVER-SUBSTITUTED"
+      }
+
+  — inside `assertionMethod`, in a `did:webvh` log that is signed once and cannot
+  be re-signed. `check_key_slots` already refuses a slot the document never
+  publishes: a key minted and thrown away. This is the same failure wearing the
+  other hat, a key published and never minted, and it arrived through the one door
+  that check does not watch.
+
+  ## What changes
+
+  - `DidTemplate::slot_vars()` — the placeholder names the declared slots occupy,
+    built from `key_slots()` rather than a second fixed list. For a v1 template it
+    is exactly the two already in `RESERVED_VARS`, so v1 behaviour is untouched;
+    it is what lets a v2 template name a third slot at all.
+  - `check_placeholders_declared` treats those names as ambient. An author cannot
+    declare a value they have no way to know.
+  - `check_slot_vars_not_declared` refuses the reverse — a slot's placeholder in
+    `requiredVars` or `optionalVars` — naming the slot and saying why. A v1
+    template still gets `ReservedVar` from the check that runs first, unchanged.
+  - An undeclared placeholder that is *shaped* like a slot's is told to declare a
+    **slot**, not a variable. The generic advice pointed at exactly what the new
+    check refuses; an error that recommends the defect is worse than no error.
+
+  ## The state this leaves
+
+  A third slot is expressible, and a VTA that cannot yet mint for it fails at
+  render with `Unresolved` naming the placeholder — rather than emitting a
+  document with a hole in it. Wiring derivation to the `keys` block is the next
+  change; until then the loud failure is the correct one.
+
+  Found while tracing what stands between a VTC and a second signing key: nothing
+  in the chain from template to `LocalSigner::with_additional_key` could carry one.
+
+
+
 ## [0.17.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.17.1...pnm-cli-v0.17.2) — 2026-09-17
 
 
