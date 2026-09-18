@@ -2582,6 +2582,139 @@ mod transport_harness_tests {
         )
     }
 
+    /// A deterministic `did:key` **and its private multibase** from a seed byte.
+    /// `orphan_did` needs only the public half; a peer that has to *sign* its
+    /// replies needs the private key too. Same encoding as every TSP binary in
+    /// `tests/e2e` (`did_key_from_seed`): multicodec `0xed01` for the public DID,
+    /// `0x8026` for the Ed25519 private multibase.
+    fn did_key_from_seed(seed: u8) -> (String, String) {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let pk = sk.verifying_key().to_bytes();
+        let did = format!(
+            "did:key:{}",
+            vta_sdk::did_key::ed25519_multibase_pubkey(&pk)
+        );
+        let mut priv_bytes = vec![0x80, 0x26];
+        priv_bytes.extend_from_slice(&[seed; 32]);
+        let priv_mb = multibase::encode(multibase::Base::Base58Btc, &priv_bytes);
+        (did, priv_mb)
+    }
+
+    /// A TSP peer that **answers** — the inverse of [`orphan_did`].
+    ///
+    /// Where the orphan proves a silent peer drives the D6 recovery to a
+    /// give-up, this proves an answering peer drives it to a *recovered reply*:
+    /// the VTA sends, this peer replies threaded to the request, and
+    /// `recover_send_tsp` correlates that reply through `pending_replies`.
+    ///
+    /// Two setup steps are load-bearing:
+    ///
+    /// - **It holds an ACL grant, not only a mediator account.** Over TSP
+    ///   inbound, `auth_for_trust_task_envelope` → `auth_from_did` runs *before*
+    ///   the reply reaches `pending_replies.complete`, and a reply document is
+    ///   not a ceremony task — so an ungranted peer's reply is refused with a
+    ///   `permissionDenied` envelope and never correlated, and the VTA times out
+    ///   on a reply that was in fact delivered. Dropping the grant makes this
+    ///   test fail exactly as the silent orphan does: the grant is the negative
+    ///   control.
+    /// - **It `relate`s the VTA before answering.** `relate` leaves this side
+    ///   `Pending`, which admits application messages (§3.6), so the reply may be
+    ///   sent; the VTA's own half is re-formed by `send_reestablishing` on the
+    ///   recovery path.
+    struct AnsweringPeer {
+        session: std::sync::Arc<vta_sdk::session::TspSession>,
+        loop_handle: tokio::task::JoinHandle<()>,
+        did: String,
+    }
+
+    impl AnsweringPeer {
+        async fn spawn(mock: &MockVta, seed: u8) -> Self {
+            let (did, priv_mb) = did_key_from_seed(seed);
+            // The mediator decides who may connect and be routed to; the VTA
+            // decides whose replies it will even look at. Both are required.
+            mock.register_mediator_account(&did).await;
+            mock.grant_super_admin(&did).await;
+
+            let session =
+                vta_sdk::session::TspSession::connect(&did, &priv_mb, mock.mediator_did())
+                    .await
+                    .expect("the answering peer connects its TSP socket");
+            session
+                .relate(mock.vta_did())
+                .await
+                .expect("the peer invites the VTA so its reply is admitted");
+            let session = std::sync::Arc::new(session);
+
+            // The answering loop: pump the socket, and for every Trust Task the
+            // VTA sends, reply threaded to it. `receive_next` also processes the
+            // VTA's relationship control frames — its accept, and the re-invite
+            // `send_reestablishing` sends on recovery — so the relationship is
+            // reconciled here without a bespoke answering arm.
+            let loop_session = session.clone();
+            let vta_did = mock.vta_did().to_string();
+            let mediator_did = mock.mediator_did().to_string();
+            let loop_handle = tokio::spawn(async move {
+                loop {
+                    // Resolve the poll before the reply send below: `receive_next`
+                    // yields a `Box<dyn Error>` on the socket-gone arm, which is
+                    // not `Send`, and leaving the whole `Result` alive across the
+                    // later `send_document().await` would make this spawned future
+                    // non-`Send`. Reduce it to the document (or stop) here.
+                    let doc = match loop_session.receive_next(1).await {
+                        Ok(Some(doc)) => doc,
+                        // Idle within the poll slice — keep pumping.
+                        Ok(None) => continue,
+                        // The socket is gone (the peer was shut down). Stop.
+                        Err(_) => break,
+                    };
+                    let Ok(request) =
+                        serde_json::from_str::<trust_tasks_rs::TrustTask<serde_json::Value>>(&doc)
+                    else {
+                        continue;
+                    };
+                    // `respond_with` threads the reply on the request's
+                    // `threadId`-or-`id` (SPEC §4.9) — the same key the VTA's
+                    // `pending_replies` waiter is registered under.
+                    let reply = request.respond_with(
+                        format!("urn:uuid:d6-reply-{}", request.id),
+                        serde_json::json!({ "answered": true }),
+                    );
+                    if let Ok(bytes) = serde_json::to_vec(&reply) {
+                        let _ = loop_session
+                            .send_document(&vta_did, &mediator_did, &bytes)
+                            .await;
+                    }
+                }
+            });
+
+            Self {
+                session,
+                loop_handle,
+                did,
+            }
+        }
+
+        fn did(&self) -> &str {
+            &self.did
+        }
+
+        /// Stop the answering loop and shut the peer's socket. Not optional: an
+        /// abandoned `TspSession` keeps its websocket auto-reconnecting for the
+        /// rest of the binary (vta-sdk #830).
+        ///
+        /// The loop is **aborted**, not signalled: after `shutdown`,
+        /// `receive_next` returns `Ok(None)` rather than `Err` (session.rs — a
+        /// closed socket is reported as idle-until-shutdown), so a loop that only
+        /// breaks on `Err` would spin forever and `loop_handle.await` would never
+        /// return. Abort ends it immediately; the following `await` then resolves
+        /// at once with a cancelled `JoinError`.
+        async fn stop(self) {
+            self.loop_handle.abort();
+            let _ = self.loop_handle.await;
+            self.session.shutdown().await;
+        }
+    }
+
     /// D6: a reply-timeout **drives** the coordinator-gated self-repair — the
     /// stale relationship is reset and re-established — even against a peer that
     /// never answers.
@@ -2669,6 +2802,75 @@ mod transport_harness_tests {
              (single-flight); a second concurrent send gets InFlight"
         );
 
+        mock.shutdown().await;
+    }
+
+    /// D6 **success arm**: a reply-timeout recovery that *completes* because the
+    /// peer answers — the join `d6_drives_recovery_on_a_reply_timeout` leaves
+    /// untested (it uses a silent orphan and asserts the failure).
+    ///
+    /// The point is the correlation: `recover_send_tsp` resets the stale
+    /// relationship, re-establishes-and-resends the (retry-safe) `acl/grant`, and
+    /// the answering peer replies threaded to it — so the reply is matched through
+    /// `pending_replies` and returned here, and the coordinator records a
+    /// *success* rather than a give-up. The two failure tests share this seam but
+    /// only ever exercise the timeout; this is the one that proves the reply path.
+    #[tokio::test]
+    async fn d6_recovers_a_reply_from_an_answering_peer() {
+        let mock = MockVta::start_with_transports().await;
+        let peer = AnsweringPeer::spawn(&mock, 0x9c).await;
+
+        let tsp = crate::operations::outbound::TspSender::from_app_state(&mock.ctx.state)
+            .expect("a mediator-connected VTA has a TSP transport")
+            // Generous relative to the orphan tests: this one must leave time for a
+            // real round trip (re-invite → deliver → the peer's reply → the VTA
+            // correlating it), not just for a timeout to elapse.
+            .with_reply_timeout(std::time::Duration::from_secs(5));
+
+        // The request the VTA re-sends on recovery. Its `id` is the thread the
+        // reply will name (`reply_thread_of` = `threadId`-or-`id`), so the waiter
+        // registered under this same string is the one the peer's reply wakes.
+        let thread = "urn:uuid:d6-success-req-1";
+        let request = trust_tasks_rs::TrustTask::new(
+            thread,
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+                .parse::<trust_tasks_rs::TypeUri>()
+                .expect("acl/grant/0.1 is a valid Type URI"),
+            serde_json::json!({}),
+        );
+        let framed = vta_sdk::tsp_binding::wrap_envelope(
+            &serde_json::to_vec(&request).expect("serialise the request"),
+        );
+
+        let out = tsp
+            .recover_for_test(
+                peer.did(),
+                thread,
+                &framed,
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+            )
+            .await;
+
+        assert!(
+            out.is_ok(),
+            "the answering peer replies, so recovery completes with the reply: {out:?}"
+        );
+        let reply = out.expect("recovery returned the correlated reply");
+        assert_eq!(
+            reply.get("threadId").and_then(|t| t.as_str()),
+            Some(thread),
+            "the correlated document is the reply the peer threaded to the request"
+        );
+
+        let metrics = tsp.recovery().metrics();
+        assert_eq!(metrics.attempts, 1, "exactly one recovery attempt ran");
+        assert_eq!(
+            metrics.successes, 1,
+            "and it settled as a success — the relationship recovered and the reply arrived"
+        );
+        assert_eq!(metrics.give_ups, 0, "a recovered peer is not given up on");
+
+        peer.stop().await;
         mock.shutdown().await;
     }
 
