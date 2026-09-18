@@ -20,7 +20,7 @@ use tracing::{info, warn};
 
 use crate::acl::Role;
 use crate::error::AppError;
-use crate::messaging::auth::{auth_for_trust_task_envelope, auth_from_message};
+use crate::messaging::auth::auth_from_message;
 use crate::operations;
 use crate::server::AppState;
 
@@ -307,19 +307,22 @@ pub async fn handle_trust_task(
     // overwrites the plaintext `from` with it (or `None`) before routing, so a
     // missing sender means the envelope was never authenticated.
     let authenticated = match message.from.as_deref() {
-        Some(sender) => auth_for_trust_task_envelope(&app_state, sender, &body).await,
+        Some(sender) => Ok(sender),
         None => Err(AppError::Authentication(
             "message has no sender (from)".into(),
         )),
     };
 
     let response = match authenticated {
-        // Authcrypt sealed this envelope to the VTA's own key, so no
-        // intermediary — mediator included — held the plaintext.
-        Ok(auth) => {
-            crate::trust_tasks::dispatch_trust_task_core(
+        // The document and the sender authcrypt proved, and no decision of our
+        // own: whether this is a request to authorize, a response to deliver or
+        // an error to stop at is the spine's to read. Authcrypt sealed this
+        // envelope to the VTA's own key, so no intermediary — mediator included
+        // — held the plaintext.
+        Ok(sender) => {
+            crate::trust_tasks::accept_from_proven_sender(
                 &app_state,
-                &auth,
+                sender,
                 &body,
                 crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
             )

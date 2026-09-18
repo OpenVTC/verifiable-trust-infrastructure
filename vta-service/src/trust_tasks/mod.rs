@@ -667,6 +667,120 @@ pub(crate) async fn attach_proof_in_place(
     }
 }
 
+/// Accept an inbound document from a transport that proved its sender itself
+/// (TSP, DIDComm) rather than by a bearer token.
+///
+/// # Why this exists, and why the transports no longer decide anything
+///
+/// Authorization used to happen in each transport, *before* the spine saw the
+/// document. That defeated the ordering [`dispatch_trust_task_inner`]
+/// documents and relies on — "a reply carries no authority and asks for
+/// nothing" — because a reply was already refused at the door by the time the
+/// spine could recognise it as one. Under DIDComm the transport's own `thid`
+/// correlation hid it; under TSP, whose binding has no request/response of its
+/// own, a DID hosting server's answer to a task the VTA had itself sent came
+/// back and was ACL-refused as though it were unsolicited. From the outside
+/// that reads as a missing ACL entry, and granting one would hand a peer
+/// standing to send *requests* when all it ever needed was to answer.
+///
+/// So a transport now hands over two things — the document, and the VID it
+/// proved — and makes no policy decision at all. The spine asks what the
+/// document *is* ([`vta_sdk::inbound`]) and only then decides what may be done
+/// with it:
+///
+/// - an **error** is terminal: logged with its reason and answered with
+///   nothing, because answering an error is what turns one failure into an
+///   exchange that ends only when a mediator starts rate-limiting;
+/// - a **response** belongs to whoever is waiting for it, and is authorized by
+///   the fact that we asked for it;
+/// - only a **request** reaches the ACL.
+///
+/// Every intrinsic-sender transport gets that at once, which is the property a
+/// per-transport copy kept failing to have.
+pub(crate) async fn accept_from_proven_sender(
+    state: &AppState,
+    sender_vid: &str,
+    body: &[u8],
+    confidentiality: transport::TransportConfidentiality,
+) -> TrustTaskOutcome {
+    use vta_sdk::inbound::{Inbound, classify};
+
+    // Nothing goes back. Every transport already reads an empty body as "no
+    // reply" — `handle_tsp` drops one rather than sealing it.
+    let silent = || TrustTaskOutcome {
+        status: axum::http::StatusCode::NO_CONTENT,
+        body: Vec::new(),
+    };
+
+    // Classified off a bare `Value`: it reads two fields and must not depend on
+    // the document deserialising into `TrustTask<Value>`. A malformed *request*
+    // still has to reach the spine to be refused the usual way, so a parse
+    // failure falls through to `Request` rather than becoming a kind of its own.
+    let kind = match serde_json::from_slice::<Value>(body) {
+        Ok(v) => classify(&v),
+        Err(_) => Inbound::Request,
+    };
+
+    // Release a waiter, if this document answers something we sent. Parsed
+    // separately from the classification above because `complete` needs the
+    // typed document; a response too malformed to type is one nobody can be
+    // waiting on anyway.
+    let deliver = |state: &AppState, body: &[u8]| -> bool {
+        serde_json::from_slice::<TrustTask<Value>>(body)
+            .map(|d| state.pending_replies.complete(&d))
+            .unwrap_or(false)
+    };
+
+    match kind {
+        Inbound::Error => {
+            // The reason, not just the fact. A peer's error is often the only
+            // account of what went wrong anywhere in the exchange, and dropping
+            // it silently is how a live failure stayed undiagnosable for an
+            // hour.
+            let reason = serde_json::from_slice::<Value>(body)
+                .ok()
+                .and_then(|v| {
+                    let p = v.get("payload")?;
+                    let code = p.get("code").and_then(Value::as_str).unwrap_or("?");
+                    let message = p.get("message").and_then(Value::as_str).unwrap_or("");
+                    Some(format!("{code}: {message}"))
+                })
+                .unwrap_or_else(|| "<unreadable payload>".to_string());
+            tracing::warn!(
+                sender = %sender_vid,
+                %reason,
+                "inbound trust-task error from a peer — terminal, not answered"
+            );
+            // A failed request should fail now rather than sit out its timeout.
+            deliver(state, body);
+            silent()
+        }
+        // Threaded, so it *may* answer something we sent — but threading alone
+        // does not make it a reply. A step-up `approve-response` and a
+        // `task-consent/decision` both thread to the request that provoked them
+        // and are nonetheless requests: they carry the approval, and dropping
+        // them would strand every ceremony waiting on a human. So the waiter
+        // decides. If one is holding this thread the document is its answer and
+        // goes no further; if not, it is an ordinary request and falls through.
+        Inbound::Response if deliver(state, body) => {
+            tracing::debug!(sender = %sender_vid, "inbound response delivered to a waiting request");
+            silent()
+        }
+        Inbound::Response | Inbound::Request => {
+            match crate::messaging::auth::auth_for_trust_task_envelope(state, sender_vid, body)
+                .await
+            {
+                Ok(auth) => dispatch_trust_task_core(state, &auth, body, confidentiality).await,
+                Err(e) => reject_trust_task(
+                    body,
+                    trust_tasks_rs::RejectReason::PermissionDenied {
+                        reason: e.to_string(),
+                    },
+                ),
+            }
+        }
+    }
+}
 pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     auth: &AuthClaims,
