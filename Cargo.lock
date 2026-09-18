@@ -2634,7 +2634,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.16.4"
+version = "0.16.5"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "chrono",
@@ -7538,7 +7538,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.17.3"
+version = "0.17.4"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
