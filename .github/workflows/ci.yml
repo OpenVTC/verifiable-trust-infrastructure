@@ -825,8 +825,16 @@ jobs:
     # of `cfg(feature = "...")` doesn't silently rot. Default-feature
     # builds are covered by the `check` job above.
     name: Feature combos
+    needs: affects
+    if: needs.affects.outputs.features != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # ~40 minutes on a warm runner once the all-features step moved out, but
+    # the budget was 45 against a 45-minute job, which made every run a coin
+    # flip. An overrun is also not reported as a failure: GitHub marks the step
+    # that was in flight `cancelled`, which reads as though a human cancelled
+    # the run. #1575 spent three attempts getting one verdict out of it.
+    # Budget the tail, not the mean.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -970,20 +978,6 @@ jobs:
       - name: vta-sdk vetting
         run: cargo test -p vta-sdk --features client,vetting --lib vetting
 
-      # The *maximal* combination. Every step above narrows the feature set;
-      # nothing built the top end, and `clippy`/`check` elsewhere in this
-      # workflow run `--all-targets` without `--all-features`. So a target
-      # gated on two non-default features was never compiled by anything:
-      # `vta-sdk/tests/provision_client_e2e.rs` (`provision-client` +
-      # `test-support`) sat uncompilable for as long as it took
-      # `ProvisionIntegrationRequest.request` to become a `serde_json::Value`.
-      #
-      # Compiling it is not enough — the same file's auth mock still handed out
-      # a 14-char challenge against a `minLength: 16` payload, a *runtime*
-      # failure that the identical fixture in `runner_rest.rs`'s unit tests had
-      # already been fixed for. So this runs the tests too.
-      - name: workspace all-features (lint)
-        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
       # `-p vta-sdk`, not the workspace: `vtc-service`'s
       # `*_without_feature_is_config_error` tests assert the error you get when
       # a secrets backend is *not* compiled in, so `--all-features` is the one
@@ -1064,6 +1058,83 @@ jobs:
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
+  features-all:
+    # The *maximal* combination, split out of `Feature combos`.
+    #
+    # Every step in that job narrows the feature set and names its package with
+    # `-p`; this one does neither, and that difference is load-bearing. It
+    # builds the whole workspace, including `pnm-cli`, `cnm-cli`, `vta-mcp` and
+    # `vta-mobile-core`, which no `-p` flag over there mentions. Left in place
+    # it made `Feature combos` unfilterable: any gate derived from that job's
+    # packages would have been narrower than the job, and would have skipped
+    # this coverage for a change to one of those crates.
+    #
+    # Why the combination is worth a job at all: `clippy`/`check` elsewhere in
+    # this workflow run `--all-targets` without `--all-features`, so a target
+    # gated on two non-default features was never compiled by anything.
+    # `vta-sdk/tests/provision_client_e2e.rs` (`provision-client` +
+    # `test-support`) sat uncompilable for as long as it took
+    # `ProvisionIntegrationRequest.request` to become a `serde_json::Value`.
+    name: Feature combos (all-features)
+    needs: affects
+    # The whole workspace, expressed with the two answers that already exist:
+    # anything inside "everything except vtc-service" or inside the VTC closure
+    # is, between them, every crate. So this skips only a change that touches
+    # no crate at all — prose — which is exactly the scope of the step.
+    if: needs.affects.outputs.vta_tests != 'false' || needs.affects.outputs.vtc_tests != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          pkgs=""
+          for p in libdbus-1-dev pkg-config; do
+            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
+          done
+          if [ -z "$pkgs" ]; then
+            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            exit 0
+          fi
+          echo "missing:$pkgs"
+          if sudo timeout 120 apt-get install -y $pkgs; then
+            exit 0
+          fi
+          echo "::warning::install from the shipped index failed; refreshing"
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
+          exit 1
+
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # Its own prefix, like every other job here: sharing one would let
+          # this restore a `target/`-less registry built for other feature
+          # sets and, worse, let one job's cache evict the repo's allowance.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-features-all-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-features-all-
+
+      - name: workspace all-features (lint)
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+
   affects:
     # Which package-scoped builds this change can possibly alter.
     #
@@ -1084,6 +1155,7 @@ jobs:
       enclave: ${{ steps.enclave.outputs.run }}
       vta_tests: ${{ steps.vta_tests.outputs.run }}
       vtc_tests: ${{ steps.vtc_tests.outputs.run }}
+      features: ${{ steps.features.outputs.run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1105,6 +1177,19 @@ jobs:
         run: bash scripts/ci-affects.sh --except vtc-service
       - id: vtc_tests
         run: bash scripts/ci-affects.sh vtc-service,vtc-client
+      # `Feature combos` is the longest job on the graph and was the only
+      # expensive one with no filter at all, so a CLI-only or docs-only pull
+      # request waited ~45 minutes for it.
+      #
+      # Its scope spans both sides of the workspace — `vta-service` and
+      # `vtc-service` both appear in it — so neither `vta_tests` nor
+      # `vtc_tests` describes it and borrowing one would skip real coverage.
+      # The package list is read out of the job's own `-p` flags rather than
+      # written down here; `ci-feature-combo-pkgs.sh` explains why, and refuses
+      # if a `--workspace` step ever makes those flags an incomplete account of
+      # what the job builds.
+      - id: features
+        run: bash scripts/ci-affects.sh "$(bash scripts/ci-feature-combo-pkgs.sh)"
 
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
