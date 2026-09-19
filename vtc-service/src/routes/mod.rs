@@ -36,13 +36,14 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{any, delete, get, post};
+use ipnetwork::IpNetwork;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
 
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
+use vti_common::rate_limit::TrustedProxyKeyExtractor;
 use vti_common::trust_task::{TrustTask, task_layer, task_routes};
 
 use crate::config::RoutingConfig;
@@ -115,7 +116,7 @@ async fn serve_openapi(api: utoipa::openapi::OpenApi) -> axum::Json<utoipa::open
 /// annotated) are served but absent from the document until annotated.
 pub fn openapi_spec() -> utoipa::openapi::OpenApi {
     OpenApiRouter::<AppState>::with_openapi(ApiDoc::openapi())
-        .nest("/v1", build_api_chain(&RoutingConfig::default(), false))
+        .nest("/v1", build_api_chain(&RoutingConfig::default(), &[]))
         .split_for_parts()
         .1
 }
@@ -204,41 +205,38 @@ pub fn router_with(
     routing: &RoutingConfig,
     website_state: Option<crate::website::WebsiteState>,
 ) -> Router<AppState> {
-    router_with_inner(routing, website_state, false)
+    router_with_inner(routing, website_state, &[])
 }
 
-/// Build the router with explicit `trust_xff`. Use this from
-/// `server.rs` where the config is available; the no-args
-/// `router_with` defaults to `trust_xff=false` (peer-IP rate
-/// limiting), which is the safe default for tests and direct-
-/// binding deployments.
 #[cfg(feature = "website")]
 pub fn router_with_xff(
     routing: &RoutingConfig,
     website_state: Option<crate::website::WebsiteState>,
-    trust_xff: bool,
+    trust_xff_cidrs: &[IpNetwork],
 ) -> Router<AppState> {
-    router_with_inner(routing, website_state, trust_xff)
+    router_with_inner(routing, website_state, trust_xff_cidrs)
 }
 
 #[cfg(not(feature = "website"))]
 pub fn router_with(routing: &RoutingConfig) -> Router<AppState> {
-    router_with_inner(routing, false)
+    router_with_inner(routing, &[])
 }
 
 #[cfg(not(feature = "website"))]
-pub fn router_with_xff(routing: &RoutingConfig, trust_xff: bool) -> Router<AppState> {
-    router_with_inner(routing, trust_xff)
+pub fn router_with_xff(routing: &RoutingConfig, trust_xff_cidrs: &[IpNetwork]) -> Router<AppState> {
+    router_with_inner(routing, trust_xff_cidrs)
 }
 
 #[cfg(not(feature = "website"))]
-fn router_with_inner(routing: &RoutingConfig, trust_xff: bool) -> Router<AppState> {
+fn router_with_inner(routing: &RoutingConfig, trust_xff_cidrs: &[IpNetwork]) -> Router<AppState> {
     // `build_api_chain` returns an `OpenApiRouter` (the single source of truth
     // for both routes and `/openapi.json`); split off the served axum `Router`
     // for `assemble` to nest. The OpenAPI document is rebuilt from the same
     // assembly by [`openapi_spec`] (which `assemble` serves), so the two cannot
     // drift.
-    let api_chain = build_api_chain(routing, trust_xff).split_for_parts().0;
+    let api_chain = build_api_chain(routing, trust_xff_cidrs)
+        .split_for_parts()
+        .0;
     with_csrf(assemble(routing, api_chain))
 }
 
@@ -246,9 +244,11 @@ fn router_with_inner(routing: &RoutingConfig, trust_xff: bool) -> Router<AppStat
 fn router_with_inner(
     routing: &RoutingConfig,
     website_state: Option<crate::website::WebsiteState>,
-    trust_xff: bool,
+    trust_xff_cidrs: &[IpNetwork],
 ) -> Router<AppState> {
-    let api_chain = build_api_chain(routing, trust_xff).split_for_parts().0;
+    let api_chain = build_api_chain(routing, trust_xff_cidrs)
+        .split_for_parts()
+        .0;
     with_csrf(assemble_with_website(routing, api_chain, website_state))
 }
 
@@ -271,7 +271,10 @@ fn with_csrf(app: Router<AppState>) -> Router<AppState> {
 /// [`assemble_with_website`]) but threaded through so a future
 /// per-mount override can land without changing this function's
 /// signature.
-fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<AppState> {
+fn build_api_chain(
+    _routing: &RoutingConfig,
+    trust_xff_cidrs: &[IpNetwork],
+) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf. The legacy
     // openvtc/vtc/auth/legacy/* slugs were VTC-specific reimplementations
     // of primitives that VTA + did-hosting also have; consolidating here
@@ -1022,7 +1025,7 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE));
 
     // Unauthenticated routes — tighter body cap + per-IP governor.
-    let unauth = build_unauth_routes(trust_xff);
+    let unauth = build_unauth_routes(trust_xff_cidrs);
     api.merge(unauth)
 }
 
@@ -1039,12 +1042,12 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
 /// - [`UNAUTH_BODY_SIZE`] body cap (tighter than the 1 MiB main
 ///   API cap — generous enough for a JWE / sealed-transfer
 ///   envelope, small enough to reject blob floods).
-/// - Per-IP `tower-governor` via [`SmartIpKeyExtractor`] (or the peer
-///   address when `trust_xff` is off): a burst of 10, then one request
-///   every 5 s. `per_second(5)` is a replenishment *interval*, not a rate —
-///   a bigger number is a tighter limit. A refusal is a `429` in the shape
-///   [`crate::routing::rate_limit`] defines, reporting limiter `unauth`.
-fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
+/// - Per-IP `tower-governor` via [`TrustedProxyKeyExtractor`] (or the peer
+///   address when `trust_xff_cidrs` is empty): a burst of 10, then one
+///   request every 5 s. `per_second(5)` is a replenishment *interval*, not a
+///   rate — a bigger number is a tighter limit. A refusal is a `429` in the
+///   shape [`crate::routing::rate_limit`] defines, reporting limiter `unauth`.
+fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
     //
     // Bearer→cookie bridge: the SPA posts an access token it already
@@ -1078,24 +1081,25 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     // KiB cap apply. The admin GET list + show + POST decide and the
     // public GET manifest stay on the `api` chain.
 
-    // L2: rate-limiter key extractor honours `trust_xff`. The
-    // governor is applied in the routing chain below via a
-    // branched `apply_governor` helper so the two key extractors'
-    // distinct generic types don't pollute the variable's signature.
-    let _ = trust_xff;
-
-    // `SmartIpKeyExtractor` reads `X-Forwarded-For` / `X-Real-IP` /
-    // `Forwarded` headers first and only falls back to `ConnectInfo`
-    // when none are set. In production the `axum::serve` call in
-    // `server.rs` wires `into_make_service_with_connect_info` so the
-    // peer-IP fallback works; in integration tests built on
-    // `Router::oneshot`, neither headers nor `ConnectInfo` are present
-    // and the extractor errors with 500. This synthetic-`ConnectInfo`
-    // middleware inserts a `127.0.0.1` placeholder **only when missing**
-    // so test calls take the peer-IP fallback path — production traffic
-    // (which already carries `ConnectInfo` from the service factory)
-    // is untouched.
-    let synth_connect_info = axum::middleware::from_fn(insert_default_connect_info_if_missing);
+    // `TrustedProxyKeyExtractor` needs `ConnectInfo` to identify the peer. In
+    // production the `axum::serve` call in `server.rs` wires
+    // `into_make_service_with_connect_info` so it's always present; in
+    // integration tests built on `Router::oneshot` it is not, and the
+    // extractor refuses every request. A synthetic-`ConnectInfo` middleware
+    // inserts a `127.0.0.1` placeholder **only when missing** so those calls
+    // take the peer-IP path.
+    //
+    // It is layered **only when nothing is trusted**, and that condition is
+    // the whole safety argument: a synthesised peer is a manufactured anchor,
+    // and with a non-empty trust list it could land *inside* a trusted CIDR —
+    // at which point a request with no peer at all would be allowed to name
+    // its own rate-limit bucket through `X-Forwarded-For`. With an empty list
+    // no address is trusted, so the placeholder can only ever be keyed on
+    // directly. A configured VTC therefore keeps the fail-closed behaviour
+    // (no peer → refused), which is what production sees anyway.
+    let synth_connect_info = trust_xff_cidrs.is_empty().then(|| {
+        axum::middleware::from_fn(vti_common::rate_limit::insert_default_connect_info_if_missing)
+    });
 
     let unauth_router = OpenApiRouter::<AppState>::new()
         .routes(tt(
@@ -1181,61 +1185,26 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         .routes(routes!(trust_tasks::dispatch))
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
 
-    // Apply the per-IP rate limiter in a branch so the two
-    // key-extractor generic types don't leak into the variable's
-    // type. The layered router is type-erased on the axum side
-    // once we hand it back.
-    let unauth_router = if trust_xff {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(5)
-                .burst_size(10)
-                .key_extractor(SmartIpKeyExtractor)
-                .finish()
-                .expect("governor config values are static and non-zero"),
-        );
-        unauth_router.layer(
-            GovernorLayer::new(cfg)
-                .error_handler(crate::routing::rate_limit::governor_error_response),
-        )
-    } else {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(5)
-                .burst_size(10)
-                .key_extractor(tower_governor::key_extractor::PeerIpKeyExtractor)
-                .finish()
-                .expect("governor config values are static and non-zero"),
-        );
-        unauth_router.layer(
-            GovernorLayer::new(cfg)
-                .error_handler(crate::routing::rate_limit::governor_error_response),
-        )
-    };
-    unauth_router.layer(synth_connect_info)
-}
-
-/// Middleware that inserts a `ConnectInfo<SocketAddr>(127.0.0.1)`
-/// extension if the request doesn't already carry one. See the
-/// rationale comment in [`build_unauth_routes`].
-async fn insert_default_connect_info_if_missing(
-    mut request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    use axum::extract::ConnectInfo;
-
-    if request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .is_none()
-    {
-        let synthetic =
-            ConnectInfo::<SocketAddr>(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0));
-        request.extensions_mut().insert(synthetic);
+    // One extractor covers both cases: with an empty CIDR list
+    // `TrustedProxyKeyExtractor` trusts nothing and so keys on the socket
+    // peer, which is exactly `PeerIpKeyExtractor`. Branching on the list only
+    // to pick between two behaviours that already coincide is a chance to get
+    // the arms the wrong way round for no gain.
+    let cfg = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(5)
+            .burst_size(10)
+            .key_extractor(TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()))
+            .finish()
+            .expect("governor config values are static and non-zero"),
+    );
+    let unauth_router = unauth_router.layer(
+        GovernorLayer::new(cfg).error_handler(crate::routing::rate_limit::governor_error_response),
+    );
+    match synth_connect_info {
+        Some(layer) => unauth_router.layer(layer),
+        None => unauth_router,
     }
-    next.run(request).await
 }
 
 /// Build the public router from the API sub-router + placeholder

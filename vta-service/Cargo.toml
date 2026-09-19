@@ -141,7 +141,7 @@ path = "src/main.rs"
 required-features = ["cli-synthesis"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.19", features = ["encryption", "passkey", "openapi"] }
+vti-common = { path = "../vti-common", version = "0.19", features = ["encryption", "passkey", "openapi", "rate-limit"] }
 # Seed-store backends + `create_seed_store` factory + `SecretsConfig` (lifted
 # from this crate into a shared crate so external integrations can reuse them).
 # Per-backend features are activated by this crate's matching features below.
@@ -357,6 +357,7 @@ tower_governor = "0.8"
 # via tower_governor; used directly so a quota can be swapped at runtime.
 # tower_governor stays for its client-IP key extractors.
 governor = "0.10"
+ipnetwork = { workspace = true }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 aes-gcm = { workspace = true }

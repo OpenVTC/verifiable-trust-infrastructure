@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # =============================================================================
 # VTA Non-TEE Image
 # =============================================================================
@@ -75,7 +76,9 @@ ARG FEATURES="setup,rest,didcomm,cli-synthesis,aws-secrets,webvh"
 # the real manifests, and the flag buys nothing for a warm-up whose output is
 # discarded. The real build below is locked, which is where it matters.
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=vta-cargo-registry \
+    --mount=type=cache,target=/build/target,id=vta-cargo-target,sharing=locked \
+    cargo chef cook --release --recipe-path recipe.json \
         --package vta-service \
         --no-default-features --features ${FEATURES}
 
@@ -83,8 +86,11 @@ RUN cargo chef cook --release --recipe-path recipe.json \
 # Cargo.lock and cannot silently resolve a different dependency set than CI
 # tested.
 COPY . .
-RUN cargo build --release --locked --package vta-service \
-        --no-default-features --features ${FEATURES}
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=vta-cargo-registry \
+    --mount=type=cache,target=/build/target,id=vta-cargo-target,sharing=locked \
+    cargo build --release --locked --package vta-service \
+        --no-default-features --features ${FEATURES} && \
+    cp target/release/vta /build/vta-bin
 
 # -----------------------------------------------------------------------------
 # Stage 4: runtime
@@ -103,7 +109,7 @@ RUN apt-get update && \
     mkdir -p /var/lib/vta /etc/vta && \
     chown -R vta:vta /var/lib/vta /etc/vta
 
-COPY --from=builder /build/target/release/vta /usr/local/bin/vta
+COPY --from=builder /build/vta-bin /usr/local/bin/vta
 
 USER vta
 EXPOSE 8100

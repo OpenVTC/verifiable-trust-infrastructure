@@ -1044,7 +1044,7 @@ The proxy starts four channels:
 
 | Channel | Flow | Purpose |
 |---------|------|---------|
-| Inbound REST | `TCP:8443 → vsock:5100 → Enclave :8100` | External clients access VTA API |
+| Inbound REST | `TCP:8443 → vsock:5100 → Enclave :8100` | External clients access VTA API. **Terminated as HTTP/1.1, not bridged** — see below |
 | Outbound DIDComm | `Enclave → vsock:5200 → TLS → mediator` | VTA DIDComm messaging |
 | Outbound HTTPS | `Enclave → vsock:5300 → allowlisted hosts` | KMS, WebVH, enclave HTTPS |
 | Outbound IMDS | `Enclave → vsock:5400 → 169.254.169.254:80` | AWS IAM credentials |
@@ -1160,6 +1160,27 @@ through the parent-side resolver.
 
 > **Fallback:** The shell script `parent-proxy.sh` is still available if you
 > prefer not to build the Rust proxy. It requires `socat` and `vsock-proxy`.
+> It is **not** a substitute where rate limiting matters — see below.
+
+### The inbound channel is the client-IP trust boundary
+
+Every other channel is a raw byte bridge. Inbound is not: `enclave-proxy`
+terminates HTTP/1.1, removes every client-supplied identity header
+(`X-Forwarded-For`, `Forwarded`, `X-Real-IP` and the vendor variants) and sets
+`X-Forwarded-For` to the address it actually accepted the connection from.
+
+It has to, because the last leg inside the enclave is
+`socat VSOCK-LISTEN:5100 → TCP-CONNECT:127.0.0.1:8100`: the VTA's socket peer
+is `127.0.0.1` for every client alike, so without this its per-IP rate limiters
+would put the whole internet in one bucket. The baked configs answer that with
+`[server] trust_xff_cidrs = ["127.0.0.1/32"]`, which tells the VTA to believe
+`X-Forwarded-For` from a loopback peer — sound precisely because this proxy is
+the one writing it.
+
+`parent-proxy.sh` bridges bytes and cannot rewrite the header, so pairing it
+with that config would let any client claim any client IP and never be rate
+limited. It refuses to start while `trust_xff_cidrs` is set; run `enclave-proxy`
+instead, or remove the key and accept one shared bucket.
 
 ## Step 7: Start the Enclave
 

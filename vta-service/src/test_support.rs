@@ -1406,23 +1406,27 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         metrics_handle: None,
     };
 
-    // Test harness uses `trust_xff = true` so the per-IP rate
-    // limiter falls back to `X-Forwarded-For` when there's no
-    // socket peer-IP (tower::oneshot doesn't carry one). The
-    // existing rate-limit regression test
-    // (`unauth_endpoint_rate_limit_returns_429_after_burst`)
-    // sets `x-forwarded-for: 192.0.2.1` so all calls hash to the
-    // same bucket and trip the burst within 20 requests.
     let state_for_ctx = state.clone();
     // Quotas are read live from the harness config, as in production, so a
     // test that patches a rate-limit key sees it applied.
+    //
+    // The harness trusts loopback and then synthesises a loopback peer,
+    // because `tower::oneshot` carries no socket: that pair is what lets a
+    // test pick its own rate-limit bucket with `x-forwarded-for`
+    // (`unauth_endpoint_rate_limit_returns_429_after_burst` sets
+    // `192.0.2.1`). Both halves live here, in the harness, and neither is in
+    // the production router — see `routes::build_api_router`, which refuses a
+    // request that has no peer rather than inventing one.
     let router = crate::routes::router_with_cors(
         &[],
-        true,
+        &["127.0.0.1/32".parse().unwrap()],
         crate::routes::QuotaSource::Live(state.config.clone()),
     )
     .with_state(state.clone())
-    .merge(crate::routes::health_router().with_state(state));
+    .merge(crate::routes::health_router().with_state(state))
+    .layer(axum::middleware::from_fn(
+        vti_common::rate_limit::insert_default_connect_info_if_missing,
+    ));
 
     let ctx = TestAppContext {
         jwt_keys,

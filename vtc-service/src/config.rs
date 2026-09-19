@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -454,22 +455,34 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    /// Whether to trust `X-Forwarded-For` / `Forwarded` headers
-    /// for client-IP attribution in the per-IP rate limiter
-    /// (`build_unauth_routes`).
-    ///
-    /// Default `false` — the rate limiter keys on the socket
-    /// peer-IP. Safe for direct-binding deployments; not
-    /// bypassable by header spoofing.
-    ///
-    /// Set `true` only when the VTC runs behind a trust-boundary
-    /// reverse proxy that overwrites or strips these headers
-    /// from external requests. Misconfiguring this is a silent
-    /// rate-limit bypass.
-    ///
-    /// Closes L2 from the May 2026 security review.
     #[serde(default)]
-    pub trust_xff: bool,
+    pub trust_xff_cidrs: Vec<IpNetwork>,
+    /// Retired: `trust_xff`. Present only to **refuse** a config that still
+    /// declares it — replaced by `trust_xff_cidrs`, an explicit trusted-proxy
+    /// CIDR allowlist. Absent (the only accepted state) deserializes to `()`
+    /// via `default`.
+    #[serde(
+        default,
+        deserialize_with = "refuse_retired_trust_xff",
+        skip_serializing
+    )]
+    pub trust_xff: (),
+}
+
+/// Reject `trust_xff` with the migration the operator needs.
+///
+/// Only ever called when the key is present — `#[serde(default)]` covers its
+/// absence — so reaching this function *is* the error.
+fn refuse_retired_trust_xff<'de, D>(_: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(
+        "`trust_xff` has been retired. Replace it with `trust_xff_cidrs = [\"<cidr>\", ...]` \
+         — the addresses of the reverse proxies actually in front of this VTC. A `true` \
+         config silently keying the rate limiter on the socket peer after this change \
+         collapses every client behind that proxy into one shared bucket.",
+    ))
 }
 
 // `deny_unknown_fields` so a typo'd backend selector (`aws_secretname`,
@@ -904,7 +917,8 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
-            trust_xff: false,
+            trust_xff_cidrs: Vec::new(),
+            trust_xff: (),
         }
     }
 }
@@ -1117,6 +1131,20 @@ mod tests {
         // to None (implicit resolution preserved).
         let cfg: SecretsConfig = toml::from_str("keyring_service = \"vtc\"").expect("parse");
         assert_eq!(cfg.backend, None);
+    }
+
+    #[test]
+    fn retired_trust_xff_key_is_refused() {
+        let err = toml::from_str::<ServerConfig>("trust_xff = true")
+            .expect_err("retired trust_xff key must be rejected");
+        assert!(format!("{err}").contains("trust_xff_cidrs"), "{err}");
+    }
+
+    #[test]
+    fn trust_xff_cidrs_still_parses() {
+        let cfg: ServerConfig =
+            toml::from_str("trust_xff_cidrs = [\"127.0.0.1/32\"]").expect("parse");
+        assert_eq!(cfg.trust_xff_cidrs.len(), 1);
     }
 
     #[test]

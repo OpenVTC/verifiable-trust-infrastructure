@@ -3262,7 +3262,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -5363,6 +5363,15 @@ name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
+
+[[package]]
+name = "ipnetwork"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -10929,6 +10938,7 @@ dependencies = [
 name = "vta-config"
 version = "0.5.3"
 dependencies = [
+ "ipnetwork",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -11196,6 +11206,7 @@ dependencies = [
  "hkdf 0.13.0",
  "hmac 0.13.0",
  "http-body-util",
+ "ipnetwork",
  "jsonwebtoken 11.0.0",
  "keyring-core",
  "libc",
@@ -11443,6 +11454,7 @@ dependencies = [
  "hmac 0.13.0",
  "http-body-util",
  "include_dir",
+ "ipnetwork",
  "jsonschema 0.55.1",
  "jsonwebtoken 11.0.0",
  "keyring-core",
@@ -11512,6 +11524,7 @@ dependencies = [
  "hkdf 0.13.0",
  "hmac 0.13.0",
  "http-body-util",
+ "ipnetwork",
  "jsonwebtoken 11.0.0",
  "libc",
  "multibase",
@@ -11525,6 +11538,7 @@ dependencies = [
  "tokio-vsock",
  "toml",
  "tower",
+ "tower_governor",
  "tracing",
  "trust-tasks-capability-client",
  "trust-tasks-rs",

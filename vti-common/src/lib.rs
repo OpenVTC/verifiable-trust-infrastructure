@@ -16,6 +16,8 @@ pub mod identifier;
 pub mod integrity;
 pub mod outbox_store;
 pub mod pagination;
+#[cfg(feature = "rate-limit")]
+pub mod rate_limit;
 #[cfg(feature = "tsp")]
 pub mod relationship_store;
 pub mod secure_file;

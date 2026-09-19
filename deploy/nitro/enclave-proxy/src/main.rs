@@ -2,6 +2,7 @@ mod bridge;
 mod channels;
 mod config;
 mod detect;
+mod http_forward;
 #[allow(dead_code)] // Protocol functions used by vsock client (different crate)
 mod protocol;
 mod resolve;
@@ -219,10 +220,12 @@ async fn main() {
     eprintln!();
 
     // Spawn all proxy channels as concurrent tasks
+    let trusted_upstream_cidrs = Arc::new(config.trusted_upstream_cidrs.clone());
     let inbound = tokio::spawn(channels::run_inbound(
         config.listen_port,
         config.enclave_cid,
         config.vsock_inbound_port,
+        trusted_upstream_cidrs,
     ));
 
     let has_mediator = config.mediator_did.is_some() || config.mediator_host_override.is_some();

@@ -1103,9 +1103,9 @@ async fn gather_inputs(
 
     // 9. Advanced server options (REST only). Opt-in so the common path stays
     //    short; defaults match the pre-P1.2 hardcoded values.
-    let (cors_origins, trust_xff, webauthn) = if enable_rest
+    let (cors_origins, trust_xff_cidrs, webauthn) = if enable_rest
         && p.confirm(
-            "Configure advanced server options (CORS, trusted proxy header, WebAuthn)?",
+            "Configure advanced server options (CORS, trusted proxy CIDRs, WebAuthn)?",
             false,
         )? {
         let cors_raw = p.text(
@@ -1120,14 +1120,32 @@ async fn gather_inputs(
             .filter(|s| !s.is_empty())
             .map(String::from)
             .collect();
-        let trust_xff = p.confirm(
-            "Trust the X-Forwarded-For header (only behind a trusted reverse proxy)?",
-            false,
+        let cidrs_raw = p.text(
+            "Trusted proxy CIDRs (comma-separated, e.g. 10.0.0.0/24 — every \
+             reverse proxy in front of this VTA, and only ones that rewrite \
+             X-Forwarded-For; a plain TCP forwarder listed here is a \
+             rate-limit bypass. Leave empty to key on the raw peer IP)",
+            None,
+            true,
+            Some(&|s: &str| {
+                for entry in s.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    entry
+                        .parse::<ipnetwork::IpNetwork>()
+                        .map_err(|e| format!("'{entry}' is not a valid CIDR: {e}"))?;
+                }
+                Ok(())
+            }),
         )?;
+        let trust_xff_cidrs: Vec<ipnetwork::IpNetwork> = cidrs_raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.parse().expect("validated above"))
+            .collect();
         let webauthn = p.confirm("Advertise a WebAuthn-RP service in the VTA DID?", false)?;
-        (cors_origins, trust_xff, webauthn)
+        (cors_origins, trust_xff_cidrs, webauthn)
     } else {
-        (Vec::new(), false, false)
+        (Vec::new(), Vec::new(), false)
     };
 
     // 10. Secrets backend.
@@ -1180,12 +1198,13 @@ async fn gather_inputs(
             host,
             port,
             cors_origins,
-            trust_xff,
+            trust_xff_cidrs,
             rate_limit_interval_secs: ServerConfig::default().rate_limit_interval_secs,
             rate_limit_burst: ServerConfig::default().rate_limit_burst,
             did_log_rate_limit_interval_secs: ServerConfig::default()
                 .did_log_rate_limit_interval_secs,
             did_log_rate_limit_burst: ServerConfig::default().did_log_rate_limit_burst,
+            trust_xff: (),
         },
         log: LogConfig {
             level: log_level,
@@ -1378,7 +1397,7 @@ mod tests {
             text("/tmp/vta-golden/data"),    // data dir (doesn't exist)
             Answer::Bool(true),              // configure advanced server opts?
             text("https://app.example.com"), // cors origins
-            Answer::Bool(true),              // trust_xff
+            text("10.0.0.0/24"),             // trust_xff_cidrs
             Answer::Bool(true),              // webauthn
             // Label, not index: the backend menu grows with features (config-seed etc.).
             Answer::Label("OS keyring"),
@@ -1412,10 +1431,10 @@ mod tests {
             webauthn = true
 
             [server]
-            host         = "0.0.0.0"
-            port         = 8100
-            cors_origins = ["https://app.example.com"]
-            trust_xff    = true
+            host            = "0.0.0.0"
+            port            = 8100
+            cors_origins    = ["https://app.example.com"]
+            trust_xff_cidrs = ["10.0.0.0/24"]
 
             [log]
             level  = "info"

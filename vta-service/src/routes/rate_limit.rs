@@ -41,8 +41,8 @@
 //! only a super-admin can trigger it. A patch that leaves a limiter's quota
 //! unchanged (including a patch of an unrelated key) keeps its buckets.
 //!
-//! `trust_xff` is not runtime-tunable: it selects the key extractor when the
-//! router is built, and changes on restart.
+//! `trust_xff_cidrs` is not runtime-tunable: it selects the key extractor when
+//! the router is built, and changes on restart.
 //!
 //! ## The 429 contract
 //!
@@ -76,10 +76,12 @@ use axum::http::{HeaderValue, Response, StatusCode, header};
 use axum::middleware::Next;
 use governor::clock::{Clock, DefaultClock};
 use governor::{DefaultKeyedRateLimiter, RateLimiter};
+use ipnetwork::IpNetwork;
 use tokio::sync::RwLock;
-use tower_governor::key_extractor::{KeyExtractor, PeerIpKeyExtractor, SmartIpKeyExtractor};
+use tower_governor::key_extractor::KeyExtractor;
 use utoipa_axum::router::OpenApiRouter;
 use vta_config::{AppConfig, ServerConfig};
+use vti_common::rate_limit::TrustedProxyKeyExtractor;
 
 /// Response header naming who produced a 429. Always `vta` here.
 ///
@@ -266,7 +268,7 @@ impl Buckets {
 /// from, and the buckets for the quota currently in force.
 struct LimiterState {
     limiter: Limiter,
-    trust_xff: bool,
+    extractor: TrustedProxyKeyExtractor,
     source: QuotaSource,
     /// Held only for a pointer clone or swap — never across an await.
     buckets: StdRwLock<Arc<Buckets>>,
@@ -297,17 +299,8 @@ impl LimiterState {
         Arc::clone(&current)
     }
 
-    /// The client IP this request is charged to. `trust_xff = false` keys on
-    /// the socket peer (spoof-safe for direct binding); `true` honours
-    /// `X-Forwarded-For` / `Forwarded` (only safe behind a proxy that
-    /// overwrites them). The extractors are tower_governor's, unchanged, so
-    /// attribution is identical to the static layer this replaced.
     fn client_ip(&self, req: &Request) -> Option<IpAddr> {
-        if self.trust_xff {
-            SmartIpKeyExtractor.extract(req).ok()
-        } else {
-            PeerIpKeyExtractor.extract(req).ok()
-        }
+        self.extractor.extract(req).ok()
     }
 }
 
@@ -317,7 +310,7 @@ impl LimiterState {
 pub(super) fn apply<S>(
     router: OpenApiRouter<S>,
     limiter: Limiter,
-    trust_xff: bool,
+    trust_xff_cidrs: &[IpNetwork],
     source: &QuotaSource,
 ) -> OpenApiRouter<S>
 where
@@ -332,7 +325,7 @@ where
     };
     let state = Arc::new(LimiterState {
         limiter,
-        trust_xff,
+        extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
         source: source.clone(),
         buckets: StdRwLock::new(Buckets::new(initial)),
     });
@@ -410,26 +403,32 @@ mod tests {
         "ok"
     }
 
+    fn trusted_loopback() -> Vec<IpNetwork> {
+        vec!["127.0.0.1/32".parse().unwrap()]
+    }
+
     /// Two branches, each behind its own limiter, merged into one router —
     /// the same shape `build_api_router` uses.
     fn two_branch_router(source: QuotaSource) -> axum::Router {
         let auth = apply(
             OpenApiRouter::<()>::new().route("/auth", get(ok)),
             Limiter::Auth,
-            true,
+            &trusted_loopback(),
             &source,
         );
         let did_log = apply(
             OpenApiRouter::<()>::new().route("/did.jsonl", get(ok)),
             Limiter::DidLog,
-            true,
+            &trusted_loopback(),
             &source,
         );
         let (router, _) = OpenApiRouter::<()>::new()
             .merge(auth)
             .merge(did_log)
             .split_for_parts();
-        router
+        router.layer(axum::middleware::from_fn(
+            vti_common::rate_limit::insert_default_connect_info_if_missing,
+        ))
     }
 
     async fn get_from(app: &axum::Router, uri: &str, ip: &str) -> Response<Body> {
@@ -587,19 +586,28 @@ mod tests {
         assert_eq!(admitted(&app, "/auth", "198.51.100.8", 20).await, 1);
     }
 
+    /// A request with no `ConnectInfo` has no un-spoofable anchor, so it must
+    /// be refused rather than charged to a placeholder. Asserted on **both**
+    /// attribution modes: the trusted-CIDR mode is the one that matters, since
+    /// a placeholder peer inside a trusted CIDR would let the request name its
+    /// own bucket through `x-forwarded-for`.
     #[tokio::test]
     async fn no_attributable_client_is_refused_not_unlimited() {
-        // trust_xff = false keys on the socket peer; a request without
-        // ConnectInfo has none, and must not pass unmetered.
-        let router = apply(
-            OpenApiRouter::<()>::new().route("/auth", get(ok)),
-            Limiter::Auth,
-            false,
-            &QuotaSource::Fixed(RateLimits::default()),
-        );
-        let (app, _) = router.split_for_parts();
-        let resp = get_from(&app, "/auth", "198.51.100.9").await;
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        for cidrs in [vec![], trusted_loopback()] {
+            let router = apply(
+                OpenApiRouter::<()>::new().route("/auth", get(ok)),
+                Limiter::Auth,
+                &cidrs,
+                &QuotaSource::Fixed(RateLimits::default()),
+            );
+            let (app, _) = router.split_for_parts();
+            let resp = get_from(&app, "/auth", "198.51.100.9").await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "cidrs={cidrs:?}"
+            );
+        }
     }
 
     #[test]

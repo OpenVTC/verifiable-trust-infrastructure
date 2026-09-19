@@ -78,6 +78,18 @@ mediator_did = "OVERLAY_PLACEHOLDER_MEDIATOR_DID"
 [server]
 host = "127.0.0.1"
 port = 8100
+# Inbound reaches the VTA as vsock → `socat … TCP-CONNECT:127.0.0.1:8100`, so
+# every client shares the peer address 127.0.0.1 and the per-IP limiters would
+# otherwise share one bucket. Trusting loopback splits them apart again —
+# and is only sound because `deploy/nitro/enclave-proxy` terminates HTTP on
+# the parent and replaces `X-Forwarded-For` with the address it actually
+# accepted the connection from (`src/http_forward.rs`).
+#
+# Delete this line if you front the enclave with anything that bridges bytes
+# rather than rewriting that header — `parent-proxy.sh` does, and refuses to
+# start while this is set. A layer-4 forwarder plus this line lets every
+# client pick its own rate-limit bucket.
+trust_xff_cidrs = ["127.0.0.1/32"]
 
 [log]
 level = "info"

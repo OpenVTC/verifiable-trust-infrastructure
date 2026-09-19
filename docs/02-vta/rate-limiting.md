@@ -40,24 +40,72 @@ or proxy that revalidates spends a cheap request rather than a full transfer.
 
 ## Keying: one bucket per client IP
 
-Each request is charged to a client IP chosen by `[server] trust_xff`:
+Each request is charged to a client IP chosen by `[server] trust_xff_cidrs` —
+the list of reverse proxies that sit in front of this VTA.
 
-- **`trust_xff = false` (default)** — the TCP peer address. Spoof-proof when
-  clients connect to the VTA directly.
-- **`trust_xff = true`** — the client address from `X-Forwarded-For` /
-  `X-Real-IP` / `Forwarded`, falling back to the peer. Only safe behind a
-  reverse proxy that overwrites or strips those headers on every external
-  request; otherwise any client can pick its own bucket and evade the limit.
+- **`trust_xff_cidrs = []` (default)** — the TCP peer address. Spoof-proof, and
+  correct whenever clients connect to the VTA directly.
+- **`trust_xff_cidrs = ["10.0.0.0/24"]`** — for a request whose peer is inside
+  one of these ranges, the VTA reads `X-Forwarded-For`; for any other peer it
+  keys on the peer, so a client that reaches the socket directly cannot talk
+  its way into someone else's bucket.
 
-> **The proxy trap.** Behind a load balancer or reverse proxy with
-> `trust_xff = false`, the TCP peer of *every* request is the proxy, so every
-> client shares **one** bucket per limiter. Ten logins from anywhere in the
-> world then exhaust the `auth` burst for everyone. If you run behind a proxy,
-> make the proxy set `X-Forwarded-For` from the real peer (discarding any value
-> the client sent) and set `trust_xff = true`.
+The header is read as the chain it is. Each proxy *appends* the address it
+accepted the request from, so the entries grow left-to-right from "whatever the
+client sent" to "what the nearest proxy saw". The VTA walks that chain from the
+**right** and takes the first entry that is not itself in `trust_xff_cidrs`.
+With one proxy that is the client; with `ALB → nginx → VTA` it steps over both
+declared hops and still finds the client. Anything the client wrote sits
+further left and is never reached.
 
-`trust_xff` is read when the REST router is built: changing it needs a restart
-(`POST /vta/restart` or a process restart). The quotas below do not.
+So list **every** hop, not just the nearest one. Listing only the innermost
+proxy in a two-hop chain is safe but useless: the walk stops at the outer
+proxy's address and every client shares its bucket again.
+
+> **`trust_xff_cidrs` is a claim about your deployment, and a wrong claim is a
+> bypass.** Naming a proxy asserts that it rewrites or appends
+> `X-Forwarded-For` **and** that nothing else can reach the VTA's socket. A
+> layer-4 (TCP) forwarder — socat, a plain NLB stream listener, an SSH tunnel —
+> satisfies neither: it passes the client's header through untouched while
+> making every request appear to come from itself. Name it here and any client
+> can set `X-Forwarded-For` to a fresh value per request and never be limited
+> at all. That is strictly worse than the shared bucket you were trying to fix.
+>
+> Check the proxy, not the topology: an nginx with
+> `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` qualifies, an
+> AWS ALB qualifies, `socat TCP-LISTEN:…` does not.
+
+> **The proxy trap (why the list exists).** Behind a load balancer with an empty
+> `trust_xff_cidrs`, the TCP peer of *every* request is the proxy, so all
+> clients share **one** bucket per limiter. Ten logins from anywhere in the
+> world then exhaust the `auth` burst for everyone.
+
+Everything uncertain falls back to the peer rather than guessing: a request
+with no peer address at all is refused outright, and a malformed or absurdly
+long chain is charged to the peer.
+
+`trust_xff_cidrs` is read when the REST router is built: changing it needs a
+restart (`POST /vta/restart` or a process restart). The quotas below do not.
+
+> **Upgrading from `trust_xff`.** The old boolean is gone, and a config that
+> still sets it **fails to load** rather than being ignored — silently
+> reverting to peer keying would reintroduce the shared bucket. Replace
+> `trust_xff = true` with the actual proxy addresses
+> (`trust_xff_cidrs = ["10.0.0.0/24"]`); replace `trust_xff = false` by
+> deleting the line.
+
+### Inside a Nitro enclave
+
+The TEE deployment is the case where this is easiest to get wrong. The enclave
+VTA is reached over vsock and then `socat … TCP-CONNECT:127.0.0.1:8100`, so its
+peer is `127.0.0.1` for every client in the world.
+
+`deploy/nitro/config.toml` therefore ships `trust_xff_cidrs = ["127.0.0.1/32"]`,
+and that is safe **only** with `deploy/nitro/enclave-proxy` on the parent: it
+terminates HTTP/1.1, strips every client-supplied identity header and sets
+`X-Forwarded-For` from the address it accepted the connection from. The
+socat-based `parent-proxy.sh` cannot do this, and refuses to start against a
+config that sets `trust_xff_cidrs`.
 
 ## Units: an interval is seconds per token, not a rate
 
@@ -94,7 +142,9 @@ The four keys live in `[server]`. Omit any of them to take the default.
 [server]
 host = "0.0.0.0"
 port = 8100
-# trust_xff = true            # only behind a header-sanitising proxy
+# Every reverse proxy in front of this VTA, innermost or not. Only set this
+# for a proxy that rewrites X-Forwarded-For; see "Keying" above.
+# trust_xff_cidrs = ["10.0.0.0/24"]
 
 # auth limiter (also sizes backup-blob): seconds per token, bucket size
 rate_limit_interval_secs = 5
