@@ -2,6 +2,34 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.43.1...vta-sdk-v0.44.0) — 2026-09-19
+
+
+### Added
+
+- **vta**: Report the subtree and the host copies a context delete could not remove ([#1577](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1577))
+
+Takes trust-tasks 0.21.4, which added the two members the context-delete work
+  needed and had nowhere to put (trustoverip/dtgwg-trust-tasks-tf#513).
+
+  `subContexts` on `vta/contexts/preview-delete/1.0`. The preview already
+  measured the subtree — #1576 made every array the union over it — but could
+  not say which contexts those arrays covered, so both CLIs and the browser
+  console each derived the list from `contexts/list` and matched paths
+  themselves. Three copies of the agent's own cascade rule, none authoritative,
+  in front of a destructive prompt. The agent decides what the cascade reaches;
+  it now says so, and the consumers read it.
+
+  `daemonCleanupErrors` on `vta/contexts/delete/1.0`. A DID whose hosting server
+  would not confirm removing the published log left the deletion reported as a
+  plain success, with the orphan visible only in the agent's own logs — which is
+  the shape of the defect this whole change set started from. It is the
+  subtree-wide form of the `daemonCleanupError` that `webvh/dids/delete/1.0`
+  already reports for one DID, and both CLIs now print it after the deletion
+  rather than letting a partial success read as a complete one.
+
+
+
 ## [0.43.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.43.0...vta-sdk-v0.43.1) — 2026-09-18
 
 
