@@ -25,6 +25,8 @@ vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 vtc-client = { path = "../vtc-client", version = "0.6" }
 
 axum = { workspace = true }
+# `retention_policy` needs a clock to compute a record's expiry.
+chrono = { workspace = true }
 # CORS only, and only when an operator asks for it — see `router_with_origins`.
 tower-http = { workspace = true, features = ["cors"] }
 tokio = { workspace = true }

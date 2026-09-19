@@ -1345,6 +1345,145 @@ mod tests {
         .await
     }
 
+    /// SPEC §7.2 item 11, through the **spine** rather than the rooms
+    /// sub-dispatcher — the layer every transport shares.
+    ///
+    /// Live delivery is at-least-once: the mediator re-pushes a recipient's whole
+    /// undelivered inbox when a socket enables live delivery and when a duplicate
+    /// socket displaces an existing session, so the same signed document arrives
+    /// twice as routine traffic. The proof does not catch it — the redelivered
+    /// copy carries the same valid proof, because it is the same document.
+    ///
+    /// Registration is the clearest witness: without a record the second copy is
+    /// executed and *fails* ("that identifier is taken"), so a redelivery turns a
+    /// success the caller may never have seen into an error. With one it is
+    /// answered with the original result.
+    #[tokio::test]
+    async fn the_spine_executes_a_redelivered_document_once() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        seed_creator(state, &f).await;
+
+        let signed = doc(
+            state,
+            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            json!({
+                "roomId": f.room.room_id,
+                "visibility": f.room.visibility,
+                "ownerDid": f.room.owner_did,
+            }),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+        )
+        .await;
+        // The bytes as they would arrive twice off the wire.
+        let body = serde_json::to_vec(&signed).expect("a document serialises");
+
+        let first = crate::trust_tasks::dispatch_trust_task_core(
+            state,
+            &crate::trust_tasks::JoinAuthCtx::rest(),
+            &body,
+        )
+        .await;
+        assert!(
+            first.status.is_success(),
+            "the first registration must succeed: {}",
+            payload_of(&first)
+        );
+
+        let second = crate::trust_tasks::dispatch_trust_task_core(
+            state,
+            &crate::trust_tasks::JoinAuthCtx::rest(),
+            &body,
+        )
+        .await;
+        assert!(
+            second.status.is_success(),
+            "a duplicate is never a failure — the task did not fail, it already \
+             happened: {}",
+            payload_of(&second)
+        );
+        assert_eq!(
+            payload_of(&second),
+            payload_of(&first),
+            "the duplicate must be answered with the original result"
+        );
+    }
+
+    /// A *different* document under an already-spent `id` is a conflict, not a
+    /// retry. The record is digest-keyed precisely so the two are
+    /// distinguishable; absorbing the second as a duplicate is the one outcome
+    /// §7.2 rules out.
+    #[tokio::test]
+    async fn the_spine_refuses_a_different_document_reusing_an_id() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        let g = RoomFixture::new(Visibility::Open).await;
+        seed_creator(state, &f).await;
+        crate::members::storage::store_member(
+            &state.members_ks,
+            &crate::members::Member::fresh(g.room.owner_did.clone()),
+        )
+        .await
+        .expect("seed the second creator");
+
+        let first = doc(
+            state,
+            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            json!({
+                "roomId": f.room.room_id,
+                "visibility": f.room.visibility,
+                "ownerDid": f.room.owner_did,
+            }),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+        )
+        .await;
+        let out = crate::trust_tasks::dispatch_trust_task_core(
+            state,
+            &crate::trust_tasks::JoinAuthCtx::rest(),
+            &serde_json::to_vec(&first).unwrap(),
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+
+        // A genuinely different registration, wearing the first document's id.
+        let mut second = doc(
+            state,
+            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            json!({
+                "roomId": g.room.room_id,
+                "visibility": g.room.visibility,
+                "ownerDid": g.room.owner_did,
+            }),
+            &g.owner.did,
+            &g.owner.secret_multibase,
+        )
+        .await;
+        second.id = first.id.clone();
+
+        let out = crate::trust_tasks::dispatch_trust_task_core(
+            state,
+            &crate::trust_tasks::JoinAuthCtx::rest(),
+            &serde_json::to_vec(&second).unwrap(),
+        )
+        .await;
+
+        assert!(
+            !out.status.is_success(),
+            "a different document under a spent id must not be executed: {}",
+            payload_of(&out)
+        );
+        assert!(
+            vti_rooms::storage::get_room(&state.rooms_ks, &g.room.room_id)
+                .await
+                .is_err(),
+            "and it must leave no room behind"
+        );
+    }
+
     /// The gap this closes: before the policy gate, anyone who could reach the
     /// endpoint could register a room here in their own name. A stranger signs a
     /// perfectly valid registration and is refused by the community, not by the
