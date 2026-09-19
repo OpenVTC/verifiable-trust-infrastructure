@@ -1025,25 +1025,7 @@ pub async fn run_context_delete(
         }
     }
 
-    // The subtree going with it. Offline this is a local read, so unlike the
-    // online path there is nothing to degrade to — and it matters more here:
-    // this command passed `force = true` to the deletion unconditionally, so
-    // a context that held nothing itself took every sub-context and everything
-    // in them with no prompt at all.
-    let mut sub_contexts: Vec<String> = {
-        use vti_common::context_path::{depth, is_ancestor_or_self};
-        let mut v: Vec<String> = crate::contexts::list_contexts(&contexts_ks)
-            .await?
-            .into_iter()
-            .map(|c| c.id)
-            .filter(|cid| *cid != id && is_ancestor_or_self(&id, cid))
-            .collect();
-        v.sort_by_key(|cid| std::cmp::Reverse(depth(cid)));
-        v
-    };
-    sub_contexts.dedup();
-
-    let has_resources = render_delete_context_preview(&id, &preview, &sub_contexts, &book);
+    let has_resources = render_delete_context_preview(&id, &preview, &book);
     if has_resources && !force && !confirm_destructive("Proceed with deletion?")? {
         println!("Aborted.");
         return Ok(());
@@ -1059,6 +1041,10 @@ pub async fn run_context_delete(
         #[cfg(feature = "webvh")]
         webvh: &webvh_ks,
     };
+
+    // Assigned by whichever arm below compiles, so neither build carries a
+    // dead initialiser (CI runs clippy with `-D warnings`).
+    let orphans: Vec<String>;
 
     // The offline delete takes the subtree's DIDs off their hosting servers
     // exactly as the online one does. An operator reaching for the break-glass
@@ -1110,7 +1096,7 @@ pub async fn run_context_delete(
             deps: &deps,
             vta_did: app_config.vta_did.as_deref(),
         };
-        crate::operations::contexts::delete_context(
+        let result = crate::operations::contexts::delete_context(
             &ks,
             &auth,
             &id,
@@ -1119,13 +1105,31 @@ pub async fn run_context_delete(
             Some(&cleanup),
         )
         .await?;
+        orphans = result.daemon_cleanup_errors;
     }
     #[cfg(not(feature = "webvh"))]
-    crate::operations::contexts::delete_context(&ks, &auth, &id, true, "vta-contexts-delete")
-        .await?;
+    {
+        crate::operations::contexts::delete_context(&ks, &auth, &id, true, "vta-contexts-delete")
+            .await?;
+        // No webvh in this build, so no host copy could have been left behind.
+        orphans = Vec::new();
+    }
 
     cs.persist().await?;
     println!("Context deleted: {id}");
+    // The break-glass path reports the partial success the online one does.
+    // An operator who reached for the offline CLI is the least likely to have
+    // another channel telling them a DID is still being served.
+    if !orphans.is_empty() {
+        eprintln!(
+            "\nwarning: {} DID(s) may still resolve — their hosting server did not confirm \
+             removal of the published log. Clean these up out-of-band:",
+            orphans.len()
+        );
+        for line in &orphans {
+            eprintln!("  - {line}");
+        }
+    }
     Ok(())
 }
 

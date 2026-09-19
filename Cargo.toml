@@ -350,7 +350,7 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # `every_served_uri_has_a_published_spec_or_is_tracked_debt` fails on a
 # dispatched URI the registry has no schema for. Below it the task is not a
 # degraded feature, it is a build that does not pass.
-trust-tasks-rs = { version = "0.21.3", default-features = false, features = [
+trust-tasks-rs = { version = "0.21.4", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

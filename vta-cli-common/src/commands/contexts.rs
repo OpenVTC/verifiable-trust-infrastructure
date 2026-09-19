@@ -415,11 +415,13 @@ pub async fn cmd_context_update_did(
 /// Render what deleting `id` destroys, and say whether it destroys anything —
 /// which is what the caller uses to decide whether to prompt.
 ///
-/// `sub_contexts` is the subtree going with it. It is a parameter rather than
-/// a member of `preview` because `vta/contexts/preview-delete/1.0` has no
-/// member for it yet; when it gains one this becomes `&preview.sub_contexts`
-/// and the callers stop computing it. Until then it must be passed, and
-/// **must be included in the "anything at all" answer**: a parent holding
+/// The subtree comes from the agent now (`subContexts`, trust-tasks 0.21.4).
+/// Both callers used to derive it from the context list, which worked but put
+/// two reimplementations of the agent's own cascade rule in front of a
+/// destructive prompt — and the CLI's answer was only as good as its copy of
+/// the path matching.
+///
+/// It **must** count toward the "anything at all" answer: a parent holding
 /// nothing over children holding everything otherwise renders as an empty
 /// preview, and the caller deletes the whole subtree without asking.
 ///
@@ -428,9 +430,9 @@ pub async fn cmd_context_update_did(
 pub fn render_delete_context_preview(
     id: &str,
     preview: &vta_sdk::protocols::context_management::delete::DeleteContextPreviewResultBody,
-    sub_contexts: &[String],
     book: &NameBook,
 ) -> bool {
+    let sub_contexts = &preview.sub_contexts;
     let has_resources = !sub_contexts.is_empty()
         || !preview.keys.is_empty()
         || !preview.webvh_dids.is_empty()
@@ -517,28 +519,6 @@ pub fn confirm_destructive(prompt: &str) -> Result<bool, Box<dyn std::error::Err
     Ok(input == "y" || input == "yes")
 }
 
-/// Contexts strictly below `id`, deepest first, best-effort.
-///
-/// Best-effort deliberately: a listing failure must not block a deletion the
-/// operator is entitled to perform, the same call the naming book already
-/// makes. It degrades to "no sub-contexts named", which is what the operator
-/// saw before this existed.
-async fn descendants_of(id: &str, client: &VtaClient) -> Vec<String> {
-    use vti_common::context_path::{depth, is_ancestor_or_self};
-
-    let Ok(list) = client.list_contexts().await else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = list
-        .contexts
-        .into_iter()
-        .map(|c| c.id)
-        .filter(|cid| cid != id && is_ancestor_or_self(id, cid))
-        .collect();
-    out.sort_by_key(|cid| std::cmp::Reverse(depth(cid)));
-    out
-}
-
 pub async fn cmd_context_delete(
     client: &VtaClient,
     id: &str,
@@ -554,22 +534,27 @@ pub async fn cmd_context_delete(
         book_from_acl(&mut book, &acl.entries);
     }
 
-    // The subtree, from the context list the agent already serves. The
-    // preview does not name it yet (no member on
-    // `vta/contexts/preview-delete/1.0`), and a deletion that silently takes
-    // sub-contexts with it is the thing this prompt exists to prevent — so it
-    // is computed here rather than left out.
-    let sub_contexts = descendants_of(id, client).await;
-
-    let has_resources = render_delete_context_preview(id, &preview, &sub_contexts, &book);
+    let has_resources = render_delete_context_preview(id, &preview, &book);
 
     if has_resources && !force && !confirm_destructive("Proceed with deletion?")? {
         println!("Aborted.");
         return Ok(());
     }
 
-    client.delete_context(id, true).await?;
+    let result = client.delete_context_with_outcome(id, true).await?;
     println!("Context deleted: {id}");
+    // The deletion succeeded and is still not finished. Said plainly, and
+    // last, so it is the thing left on screen.
+    if !result.daemon_cleanup_errors.is_empty() {
+        eprintln!(
+            "\nwarning: {} DID(s) may still resolve — their hosting server did not confirm \
+             removal of the published log. Clean these up out-of-band:",
+            result.daemon_cleanup_errors.len()
+        );
+        for line in &result.daemon_cleanup_errors {
+            eprintln!("  - {line}");
+        }
+    }
     Ok(())
 }
 
