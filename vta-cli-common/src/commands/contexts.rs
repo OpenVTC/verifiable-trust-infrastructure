@@ -412,15 +412,31 @@ pub async fn cmd_context_update_did(
 ///
 /// Shared by online + offline delete paths so both warn about exactly
 /// the same resource classes.
+/// Render what deleting `id` destroys, and say whether it destroys anything —
+/// which is what the caller uses to decide whether to prompt.
+///
+/// `sub_contexts` is the subtree going with it. It is a parameter rather than
+/// a member of `preview` because `vta/contexts/preview-delete/1.0` has no
+/// member for it yet; when it gains one this becomes `&preview.sub_contexts`
+/// and the callers stop computing it. Until then it must be passed, and
+/// **must be included in the "anything at all" answer**: a parent holding
+/// nothing over children holding everything otherwise renders as an empty
+/// preview, and the caller deletes the whole subtree without asking.
+///
+/// `did_templates` counts here too. It did not, so a context whose only
+/// contents were templates rendered nothing and skipped the prompt.
 pub fn render_delete_context_preview(
     id: &str,
     preview: &vta_sdk::protocols::context_management::delete::DeleteContextPreviewResultBody,
+    sub_contexts: &[String],
     book: &NameBook,
 ) -> bool {
-    let has_resources = !preview.keys.is_empty()
+    let has_resources = !sub_contexts.is_empty()
+        || !preview.keys.is_empty()
         || !preview.webvh_dids.is_empty()
         || !preview.acl_entries_removed.is_empty()
-        || !preview.acl_entries_updated.is_empty();
+        || !preview.acl_entries_updated.is_empty()
+        || !preview.did_templates.is_empty();
 
     if !has_resources {
         return false;
@@ -430,6 +446,15 @@ pub fn render_delete_context_preview(
         "Deleting context '{}' will remove the following resources:\n",
         id
     );
+
+    // First, because it reframes everything below it: those lists are the
+    // whole subtree's, not this context's.
+    if !sub_contexts.is_empty() {
+        println!("  Sub-contexts ({}):", sub_contexts.len());
+        for ctx in sub_contexts {
+            println!("    - {ctx}");
+        }
+    }
 
     if !preview.keys.is_empty() {
         println!("  Keys ({}):", preview.keys.len());
@@ -469,6 +494,13 @@ pub fn render_delete_context_preview(
         }
     }
 
+    if !preview.did_templates.is_empty() {
+        println!("  DID templates ({}):", preview.did_templates.len());
+        for name in &preview.did_templates {
+            println!("    - {name}");
+        }
+    }
+
     println!();
     true
 }
@@ -483,6 +515,28 @@ pub fn confirm_destructive(prompt: &str) -> Result<bool, Box<dyn std::error::Err
     io::stdin().read_line(&mut input)?;
     let input = input.trim().to_lowercase();
     Ok(input == "y" || input == "yes")
+}
+
+/// Contexts strictly below `id`, deepest first, best-effort.
+///
+/// Best-effort deliberately: a listing failure must not block a deletion the
+/// operator is entitled to perform, the same call the naming book already
+/// makes. It degrades to "no sub-contexts named", which is what the operator
+/// saw before this existed.
+async fn descendants_of(id: &str, client: &VtaClient) -> Vec<String> {
+    use vti_common::context_path::{depth, is_ancestor_or_self};
+
+    let Ok(list) = client.list_contexts().await else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = list
+        .contexts
+        .into_iter()
+        .map(|c| c.id)
+        .filter(|cid| cid != id && is_ancestor_or_self(id, cid))
+        .collect();
+    out.sort_by_key(|cid| std::cmp::Reverse(depth(cid)));
+    out
 }
 
 pub async fn cmd_context_delete(
@@ -500,7 +554,14 @@ pub async fn cmd_context_delete(
         book_from_acl(&mut book, &acl.entries);
     }
 
-    let has_resources = render_delete_context_preview(id, &preview, &book);
+    // The subtree, from the context list the agent already serves. The
+    // preview does not name it yet (no member on
+    // `vta/contexts/preview-delete/1.0`), and a deletion that silently takes
+    // sub-contexts with it is the thing this prompt exists to prevent — so it
+    // is computed here rather than left out.
+    let sub_contexts = descendants_of(id, client).await;
+
+    let has_resources = render_delete_context_preview(id, &preview, &sub_contexts, &book);
 
     if has_resources && !force && !confirm_destructive("Proceed with deletion?")? {
         println!("Aborted.");

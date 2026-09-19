@@ -1025,7 +1025,25 @@ pub async fn run_context_delete(
         }
     }
 
-    let has_resources = render_delete_context_preview(&id, &preview, &book);
+    // The subtree going with it. Offline this is a local read, so unlike the
+    // online path there is nothing to degrade to — and it matters more here:
+    // this command passed `force = true` to the deletion unconditionally, so
+    // a context that held nothing itself took every sub-context and everything
+    // in them with no prompt at all.
+    let mut sub_contexts: Vec<String> = {
+        use vti_common::context_path::{depth, is_ancestor_or_self};
+        let mut v: Vec<String> = crate::contexts::list_contexts(&contexts_ks)
+            .await?
+            .into_iter()
+            .map(|c| c.id)
+            .filter(|cid| *cid != id && is_ancestor_or_self(&id, cid))
+            .collect();
+        v.sort_by_key(|cid| std::cmp::Reverse(depth(cid)));
+        v
+    };
+    sub_contexts.dedup();
+
+    let has_resources = render_delete_context_preview(&id, &preview, &sub_contexts, &book);
     if has_resources && !force && !confirm_destructive("Proceed with deletion?")? {
         println!("Aborted.");
         return Ok(());
