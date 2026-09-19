@@ -201,9 +201,163 @@ pub(crate) async fn dispatch_trust_task_core(
         ctx
     };
 
+    // 3b. SPEC §7.2 item 11 — the duplicate-execution record.
+    //
+    // Every transport that reaches this spine is at-least-once. The mediator
+    // re-pushes a recipient's whole undelivered inbox when a socket enables
+    // live delivery and when a duplicate socket displaces an existing session,
+    // so a frame this VTC has already handled arrives again as a matter of
+    // routine — not as an attack. Without a record, the second copy is executed
+    // a second time.
+    //
+    // Expiry and the recipient binding (step 2) do not close this. Both are
+    // properties of the document, and a redelivered copy satisfies them exactly
+    // as the first did — which is the point: it *is* the first document.
+    //
+    // Deliberately the same mechanism the VTA uses rather than a cache of this
+    // service's own. `ReplayGuard` is digest-keyed, so a *different* document
+    // arriving under an already-spent `id` is `idConflict` rather than being
+    // silently absorbed as a retry, and it claims before dispatch, so two
+    // simultaneous deliveries cannot both pass a check-then-act test.
+    //
+    // Placed after the proof check so an unauthenticated flood cannot spend
+    // another sender's ids, matching where the webvh control plane puts its own
+    // gate and for the same reason.
+    let doc_id = doc.id.clone();
+    let digest = match trust_tasks_rs::document_digest(&doc) {
+        Ok(d) => d,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::InternalError {
+                    reason: format!(
+                        "cannot canonicalise the document to key its replay record: {e}"
+                    ),
+                },
+            );
+        }
+    };
+    let now = chrono::Utc::now();
+    let retain_until = retention_policy().record_expiry(&doc, now);
+    match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc_id, &digest, retain_until, now)
+        .await
+    {
+        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => {}
+        Ok(trust_tasks_rs::ReplayVerdict::Duplicate {
+            prior_response,
+            in_flight,
+        }) => {
+            // §7.2 (*Disposition of a duplicate*): "In no case is a duplicate
+            // reported as `taskFailed`; the task did not fail, it already
+            // happened." A redelivery is the common case here, so answering it
+            // with the original result is not a courtesy — it is what keeps a
+            // caller whose reply was lost from retrying forever.
+            return match prior_response {
+                Some(v) => match serde_json::to_vec(&v) {
+                    Ok(body) => TrustTaskOutcome {
+                        status: axum::http::StatusCode::OK,
+                        body,
+                    },
+                    Err(e) => reject_with(
+                        &doc,
+                        RejectReason::InternalError {
+                            reason: format!("prior response is unserialisable: {e}"),
+                        },
+                    ),
+                },
+                // Still running: `202` is the only honest code. `200` claims a
+                // result that does not exist yet and `409` a conflict that does
+                // not exist — it is the same document.
+                None if in_flight => TrustTaskOutcome {
+                    status: axum::http::StatusCode::ACCEPTED,
+                    body: Vec::new(),
+                },
+                None => TrustTaskOutcome {
+                    status: axum::http::StatusCode::NO_CONTENT,
+                    body: Vec::new(),
+                },
+            };
+        }
+        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => {
+            return reject_with(&doc, RejectReason::IdConflict);
+        }
+        // Fail closed. A consumer that cannot establish whether a document is a
+        // duplicate has not satisfied item 11, so it must not execute — and
+        // `unavailable` is retryable, which is the truthful signal.
+        Err(e) => {
+            tracing::error!(error = %e, id = %doc_id, "replay guard unavailable");
+            return reject_with(&doc, RejectReason::Unavailable { retry_after: None });
+        }
+        // `ReplayVerdict` is `#[non_exhaustive]`. Every variant it has gained so
+        // far is a reason *not* to run the task; guessing permissively on an
+        // unknown one is how a duplicate-execution defence stops defending.
+        Ok(other) => {
+            tracing::error!(
+                verdict = ?other,
+                id = %doc_id,
+                "replay guard returned a verdict this build does not know",
+            );
+            return reject_with(&doc, RejectReason::Unavailable { retry_after: None });
+        }
+    }
+
     // 4. Dispatch by type URI, then sign what comes back.
     let outcome = dispatch_typed(state, ctx, doc, &type_uri).await;
-    sign_success_response(state, outcome).await
+    let outcome = sign_success_response(state, outcome).await;
+
+    // Close out the claim taken at 3b.
+    //
+    // - **Succeeded** → record the response, so the redelivery this guard
+    //   exists to absorb is answered with the result rather than with silence.
+    // - **Failed** → release. A document refused downstream of the claim would
+    //   otherwise burn its `id`, and a corrected resend under the same `id`
+    //   would come back `idConflict` for as long as the record is retained.
+    {
+        let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
+        if outcome.status.is_success() {
+            let recorded = serde_json::from_slice::<serde_json::Value>(&outcome.body).ok();
+            if let Err(e) = guard.record_response(&doc_id, recorded.as_ref()).await {
+                // Not fatal: the effect happened and the claim stands, so item 11
+                // still holds. Only the answer-a-retry courtesy is lost.
+                tracing::warn!(error = %e, id = %doc_id, "replay guard: response not recorded");
+            }
+        } else if let Err(e) = guard.release(&doc_id, &digest).await {
+            tracing::warn!(error = %e, id = %doc_id, "replay guard: claim not released");
+        }
+    }
+
+    outcome
+}
+
+/// Process-local duplicate-execution records (SPEC §7.2 item 11).
+///
+/// In-memory on purpose. Cross-restart replay is not what this defends against:
+/// the records it would need are exactly the ones a restart makes unreachable
+/// anyway, and the redelivery window it does cover is far shorter than an
+/// uptime. Capacity-bounded, so a burst of distinct documents cannot grow it
+/// without limit.
+///
+/// Single-process, like the VTA's. Behind a load balancer two replicas would
+/// each accept the same document once; a VTC is not deployed that way today,
+/// and making this durable is the change to make when one is.
+static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
+    std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
+
+/// How long a duplicate-execution record is kept.
+///
+/// **Retention only** — this is not an acceptance policy and must not become
+/// one. The VTC does not enforce a freshness window today (many of its
+/// producers stamp no `issuedAt`), and turning one on here would refuse
+/// documents this service accepts now. What the policy supplies is the
+/// fallback horizon for a document carrying no `expiresAt`: without it such a
+/// record would be held until capacity evicted it.
+///
+/// The bound may only ever be *longer* than the window in which a document is
+/// still executable. Shorter is the direction §7.2 forbids — a replay arriving
+/// while the document is still acceptable, with its record already dropped,
+/// runs twice.
+fn retention_policy() -> trust_tasks_rs::FreshnessPolicy {
+    trust_tasks_rs::FreshnessPolicy::consequential()
 }
 
 /// Attach this community's Data-Integrity proof to a success response.

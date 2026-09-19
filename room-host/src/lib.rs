@@ -314,6 +314,112 @@ pub async fn dispatch(state: &Arc<HostState>, body: &[u8]) -> Answer {
         }
     };
 
+    // SPEC §7.2 item 11 — the duplicate-execution record.
+    //
+    // Every carrier that reaches here is at-least-once. The mediator re-pushes a
+    // recipient's whole undelivered inbox when a socket enables live delivery and when a
+    // duplicate socket displaces an existing session, so a frame this host has already
+    // answered arrives again as routine traffic. Without a record, `put`, `mint` and
+    // `transfer` run a second time.
+    //
+    // The document's proof does not close this: a redelivered copy carries the same valid
+    // proof the first did. It *is* the first document.
+    if !is_consequential(&doc.type_uri.to_string()) {
+        // `ReplayPolicy::NotConsequential` — item 11's narrow disapplication, and a
+        // property of the operation rather than of this host's convenience. The read tasks
+        // return what is there and change nothing, so a record would buy no correctness
+        // and cost a slot that a write needs.
+        return route(state, doc).await;
+    }
+
+    let doc_id = doc.id.clone();
+    let digest = match trust_tasks_rs::document_digest(&doc) {
+        Ok(d) => d,
+        Err(e) => {
+            return reject(
+                &doc,
+                RejectReason::InternalError {
+                    reason: format!(
+                        "cannot canonicalise the document to key its replay record: {e}"
+                    ),
+                },
+            );
+        }
+    };
+    let now = chrono::Utc::now();
+    let retain_until = retention_policy().record_expiry(&doc, now);
+    match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc_id, &digest, retain_until, now)
+        .await
+    {
+        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => {}
+        Ok(trust_tasks_rs::ReplayVerdict::Duplicate {
+            prior_response,
+            in_flight,
+        }) => {
+            // §7.2 (*Disposition of a duplicate*): never `taskFailed` — the task did not
+            // fail, it already happened. Answering with the original result is what keeps
+            // a member whose reply was lost from retrying a write forever.
+            return match prior_response {
+                Some(document) => Answer {
+                    status: 200,
+                    document,
+                },
+                // Still running. `202` is the only honest code: `200` claims a result that
+                // does not exist yet, `409` a conflict that does not exist — it is the
+                // same document.
+                None if in_flight => Answer {
+                    status: 202,
+                    document: Value::Null,
+                },
+                None => Answer {
+                    status: 204,
+                    document: Value::Null,
+                },
+            };
+        }
+        // A *different* document under an already-spent id. Digest-keyed precisely so this
+        // is refused rather than absorbed as a retry of the original.
+        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => {
+            return reject(&doc, RejectReason::IdConflict);
+        }
+        // Fail closed: a host that cannot establish whether a document is a duplicate has
+        // not satisfied item 11, so it must not execute. `unavailable` is retryable, which
+        // is the truthful signal.
+        Err(e) => {
+            tracing::error!(error = %e, id = %doc_id, "replay guard unavailable");
+            return reject(&doc, RejectReason::Unavailable { retry_after: None });
+        }
+        // `ReplayVerdict` is `#[non_exhaustive]`; every variant so far is a reason not to
+        // run the task, so an unknown one is refused rather than guessed permissively.
+        Ok(other) => {
+            tracing::error!(verdict = ?other, id = %doc_id, "replay guard: unknown verdict");
+            return reject(&doc, RejectReason::Unavailable { retry_after: None });
+        }
+    }
+
+    let answer = route(state, doc).await;
+
+    // Close out the claim. A success records its response so the redelivery this exists to
+    // absorb is answered with the result; a failure releases, or a document refused
+    // downstream of the claim would burn its id and a corrected resend under the same id
+    // would come back `idConflict` until the record expired.
+    {
+        let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
+        if (200..300).contains(&answer.status) {
+            if let Err(e) = guard.record_response(&doc_id, Some(&answer.document)).await {
+                tracing::warn!(error = %e, id = %doc_id, "replay guard: response not recorded");
+            }
+        } else if let Err(e) = guard.release(&doc_id, &digest).await {
+            tracing::warn!(error = %e, id = %doc_id, "replay guard: claim not released");
+        }
+    }
+
+    answer
+}
+
+/// Route a document to its handler. Split out of [`dispatch`] so the replay record can be
+/// taken around the whole routing step, rather than in each of eleven handlers.
+async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
     let payload = doc.payload.clone();
     match doc.type_uri.to_string().as_str() {
         ROOMS_CREATE_TYPE => create(state, &doc, payload).await,
@@ -337,6 +443,37 @@ pub async fn dispatch(state: &Arc<HostState>, body: &[u8]) -> Answer {
             },
         ),
     }
+}
+
+/// Whether a task changes room state, and so needs a duplicate-execution record.
+///
+/// Listed positively, by type, rather than derived from a naming convention: a new task
+/// whose URI nobody thought about must land on the **safe** side, and an unknown type here
+/// is guarded. The cost of guarding a read by mistake is one map slot; the cost of missing
+/// a write is a record written twice or an epoch minted twice.
+fn is_consequential(type_uri: &str) -> bool {
+    !matches!(
+        type_uri,
+        ROOMS_RECORDS_GET_TYPE
+            | ROOMS_RECORDS_LIST_TYPE
+            | ROOMS_EPOCH_CHAIN_TYPE
+            | ROOMS_EPOCH_COMMITS_TYPE
+    )
+}
+
+/// Process-local duplicate-execution records (SPEC §7.2 item 11).
+///
+/// In-memory and single-process, matching the VTA's and the VTC's. A replicated host would
+/// need a shared store behind the same trait — two replicas each hold their own map, so a
+/// document accepted at one is `Fresh` at the other and the write happens twice.
+static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
+    std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
+
+/// How long a duplicate-execution record is kept. **Retention only** — this is not an
+/// acceptance policy, and a document carrying its own `expiresAt` uses that; the window
+/// here is the fallback for one that carries none.
+fn retention_policy() -> trust_tasks_rs::FreshnessPolicy {
+    trust_tasks_rs::FreshnessPolicy::consequential()
 }
 
 async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
@@ -1752,6 +1889,168 @@ mod tests {
         assert_eq!(
             body["author"], f.owner.did,
             "the author is the verified subject, not the room's owner field"
+        );
+    }
+
+    /// POST bytes verbatim, so the *same* document can be delivered twice.
+    ///
+    /// `call` re-signs, which mints a fresh `id` each time and so can never express a
+    /// redelivery — the thing every carrier here actually does.
+    async fn post_raw(app: &Router, doc: &[u8]) -> (StatusCode, Value) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/trust-tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(doc.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        // The routed document's `payload`, as `call` returns — the reply's own `id` is a
+        // fresh uuid per answer, so comparing whole documents would never match.
+        let doc: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, doc.get("payload").cloned().unwrap_or(Value::Null))
+    }
+
+    /// SPEC §7.2 item 11. Live delivery is at-least-once — the mediator re-pushes an
+    /// undelivered inbox on every live-delivery activation and every socket replacement —
+    /// so the same signed `put` arrives twice as routine traffic. It must be written once.
+    ///
+    /// The proof does not catch this: the redelivered copy carries the same valid proof,
+    /// because it is the same document.
+    #[tokio::test]
+    async fn a_redelivered_write_is_executed_once() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let doc = vta_sdk::trust_task_sign::build_signed(
+            ROOMS_RECORDS_PUT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/pricing",
+                "presentation": f.as_owner(),
+                "cleartext": { "body": "a decision" },
+            }),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+            "did:key:zHost",
+        )
+        .await
+        .expect("sign the request");
+
+        let (status, first) = post_raw(&app, doc.as_bytes()).await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(first["version"], 1);
+
+        let (status, second) = post_raw(&app, doc.as_bytes()).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a duplicate is never a failure — the task did not fail, it already happened: \
+             {second}"
+        );
+        assert_eq!(
+            second, first,
+            "the duplicate must be answered with the original result, not re-executed"
+        );
+
+        // The claim is what proves it: a second execution would have made version 2.
+        let (status, body) = call(
+            &app,
+            ROOMS_RECORDS_GET_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/pricing",
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["version"], 1, "the record was written twice");
+    }
+
+    /// A *different* document under an already-spent `id` is a conflict, not a retry.
+    /// Digest-keyed precisely so the two are distinguishable; absorbing the second as a
+    /// duplicate is the one outcome §7.2 rules out.
+    #[tokio::test]
+    async fn a_different_document_reusing_an_id_is_refused() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let sign = async |body: &str| {
+            vta_sdk::trust_task_sign::build_signed(
+                ROOMS_RECORDS_PUT_TYPE,
+                serde_json::json!({
+                    "roomId": f.room.room_id,
+                    "key": "decision/pricing",
+                    "presentation": f.as_owner(),
+                    "cleartext": { "body": body },
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+                "did:key:zHost",
+            )
+            .await
+            .expect("sign the request")
+        };
+
+        let first = sign("a decision").await;
+        let (status, _) = post_raw(&app, first.as_bytes()).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Same id, different content.
+        let id = serde_json::from_str::<Value>(&first).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut second: Value = serde_json::from_str(&sign("a different decision").await).unwrap();
+        second["id"] = Value::String(id);
+        let (status, body) = post_raw(&app, serde_json::to_vec(&second).unwrap().as_slice()).await;
+
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "a different document under a spent id must not be served: {body}"
+        );
+    }
+
+    /// Reads take no record. They change nothing, so a slot spent on one is a slot a write
+    /// cannot have — and two identical reads must both be answered, not absorbed.
+    #[tokio::test]
+    async fn a_repeated_read_is_answered_every_time() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let doc = vta_sdk::trust_task_sign::build_signed(
+            ROOMS_RECORDS_LIST_TYPE,
+            serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+            "did:key:zHost",
+        )
+        .await
+        .expect("sign the request");
+
+        let (first_status, first) = post_raw(&app, doc.as_bytes()).await;
+        let (second_status, second) = post_raw(&app, doc.as_bytes()).await;
+
+        assert_eq!(first_status, StatusCode::OK, "{first}");
+        assert_eq!(
+            second_status,
+            StatusCode::OK,
+            "a repeated read must be answered, not treated as a duplicate: {second}"
         );
     }
 
