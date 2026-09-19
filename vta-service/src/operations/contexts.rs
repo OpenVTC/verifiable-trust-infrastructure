@@ -240,19 +240,36 @@ pub async fn preview_delete_context(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
 
-    let preview = collect_context_resources(
+    // The preview covers the whole subtree, because the deletion does.
+    //
+    // It used to collect `id` alone. A context whose own keyspaces were empty
+    // but whose children held keys and DIDs previewed as holding nothing, so
+    // every consumer that decides "does this need `force`?" from the preview
+    // — the browser console does exactly that — decided it from the wrong
+    // set: it either sent `force: false` and got an unexplained refusal, or,
+    // when the parent happened to hold one key of its own, destroyed an entire
+    // unlisted subtree under a confirmation that listed one key.
+    //
+    // Delete and preview must answer the same question. `subtree` is the list
+    // the deletion iterates, built here the same way.
+    let mut subtree = list_descendants(contexts_ks, id).await?;
+    subtree.push(id.to_string());
+
+    let mut preview = collect_subtree_resources(
         keys_ks,
         acl_ks,
         did_templates_ks,
         #[cfg(feature = "webvh")]
         webvh_ks,
-        id,
+        &subtree,
     )
     .await?;
+    preview.id = id.to_string();
 
     info!(
         channel,
         id = %id,
+        sub_contexts = subtree.len() - 1,
         keys = preview.keys.len(),
         dids = preview.webvh_dids.len(),
         templates = preview.did_templates.len(),
@@ -580,6 +597,90 @@ async fn purge_context_resources(
         }
     }
     crate::did_templates::delete_all_context_templates(did_templates_ks, context_id).await?;
+
+    Ok(preview)
+}
+
+/// Everything a deletion of `context_ids` (a context and its whole subtree)
+/// would destroy, as one preview.
+///
+/// Not a loop over [`collect_context_resources`], and the difference is the
+/// ACL classification. That function asks "does this entry hold *only* this
+/// context?", which is the right question for one context and the wrong one
+/// for a subtree: an entry scoped to both `acme` and `acme/eng` holds another
+/// context by that test, so a per-context loop reports it twice as merely
+/// *narrowed* — when deleting `acme` takes both of its scopes and the entry
+/// goes entirely. An operator reading that preview is told a subject keeps
+/// authority it is about to lose completely.
+///
+/// So the question is asked once against the whole delete set, which is also
+/// the state the deletion's iterative, deepest-first cascade converges on.
+async fn collect_subtree_resources(
+    keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    did_templates_ks: &KeyspaceHandle,
+    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    context_ids: &[String],
+) -> Result<DeleteContextPreviewResultBody, AppError> {
+    use crate::keys::KeyRecord;
+
+    // `id` is the caller's to set: this function answers for a set of
+    // contexts and has no opinion about which of them the operator named.
+    let mut preview = DeleteContextPreviewResultBody::default();
+
+    // Keys. One scan for the whole subtree, not one per context.
+    for (_key, value) in keys_ks.prefix_iter_raw("key:").await? {
+        let record: KeyRecord = serde_json::from_slice(&value)?;
+        if record
+            .context_id
+            .as_deref()
+            .is_some_and(|c| context_ids.iter().any(|d| d == c))
+        {
+            preview.keys.push(record.key_id);
+        }
+    }
+
+    // WebVH DIDs.
+    #[cfg(feature = "webvh")]
+    {
+        use vta_sdk::webvh::WebvhDidRecord;
+        for (_key, value) in webvh_ks.prefix_iter_raw("did:").await? {
+            let record: WebvhDidRecord = serde_json::from_slice(&value)?;
+            if context_ids.contains(&record.context_id) {
+                preview.webvh_dids.push(record.did);
+            }
+        }
+    }
+
+    // ACL entries, classified against the whole delete set.
+    for (_key, value) in acl_ks.prefix_iter_raw("acl:").await? {
+        let entry: crate::acl::AclEntry = serde_json::from_slice(&value)?;
+        let doomed = entry
+            .allowed_contexts
+            .iter()
+            .filter(|c| context_ids.contains(c))
+            .count();
+        if doomed == 0 {
+            continue;
+        }
+        if doomed == entry.allowed_contexts.len() {
+            // Every scope it holds is going: the entry goes with them.
+            preview.acl_entries_removed.push(entry.did);
+        } else {
+            preview.acl_entries_updated.push(entry.did);
+        }
+    }
+
+    // DID templates. Duplicated names across contexts are kept, not deduped:
+    // they are distinct templates, and collapsing them would under-report how
+    // many are destroyed.
+    for context_id in context_ids {
+        let templates =
+            crate::did_templates::list_context_templates(did_templates_ks, context_id).await?;
+        preview
+            .did_templates
+            .extend(templates.into_iter().map(|r| r.template.name));
+    }
 
     Ok(preview)
 }
@@ -912,6 +1013,104 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// Store an ACL entry scoped to `contexts`.
+    async fn seed_acl(ks: &KeyspaceHandle, did: &str, contexts: &[&str]) {
+        let mut entry = crate::acl::AclEntry::new(did, Role::Admin, "seed");
+        entry.allowed_contexts = contexts.iter().map(|c| (*c).to_string()).collect();
+        crate::acl::store_acl_entry(ks, &entry).await.unwrap();
+    }
+
+    /// The preview answers for the subtree, because the deletion acts on it.
+    ///
+    /// The shape that mattered in the field: a parent holding nothing of its
+    /// own, over children that hold everything. The old preview reported the
+    /// parent's empty hands and consumers concluded the delete was harmless.
+    #[tokio::test]
+    async fn preview_reports_what_sub_contexts_hold() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        // The resource is two levels down and belongs to neither `acme` nor
+        // anything a per-context preview of `acme` would look at.
+        seed(&ks.contexts, "acme/eng/ci", Some("acme/eng")).await;
+        seed_acl(&ks.acl, "did:key:zBuildBot", &["acme/eng/ci"]).await;
+
+        let preview = preview_delete_context(
+            &ks.contexts,
+            &ks.keys,
+            &ks.acl,
+            &ks.did_templates,
+            #[cfg(feature = "webvh")]
+            &ks.webvh,
+            &super_admin(),
+            "acme",
+            "t",
+        )
+        .await
+        .expect("preview");
+
+        assert_eq!(
+            preview.acl_entries_removed,
+            vec!["did:key:zBuildBot".to_string()],
+            "a grandchild's ACL entry is destroyed by this delete and must be previewed"
+        );
+    }
+
+    /// An entry scoped to a parent *and* its child loses both scopes when the
+    /// parent is deleted, so it is `removed`, not `updated`.
+    ///
+    /// A per-context preview gets this backwards twice over: asked about
+    /// `acme` it sees the entry also holds `acme/eng` and calls it narrowed;
+    /// asked about `acme/eng` it sees `acme` and says the same. Both scopes
+    /// are in the delete set, so the entry goes — and "keeps some authority"
+    /// is the one thing an operator must not be told about a subject that is
+    /// about to have none.
+    #[tokio::test]
+    async fn an_acl_entry_scoped_wholly_inside_the_subtree_is_previewed_as_removed() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        seed(&ks.contexts, "other", None).await;
+
+        seed_acl(&ks.acl, "did:key:zInside", &["acme", "acme/eng"]).await;
+        seed_acl(&ks.acl, "did:key:zStraddles", &["acme/eng", "other"]).await;
+        seed_acl(&ks.acl, "did:key:zOutside", &["other"]).await;
+
+        let preview = preview_delete_context(
+            &ks.contexts,
+            &ks.keys,
+            &ks.acl,
+            &ks.did_templates,
+            #[cfg(feature = "webvh")]
+            &ks.webvh,
+            &super_admin(),
+            "acme",
+            "t",
+        )
+        .await
+        .expect("preview");
+
+        assert_eq!(
+            preview.acl_entries_removed,
+            vec!["did:key:zInside".to_string()],
+            "both of its scopes are in the delete set"
+        );
+        assert_eq!(
+            preview.acl_entries_updated,
+            vec!["did:key:zStraddles".to_string()],
+            "it keeps `other`"
+        );
+        assert!(
+            !preview
+                .acl_entries_removed
+                .contains(&"did:key:zOutside".to_string())
+                && !preview
+                    .acl_entries_updated
+                    .contains(&"did:key:zOutside".to_string()),
+            "an entry with no scope in the subtree is untouched"
+        );
     }
 
     #[tokio::test]
