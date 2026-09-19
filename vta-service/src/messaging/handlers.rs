@@ -535,6 +535,7 @@ didcomm_handler!(
         "didcomm",
     )
     .await
+    .map_err(AppError::from)
 );
 
 didcomm_handler!(
@@ -549,6 +550,7 @@ didcomm_handler!(
         "didcomm"
     )
     .await
+    .map_err(AppError::from)
 );
 
 didcomm_handler!(
@@ -576,6 +578,7 @@ didcomm_handler!(
         "didcomm",
     )
     .await
+    .map_err(AppError::from)
 );
 
 didcomm_handler!(
@@ -591,6 +594,7 @@ didcomm_handler!(
         "didcomm",
     )
     .await
+    .map_err(AppError::from)
 );
 
 didcomm_handler!(
@@ -610,6 +614,7 @@ didcomm_handler!(
         "didcomm",
     )
     .await
+    .map_err(AppError::from)
 );
 
 didcomm_handler!(
@@ -652,7 +657,11 @@ didcomm_handler!(
         #[cfg(not(feature = "webvh"))]
         let outcome =
             operations::contexts::delete_context(&ks, &auth, &body.id, body.force, "didcomm").await;
-        outcome
+        // This surface carries a problem report, not a Trust-Task error code,
+        // so the typed refusal collapses to its `AppError` here. The
+        // `vta/contexts/delete:notEmpty` code is the Trust-Task handler's to
+        // emit; see `trust_tasks::contexts::handle_delete`.
+        outcome.map_err(AppError::from)
     }
 );
 

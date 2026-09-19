@@ -18,7 +18,81 @@ use crate::auth::AuthClaims;
 use crate::operations;
 use crate::server::AppState;
 
-use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
+use super::helpers::{
+    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with_code, success_response,
+};
+
+/// The task's own slug, read off the document rather than written down, so an
+/// extended code can only ever name the task that emitted it.
+fn slug_from_doc(doc: &TrustTask<Value>) -> String {
+    doc.type_uri
+        .to_string()
+        .strip_prefix("https://trusttasks.org/spec/")
+        .and_then(|rest| rest.rsplit_once('/'))
+        .map(|(slug, _ver)| slug.to_string())
+        .unwrap_or_else(|| "vta/contexts/delete".to_string())
+}
+
+fn ext(slug: &str, local: &str) -> trust_tasks_rs::TrustTaskCode {
+    trust_tasks_rs::TrustTaskCode::new_extended(slug, local)
+        .expect("contexts extended code is grammar-valid")
+}
+
+/// Reject a context operation with the error code its own specification
+/// declares.
+///
+/// One function for the whole family, because the slug is read off the
+/// document: the same match answers `vta/contexts/get:notFound`,
+/// `vta/contexts/update:notFound`, `vta/contexts/create:parentNotFound` and
+/// `vta/contexts/delete:notEmpty` depending only on which task is being
+/// served. A per-handler mapping would be six copies of this, and the sixth
+/// would be the one that drifts.
+fn reject_context_error(
+    doc: &TrustTask<Value>,
+    e: operations::contexts::ContextError,
+) -> TrustTaskOutcome {
+    use operations::contexts::ContextError;
+    let slug = slug_from_doc(doc);
+    match e {
+        // Deliberately says nothing about whether the id exists. That is the
+        // point of the code: `vta/contexts/get` states that it "does not
+        // distinguish 'does not exist' from 'exists but not yours'", and a
+        // message that distinguished them would put back exactly what the
+        // conflation removes.
+        ContextError::Unreachable => reject_with_code(
+            doc,
+            ext(&slug, "notFound"),
+            "no context with that id is reachable by this caller",
+            None,
+        ),
+        ContextError::ParentUnreachable => reject_with_code(
+            doc,
+            ext(&slug, "parentNotFound"),
+            "no context with that parent id is reachable by this caller",
+            None,
+        ),
+        ContextError::NotEmpty(holds) => reject_with_code(
+            doc,
+            ext(&slug, "notEmpty"),
+            format!(
+                "context holds {}; retry with force to delete the whole subtree, or preview it \
+                 first",
+                holds.summary()
+            ),
+            // The counts machine-readably, so a consumer can decide without
+            // parsing the sentence above. `subContexts` is the one that
+            // changes what the operator is agreeing to.
+            Some(serde_json::json!({
+                "subContexts": holds.sub_contexts,
+                "keys": holds.keys,
+                "webvhDids": holds.webvh_dids,
+                "aclEntries": holds.acl_entries,
+                "didTemplates": holds.did_templates,
+            })),
+        ),
+        ContextError::Other(e) => app_error_to_reject(doc, e),
+    }
+}
 
 /// Handler for `spec/vta/contexts/list/1.0`.
 pub(super) async fn handle_list(
@@ -85,7 +159,7 @@ pub(super) async fn handle_create(
             }
             success_response(&doc, body)
         }
-        Err(e) => app_error_to_reject(&doc, e),
+        Err(e) => reject_context_error(&doc, e),
     }
 }
 
@@ -108,7 +182,7 @@ pub(super) async fn handle_get(
     .await
     {
         Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
+        Err(e) => reject_context_error(&doc, e),
     }
 }
 
@@ -182,7 +256,7 @@ pub(super) async fn handle_update(
     .await
     {
         Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
+        Err(e) => reject_context_error(&doc, e),
     }
 }
 
@@ -209,7 +283,7 @@ pub(super) async fn handle_update_did(
     .await
     {
         Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
+        Err(e) => reject_context_error(&doc, e),
     }
 }
 
@@ -241,7 +315,7 @@ pub(super) async fn handle_preview_delete(
     .await
     {
         Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
+        Err(e) => reject_context_error(&doc, e),
     }
 }
 
@@ -306,6 +380,6 @@ pub(super) async fn handle_delete(
 
     match outcome {
         Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
+        Err(e) => reject_context_error(&doc, e),
     }
 }
