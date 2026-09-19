@@ -769,7 +769,9 @@ const STEP_UP_APPROVE_REQUEST_TYPE: &str =
 /// path and the push is an enhancement, so the cost of waiting is paid by an
 /// operation that would have succeeded anyway. The resolver caches, so this is
 /// the first-contact cost per approver, not a per-push one.
-const ROUTE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+// Fully qualified: the `Duration` import above is `didcomm`-gated, while this
+// bound applies to route resolution in every build.
+const ROUTE_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Pure route selection for a delegated push: given the approver DID, whatever
 /// mediator its DID document advertises, and the VTA's configured mediator,
