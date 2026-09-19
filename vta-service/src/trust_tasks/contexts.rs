@@ -262,9 +262,49 @@ pub(super) async fn handle_delete(
         Err(resp) => return resp,
     };
     let ks = operations::keyspaces_from_app_state(state);
-    match operations::contexts::delete_context(&ks, auth, &req.id, req.force, TRANSPORT_TRUST_TASK)
-        .await
-    {
+    // A context's DIDs are deleted through the full webvh path, which needs a
+    // resolver to reach their hosting servers. Without one the deletion is
+    // *refused* for a context that holds DIDs rather than dropping their local
+    // records — see `ContextDidCleanup`.
+    #[cfg(feature = "webvh")]
+    let outcome = {
+        let vta_did = state.config.read().await.vta_did.clone();
+        match state.did_resolver.as_ref() {
+            Some(did_resolver) => {
+                let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
+                let cleanup = operations::contexts::ContextDidCleanup {
+                    deps: &deps,
+                    vta_did: vta_did.as_deref(),
+                };
+                operations::contexts::delete_context(
+                    &ks,
+                    auth,
+                    &req.id,
+                    req.force,
+                    TRANSPORT_TRUST_TASK,
+                    Some(&cleanup),
+                )
+                .await
+            }
+            None => {
+                operations::contexts::delete_context(
+                    &ks,
+                    auth,
+                    &req.id,
+                    req.force,
+                    TRANSPORT_TRUST_TASK,
+                    None,
+                )
+                .await
+            }
+        }
+    };
+    #[cfg(not(feature = "webvh"))]
+    let outcome =
+        operations::contexts::delete_context(&ks, auth, &req.id, req.force, TRANSPORT_TRUST_TASK)
+            .await;
+
+    match outcome {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }

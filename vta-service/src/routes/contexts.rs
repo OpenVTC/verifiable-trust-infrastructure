@@ -244,6 +244,36 @@ pub async fn delete_context_handler(
     .await?;
 
     let ks = operations::keyspaces_from_app_state(&state);
+    // See the trust-task handler: the subtree's DIDs go through the full webvh
+    // deletion, and a build with no resolver refuses a context holding them
+    // rather than orphaning their host copies.
+    #[cfg(feature = "webvh")]
+    {
+        let vta_did = state.config.read().await.vta_did.clone();
+        match state.did_resolver.as_ref() {
+            Some(did_resolver) => {
+                let deps = operations::did_webvh::WebvhDeps::from_app_state(&state, did_resolver);
+                let cleanup = operations::contexts::ContextDidCleanup {
+                    deps: &deps,
+                    vta_did: vta_did.as_deref(),
+                };
+                operations::contexts::delete_context(
+                    &ks,
+                    &auth.0,
+                    &id,
+                    query.force,
+                    "rest",
+                    Some(&cleanup),
+                )
+                .await?;
+            }
+            None => {
+                operations::contexts::delete_context(&ks, &auth.0, &id, query.force, "rest", None)
+                    .await?;
+            }
+        }
+    }
+    #[cfg(not(feature = "webvh"))]
     operations::contexts::delete_context(&ks, &auth.0, &id, query.force, "rest").await?;
     Ok(StatusCode::NO_CONTENT)
 }

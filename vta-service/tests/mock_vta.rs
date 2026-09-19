@@ -1330,6 +1330,10 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
 
 #[cfg(feature = "webvh")]
 async fn mint_did(client: &VtaClient, hosted: bool) -> String {
+    mint_did_in(client, "ctx1", hosted).await
+}
+
+async fn mint_did_in(client: &VtaClient, context_id: &str, hosted: bool) -> String {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
@@ -1348,7 +1352,7 @@ async fn mint_did(client: &VtaClient, hosted: bool) -> String {
     };
     client
         .create_did_webvh(CreateDidWebvhRequest {
-            context_id: "ctx1".into(),
+            context_id: context_id.into(),
             server_id,
             url,
             path: None,
@@ -1372,6 +1376,114 @@ async fn mint_did(client: &VtaClient, hosted: bool) -> String {
         .await
         .expect("mint a did:webvh")
         .did
+}
+
+/// Deleting a context takes the DIDs in its **subtree** off the hosting
+/// server, not merely out of the local keyspace.
+///
+/// The regression this holds: the cascade used to drop each DID's local
+/// record directly (`webvh_store::delete_did` + its log key) and never call
+/// the host. The context vanished, the operator was told it was deleted, and
+/// the DID in the sub-context carried on resolving from its host for everyone
+/// else. `webvh_host_deletes()` is the only witness that distinguishes the two
+/// outcomes — a local-record assertion passes either way, which is exactly why
+/// the defect survived.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn deleting_a_context_deletes_its_subtree_dids_on_the_hosting_server() {
+    use vta_sdk::client::CreateContextRequest;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
+
+    client
+        .create_context(CreateContextRequest {
+            id: "sub".into(),
+            name: "Sub".into(),
+            description: None,
+            parent: Some("ctx1".into()),
+        })
+        .await
+        .expect("nest a sub-context under ctx1");
+
+    // The DID lives in the *sub*-context, so only a cascade reaches it.
+    let did = mint_did_in(&client, "ctx1/sub", true).await;
+    assert_eq!(mock.webvh_host_deletes(), 0);
+
+    client
+        .delete_context("ctx1", true)
+        .await
+        .expect("force-delete the whole subtree");
+
+    assert_eq!(
+        mock.webvh_host_deletes(),
+        1,
+        "the host must be asked to delete the sub-context's DID"
+    );
+    assert!(
+        client.get_did_webvh(&did).await.is_err(),
+        "the local record goes too"
+    );
+    assert!(
+        client.get_context("ctx1/sub").await.is_err(),
+        "the sub-context goes with its parent"
+    );
+
+    mock.shutdown().await;
+}
+
+/// A DID that some context *outside* the delete set acts as still blocks the
+/// deletion, and nothing is destroyed on the way to finding that out.
+///
+/// The narrow form of the cascade's blocker exemption: it names the contexts
+/// going away, rather than switching the check off for the duration. Switching
+/// it off would let a context delete strand an unrelated context's identity —
+/// the very thing the blocker exists to prevent.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn a_context_delete_is_refused_when_an_outside_context_acts_as_one_of_its_dids() {
+    use vta_sdk::client::CreateContextRequest;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
+
+    let did = mint_did_in(&client, "ctx1", true).await;
+
+    // `other` is not under `ctx1`, so it survives the delete and would be left
+    // pointing at an identifier that no longer resolves.
+    client
+        .create_context(CreateContextRequest {
+            id: "other".into(),
+            name: "Other".into(),
+            description: None,
+            parent: None,
+        })
+        .await
+        .expect("create a sibling context");
+    client
+        .update_context_did("other", &did)
+        .await
+        .expect("point it at ctx1's DID");
+
+    let err = client
+        .delete_context("ctx1", true)
+        .await
+        .expect_err("must be refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("other"),
+        "the refusal must name the context: {msg}"
+    );
+
+    // Refused before anything was destroyed.
+    assert_eq!(mock.webvh_host_deletes(), 0);
+    assert!(client.get_did_webvh(&did).await.is_ok(), "the DID survives");
+    assert!(
+        client.get_context("ctx1").await.is_ok(),
+        "the context survives"
+    );
+
+    mock.shutdown().await;
 }
 
 /// The unchanged path: a hosted DID's delete reaches the host, and the

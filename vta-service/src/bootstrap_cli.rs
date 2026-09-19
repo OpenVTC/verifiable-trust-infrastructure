@@ -1041,6 +1041,68 @@ pub async fn run_context_delete(
         #[cfg(feature = "webvh")]
         webvh: &webvh_ks,
     };
+
+    // The offline delete takes the subtree's DIDs off their hosting servers
+    // exactly as the online one does. An operator reaching for the break-glass
+    // CLI is the last person who should be left with DIDs that still resolve
+    // for a context that no longer exists — the same reasoning, in the same
+    // words, as the offline `webvh_cli` delete.
+    #[cfg(feature = "webvh")]
+    {
+        use std::sync::Arc;
+
+        use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+
+        let sessions_ks = cs.keyspace(crate::keyspaces::SESSIONS)?;
+        let issued_credentials_ks = cs.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?;
+        let audit_sink: vta_audit::SharedAuditSink =
+            vta_audit::shared_keyspace_sink(audit_ks.clone());
+        let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
+            Arc::from(crate::keys::seed_store::create_seed_store(&app_config)?);
+        let did_resolver = DIDCacheClient::new(
+            DIDCacheConfigBuilder::default()
+                .with_host_policy(vta_sdk::resolver::webvh_host_policy())
+                .build(),
+        )
+        .await?;
+        let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
+            Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = crate::operations::did_webvh::WebvhDeps {
+            delete_cascade: Some(crate::operations::did_webvh::DeleteCascadeDeps {
+                acl_ks: &acl_ks,
+                sessions_ks: &sessions_ks,
+                issued_credentials_ks: &issued_credentials_ks,
+            }),
+            keys_ks: &keys_ks,
+            imported_ks: &imported_ks,
+            contexts_ks: &contexts_ks,
+            webvh_ks: &webvh_ks,
+            audit: &audit_sink,
+            seed_store: &*seed_store,
+            did_resolver: &did_resolver,
+            didcomm_bridge: &no_bridge,
+            auth_locks: &auth_locks,
+            // Offline: no mediator socket to lend, so the seam falls to
+            // DIDComm. Same reason as `webvh_cli`.
+            #[cfg(feature = "tsp")]
+            tsp: None,
+        };
+        let cleanup = crate::operations::contexts::ContextDidCleanup {
+            deps: &deps,
+            vta_did: app_config.vta_did.as_deref(),
+        };
+        crate::operations::contexts::delete_context(
+            &ks,
+            &auth,
+            &id,
+            true,
+            "vta-contexts-delete",
+            Some(&cleanup),
+        )
+        .await?;
+    }
+    #[cfg(not(feature = "webvh"))]
     crate::operations::contexts::delete_context(&ks, &auth, &id, true, "vta-contexts-delete")
         .await?;
 

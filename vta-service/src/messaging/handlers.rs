@@ -619,7 +619,40 @@ didcomm_handler!(
     context_management::delete::DeleteContextBody,
     |s, auth, body| {
         let ks = operations::keyspaces_from_vta_state(s);
-        operations::contexts::delete_context(&ks, &auth, &body.id, body.force, "didcomm").await
+        // See the trust-task handler: the subtree's DIDs go through the full
+        // webvh deletion so their host copies go too.
+        #[cfg(feature = "webvh")]
+        let outcome = {
+            let vta_did = s.config.read().await.vta_did.clone();
+            match s.did_resolver.as_ref() {
+                Some(did_resolver) => {
+                    let deps = operations::did_webvh::WebvhDeps::from_vta_state(s, did_resolver);
+                    let cleanup = operations::contexts::ContextDidCleanup {
+                        deps: &deps,
+                        vta_did: vta_did.as_deref(),
+                    };
+                    operations::contexts::delete_context(
+                        &ks,
+                        &auth,
+                        &body.id,
+                        body.force,
+                        "didcomm",
+                        Some(&cleanup),
+                    )
+                    .await
+                }
+                None => {
+                    operations::contexts::delete_context(
+                        &ks, &auth, &body.id, body.force, "didcomm", None,
+                    )
+                    .await
+                }
+            }
+        };
+        #[cfg(not(feature = "webvh"))]
+        let outcome =
+            operations::contexts::delete_context(&ks, &auth, &body.id, body.force, "didcomm").await;
+        outcome
     }
 );
 
