@@ -265,11 +265,16 @@ pub async fn preview_delete_context(
     )
     .await?;
     preview.id = id.to_string();
+    // The contexts the arrays above are the union over. Measured already —
+    // `subtree` is what `collect_subtree_resources` was handed — so the only
+    // thing that was missing was saying so on the wire. `subtree` ends with
+    // `id` itself, which is not a *sub*-context.
+    preview.sub_contexts = subtree[..subtree.len() - 1].to_vec();
 
     info!(
         channel,
         id = %id,
-        sub_contexts = subtree.len() - 1,
+        sub_contexts = preview.sub_contexts.len(),
         keys = preview.keys.len(),
         dids = preview.webvh_dids.len(),
         templates = preview.did_templates.len(),
@@ -476,8 +481,9 @@ pub async fn delete_context(
 
     // Said, never swallowed — the same partial success
     // `delete_did_webvh`'s `daemonCleanupError` reports for a single DID.
-    // `vta/contexts/delete/1.0` has nowhere on its response to carry this yet,
-    // so for now it is an error-level event rather than a wire member.
+    // Logged *and* returned: the log is for whoever is watching the agent,
+    // the response member is for the caller who asked for the deletion and is
+    // otherwise told only that it succeeded.
     if !orphans.is_empty() {
         tracing::error!(
             channel,
@@ -503,6 +509,7 @@ pub async fn delete_context(
     Ok(DeleteContextResultBody {
         id: id.to_string(),
         deleted: true,
+        daemon_cleanup_errors: orphans,
     })
 }
 
@@ -1111,6 +1118,94 @@ mod tests {
                     .contains(&"did:key:zOutside".to_string()),
             "an entry with no scope in the subtree is untouched"
         );
+    }
+
+    /// The preview names the subtree, deepest first, and does not count the
+    /// context itself among its own sub-contexts.
+    ///
+    /// Until trust-tasks 0.21.4 there was no member for this, and both CLIs
+    /// plus the browser console each derived it from the context list. Three
+    /// copies of the agent's cascade rule in front of a destructive prompt,
+    /// none of them authoritative.
+    #[tokio::test]
+    async fn preview_names_the_sub_contexts_that_go_with_it() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        seed(&ks.contexts, "acme/eng/ci", Some("acme/eng")).await;
+        // Not under `acme` — a prefix match on the string alone would take it.
+        seed(&ks.contexts, "acme-corp", None).await;
+
+        let preview = preview_delete_context(
+            &ks.contexts,
+            &ks.keys,
+            &ks.acl,
+            &ks.did_templates,
+            #[cfg(feature = "webvh")]
+            &ks.webvh,
+            &super_admin(),
+            "acme",
+            "t",
+        )
+        .await
+        .expect("preview");
+
+        assert_eq!(
+            preview.sub_contexts,
+            vec!["acme/eng/ci".to_string(), "acme/eng".to_string()],
+            "deepest first, and `acme-corp` is not a child of `acme`"
+        );
+        assert!(
+            !preview.sub_contexts.contains(&"acme".to_string()),
+            "the context previewed is not one of its own sub-contexts"
+        );
+    }
+
+    /// A leaf reports no sub-contexts rather than omitting the question.
+    #[tokio::test]
+    async fn a_leaf_previews_an_empty_sub_context_list() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+
+        let preview = preview_delete_context(
+            &ks.contexts,
+            &ks.keys,
+            &ks.acl,
+            &ks.did_templates,
+            #[cfg(feature = "webvh")]
+            &ks.webvh,
+            &super_admin(),
+            "acme",
+            "t",
+        )
+        .await
+        .expect("preview");
+
+        assert!(preview.sub_contexts.is_empty());
+    }
+
+    /// A deletion that destroyed nothing on a host reports no orphans — the
+    /// control for the partial-success member, so a consumer reading it as
+    /// "absent means clean" is reading something that was actually decided.
+    #[tokio::test]
+    async fn a_clean_delete_reports_no_daemon_cleanup_errors() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+
+        let result = delete_context(
+            &ks.as_ks(),
+            &super_admin(),
+            "acme",
+            true,
+            "t",
+            #[cfg(feature = "webvh")]
+            None,
+        )
+        .await
+        .expect("delete");
+
+        assert!(result.deleted);
+        assert!(result.daemon_cleanup_errors.is_empty());
     }
 
     #[tokio::test]

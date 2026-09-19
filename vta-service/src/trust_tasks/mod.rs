@@ -4669,18 +4669,42 @@ mod response_coverage {
             json!({ "id": "cov-contexts", "name": "renamed" }),
         )
         .await;
+        // A sub-context, so the preview below actually emits `subContexts`.
+        //
+        // Without one the member is empty, `skip_serializing_if` keeps it off
+        // the wire, and the response gate validates a document that never
+        // carries the thing this coverage is here to check. A member that is
+        // only ever absent is not covered by a test that passes.
+        ok(
+            &state,
+            t::TASK_CONTEXTS_CREATE_1_0,
+            json!({ "id": "sub", "name": "sub", "parent": "cov-contexts" }),
+        )
+        .await;
         // Preview before delete: the pair exists so an operator can see what a
         // delete would take with it, so cover them in that order.
-        ok(
+        let preview = ok(
             &state,
             t::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
             json!({ "id": "cov-contexts" }),
         )
         .await;
+        // The gate above validated this document against the published
+        // schema. That is only evidence about `subContexts` if `subContexts`
+        // was in it — an omitted member validates perfectly against a schema
+        // that has never heard of it, which is exactly how a response gate
+        // reports a route as conforming while telling you nothing.
+        assert_eq!(
+            preview["subContexts"],
+            json!(["cov-contexts/sub"]),
+            "the preview must name the subtree on the wire, camelCase: {preview}"
+        );
+        // `force`, because the subtree is no longer empty — which is the
+        // refusal the preview above exists to warn about.
         ok(
             &state,
             t::TASK_CONTEXTS_DELETE_1_0,
-            json!({ "id": "cov-contexts" }),
+            json!({ "id": "cov-contexts", "force": true }),
         )
         .await;
     }
