@@ -2,6 +2,139 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.34.1...vta-service-v0.35.0) — 2026-09-19
+
+
+### Added
+
+- **vta**: Report the subtree and the host copies a context delete could not remove ([#1577](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1577))
+
+Takes trust-tasks 0.21.4, which added the two members the context-delete work
+  needed and had nowhere to put (trustoverip/dtgwg-trust-tasks-tf#513).
+
+  `subContexts` on `vta/contexts/preview-delete/1.0`. The preview already
+  measured the subtree — #1576 made every array the union over it — but could
+  not say which contexts those arrays covered, so both CLIs and the browser
+  console each derived the list from `contexts/list` and matched paths
+  themselves. Three copies of the agent's own cascade rule, none authoritative,
+  in front of a destructive prompt. The agent decides what the cascade reaches;
+  it now says so, and the consumers read it.
+
+  `daemonCleanupErrors` on `vta/contexts/delete/1.0`. A DID whose hosting server
+  would not confirm removing the published log left the deletion reported as a
+  plain success, with the orphan visible only in the agent's own logs — which is
+  the shape of the defect this whole change set started from. It is the
+  subtree-wide form of the `daemonCleanupError` that `webvh/dids/delete/1.0`
+  already reports for one DID, and both CLIs now print it after the deletion
+  rather than letting a partial success read as a complete one.
+
+
+
+### Fixed
+
+- **vta**: Preview the whole subtree a context delete destroys ([#1576](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1576))
+
+`preview_delete_context` collected the named context and nothing else, while
+  `delete_context` cascades the whole subtree. Two functions answering
+  different questions about the same act, and the preview's was the wrong one.
+
+  A context whose own keyspaces were empty over children holding keys, DIDs
+  and grants previewed as holding nothing. Every consumer decides from that
+  preview whether the deletion needs `force`, so every consumer decided from
+  the wrong set: send `force: false` and the agent refuses with nothing on
+  screen explaining why, or — when the parent happens to hold one key — send
+  `force: true` and destroy an entire unlisted subtree under a confirmation
+  listing one key.
+
+  `collect_subtree_resources` answers for the delete set, and is not a loop
+  over the per-context collector. The difference is the ACL classification.
+  The per-context question is "does this entry hold *only* this context?",
+  which for a subtree gets it backwards: an entry scoped to both `acme` and
+  `acme/eng` looks like it holds another context, so a loop reports it twice
+  as merely narrowed — when deleting `acme` takes both scopes and the entry
+  goes entirely. Asked once against the whole set it comes out as `removed`,
+  which is also where the deletion's deepest-first cascade converges. Telling
+  an operator that a subject keeps authority it is about to lose completely is
+  the one error this preview must not make.
+
+  Both CLI front-ends prompted off that preview and passed `force = true` to
+  the deletion regardless, so `vta context delete acme` on a parent that held
+  nothing itself took the subtree with no prompt at all. They now name the
+  sub-contexts — derived locally, since the task has no member for them yet —
+  and count them, and DID templates, toward "does this destroy anything".
+  The renderer never printed `didTemplates` and never counted them, so a
+  context whose only contents were templates skipped the prompt too.
+
+  Both new tests were confirmed to fail against the old preview.
+
+- **vta**: Delete a context's did:webvh DIDs off their hosting servers, not just locally
+
+Deleting a context cascaded to its sub-contexts and dropped each DID's local record with webvh_store::delete_did plus its log key. That is not a smaller version of deleting the DID; it is a different outcome. The published log stayed on the hosting server, so the DID kept resolving for everyone except the agent that owned it. Credentials the VTA had issued naming it stayed valid, with the only records that could revoke them destroyed. Live sessions authenticated as it kept working. The operator was told the context was deleted, and nothing in the result distinguished the two outcomes.
+
+  Every DID in the subtree now goes through delete_did_webvh_with — the same path pnm did-mgmt dids delete takes — so the host copy is removed, credentials revoked, sessions ended, and the full key-fragment range cleaned up. purge_context_resources no longer deletes DIDs at all: one path, not two, and the weaker one is gone.
+
+  delete_context takes a ContextDidCleanup; None means the caller cannot reach a hosting server, and a context holding DIDs is then refused rather than having its records dropped behind their hosts' backs. DeleteDidOptions::contexts_being_deleted narrows the "a context acts as this DID" blocker to the contexts going away, so a DID some other context acts as is still refused. Blockers are collected across the whole subtree and refuse before anything is destroyed, rather than deleting three contexts' DIDs and refusing on the fourth.
+
+  Ordering is remote-first (VTI R2.1): a local record removed before its host copy is the one state from which the host copy can never be removed.
+
+  deleting_a_context_deletes_its_subtree_dids_on_the_hosting_server holds it, and was confirmed to fail against the old behaviour — webvh_host_deletes() is the only witness that separates the two outcomes, which is why an assertion on the local record let this survive.
+
+- **vta**: Carry a holder grant through an admin rollover instead of deleting it ([#1573](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1573))
+
+Onboarding a client tells the operator to grant `--admin-holder` on the
+  ephemeral setup key. Provisioning then rolled that key over to a
+  long-term admin DID, wrote the successor's ACL row from
+  `CreateAclParams::default()`, and deleted the ephemeral's row in the same
+  call. An empty capability list means "whatever the role implies", and
+  `persona-holder` is implied by no role — that is the whole point of
+  `ADDITIVE_CAPABILITIES` — so the grant the operator had just been told to
+  make was destroyed by the operation meant to hand it over.
+
+  Nothing said so. Everything context-scoped kept working, and the loss
+  surfaced much later, on a different screen, as a refusal to read the
+  holder's own attribute pool: "an administrator scoped to a context and
+  holding neither is refused here exactly as an application would be." True,
+  and no help at all in working out that a capability had gone missing at
+  install time. There was no audit trace either, because nothing had decided
+  to drop it.
+
+  `retire_ephemeral_after_rollover` now carries the ephemeral's additive
+  capabilities onto its successor before deleting the row. Both provisioning
+  paths — `provision_integration` and `provision_admin_rotation` — already
+  go through it.
+
+  This is not a scoped admin conferring holder authority, and the guard that
+  stops that (`a_scoped_admin_must_not_confer_holder_authority`) is
+  untouched. That guard is about an operator *minting* authority over the
+  holder's identity. Here the authority already exists, on a DID the same
+  operator controls, and is being retired in this same call: the grant moves
+  rather than multiplies, and the number of DIDs holding it does not grow.
+  The self-service rotation that audits under the same `acl.swap` event
+  already carries the whole capability list across (`swap_acl`); this path
+  was the one that did not.
+
+  Only additive capabilities are carried. A narrowing list is re-derivable
+  from the role and is not lost by omission, and copying one would quietly
+  reduce what existing deployments' successors can do — the same class of
+  silent change, in the other direction.
+
+  The move is audited as `acl.capabilities.carried` rather than folded into
+  the `acl.swap` that follows: a capability moving between DIDs is the part
+  a reviewer asks about, and it must be answerable without inferring it from
+  two rows that no longer both exist.
+
+- **rate-limit**: Key the per-IP limiter on trusted-proxy CIDRs, not a global XFF flag ([#1562](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1562))
+
+* fix(rate-limit)!: key the per-IP limiter on trusted-proxy CIDRs, not a global XFF flag
+
+  Replaces the boolean `trust_xff` flag with `trust_xff_cidrs: Vec<CIDR>` (VTA + VTC). The per-IP rate limiter now reads `X-Forwarded-For` only when the request's peer address falls inside an explicit trusted-proxy CIDR allowlist, keying on the rightmost entry.
+
+  Fixes two issues with the old flag: an untrusted peer could forge a leading XFF entry to evade its own limit, and every request behind a trusted proxy shared one bucket — one client's burst could 429 unrelated clients.
+
+  Breaking config change: replace `trust_xff = true/false` with `trust_xff_cidrs = ["<cidr>", ...]`.
+
+
+
 ## [0.34.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.34.0...vta-service-v0.34.1) — 2026-09-18
 
 

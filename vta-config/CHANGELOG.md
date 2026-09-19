@@ -2,6 +2,23 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.5.3...vta-config-v0.6.0) — 2026-09-19
+
+
+### Fixed
+
+- **rate-limit**: Key the per-IP limiter on trusted-proxy CIDRs, not a global XFF flag ([#1562](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1562))
+
+* fix(rate-limit)!: key the per-IP limiter on trusted-proxy CIDRs, not a global XFF flag
+
+  Replaces the boolean `trust_xff` flag with `trust_xff_cidrs: Vec<CIDR>` (VTA + VTC). The per-IP rate limiter now reads `X-Forwarded-For` only when the request's peer address falls inside an explicit trusted-proxy CIDR allowlist, keying on the rightmost entry.
+
+  Fixes two issues with the old flag: an untrusted peer could forge a leading XFF entry to evade its own limit, and every request behind a trusted proxy shared one bucket — one client's burst could 429 unrelated clients.
+
+  Breaking config change: replace `trust_xff = true/false` with `trust_xff_cidrs = ["<cidr>", ...]`.
+
+
+
 ## [0.5.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.5.2...vta-config-v0.5.3) — 2026-09-18
 
 

@@ -2,6 +2,97 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.17.2...vta-cli-common-v0.18.0) — 2026-09-19
+
+
+### Added
+
+- **vta**: Report the subtree and the host copies a context delete could not remove ([#1577](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1577))
+
+Takes trust-tasks 0.21.4, which added the two members the context-delete work
+  needed and had nowhere to put (trustoverip/dtgwg-trust-tasks-tf#513).
+
+  `subContexts` on `vta/contexts/preview-delete/1.0`. The preview already
+  measured the subtree — #1576 made every array the union over it — but could
+  not say which contexts those arrays covered, so both CLIs and the browser
+  console each derived the list from `contexts/list` and matched paths
+  themselves. Three copies of the agent's own cascade rule, none authoritative,
+  in front of a destructive prompt. The agent decides what the cascade reaches;
+  it now says so, and the consumers read it.
+
+  `daemonCleanupErrors` on `vta/contexts/delete/1.0`. A DID whose hosting server
+  would not confirm removing the published log left the deletion reported as a
+  plain success, with the orphan visible only in the agent's own logs — which is
+  the shape of the defect this whole change set started from. It is the
+  subtree-wide form of the `daemonCleanupError` that `webvh/dids/delete/1.0`
+  already reports for one DID, and both CLIs now print it after the deletion
+  rather than letting a partial success read as a complete one.
+
+
+
+### Fixed
+
+- **vta**: Preview the whole subtree a context delete destroys ([#1576](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1576))
+
+`preview_delete_context` collected the named context and nothing else, while
+  `delete_context` cascades the whole subtree. Two functions answering
+  different questions about the same act, and the preview's was the wrong one.
+
+  A context whose own keyspaces were empty over children holding keys, DIDs
+  and grants previewed as holding nothing. Every consumer decides from that
+  preview whether the deletion needs `force`, so every consumer decided from
+  the wrong set: send `force: false` and the agent refuses with nothing on
+  screen explaining why, or — when the parent happens to hold one key — send
+  `force: true` and destroy an entire unlisted subtree under a confirmation
+  listing one key.
+
+  `collect_subtree_resources` answers for the delete set, and is not a loop
+  over the per-context collector. The difference is the ACL classification.
+  The per-context question is "does this entry hold *only* this context?",
+  which for a subtree gets it backwards: an entry scoped to both `acme` and
+  `acme/eng` looks like it holds another context, so a loop reports it twice
+  as merely narrowed — when deleting `acme` takes both scopes and the entry
+  goes entirely. Asked once against the whole set it comes out as `removed`,
+  which is also where the deletion's deepest-first cascade converges. Telling
+  an operator that a subject keeps authority it is about to lose completely is
+  the one error this preview must not make.
+
+  Both CLI front-ends prompted off that preview and passed `force = true` to
+  the deletion regardless, so `vta context delete acme` on a parent that held
+  nothing itself took the subtree with no prompt at all. They now name the
+  sub-contexts — derived locally, since the task has no member for them yet —
+  and count them, and DID templates, toward "does this destroy anything".
+  The renderer never printed `didTemplates` and never counted them, so a
+  context whose only contents were templates skipped the prompt too.
+
+  Both new tests were confirmed to fail against the old preview.
+
+- **acl**: Pnm acl always says which capabilities an entry holds ([#1574](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1574))
+
+An ACL entry with no capabilities granted by name printed no
+  `Capabilities:` line at all. An operator reading `pnm acl get` to find
+  out whether a DID holds `persona-holder` got silence, which reads as
+  "this tool does not show capabilities" rather than "this entry has
+  none" — a different answer to the question being asked.
+
+  That matters for `persona-holder` specifically. It is additive: no role
+  derives it, so it is held only where an operator granted it by name, and
+  its absence is a fact about the entry rather than a gap in the output.
+  Checking for it was the one case the display could not serve.
+
+  Empty now renders as what it means, naming the role that still applies
+  so "none granted by name" is not misread as "this DID can do nothing".
+  `acl create` echoes the same way, so a `--capabilities` the server
+  declined is visible at the point of creation rather than later at the
+  gate it was meant to open.
+
+  The names are echoed as stored rather than decoded into `Capability`
+  and re-rendered. That type is `#[non_exhaustive]` so a newer VTA can
+  store a name this build has never heard of, and dropping it would hide a
+  grant from the very output somebody is reading to look for grants.
+
+
+
 ## [0.17.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.17.1...vta-cli-common-v0.17.2) — 2026-09-18
 
 
