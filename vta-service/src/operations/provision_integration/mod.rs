@@ -61,9 +61,9 @@ use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use chrono::Duration;
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::acl::{Role, delete_acl_entry, get_acl_entry};
+use crate::acl::{Capability, Role, delete_acl_entry, get_acl_entry, store_acl_entry};
 use crate::audit::{self, audit};
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
@@ -985,9 +985,10 @@ async fn retire_ephemeral_after_rollover(
     if admin_did == client_did {
         return Ok(());
     }
-    if get_acl_entry(&state.acl_ks, client_did).await?.is_none() {
+    let Some(ephemeral) = get_acl_entry(&state.acl_ks, client_did).await? else {
         return Ok(());
-    }
+    };
+    carry_additive_capabilities(state, &ephemeral, admin_did, context).await?;
     delete_acl_entry(&state.acl_ks, client_did).await?;
     info!(
         from = %client_did,
@@ -1005,6 +1006,113 @@ async fn retire_ephemeral_after_rollover(
         &state.audit,
         "acl.swap",
         client_did,
+        Some(admin_did),
+        "success",
+        Some("provision-integration"),
+        Some(context),
+    )
+    .await;
+    Ok(())
+}
+
+/// Which of the ephemeral's capabilities the successor is missing and cannot
+/// re-derive.
+///
+/// The whole decision, kept separate from the store I/O around it because this
+/// is the part that regressed: the successor's row is written with an empty
+/// capability list, which means "whatever the role implies" — and the additive
+/// ones are implied by no role at all.
+fn additive_to_carry(ephemeral: &[Capability], successor: &[Capability]) -> Vec<Capability> {
+    ephemeral
+        .iter()
+        .copied()
+        .filter(|cap| vti_common::acl::is_additive(*cap))
+        .filter(|cap| !successor.contains(cap))
+        .collect()
+}
+
+/// Move the ephemeral's **additive** capabilities onto its successor.
+///
+/// A rollover is a hand-off: the same authority, on a new DID, with the old row
+/// deleted in the same breath — which is why it audits as `acl.swap`. The
+/// self-service rotation that shares that event name already carries the whole
+/// capability list across ([`super::acl::swap_acl`]). This path did not, and
+/// built the successor's row from `CreateAclParams::default()` instead.
+///
+/// For most capabilities that made no difference, because an empty list means
+/// "whatever the role implies" and the successor gets the same `Role::Admin`.
+/// It is not true of the additive ones: [`vti_common::acl::ADDITIVE_CAPABILITIES`]
+/// exists precisely because **no role derives them**, so an empty list drops
+/// them and nothing re-derives them afterwards.
+///
+/// The consequence was silent and permanent. An operator onboarding a client is
+/// told to grant `--admin-holder` on the ephemeral; provisioning then wrote a
+/// successor without `persona-holder` and deleted the row that had it. Everything
+/// context-scoped kept working, so the loss surfaced much later as a refusal to
+/// read the holder's own attributes — with nothing in the audit trail saying a
+/// capability had been dropped, because nothing had decided to drop it.
+///
+/// # Why this is not a scoped admin conferring holder authority
+///
+/// `create_acl` refuses [`Capability::PersonaHolder`] from a context-scoped
+/// admin, and must keep doing so: that guard stops a scoped administrator
+/// *minting* authority over the holder's identity. This is not minting. The
+/// authority already exists, on a DID the same operator controls, and it is
+/// being retired in this same call — the grant moves rather than multiplies,
+/// and the total set of DIDs holding it does not grow.
+///
+/// Only additive capabilities are carried. A *narrowing* list is re-derivable
+/// from the role and is not lost by omission, and copying one would quietly
+/// reduce what existing deployments' successors can do — the same class of
+/// silent change, in the other direction.
+async fn carry_additive_capabilities(
+    state: &ProvisionIntegrationDeps,
+    ephemeral: &vti_common::acl::AclEntry,
+    admin_did: &str,
+    context: &str,
+) -> Result<(), AppError> {
+    if !ephemeral
+        .capabilities
+        .iter()
+        .any(|cap| vti_common::acl::is_additive(*cap))
+    {
+        return Ok(());
+    }
+    // The successor was written a moment ago by `create_acl`; a rollover whose
+    // successor is missing is a bug elsewhere, not something to paper over.
+    let Some(mut successor) = get_acl_entry(&state.acl_ks, admin_did).await? else {
+        warn!(
+            admin_did = %admin_did,
+            "rollover successor has no ACL row — additive capabilities not carried"
+        );
+        return Ok(());
+    };
+    let added = additive_to_carry(&ephemeral.capabilities, &successor.capabilities);
+    if added.is_empty() {
+        return Ok(());
+    }
+    successor.capabilities.extend(added.iter().copied());
+    store_acl_entry(&state.acl_ks, &successor).await?;
+    info!(
+        from = %ephemeral.did,
+        to = %admin_did,
+        context = %context,
+        carried = ?added,
+        "carried additive capabilities to the rollover successor"
+    );
+    // Audited under its own name rather than folded into the `acl.swap` below:
+    // a capability moving is the part a reviewer asks about, and it must be
+    // answerable without inferring it from two rows that no longer both exist.
+    audit!(
+        "acl.capabilities.carried",
+        actor = &ephemeral.did,
+        resource = admin_did,
+        outcome = "success"
+    );
+    audit::record_best_effort(
+        &state.audit,
+        "acl.capabilities.carried",
+        &ephemeral.did,
         Some(admin_did),
         "success",
         Some("provision-integration"),
@@ -1323,6 +1431,55 @@ mod tests {
     use super::webvh::{resolve_webvh_server, take_webvh_path};
     use super::*;
     use vta_sdk::provision_integration::{BootstrapAsk, DidTemplateRef, TemplateBootstrapAsk};
+
+    // ── the rollover carries what a role cannot re-derive ────────────────
+
+    /// The regression this exists for. An operator onboarding a client is told
+    /// to grant `--admin-holder` on the ephemeral; the rollover then wrote the
+    /// successor's row from defaults — an empty capability list, meaning
+    /// "whatever the role implies" — and deleted the row that had the grant.
+    /// `persona-holder` is implied by no role, so it was simply gone, and the
+    /// loss surfaced much later as a refusal to read the holder's own
+    /// attributes.
+    #[test]
+    fn an_additive_grant_survives_the_rollover() {
+        assert_eq!(
+            additive_to_carry(&[Capability::PersonaHolder], &[]),
+            vec![Capability::PersonaHolder]
+        );
+    }
+
+    /// Only the additive ones. A narrowing list is re-derivable from the role
+    /// and is not lost by omission; copying one would quietly reduce what
+    /// existing deployments' successors can do — the same silent change, in the
+    /// other direction.
+    #[test]
+    fn a_narrowing_capability_is_left_where_it_is() {
+        let carried = additive_to_carry(&[Capability::VaultRead, Capability::PersonaHolder], &[]);
+        assert_eq!(carried, vec![Capability::PersonaHolder]);
+        assert!(
+            !carried.contains(&Capability::VaultRead),
+            "the role already implies it"
+        );
+    }
+
+    /// Re-running provisioning must not stack duplicates onto a successor that
+    /// already carries the grant.
+    #[test]
+    fn a_grant_the_successor_already_has_is_not_carried_twice() {
+        assert!(
+            additive_to_carry(&[Capability::PersonaHolder], &[Capability::PersonaHolder])
+                .is_empty()
+        );
+    }
+
+    /// An ephemeral with nothing additive leaves the successor exactly as
+    /// `create_acl` wrote it.
+    #[test]
+    fn nothing_is_carried_when_there_was_nothing_additive() {
+        assert!(additive_to_carry(&[], &[]).is_empty());
+        assert!(additive_to_carry(&[Capability::VaultRead], &[]).is_empty());
+    }
 
     fn sample_ask(template_name: &str, with_url: bool) -> BootstrapAsk {
         let mut vars = BTreeMap::new();
