@@ -261,12 +261,48 @@ pub async fn preview_delete_context(
     Ok(preview)
 }
 
+/// What a context deletion needs in order to take the `did:webvh` DIDs in its
+/// subtree with it **properly** — off the hosting server, not merely out of
+/// the local keyspace.
+///
+/// `None` is not "skip the DIDs". It means this caller cannot delete one, and
+/// [`delete_context`] refuses rather than dropping the local records of DIDs
+/// that would carry on resolving from their host forever after — the same
+/// stance, for the same reason, that
+/// [`WebvhDeps::delete_cascade`](crate::operations::did_webvh::WebvhDeps::delete_cascade)
+/// takes on a DID deleted on its own.
+#[cfg(feature = "webvh")]
+pub struct ContextDidCleanup<'a> {
+    pub deps: &'a crate::operations::did_webvh::WebvhDeps<'a>,
+    /// This VTA's DID, which authenticates the delete to the hosting daemon.
+    /// Absent, the host copy cannot be removed and the deletion says so.
+    pub vta_did: Option<&'a str>,
+}
+
+/// Delete a context and, with `force`, everything below it.
+///
+/// ## Why the DIDs do not go through the local store
+///
+/// Every `did:webvh` DID in the subtree is deleted through
+/// [`delete_did_webvh_with`](crate::operations::did_webvh::delete_did_webvh_with),
+/// the same path `pnm did-mgmt dids delete` takes, rather than by dropping its
+/// record here.
+///
+/// Dropping the record is what this function used to do, and it is not a
+/// smaller version of deleting the DID — it is a different outcome. The log
+/// stays published on the hosting server, so the DID keeps resolving for
+/// everyone except the agent that owned it; the credentials the VTA issued
+/// naming it stay valid with the only records that could revoke them
+/// destroyed; and live sessions authenticated as it keep working. Deleting a
+/// context is supposed to retire its identities, and a caller has no way to
+/// tell from the result that it did not.
 pub async fn delete_context(
     ks: &super::Keyspaces<'_>,
     auth: &AuthClaims,
     id: &str,
     force: bool,
     channel: &str,
+    #[cfg(feature = "webvh")] webvh: Option<&ContextDidCleanup<'_>>,
 ) -> Result<DeleteContextResultBody, AppError> {
     let contexts_ks = ks.contexts;
     let keys_ks = ks.keys;
@@ -322,8 +358,89 @@ pub async fn delete_context(
     let mut to_delete = descendants;
     to_delete.push(id.to_string());
 
-    let (mut keys, mut dids, mut acl_removed, mut acl_updated, mut templates) = (0, 0, 0, 0, 0);
+    // ---- Refuse before destroying anything --------------------------------
+    //
+    // Every DID in the subtree is checked for blockers *first*, across the
+    // whole subtree, and a single blocker refuses the whole deletion. Checking
+    // per-DID inside the loop would delete the DIDs of the first three
+    // contexts and then refuse on the fourth, which is the half-deletion the
+    // task spec forbids in as many words ("either the context and its contents
+    // go, or nothing does") and the state no operator can reason about.
+    #[cfg(feature = "webvh")]
+    let subtree_dids = subtree_webvh_dids(webvh_ks, &to_delete).await?;
+    #[cfg(feature = "webvh")]
+    if !subtree_dids.is_empty() {
+        let cleanup = webvh.ok_or_else(|| {
+            AppError::Internal(format!(
+                "this code path cannot delete a context holding did:webvh DIDs: it has no way \
+                 to reach their hosting servers, and dropping the local records would leave \
+                 {} DID(s) resolving from their host with no means left to remove them",
+                subtree_dids.len()
+            ))
+        })?;
+        let options =
+            crate::operations::did_webvh::DeleteDidOptions::within_context_deletion(&to_delete);
+        let mut blockers = Vec::new();
+        for did in &subtree_dids {
+            let plan = crate::operations::did_webvh::plan_did_deletion_with(
+                cleanup.deps,
+                auth,
+                did,
+                cleanup.vta_did,
+                options,
+            )
+            .await?;
+            blockers.extend(plan.blockers.into_iter().map(|b| format!("{did}: {b}")));
+        }
+        if !blockers.is_empty() {
+            return Err(AppError::Conflict(format!(
+                "context `{id}` cannot be deleted — {} DID blocker{} to resolve first:\n{}",
+                blockers.len(),
+                if blockers.len() == 1 { "" } else { "s" },
+                blockers
+                    .iter()
+                    .map(|b| format!("  - {b}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )));
+        }
+    }
+
+    let (mut keys, mut acl_removed, mut acl_updated, mut templates) = (0, 0, 0, 0);
+    #[allow(unused_mut)]
+    let mut dids = 0usize;
+    // Host copies the daemon would not remove. Deletion carries on — the
+    // alternative is a subtree half gone — but the orphans are named rather
+    // than counted, because an operator cleaning up out-of-band needs the
+    // identifiers and a count tells them only that they have a problem.
+    #[allow(unused_mut)]
+    let mut orphans: Vec<String> = Vec::new();
+
     for ctx_id in &to_delete {
+        // DIDs first, and remotely first within that: a local record removed
+        // before its host copy is the one state from which the host copy can
+        // never be removed at all (VTI R2.1).
+        #[cfg(feature = "webvh")]
+        if let Some(cleanup) = webvh {
+            let options =
+                crate::operations::did_webvh::DeleteDidOptions::within_context_deletion(&to_delete);
+            for did in context_webvh_dids(webvh_ks, ctx_id).await? {
+                let result = crate::operations::did_webvh::delete_did_webvh_with(
+                    cleanup.deps,
+                    auth,
+                    &did,
+                    cleanup.vta_did,
+                    channel,
+                    options,
+                )
+                .await?;
+                if let Some(reason) = result.daemon_cleanup_error {
+                    orphans.push(format!("{did}: {reason}"));
+                }
+                dids += 1;
+            }
+        }
+
         let purged = purge_context_resources(
             keys_ks,
             acl_ks,
@@ -334,11 +451,25 @@ pub async fn delete_context(
         )
         .await?;
         keys += purged.keys.len();
-        dids += purged.webvh_dids.len();
         acl_removed += purged.acl_entries_removed.len();
         acl_updated += purged.acl_entries_updated.len();
         templates += purged.did_templates.len();
         delete_context_store(contexts_ks, ctx_id).await?;
+    }
+
+    // Said, never swallowed — the same partial success
+    // `delete_did_webvh`'s `daemonCleanupError` reports for a single DID.
+    // `vta/contexts/delete/1.0` has nowhere on its response to carry this yet,
+    // so for now it is an error-level event rather than a wire member.
+    if !orphans.is_empty() {
+        tracing::error!(
+            channel,
+            id = %id,
+            orphans = orphans.len(),
+            detail = %orphans.join("; "),
+            "context deleted, but host copies of some DIDs were not removed and may still \
+             resolve — clean them up out-of-band"
+        );
     }
 
     info!(
@@ -356,6 +487,44 @@ pub async fn delete_context(
         id: id.to_string(),
         deleted: true,
     })
+}
+
+/// The `did:webvh` DIDs recorded against `context_id`.
+#[cfg(feature = "webvh")]
+async fn context_webvh_dids(
+    webvh_ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<Vec<String>, AppError> {
+    use vta_sdk::webvh::WebvhDidRecord;
+    let mut dids = Vec::new();
+    for (_key, value) in webvh_ks.prefix_iter_raw("did:").await? {
+        let record: WebvhDidRecord = serde_json::from_slice(&value)?;
+        if record.context_id == context_id {
+            dids.push(record.did);
+        }
+    }
+    Ok(dids)
+}
+
+/// The `did:webvh` DIDs recorded against any of `context_ids`, in one pass.
+///
+/// One scan rather than one per context: the pre-flight runs over the whole
+/// subtree, and a per-context scan makes a deep tree quadratic in the size of
+/// the DID keyspace for no gain.
+#[cfg(feature = "webvh")]
+async fn subtree_webvh_dids(
+    webvh_ks: &KeyspaceHandle,
+    context_ids: &[String],
+) -> Result<Vec<String>, AppError> {
+    use vta_sdk::webvh::WebvhDidRecord;
+    let mut dids = Vec::new();
+    for (_key, value) in webvh_ks.prefix_iter_raw("did:").await? {
+        let record: WebvhDidRecord = serde_json::from_slice(&value)?;
+        if context_ids.contains(&record.context_id) {
+            dids.push(record.did);
+        }
+    }
+    Ok(dids)
 }
 
 /// Strict descendant contexts of `id` (the subtree below it, excluding `id`),
@@ -396,12 +565,11 @@ async fn purge_context_resources(
     for key_id in &preview.keys {
         keys_ks.remove(crate::keys::store_key(key_id)).await?;
     }
-    #[cfg(feature = "webvh")]
-    for did in &preview.webvh_dids {
-        crate::webvh_store::delete_did(webvh_ks, did).await?;
-        // Best-effort: serverless DIDs have no log entry.
-        let _ = webvh_ks.remove(format!("log:{did}")).await;
-    }
+    // No DID deletion here. The subtree's `did:webvh` DIDs are deleted by
+    // `delete_context` through the full webvh path *before* this runs, so by
+    // the time a context is purged it has none left. Deleting the record here
+    // as well would be a second, weaker implementation of the same step — the
+    // one that left host copies published.
     for did in &preview.acl_entries_removed {
         crate::acl::delete_acl_entry(acl_ks, did).await?;
     }
@@ -752,7 +920,7 @@ mod tests {
         seed(&ks.contexts, "acme", None).await;
         seed(&ks.contexts, "acme/eng", Some("acme")).await;
 
-        let err = delete_context(&ks.as_ks(), &super_admin(), "acme", false, "t")
+        let err = delete_context(&ks.as_ks(), &super_admin(), "acme", false, "t", None)
             .await
             .unwrap_err();
         assert!(
@@ -777,7 +945,7 @@ mod tests {
         seed(&ks.contexts, "acme/eng/team", Some("acme/eng")).await;
         seed(&ks.contexts, "acme/ops", Some("acme")).await;
 
-        delete_context(&ks.as_ks(), &super_admin(), "acme", true, "t")
+        delete_context(&ks.as_ks(), &super_admin(), "acme", true, "t", None)
             .await
             .expect("cascade delete");
 
@@ -796,7 +964,7 @@ mod tests {
         seed(&ks.contexts, "acme/eng", Some("acme")).await;
 
         // An admin scoped to `acme` deletes the leaf sub-context.
-        delete_context(&ks.as_ks(), &admin_of("acme"), "acme/eng", false, "t")
+        delete_context(&ks.as_ks(), &admin_of("acme"), "acme/eng", false, "t", None)
             .await
             .expect("parent-admin deletes sub-context");
         assert!(
@@ -814,7 +982,7 @@ mod tests {
         seed(&ks.contexts, "acme", None).await;
         seed(&ks.contexts, "other", None).await;
 
-        let err = delete_context(&ks.as_ks(), &admin_of("acme"), "other", false, "t")
+        let err = delete_context(&ks.as_ks(), &admin_of("acme"), "other", false, "t", None)
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");

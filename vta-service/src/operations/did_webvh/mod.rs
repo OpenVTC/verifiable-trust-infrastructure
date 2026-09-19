@@ -1825,20 +1825,46 @@ pub async fn create_did_webvh(
 /// the default refuses: a DID whose hosting server is no longer registered here.
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
-pub struct DeleteDidOptions {
+pub struct DeleteDidOptions<'a> {
     /// Delete the local record even though its hosting server is no longer
     /// registered, leaving the published log on that host. Refused for a DID
     /// whose server *is* registered (the host copy can be deleted there) and
     /// for a serverless DID (there is no host copy).
     pub local_only: bool,
+    /// Contexts going away in the same operation as this DID.
+    ///
+    /// A context that *acts as* a DID normally blocks its deletion — the
+    /// refusal exists so a context is never left pointing at an identifier
+    /// that no longer resolves. During a context-subtree cascade that
+    /// reasoning inverts: the context holding the DID is being deleted too, so
+    /// there is nothing left to strand, and honouring the blocker would make
+    /// the cascade impossible for exactly the contexts that have an identity.
+    ///
+    /// Narrow on purpose. It names the contexts in the delete set rather than
+    /// switching the check off, so a DID that some *other* context still acts
+    /// as is refused during a cascade exactly as it is anywhere else.
+    pub contexts_being_deleted: &'a [String],
 }
 
-impl DeleteDidOptions {
+impl<'a> DeleteDidOptions<'a> {
     /// Opt in to deleting only the local record of a DID whose hosting server
     /// is no longer registered. See [`DeleteDidOptions::local_only`].
     #[must_use]
     pub fn local_only() -> Self {
-        Self { local_only: true }
+        Self {
+            local_only: true,
+            ..Self::default()
+        }
+    }
+
+    /// Delete this DID as part of a cascade removing `contexts`. See
+    /// [`DeleteDidOptions::contexts_being_deleted`].
+    #[must_use]
+    pub fn within_context_deletion(contexts: &'a [String]) -> Self {
+        Self {
+            contexts_being_deleted: contexts,
+            ..Self::default()
+        }
     }
 }
 
@@ -1871,7 +1897,7 @@ pub async fn delete_did_webvh_with(
     did: &str,
     vta_did: Option<&str>,
     channel: &str,
-    options: DeleteDidOptions,
+    options: DeleteDidOptions<'_>,
 ) -> Result<DeleteDidWebvhResultBody, AppError> {
     auth.require_admin()?;
 
@@ -2108,7 +2134,7 @@ pub async fn plan_did_deletion_with(
     auth: &AuthClaims,
     did: &str,
     vta_did: Option<&str>,
-    options: DeleteDidOptions,
+    options: DeleteDidOptions<'_>,
 ) -> Result<DidDeletionPlan, AppError> {
     let blockers = delete_blockers(deps, auth, did, vta_did, options).await?;
 
@@ -2141,7 +2167,7 @@ async fn delete_blockers(
     auth: &AuthClaims,
     did: &str,
     vta_did_value: Option<&str>,
-    options: DeleteDidOptions,
+    options: DeleteDidOptions<'_>,
 ) -> Result<Vec<String>, AppError> {
     let mut blockers = Vec::new();
 
@@ -2184,9 +2210,10 @@ async fn delete_blockers(
         ));
     }
 
-    // A context whose identity this DID is.
+    // A context whose identity this DID is — unless that context is going away
+    // in the same operation, in which case there is nothing left to strand.
     for ctx in crate::contexts::list_contexts(deps.contexts_ks).await? {
-        if ctx.did.as_deref() == Some(did) {
+        if ctx.did.as_deref() == Some(did) && !options.contexts_being_deleted.contains(&ctx.id) {
             let id = &ctx.id;
             blockers.push(format!(
                 "context `{id}` acts as this DID — reassign it first:                  `pnm contexts update {id} --did <new-did>`"
