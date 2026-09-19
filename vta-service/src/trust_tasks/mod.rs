@@ -4709,6 +4709,136 @@ mod response_coverage {
         .await;
     }
 
+    /// `vta/contexts/delete:notEmpty` reaches the wire.
+    ///
+    /// The specification requires a conforming consumer to answer this code
+    /// when a context still holds something and `force` is absent. It answered
+    /// the framework's `malformedRequest` instead — which says the request was
+    /// wrong, when it was well-formed, understood, and refused for what the
+    /// context holds. A consumer could separate the two only by matching on
+    /// English.
+    ///
+    /// Asserted on the emitted document, not on the operations layer: the
+    /// refusal being typed internally is not evidence that anything puts the
+    /// declared code on the wire.
+    #[tokio::test]
+    async fn a_delete_without_force_answers_not_empty_on_the_wire() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-notempty").await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_CREATE_1_0,
+            json!({ "id": "sub", "name": "sub", "parent": "cov-notempty" }),
+        )
+        .await;
+
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(
+            t::TASK_CONTEXTS_DELETE_1_0,
+            &vta_did,
+            json!({ "id": "cov-notempty" }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+
+        assert_eq!(
+            doc["payload"]["code"], "vta/contexts/delete:notEmpty",
+            "the specification names this code for this refusal: {doc}"
+        );
+        // The counts, so a consumer decides without parsing the message.
+        assert_eq!(doc["payload"]["details"]["subContexts"], 1, "{doc}");
+
+        // And the refusal left the subtree alone.
+        let still = ok(
+            &state,
+            t::TASK_CONTEXTS_GET_1_0,
+            json!({ "id": "cov-notempty/sub" }),
+        )
+        .await;
+        assert_eq!(still["id"], "cov-notempty/sub");
+    }
+
+    /// Every id-taking task in the contexts family answers its own
+    /// `<task>:notFound`, and says nothing about whether the id exists.
+    ///
+    /// The family declares eight extended codes and emitted none of them:
+    /// an unreachable id rode out as the framework's `taskFailed` (or, for an
+    /// id outside the caller's scope, `permissionDenied` — which is the leak,
+    /// not merely the wrong code). `vta/contexts/get` states the requirement
+    /// plainly: "deliberately does not distinguish 'does not exist' from
+    /// 'exists but not yours'".
+    ///
+    /// Asserted per task, because the code is per task: one handler emitting
+    /// the right slug says nothing about the other four.
+    #[tokio::test]
+    async fn every_contexts_task_answers_its_own_not_found() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+
+        // A real context the caller is not scoped to, and an id that does not
+        // exist. Both must come back identical.
+        a_context(&state, "cov-real").await;
+
+        let scoped = crate::test_support::admin_claims_for_context("cov-other");
+
+        for (uri, slug, payload) in [
+            (
+                t::TASK_CONTEXTS_GET_1_0,
+                "vta/contexts/get",
+                json!({ "id": "PLACEHOLDER" }),
+            ),
+            (
+                t::TASK_CONTEXTS_UPDATE_DID_1_0,
+                "vta/contexts/update-did",
+                json!({ "id": "PLACEHOLDER", "did": "did:key:z6MkTest" }),
+            ),
+            (
+                t::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+                "vta/contexts/preview-delete",
+                json!({ "id": "PLACEHOLDER" }),
+            ),
+            (
+                t::TASK_CONTEXTS_DELETE_1_0,
+                "vta/contexts/delete",
+                json!({ "id": "PLACEHOLDER", "force": true }),
+            ),
+        ] {
+            let mut codes = Vec::new();
+            for id in ["cov-real", "cov-ghost"] {
+                let mut p = payload.clone();
+                p["id"] = json!(id);
+                let body = signed_body(uri, &vta_did, p);
+                let outcome = super::dispatch_trust_task_core(
+                    &state,
+                    &scoped,
+                    &body,
+                    transport::TransportConfidentiality::HopByHop,
+                )
+                .await;
+                let doc: Value =
+                    serde_json::from_slice(&outcome.body).expect("a response document");
+                assert_eq!(
+                    doc["payload"]["code"],
+                    json!(format!("{slug}:notFound")),
+                    "{uri} must answer its own notFound for `{id}`: {doc}"
+                );
+                codes.push(doc["payload"]["message"].clone());
+            }
+            // The real id and the absent one are answered identically — the
+            // property the code exists for, not just the code itself.
+            assert_eq!(
+                codes[0], codes[1],
+                "{uri} distinguishes a real id from an absent one, which is the leak"
+            );
+        }
+    }
+
     /// The app-state key/value family, single and batch.
     #[tokio::test]
     async fn app_state_lifecycle() {

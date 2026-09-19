@@ -61,7 +61,7 @@ pub async fn create_context(
     description: Option<String>,
     parent: Option<String>,
     channel: &str,
-) -> Result<CreateContextResultBody, AppError> {
+) -> Result<CreateContextResultBody, ContextError> {
     // The leaf id is always a single slug segment.
     crate::contexts::validate_slug(id)?;
 
@@ -80,10 +80,18 @@ pub async fn create_context(
             // Sub-context: the parent must exist and the caller must be admin of
             // it. `require_context` is the segment-aware ancestry gate; the route
             // already required the admin role.
-            let parent_ctx = get_context(contexts_ks, parent_id).await?.ok_or_else(|| {
-                AppError::NotFound(format!("parent context not found: {parent_id}"))
-            })?;
-            auth.require_context(parent_id)?;
+            // Scope first, then existence, and one answer for both — the
+            // specification requires the same treatment `vta/contexts/get`
+            // sets out, and names it `create:parentNotFound`. This used to
+            // look the parent up *before* checking scope and report the two
+            // separately, so an unauthorised caller could learn which parent
+            // ids are real by reading which refusal came back.
+            if auth.require_context(parent_id).is_err() {
+                return Err(ContextError::ParentUnreachable);
+            }
+            let parent_ctx = get_context(contexts_ks, parent_id)
+                .await?
+                .ok_or(ContextError::ParentUnreachable)?;
             // Full path = `<parent>/<id>`; validates segment + total depth.
             let full = vti_common::context_path::child_path(parent_id, id)?;
             (
@@ -96,9 +104,9 @@ pub async fn create_context(
     };
 
     if get_context(contexts_ks, &full_id).await?.is_some() {
-        return Err(AppError::Conflict(format!(
+        return Err(ContextError::Other(AppError::Conflict(format!(
             "context already exists: {full_id}"
-        )));
+        ))));
     }
 
     let (index, base_path) =
@@ -123,10 +131,10 @@ pub async fn create_context(
     // The loser's counter slot stays as a gap — safe; record overwrite
     // would not be (it re-points the context's BIP-32 base path).
     if !crate::contexts::store_new_context(contexts_ks, &record).await? {
-        return Err(AppError::Conflict(format!(
+        return Err(ContextError::Other(AppError::Conflict(format!(
             "context already exists: {}",
             record.id
-        )));
+        ))));
     }
 
     info!(channel, id = %record.id, parent = ?record.parent, index, "context created");
@@ -138,11 +146,8 @@ pub async fn get_context_op(
     auth: &AuthClaims,
     id: &str,
     channel: &str,
-) -> Result<CreateContextResultBody, AppError> {
-    auth.require_context(id)?;
-    let record = get_context(contexts_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
+) -> Result<CreateContextResultBody, ContextError> {
+    let record = reach_context(contexts_ks, auth, id).await?;
     info!(channel, id = %id, "context retrieved");
     Ok(to_result_body(&record))
 }
@@ -168,12 +173,13 @@ pub async fn update_context(
     id: &str,
     params: UpdateContextParams,
     channel: &str,
-) -> Result<CreateContextResultBody, AppError> {
+) -> Result<CreateContextResultBody, ContextError> {
     auth.require_super_admin()?;
 
-    let mut record = get_context(contexts_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
+    // Super-admin reaches every context, so this only ever resolves the
+    // existence half — but it resolves it to the same answer the rest of the
+    // family gives, which is what `update:notFound` names.
+    let mut record = reach_context(contexts_ks, auth, id).await?;
 
     if let Some(name) = params.name {
         record.name = name;
@@ -203,13 +209,9 @@ pub async fn update_context_did(
     id: &str,
     did: String,
     channel: &str,
-) -> Result<CreateContextResultBody, AppError> {
+) -> Result<CreateContextResultBody, ContextError> {
     auth.require_admin()?;
-    auth.require_context(id)?;
-
-    let mut record = get_context(contexts_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
+    let mut record = reach_context(contexts_ks, auth, id).await?;
 
     record.did = Some(did);
     record.updated_at = Utc::now();
@@ -231,14 +233,10 @@ pub async fn preview_delete_context(
     auth: &AuthClaims,
     id: &str,
     channel: &str,
-) -> Result<DeleteContextPreviewResultBody, AppError> {
+) -> Result<DeleteContextPreviewResultBody, ContextError> {
     // Admin role + access to the context (or an ancestor) — folder authority.
     auth.require_admin()?;
-    auth.require_context(id)?;
-
-    get_context(contexts_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
+    reach_context(contexts_ks, auth, id).await?;
 
     // The preview covers the whole subtree, because the deletion does.
     //
@@ -283,6 +281,174 @@ pub async fn preview_delete_context(
     Ok(preview)
 }
 
+/// What the subtree holds, when that is why a deletion was refused.
+///
+/// Counts rather than lists: the operator who wants the identifiers has
+/// `vta/contexts/preview-delete/1.0`, which returns them, and duplicating that
+/// here would be a second answer to the same question — the divergence this
+/// module spent #1576 removing.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NotEmpty {
+    pub sub_contexts: usize,
+    pub keys: usize,
+    pub webvh_dids: usize,
+    /// ACL entries the deletion would remove outright or narrow.
+    pub acl_entries: usize,
+    pub did_templates: usize,
+}
+
+impl NotEmpty {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sub_contexts == 0
+            && self.keys == 0
+            && self.webvh_dids == 0
+            && self.acl_entries == 0
+            && self.did_templates == 0
+    }
+
+    /// An operator-facing summary naming only what is actually there.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let mut parts = Vec::new();
+        if self.sub_contexts > 0 {
+            parts.push(plural(self.sub_contexts, "sub-context", "sub-contexts"));
+        }
+        if self.keys > 0 {
+            parts.push(plural(self.keys, "key", "keys"));
+        }
+        if self.webvh_dids > 0 {
+            parts.push(plural(self.webvh_dids, "published DID", "published DIDs"));
+        }
+        if self.acl_entries > 0 {
+            parts.push(plural(self.acl_entries, "ACL entry", "ACL entries"));
+        }
+        if self.did_templates > 0 {
+            parts.push(plural(self.did_templates, "DID template", "DID templates"));
+        }
+        match parts.len() {
+            0 => "nothing".to_string(),
+            1 => parts.remove(0),
+            _ => {
+                let last = parts.pop().unwrap_or_default();
+                format!("{} and {last}", parts.join(", "))
+            }
+        }
+    }
+}
+
+/// Why a context operation refused, when the reason is one the family's
+/// specifications name as an error code of their own.
+///
+/// A distinct type, rather than more [`AppError`] variants, because exactly
+/// one caller needs to tell these apart: the Trust-Task handlers, which owe
+/// `<task>:notFound`, `vta/contexts/delete:notEmpty` and
+/// `vta/contexts/create:parentNotFound` on the wire. `AppError` is shared by
+/// the whole workspace and every match on it would have to grow arms for
+/// codes belonging to one family.
+///
+/// Typed rather than matched on `AppError::NotFound`, which was the cheaper
+/// option and is wrong: `delete_context` also drives
+/// `delete_did_webvh_with`, whose own `NotFound` means a DID record is
+/// missing. Mapping every `NotFound` in the handler to `delete:notFound`
+/// would answer "no such context" for a DID that vanished mid-cascade.
+///
+/// `From<AppError>` keeps `?` working inside these functions, and
+/// `From<ContextError>` converts back for the transports that carry a status
+/// rather than a Trust-Task code — so a caller that does not care is
+/// unchanged.
+#[derive(Debug)]
+pub enum ContextError {
+    /// No context with this id is reachable by this caller — **whether or not
+    /// it exists**. The family's `<task>:notFound`.
+    ///
+    /// One variant for both because the specifications require one answer:
+    /// `vta/contexts/get` puts it plainly ("deliberately does not distinguish
+    /// 'does not exist' from 'exists but not yours'"), and `update`,
+    /// `update-did` and `delete` each repeat it as "whether or not it
+    /// exists". Distinguishing them tells an unauthorised caller which ids
+    /// are real.
+    Unreachable,
+    /// The `parent` of a create is unreachable — `create:parentNotFound`. The
+    /// same question as [`Self::Unreachable`] asked about a different id, and
+    /// a separate variant only because the code the specification declares
+    /// for it is named differently.
+    ParentUnreachable,
+    /// Refused because the subtree holds something and `force` was absent —
+    /// `vta/contexts/delete:notEmpty`.
+    NotEmpty(NotEmpty),
+    Other(AppError),
+}
+
+impl From<AppError> for ContextError {
+    fn from(e: AppError) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl From<ContextError> for AppError {
+    fn from(e: ContextError) -> Self {
+        match e {
+            // 404 on both, which is the enumeration-safe status and already
+            // what REST answered for the missing half.
+            ContextError::Unreachable => AppError::NotFound("context not found".into()),
+            ContextError::ParentUnreachable => {
+                AppError::NotFound("parent context not found".into())
+            }
+            // Conflict, not Validation: the request is well-formed and the
+            // refusal is about the state of the context, which is what 409
+            // says and 400 does not.
+            ContextError::NotEmpty(n) => AppError::Conflict(format!(
+                "context holds {}; use force=true to delete the whole subtree, or preview first",
+                n.summary()
+            )),
+            ContextError::Other(e) => e,
+        }
+    }
+}
+
+impl std::fmt::Display for ContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable => write!(f, "context not found"),
+            Self::ParentUnreachable => write!(f, "parent context not found"),
+            Self::NotEmpty(n) => write!(f, "context holds {}", n.summary()),
+            Self::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ContextError {}
+
+/// The context `id`, if this caller can reach it.
+///
+/// The family's single answer to "does this caller get to act on this id",
+/// and the reason it is one function: the check is two steps — scope, then
+/// existence — and performing them in the wrong order, or reporting them
+/// separately, is what tells an unauthorised caller which ids are real. Every
+/// id-taking task in the family had them separate, and `create_context` had
+/// them in the opposite order to everything else.
+///
+/// **Not for `vta/contexts/secrets`.** That task's specification takes the
+/// opposite position deliberately and argues it: entitlement is checked
+/// *before* existence, so "not found" is only ever said to a caller already
+/// entitled to hear it, and the pair leaks nothing. `operations::export`
+/// keeps that order, and `entitlement_is_checked_before_existence` pins it.
+async fn reach_context(
+    contexts_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    id: &str,
+) -> Result<ContextRecord, ContextError> {
+    if auth.require_context(id).is_err() {
+        return Err(ContextError::Unreachable);
+    }
+    get_context(contexts_ks, id)
+        .await?
+        .ok_or(ContextError::Unreachable)
+}
+
 /// What a context deletion needs in order to take the `did:webvh` DIDs in its
 /// subtree with it **properly** — off the hosting server, not merely out of
 /// the local keyspace.
@@ -325,7 +491,7 @@ pub async fn delete_context(
     force: bool,
     channel: &str,
     #[cfg(feature = "webvh")] webvh: Option<&ContextDidCleanup<'_>>,
-) -> Result<DeleteContextResultBody, AppError> {
+) -> Result<DeleteContextResultBody, ContextError> {
     let contexts_ks = ks.contexts;
     let keys_ks = ks.keys;
     let acl_ks = ks.acl;
@@ -335,50 +501,45 @@ pub async fn delete_context(
     // Admin role + access to the context (or an ancestor) — folder authority: a
     // parent-admin may delete a sub-context and its subtree.
     auth.require_admin()?;
-    auth.require_context(id)?;
-
-    get_context(contexts_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
+    reach_context(contexts_ks, auth, id).await?;
 
     // The subtree below `id`, deepest first (so children are removed before
     // parents and ACL re-classification stays correct each step).
     let descendants = list_descendants(contexts_ks, id).await?;
 
-    // Resources directly on `id`.
-    let own = collect_context_resources(
+    // Delete the subtree: each descendant (deepest first), then `id`.
+    let mut to_delete = descendants;
+    to_delete.push(id.to_string());
+
+    // What the deletion would destroy, measured over the whole subtree and
+    // measured once — the same scan the force gate and the refusal message
+    // both read. This used to count the named context's own resources and
+    // separately test "are there descendants", which reached the right
+    // verdict and then described it as "associated resources": true of a
+    // context holding one key and of a subtree holding forty.
+    let contents = collect_subtree_resources(
         keys_ks,
         acl_ks,
         did_templates_ks,
         #[cfg(feature = "webvh")]
         webvh_ks,
-        id,
+        &to_delete,
     )
     .await?;
-    let own_has_resources = !own.keys.is_empty()
-        || !own.webvh_dids.is_empty()
-        || !own.acl_entries_removed.is_empty()
-        || !own.acl_entries_updated.is_empty()
-        || !own.did_templates.is_empty();
+    let holds = NotEmpty {
+        sub_contexts: to_delete.len() - 1,
+        keys: contents.keys.len(),
+        webvh_dids: contents.webvh_dids.len(),
+        acl_entries: contents.acl_entries_removed.len() + contents.acl_entries_updated.len(),
+        did_templates: contents.did_templates.len(),
+    };
 
-    // Refuse a destructive delete (sub-contexts and/or resources) without force.
-    if (own_has_resources || !descendants.is_empty()) && !force {
-        let mut reasons = Vec::new();
-        if !descendants.is_empty() {
-            reasons.push(format!("{} sub-context(s)", descendants.len()));
-        }
-        if own_has_resources {
-            reasons.push("associated resources".to_string());
-        }
-        return Err(AppError::Validation(format!(
-            "context has {}; use force=true to delete the whole subtree, or preview first",
-            reasons.join(" and "),
-        )));
+    // `force` is an explicitness flag, not a privilege: the specification is
+    // explicit that a consumer MUST NOT require a different role for it, and
+    // MUST NOT treat its absence as permission to delete contents anyway.
+    if !holds.is_empty() && !force {
+        return Err(ContextError::NotEmpty(holds));
     }
-
-    // Delete the subtree: each descendant (deepest first), then `id`.
-    let mut to_delete = descendants;
-    to_delete.push(id.to_string());
 
     // ---- Refuse before destroying anything --------------------------------
     //
@@ -415,7 +576,7 @@ pub async fn delete_context(
             blockers.extend(plan.blockers.into_iter().map(|b| format!("{did}: {b}")));
         }
         if !blockers.is_empty() {
-            return Err(AppError::Conflict(format!(
+            return Err(ContextError::Other(AppError::Conflict(format!(
                 "context `{id}` cannot be deleted — {} DID blocker{} to resolve first:\n{}",
                 blockers.len(),
                 if blockers.len() == 1 { "" } else { "s" },
@@ -424,7 +585,7 @@ pub async fn delete_context(
                     .map(|b| format!("  - {b}"))
                     .collect::<Vec<_>>()
                     .join("\n")
-            )));
+            ))));
         }
     }
 
@@ -804,7 +965,10 @@ mod tests {
         let err = create_context(&ks, &admin_of("acme"), "ops", "Ops".into(), None, None, "t")
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+        assert!(
+            matches!(err, ContextError::Other(AppError::Forbidden(_))),
+            "creating a top-level context is a role question, not an id one: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -935,7 +1099,30 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+        // ...and is told the same thing it would be told about a parent that
+        // does not exist. The specification requires that answer in as many
+        // words: "the same answer it gives for a parent that does not exist,
+        // for the reason set out in `vta/contexts/get`". Told apart, the pair
+        // is an oracle for which context ids are real.
+        let absent = create_context(
+            &ks,
+            &admin_of("acme"),
+            "team",
+            "Team".into(),
+            None,
+            Some("ghost".into()),
+            "t",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ContextError::ParentUnreachable), "{err:?}");
+        assert!(
+            matches!(absent, ContextError::ParentUnreachable),
+            "{absent:?}"
+        );
+        // Indistinguishable on the way out, not merely the same variant: a
+        // message naming one of them would hand back what the variant hides.
+        assert_eq!(err.to_string(), absent.to_string());
     }
 
     #[tokio::test]
@@ -952,7 +1139,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+        assert!(matches!(err, ContextError::ParentUnreachable), "{err:?}");
     }
 
     // ── subtree delete (slice 3) ──
@@ -1217,10 +1404,15 @@ mod tests {
         let err = delete_context(&ks.as_ks(), &super_admin(), "acme", false, "t", None)
             .await
             .unwrap_err();
-        assert!(
-            matches!(&err, AppError::Validation(m) if m.contains("sub-context")),
-            "{err:?}"
-        );
+        // The typed refusal, not a string: this is what the Trust-Task handler
+        // reads to emit `vta/contexts/delete:notEmpty`, and asserting on prose
+        // is how the old check managed to pass while the wire carried
+        // `malformedRequest`.
+        let ContextError::NotEmpty(holds) = &err else {
+            panic!("expected a notEmpty refusal, got {err:?}");
+        };
+        assert_eq!(holds.sub_contexts, 1);
+        assert_eq!(holds.summary(), "1 sub-context");
         // Nothing was deleted.
         assert!(get_context(&ks.contexts, "acme").await.unwrap().is_some());
         assert!(
@@ -1229,6 +1421,44 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// The refusal counts the whole subtree, and names what is there.
+    ///
+    /// The old message said "associated resources" — as true of one key as of
+    /// forty, and of a leaf as of a deep tree. An operator deciding whether to
+    /// pass `force` is deciding about the difference.
+    #[tokio::test]
+    async fn the_refusal_counts_the_whole_subtree() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        seed(&ks.contexts, "acme/eng/ci", Some("acme/eng")).await;
+        // A grant two levels down: the named context holds nothing itself.
+        seed_acl(&ks.acl, "did:key:zBuildBot", &["acme/eng/ci"]).await;
+
+        let err = delete_context(&ks.as_ks(), &super_admin(), "acme", false, "t", None)
+            .await
+            .unwrap_err();
+        let ContextError::NotEmpty(holds) = &err else {
+            panic!("expected a notEmpty refusal, got {err:?}");
+        };
+        assert_eq!(holds.sub_contexts, 2);
+        assert_eq!(holds.acl_entries, 1);
+        assert_eq!(holds.summary(), "2 sub-contexts and 1 ACL entry");
+    }
+
+    /// An empty leaf is deletable without `force` — the control, so the
+    /// refusal above is not simply "always refuses".
+    #[tokio::test]
+    async fn an_empty_leaf_needs_no_force() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+
+        delete_context(&ks.as_ks(), &super_admin(), "acme", false, "t", None)
+            .await
+            .expect("an empty leaf deletes without force");
+        assert!(get_context(&ks.contexts, "acme").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1279,7 +1509,19 @@ mod tests {
         let err = delete_context(&ks.as_ks(), &admin_of("acme"), "other", false, "t", None)
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+        // `notFound`, not `forbidden`: `vta/contexts/delete` requires this
+        // answer "for an id the caller cannot reach, whether or not it
+        // exists". `other` does exist — and saying so to a caller who may not
+        // touch it is the leak the code exists to close.
+        assert!(matches!(&err, ContextError::Unreachable), "{err:?}");
+        let absent = delete_context(&ks.as_ks(), &admin_of("acme"), "ghost", false, "t", None)
+            .await
+            .unwrap_err();
+        assert!(matches!(&absent, ContextError::Unreachable), "{absent:?}");
+        // Indistinguishable on the way out, not merely the same variant: a
+        // message naming one of them would hand back what the variant hides.
+        assert_eq!(err.to_string(), absent.to_string());
+
         assert!(get_context(&ks.contexts, "other").await.unwrap().is_some());
     }
 }

@@ -1845,7 +1845,10 @@ async fn context_admin_cannot_update_other_context_did() {
     ))
     .await;
 
-    // Admin scoped to ctx-a cannot update ctx-b's DID
+    // Admin scoped to ctx-a cannot update ctx-b's DID — and is told 404, not
+    // 403. `vta/contexts/update-did` requires that answer "for an id the
+    // caller cannot reach, whether or not it exists", and 403 on a real id
+    // and 404 on an absent one is an oracle for which contexts are real.
     let scoped_token = ctx
         .auth_token("did:key:z6MkScopedA", "admin", vec!["ctx-a".into()])
         .await;
@@ -1856,7 +1859,22 @@ async fn context_admin_cannot_update_other_context_did() {
             json!({"did": "did:webvh:nope:example.com"}),
         ))
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The same status for an id that does not exist at all, which is the
+    // point: the two are indistinguishable from outside.
+    let (absent, _) = app
+        .request(put_auth(
+            "/contexts/ctx-ghost/did",
+            &scoped_token,
+            json!({"did": "did:webvh:nope:example.com"}),
+        ))
+        .await;
+    assert_eq!(absent, StatusCode::NOT_FOUND);
+
+    // And ctx-b was not modified by the refusal.
+    let (_, body) = app.request(get_auth("/contexts/ctx-b", &super_token)).await;
+    assert_eq!(body["did"], json!(null), "{body}");
 }
 
 #[tokio::test]

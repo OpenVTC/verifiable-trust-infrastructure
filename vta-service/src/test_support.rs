@@ -370,6 +370,16 @@ pub fn super_admin_claims() -> AuthClaims {
     }
 }
 
+/// An admin whose authority is confined to `context` — the caller every
+/// "an id you cannot reach" test needs, and the one `super_admin_claims`
+/// cannot stand in for, since an unrestricted admin reaches everything.
+pub fn admin_claims_for_context(context: &str) -> AuthClaims {
+    AuthClaims {
+        allowed_contexts: vec![context.to_string()],
+        ..super_admin_claims()
+    }
+}
+
 /// Build + sign + verify a template-driven `BootstrapRequest` with no
 /// admin rollover and no extra template vars.
 pub async fn signed_request(template_name: &str, context_hint: &str) -> VerifiedBootstrapRequest {
