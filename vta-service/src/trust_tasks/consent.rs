@@ -372,13 +372,17 @@ async fn maybe_wake_consent_approver(
     display_hint: Option<&str>,
     first_message_digest: Option<&str>,
 ) {
-    let mediator_did = {
+    // Lock released before the route decision — see `maybe_push_step_up`.
+    let configured_mediator = {
         let cfg = state.config.read().await;
-        super::step_up::approver_mediator(
-            approver,
-            cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
-        )
+        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
     };
+    let mediator_did = super::step_up::approver_mediator(
+        approver,
+        configured_mediator.as_deref(),
+        state.did_resolver.as_ref(),
+    )
+    .await;
     let Some(mediator_did) = mediator_did else {
         tracing::debug!(
             approver = %approver,
