@@ -179,7 +179,12 @@ async fn push_one(
         let cfg = state.config.read().await;
         cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
     };
-    let mediator_did = super::step_up::approver_mediator(approver, configured_mediator.as_deref());
+    let mediator_did = super::step_up::approver_mediator(
+        approver,
+        configured_mediator.as_deref(),
+        state.did_resolver.as_ref(),
+    )
+    .await;
 
     #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
     let Some(mediator_did) = mediator_did else {
@@ -194,8 +199,11 @@ async fn push_one(
             configured_mediator = ?configured_mediator,
             "no mediator route for consent approver — NOT notifying; the approver \
              learns of this request only if the requester relays it (a CLI cannot). \
-             A did:key approver routes via the VTA's own [messaging] mediator_did: \
-             unset config, or a non-did:key approver, produces this."
+             A did:key approver routes via the VTA's own [messaging] mediator_did, \
+             so an unset config produces this; any other approver routes via the \
+             mediator its own DID document advertises, so a document carrying no \
+             DIDCommMessaging service — or one that would not resolve — produces \
+             it too. The preceding log line says which."
         );
         return;
     };
@@ -315,13 +323,17 @@ pub(super) async fn push_granted(
     #[cfg_attr(not(feature = "didcomm"), allow(unused))] correlator: &str,
     #[cfg_attr(not(feature = "didcomm"), allow(unused))] type_uri: &str,
 ) {
-    let mediator_did = {
+    // Lock released before the route decision — see `notify_consent_approver`.
+    let configured_mediator = {
         let cfg = state.config.read().await;
-        super::step_up::approver_mediator(
-            requester,
-            cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
-        )
+        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
     };
+    let mediator_did = super::step_up::approver_mediator(
+        requester,
+        configured_mediator.as_deref(),
+        state.did_resolver.as_ref(),
+    )
+    .await;
     #[cfg_attr(not(feature = "didcomm"), allow(unused))]
     let Some(mediator_did) = mediator_did else {
         tracing::debug!(

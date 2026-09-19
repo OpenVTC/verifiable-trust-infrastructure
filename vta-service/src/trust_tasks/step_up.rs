@@ -30,6 +30,7 @@
 use std::time::Duration;
 
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine as _;
 use base64::engine::general_purpose;
@@ -763,20 +764,110 @@ async fn mint_pending_step_up(
 const STEP_UP_APPROVE_REQUEST_TYPE: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-request/0.2";
 
-/// Pure route selection for a delegated push: given the approver DID and the
-/// VTA's configured mediator, pick the mediator to forward through.
+/// How long [`approver_mediator`] will wait to read an approver's DID document
+/// before giving up on the push. Deliberately short: the caller is on a request
+/// path and the push is an enhancement, so the cost of waiting is paid by an
+/// operation that would have succeeded anyway. The resolver caches, so this is
+/// the first-contact cost per approver, not a per-push one.
+// Fully qualified: the `Duration` import above is `didcomm`-gated, while this
+// bound applies to route resolution in every build.
+const ROUTE_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Pure route selection for a delegated push: given the approver DID, whatever
+/// mediator its DID document advertises, and the VTA's configured mediator,
+/// pick the mediator to forward through.
 ///
-/// DID-driven so it extends to routable DIDs: a `did:key` approver (the v1
-/// mobile holder) has no DIDComm service endpoint, so it routes through the
-/// VTA's own (shared) mediator — the holder registers its `did:key` with the
-/// same mediator and picks the message up there. Future `did:peer` / `did:webvh`
-/// approvers advertise their own mediator service and route there instead (not
-/// yet wired → `None`, so the relay fallback applies).
-pub(super) fn approver_mediator(approver_did: &str, configured: Option<&str>) -> Option<String> {
-    if !approver_did.starts_with("did:key:") {
-        return None;
+/// DID-driven, and the two arms are not interchangeable:
+///
+/// - A `did:key` approver (the v1 mobile holder) **cannot** advertise a service,
+///   so it routes through the VTA's own (shared) mediator — the holder registers
+///   its `did:key` there and picks the message up from the same queue.
+/// - Any other DID (`did:webvh`, `did:peer`, `did:web`) advertises its own
+///   mediator, and that is the only mediator it is registered with. It routes
+///   there or nowhere.
+///
+/// A routable approver therefore **never** falls back to the configured
+/// mediator: forwarding to a mediator the approver is not registered with does
+/// not reach them, and it spends a slot of the VTA's own sender-queue allowance
+/// to do nothing — the shared-fate shape behind the queue-cap failure. `None`
+/// means the relay fallback applies, which is the honest outcome.
+fn route_for(
+    approver_did: &str,
+    advertised: Option<&str>,
+    configured: Option<&str>,
+) -> Option<String> {
+    let chosen = if approver_did.starts_with("did:key:") {
+        configured
+    } else {
+        advertised
+    };
+    chosen.filter(|m| !m.is_empty()).map(str::to_string)
+}
+
+/// Route selection for a delegated push, resolving the approver's DID document
+/// when the approver is one that can advertise its own mediator.
+///
+/// Resolution goes through the caller-supplied shared [`DIDCacheClient`] rather
+/// than a fresh resolver, so a push does not add an uncached round trip per
+/// call site.
+///
+/// A resolution failure and a document with no `DIDCommMessaging` service both
+/// yield `None` — the push is skipped and the relay fallback applies — but they
+/// are logged apart, because the first is our problem and the second is the
+/// approver's.
+///
+/// The resolution is **bounded** by [`ROUTE_RESOLVE_TIMEOUT`]. Every caller
+/// awaits this inline on a request path, while the push it gates is documented
+/// as best-effort and never a hard dependency — so an approver whose DID host
+/// is slow or down must not hold the caller's response open. On timeout the
+/// push is skipped exactly as any other no-route case.
+pub(super) async fn approver_mediator(
+    approver_did: &str,
+    configured: Option<&str>,
+    resolver: Option<&DIDCacheClient>,
+) -> Option<String> {
+    if approver_did.starts_with("did:key:") {
+        return route_for(approver_did, None, configured);
     }
-    configured.filter(|m| !m.is_empty()).map(str::to_string)
+
+    let Some(resolver) = resolver else {
+        tracing::debug!(
+            approver = %approver_did,
+            "no DID resolver on this node; cannot read the approver's advertised mediator"
+        );
+        return None;
+    };
+
+    let resolve = vta_sdk::session::resolve_mediator_did_with_resolver(approver_did, resolver);
+    let advertised = match tokio::time::timeout(ROUTE_RESOLVE_TIMEOUT, resolve).await {
+        Ok(Ok(Some(m))) => Some(m),
+        Ok(Ok(None)) => {
+            tracing::debug!(
+                approver = %approver_did,
+                "approver advertises no DIDCommMessaging service; relay fallback applies"
+            );
+            None
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(
+                error = %e, approver = %approver_did,
+                "could not resolve the approver's DID document to find its mediator; \
+                 relay fallback applies"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                approver = %approver_did,
+                timeout_secs = ROUTE_RESOLVE_TIMEOUT.as_secs(),
+                "timed out resolving the approver's DID document to find its mediator; \
+                 relay fallback applies"
+            );
+            None
+        }
+    };
+
+    route_for(approver_did, advertised.as_deref(), configured)
 }
 
 /// Deliver a signed Trust-Task document to `recipient` over **TSP** when we have
@@ -842,13 +933,19 @@ async fn maybe_push_step_up(
     if recipient == caller_did {
         return; // self mode — the caller satisfies its own step-up.
     }
-    let mediator_did = {
+    // Cloned out so the config read-lock is released before the route decision:
+    // resolving a routable approver's DID document is network I/O, and holding
+    // the lock across it stalls every config writer for that long.
+    let configured_mediator = {
         let cfg = state.config.read().await;
-        approver_mediator(
-            recipient,
-            cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
-        )
+        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
     };
+    let mediator_did = approver_mediator(
+        recipient,
+        configured_mediator.as_deref(),
+        state.did_resolver.as_ref(),
+    )
+    .await;
     #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
     let Some(mediator_did) = mediator_did else {
         tracing::debug!(
@@ -1267,17 +1364,56 @@ mod tests {
 
     #[test]
     fn approver_mediator_routes_did_key_to_configured_mediator() {
-        // did:key approver → the shared (VTA-configured) mediator.
+        // did:key cannot advertise a service, so it routes through the shared
+        // (VTA-configured) mediator — where the holder registered it.
         assert_eq!(
-            approver_mediator("did:key:z6MkApprover", Some("did:web:mediator")),
+            route_for("did:key:z6MkApprover", None, Some("did:web:mediator")),
             Some("did:web:mediator".to_string())
         );
         // No (or empty) configured mediator → no route (relay fallback).
-        assert_eq!(approver_mediator("did:key:z6MkApprover", None), None);
-        assert_eq!(approver_mediator("did:key:z6MkApprover", Some("")), None);
-        // Future routable DIDs advertise their own mediator; not wired yet → None.
+        assert_eq!(route_for("did:key:z6MkApprover", None, None), None);
+        assert_eq!(route_for("did:key:z6MkApprover", None, Some("")), None);
+        // What a did:key advertises is irrelevant — it cannot advertise.
         assert_eq!(
-            approver_mediator("did:webvh:scid:host:approver", Some("did:web:mediator")),
+            route_for(
+                "did:key:z6MkApprover",
+                Some("did:web:other"),
+                Some("did:web:mediator")
+            ),
+            Some("did:web:mediator".to_string())
+        );
+    }
+
+    #[test]
+    fn approver_mediator_routes_a_routable_did_to_its_own_mediator() {
+        // The regression Keyring hit (KR-26/VTI-26): a did:webvh or did:peer
+        // approver used to yield `None` unconditionally, so it was never pushed
+        // to and never woken. It now routes to the mediator it advertises.
+        assert_eq!(
+            route_for(
+                "did:webvh:scid:host:approver",
+                Some("did:web:their-mediator"),
+                Some("did:web:ours"),
+            ),
+            Some("did:web:their-mediator".to_string())
+        );
+        assert_eq!(
+            route_for("did:peer:2.Ez6Mk", Some("did:web:their-mediator"), None),
+            Some("did:web:their-mediator".to_string())
+        );
+    }
+
+    #[test]
+    fn a_routable_approver_never_falls_back_to_our_mediator() {
+        // Forwarding to a mediator the approver is not registered with does not
+        // reach them, and spends a slot of our own sender-queue allowance to do
+        // nothing. `None` (relay fallback) is the honest answer.
+        assert_eq!(
+            route_for("did:webvh:scid:host:approver", None, Some("did:web:ours")),
+            None
+        );
+        assert_eq!(
+            route_for("did:peer:2.Ez6Mk", Some(""), Some("did:web:ours")),
             None
         );
     }
