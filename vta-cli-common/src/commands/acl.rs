@@ -37,6 +37,31 @@ pub fn format_contexts(role: &str, contexts: &[String]) -> String {
     act_scope_for(&role, contexts).to_string()
 }
 
+/// What this entry may do, for display. **Always rendered, including when the
+/// stored list is empty** — an omitted line is indistinguishable from a tool
+/// that does not show capabilities at all, and reads as "not a field" rather
+/// than "not granted".
+///
+/// That distinction is the whole value of the line. `persona-holder` is
+/// additive: no role derives it, so it is held only where an operator granted
+/// it by name, and its absence is a fact about the entry rather than a gap in
+/// the output. An operator checking whether an install has it got silence, and
+/// silence answers a different question than the one they asked.
+///
+/// The names are echoed as stored, not decoded into `Capability` and
+/// re-rendered. That type is `#[non_exhaustive]` precisely so a consumer
+/// meeting a capability it has never heard of must decide what to do with it —
+/// and for a *display* the only safe decision is to show it. Decoding first
+/// would drop an unrecognised grant from the very output somebody is reading to
+/// find out whether a grant is there.
+pub fn format_capabilities(role: &str, held: &[String]) -> String {
+    if held.is_empty() {
+        format!("(none granted by name — everything `{role}` allows)")
+    } else {
+        held.join(", ")
+    }
+}
+
 pub fn format_role(role: &str, contexts: &[String]) -> String {
     if role == "admin" && contexts.is_empty() {
         "super admin".to_string()
@@ -329,10 +354,10 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
     if let Some(keys) = format_allowed_keys(entry.allowed_keys.as_deref()) {
         println!("Allowed keys:     {keys}");
     }
-    let held = entry.capabilities();
-    if !held.is_empty() {
-        println!("Capabilities:     {}", held.join(", "));
-    }
+    println!(
+        "Capabilities:     {}",
+        format_capabilities(&entry.role, &entry.capabilities())
+    );
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -401,11 +426,13 @@ pub async fn cmd_acl_create(
         println!("  Allowed keys: {keys}");
     }
     // Echoed from the entry the VTA stored, so an operator sees the narrowing
-    // that actually took effect rather than the one they asked for.
-    let held = entry.capabilities();
-    if !held.is_empty() {
-        println!("  Capabilities: {}", held.join(", "));
-    }
+    // that actually took effect rather than the one they asked for — and shown
+    // even when empty, so a `--capabilities persona-holder` the server declined
+    // is visible here rather than at the gate it was meant to open.
+    println!(
+        "  Capabilities: {}",
+        format_capabilities(&entry.role, &entry.capabilities())
+    );
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -600,6 +627,59 @@ pub async fn cmd_acl_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── format_capabilities ────────────────────────────────────────
+
+    /// The regression this formatter exists for. An install whose agent
+    /// credential had never been granted `persona-holder` printed no
+    /// `Capabilities:` line at all, so `pnm acl get` looked like a tool that
+    /// does not report capabilities rather than one reporting none — and the
+    /// grant's absence was only discovered later, at the gate it was meant to
+    /// open. Empty must render as *something*.
+    #[test]
+    fn test_empty_capabilities_still_render() {
+        let rendered = format_capabilities("admin", &[]);
+        assert!(
+            !rendered.is_empty(),
+            "an entry with no named capabilities must still print a line"
+        );
+        assert!(
+            rendered.contains("none granted by name"),
+            "empty must say it is empty, not go silent: {rendered}"
+        );
+        // And it must say what the entry *does* hold, so "none granted by
+        // name" is not misread as "this DID can do nothing".
+        assert!(
+            rendered.contains("admin"),
+            "empty must name the role that still applies: {rendered}"
+        );
+    }
+
+    /// A capability name is echoed exactly as the VTA stored it, so an
+    /// operator can compare it against the `--capabilities` they passed.
+    #[test]
+    fn test_granted_capabilities_are_echoed_verbatim() {
+        assert_eq!(
+            format_capabilities("admin", &["persona-holder".to_string()]),
+            "persona-holder"
+        );
+        assert_eq!(
+            format_capabilities(
+                "reader",
+                &["vault-read".to_string(), "persona-holder".to_string()]
+            ),
+            "vault-read, persona-holder"
+        );
+    }
+
+    /// A name this build has never heard of must still be shown. `Capability`
+    /// is `#[non_exhaustive]`, so a newer VTA can store one; dropping it here
+    /// would hide a grant from the display used to look for grants.
+    #[test]
+    fn test_unrecognised_capability_is_not_dropped() {
+        let rendered = format_capabilities("admin", &["capability-from-the-future".to_string()]);
+        assert_eq!(rendered, "capability-from-the-future");
+    }
 
     // ── format_contexts ────────────────────────────────────────────
 
