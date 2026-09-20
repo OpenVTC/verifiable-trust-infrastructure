@@ -214,48 +214,35 @@ impl TspTransport {
     /// first so a stale `Bidirectional` local half actually re-invites rather
     /// than sending straight into the drop again.
     ///
-    /// # Why this is spelled out rather than `TspOps::send_reestablishing`
+    /// Delegates, and that is a decision with history. #1582 spelled the three
+    /// steps out here — readiness, invite, payload — because the SDK's readiness
+    /// read and its `SendInvite` are two separate awaits on the relationship
+    /// store, and the peer can move our half between them: its own invite
+    /// arrives, `None` + `ReceiveInvite` leaves us `InviteReceived`, and
+    /// `SendInvite` is legal only from `None`. The refused invite took the
+    /// payload down with it, which the D6 recovery then reported as a peer that
+    /// "did not answer" a request it had never been sent.
     ///
-    /// The SDK's version is the same three steps — read the readiness, invite if
-    /// it says `Reestablish`, send the payload — but its readiness read and the
-    /// FSM's `SendInvite` transition are two separate awaits on the relationship
-    /// store, and **the peer can move our half between them**. `SendInvite` is
-    /// legal only from `None`, so an inbound invite from that same peer landing
-    /// in the window makes the invite fail with
-    ///
-    /// ```text
-    /// invalid transition: SendInvite in state InviteReceived
-    /// ```
-    ///
-    /// and the payload is never sent. That is not a failed recovery — it is the
-    /// *successful* one, arrived at from the other side: a relationship is on
-    /// record again, and §3.6 admits an application message over any state but
-    /// `None`. Failing there loses the resend, and the loss is worst exactly
-    /// when it matters most, because two endpoints repairing the same broken
-    /// relationship at once (a mediator restart, a VTA redeploy) is precisely
-    /// the case that produces the collision.
-    ///
-    /// So a refused invite is answered by **re-reading the store**, not by
-    /// trusting the error's text — [`invite_refusal_is_benign`] is the decision,
-    /// separated so it can be read and tested without a mediator. The payload is
-    /// still sent exactly once either way.
+    /// The SDK does that re-read itself from **0.26.12** (affinidi-tdk-rs #838),
+    /// so the local copy is gone: one owner for the decision, and `vtc-service`'s
+    /// registry client — which calls the SDK's form directly — is covered by the
+    /// same bump rather than needing its own copy. The floor in `Cargo.toml` is
+    /// `0.26.12` and not `0.26` precisely because of this: on `^0.26` a lockfile
+    /// resolving 0.26.11 would put the race back with nothing here to catch it.
     pub async fn send_reestablishing(
         &self,
         recipient: &str,
         body: &[u8],
     ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
-        use affinidi_messaging_sdk::SendReadiness;
-
-        let tsp = self.atm.tsp();
-        if tsp.send_readiness(&self.profile, recipient).await? == SendReadiness::Reestablish
-            && let Err(e) = tsp.form_relationship_routed(&self.profile, recipient).await
-        {
-            let after = tsp.send_readiness(&self.profile, recipient).await?;
-            if !invite_refusal_is_benign(after) {
-                return Err(e);
-            }
-        }
-        self.send_to(recipient, body).await
+        self.atm
+            .tsp()
+            .send_reestablishing(
+                &self.profile,
+                recipient,
+                &[self.mediator_did.clone(), recipient.to_string()],
+                body,
+            )
+            .await
     }
 
     /// Re-invite `recipient` **without** sending a payload — heal the
@@ -272,60 +259,5 @@ impl TspTransport {
             .form_relationship_routed(&self.profile, recipient)
             .await
             .map(|_| ())
-    }
-}
-
-/// May a refused `SendInvite` be carried on from, given the readiness read
-/// **after** the refusal?
-///
-/// The question only arises on the re-establishing send
-/// ([`TspTransport::send_reestablishing`]), and it is decided on the *store*
-/// rather than on the error's text: an `ATMError` string is not a contract, and
-/// the state is.
-///
-/// - Anything but `Reestablish` means a relationship is on record again — the
-///   peer invited us while we were preparing to invite it. That is the outcome
-///   the invite existed to produce, reached from the other side, and §3.6 admits
-///   the payload over any state but `None`. Carry on.
-/// - `Reestablish` means our half is still `None`: the invite failed for its own
-///   reasons (no route, no key, the mediator refused it), nothing has changed,
-///   and sending the payload would send it into the §7.2.2 drop. Surface the
-///   error.
-///
-/// A pure function, and deliberately so: the race it answers cannot be staged
-/// in a test — it lives between two awaits inside the SDK — so the decision is
-/// what gets pinned. Same reason `tsp_inbound::decide_control` is separate from
-/// the sends it drives.
-#[must_use]
-fn invite_refusal_is_benign(after: affinidi_messaging_sdk::SendReadiness) -> bool {
-    !matches!(after, affinidi_messaging_sdk::SendReadiness::Reestablish)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::invite_refusal_is_benign;
-    use affinidi_messaging_sdk::SendReadiness;
-
-    /// The collision this exists for: the peer's invite landed between our
-    /// readiness read and our `SendInvite`, leaving our half `InviteReceived`.
-    /// A relationship is on record, so the payload goes.
-    #[test]
-    fn a_peer_invite_landing_mid_reestablish_is_carried_on_from() {
-        assert!(invite_refusal_is_benign(SendReadiness::HandshakeInFlight));
-    }
-
-    /// The peer went further and the handshake completed under us. Still on
-    /// record, still sendable — more so.
-    #[test]
-    fn a_completed_relationship_is_carried_on_from() {
-        assert!(invite_refusal_is_benign(SendReadiness::Ready));
-    }
-
-    /// Nothing on record after the refusal, so the invite genuinely failed.
-    /// Sending the payload here would feed it to the peer's §7.2.2 drop and
-    /// report success; the error has to stand.
-    #[test]
-    fn a_half_still_absent_means_the_invite_really_failed() {
-        assert!(!invite_refusal_is_benign(SendReadiness::Reestablish));
     }
 }

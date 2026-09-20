@@ -71,7 +71,7 @@ affinidi-messaging-delivery = { workspace = true }
 # for the Rev 3 §7.2.2 recovery machinery — the `RelationshipKv`/
 # `PersistentRelationshipStore`/`EvictionPolicy` types the ATM is handed. Behind
 # the `tsp` feature so a non-TSP consumer never pulls the SDK into its graph.
-affinidi-messaging-sdk = { version = "0.26", optional = true, default-features = false, features = [
+affinidi-messaging-sdk = { version = "0.26.12", optional = true, default-features = false, features = [
   "tsp",
 ] }
 axum = { workspace = true }
