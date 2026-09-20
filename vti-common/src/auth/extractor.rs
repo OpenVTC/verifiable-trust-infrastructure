@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::acl::{ActScope, Role, act_scope_for};
 use crate::auth::jwt::JwtKeys;
-use crate::auth::session::{Session, SessionState, get_session, now_epoch};
+use crate::auth::session::{Session, SessionState, get_session, now_epoch, touch_last_seen};
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
@@ -66,6 +66,23 @@ pub struct AuthClaims {
 /// cross-site CSRF.
 pub const ADMIN_SESSION_COOKIE: &str = "vtc_admin_session";
 
+/// Name of the companion refresh cookie set by the same two flows.
+///
+/// Carries the opaque refresh token so the admin SPA can renew a
+/// session it cannot otherwise renew: the access token lives in an
+/// `HttpOnly` cookie JS cannot read, and the refresh token was
+/// previously returned only in a login response body that the console
+/// discarded. Same flags as [`ADMIN_SESSION_COOKIE`] — `HttpOnly` keeps
+/// it out of JS, `SameSite=Strict` keeps it off cross-site requests.
+///
+/// **This cookie makes `/v1/auth/refresh` CSRF-reachable.** The endpoint
+/// was safe to exempt while its only credential was a token in the
+/// request body, which an attacker cannot read; a cookie the browser
+/// attaches automatically is a different proposition. `routing::csrf`
+/// must therefore treat a request bearing this cookie as session-
+/// authenticated — see `has_session_cookie` there.
+pub const ADMIN_REFRESH_COOKIE: &str = "vtc_admin_refresh";
+
 impl<S: AuthState> FromRequestParts<S> for AuthClaims {
     type Rejection = AppError;
 
@@ -93,7 +110,12 @@ impl<S: AuthState> axum::extract::OptionalFromRequestParts<S> for AuthClaims {
         parts: &mut Parts,
         state: &S,
     ) -> Result<Option<Self>, Self::Rejection> {
-        let Some(token) = presented_token(parts, state).await else {
+        // No activity touch here, deliberately. The one caller is the
+        // passkey login/step-up finish, and its step-up branch already
+        // writes `last_seen` itself as part of elevating the session;
+        // touching again would be a redundant store write on the single
+        // hottest-to-get-wrong path in the auth surface.
+        let Some((token, _source)) = presented_token(parts, state).await else {
             return Ok(None);
         };
         Ok(Some(authenticate_token(&token, state).await?.0))
@@ -112,13 +134,48 @@ async fn authenticate<S: AuthState>(
     parts: &mut Parts,
     state: &S,
 ) -> Result<(AuthClaims, Session), AppError> {
-    let Some(token) = presented_token(parts, state).await else {
+    let Some((token, source)) = presented_token(parts, state).await else {
         warn!("auth rejected: no Authorization header and no {ADMIN_SESSION_COOKIE} cookie");
         return Err(AppError::Unauthorized(
             "missing or invalid Authorization header".into(),
         ));
     };
-    authenticate_token(&token, state).await
+    let (claims, session) = authenticate_token(&token, state).await?;
+
+    // A cookie-borne request is a browser session doing something, which
+    // is what an idle timeout measures. Bearer requests are excluded on
+    // purpose: they are the CLIs and service integrations, they have no
+    // idle timeout, and touching for them would add a store write per
+    // call across every programmatic caller in the system.
+    //
+    // Best-effort. Failing to record activity must not fail an otherwise
+    // valid request — the cost of a lost touch is an early sign-out, not
+    // a security hole, and the request itself was legitimate.
+    if source == TokenSource::Cookie {
+        match touch_last_seen(state.sessions_ks(), &session, now_epoch()).await {
+            Ok(_) => {}
+            Err(e) => warn!(
+                session_id = %session.session_id,
+                error = %e,
+                "failed to record session activity; session may idle out early",
+            ),
+        }
+    }
+
+    Ok((claims, session))
+}
+
+/// How the caller presented their JWT.
+///
+/// The distinction matters for exactly one thing — whether the request
+/// counts as user activity for the idle timeout — so it is deliberately
+/// not exposed beyond this module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenSource {
+    /// `Authorization: Bearer` — a programmatic client.
+    Bearer,
+    /// The admin session cookie — a browser.
+    Cookie,
 }
 
 /// Pull the caller's JWT off the request, whichever way they presented it.
@@ -133,12 +190,15 @@ async fn authenticate<S: AuthState>(
 /// [`OptionalFromRequestParts`](axum::extract::OptionalFromRequestParts) treat
 /// an anonymous request as "not authenticated" while still rejecting a forged
 /// or expired token outright.
-async fn presented_token<S: AuthState>(parts: &mut Parts, state: &S) -> Option<String> {
+async fn presented_token<S: AuthState>(
+    parts: &mut Parts,
+    state: &S,
+) -> Option<(String, TokenSource)> {
     let bearer = TypedHeader::<Authorization<Bearer>>::from_request_parts(parts, state)
         .await
         .ok()
-        .map(|TypedHeader(auth)| auth.token().to_string());
-    bearer.or_else(|| cookie_token(parts, ADMIN_SESSION_COOKIE))
+        .map(|TypedHeader(auth)| (auth.token().to_string(), TokenSource::Bearer));
+    bearer.or_else(|| cookie_token(parts, ADMIN_SESSION_COOKIE).map(|t| (t, TokenSource::Cookie)))
 }
 
 async fn authenticate_token<S: AuthState>(

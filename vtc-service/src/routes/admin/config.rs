@@ -402,6 +402,7 @@ fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {
         "server.host" => Value::String(cfg.server.host.clone()),
         "server.port" => Value::Number(cfg.server.port.into()),
         "log.level" => Value::String(cfg.log.level.clone()),
+        "auth.admin_idle_timeout" => Value::Number(cfg.auth.admin_idle_timeout.into()),
         _ => Value::Null,
     }
 }
@@ -425,6 +426,16 @@ fn apply_to_live(cfg: &mut crate::config::AppConfig, key: &str, value: &Value) -
         && let Some(s) = value.as_str()
     {
         cfg.log.level = s.to_string();
+        return true;
+    }
+    // Unlike `log.level`, this one needs no subscriber plumbing to take
+    // effect: `VtcAuthBackend::from_state` snapshots `state.config` on
+    // every auth call, so the next refresh already measures against the
+    // new value.
+    if key == "auth.admin_idle_timeout"
+        && let Some(n) = value.as_u64()
+    {
+        cfg.auth.admin_idle_timeout = n;
         return true;
     }
     false

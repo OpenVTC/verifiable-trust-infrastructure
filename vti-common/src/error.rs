@@ -186,6 +186,9 @@ impl AppError {
 /// - `SessionNotFound`, `SessionStateMismatch`, `ChallengeMismatch`,
 ///   `ChallengeExpired`, `SignerMismatch`, `StaleMessage`,
 ///   `RefreshTokenInvalid`, `RefreshTokenExpired` → 401
+/// - `SessionIdleTimeout` → 401, but with its own message: it is only
+///   reachable by the proven session owner, so it does not share the
+///   group's enumeration-resistance constraint.
 /// - `AttestationFailed` → 503 via Internal (TEE outages are not
 ///   the caller's fault).
 /// - `Internal` → 500.
@@ -214,8 +217,29 @@ impl From<crate::auth::backend::AuthError> for AppError {
                 tracing::debug!(reason = %e, "authentication failed");
                 AppError::Authentication("authentication failed".into())
             }
+            // Told plainly, unlike the group above, because this one is
+            // not reachable by probing. `handle_refresh` claims-and-
+            // deletes the refresh-token index before it runs, so anyone
+            // who gets this answer has already proven possession of a
+            // valid, unconsumed refresh token for an authenticated
+            // session — they are the session's owner, and there is
+            // nothing left to disclose to them. It earns its own message
+            // because "you were signed out for being away" and "your
+            // session hit its maximum age" send an operator to different
+            // places, and the generic string sends them to neither.
+            A::SessionIdleTimeout => {
+                tracing::debug!(reason = %e, "refresh refused: idle timeout");
+                AppError::Authentication(
+                    "session signed out after the configured period of inactivity".into(),
+                )
+            }
             A::AttestationFailed(msg) => AppError::Internal(format!("tee attestation: {msg}")),
             A::Internal(msg) => AppError::Internal(msg),
+            // Deliberately no wildcard arm. `AuthError` is
+            // `#[non_exhaustive]`, but that constrains only *other*
+            // crates — in here the match stays exhaustive, so a new
+            // variant is a compile error at this spot rather than
+            // something that silently inherits a catch-all mapping.
         }
     }
 }

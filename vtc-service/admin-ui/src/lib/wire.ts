@@ -1974,6 +1974,7 @@ export interface components {
              *     VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
              */
             accessToken: string;
+            ext?: null | components["schemas"]["Value"];
         };
         /**
          * @description `POST /v1/auth/admin-session` — exchange a bearer access token for the

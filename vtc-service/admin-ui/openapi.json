@@ -5272,6 +5272,17 @@
           "accessToken": {
             "type": "string",
             "description": "A valid VTC access token the caller already holds — e.g. from the\nVTA-wallet SIOP login, which returns it in `tokens.accessToken`."
+          },
+          "ext": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Value",
+                "description": "Extension members. Carries the optional refresh token this route\nneeds but the canonical payload has no top-level member for.\n\n`spec/vtc/auth/admin-session/0.1` types its payload as\n`{accessToken, ext}` and the conformance witness compares this\nstruct against it, so a top-level `refreshToken` would fail the\nbuild. `ext` is the schema's own escape hatch; see\n[`refresh_token_from_ext`]."
+              }
+            ]
           }
         }
       },

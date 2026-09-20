@@ -72,9 +72,23 @@ export default function App() {
       if (!current) return;
       if (expiryNotifiedRef.current) return;
       expiryNotifiedRef.current = true;
-      toast.push("info", "Your session expired. Sign in again to continue.");
-      qc.setQueryData(["whoami"], null);
-      void qc.invalidateQueries({ queryKey: ["whoami"] });
+      // Re-probe before declaring the session dead. Renewal rotates the
+      // refresh token and the daemon claims the old one atomically, so
+      // two tabs renewing at once means one of them is refused — even
+      // though the session is perfectly alive, because the *other* tab
+      // just renewed it and both share the cookie jar. Without this
+      // check the losing tab would bounce a working session to Login.
+      void probeSession().then((session) => {
+        if (session) {
+          // Someone else renewed it. Re-arm and carry on.
+          expiryNotifiedRef.current = false;
+          qc.setQueryData(["whoami"], session);
+          return;
+        }
+        toast.push("info", "Your session expired. Sign in again to continue.");
+        qc.setQueryData(["whoami"], null);
+        void qc.invalidateQueries({ queryKey: ["whoami"] });
+      });
     };
     window.addEventListener("vtc-session-expired", onExpired);
     return () => {

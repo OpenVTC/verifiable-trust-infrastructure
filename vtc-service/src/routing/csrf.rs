@@ -75,7 +75,7 @@ use subtle::ConstantTimeEq;
 // auth extractor reads to authenticate a cookie session. If a new
 // auth cookie is ever added there, the CSRF gate must learn about it
 // too — keep them pinned to the same symbol so the coupling is loud.
-use vti_common::auth::extractor::ADMIN_SESSION_COOKIE;
+use vti_common::auth::extractor::{ADMIN_REFRESH_COOKIE, ADMIN_SESSION_COOKIE};
 
 /// Paths exempt from CSRF: unauth bootstrapping flows + the public
 /// form-post target. Each is documented in the module-level
@@ -88,7 +88,19 @@ const CSRF_EXEMPT_PATHS: &[&str] = &[
     // same rationale as `/v1/auth/*` above — no session cookie yet).
     "/v1/wallet/auth/challenge",
     "/v1/wallet/auth/",
-    "/v1/auth/refresh",
+    // `/v1/auth/refresh` was exempt here until the admin console gained a
+    // refresh cookie. While the only way to present a refresh token was
+    // to put it in the request body, the endpoint was structurally
+    // CSRF-immune: a cross-site page cannot read the token, so it cannot
+    // forge the request. A cookie the browser attaches on its own removes
+    // that property, and a forged refresh would rotate the victim's token
+    // out from under them — the attacker learns nothing (they cannot read
+    // the response) but the session is destroyed, which is a logout DoS.
+    //
+    // Removing the exemption costs the body-token callers nothing: an
+    // SDK/CLI refresh carries no session cookie, so `has_session_cookie`
+    // below lets it through unenforced. Only the browser path, which
+    // already sends `X-CSRF-Token` on every mutation, is now gated.
     "/v1/install/claim/start",
     "/v1/install/claim/finish",
     // First-admin finalisation — unauthenticated (the setup-session JWT in
@@ -129,10 +141,16 @@ fn is_csrf_exempt(path: &str) -> bool {
     false
 }
 
-/// True when the request carries the `vtc_admin_session` cookie — the
-/// only credential a CSRF attack can ride. Requests without it can't
-/// be authenticated-as-victim, so they're not a CSRF vector and skip
+/// True when the request carries either admin cookie — the credentials
+/// a CSRF attack can ride. Requests without one can't be
+/// authenticated-as-victim, so they're not a CSRF vector and skip
 /// enforcement (the auth layer 401s them if they're unauthenticated).
+///
+/// Both cookies count, not just the session one. `vtc_admin_refresh`
+/// authenticates `/v1/auth/refresh` all by itself, so a request holding
+/// only that one is every bit as forgeable as a request holding only the
+/// session cookie — and a browser whose access cookie has already lapsed
+/// is in exactly that state.
 fn has_session_cookie(headers: &HeaderMap) -> bool {
     headers
         .get_all(axum::http::header::COOKIE)
@@ -141,7 +159,7 @@ fn has_session_cookie(headers: &HeaderMap) -> bool {
         .flat_map(|s| s.split(';'))
         .map(|s| s.trim())
         .filter_map(|kv| kv.split_once('='))
-        .any(|(name, _)| name == ADMIN_SESSION_COOKIE)
+        .any(|(name, _)| name == ADMIN_SESSION_COOKIE || name == ADMIN_REFRESH_COOKIE)
 }
 
 /// Tower middleware function. Wire via

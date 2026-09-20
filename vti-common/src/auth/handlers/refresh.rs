@@ -93,6 +93,36 @@ pub async fn handle_refresh<B: AuthBackend>(
         return Err(AuthError::RefreshTokenExpired.into());
     }
 
+    // ---- 5a. Idle timeout ----
+    //
+    // Measured against `last_seen`, which only genuine user activity
+    // writes (`SessionStore::touch_session`). It is deliberately not
+    // measured against the access token's expiry: a browser that renews
+    // on a timer would otherwise keep a session alive for as long as
+    // the tab stayed open, however long the operator had been away —
+    // which is the whole thing an idle timeout prevents.
+    //
+    // `last_seen == 0` means a row written before the field existed
+    // (`#[serde(default)]`); fall back to `created_at`, matching what
+    // `cleanup_expired_sessions` does for the same case.
+    if let Some(idle_ttl) = backend.idle_timeout() {
+        let last_activity = if old_session.last_seen == 0 {
+            old_session.created_at
+        } else {
+            old_session.last_seen
+        };
+        if now.saturating_sub(last_activity) > idle_ttl {
+            tracing::warn!(
+                session_id = %old_session.session_id,
+                did = %old_session.did,
+                idle_for = now.saturating_sub(last_activity),
+                idle_ttl,
+                "refresh rejected: session idle past the timeout",
+            );
+            return Err(AuthError::SessionIdleTimeout.into());
+        }
+    }
+
     // ---- 6. Preserve AAL across rotation ----
 
     let (amr, acr) = super::refresh_amr_acr(&old_session);
@@ -144,7 +174,19 @@ pub async fn handle_refresh<B: AuthBackend>(
         challenge: String::new(),
         state: SessionState::Authenticated,
         created_at: now,
-        last_seen: now,
+        // Carried forward, **not** reset to `now`. Rotating a token is
+        // the client's timer firing, not the operator doing something,
+        // and a renewal that refreshed `last_seen` would push the idle
+        // deadline out on every cycle — the timeout could then never
+        // fire, which is the exact failure this field exists to prevent.
+        // Only `SessionStore::touch_session` advances it.
+        //
+        // Safe for the sweeper: `cleanup_expired_sessions` judges an
+        // `Authenticated` row that *has* a refresh token by
+        // `refresh_expires_at` and never reads `last_seen`, and the
+        // refresh-less intrinsic sessions that do use `last_seen` never
+        // reach this handler.
+        last_seen: old_session.last_seen,
         refresh_token: Some(new_refresh_token.clone()),
         refresh_expires_at: Some(new_refresh_expires_at),
         tee_attested: old_session.tee_attested,
