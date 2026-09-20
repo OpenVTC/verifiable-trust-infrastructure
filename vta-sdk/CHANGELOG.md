@@ -2,6 +2,216 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.43.1...vta-sdk-v0.44.0) — 2026-09-20
+
+
+### Added
+
+- **vtc**: Add vtc/join-requests/withdraw/0.1 — the applicant closes their own request ([#1591](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1591))
+
+Keyring finding KR-03. An applicant could open a join request and then had no
+  way to close it. A `deferred` request — the community answered `requestMore` —
+  was the sharp case: it stays open forever, the dedup guard in `submit_inner`
+  keeps matching the row so no resubmission is possible, and the only exit was
+  to ask a community admin to reject it, which records the wrong outcome for
+  what is actually the applicant changing their mind. Nothing but the retention
+  sweeper ever closed it, on a schedule neither party controls.
+
+  The task was spec'd upstream first (dtgwg-trust-tasks-tf #518, shipped in
+  trust-tasks-rs 0.21.5) and is implemented here against the generated types.
+  Payload, response and the `withdrawn` status all come from
+  `trust_tasks_rs::specs::vtc::join_requests::withdraw` — never a local copy.
+
+  ## Authorization is ownership, not membership
+
+  An applicant holds neither a role nor a capability; that is what they are
+  applying for. So the entitlement is that the proven caller is the applicant
+  recorded on the request. `resolve_holder` supplies the proof — authcrypt
+  sender on DIDComm, document proof signer on REST — exactly as `self-remove`
+  does.
+
+  ## The two refusals are shaped differently on purpose
+
+    * A request that does not exist and one belonging to somebody else both
+      answer `notFound`. Separating them would let a caller probe whether a
+      given request id exists on this community — the same enumeration-
+      resistance reasoning the vault read paths use.
+    * An already-decided request answers `alreadyDecided`, because the applicant
+      is entitled to the outcome of their own request and no retry changes it.
+
+  Both go out as the extended codes the spec declares rather than through the
+  generic `AppError` → reject mapping, which flattens `NotFound` and `Gone` into
+  a bare `taskFailed` carrying only English. Telling "nothing to withdraw" apart
+  from "already decided" without parsing prose is the whole reason the spec
+  declares two codes, so a dispatcher-level test pins them.
+
+  ## requestId is optional
+
+  For the same reason it is optional on the status poll: an applicant whose
+  submit response was lost never received one, and the id-less form is all they
+  have. A supplied id is preferred over inferring from the caller, as the spec
+  requires.
+
+  ## Where the applicant's reason goes
+
+  To the audit log, not onto the row. `JoinRequest` is a canonically-typed wire
+  shape with no member for it, and `decision` means *refusal* — writing it there
+  would make a withdrawn request read as rejected.
+  `AuditEvent::JoinRequestWithdrawn` carries the reason alongside the previous
+  status, and is the one join event whose actor and subject are the same party.
+  `AuditEvent` is `#[non_exhaustive]`, so the new variant is additive.
+
+  ## Also, partially, KR-04
+
+  The same defect seen from the other side: the duplicate-submit `Conflict` said
+  "withdraw or await its decision" while naming neither the status nor any
+  withdraw mechanism. It now names both — `pending` is waiting on the community
+  and will move on its own, `deferred` is waiting on the applicant and is the
+  case this task exists for.
+
+  KR-04's remaining half is not in this PR and needs an upstream change first:
+  making that refusal a *typed* answer requires a `requestAlreadyOpen` code on
+  `vtc/join-requests/submit`, which declares no such code today. Likewise the
+  second half of KR-03 — letting a deferred applicant supplement the existing
+  request rather than open a second one — is a task that does not exist yet.
+  Both are follow-ups.
+
+  ## Dependency
+
+  The `trust-tasks-rs` workspace requirement moves 0.21.4 -> 0.21.5 because
+  `vta-sdk` re-exports the generated module in its public API, so a consumer
+  resolving 0.21.4 would not build. The three unrelated lines in Cargo.lock
+  (`syn`, two `base64`) are pre-existing drift between the committed lock and
+  what cargo resolves — any `cargo update` of any package rewrites them.
+
+  A conformance witness is added in `trust_tasks/conformance.rs`, projected
+  through the same generated builder the handler returns through rather than
+  transcribed.
+
+- **vta**: Report the subtree and the host copies a context delete could not remove ([#1577](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1577))
+
+Takes trust-tasks 0.21.4, which added the two members the context-delete work
+  needed and had nowhere to put (trustoverip/dtgwg-trust-tasks-tf#513).
+
+  `subContexts` on `vta/contexts/preview-delete/1.0`. The preview already
+  measured the subtree — #1576 made every array the union over it — but could
+  not say which contexts those arrays covered, so both CLIs and the browser
+  console each derived the list from `contexts/list` and matched paths
+  themselves. Three copies of the agent's own cascade rule, none authoritative,
+  in front of a destructive prompt. The agent decides what the cascade reaches;
+  it now says so, and the consumers read it.
+
+  `daemonCleanupErrors` on `vta/contexts/delete/1.0`. A DID whose hosting server
+  would not confirm removing the published log left the deletion reported as a
+  plain success, with the orphan visible only in the agent's own logs — which is
+  the shape of the defect this whole change set started from. It is the
+  subtree-wide form of the `daemonCleanupError` that `webvh/dids/delete/1.0`
+  already reports for one DID, and both CLIs now print it after the deletion
+  rather than letting a partial success read as a complete one.
+
+
+
+### Fixed
+
+- **tsp**: Take the SDK's re-establish fix and drop the local copy ([#1588](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1588))
+
+#1582 worked around a race inside `TspOps::send_reestablishing`: its readiness
+  read and its `SendInvite` are two separate awaits on the relationship store, and
+  the peer can move our half between them — its own invite arrives, `None` +
+  `ReceiveInvite` leaves us `InviteReceived`, and `SendInvite` is legal only from
+  `None`. The refused invite took the payload down with it, and the D6 recovery
+  reported a peer that "did not answer" a request it had never been sent.
+
+  The workaround was a local copy of the SDK's three steps with the tolerance
+  added. `affinidi-messaging-sdk` 0.26.12 (affinidi-tdk-rs#838) does that re-read
+  itself, so `TspTransport::send_reestablishing` delegates again and the local
+  `invite_refusal_is_benign` and its tests are gone — one owner for the decision
+  rather than two that can drift.
+
+  Two things this bump settles beyond the deletion:
+
+  - **`vtc-service` is fixed by it.** Its registry client
+    (`registry::messaging::send_tsp`) calls the SDK's form directly and never had
+    the workaround. #1582 left it alone because the syncer's backoff — the one
+    retry owner on that path — re-sent through the transient failure, so it
+    self-healed on the next attempt. Now it does not fail in the first place.
+  - **The requirement names the patch: `0.26.12`, not `0.26`.** Every
+    `affinidi-messaging-sdk` requirement in the workspace moves, because on `^0.26`
+    a lockfile resolving 0.26.11 would put the race back with nothing local left to
+    catch it. A floor that is load-bearing rather than tidy.
+
+  What stays from #1582 is the part the SDK cannot fix: `recover_send_tsp` telling
+  `Timeout`, `Cancelled` and `SendFailed(reason)` apart instead of reporting all
+  three as a silent peer, and the `AnsweringPeer` harness recording what it
+  received and sent. That is what made the upstream defect readable in one CI run,
+  and it is VTA-side either way.
+
+  Design note `tsp-relationship-recovery.md` D6a updated to say where the fix now
+  lives.
+
+- **vtc**: Return the generated endorsement-type delete response, not a copy of it ([#1587](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1587))
+
+`main` is red. #1584 renamed this route's hand-written response struct out
+  of a three-way `DeleteResponse` collision and, in doing so, gave it a doc
+  comment naming the task it restates — which is exactly what
+  `vta-sdk/tests/generated_wire_types_census.rs` looks for. The type had
+  been violating that census all along; it was invisible only because it
+  carried no doc comment saying so.
+
+  The census does not take new baseline entries, and it is right not to:
+  `trust_tasks_rs::specs::vtc::endorsement_types::delete::v0_1::Response` is
+  the published shape, and a local `{ typeUri }` beside it is a second
+  definition that can drift. The handler now returns the generated type and
+  builds it through its builder, so a response that does not match the
+  schema is a construction error rather than a struct literal that compiles
+  and lies.
+
+- **resolver**: Take the shared DID resolver instead of building one ([#1581](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1581))
+
+* fix(resolver): take the shared DID resolver instead of building one
+
+  Twelve call sites across `vta-service`, `cnm-cli` and `vtc-service` each
+  constructed their own `DIDCacheClient`. A client owns its cache, so the
+  same DID was fetched once per construction rather than once per process,
+  and a `did:webvh` host saw a burst of requests for what is one logical
+  operation — enough to earn a 429 from its own rate limiter.
+
+  Every one of them built
+  `DIDCacheConfigBuilder::default().with_host_policy(webvh_host_policy())`,
+  which is byte-for-byte what `build_did_cache_config(None)` produces, so
+  taking `shared_did_resolver_from_env()` preserves behaviour and collapses
+  twelve caches into the one the SDK already keeps per runtime, sidecar URL
+  and host policy.
+
+  It also fixes a second problem those sites had: by calling
+  `DIDCacheClient::new` directly they never read `PNM_RESOLVER_URL`, so an
+  operator who had configured a resolver sidecar — the documented mitigation
+  for exactly this load — did not get it on any of these paths. The env var
+  existed to spare the SDK's public API, and these call sites went around
+  it.
+
+  Three sites are deliberately left alone, and each looks convertible:
+
+  - `vtc-service/src/server.rs` and `room-host/src/main.rs` build a plain
+    default with no host policy. Converting them would add
+    `webvh_host_policy()` and change which hosts are permitted — a
+    security-relevant change, not a caching one, and not one to make inside
+    this change.
+  - `pnm-cli/src/bootstrap.rs` passes `None` on purpose. Bootstrap resolves
+    the DID locally so the operator verifies the SCID and signed log on
+    their own machine rather than trusting a sidecar; that `None` is the
+    trust boundary, not an oversight.
+
+  Adds the test that was missing for the property all of this now rests on:
+  that two callers on one runtime get one resolver. Sharing could have
+  broken and every converted site would have quietly gone back to a private
+  cache with nothing failing.
+
+  Reported as VTI-19 by the Keyring wallet team, who saw one command fetch
+  `/.well-known/did.jsonl` forty times in five minutes.
+
+
+
 ## [0.43.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.43.0...vta-sdk-v0.43.1) — 2026-09-18
 
 

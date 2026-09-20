@@ -2,6 +2,358 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.34.1...vta-service-v0.35.0) — 2026-09-20
+
+
+### Added
+
+- **vta**: Report the subtree and the host copies a context delete could not remove ([#1577](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1577))
+
+Takes trust-tasks 0.21.4, which added the two members the context-delete work
+  needed and had nowhere to put (trustoverip/dtgwg-trust-tasks-tf#513).
+
+  `subContexts` on `vta/contexts/preview-delete/1.0`. The preview already
+  measured the subtree — #1576 made every array the union over it — but could
+  not say which contexts those arrays covered, so both CLIs and the browser
+  console each derived the list from `contexts/list` and matched paths
+  themselves. Three copies of the agent's own cascade rule, none authoritative,
+  in front of a destructive prompt. The agent decides what the cascade reaches;
+  it now says so, and the consumers read it.
+
+  `daemonCleanupErrors` on `vta/contexts/delete/1.0`. A DID whose hosting server
+  would not confirm removing the published log left the deletion reported as a
+  plain success, with the orphan visible only in the agent's own logs — which is
+  the shape of the defect this whole change set started from. It is the
+  subtree-wide form of the `daemonCleanupError` that `webvh/dids/delete/1.0`
+  already reports for one DID, and both CLIs now print it after the deletion
+  rather than letting a partial success read as a complete one.
+
+
+
+### Fixed
+
+- **tsp**: Take the SDK's re-establish fix and drop the local copy ([#1588](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1588))
+
+#1582 worked around a race inside `TspOps::send_reestablishing`: its readiness
+  read and its `SendInvite` are two separate awaits on the relationship store, and
+  the peer can move our half between them — its own invite arrives, `None` +
+  `ReceiveInvite` leaves us `InviteReceived`, and `SendInvite` is legal only from
+  `None`. The refused invite took the payload down with it, and the D6 recovery
+  reported a peer that "did not answer" a request it had never been sent.
+
+  The workaround was a local copy of the SDK's three steps with the tolerance
+  added. `affinidi-messaging-sdk` 0.26.12 (affinidi-tdk-rs#838) does that re-read
+  itself, so `TspTransport::send_reestablishing` delegates again and the local
+  `invite_refusal_is_benign` and its tests are gone — one owner for the decision
+  rather than two that can drift.
+
+  Two things this bump settles beyond the deletion:
+
+  - **`vtc-service` is fixed by it.** Its registry client
+    (`registry::messaging::send_tsp`) calls the SDK's form directly and never had
+    the workaround. #1582 left it alone because the syncer's backoff — the one
+    retry owner on that path — re-sent through the transient failure, so it
+    self-healed on the next attempt. Now it does not fail in the first place.
+  - **The requirement names the patch: `0.26.12`, not `0.26`.** Every
+    `affinidi-messaging-sdk` requirement in the workspace moves, because on `^0.26`
+    a lockfile resolving 0.26.11 would put the race back with nothing local left to
+    catch it. A floor that is load-bearing rather than tidy.
+
+  What stays from #1582 is the part the SDK cannot fix: `recover_send_tsp` telling
+  `Timeout`, `Cancelled` and `SendFailed(reason)` apart instead of reporting all
+  three as a silent peer, and the `AnsweringPeer` harness recording what it
+  received and sent. That is what made the upstream defect readable in one CI run,
+  and it is VTA-side either way.
+
+  Design note `tsp-relationship-recovery.md` D6a updated to say where the fix now
+  lives.
+
+- **tsp**: A peer's invite landing mid-recovery must not lose the resend ([#1582](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1582))
+
+The D6 reply-timeout recovery (`recover_send_tsp`) resets our half of the TSP
+  relationship and re-establishes it with the payload riding behind the invite
+  (§3.6). `TspOps::send_reestablishing` does that in three steps, and the first
+  two are separate awaits on the relationship store: read the send readiness,
+  then `SendInvite`. The peer can move our half in between — its own invite
+  arrives, `None` + `ReceiveInvite` leaves us `InviteReceived`, and `SendInvite`
+  is legal only from `None`. The invite is then refused with
+
+      invalid transition: SendInvite in state InviteReceived
+
+  and the payload is never sent.
+
+  That is not a failed recovery. It is the outcome the invite existed to produce,
+  reached from the other side: a relationship is on record again, and
+  `admits_application_message()` is true for every state but `None`. And the
+  collision is commonest exactly where recovery is — two endpoints repairing the
+  same broken relationship at once is what a mediator restart or a VTA redeploy
+  produces.
+
+  So `TspTransport::send_reestablishing` spells the three steps out rather than
+  calling the SDK's combined form, and answers a refused invite by re-reading the
+  store rather than by matching on the error's text: our half no longer `None`
+  means carry on to the payload; still `None` means the invite failed for its own
+  reasons and that error stands. The payload is sent exactly once either way.
+  `invite_refusal_is_benign` carries that decision as a pure function with its own
+  tests — the race itself lives between two awaits inside the SDK and cannot be
+  staged in a test, so the decision is what gets pinned.
+
+  Found through `d6_recovers_a_reply_from_an_answering_peer`, which had failed six
+  of the last ten `Test (workspace)` runs on main. The answering peer's
+  spawn-time `relate` is the colliding invite and the window is two store reads,
+  so it is a coin flip under load — and it never showed in the isolated
+  `transport-harness` step, only in the full parallel suite.
+
+  Two diagnosis defects made it unreadable, both fixed here:
+
+  - `recover_send_tsp` collapsed `Timeout`, `Cancelled` and `SendFailed(reason)`
+    into "`<peer>` did not answer over TSP after re-establishing the
+    relationship", so a frame that never left this VTA was reported as a silent
+    peer and sent every reader to the wrong endpoint. The steady-state `send_tsp`
+    beside it already told the three apart.
+  - The `AnsweringPeer` harness discarded every fault inside its loop — `Err(_) =>
+    break` on the socket, `let _ = send_document(…)` on the reply. It now records
+    what it received and sent, and the assertion prints it; `received 0
+    document(s)` is what named the cause.
+
+  The same race is open in `vtc-service`'s registry client, which calls the SDK's
+  combined form. There it surfaces as a transient `Unreachable` and the syncer's
+  backoff — the one retry owner on that path — re-sends into a store that by then
+  reads `HandshakeInFlight`, so it self-heals on the next attempt. Left as is
+  deliberately; a one-shot recovery has no such owner, which is why the VTA's arm
+  could not.
+
+  Design note: `docs/05-design-notes/tsp-relationship-recovery.md` D6a.
+
+- **resolver**: Take the shared DID resolver instead of building one ([#1581](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1581))
+
+* fix(resolver): take the shared DID resolver instead of building one
+
+  Twelve call sites across `vta-service`, `cnm-cli` and `vtc-service` each
+  constructed their own `DIDCacheClient`. A client owns its cache, so the
+  same DID was fetched once per construction rather than once per process,
+  and a `did:webvh` host saw a burst of requests for what is one logical
+  operation — enough to earn a 429 from its own rate limiter.
+
+  Every one of them built
+  `DIDCacheConfigBuilder::default().with_host_policy(webvh_host_policy())`,
+  which is byte-for-byte what `build_did_cache_config(None)` produces, so
+  taking `shared_did_resolver_from_env()` preserves behaviour and collapses
+  twelve caches into the one the SDK already keeps per runtime, sidecar URL
+  and host policy.
+
+  It also fixes a second problem those sites had: by calling
+  `DIDCacheClient::new` directly they never read `PNM_RESOLVER_URL`, so an
+  operator who had configured a resolver sidecar — the documented mitigation
+  for exactly this load — did not get it on any of these paths. The env var
+  existed to spare the SDK's public API, and these call sites went around
+  it.
+
+  Three sites are deliberately left alone, and each looks convertible:
+
+  - `vtc-service/src/server.rs` and `room-host/src/main.rs` build a plain
+    default with no host policy. Converting them would add
+    `webvh_host_policy()` and change which hosts are permitted — a
+    security-relevant change, not a caching one, and not one to make inside
+    this change.
+  - `pnm-cli/src/bootstrap.rs` passes `None` on purpose. Bootstrap resolves
+    the DID locally so the operator verifies the SCID and signed log on
+    their own machine rather than trusting a sidecar; that `None` is the
+    trust boundary, not an oversight.
+
+  Adds the test that was missing for the property all of this now rests on:
+  that two callers on one runtime get one resolver. Sharing could have
+  broken and every converted site would have quietly gone back to a private
+  cache with nothing failing.
+
+  Reported as VTI-19 by the Keyring wallet team, who saw one command fetch
+  `/.well-known/did.jsonl` forty times in five minutes.
+
+- **step-up**: Route delegated pushes to an approver's own mediator ([#1579](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1579))
+
+* fix(step-up): route delegated pushes to an approver's own mediator
+
+  `approver_mediator` returned `None` for any DID that was not `did:key`, so
+  a `did:webvh` or `did:peer` approver was never pushed to. All four call
+  sites give up at that point — `consent_request.rs` (approver and requester
+  notices), `consent.rs` (wake) and `step_up.rs` (delegated step-up) — and
+  each one sits upstream of everything that would otherwise reach the
+  device: the TSP attempt, the DIDComm forward, and `trigger_gateway_wake`.
+  One gate therefore starved three delivery paths at once, which is why the
+  symptom presented from several directions: a consent request that stayed
+  queued, an idle approver that was never roused, and a delegated step-up
+  that fell back to the relay every time.
+
+  The predicate now resolves the approver's DID document and reads the
+  mediator from its `DIDCommMessaging` service, matching on service `type`
+  per the workspace transport rules. `did:key` keeps its existing behaviour —
+  it cannot advertise a service, so it routes through the VTA's configured
+  mediator, where the holder registered it.
+
+  A routable approver deliberately does **not** fall back to the configured
+  mediator when its document names none. Forwarding to a mediator the
+  approver is not registered with does not reach them, and spends a slot of
+  this VTA's sender-queue allowance to do nothing; `None` (relay fallback)
+  is the honest answer.
+
+  Resolution is bounded by a 5s timeout. Every call site awaits this inline
+  on a request path while the push it gates is documented as best-effort, so
+  an approver whose DID host is slow must not hold the caller's response
+  open. The shared `AppState::did_resolver` is used rather than a fresh
+  resolver, so the cache absorbs repeat pushes to the same approver.
+
+  The three call sites that read `[messaging] mediator_did` under the config
+  read-lock now clone it and drop the lock first: the route decision is
+  network I/O and holding the lock across it would stall config writers.
+
+  Reported as VTI-26 and VTI-24 by the Keyring wallet team, who hit it with
+  `did:webvh` phone approvers.
+
+- **vta**: Answer the contexts family's declared error codes, and stop distinguishing "not yours" from "not there" ([#1580](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1580))
+
+The `vta/contexts/*` specifications declare eight extended error codes. The
+  VTA emitted none of them. Worse than the missing codes: the answers it gave
+  instead leaked which context ids are real.
+
+  ## The leak
+
+  Every id-taking task checked scope and existence separately, and reported
+  them separately:
+
+      auth.require_context(id)?;                       // 403, names the id back
+      get_context(..).ok_or(AppError::NotFound(..))?;  // 404
+
+  So a caller scoped to one context learned, from the difference between the
+  two refusals, exactly which other context ids exist. The captured refusal
+  reads `permission denied: forbidden: no access to context: cov-real` — it
+  confirms the id and hands it back. `create_context` had the same leak
+  inverted: it looked the parent up *before* checking scope, so an
+  unauthorised caller learned a parent was real before being told it could not
+  use it.
+
+  The specifications require the opposite, and say so. `vta/contexts/get`:
+  "deliberately does not distinguish 'does not exist' from 'exists but not
+  yours'". `update`, `update-did` and `delete` each repeat it as "whether or
+  not it exists". `create` names its own code and ties it to `get`'s
+  reasoning.
+
+  ## What changed
+
+  `reach_context` is the family's single answer to "does this caller get to
+  act on this id" — scope, then existence, one `Unreachable` for both. Six
+  operations go through it; `create` gets the same treatment for its parent.
+
+  The operations return a typed `ContextError`, and one `reject_context_error`
+  maps it to the code the calling task declares — the slug is read off the
+  document, so `get:notFound`, `update:notFound`, `update-did:notFound`,
+  `preview-delete:notFound`, `delete:notFound`, `delete:notEmpty` and
+  `create:parentNotFound` are all the same match. `From`/`Into` keeps `?`
+  working inside and converts back for the transports that carry a status
+  rather than a Trust-Task code, so REST and DIDComm need no per-site changes.
+
+- **vta**: Preview the whole subtree a context delete destroys ([#1576](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1576))
+
+`preview_delete_context` collected the named context and nothing else, while
+  `delete_context` cascades the whole subtree. Two functions answering
+  different questions about the same act, and the preview's was the wrong one.
+
+  A context whose own keyspaces were empty over children holding keys, DIDs
+  and grants previewed as holding nothing. Every consumer decides from that
+  preview whether the deletion needs `force`, so every consumer decided from
+  the wrong set: send `force: false` and the agent refuses with nothing on
+  screen explaining why, or — when the parent happens to hold one key — send
+  `force: true` and destroy an entire unlisted subtree under a confirmation
+  listing one key.
+
+  `collect_subtree_resources` answers for the delete set, and is not a loop
+  over the per-context collector. The difference is the ACL classification.
+  The per-context question is "does this entry hold *only* this context?",
+  which for a subtree gets it backwards: an entry scoped to both `acme` and
+  `acme/eng` looks like it holds another context, so a loop reports it twice
+  as merely narrowed — when deleting `acme` takes both scopes and the entry
+  goes entirely. Asked once against the whole set it comes out as `removed`,
+  which is also where the deletion's deepest-first cascade converges. Telling
+  an operator that a subject keeps authority it is about to lose completely is
+  the one error this preview must not make.
+
+  Both CLI front-ends prompted off that preview and passed `force = true` to
+  the deletion regardless, so `vta context delete acme` on a parent that held
+  nothing itself took the subtree with no prompt at all. They now name the
+  sub-contexts — derived locally, since the task has no member for them yet —
+  and count them, and DID templates, toward "does this destroy anything".
+  The renderer never printed `didTemplates` and never counted them, so a
+  context whose only contents were templates skipped the prompt too.
+
+  Both new tests were confirmed to fail against the old preview.
+
+- **vta**: Delete a context's did:webvh DIDs off their hosting servers, not just locally
+
+Deleting a context cascaded to its sub-contexts and dropped each DID's local record with webvh_store::delete_did plus its log key. That is not a smaller version of deleting the DID; it is a different outcome. The published log stayed on the hosting server, so the DID kept resolving for everyone except the agent that owned it. Credentials the VTA had issued naming it stayed valid, with the only records that could revoke them destroyed. Live sessions authenticated as it kept working. The operator was told the context was deleted, and nothing in the result distinguished the two outcomes.
+
+  Every DID in the subtree now goes through delete_did_webvh_with — the same path pnm did-mgmt dids delete takes — so the host copy is removed, credentials revoked, sessions ended, and the full key-fragment range cleaned up. purge_context_resources no longer deletes DIDs at all: one path, not two, and the weaker one is gone.
+
+  delete_context takes a ContextDidCleanup; None means the caller cannot reach a hosting server, and a context holding DIDs is then refused rather than having its records dropped behind their hosts' backs. DeleteDidOptions::contexts_being_deleted narrows the "a context acts as this DID" blocker to the contexts going away, so a DID some other context acts as is still refused. Blockers are collected across the whole subtree and refuse before anything is destroyed, rather than deleting three contexts' DIDs and refusing on the fourth.
+
+  Ordering is remote-first (VTI R2.1): a local record removed before its host copy is the one state from which the host copy can never be removed.
+
+  deleting_a_context_deletes_its_subtree_dids_on_the_hosting_server holds it, and was confirmed to fail against the old behaviour — webvh_host_deletes() is the only witness that separates the two outcomes, which is why an assertion on the local record let this survive.
+
+- **vta**: Carry a holder grant through an admin rollover instead of deleting it ([#1573](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1573))
+
+Onboarding a client tells the operator to grant `--admin-holder` on the
+  ephemeral setup key. Provisioning then rolled that key over to a
+  long-term admin DID, wrote the successor's ACL row from
+  `CreateAclParams::default()`, and deleted the ephemeral's row in the same
+  call. An empty capability list means "whatever the role implies", and
+  `persona-holder` is implied by no role — that is the whole point of
+  `ADDITIVE_CAPABILITIES` — so the grant the operator had just been told to
+  make was destroyed by the operation meant to hand it over.
+
+  Nothing said so. Everything context-scoped kept working, and the loss
+  surfaced much later, on a different screen, as a refusal to read the
+  holder's own attribute pool: "an administrator scoped to a context and
+  holding neither is refused here exactly as an application would be." True,
+  and no help at all in working out that a capability had gone missing at
+  install time. There was no audit trace either, because nothing had decided
+  to drop it.
+
+  `retire_ephemeral_after_rollover` now carries the ephemeral's additive
+  capabilities onto its successor before deleting the row. Both provisioning
+  paths — `provision_integration` and `provision_admin_rotation` — already
+  go through it.
+
+  This is not a scoped admin conferring holder authority, and the guard that
+  stops that (`a_scoped_admin_must_not_confer_holder_authority`) is
+  untouched. That guard is about an operator *minting* authority over the
+  holder's identity. Here the authority already exists, on a DID the same
+  operator controls, and is being retired in this same call: the grant moves
+  rather than multiplies, and the number of DIDs holding it does not grow.
+  The self-service rotation that audits under the same `acl.swap` event
+  already carries the whole capability list across (`swap_acl`); this path
+  was the one that did not.
+
+  Only additive capabilities are carried. A narrowing list is re-derivable
+  from the role and is not lost by omission, and copying one would quietly
+  reduce what existing deployments' successors can do — the same class of
+  silent change, in the other direction.
+
+  The move is audited as `acl.capabilities.carried` rather than folded into
+  the `acl.swap` that follows: a capability moving between DIDs is the part
+  a reviewer asks about, and it must be answerable without inferring it from
+  two rows that no longer both exist.
+
+- **rate-limit**: Key the per-IP limiter on trusted-proxy CIDRs, not a global XFF flag ([#1562](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1562))
+
+* fix(rate-limit)!: key the per-IP limiter on trusted-proxy CIDRs, not a global XFF flag
+
+  Replaces the boolean `trust_xff` flag with `trust_xff_cidrs: Vec<CIDR>` (VTA + VTC). The per-IP rate limiter now reads `X-Forwarded-For` only when the request's peer address falls inside an explicit trusted-proxy CIDR allowlist, keying on the rightmost entry.
+
+  Fixes two issues with the old flag: an untrusted peer could forge a leading XFF entry to evade its own limit, and every request behind a trusted proxy shared one bucket — one client's burst could 429 unrelated clients.
+
+  Breaking config change: replace `trust_xff = true/false` with `trust_xff_cidrs = ["<cidr>", ...]`.
+
+
+
 ## [0.34.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.34.0...vta-service-v0.34.1) — 2026-09-18
 
 
