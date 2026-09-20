@@ -413,29 +413,37 @@ endpoints repairing the same broken relationship at once is what a mediator
 restart or a VTA redeploy produces, so the collision is common precisely when
 recovery is.
 
-So `vta-service`'s `TspTransport::send_reestablishing` spells the three steps
-out rather than calling the SDK's combined form, and answers a refused invite by
+**The fix lives in the SDK, from `affinidi-messaging-sdk` 0.26.12**
+(affinidi-tdk-rs #838). `TspOps::send_reestablishing` answers a refused invite by
 **re-reading the store** — not by matching on the error's text, which is not a
 contract. Our half no longer `None` means carry on to the payload; still `None`
-means the invite failed for its own reasons and that error stands
-(`invite_refusal_is_benign`, a pure function, is the decision). The payload is
-sent exactly once either way.
+means the invite failed for its own reasons and that error stands. The decision
+is the pure `invite_refusal_is_benign(SendReadiness) -> bool`, exported beside
+`readiness_for` and unit-tested with it: the race lives between two awaits, so
+no test can place the peer's invite, and the decision is what can be pinned.
 
-Two things this exposed, both fixed alongside it:
+`vta-service` carried a local copy of that sequence for one release (#1582) and
+now delegates again (#1586). Two consequences worth keeping in view:
 
-- `recover_send_tsp` collapsed `Timeout`, `Cancelled` and `SendFailed(reason)`
-  into one message, "`<peer>` did not answer over TSP after re-establishing the
-  relationship" — so a frame that never left this VTA was reported as a silent
-  peer, and every reader was sent to the wrong endpoint. The steady-state
-  `send_tsp` beside it already told the three apart; the recovery arm now does
-  too.
-- The same race is open in `vtc-service`'s registry client
-  (`registry::messaging::send_tsp`), which calls the SDK's combined form. There
-  it surfaces as a transient `Unreachable` and the syncer's backoff — the one
-  retry owner on that path — re-sends into a store that now reads
-  `HandshakeInFlight`, so it self-heals on the next attempt. Left as is
-  deliberately; a one-shot recovery has no such owner, which is why the VTA's
-  arm could not.
+- **The floor is `0.26.12`, not `0.26`.** Every `affinidi-messaging-sdk`
+  requirement in this workspace names the patch. On `^0.26` a lockfile resolving
+  0.26.11 would put the race back with nothing local left to catch it — the
+  failure mode that makes a version floor load-bearing rather than tidy.
+- **`vtc-service` is covered by the same bump.** Its registry client
+  (`registry::messaging::send_tsp`) calls the SDK's form directly. Before 0.26.12
+  the collision surfaced there as a transient `Unreachable` that the syncer's
+  backoff — the one retry owner on that path — re-sent through, so it self-healed
+  on the next attempt; that is why it was left alone rather than given a second
+  copy of the workaround. A one-shot recovery has no such owner, which is why the
+  VTA's arm could not wait.
+
+One thing this exposed on the VTA side, fixed with it: `recover_send_tsp`
+collapsed `Timeout`, `Cancelled` and `SendFailed(reason)` into one message,
+"`<peer>` did not answer over TSP after re-establishing the relationship" — so a
+frame that never left this VTA was reported as a silent peer, and every reader
+was sent to the wrong endpoint. The steady-state `send_tsp` beside it already
+told the three apart; the recovery arm now does too. That is what made the
+upstream defect readable, and it stays whatever the SDK does.
 
 ### D7 — Security invariants for re-establishment
 

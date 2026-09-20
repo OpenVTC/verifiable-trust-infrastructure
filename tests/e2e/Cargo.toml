@@ -37,7 +37,7 @@ trust-tasks-rs = { workspace = true }
 affinidi-tdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
-affinidi-messaging-sdk = "0.26"
+affinidi-messaging-sdk = "0.26.12"
 affinidi-messaging-didcomm = "0.15"
 
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
