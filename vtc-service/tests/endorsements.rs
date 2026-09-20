@@ -501,6 +501,104 @@ async fn delete_type_refused_while_live_endorsement_exists() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 }
 
+/// The symmetric partner of `register_accepts`' check that a criterion's
+/// `statementType` is registered. Without this, deleting the type strands the
+/// criterion in exactly the state registration forbids: it keeps advertising a
+/// type the community no longer recognises, and can no longer be saved again.
+#[tokio::test]
+async fn delete_type_refused_while_a_criterion_names_it() {
+    let fix = build().await;
+    let uri = "https://example.com/v1/identity-vetting";
+    register_type(&fix, uri).await;
+    register_vetting_criterion(&fix, "kernel-developer", uri).await;
+
+    let (status, body) = delete_type(&fix, uri).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    // The console renders this text verbatim, so the criterion must be named:
+    // "it is in use" the operator cannot act on.
+    let message = body.to_string();
+    assert!(
+        message.contains("kernel-developer"),
+        "409 must name the criterion that blocks the delete: {message}"
+    );
+
+    // Removing the criterion releases the type — the guard is not sticky.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/v1/schemas/accepts/kernel-developer")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let (status, body) = delete_type(&fix, uri).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["typeUri"], uri);
+}
+
+/// `DELETE /v1/endorsement-types/{uri}`, percent-encoding the URI into the path.
+async fn delete_type(fix: &Fixture, uri: &str) -> (StatusCode, Value) {
+    let encoded = uri.replace(':', "%3A").replace('/', "%2F");
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/endorsement-types/{encoded}"))
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", DELETE_TYPE_TASK)
+        .body(Body::empty())
+        .unwrap();
+    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+}
+
+/// An Accepts criterion counting statements of `statement_type`. The DCQL
+/// query references `EndorsementCredential`, so that per-type schema is
+/// registered first — `store_accepts` refuses a dangling type reference.
+async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &str) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/schemas")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "typeUri": "EndorsementCredential",
+                "dtgType": "EndorsementCredential",
+                "kind": "accepts",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/schemas/accepts")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "id": id,
+                "description": "Two vetters, at least one in person",
+                "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
+                           "meta": { "type_values": ["EndorsementCredential"] } } ] },
+                "vetting": {
+                    "version": "0.1",
+                    "statementType": statement_type,
+                    "minStatements": 2,
+                    "minByMethod": { "inPerson": 1 },
+                    "acceptedMethods": ["inPerson", "video"],
+                    "maxStatementAge": "P120D",
+                    "eligibleVetters": { "role": "vetter" },
+                },
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::CREATED, "register criterion: {body}");
+}
+
 // ─── Revoke ──────────────────────────────────────────────
 
 #[tokio::test]

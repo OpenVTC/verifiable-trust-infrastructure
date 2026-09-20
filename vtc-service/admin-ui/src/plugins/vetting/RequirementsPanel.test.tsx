@@ -111,7 +111,9 @@ describe("RequirementsPanel", () => {
     );
     renderWithProviders(<RequirementsPanel />);
 
-    const card = (await screen.findByText("legacy")).closest("section")!;
+    const card = (
+      await screen.findByRole("heading", { name: "Criterion legacy" })
+    ).closest("section")!;
     fireEvent.click(within(card).getByRole("button", { name: "Remove" }));
 
     const dialog = await screen.findByRole("dialog");
@@ -133,7 +135,9 @@ describe("RequirementsPanel", () => {
     mockFetch(routes());
     renderWithProviders(<RequirementsPanel />);
 
-    const card = (await screen.findByText("kernel-developer")).closest("section")!;
+    const card = (
+      await screen.findByRole("heading", { name: "Criterion kernel-developer" })
+    ).closest("section")!;
     fireEvent.click(within(card).getByRole("button", { name: "Edit" }));
     expect(
       await screen.findByRole("heading", { name: "Editing kernel-developer" }),

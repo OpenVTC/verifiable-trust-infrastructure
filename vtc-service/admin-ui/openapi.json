@@ -2016,7 +2016,7 @@
         "tags": [
           "endorsement-types"
         ],
-        "operationId": "delete",
+        "operationId": "endorsementTypeDelete",
         "parameters": [
           {
             "name": "type_uri",
@@ -2034,7 +2034,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DeleteResponse"
+                  "$ref": "#/components/schemas/EndorsementTypeDeleteResponse"
                 }
               }
             }
@@ -6561,6 +6561,18 @@
           "typeUri": {
             "type": "string",
             "description": "The type URI. Primary key — URL-encoded into the\nkeyspace key."
+          }
+        }
+      },
+      "EndorsementTypeDeleteResponse": {
+        "type": "object",
+        "description": "`{ typeUri }` — the shape `vtc/endorsement-types/delete/0.1`\npublishes.\n\nNamed for its route rather than `DeleteResponse`: three structs\nin this crate carried that name, utoipa's component registry\nkeeps one, and `routes::schemas`' `{ id }` won — so\n`openapi.json` documented this route as returning `{ id }`, and\nthe console's generated `wire.ts` carried that error. The JSON\nbody is unchanged.",
+        "required": [
+          "typeUri"
+        ],
+        "properties": {
+          "typeUri": {
+            "type": "string"
           }
         }
       },

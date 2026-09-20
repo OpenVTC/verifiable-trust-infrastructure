@@ -50,6 +50,20 @@ criteria may count it — "Register it" on the Requirements page, or:
 }
 ```
 
+A type can be withdrawn again — "Remove" beside it on the Requirements page, or
+`vtc/endorsement-types/delete/0.1` (`DELETE /v1/endorsement-types/{typeUri}`) —
+but **only while nothing references it**. The community refuses with `409
+endorsement-type-in-use` while any criterion names the type as its
+`statementType`, or any endorsement of the type is still live, and the refusal
+names both: the criteria by id and the live endorsements by count. Revoke the
+endorsements and remove or re-point the criteria first. The console shows which
+criteria require each type, and leaves Remove disabled while any do.
+
+Removing a type does not touch statements already issued of it. It means no
+criterion may name it until it is registered again — a criterion that already
+does is what the refusal exists to protect, since registering a criterion whose
+`statementType` is unregistered is itself refused.
+
 ### 2. Say what you require
 
 Add a `vetting` object to an Accepts criterion — "Add a criterion" on the
@@ -425,11 +439,12 @@ key revoked later does not revoke the grant — revoke it with
 - **Vetting → Withdrawals** lists withdrawal notices with their review state,
   linking to the join requests and members they touch.
 - **Vetting → Requirements** is where admission criteria are written: it adds,
-  edits and removes them (`/v1/schemas/accepts`), registers the endorsement
-  types a criterion may count (`/v1/endorsement-types`), and reads each
-  criterion's `requirementsDigest` from `GET /v1/join-requests/manifest` — the
-  manifest 0.2 answer for an admin session, under the same task — so a change
-  is visible as applicants will see it. Every requirement is checked in the
+  edits and removes them (`/v1/schemas/accepts`), registers and removes the
+  endorsement types a criterion may count (`/v1/endorsement-types`) — saying
+  under each type which criteria require it, and leaving Remove disabled while
+  any do — and reads each criterion's `requirementsDigest` from `GET
+  /v1/join-requests/manifest` — the manifest 0.2 answer for an admin session,
+  under the same task — so a change is visible as applicants will see it. Every requirement is checked in the
   browser against the same rules the daemon applies before it can be saved, and
   the page says in sentences what applicants will be told.
 - A join request's page shows the vetting facts it was decided on, statement

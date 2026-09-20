@@ -2838,6 +2838,19 @@ select[aria-invalid="true"] {
   flex-direction: column;
   gap: var(--space-1);
 }
+/* One registered statement type: its identity and usage note on the
+ * left, its Remove on the right, stacking on a narrow viewport. */
+.vet-type {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.vet-type > div:first-child {
+  min-width: 0;
+  flex: 1 1 20rem;
+}
 .vet-subhead {
   margin: 0 0 var(--space-2);
   font-size: var(--text-sm);
