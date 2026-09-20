@@ -234,7 +234,7 @@ pub async fn delete(
     auth: AdminAuth,
     State(state): State<AppState>,
     Path(type_uri): Path<String>,
-) -> Result<(StatusCode, Json<DeleteTaskResponse>), AppError> {
+) -> Result<(StatusCode, Json<EndorsementTypeDelete01Response>), AppError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -284,17 +284,20 @@ pub async fn delete(
 
     info!(type_uri = %type_uri, by = %auth.0.did, "endorsement type deleted");
 
-    Ok((
-        StatusCode::OK,
-        Json(
-            DeleteTaskResponse::builder()
-                .type_uri(type_uri)
-                .try_into()
-                .map_err(|e| {
-                    AppError::Internal(format!("delete response does not match its schema: {e}"))
-                })?,
-        ),
-    ))
+    // Built as the generated type — the builder's `try_into` is what checks the
+    // value against the specification's own schema — and returned as the wrapper
+    // the `#[utoipa::path]` above declares. `#[serde(transparent)]` makes the two
+    // identical on the wire, which is why the annotation and the return type
+    // could drift apart in the first place; `openapi_response_census` compares
+    // the names because the bytes cannot tell them apart.
+    let response: DeleteTaskResponse = DeleteTaskResponse::builder()
+        .type_uri(type_uri)
+        .try_into()
+        .map_err(|e| {
+            AppError::Internal(format!("delete response does not match its schema: {e}"))
+        })?;
+
+    Ok((StatusCode::OK, Json(response.into())))
 }
 
 /// The 409 body for a type something still references.
