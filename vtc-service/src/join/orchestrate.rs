@@ -18,7 +18,7 @@ use uuid::Uuid;
 use affinidi_vc::VerifiableCredential;
 use vti_common::audit::{
     AuditEvent, AuditWriter, CredentialIssuedData, JoinRequestData, JoinRequestRejectedData,
-    MemberAddedData,
+    JoinRequestWithdrawnData, MemberAddedData,
 };
 use vti_common::error::AppError;
 
@@ -131,9 +131,19 @@ pub async fn submit_inner(
     // caps unbounded accumulation. An already-admitted applicant is caught
     // later by the admit duplicate-ACL guard.
     if let Some(existing) = find_open_request(&state.join_requests_ks, &applicant_did).await? {
+        // Name the status, not just the id. "Withdraw or await its decision"
+        // is advice the applicant cannot act on without knowing which of the
+        // two they are in: a `deferred` request is waiting on *them*, and is
+        // the case `vtc/join-requests/withdraw/0.1` exists for, while a
+        // `pending` one is waiting on the community and will move on its own.
+        let status = crate::join::storage::get_join_request(&state.join_requests_ks, existing)
+            .await?
+            .map(|r| r.status.to_string())
+            .unwrap_or_else(|| "open".to_string());
         return Err(AppError::Conflict(format!(
-            "an open join request already exists for {applicant_did} (id {existing}); \
-             withdraw or await its decision before resubmitting"
+            "an open join request already exists for {applicant_did} (id {existing}, \
+             status {status}); withdraw it with vtc/join-requests/withdraw/0.1, or await \
+             its decision, before resubmitting"
         )));
     }
 
@@ -708,7 +718,12 @@ fn canonical_payload(
 /// status poll (`status_by_applicant`), which is only well-defined because of
 /// it — an applicant that has lost the community's request id can ask about
 /// "my open request" and get exactly one answer.
-pub(crate) async fn find_open_request(
+// `pub` rather than `pub(crate)` so the withdraw tests can assert the release
+// directly: that a withdrawn row stops matching the guard is the half of the
+// task the applicant actually feels, and asserting it through a route would
+// test the route instead. `vtc-service` is `publish = false`, so widening this
+// costs nothing outside the workspace.
+pub async fn find_open_request(
     ks: &vti_common::store::KeyspaceHandle,
     applicant_did: &str,
 ) -> Result<Option<Uuid>, AppError> {
@@ -800,6 +815,108 @@ fn signing_bytes(payload: &[u8]) -> Vec<u8> {
     buf.extend_from_slice(JOIN_REQUEST_SUBMIT_DOMAIN_TAG);
     buf.extend_from_slice(payload);
     buf
+}
+
+// ---------------------------------------------------------------------------
+/// Close an applicant's own open join request.
+///
+/// The applicant is the authority: `applicant_did` is the **proven** caller
+/// (authcrypt sender on DIDComm, document proof signer on REST), and a request
+/// is withdrawable only by the applicant recorded on it. That match is the
+/// entitlement — not membership, not a capability, neither of which an
+/// applicant has, which is why they are applying
+/// (`vtc/join-requests/withdraw/0.1` § Authorization).
+///
+/// `request_id` is OPTIONAL for the reason it is optional on the status poll:
+/// an applicant whose submit response was lost never received an id, and the
+/// id-less form is the only one available to them. When it is supplied it is
+/// preferred over inferring the request from the caller, as the spec requires.
+///
+/// ## Why the two refusals are shaped differently
+///
+/// A request that does not exist, and one that exists but belongs to somebody
+/// else, both answer `NotFound`. Distinguishing them would let a caller probe
+/// whether a given request id exists on this community — the same
+/// enumeration-resistance reasoning the vault's read paths use.
+///
+/// A request that has already been decided answers `Gone` instead, because the
+/// applicant *is* entitled to know the outcome of their own request, and
+/// because no retry will change it.
+pub async fn withdraw_inner(
+    state: &AppState,
+    applicant_did: &str,
+    request_id: Option<Uuid>,
+    reason: Option<String>,
+) -> Result<JoinRequest, AppError> {
+    let ks = &state.join_requests_ks;
+
+    // The spec's rule: prefer a supplied id over inferring from the caller.
+    let id = match request_id {
+        Some(id) => id,
+        None => find_open_request(ks, applicant_did).await?.ok_or_else(|| {
+            AppError::NotFound(format!("no open join request for {applicant_did}"))
+        })?,
+    };
+
+    let mut request = crate::join::storage::get_join_request(ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("no open join request for {applicant_did}")))?;
+
+    // Ownership, and the reason it is conflated with absence above.
+    if request.applicant_did != applicant_did {
+        return Err(AppError::NotFound(format!(
+            "no open join request for {applicant_did}"
+        )));
+    }
+
+    match request.status {
+        JoinStatus::Pending | JoinStatus::Deferred => {}
+        decided => {
+            return Err(AppError::Gone(format!(
+                "join request {id} is already {decided} and cannot be withdrawn"
+            )));
+        }
+    }
+
+    let previous_status = request.status.to_string();
+    request.status = JoinStatus::Withdrawn;
+    crate::join::storage::store_join_request(ks, &request).await?;
+
+    // The applicant's words go to the audit log, not onto the row. `decision`
+    // means *refusal* — `decision_for_applicant` reconstructs one — so writing
+    // a withdrawal there would make a withdrawn request read as rejected, and
+    // the `JoinRequest` component is canonically typed, so it has no member of
+    // its own to take. The audit entry is the community's record of the
+    // withdrawal, which is what the spec asks for.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        // Actor and subject are the same party here, and that is the point:
+        // the applicant acts on their own request. Every other join audit
+        // event has an operator as actor and the applicant as subject.
+        writer
+            .write(
+                applicant_did,
+                Some(applicant_did),
+                AuditEvent::JoinRequestWithdrawn(JoinRequestWithdrawnData {
+                    request_id: id.to_string(),
+                    reason: reason.filter(|r| !r.trim().is_empty()),
+                    previous_status,
+                }),
+            )
+            .await?;
+    }
+
+    // Reaching `Withdrawn` does two things beyond recording the fact: the
+    // dedup guard (`find_open_request`) stops matching this row, so the
+    // applicant may submit again; and the row becomes terminal-retainable, so
+    // the retention sweeper prunes it on the community's own schedule rather
+    // than holding it forever as `Deferred` did.
+    tracing::info!(
+        request_id = %id,
+        applicant = %applicant_did,
+        "join request withdrawn by its applicant"
+    );
+
+    Ok(request)
 }
 
 // ---------------------------------------------------------------------------

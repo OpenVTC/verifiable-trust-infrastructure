@@ -1027,6 +1027,25 @@ fn table() -> Vec<Conformance> {
             ))
         ),
         checked!(
+            s::join_requests::withdraw::v0_1::Payload,
+            s::join_requests::withdraw::v0_1::Response,
+            // Both members are optional — the id-less form is the common case
+            // (trust_tasks/mod.rs:1159) — so the witness carries the populated
+            // one, which is the only shape with anything to check.
+            json!({ "requestId": REQUEST_ID, "reason": "joining a different community instead" }),
+            // Projected through the same generated builder the handler returns
+            // through (trust_tasks/mod.rs:1186), not transcribed.
+            to_v({
+                let r: s::join_requests::withdraw::v0_1::Response =
+                    s::join_requests::withdraw::v0_1::Response::builder()
+                        .request_id(REQUEST_ID.to_string())
+                        .status(s::join_requests::withdraw::v0_1::ResponseStatus::Withdrawn)
+                        .try_into()
+                        .expect("the withdraw response satisfies its own schema");
+                r
+            })
+        ),
+        checked!(
             s::join_requests::status::v0_1::Payload,
             s::join_requests::status::v0_1::Response,
             // The id-less poll: `requestId` is `Option` and omitted

@@ -117,6 +117,45 @@ pub struct JoinRequestSubmitBody {
 /// manifest publishes.
 pub use trust_tasks_rs::specs::vtc::join_requests::manifest;
 
+/// The generated `vtc/join-requests/withdraw` module.
+///
+/// Re-exported rather than mirrored by hand: the payload has a generated module
+/// (`trust-tasks-rs` 0.21.5, from spec PR #518), and the workspace rule is that
+/// a task with one never gets a local copy — `vta-sdk`'s
+/// `generated_wire_types_census` enforces it. `SelfRemoveBody` and its
+/// neighbours below are hand-written because they predate their generated
+/// modules; that list only shrinks.
+pub use trust_tasks_rs::specs::vtc::join_requests::withdraw;
+
+/// Trust Task `type` for withdrawing a join request: the applicant closes
+/// their own open request.
+///
+/// Taken from the generated type rather than written as a literal, so the
+/// constant cannot drift from the spec that defines it.
+pub const JOIN_REQUEST_WITHDRAW_TYPE: &str =
+    <withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Trust Task `type` for the withdraw response.
+pub const JOIN_REQUEST_WITHDRAW_RESPONSE_TYPE: &str =
+    <withdraw::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Extended error code: the caller has no open request to withdraw.
+///
+/// Also the answer when a supplied `requestId` names a request belonging to
+/// somebody else. The spec conflates the two deliberately — distinguishing
+/// them would let a caller probe whether a given id exists on this community —
+/// and the code's own registry entry records that reasoning.
+pub const JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND: &str = "vtc/join-requests/withdraw:notFound";
+
+/// Extended error code: the request has already been approved, rejected or
+/// withdrawn, so there is nothing left to close.
+///
+/// Distinct from [`JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND`] because an applicant
+/// *is* entitled to the outcome of their own request, and because no retry
+/// will change it.
+pub const JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED: &str =
+    "vtc/join-requests/withdraw:alreadyDecided";
+
 /// Trust Task `type` for a join-request manifest request: discover the
 /// community's join evidence requirements. Public read; empty payload.
 pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
