@@ -375,15 +375,23 @@ async fn rest_submit_dedups_an_open_request_for_the_same_applicant() {
     assert_eq!(verdict_effect(&body), "refer");
 
     // Duplicate while the first request is still open → a business-rule
-    // conflict, surfaced as the framework `taskFailed` reject (422).
+    // conflict (422), carrying the consumer-minted code that names the request
+    // in the way. A client that does not know the code reads `taskFailed`
+    // instead, by SPEC.md §8.5's fallback rule.
     let (_did2, doc2) = submit_doc(&vp).await;
     let (status2, body2) = post_tt(&fix.router, doc2).await;
     assert_eq!(
         status2,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "a second open request for one applicant must be a taskFailed conflict: {body2}"
+        "a second open request for one applicant must be a business-rule conflict: {body2}"
     );
-    assert_eq!(tt_error_code(&body2), "taskFailed");
+    assert_eq!(
+        tt_error_code(&body2),
+        vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN
+    );
+    // `pending` here, not `deferred`: the default policy refers this request to
+    // an admin, so it is the community that owes the next move.
+    assert_eq!(body2.pointer("/payload/details/status").unwrap(), "pending");
 }
 
 #[tokio::test]
@@ -3808,5 +3816,52 @@ async fn the_withdraw_task_answers_with_the_codes_its_spec_declares() {
     assert_eq!(
         tt_error_code(&body),
         JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED
+    );
+}
+
+/// KR-04, the other side of the withdraw task: when the dedup guard refuses a
+/// second application, the refusal must say *which* request is in the way and
+/// what state it is in — otherwise the applicant cannot tell whether to wait
+/// or to withdraw, which is the position Keyring's applicants were left in.
+///
+/// `deferred` is the case that matters. A `pending` request is waiting on the
+/// community and resolves on its own; a `deferred` one is waiting on the
+/// applicant, so "await its decision" is advice that would never come true.
+#[tokio::test]
+async fn a_duplicate_submit_names_the_open_request_and_its_status() {
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN, JOIN_REQUEST_SUBMIT_TYPE,
+    };
+
+    let f = build_fixture().await;
+    let seed = [0x6B; 32];
+    let (applicant, _) = signed_trust_task_seed(&seed, JOIN_REQUEST_SUBMIT_TYPE, json!({})).await;
+    let id = seed_request(&f, &applicant, JoinStatus::Deferred).await;
+
+    let (_did, doc) = signed_trust_task_seed(
+        &seed,
+        JOIN_REQUEST_SUBMIT_TYPE,
+        json!({
+            "vp": { "type": ["VerifiablePresentation"] },
+            "registryConsent": false,
+            "extensions": {}
+        }),
+    )
+    .await;
+    let (status, body) = post_tt(&f.router, doc).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN
+    );
+    let details = body
+        .pointer("/payload/details")
+        .unwrap_or_else(|| panic!("no payload.details in {body}"));
+    assert_eq!(details["requestId"], json!(id.to_string()));
+    assert_eq!(
+        details["status"], "deferred",
+        "the annex distinguishes the request waiting on the applicant from one \
+         waiting on the community: {body}"
     );
 }

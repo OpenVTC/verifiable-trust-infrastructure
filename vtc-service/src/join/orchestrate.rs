@@ -62,6 +62,51 @@ pub struct JoinSubmitOutcome {
     pub request: JoinRequest,
     pub admit: Option<Box<AdmitOutcome>>,
 }
+/// Why a submit was refused, where the reason carries data the wire needs.
+///
+/// `submit_inner` reports every other failure as an [`AppError`] and is
+/// converted back to one by [`From`], so the REST route and the legacy DIDComm
+/// problem-report path are unchanged — an `AlreadyOpen` still reaches them as
+/// the same `Conflict` they answered before.
+///
+/// The Trust Task handler is the one caller that matches the variant, because
+/// it is the one surface that can carry a typed code and a `details` annex. It
+/// exists so the handler does not have to *re-read* the open request to
+/// describe it: the dedup guard already holds the id and the status at the
+/// moment it fires, and re-deriving them afterwards would race a concurrent
+/// decision on the very request being described.
+#[derive(Debug)]
+pub enum SubmitRefusal {
+    /// The applicant already has an open request. Carries what the guard saw.
+    AlreadyOpen {
+        request_id: Uuid,
+        status: JoinStatus,
+    },
+    /// Everything else, unchanged.
+    Other(AppError),
+}
+
+impl From<AppError> for SubmitRefusal {
+    fn from(e: AppError) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl From<SubmitRefusal> for AppError {
+    fn from(r: SubmitRefusal) -> Self {
+        match r {
+            // The prose stays exactly as the non-Trust-Task surfaces already
+            // render it; only the Trust Task path reads the structure instead.
+            SubmitRefusal::AlreadyOpen { request_id, status } => AppError::Conflict(format!(
+                "an open join request already exists (id {request_id}, status {status}); \
+                 withdraw it with vtc/join-requests/withdraw/0.1, or await its decision, \
+                 before resubmitting"
+            )),
+            SubmitRefusal::Other(e) => e,
+        }
+    }
+}
+
 /// Shared inner implementation called by both REST and the DIDComm
 /// handler — the join ceremony's decide → effect spine.
 ///
@@ -85,7 +130,7 @@ pub async fn submit_inner(
     extensions: JsonValue,
     binding: Option<HolderBinding<'_>>,
     transport: JoinTransport,
-) -> Result<JoinSubmitOutcome, AppError> {
+) -> Result<JoinSubmitOutcome, SubmitRefusal> {
     // 1. Holder binding (REST only): audience + freshness + signature. The
     // DIDComm path (`binding == None`) is authenticated + addressed by the
     // authcrypt envelope, so it skips this.
@@ -103,7 +148,8 @@ pub async fn submit_inner(
             return Err(AppError::Validation(format!(
                 "join-request audience ({}) does not match this VTC ({vtc_did})",
                 b.audience
-            )));
+            ))
+            .into());
         }
         // Freshness: a stale captured body is rejected; small future skew ok.
         let now = crate::auth::session::now_epoch() as i64;
@@ -113,7 +159,8 @@ pub async fn submit_inner(
             return Err(AppError::Validation(
                 "join-request `created` is outside the freshness window — re-sign and resubmit"
                     .into(),
-            ));
+            )
+            .into());
         }
         verify_holder_signature(
             &applicant_did,
@@ -131,20 +178,27 @@ pub async fn submit_inner(
     // caps unbounded accumulation. An already-admitted applicant is caught
     // later by the admit duplicate-ACL guard.
     if let Some(existing) = find_open_request(&state.join_requests_ks, &applicant_did).await? {
-        // Name the status, not just the id. "Withdraw or await its decision"
+        // Report the status, not just the id. "Withdraw or await its decision"
         // is advice the applicant cannot act on without knowing which of the
         // two they are in: a `deferred` request is waiting on *them*, and is
         // the case `vtc/join-requests/withdraw/0.1` exists for, while a
         // `pending` one is waiting on the community and will move on its own.
+        //
+        // Returned as structure rather than prose so the Trust Task surface can
+        // answer `submit:requestAlreadyOpen` with a machine-readable annex.
+        // Reading the row here rather than in the handler is deliberate: this
+        // is the instant the guard fired, so the status cannot have moved under
+        // a concurrent decision by the time it is described.
         let status = crate::join::storage::get_join_request(&state.join_requests_ks, existing)
             .await?
-            .map(|r| r.status.to_string())
-            .unwrap_or_else(|| "open".to_string());
-        return Err(AppError::Conflict(format!(
-            "an open join request already exists for {applicant_did} (id {existing}, \
-             status {status}); withdraw it with vtc/join-requests/withdraw/0.1, or await \
-             its decision, before resubmitting"
-        )));
+            // A row the guard just matched and that has vanished since is not a
+            // state worth inventing a name for; `Pending` is the conservative
+            // reading, and the id is what the applicant acts on either way.
+            .map_or(JoinStatus::Pending, |r| r.status);
+        return Err(SubmitRefusal::AlreadyOpen {
+            request_id: existing,
+            status,
+        });
     }
 
     // 3. The lossy `vp_claims` projection is still stored on the row
