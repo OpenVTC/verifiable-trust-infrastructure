@@ -2839,7 +2839,22 @@ mod transport_harness_tests {
             // Generous relative to the orphan tests: this one must leave time for a
             // real round trip (re-invite → deliver → the peer's reply → the VTA
             // correlating it), not just for a timeout to elapse.
-            .with_reply_timeout(std::time::Duration::from_secs(5));
+            //
+            // The number is a fixture parameter, not the subject. What this test
+            // asserts is the *correlation* — that the peer's reply is matched
+            // through `pending_replies` and returned — and the timeout only has
+            // to be long enough not to fire before that happens. At 5s it was
+            // also, in effect, asserting that a loaded CI runner completes a TSP
+            // round trip within five seconds, which it does not reliably do: this
+            // test flaked on `main` itself (run 35465791169, 19 Sep) and on
+            // unrelated PRs, in `Test (workspace)` — the job this repo's CI
+            // comments call "the gate that matters".
+            //
+            // Raising it weakens nothing. A reply that never arrives still fails
+            // the assertion below; it just takes longer to say so. The timeout
+            // path has its own coverage in `d6_drives_recovery_on_a_reply_timeout`,
+            // which uses a silent peer and a deliberately short bound.
+            .with_reply_timeout(std::time::Duration::from_secs(30));
 
         // The request the VTA re-sends on recovery. Its `id` is the thread the
         // reply will name (`reply_thread_of` = `threadId`-or-`id`), so the waiter
