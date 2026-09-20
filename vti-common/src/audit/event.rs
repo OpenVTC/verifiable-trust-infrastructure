@@ -186,6 +186,17 @@ pub enum AuditEvent {
     /// An admin / moderator rejected a pending join request. The
     /// `reason` field is operator-supplied and may be empty.
     JoinRequestRejected(JoinRequestRejectedData),
+    /// The **applicant** closed their own open request
+    /// (`vtc/join-requests/withdraw/0.1`).
+    ///
+    /// Kept distinct from `JoinRequestRejected` because "the applicant
+    /// changed their mind" and "the community said no" are different
+    /// outcomes, and a maintainer reading the record later is entitled to
+    /// tell them apart. It is also where the applicant's free-text reason
+    /// lives: the `JoinRequest` row has a canonical spec'd shape and no
+    /// member for it, and `JoinDecision` means *refusal*, so writing it
+    /// there would make a withdrawn request read as rejected.
+    JoinRequestWithdrawn(JoinRequestWithdrawnData),
 
     /// New member row written. Companion event to
     /// `JoinRequestApproved` — the latter is what an audit
@@ -560,6 +571,7 @@ impl AuditEvent {
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
+            Self::JoinRequestWithdrawn(..) => "JoinRequestWithdrawn",
             Self::MemberAdded(..) => "MemberAdded",
             Self::MemberRemoved(..) => "MemberRemoved",
             Self::MembershipReciprocated(..) => "MembershipReciprocated",
@@ -1012,6 +1024,25 @@ pub struct JoinRequestData {
     /// Transport the request arrived over (`"rest"` / `"didcomm"`),
     /// recorded for diagnostics.
     pub transport: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestWithdrawnData {
+    /// UUID of the JoinRequest row the applicant closed.
+    pub request_id: String,
+    /// The applicant's own words, bounded at 1024 characters by the spec's
+    /// schema. Absent when they supplied none.
+    ///
+    /// Recorded for the humans who will read this — a vetter who attested to
+    /// the applicant, or a maintainer who was mid-review. Never interpreted:
+    /// `vtc/join-requests/withdraw/0.1` forbids a consumer branching on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What the request's status was when it was withdrawn — `pending` or
+    /// `deferred`. A deferred request is the case the task exists for: the
+    /// community asked for more and the applicant chose not to supply it.
+    pub previous_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -3601,3 +3601,212 @@ async fn admin_list_get_is_not_rate_limited() {
         );
     }
 }
+
+// ─── vtc/join-requests/withdraw/0.1 ────────────────────────────────────────
+//
+// The KR-03 / VTI-03 regression. A request answered `requestMore` becomes
+// `Deferred`, and before this task there was no transition out of it: the
+// dedup guard kept matching the row, so the applicant could neither resolve
+// it nor replace it, and only the retention sweeper ever closed it — on a
+// schedule neither party controls.
+
+use vtc_service::join::JoinStatus;
+use vtc_service::join::orchestrate::withdraw_inner;
+use vtc_service::join::storage::{get_join_request, store_join_request};
+use vti_common::error::AppError;
+
+/// Put a request in `status` for `applicant`, the way the policy step would.
+async fn seed_request(f: &Fixture, applicant: &str, status: JoinStatus) -> uuid::Uuid {
+    let mut request =
+        vtc_service::join::JoinRequest::new(applicant.to_string(), serde_json::json!({"vp": "x"}));
+    request.status = status;
+    store_join_request(&f.state.join_requests_ks, &request)
+        .await
+        .expect("seed the request");
+    request.id
+}
+
+/// The whole point of the task: a deferred request closes, and closing it is
+/// what lets the applicant apply again.
+#[tokio::test]
+async fn withdrawing_a_deferred_request_closes_it_and_frees_the_applicant() {
+    let f = build_fixture().await;
+    let applicant = "did:key:zWithdrawApplicant";
+    let id = seed_request(&f, applicant, JoinStatus::Deferred).await;
+
+    let out = withdraw_inner(
+        &f.state,
+        applicant,
+        Some(id),
+        Some("changed my mind".into()),
+    )
+    .await
+    .expect("the applicant may withdraw their own deferred request");
+    assert_eq!(out.status, JoinStatus::Withdrawn);
+
+    let stored = get_join_request(&f.state.join_requests_ks, id)
+        .await
+        .expect("read back")
+        .expect("row still exists");
+    assert_eq!(
+        stored.status,
+        JoinStatus::Withdrawn,
+        "the transition is persisted, not just returned"
+    );
+
+    // The release is the half that matters to the applicant: the dedup guard
+    // matches only Pending|Deferred, so a withdrawn row stops blocking them.
+    assert!(
+        vtc_service::join::orchestrate::find_open_request(&f.state.join_requests_ks, applicant)
+            .await
+            .expect("guard lookup")
+            .is_none(),
+        "a withdrawn request must not keep blocking a fresh application"
+    );
+}
+
+/// A pending request — waiting on the community rather than the applicant —
+/// is withdrawable too. The applicant is allowed to change their mind before
+/// a decision, not only when asked for more.
+#[tokio::test]
+async fn a_pending_request_can_also_be_withdrawn() {
+    let f = build_fixture().await;
+    let applicant = "did:key:zPendingApplicant";
+    let id = seed_request(&f, applicant, JoinStatus::Pending).await;
+
+    let out = withdraw_inner(&f.state, applicant, Some(id), None)
+        .await
+        .expect("pending is withdrawable");
+    assert_eq!(out.status, JoinStatus::Withdrawn);
+}
+
+/// With no id, the request is resolved from the authenticated applicant —
+/// the only form available to someone whose submit response was lost.
+#[tokio::test]
+async fn the_id_less_form_resolves_the_applicants_own_request() {
+    let f = build_fixture().await;
+    let applicant = "did:key:zIdLessApplicant";
+    let id = seed_request(&f, applicant, JoinStatus::Deferred).await;
+
+    let out = withdraw_inner(&f.state, applicant, None, None)
+        .await
+        .expect("the id-less form resolves from the caller");
+    assert_eq!(out.id, id, "it resolved the applicant's own request");
+    assert_eq!(out.status, JoinStatus::Withdrawn);
+}
+
+/// Ownership is the entitlement, and a stranger naming a real id learns
+/// nothing about whether it exists.
+#[tokio::test]
+async fn only_the_applicant_may_withdraw_and_a_stranger_cannot_probe() {
+    let f = build_fixture().await;
+    let applicant = "did:key:zOwnerApplicant";
+    let stranger = "did:key:zStranger";
+    let id = seed_request(&f, applicant, JoinStatus::Deferred).await;
+
+    let err = withdraw_inner(&f.state, stranger, Some(id), None)
+        .await
+        .expect_err("a stranger cannot withdraw someone else's request");
+    assert!(
+        matches!(err, AppError::NotFound(_)),
+        "a request that is not yours answers NotFound, the same as one that \
+         does not exist — telling them apart would let a caller probe whether \
+         an id exists on this community. Got: {err:?}"
+    );
+
+    // And it really did not act.
+    let stored = get_join_request(&f.state.join_requests_ks, id)
+        .await
+        .expect("read back")
+        .expect("row still exists");
+    assert_eq!(
+        stored.status,
+        JoinStatus::Deferred,
+        "the refused withdrawal must not have changed the row"
+    );
+}
+
+/// A decided request answers `Gone`, not `NotFound`: the applicant is
+/// entitled to know the outcome of their own request, and no retry changes it.
+#[tokio::test]
+async fn a_decided_request_cannot_be_withdrawn() {
+    let f = build_fixture().await;
+    for decided in [
+        JoinStatus::Approved,
+        JoinStatus::Rejected,
+        JoinStatus::Withdrawn,
+    ] {
+        let applicant = format!("did:key:zDecided{decided}");
+        let id = seed_request(&f, &applicant, decided).await;
+
+        let err = withdraw_inner(&f.state, &applicant, Some(id), None)
+            .await
+            .expect_err("a decided request is not withdrawable");
+        assert!(
+            matches!(err, AppError::Gone(_)),
+            "{decided} should answer Gone — the applicant may know the outcome \
+             of their own request, and retrying will never change it. Got: {err:?}"
+        );
+    }
+}
+
+/// The dispatcher path, which is the only one that shows what an applicant's
+/// client actually receives.
+///
+/// The unit tests above assert `withdraw_inner`'s `AppError`s; those say
+/// nothing about the wire, because the generic `AppError` → reject mapping
+/// flattens both `NotFound` and `Gone` into a bare `taskFailed`. The spec
+/// declares two codes precisely so a client can tell "nothing to withdraw"
+/// from "already decided" without parsing English, so the codes are what this
+/// test pins.
+#[tokio::test]
+async fn the_withdraw_task_answers_with_the_codes_its_spec_declares() {
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED, JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND,
+        JOIN_REQUEST_WITHDRAW_TYPE,
+    };
+
+    let f = build_fixture().await;
+    let seed = [0x5A; 32];
+
+    // Nothing open: `notFound`, and the id-less form is what an applicant who
+    // never received a submit response is left with.
+    let (applicant, doc) =
+        signed_trust_task_seed(&seed, JOIN_REQUEST_WITHDRAW_TYPE, json!({})).await;
+    let (status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND);
+
+    // Open: it closes, and the response names the request even though the
+    // payload did not — the spec's reason for returning `requestId`.
+    let id = seed_request(&f, &applicant, JoinStatus::Deferred).await;
+    let (_did, doc) = signed_trust_task_seed(
+        &seed,
+        JOIN_REQUEST_WITHDRAW_TYPE,
+        json!({ "reason": "applying elsewhere" }),
+    )
+    .await;
+    let (status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.pointer("/payload/status").unwrap(), "withdrawn");
+    assert_eq!(
+        body.pointer("/payload/requestId").unwrap(),
+        &json!(id.to_string()),
+    );
+
+    // Withdrawn is decided, so a second attempt is `alreadyDecided` — not
+    // `notFound`, which would tell the applicant their own request never
+    // existed.
+    let (_did, doc) = signed_trust_task_seed(
+        &seed,
+        JOIN_REQUEST_WITHDRAW_TYPE,
+        json!({ "requestId": id.to_string() }),
+    )
+    .await;
+    let (status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED
+    );
+}

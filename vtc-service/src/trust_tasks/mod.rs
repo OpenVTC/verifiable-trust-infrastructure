@@ -458,6 +458,7 @@ async fn dispatch_typed(
             handle_manifest(state, ctx, doc, ManifestVersion::V0_2).await
         }
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
+        jr::JOIN_REQUEST_WITHDRAW_TYPE => handle_withdraw(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
         vetting_wire::VETTING_REVOKE_STATEMENT_TYPE => {
@@ -657,6 +658,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // 0.2 adds the per-criterion vetting requirements and `requirementsDigest`.
     jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
     jr::JOIN_REQUEST_STATUS_TYPE,
+    // The applicant closing their own request. Paired with `status` above: the
+    // poll is how they learn the community asked for more, and this is how
+    // they decline to supply it.
+    jr::JOIN_REQUEST_WITHDRAW_TYPE,
     jr::MEMBER_SELF_REMOVE_TYPE,
     mem::MEMBER_VMC_TYPE,
     // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
@@ -1130,6 +1135,92 @@ async fn handle_status(
 ///
 /// The bare-body handler stays for existing senders; both produce the same
 /// receipt payload, so a migrating client sees no behaviour change.
+/// `vtc/join-requests/withdraw/0.1` — the applicant closes their own request.
+///
+/// Holder-bound like `self-remove`: [`resolve_holder`] proves the caller
+/// (authcrypt sender on DIDComm, document proof signer on REST) and refuses a
+/// document whose `issuer` names anyone else. That proven identity *is* the
+/// authorization — the spec's entitlement is ownership of the request, and an
+/// applicant holds no membership or capability to check instead.
+async fn handle_withdraw(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let applicant_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: jr::withdraw::v0_1::Payload = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+
+    // Every member is optional, so an empty payload is the common case: the
+    // proven caller identifies the applicant and at most one request is open.
+    let request_id = match body.request_id.as_ref().map(|r| uuid::Uuid::parse_str(r)) {
+        None => None,
+        Some(Ok(id)) => Some(id),
+        Some(Err(e)) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("requestId is not a UUID: {e}"),
+                },
+            );
+        }
+    };
+
+    match crate::join::orchestrate::withdraw_inner(
+        state,
+        &applicant_did,
+        request_id,
+        body.reason.as_ref().map(|r| r.to_string()),
+    )
+    .await
+    {
+        Ok(request) => {
+            // Built through the generated builder rather than a JSON literal,
+            // so the response cannot drift from the schema that defines it.
+            let response = match jr::withdraw::v0_1::Response::builder()
+                .request_id(request.id.to_string())
+                .status(jr::withdraw::v0_1::ResponseStatus::Withdrawn)
+                .try_into()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::InternalError {
+                            reason: format!("withdraw response failed its own schema: {e}"),
+                        },
+                    );
+                }
+            };
+            success_response::<_, jr::withdraw::v0_1::Response>(&doc, response)
+        }
+        // The spec declares both of these, so they go out as themselves. The
+        // generic `app_error_to_reject` would flatten each into a bare
+        // `taskFailed` carrying only English, which is precisely what an
+        // applicant's client cannot branch on — and telling "nothing to
+        // withdraw" apart from "already decided" is the whole point of
+        // declaring two codes.
+        Err(e @ AppError::NotFound(_)) => reject_with_code(
+            &doc,
+            extended_code(jr::JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND),
+            e.to_string(),
+            None,
+        ),
+        Err(e @ AppError::Gone(_)) => reject_with_code(
+            &doc,
+            extended_code(jr::JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED),
+            e.to_string(),
+            None,
+        ),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
 async fn handle_self_remove(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -1463,6 +1554,7 @@ mod tests {
             jr::JOIN_REQUEST_MANIFEST_TYPE,
             jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
             jr::JOIN_REQUEST_STATUS_TYPE,
+            jr::JOIN_REQUEST_WITHDRAW_TYPE,
             jr::MEMBER_SELF_REMOVE_TYPE,
             mem::MEMBER_VMC_TYPE,
             vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
