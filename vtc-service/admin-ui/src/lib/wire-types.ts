@@ -111,7 +111,7 @@ export type EndorsementTypesPage = Schemas["Paginated_EndorsementType"];
 export type EndorsementTypeRegistered = Schemas["RegisterResponse"];
 export type RegisterEndorsementTypeBody = Schemas["RegisterBody"];
 /** `{ typeUri }`, what `endorsement-types/delete/0.1` publishes. */
-export type EndorsementTypeDeleted = Schemas["EndorsementTypeDeleteResponse"];
+export type EndorsementTypeDeleted = Schemas["VtcEndorsementTypesDeleteV0_1Response"];
 
 // ── Audit ───────────────────────────────────────────────────────────────
 export type AuditEntry = Schemas["AuditEntry"];
