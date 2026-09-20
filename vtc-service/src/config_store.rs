@@ -66,6 +66,15 @@ pub enum ConfigKeyKind {
     /// Unsigned integer in `0..=u64::MAX` (PATCH accepts any JSON
     /// number; we coerce + range-check).
     U64,
+    /// Unsigned integer constrained to `min..=max`, inclusive.
+    ///
+    /// Exists because a bare [`Self::U64`] accepts `0` and
+    /// `u64::MAX` alike, and some keys have no sane reading at
+    /// either end — a one-second idle timeout signs an operator out
+    /// mid-keystroke, a ten-year one is not a timeout. Refusing at
+    /// the API rather than in the console keeps the bound true for
+    /// a scripted `config/patch` as well.
+    U64Range { min: u64, max: u64 },
     /// Restricted set of strings — the value must be one of the
     /// listed variants. Useful for `log.level` ∈ {"trace", "debug",
     /// "info", "warn", "error"}.
@@ -95,6 +104,16 @@ pub struct ConfigKeyDef {
     /// alongside the actual `server.tls.*` config fields.
     pub sensitive: bool,
 }
+
+/// Mirrors `vti_common::config`'s compiled-in default for
+/// `auth.admin_idle_timeout`.
+///
+/// Duplicated rather than imported because the default fn there is
+/// private, and the four-layer resolver needs the value in two places
+/// (the default layer, and the "is the TOML value actually a default?"
+/// test). Pinned against the real config by a unit test below, so the
+/// copy cannot drift.
+const DEFAULT_ADMIN_IDLE_TIMEOUT: u64 = 900;
 
 /// The full catalog of UX-settable keys for Phase 0.
 ///
@@ -137,6 +156,23 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         key: "public_url",
         kind: ConfigKeyKind::String,
         requires_restart: true,
+        sensitive: false,
+    },
+    // How long an admin console session may sit without user activity
+    // before it stops being renewable. Hot-reloadable: `VtcAuthBackend`
+    // re-reads `state.config` on every auth call, so a `config/patch` +
+    // `config/reload` is in force on the next request.
+    //
+    // Bounded rather than free: below a minute an operator is signed out
+    // between keystrokes, and beyond a day the value has stopped being a
+    // timeout in any useful sense.
+    ConfigKeyDef {
+        key: "auth.admin_idle_timeout",
+        kind: ConfigKeyKind::U64Range {
+            min: 60,
+            max: 86_400,
+        },
+        requires_restart: false,
         sensitive: false,
     },
 ];
@@ -267,6 +303,15 @@ fn toml_layer_value(key: &str, cfg: &AppConfig) -> Option<Value> {
         // `public_url` has no compiled-in default — `None` (unset) is the
         // default, so any configured value is the toml-layer value.
         "public_url" => cfg.public_url.clone().map(Value::String),
+        "auth.admin_idle_timeout" => {
+            if cfg.auth.admin_idle_timeout == DEFAULT_ADMIN_IDLE_TIMEOUT {
+                None
+            } else {
+                Some(Value::Number(serde_json::Number::from(
+                    cfg.auth.admin_idle_timeout,
+                )))
+            }
+        }
         _ => None,
     }
 }
@@ -283,6 +328,9 @@ fn default_layer_value(key: &str) -> Value {
         // No compiled-in default: `null` means "unset" (pre-setup
         // deployment — WebAuthn / status lists deferred).
         "public_url" => Value::Null,
+        "auth.admin_idle_timeout" => {
+            Value::Number(serde_json::Number::from(DEFAULT_ADMIN_IDLE_TIMEOUT))
+        }
         _ => Value::Null, // unreachable for registry keys
     }
 }
@@ -300,6 +348,10 @@ fn env_layer_value(key: &str) -> Option<Value> {
             .map(|n| Value::Number(serde_json::Number::from(n))),
         "log.level" => std::env::var("VTC_LOG_LEVEL").ok().map(Value::String),
         "public_url" => std::env::var("VTC_PUBLIC_URL").ok().map(Value::String),
+        "auth.admin_idle_timeout" => std::env::var("VTC_AUTH_ADMIN_IDLE_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|n| Value::Number(serde_json::Number::from(n))),
         _ => None,
     }
 }
@@ -370,6 +422,13 @@ fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
         "public_url" => {
             cfg.public_url = value.as_str().map(str::to_string);
         }
+        "auth.admin_idle_timeout" => match value.as_u64() {
+            Some(n) => cfg.auth.admin_idle_timeout = n,
+            None => tracing::warn!(
+                %value,
+                "config override `auth.admin_idle_timeout` is not a u64 — ignored"
+            ),
+        },
         _ => {}
     }
 }
@@ -418,6 +477,17 @@ pub fn validate_value(def: &ConfigKeyDef, value: &Value) -> Result<(), AppError>
         }
         ConfigKeyKind::U64 => match value.as_u64() {
             Some(_) => Ok(()),
+            None => Err(AppError::Validation(format!(
+                "{} must be an unsigned integer",
+                def.key
+            ))),
+        },
+        ConfigKeyKind::U64Range { min, max } => match value.as_u64() {
+            Some(n) if (min..=max).contains(&n) => Ok(()),
+            Some(n) => Err(AppError::Validation(format!(
+                "{} must be between {min} and {max} seconds, got {n}",
+                def.key
+            ))),
             None => Err(AppError::Validation(format!(
                 "{} must be an unsigned integer",
                 def.key
@@ -475,6 +545,73 @@ mod tests {
 
     fn default_app_config() -> AppConfig {
         toml::from_str("").expect("empty TOML parses")
+    }
+
+    // ── auth.admin_idle_timeout ──
+
+    /// The registry keeps its own copy of the compiled-in default
+    /// because `vti_common`'s default fn is private. Pin the two
+    /// together: if the shared default moves and this copy does not,
+    /// the default layer starts reporting a value the daemon is not
+    /// actually running with, and `toml_layer_value` starts calling a
+    /// genuine operator setting a "default" (or vice versa).
+    #[test]
+    fn registry_default_matches_the_real_config_default() {
+        let cfg = default_app_config();
+        assert_eq!(
+            cfg.auth.admin_idle_timeout, DEFAULT_ADMIN_IDLE_TIMEOUT,
+            "DEFAULT_ADMIN_IDLE_TIMEOUT has drifted from vti_common's default"
+        );
+    }
+
+    #[test]
+    fn idle_timeout_rejects_values_outside_the_bounds() {
+        let def = lookup("auth.admin_idle_timeout").expect("key is registered");
+        // A timeout shorter than a minute signs an operator out between
+        // keystrokes; one longer than a day is not a timeout.
+        assert!(validate_value(def, &json!(59)).is_err());
+        assert!(validate_value(def, &json!(86_401)).is_err());
+        assert!(validate_value(def, &json!(0)).is_err());
+        assert!(validate_value(def, &json!("900")).is_err());
+        // The bounds themselves are inclusive.
+        assert!(validate_value(def, &json!(60)).is_ok());
+        assert!(validate_value(def, &json!(86_400)).is_ok());
+        assert!(validate_value(def, &json!(1800)).is_ok());
+    }
+
+    #[test]
+    fn idle_timeout_error_names_the_bounds_it_wants() {
+        let def = lookup("auth.admin_idle_timeout").expect("key is registered");
+        let err = validate_value(def, &json!(5)).unwrap_err().to_string();
+        // An operator who set a bad value should be told the range, not
+        // just that they were wrong.
+        assert!(err.contains("60"), "{err}");
+        assert!(err.contains("86400"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_db_override_reaches_the_live_config() {
+        let (store, _dir) = temp_store();
+        let mut cfg = default_app_config();
+        assert_eq!(cfg.auth.admin_idle_timeout, DEFAULT_ADMIN_IDLE_TIMEOUT);
+
+        store
+            .put("auth.admin_idle_timeout", &json!(1800))
+            .await
+            .unwrap();
+        apply_overrides(&mut cfg, &store).await.unwrap();
+
+        assert_eq!(cfg.auth.admin_idle_timeout, 1800);
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_is_hot_reloadable() {
+        let def = lookup("auth.admin_idle_timeout").expect("key is registered");
+        assert!(
+            !def.requires_restart,
+            "the console's Save does PATCH + reload; a restart-only key would \
+             report success and change nothing until the daemon bounced"
+        );
     }
 
     // ── ConfigStore CRUD ──

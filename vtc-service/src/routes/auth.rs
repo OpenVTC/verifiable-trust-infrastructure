@@ -1,13 +1,16 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::http::header::SET_COOKIE;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::passkey::login::start::v0_2 as start_spec;
 use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
 use uuid::Uuid;
+use vti_common::auth::extractor::ADMIN_REFRESH_COOKIE;
 
 use vta_sdk::protocols::auth::{
     AuthenticateResponse, ChallengeRequest, ChallengeResponse, Session as WireSession, TokenBundle,
@@ -368,6 +371,34 @@ pub struct AdminSessionRequest {
     /// A valid VTC access token the caller already holds — e.g. from the
     /// VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
     pub access_token: String,
+    /// Extension members. Carries the optional refresh token this route
+    /// needs but the canonical payload has no top-level member for.
+    ///
+    /// `spec/vtc/auth/admin-session/0.1` types its payload as
+    /// `{accessToken, ext}` and the conformance witness compares this
+    /// struct against it, so a top-level `refreshToken` would fail the
+    /// build. `ext` is the schema's own escape hatch; see
+    /// [`refresh_token_from_ext`].
+    #[serde(default)]
+    pub ext: Option<JsonValue>,
+}
+
+/// The `ext` member the console puts the refresh token under.
+const EXT_NAMESPACE: &str = "org.openvtc";
+
+/// Pull `ext["org.openvtc"].refreshToken` out of an admin-session request.
+///
+/// The wallet login path receives a refresh token from `/v1/auth/` and is
+/// the only party that can hand it to this route — unlike passkey login,
+/// this handler mints nothing and so has no refresh token of its own. A
+/// caller that omits it still gets a working cookie session; it simply
+/// cannot renew, which is the behaviour every caller had before.
+fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
+    ext?.get(EXT_NAMESPACE)?
+        .get("refreshToken")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// `POST /v1/auth/admin-session` — exchange a bearer access token for the
@@ -436,12 +467,34 @@ pub async fn admin_session(
 
     let max_age = claims.exp.saturating_sub(now_epoch()).max(1);
 
+    // A refresh token, if the caller sent one, is what lets this session
+    // renew. This handler mints nothing — it mirrors a token the caller
+    // already held — so unlike the passkey path it has no refresh token
+    // of its own to fall back on. The refresh cookie must outlive the
+    // access cookie or it could never renew it; its own expiry is
+    // enforced server-side on the session row, so a generous Max-Age here
+    // grants nothing the row does not already allow.
+    let refresh_token = refresh_token_from_ext(req.ext.as_ref());
+    let refresh_max_age = {
+        let cfg = state.config.read().await;
+        cfg.auth.refresh_token_expiry
+    };
+    // The csrf cookie has to survive as long as the longest-lived
+    // credential it protects. Scoped to the access window it would lapse
+    // first, and the renewal POST — a mutation, so CSRF-gated — would
+    // 403 with no token to present.
+    let cookie_window = if refresh_token.is_some() {
+        refresh_max_age.max(max_age)
+    } else {
+        max_age
+    };
+
     let mut csrf_bytes = [0u8; 32];
     rand::rng().fill(&mut csrf_bytes);
     let csrf = hex::encode(csrf_bytes);
 
     let session_cookie = build_session_cookie(&req.access_token, max_age);
-    let csrf_cookie = build_csrf_cookie(&csrf, max_age);
+    let csrf_cookie = build_csrf_cookie(&csrf, cookie_window);
 
     // The spec's response is `{sessionId, expiresAt}`, and this handler
     // returned 204 with both values only in `Set-Cookie` headers.
@@ -474,6 +527,13 @@ pub async fn admin_session(
         HeaderValue::try_from(csrf_cookie)
             .map_err(|e| AppError::Internal(format!("invalid csrf cookie value: {e}")))?,
     );
+    if let Some(token) = refresh_token {
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::try_from(build_refresh_cookie(&token, refresh_max_age))
+                .map_err(|e| AppError::Internal(format!("invalid refresh cookie value: {e}")))?,
+        );
+    }
     Ok(response)
 }
 
@@ -775,12 +835,20 @@ pub async fn passkey_login_finish(
     // Set cookies — same shape as `admin_session`.
     let max_age = minted.access_expires_at.saturating_sub(now_epoch()).max(1);
     let session_cookie = build_session_cookie(&minted.access_token, max_age);
+    // The refresh cookie outlives the access cookie by design: it is what
+    // the console presents to mint the next access token, so it is scoped
+    // to the refresh TTL rather than this 300s (aal2) access window.
+    let refresh_max_age = minted.refresh_expires_at.saturating_sub(now_epoch()).max(1);
+    let refresh_cookie = build_refresh_cookie(&minted.refresh_token, refresh_max_age);
 
     use rand::RngExt;
     let mut csrf_bytes = [0u8; 32];
     rand::rng().fill(&mut csrf_bytes);
     let csrf = hex::encode(csrf_bytes);
-    let csrf_cookie = build_csrf_cookie(&csrf, max_age);
+    // Scoped to the refresh window too. If it expired with the access
+    // cookie, the renewal POST — a mutation, and therefore CSRF-gated —
+    // would have no token to present and every renewal would 403.
+    let csrf_cookie = build_csrf_cookie(&csrf, refresh_max_age);
 
     let resp = PasskeyLoginResponse {
         // Required by `login/finish/0.2`, and not merely decorative: `start`
@@ -818,6 +886,11 @@ pub async fn passkey_login_finish(
         SET_COOKIE,
         HeaderValue::try_from(csrf_cookie)
             .map_err(|e| AppError::Internal(format!("invalid csrf cookie: {e}")))?,
+    );
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(refresh_cookie)
+            .map_err(|e| AppError::Internal(format!("invalid refresh cookie: {e}")))?,
     );
 
     Ok(response)
@@ -1026,6 +1099,20 @@ fn build_csrf_cookie(csrf: &str, max_age: u64) -> String {
     format!("csrf={csrf}; Path=/; Max-Age={max_age}; SameSite=Strict; Secure")
 }
 
+/// Build the refresh cookie carrying the opaque refresh token.
+///
+/// Same flags as the session cookie, and `HttpOnly` for the same
+/// reason: the SPA never needs to *read* the token, only to have the
+/// browser send it to `/v1/auth/refresh`. Its `Max-Age` is the refresh
+/// TTL, not the access TTL — it has to outlive the access cookie or it
+/// could not renew it, which is the whole point.
+fn build_refresh_cookie(refresh_token: &str, max_age: u64) -> String {
+    format!(
+        "{name}={refresh_token}; Path=/; Max-Age={max_age}; SameSite=Strict; Secure; HttpOnly",
+        name = vti_common::auth::extractor::ADMIN_REFRESH_COOKIE,
+    )
+}
+
 #[cfg(test)]
 mod cookie_format_tests {
     use super::*;
@@ -1113,13 +1200,37 @@ const REFRESH_TASK_URI: &str = <refresh::Payload as trust_tasks_rs::Payload>::TY
 )]
 pub async fn refresh(
     State(state): State<AppState>,
+    headers: HeaderMap,
     body: String,
-) -> Result<Json<AuthenticateResponse>, AppError> {
+) -> Result<Response, AppError> {
+    // Cookie path, tried first: the admin console posts an empty body and
+    // lets the browser present `vtc_admin_refresh`. It has to come before
+    // the others because there is no document to sniff — an empty body is
+    // not a Trust Task and not a DIDComm envelope, so without this it
+    // would fall through to "ATM not configured".
+    //
+    // This is the only path that answers with `Set-Cookie`, because it is
+    // the only one whose caller keeps its credentials in cookies.
+    if let Some(token) = cookie_value(&headers, ADMIN_REFRESH_COOKIE) {
+        let backend = crate::auth::VtcAuthBackend::from_state(&state).await?;
+        let resp = vti_common::auth::handlers::handle_refresh(
+            &backend,
+            vti_common::auth::RefreshInput {
+                refresh_token: token,
+                // No proven signer on this path, exactly as on the REST
+                // Trust-Task path: the opaque token is the credential.
+                signer_did: None,
+            },
+        )
+        .await?;
+        return reissue_session_cookies(&state, resp, &headers).await;
+    }
+
     // Canonical REST path, tried first so a VTC reached by a client with no
     // DIDComm stack — and a VTC running with no `atm` at all — can still
     // refresh. Falls through for any body that isn't such a document.
     if let Some(resp) = try_refresh_trust_task(&state, &body).await? {
-        return Ok(Json(resp));
+        return Ok(Json(resp).into_response());
     }
 
     let atm = state
@@ -1159,7 +1270,68 @@ pub async fn refresh(
         },
     )
     .await?;
-    Ok(Json(resp))
+    Ok(Json(resp).into_response())
+}
+
+/// Read one cookie's value out of a request's `Cookie` headers.
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(';'))
+        .map(str::trim)
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Re-issue the console's cookie trio after a successful cookie refresh.
+///
+/// All three move together. The session cookie carries the new access
+/// token; the refresh cookie carries the rotated refresh token, and must
+/// be replaced because rotation invalidated the old one — leaving the
+/// stale cookie in place would make the *next* renewal fail. The csrf
+/// cookie keeps its **existing value** and is re-sent only to extend its
+/// `Max-Age`: the SPA has already mirrored that value into its in-memory
+/// header state, and handing it a new one mid-flight would 403 every
+/// mutation issued between this response landing and the SPA re-reading
+/// `document.cookie`.
+async fn reissue_session_cookies(
+    state: &AppState,
+    resp: AuthenticateResponse,
+    request_headers: &HeaderMap,
+) -> Result<Response, AppError> {
+    let refresh_ttl = {
+        let cfg = state.config.read().await;
+        cfg.auth.refresh_token_expiry
+    };
+    let access_max_age = resp.tokens.expires_in.max(1);
+    let session_cookie = build_session_cookie(&resp.tokens.access_token, access_max_age);
+    let refresh_cookie = resp
+        .tokens
+        .refresh_token
+        .as_ref()
+        .map(|t| build_refresh_cookie(t, refresh_ttl));
+    // Same value, longer life. A missing csrf cookie means the caller is
+    // not the console (it always has one), so there is nothing to extend.
+    let csrf_cookie =
+        cookie_value(request_headers, "csrf").map(|v| build_csrf_cookie(&v, refresh_ttl));
+
+    let mut response = Json(resp).into_response();
+    let headers = response.headers_mut();
+    for cookie in [Some(session_cookie), refresh_cookie, csrf_cookie]
+        .into_iter()
+        .flatten()
+    {
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::try_from(cookie)
+                .map_err(|e| AppError::Internal(format!("invalid cookie on refresh: {e}")))?,
+        );
+    }
+    Ok(response)
 }
 
 /// Try to refresh from an `auth/refresh/0.1` Trust Task document — the
@@ -1378,10 +1550,22 @@ pub async fn sign_out(
         name = vti_common::auth::extractor::ADMIN_SESSION_COOKIE,
     );
     let csrf_clear = "csrf=; Path=/; Max-Age=0; SameSite=Strict; Secure".to_string();
+    // The refresh cookie outlives the session cookie, so leaving it behind
+    // would leave a signed-out browser holding a credential that still
+    // mints access tokens — sign-out that does not sign you out.
+    let refresh_clear = format!(
+        "{name}=; Path=/; Max-Age=0; SameSite=Strict; Secure; HttpOnly",
+        name = ADMIN_REFRESH_COOKIE,
+    );
     headers.append(
         SET_COOKIE,
         HeaderValue::try_from(session_clear)
             .map_err(|e| AppError::Internal(format!("invalid session cookie: {e}")))?,
+    );
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(refresh_clear)
+            .map_err(|e| AppError::Internal(format!("invalid refresh cookie: {e}")))?,
     );
     headers.append(
         SET_COOKIE,

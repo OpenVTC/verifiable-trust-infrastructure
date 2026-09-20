@@ -33,6 +33,17 @@ pub struct AuthConfig {
     pub refresh_token_expiry: u64,
     #[serde(default = "default_challenge_ttl")]
     pub challenge_ttl: u64,
+    /// How long an admin session may go without user activity before it
+    /// may no longer be renewed, in seconds.
+    ///
+    /// Distinct from [`Self::access_token_expiry`], which is how often a
+    /// live session rotates its token. A console that renews on a timer
+    /// would never lapse if the two were the same clock, so this is the
+    /// value that actually decides when an operator who walked away is
+    /// signed out. Enforced in `auth::handlers::handle_refresh` against
+    /// `Session::last_seen`.
+    #[serde(default = "default_admin_idle_timeout")]
+    pub admin_idle_timeout: u64,
     #[serde(default = "default_session_cleanup_interval")]
     pub session_cleanup_interval: u64,
     /// Base64url-no-pad encoded 32-byte Ed25519 private key for JWT signing.
@@ -84,6 +95,7 @@ impl std::fmt::Debug for AuthConfig {
             .field("access_token_expiry", &self.access_token_expiry)
             .field("refresh_token_expiry", &self.refresh_token_expiry)
             .field("challenge_ttl", &self.challenge_ttl)
+            .field("admin_idle_timeout", &self.admin_idle_timeout)
             .field("session_cleanup_interval", &self.session_cleanup_interval)
             .field(
                 "jwt_signing_key",
@@ -257,6 +269,16 @@ fn default_challenge_ttl() -> u64 {
     300
 }
 
+/// 15 minutes. Chosen to be *longer* than the cliff it replaces: before
+/// this existed a passkey console session died at 300s of wall-clock
+/// regardless of activity, because the cookie's life was the aal2 access
+/// token's. An idle timeout of 900s is both the documented intent of
+/// `access_token_expiry` and a strictly kinder default than the observed
+/// behaviour.
+fn default_admin_idle_timeout() -> u64 {
+    900
+}
+
 fn default_session_cleanup_interval() -> u64 {
     600
 }
@@ -267,6 +289,7 @@ impl Default for AuthConfig {
             access_token_expiry: default_access_token_expiry(),
             refresh_token_expiry: default_refresh_token_expiry(),
             challenge_ttl: default_challenge_ttl(),
+            admin_idle_timeout: default_admin_idle_timeout(),
             session_cleanup_interval: default_session_cleanup_interval(),
             jwt_signing_key: None,
             step_up: (),
@@ -297,6 +320,7 @@ mod tests {
             access_token_expiry: 900,
             refresh_token_expiry: 86400,
             challenge_ttl: 300,
+            admin_idle_timeout: 900,
             session_cleanup_interval: 600,
             jwt_signing_key: Some("SUPER_SECRET_KEY_MATERIAL_MUST_NOT_LEAK".into()),
             step_up: (),
@@ -336,6 +360,7 @@ mod tests {
             access_token_expiry: 900,
             refresh_token_expiry: 86400,
             challenge_ttl: 300,
+            admin_idle_timeout: 900,
             session_cleanup_interval: 600,
             jwt_signing_key: Some("key-material".into()),
             step_up: (),

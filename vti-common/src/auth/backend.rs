@@ -57,7 +57,13 @@ use crate::auth::session::Session;
 /// `From<AuthError>` so the handler can return these variants and
 /// the route layer surfaces them via its existing `IntoResponse`
 /// plumbing (e.g. vti-common's `AppError::Unauthorized(_)` arm).
+///
+/// `#[non_exhaustive]`: this enum has grown with every auth feature, and
+/// each addition was a silent breaking change for consumers matching it
+/// exhaustively. Marking it costs downstream a wildcard arm once and
+/// makes every future failure mode additive.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AuthError {
     /// DID is not in the backend's ACL, or the ACL entry is expired.
     /// Returned as 403 Forbidden to avoid revealing whether the DID
@@ -128,6 +134,18 @@ pub enum AuthError {
     /// 401 Unauthorized; the holder must re-authenticate.
     #[error("refresh token expired")]
     RefreshTokenExpired,
+
+    /// The session went longer than [`AuthBackend::idle_timeout`]
+    /// without user activity, so it may no longer be renewed.
+    ///
+    /// Distinct from [`Self::RefreshTokenExpired`] because the two mean
+    /// different things to an operator and have different fixes: a
+    /// refresh token that ran out is a session that lived its full
+    /// span, while this is one abandoned mid-life. A console that
+    /// collapsed them would tell someone who stepped away for lunch
+    /// that their session had reached its maximum age.
+    #[error("session idle timeout exceeded")]
+    SessionIdleTimeout,
 
     /// TEE attestation failed in a `TeeMode::Required` deployment.
     /// Returned as 503 Service Unavailable (the operator's TEE is
@@ -206,6 +224,37 @@ pub trait SessionStore: Send + Sync + 'static {
     /// yet built a tracker — correct but slow under load. Override
     /// before relying on per-DID rate limiting in production.
     async fn count_pending_challenges(&self, did: &str) -> Result<usize, Self::Error>;
+
+    /// Record that `session_id` saw **user activity** at `at` (epoch
+    /// seconds), by writing [`Session::last_seen`].
+    ///
+    /// This is what [`AuthBackend::idle_timeout`] measures against, so
+    /// only genuine interaction may call it. An admin console that
+    /// polls a status endpoint on a timer would, if that poll counted,
+    /// hold a session open for as long as the tab stayed open — which
+    /// is precisely the thing an idle timeout exists to prevent.
+    ///
+    /// The default is a read-modify-write, which is **not** atomic
+    /// against a concurrent session mutation: a racing write can lose
+    /// the `last_seen` bump. That is the safe direction to lose in — a
+    /// dropped bump expires a session early, never late — and it
+    /// follows the [`Self::count_pending_challenges`] precedent of a
+    /// correct-but-unoptimised default. A backend with a
+    /// compare-and-set or partial-update primitive should override.
+    ///
+    /// A missing session is `Ok(())`, not an error: the row may have
+    /// been swept or revoked between authentication and this call, and
+    /// there is nothing to record.
+    async fn touch_session(&self, session_id: &str, at: u64) -> Result<(), Self::Error> {
+        let Some(mut session) = self.get_session(session_id).await? else {
+            return Ok(());
+        };
+        if session.last_seen >= at {
+            return Ok(());
+        }
+        session.last_seen = at;
+        self.store_session(&session).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +433,23 @@ pub trait AuthBackend: Send + Sync + 'static {
     /// `session.created_at` to bound replay risk. Default 60s.
     fn didcomm_freshness_window(&self) -> u64 {
         60
+    }
+
+    /// Idle timeout in seconds: how long a session may go without
+    /// **user activity** before it may no longer be renewed.
+    ///
+    /// `None` (the default) means no idle enforcement — a session is
+    /// bounded only by its refresh-token expiry, which is the
+    /// behaviour every backend had before this existed.
+    ///
+    /// This is deliberately distinct from [`Self::access_token_ttl`].
+    /// An access token is short and rotates; the idle timeout is a
+    /// policy about the operator, and a browser session that renews on
+    /// a timer would otherwise never lapse no matter how long the
+    /// human had been away. `handle_refresh` measures it against
+    /// [`SessionStore::touch_session`]'s `last_seen`.
+    fn idle_timeout(&self) -> Option<u64> {
+        None
     }
 }
 

@@ -19,6 +19,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { Field } from "@/components/Field";
 import { formatIso, shorten, shortenDid } from "@/lib/format";
 import { useToast } from "@/lib/toast";
+import { SessionTimeoutCard } from "@/plugins/SessionTimeoutCard";
 
 // One canonical task per verb (the two combined `acl/legacy/*` tasks
 // were retired in phase 2d).
@@ -151,6 +152,8 @@ export function Acl() {
   return (
     <section className="page">
       <h2>Access control</h2>
+
+      <SessionTimeoutCard />
 
       <section className="card">
         <div className="toolbar">

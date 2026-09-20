@@ -233,6 +233,38 @@ pub async fn update_session(sessions: &KeyspaceHandle, session: &Session) -> Res
 /// are bounded by `refresh_expires_at` and ignore this.
 pub const INTRINSIC_SESSION_IDLE_TTL_SECS: u64 = 86_400; // 24h
 
+/// How stale `last_seen` must be before an activity touch writes.
+///
+/// Without it a busy console would rewrite the session row on every
+/// request for no gain: the idle timeout is measured in minutes, so
+/// second-level precision buys nothing and costs a store write per call.
+pub const LAST_SEEN_GRANULARITY_SECS: u64 = 60;
+
+/// Record user activity on `session` by advancing `last_seen` to `now`.
+///
+/// Returns `Ok(false)` when the write was skipped as unnecessary —
+/// either the row is already fresh within
+/// [`LAST_SEEN_GRANULARITY_SECS`], or the clock went backwards.
+///
+/// **Only genuine interaction should call this.** It is the clock an
+/// idle timeout is measured against (`AuthBackend::idle_timeout`), so
+/// anything that fires on a timer — a token renewal, a background poll —
+/// would, by touching it, hold the session open for as long as the
+/// process ran and make the timeout unreachable.
+pub async fn touch_last_seen(
+    sessions: &KeyspaceHandle,
+    session: &Session,
+    now: u64,
+) -> Result<bool, AppError> {
+    if now < session.last_seen.saturating_add(LAST_SEEN_GRANULARITY_SECS) {
+        return Ok(false);
+    }
+    let mut updated = session.clone();
+    updated.last_seen = now;
+    update_session(sessions, &updated).await?;
+    Ok(true)
+}
+
 /// Resolve the canonical session for an intrinsic-sender (DIDComm/TSP) caller,
 /// creating it on first sight. Keyed on the authenticated `did` so the same
 /// identity resolves **one** persistent session across messages and transports.

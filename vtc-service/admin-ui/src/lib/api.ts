@@ -4,6 +4,12 @@
 // rides along. Mutating requests (POST/PUT/DELETE/PATCH) mirror the
 // `csrf` cookie's value into the `X-CSRF-Token` header for the
 // double-submit check in `routing::csrf`.
+//
+// It also keeps the session alive: `request` renews the cookie before a
+// call when the access token is nearly out, so an operator who is using
+// the console is not signed out mid-task. See `lib/session.ts`.
+
+import { renewIfNeeded, resetSession, setSessionExpiry } from "@/lib/session";
 
 // `GET /health` is unauth and deliberately minimal: it carries only
 // `{status, version, vtc_did}`. The `vta_did` / `mediator_url` /
@@ -30,6 +36,8 @@ export interface HealthResponse {
 // aliases instead, so a response change fails to compile rather than arriving
 // as `undefined`.
 import type {
+  ConfigPatchResponse,
+  EffectiveConfig,
   DiagnosticsResponse,
   RegistryRecordsResponse,
   SyncJobsDiscardResponse,
@@ -100,11 +108,46 @@ function csrfTokenFromCookie(): string | null {
   return match?.[1] ?? null;
 }
 
+const REFRESH_TASK = "https://trusttasks.org/spec/auth/refresh/0.1";
+
+/**
+ * The renewal call itself, kept out of `request` so it cannot recurse
+ * through the pre-flight renewal check.
+ *
+ * Posts an empty body: the browser presents `vtc_admin_refresh`, and the
+ * daemon's cookie path reads the token from there. The csrf header is
+ * still required — the endpoint stopped being CSRF-exempt the moment a
+ * cookie alone could authenticate it.
+ *
+ * Returns the new expiry, or `null` when the daemon refused (an idled-out
+ * session, a rotated-away token, a revoked ACL entry).
+ */
+async function renewSession(): Promise<number | null> {
+  const headers = new Headers({ "Trust-Task": REFRESH_TASK });
+  const csrf = csrfTokenFromCookie();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+  const res = await fetch("/v1/auth/refresh", {
+    method: "POST",
+    credentials: "include",
+    headers,
+  });
+  if (!res.ok) return null;
+  const body = (await res.json()) as { session?: { expiresAt?: string } };
+  const expiresAt = body.session?.expiresAt;
+  return expiresAt ? Math.floor(new Date(expiresAt).getTime() / 1000) : null;
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
   requires?: string[],
 ): Promise<T> {
+  // Renew first if the token is nearly out. A no-op unless we know the
+  // expiry (i.e. unless `whoami` has run), so the login ceremony's own
+  // unauthenticated calls are untouched.
+  if (path !== "/v1/auth/refresh") {
+    await renewIfNeeded(renewSession);
+  }
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (method !== "GET" && method !== "HEAD") {
@@ -438,9 +481,54 @@ export const fetchWhoami = (): Promise<WhoamiResponse> =>
     requires: ["session.subject", "roles", "scopes"],
   });
 
+// ── Runtime config ──────────────────────────────────────────────────────
+//
+// The console's first client for `/v1/admin/config`. Note the two-step
+// Save: PATCH writes the db-layer override but does **not** touch the
+// running config, so a Save that stopped there would report success and
+// change nothing until the daemon happened to restart. `reload` is what
+// folds the overlay onto the live `AppConfig`.
+
+const CONFIG_SHOW_TASK = "https://trusttasks.org/spec/config/show/0.1";
+const CONFIG_PATCH_TASK = "https://trusttasks.org/spec/config/patch/0.1";
+const CONFIG_RELOAD_TASK = "https://trusttasks.org/spec/config/reload/0.1";
+
+export const fetchEffectiveConfig = (): Promise<EffectiveConfig> =>
+  getJson<EffectiveConfig>("/v1/admin/config", {
+    trustTask: CONFIG_SHOW_TASK,
+    requires: ["fields"],
+  });
+
+/**
+ * Write config overrides and put them into effect.
+ *
+ * Returns the PATCH response so a caller can surface `rejected` — the
+ * daemon validates bounds server-side, so a value the console let through
+ * can still come back refused, and the reason is worth showing.
+ */
+export async function saveConfig(
+  overrides: Record<string, unknown>,
+): Promise<ConfigPatchResponse> {
+  const result = await patchJson<ConfigPatchResponse>(
+    "/v1/admin/config",
+    { overrides },
+    { trustTask: CONFIG_PATCH_TASK, requires: ["applied", "rejected"] },
+  );
+  if (result.applied.length > 0) {
+    await postJson<unknown>("/v1/admin/config/reload", undefined, {
+      trustTask: CONFIG_RELOAD_TASK,
+    });
+  }
+  return result;
+}
+
 /** Revoke the server-side session and clear browser cookies. */
-export const signOut = (): Promise<void> =>
-  postJson<void>("/v1/auth/sign-out", undefined, { trustTask: SIGN_OUT_TASK });
+export const signOut = async (): Promise<void> => {
+  await postJson<void>("/v1/auth/sign-out", undefined, { trustTask: SIGN_OUT_TASK });
+  // Drop the expiry so a subsequent sign-in starts from that session's
+  // own deadline rather than renewing against the dead one's.
+  resetSession();
+};
 
 // ---------------------------------------------------------------------------
 // Invitations — issue a VIC for a prospective member (operator side of the
@@ -602,10 +690,18 @@ export const checkRecognition = (did: string): Promise<RecognitionCheck> =>
 /** Probe: returns the whoami response when signed in, null when not. */
 export async function probeSession(): Promise<WhoamiResponse | null> {
   try {
-    return await fetchWhoami();
+    const who = await fetchWhoami();
+    // The one place the console learns when its cookie dies. It has
+    // always been in this response; nothing read it until renewal
+    // needed something to schedule against.
+    setSessionExpiry(who.session?.expiresAt ?? null);
+    return who;
   } catch (e) {
     const err = e as ApiError;
-    if (err.status === 401 || err.status === 403) return null;
+    if (err.status === 401 || err.status === 403) {
+      resetSession();
+      return null;
+    }
     throw e;
   }
 }

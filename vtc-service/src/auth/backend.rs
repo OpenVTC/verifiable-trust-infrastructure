@@ -39,6 +39,7 @@ pub struct VtcAuthBackend {
     challenge_ttl: u64,
     access_token_ttl: u64,
     refresh_token_ttl: u64,
+    admin_idle_timeout: u64,
 }
 
 impl VtcAuthBackend {
@@ -49,12 +50,13 @@ impl VtcAuthBackend {
             .ok_or_else(|| AppError::Internal("JWT keys not configured".to_string()))?;
         let sessions = KeyspaceSessionStore::new(state.sessions_ks.clone());
 
-        let (challenge_ttl, access_token_ttl, refresh_token_ttl) = {
+        let (challenge_ttl, access_token_ttl, refresh_token_ttl, admin_idle_timeout) = {
             let cfg = state.config.read().await;
             (
                 cfg.auth.challenge_ttl,
                 cfg.auth.access_token_expiry,
                 cfg.auth.refresh_token_expiry,
+                cfg.auth.admin_idle_timeout,
             )
         };
 
@@ -65,6 +67,7 @@ impl VtcAuthBackend {
             challenge_ttl,
             access_token_ttl,
             refresh_token_ttl,
+            admin_idle_timeout,
         })
     }
 }
@@ -133,6 +136,13 @@ impl AuthBackend for VtcAuthBackend {
 
     fn refresh_token_ttl(&self) -> u64 {
         self.refresh_token_ttl
+    }
+
+    /// The snapshot is taken per request — `from_state` runs in every
+    /// auth handler — so a `config/patch` + `config/reload` is in force
+    /// on the next call without a restart.
+    fn idle_timeout(&self) -> Option<u64> {
+        Some(self.admin_idle_timeout)
     }
 }
 

@@ -113,6 +113,16 @@ export type RegisterEndorsementTypeBody = Schemas["RegisterBody"];
 /** `{ typeUri }`, what `endorsement-types/delete/0.1` publishes. */
 export type EndorsementTypeDeleted = Schemas["VtcEndorsementTypesDeleteV0_1Response"];
 
+// ── Runtime config ──────────────────────────────────────────────────────
+//
+// The four-layer overlay (`env > db > toml > default`). `source` is what
+// tells the console whether a value it is about to offer to edit is one it
+// can actually change — an env override wins over the db layer a PATCH
+// writes, so a control rendered without checking would silently do nothing.
+export type EffectiveConfig = Schemas["EffectiveConfig"];
+export type EffectiveField = Schemas["EffectiveField"];
+export type ConfigPatchResponse = Schemas["PatchResponse"];
+
 // ── Audit ───────────────────────────────────────────────────────────────
 export type AuditEntry = Schemas["AuditEntry"];
 export type AuditListResponse = Schemas["AuditListResponse"];

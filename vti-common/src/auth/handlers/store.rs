@@ -71,4 +71,17 @@ impl SessionStore for KeyspaceSessionStore {
     async fn count_pending_challenges(&self, did: &str) -> Result<usize, Self::Error> {
         session::count_pending_challenges(&self.inner, did).await
     }
+
+    /// Overrides the trait's read-modify-write default to share one
+    /// implementation with the extractor's per-request touch — both go
+    /// through [`session::touch_last_seen`], so the granularity throttle
+    /// is applied in exactly one place.
+    async fn touch_session(&self, session_id: &str, at: u64) -> Result<(), Self::Error> {
+        let Some(row) = session::get_session(&self.inner, session_id).await? else {
+            return Ok(());
+        };
+        session::touch_last_seen(&self.inner, &row, at)
+            .await
+            .map(|_| ())
+    }
 }
