@@ -780,7 +780,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete: operations["delete"];
+        delete: operations["endorsementTypeDelete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2758,6 +2758,20 @@ export interface components {
              * @description The type URI. Primary key — URL-encoded into the
              *     keyspace key.
              */
+            typeUri: string;
+        };
+        /**
+         * @description `{ typeUri }` — the shape `vtc/endorsement-types/delete/0.1`
+         *     publishes.
+         *
+         *     Named for its route rather than `DeleteResponse`: three structs
+         *     in this crate carried that name, utoipa's component registry
+         *     keeps one, and `routes::schemas`' `{ id }` won — so
+         *     `openapi.json` documented this route as returning `{ id }`, and
+         *     the console's generated `wire.ts` carried that error. The JSON
+         *     body is unchanged.
+         */
+        EndorsementTypeDeleteResponse: {
             typeUri: string;
         };
         /**
@@ -7569,7 +7583,7 @@ export interface operations {
             };
         };
     };
-    delete: {
+    endorsementTypeDelete: {
         parameters: {
             query?: never;
             header?: never;
@@ -7587,7 +7601,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DeleteResponse"];
+                    "application/json": components["schemas"]["EndorsementTypeDeleteResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */

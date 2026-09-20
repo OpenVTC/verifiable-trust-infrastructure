@@ -23,6 +23,7 @@ import type {
   AutoGrantStatus,
   CommunityBranding,
   EndorsementType,
+  EndorsementTypeDeleted,
   EndorsementTypeRegistered,
   EndorsementTypesPage,
   JoinManifest,
@@ -56,6 +57,8 @@ const TASK_ENDORSEMENT_TYPE_REGISTER =
   "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
 const TASK_ENDORSEMENT_TYPE_LIST =
   "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1";
+const TASK_ENDORSEMENT_TYPE_DELETE =
+  "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const TASK_JOIN_REQUESTS_LIST =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
 export const TASK_MANIFEST_V0_2 =
@@ -252,6 +255,19 @@ export async function fetchEndorsementTypes(): Promise<EndorsementType[]> {
   }
   return types;
 }
+
+/**
+ * Remove a registered type. The daemon refuses while anything still references
+ * it — a live endorsement of the type, or a criterion naming it as its
+ * `statementType` — and names both in the 409, which is what the card renders.
+ */
+export const deleteEndorsementType = (
+  typeUri: string,
+): Promise<EndorsementTypeDeleted> =>
+  deleteJson<EndorsementTypeDeleted>(
+    `/v1/endorsement-types/${encodeURIComponent(typeUri)}`,
+    { trustTask: TASK_ENDORSEMENT_TYPE_DELETE, requires: ["typeUri"] },
+  );
 
 export const registerEndorsementType = (
   body: RegisterEndorsementTypeBody,

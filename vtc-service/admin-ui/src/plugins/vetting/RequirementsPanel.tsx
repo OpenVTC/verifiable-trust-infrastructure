@@ -130,7 +130,7 @@ export function RequirementsPanel() {
       {criteria.error && <LoadError what="the admission criteria" error={criteria.error} />}
       {manifest.error && <LoadError what="the join manifest" error={manifest.error} />}
 
-      <StatementTypesCard />
+      <StatementTypesCard criteria={criteria.data ?? null} />
 
       {editing.kind !== "none" && (
         <CriterionEditor

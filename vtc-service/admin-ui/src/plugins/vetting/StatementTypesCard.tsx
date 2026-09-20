@@ -7,24 +7,50 @@
 // meets that refusal before they have any way to act on it. Registering the
 // type is one button here, and the criterion editor links back to it.
 //
-// Registration is additive and cheap; removal is not offered, because the
-// daemon refuses to delete a type while a live endorsement references it and
-// the console has no view of which do.
+// Removal used to be withheld, on the grounds that the daemon refuses to delete
+// a type anything still references and the console could not see what did. The
+// half it can see is the half that blocks an operator in practice: peer-vetting
+// statements are signed by vetters' own wallets, so they are not in this
+// community's endorsement store at all, and what actually depends on a type is
+// a criterion naming it. The criteria are already loaded one component up, so
+// each type says who uses it and Remove is disabled while anyone does.
+//
+// The other half — live endorsements of the type, which would mean paging the
+// whole endorsement store to count — is left to the daemon. Its 409 carries the
+// count, and the error block below renders it.
 
 import { type FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/lib/toast";
 import { IDENTITY_VETTING_STATEMENT_TYPE } from "@/lib/vetting";
+import type { AcceptsCriterion, EndorsementType } from "@/lib/wire-types";
 
-import { fetchEndorsementTypes, registerEndorsementType, vettingKeys } from "./api";
+import {
+  deleteEndorsementType,
+  fetchEndorsementTypes,
+  registerEndorsementType,
+  vettingKeys,
+} from "./api";
 import { describedBy, errorMessage, FormField, LoadError } from "./ui";
 
 const IDENTITY_VETTING_DESCRIPTION = "A member verified this person's identity";
 
-export function StatementTypesCard() {
+/**
+ * `criteria` is `null` until the page has them — while the criteria query is
+ * pending or has failed. Removal stays disabled until then rather than
+ * defaulting to "nothing uses this", which would be a guess the operator would
+ * read as a fact.
+ */
+export function StatementTypesCard({
+  criteria,
+}: {
+  criteria: AcceptsCriterion[] | null;
+}) {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const confirm = useConfirm();
   const query = useQuery({
     queryKey: vettingKeys.endorsementTypes,
     queryFn: fetchEndorsementTypes,
@@ -51,6 +77,28 @@ export function StatementTypesCard() {
       );
     },
   });
+
+  const remove = useMutation({
+    mutationFn: deleteEndorsementType,
+    onSuccess: (_res, uri) => {
+      void queryClient.invalidateQueries({ queryKey: vettingKeys.endorsementTypes });
+      toast.push(
+        "success",
+        `Removed ${uri}. No criterion can name it until it is registered again; statements already issued of that type are untouched.`,
+      );
+    },
+  });
+
+  const onRemove = async (type: EndorsementType) => {
+    const ok = await confirm({
+      title: `Remove the statement type "${type.typeUri}"?`,
+      message:
+        "No criterion will be able to name it until it is registered again. Statements already issued of this type are not touched, and the daemon still refuses the removal if any of them are live.",
+      confirmLabel: "Remove type",
+      destructive: true,
+    });
+    if (ok) remove.mutate(type.typeUri);
+  };
 
   const uriError = typeUri.trim() ? null : "Give the type URI a statement carries.";
   const shownUriError = attempted ? uriError : null;
@@ -84,14 +132,21 @@ export function StatementTypesCard() {
         <p className="muted">No endorsement types are registered yet.</p>
       ) : (
         <ul className="vet-list">
-          {types.map((t) => (
-            <li key={t.typeUri}>
-              <code>{t.typeUri}</code>
-              {t.description ? ` — ${t.description}` : ""}
-              {t.typeUri === IDENTITY_VETTING_STATEMENT_TYPE && (
-                <> — the identity-vetting statement</>
-              )}
-            </li>
+          {types.map((t, i) => (
+            <StatementTypeRow
+              key={t.typeUri}
+              type={t}
+              usedBy={
+                criteria === null
+                  ? null
+                  : criteria
+                      .filter((c) => c.vetting?.statementType === t.typeUri)
+                      .map((c) => c.id)
+              }
+              noteId={`statement-type-usage-${i}`}
+              busy={remove.isPending}
+              onRemove={() => void onRemove(t)}
+            />
           ))}
         </ul>
       )}
@@ -169,6 +224,80 @@ export function StatementTypesCard() {
           <p>{errorMessage(register.error)}</p>
         </div>
       )}
+
+      {remove.error && (
+        <div className="finding error" role="alert">
+          <strong>Could not remove the type</strong>
+          <p>{errorMessage(remove.error)}</p>
+        </div>
+      )}
     </section>
+  );
+}
+
+/**
+ * One registered type, what depends on it, and its Remove.
+ *
+ * `usedBy` is the ids of the criteria naming this type, or `null` when the
+ * criteria are not known. Remove is disabled in both the "used" and the "not
+ * known" case, and the note says which — a disabled control whose reason is
+ * only in a tooltip is no reason at all, so the note is the button's
+ * `aria-describedby` too.
+ */
+function StatementTypeRow({
+  type,
+  usedBy,
+  noteId,
+  busy,
+  onRemove,
+}: {
+  type: EndorsementType;
+  usedBy: string[] | null;
+  noteId: string;
+  busy: boolean;
+  onRemove: () => void;
+}) {
+  const inUse = usedBy !== null && usedBy.length > 0;
+  const blocked = usedBy === null || inUse;
+
+  return (
+    <li className="vet-type">
+      <div>
+        <code>{type.typeUri}</code>
+        {type.description ? ` — ${type.description}` : ""}
+        {type.typeUri === IDENTITY_VETTING_STATEMENT_TYPE && (
+          <> — the identity-vetting statement</>
+        )}
+        <span className={inUse ? "vet-note warn" : "vet-note"} id={noteId}>
+          {usedBy === null ? (
+            "Checking which criteria require it…"
+          ) : usedBy.length === 0 ? (
+            "No criterion requires it."
+          ) : (
+            <>
+              Required by {usedBy.length === 1 ? "criterion" : "criteria"}{" "}
+              {usedBy.map((id, i) => (
+                <span key={id}>
+                  {i > 0 && ", "}
+                  <code>{id}</code>
+                </span>
+              ))}
+              . Remove or re-point {usedBy.length === 1 ? "it" : "them"} first.
+            </>
+          )}
+        </span>
+      </div>
+      <div className="row-actions">
+        <button
+          type="button"
+          className="secondary destructive"
+          disabled={blocked || busy}
+          aria-describedby={noteId}
+          onClick={onRemove}
+        >
+          Remove
+        </button>
+      </div>
+    </li>
   );
 }

@@ -5,8 +5,20 @@
 //!
 //! - `POST /v1/endorsement-types` — register a type.
 //! - `GET /v1/endorsement-types` — paginated list.
-//! - `DELETE /v1/endorsement-types/{uri}` — refuses while at
-//!   least one live endorsement still references the type.
+//! - `DELETE /v1/endorsement-types/{uri}` — refuses while
+//!   anything still references the type: a live endorsement of
+//!   it, or an Accepts criterion naming it as its
+//!   `vetting.statementType`. Both are reported in one refusal,
+//!   so an operator who has to clear both learns that in one
+//!   call rather than two.
+//!
+//! The criterion half is the symmetric partner of the check in
+//! `routes::schemas::register_accepts`, which refuses a criterion
+//! whose `statementType` is not registered. Without it, deleting
+//! a type strands a criterion in exactly the state registration
+//! forbids: applicants keep reading a manifest that requires a
+//! type the community no longer recognises, and the criterion can
+//! no longer be saved again.
 //!
 //! ## Reserved type URIs
 //!
@@ -39,6 +51,7 @@ use crate::endorsement_types::{
     store_type,
 };
 use crate::endorsements::count_live_by_type;
+use crate::schemas::list_accepts;
 use crate::server::AppState;
 
 const LIST_MAX_LIMIT: usize = 200;
@@ -188,19 +201,29 @@ pub async fn list(
 
 // ─── Delete ──────────────────────────────────────────────
 
+/// `{ typeUri }` — the shape `vtc/endorsement-types/delete/0.1`
+/// publishes.
+///
+/// Named for its route rather than `DeleteResponse`: three structs
+/// in this crate carried that name, utoipa's component registry
+/// keeps one, and `routes::schemas`' `{ id }` won — so
+/// `openapi.json` documented this route as returning `{ id }`, and
+/// the console's generated `wire.ts` carried that error. The JSON
+/// body is unchanged.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
-pub struct DeleteResponse {
+pub struct EndorsementTypeDeleteResponse {
     pub type_uri: String,
 }
 
 #[utoipa::path(
-    delete, path = "/endorsement-types/{type_uri}", tag = "endorsement-types",
+    delete, path = "/endorsement-types/{type_uri}",
+    operation_id = "endorsementTypeDelete", tag = "endorsement-types",
     security(("bearer_jwt" = [])),
     params(("type_uri" = String, Path, description = "Endorsement type URI")),
     responses(
-        (status = 200, description = "Endorsement type deleted", body = DeleteResponse),
+        (status = 200, description = "Endorsement type deleted", body = EndorsementTypeDeleteResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "Endorsement type not found"),
@@ -210,7 +233,7 @@ pub async fn delete(
     auth: AdminAuth,
     State(state): State<AppState>,
     Path(type_uri): Path<String>,
-) -> Result<(StatusCode, Json<DeleteResponse>), AppError> {
+) -> Result<(StatusCode, Json<EndorsementTypeDeleteResponse>), AppError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -225,12 +248,23 @@ pub async fn delete(
         )));
     }
 
-    // Refuse if any live endorsement still references the type.
+    // Refuse while anything still references the type. Both halves are
+    // gathered before refusing: an operator clearing one only to meet the
+    // other is two round trips for one answer we already had.
     let in_use = count_live_by_type(&state.endorsements_ks, &type_uri).await?;
-    if in_use > 0 {
-        return Err(AppError::Conflict(format!(
-            "endorsement-type-in-use: {in_use} live endorsement(s) of type '{type_uri}' \
-             still exist; revoke them before deleting the type"
+    let criteria: Vec<String> = list_accepts(&state.schemas_ks)
+        .await?
+        .into_iter()
+        .filter(|c| {
+            c.vetting
+                .as_ref()
+                .is_some_and(|v| v.statement_type == type_uri)
+        })
+        .map(|c| c.id)
+        .collect();
+    if in_use > 0 || !criteria.is_empty() {
+        return Err(AppError::Conflict(in_use_message(
+            &type_uri, in_use, &criteria,
         )));
     }
 
@@ -249,5 +283,97 @@ pub async fn delete(
 
     info!(type_uri = %type_uri, by = %auth.0.did, "endorsement type deleted");
 
-    Ok((StatusCode::OK, Json(DeleteResponse { type_uri })))
+    Ok((
+        StatusCode::OK,
+        Json(EndorsementTypeDeleteResponse { type_uri }),
+    ))
+}
+
+/// The 409 body for a type something still references.
+///
+/// Keeps the `endorsement-type-in-use:` prefix the live-endorsement
+/// refusal has always carried, and names each clause that applies
+/// plus what to do about it — an operator error should suggest the
+/// fix, and the admin console renders this text verbatim.
+fn in_use_message(type_uri: &str, in_use: usize, criteria: &[String]) -> String {
+    let mut why = Vec::new();
+    let mut fix = Vec::new();
+    if in_use > 0 {
+        why.push(format!("{in_use} live endorsement(s) of it exist"));
+        fix.push("revoke the endorsements");
+    }
+    if !criteria.is_empty() {
+        let named = criteria
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        why.push(if criteria.len() == 1 {
+            format!("criterion {named} requires statements of it")
+        } else {
+            format!("criteria {named} require statements of it")
+        });
+        fix.push("remove or re-point the criteria");
+    }
+    format!(
+        "endorsement-type-in-use: '{type_uri}' is still referenced — {}. {} before \
+         deleting the type.",
+        why.join("; "),
+        capitalise(&fix.join(" and ")),
+    )
+}
+
+fn capitalise(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_use_message;
+
+    const URI: &str = "https://example.org/endorsements/identity-vetting/0.1";
+
+    #[test]
+    fn names_the_single_criterion_and_what_to_do() {
+        let msg = in_use_message(URI, 0, &["kernel-developer".to_string()]);
+        assert_eq!(
+            msg,
+            "endorsement-type-in-use: 'https://example.org/endorsements/identity-vetting/0.1' \
+             is still referenced — criterion 'kernel-developer' requires statements of it. \
+             Remove or re-point the criteria before deleting the type."
+        );
+    }
+
+    #[test]
+    fn reports_both_reasons_in_one_refusal() {
+        let msg = in_use_message(
+            URI,
+            2,
+            &["kernel-developer".to_string(), "contributor".to_string()],
+        );
+        assert!(msg.contains("2 live endorsement(s) of it exist"), "{msg}");
+        assert!(
+            msg.contains("criteria 'kernel-developer', 'contributor' require statements of it"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("Revoke the endorsements and remove or re-point the criteria"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn keeps_the_live_endorsement_wording_the_prefix_promises() {
+        let msg = in_use_message(URI, 1, &[]);
+        assert!(msg.starts_with("endorsement-type-in-use: "), "{msg}");
+        assert!(msg.contains("1 live endorsement(s) of it exist"), "{msg}");
+        assert!(
+            msg.contains("Revoke the endorsements before deleting the type."),
+            "{msg}"
+        );
+    }
 }
