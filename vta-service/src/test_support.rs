@@ -2623,14 +2623,16 @@ mod transport_harness_tests {
     ///
     /// Two setup steps are load-bearing:
     ///
-    /// - **It holds an ACL grant, not only a mediator account.** Over TSP
-    ///   inbound, `auth_for_trust_task_envelope` → `auth_from_did` runs *before*
-    ///   the reply reaches `pending_replies.complete`, and a reply document is
-    ///   not a ceremony task — so an ungranted peer's reply is refused with a
-    ///   `permissionDenied` envelope and never correlated, and the VTA times out
-    ///   on a reply that was in fact delivered. Dropping the grant makes this
-    ///   test fail exactly as the silent orphan does: the grant is the negative
-    ///   control.
+    /// - **It holds an ACL grant, not only a mediator account.** That was once
+    ///   the difference between a correlated reply and a `permissionDenied`
+    ///   envelope: `auth_for_trust_task_envelope` ran *before* the reply reached
+    ///   `pending_replies.complete`, so an ungranted peer's reply was refused and
+    ///   the VTA timed out on an answer it had in fact been sent. The spine now
+    ///   classifies an inbound document first and hands a threaded one to its
+    ///   waiter before any ACL check (`accept_from_proven_sender`), so the grant
+    ///   no longer decides *this* test. It is kept because it still decides a
+    ///   reply that arrives after its waiter gave up, which falls through to the
+    ///   dispatcher like any other request.
     /// - **It `relate`s the VTA before answering.** `relate` leaves this side
     ///   `Pending`, which admits application messages (§3.6), so the reply may be
     ///   sent; the VTA's own half is re-formed by `send_reestablishing` on the
@@ -2639,6 +2641,28 @@ mod transport_harness_tests {
         session: std::sync::Arc<vta_sdk::session::TspSession>,
         loop_handle: tokio::task::JoinHandle<()>,
         did: String,
+        /// What the answering loop actually did, for the assertion message.
+        ///
+        /// Every failure inside that loop used to be discarded — `Err(_) =>
+        /// break` on the socket, `let _ = send_document(…)` on the reply — so a
+        /// peer that never saw the request and a peer whose reply failed to send
+        /// both surfaced as the VTA's "did not answer", which is the one reading
+        /// that is certainly wrong. The loop records here instead, and
+        /// [`report`](Self::report) puts it in the panic message.
+        log: std::sync::Arc<std::sync::Mutex<PeerLog>>,
+    }
+
+    /// What the answering peer saw and did — the difference between "the request
+    /// never arrived", "the reply could not be sent" and "the reply was sent and
+    /// the VTA did not correlate it", which are three different bugs.
+    #[derive(Default)]
+    struct PeerLog {
+        /// Documents pulled off the socket (any kind).
+        received: usize,
+        /// Replies handed to `send_document` without error.
+        sent: usize,
+        /// Faults, in order: a send that failed, or the socket ending.
+        faults: Vec<String>,
     }
 
     impl AnsweringPeer {
@@ -2667,6 +2691,8 @@ mod transport_harness_tests {
             let loop_session = session.clone();
             let vta_did = mock.vta_did().to_string();
             let mediator_did = mock.mediator_did().to_string();
+            let log = std::sync::Arc::new(std::sync::Mutex::new(PeerLog::default()));
+            let loop_log = log.clone();
             let loop_handle = tokio::spawn(async move {
                 loop {
                     // Resolve the poll before the reply send below: `receive_next`
@@ -2674,16 +2700,36 @@ mod transport_harness_tests {
                     // not `Send`, and leaving the whole `Result` alive across the
                     // later `send_document().await` would make this spawned future
                     // non-`Send`. Reduce it to the document (or stop) here.
-                    let doc = match loop_session.receive_next(1).await {
+                    let polled = loop_session
+                        .receive_next(1)
+                        .await
+                        .map_err(|e| e.to_string());
+                    let doc = match polled {
                         Ok(Some(doc)) => doc,
                         // Idle within the poll slice — keep pumping.
                         Ok(None) => continue,
-                        // The socket is gone (the peer was shut down). Stop.
-                        Err(_) => break,
+                        // The socket is gone (the peer was shut down). Stop —
+                        // but say so, because from the VTA's side a peer that
+                        // stopped pumping is indistinguishable from one that
+                        // chose not to answer.
+                        Err(e) => {
+                            loop_log
+                                .lock()
+                                .expect("peer log")
+                                .faults
+                                .push(format!("the peer's socket ended: {e}"));
+                            break;
+                        }
                     };
+                    loop_log.lock().expect("peer log").received += 1;
                     let Ok(request) =
                         serde_json::from_str::<trust_tasks_rs::TrustTask<serde_json::Value>>(&doc)
                     else {
+                        loop_log
+                            .lock()
+                            .expect("peer log")
+                            .faults
+                            .push(format!("a frame that is not a Trust Task: {doc}"));
                         continue;
                     };
                     // `respond_with` threads the reply on the request's
@@ -2694,9 +2740,15 @@ mod transport_harness_tests {
                         serde_json::json!({ "answered": true }),
                     );
                     if let Ok(bytes) = serde_json::to_vec(&reply) {
-                        let _ = loop_session
+                        let sent = loop_session
                             .send_document(&vta_did, &mediator_did, &bytes)
-                            .await;
+                            .await
+                            .map_err(|e| e.to_string());
+                        let mut log = loop_log.lock().expect("peer log");
+                        match sent {
+                            Ok(()) => log.sent += 1,
+                            Err(e) => log.faults.push(format!("the reply could not be sent: {e}")),
+                        }
                     }
                 }
             });
@@ -2705,11 +2757,27 @@ mod transport_harness_tests {
                 session,
                 loop_handle,
                 did,
+                log,
             }
         }
 
         fn did(&self) -> &str {
             &self.did
+        }
+
+        /// One line saying what the peer saw and did, for an assertion message.
+        fn report(&self) -> String {
+            let log = self.log.lock().expect("peer log");
+            format!(
+                "the peer received {} document(s), sent {} reply(ies); faults: {}",
+                log.received,
+                log.sent,
+                if log.faults.is_empty() {
+                    "none".to_string()
+                } else {
+                    log.faults.join("; ")
+                }
+            )
         }
 
         /// Stop the answering loop and shut the peer's socket. Not optional: an
@@ -2867,7 +2935,8 @@ mod transport_harness_tests {
 
         assert!(
             out.is_ok(),
-            "the answering peer replies, so recovery completes with the reply: {out:?}"
+            "the answering peer replies, so recovery completes with the reply: {out:?} — {}",
+            peer.report()
         );
         let reply = out.expect("recovery returned the correlated reply");
         assert_eq!(

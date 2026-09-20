@@ -389,6 +389,54 @@ about). It needs a **concrete** `Arc<PersistentRelationshipStore<..>>` handle
 kept beside the `Arc<dyn RelationshipStore>` handed to the ATM (the sweep/
 enumerate methods are on the concrete type, not the trait).
 
+### D6a — A refused invite is not a failed recovery
+
+The re-establishing send is three steps — read the send readiness, invite if it
+says `Reestablish`, send the payload behind it (§3.6) — and the first two are
+**separate awaits on the relationship store**. The peer can move our half in
+between: its own invite arrives, `None` + `ReceiveInvite` leaves us
+`InviteReceived`, and `SendInvite` is legal only from `None`. The invite is then
+refused with
+
+```text
+invalid transition: SendInvite in state InviteReceived
+```
+
+and the SDK's combined `send_reestablishing` returns that error **with the
+payload unsent**.
+
+Treating that as a failure is wrong twice over. It is the outcome the invite
+existed to produce, reached from the other side — a relationship is on record,
+and `admits_application_message()` is true for every state but `None`, so the
+payload could have gone. And it is worst exactly where it matters most: two
+endpoints repairing the same broken relationship at once is what a mediator
+restart or a VTA redeploy produces, so the collision is common precisely when
+recovery is.
+
+So `vta-service`'s `TspTransport::send_reestablishing` spells the three steps
+out rather than calling the SDK's combined form, and answers a refused invite by
+**re-reading the store** — not by matching on the error's text, which is not a
+contract. Our half no longer `None` means carry on to the payload; still `None`
+means the invite failed for its own reasons and that error stands
+(`invite_refusal_is_benign`, a pure function, is the decision). The payload is
+sent exactly once either way.
+
+Two things this exposed, both fixed alongside it:
+
+- `recover_send_tsp` collapsed `Timeout`, `Cancelled` and `SendFailed(reason)`
+  into one message, "`<peer>` did not answer over TSP after re-establishing the
+  relationship" — so a frame that never left this VTA was reported as a silent
+  peer, and every reader was sent to the wrong endpoint. The steady-state
+  `send_tsp` beside it already told the three apart; the recovery arm now does
+  too.
+- The same race is open in `vtc-service`'s registry client
+  (`registry::messaging::send_tsp`), which calls the SDK's combined form. There
+  it surfaces as a transient `Unreachable` and the syncer's backoff — the one
+  retry owner on that path — re-sends into a store that now reads
+  `HandshakeInFlight`, so it self-heals on the next attempt. Left as is
+  deliberately; a one-shot recovery has no such owner, which is why the VTA's
+  arm could not.
+
 ### D7 — Security invariants for re-establishment
 
 Recovery is the moment an attacker would try a key-swap or downgrade, so:

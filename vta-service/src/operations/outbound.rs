@@ -377,14 +377,30 @@ impl TspSender {
                             self.recovery.settle_success(&our, recipient).await;
                             Ok(v)
                         }
-                        _ => {
+                        // Why the resend failed, not just that it did. The
+                        // steady-state `send_tsp` above already tells these three
+                        // apart; collapsing them here said "the peer did not
+                        // answer" for a frame that never left this VTA, which
+                        // sends whoever reads it to look at the wrong endpoint.
+                        other => {
                             self.recovery
                                 .settle_failure(&our, recipient, now, backoff())
                                 .await;
-                            Err(bad_gateway_error(format!(
-                                "`{recipient}` did not answer over TSP after re-establishing the \
-                                 relationship"
-                            )))
+                            Err(bad_gateway_error(match other {
+                                TspAttempt::SendFailed(reason) => format!(
+                                    "could not resend to `{recipient}` over TSP after \
+                                     re-establishing the relationship: {reason}"
+                                ),
+                                TspAttempt::Cancelled => format!(
+                                    "the wait for `{recipient}`'s reply was cancelled after \
+                                     re-establishing the relationship"
+                                ),
+                                // `Timeout`, and `Reply` cannot reach here.
+                                _ => format!(
+                                    "`{recipient}` did not answer over TSP after re-establishing \
+                                     the relationship"
+                                ),
+                            }))
                         }
                     }
                 } else {
