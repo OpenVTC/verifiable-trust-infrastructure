@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
 use crate::auth::AuthClaims;
@@ -40,12 +39,7 @@ pub async fn run_add_server(
     let config = AppConfig::load(config_path)?;
     let cs = CliStore::open(&config).await?;
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await?;
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
 
     let auth = cli_super_admin();
     let result = operations::did_webvh::register_webvh_server(
@@ -235,12 +229,7 @@ pub async fn run_create_did(
         is_vta_identity: false,
     };
 
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await?;
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     // Offline CLI: no shared AppState, so create a local per-server
     // auth-lock registry for any daemon-REST authentication a publish
@@ -401,12 +390,7 @@ pub async fn run_delete_did(
         Arc::from(create_seed_store(&config)?);
 
     let auth = cli_super_admin();
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await?;
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::WebvhDeps {
@@ -545,12 +529,7 @@ pub async fn run_edit_did(
     let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await?;
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
@@ -733,12 +712,7 @@ pub async fn run_register_did(
     let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await?;
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);

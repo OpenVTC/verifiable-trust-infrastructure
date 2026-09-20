@@ -6,8 +6,6 @@ use didwebvh_rs::url::WebVHURL;
 use serde_json::json;
 use url::Url;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
-
 use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
 use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
@@ -135,12 +133,7 @@ pub async fn run_create_did_webvh(
 
     // Build params and call the operations layer
     let auth = cli_super_admin();
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await?;
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
         Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
 
@@ -463,8 +456,11 @@ fn edit_did_document(
 #[cfg(all(test, feature = "config-seed"))]
 mod tests {
     use super::*;
+    // Only the tests construct a resolver directly now: the production path
+    // takes the process-shared one so repeat resolutions hit one cache.
     use crate::acl::get_acl_entry;
     use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
     use vti_common::acl::Role;
 
     /// `vta create-did-webvh --url <URL> --admin --export-secrets` must run

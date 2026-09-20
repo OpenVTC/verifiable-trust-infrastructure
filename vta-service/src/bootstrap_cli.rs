@@ -1055,20 +1055,13 @@ pub async fn run_context_delete(
     {
         use std::sync::Arc;
 
-        use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
-
         let sessions_ks = cs.keyspace(crate::keyspaces::SESSIONS)?;
         let issued_credentials_ks = cs.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?;
         let audit_sink: vta_audit::SharedAuditSink =
             vta_audit::shared_keyspace_sink(audit_ks.clone());
         let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
             Arc::from(crate::keys::seed_store::create_seed_store(&app_config)?);
-        let did_resolver = DIDCacheClient::new(
-            DIDCacheConfigBuilder::default()
-                .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-                .build(),
-        )
-        .await?;
+        let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
         let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
             Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
         let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();

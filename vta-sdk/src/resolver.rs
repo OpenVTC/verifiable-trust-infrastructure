@@ -358,6 +358,57 @@ mod tests {
 
     /// Without the opt-in the policy is the strict one. Guards against the
     /// default being flipped by a later refactor of `build_did_cache_config`.
+    /// Two callers on one runtime get one resolver, and therefore one cache.
+    ///
+    /// This is load-bearing rather than an optimisation. A dozen call sites
+    /// across `vta-service`, `cnm-cli` and `vtc-service` were each building
+    /// their own `DIDCacheClient`, so the same DID was fetched once per
+    /// construction and a `did:webvh` host saw a burst of requests for one
+    /// logical operation — enough to earn a 429 from its own rate limiter.
+    /// They now take the shared one, which only helps if it is actually
+    /// shared, and nothing pinned that.
+    ///
+    /// Counted for **this runtime only**, never over the whole registry. The
+    /// registry is process-global and every other `#[tokio::test]` in this
+    /// binary registers under its own runtime key, so a total is both noisy
+    /// and — worse — not monotonic: `shared_did_resolver` prunes entries whose
+    /// runtime has ended before it inserts, so the map can shrink under a test
+    /// that is only reading it. An earlier version of this test asserted
+    /// `after == before + 1` and failed in CI for exactly that reason, with a
+    /// dead entry pruned in the same call that added ours.
+    #[tokio::test]
+    async fn two_callers_on_one_runtime_share_one_resolver() {
+        fn mine() -> usize {
+            let id = tokio::runtime::Handle::current().id();
+            shared_resolvers()
+                .keys()
+                .filter(|k| k.runtime == id)
+                .count()
+        }
+
+        assert_eq!(mine(), 0, "this runtime starts with no registered resolver");
+
+        let first = shared_did_resolver(None).await.expect("first resolver");
+        assert_eq!(mine(), 1, "the first call registers one resolver");
+
+        let _second = shared_did_resolver(None).await.expect("second resolver");
+        assert_eq!(
+            mine(),
+            1,
+            "the second call must reuse the registered resolver, not build another"
+        );
+
+        // No second key is registered to prove the counter can move: the
+        // 0 -> 1 step above already does that, and the only other way to move
+        // it is a different sidecar URL, which puts the client in network mode
+        // and makes this test wait on a socket that is not the subject.
+
+        // Still registered after a caller drops its clone: the registry holds
+        // the shared one, so a short-lived caller cannot evict it for the next.
+        drop(first);
+        assert!(mine() >= 1);
+    }
+
     #[test]
     fn default_policy_is_public_only() {
         // No env var and no `set_allow_private_endpoints` call in this test

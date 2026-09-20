@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -78,13 +77,7 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     );
 
     // 2. DID resolver for resolution checks
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await
-    .ok();
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await.ok();
 
     // 3. VTC DID + resolution check → extract mediator DID from DIDCommMessaging
     let mut discovered_mediator: Option<String> = None;

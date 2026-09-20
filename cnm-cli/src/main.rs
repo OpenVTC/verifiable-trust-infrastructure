@@ -1630,7 +1630,6 @@ async fn cmd_health(
     keyring_key: &str,
     cnm_config: &config::CnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
     use std::time::Duration;
 
     let ping_timeout = Duration::from_secs(10);
@@ -1660,13 +1659,7 @@ async fn cmd_health(
     println!("  {CYAN}{:<13}{RESET} {}", "URL", client.endpoint_label());
 
     // Create a shared DID resolver for both sections
-    let resolver = match DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await
-    {
+    let resolver = match vta_sdk::resolver::shared_did_resolver_from_env().await {
         Ok(r) => Some(r),
         Err(e) => {
             println!("  {DIM}DID resolution skipped (resolver unavailable: {e}){RESET}");

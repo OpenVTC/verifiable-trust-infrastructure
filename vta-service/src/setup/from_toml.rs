@@ -33,7 +33,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use url::Url;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use vta_sdk::protocol::matching::Protocol;
 
 use crate::config::{
@@ -1764,12 +1763,7 @@ async fn create_simple_webvh_did(
         .to_string();
 
     let auth = cli_super_admin();
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await?;
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
         Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
 

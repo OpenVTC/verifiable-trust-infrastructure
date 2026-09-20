@@ -33,7 +33,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use tokio::sync::RwLock;
 
 use vta_cli_common::commands::services::print_serverless_hint;
@@ -192,12 +192,7 @@ async fn build_offline_deps(
     // meant any non-plaintext backend failed with
     // "no seed found in external store" (#564).
     let seed_store = create_seed_store(&config)?;
-    let did_resolver = DIDCacheClient::new(
-        DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
-            .build(),
-    )
-    .await?;
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let didcomm_bridge = Arc::new(DIDCommBridge::placeholder());
     let telemetry: SharedTelemetrySink = Arc::new(RingBufferTelemetry::new());
     #[cfg(feature = "didcomm")]
