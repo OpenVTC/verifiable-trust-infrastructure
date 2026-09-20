@@ -358,6 +358,49 @@ mod tests {
 
     /// Without the opt-in the policy is the strict one. Guards against the
     /// default being flipped by a later refactor of `build_did_cache_config`.
+    /// Two callers on one runtime get one resolver, and therefore one cache.
+    ///
+    /// This is load-bearing rather than an optimisation. A dozen call sites
+    /// across `vta-service`, `cnm-cli` and `vtc-service` were each building
+    /// their own `DIDCacheClient`, so the same DID was fetched once per
+    /// construction and a `did:webvh` host saw a burst of requests for one
+    /// logical operation — enough to earn a 429 from its own rate limiter.
+    /// They now take the shared one, which only helps if it is actually shared,
+    /// and nothing pinned that.
+    ///
+    /// Asserted on the registry rather than on cache hits: the alternative is
+    /// resolving a loopback DID twice and counting fetches, which needs the
+    /// private-host policy and makes the test about host policy as much as
+    /// about sharing.
+    #[tokio::test]
+    async fn two_callers_on_one_runtime_share_one_resolver() {
+        // Distinct from any other test's key, so a shared registry entry left
+        // by another test in this process cannot make this pass or fail.
+        let url = None;
+        let before = { shared_resolvers().len() };
+
+        let first = shared_did_resolver(url).await.expect("first resolver");
+        let after_first = { shared_resolvers().len() };
+        assert_eq!(
+            after_first,
+            before + 1,
+            "the first call should register exactly one resolver"
+        );
+
+        let _second = shared_did_resolver(url).await.expect("second resolver");
+        assert_eq!(
+            shared_resolvers().len(),
+            after_first,
+            "the second call must reuse the registered resolver, not build another"
+        );
+
+        drop(first);
+        // Still registered after a caller drops its clone — the registry holds
+        // the shared one, so a short-lived caller does not evict it for the
+        // next.
+        assert_eq!(shared_resolvers().len(), after_first);
+    }
+
     #[test]
     fn default_policy_is_public_only() {
         // No env var and no `set_allow_private_endpoints` call in this test
