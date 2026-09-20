@@ -724,6 +724,42 @@ function MemberDetail() {
                 )}
               </dd>
             </dl>
+
+            {/* The action belongs to the row above it, not to Admin
+             * actions where it used to sit. Membership edge is the thing
+             * this button changes, and its own copy already says "request
+             * a fresh one below" — which was pointing four cards down,
+             * past Published relationships, Disposition and Vetter role,
+             * to a block otherwise about promoting and removing people.
+             * Asking a member for their half of the pair is neither. */}
+            <div className="form-actions">
+              <button
+                type="button"
+                className="secondary"
+                disabled={requestVmcMutation.isPending}
+                title="Ask this member to issue and send their reciprocal VMC (member → VTC half of the membership pair)"
+                onClick={() => requestVmcMutation.mutate(decoded)}
+              >
+                {requestVmcMutation.isPending
+                  ? "Requesting…"
+                  : query.data.memberVmcId
+                    ? "Re-request member VMC"
+                    : "Request member VMC"}
+              </button>
+            </div>
+
+            {requestVmcMutation.error && (
+              <div className="finding error" role="alert">
+                <strong>Request failed</strong>
+                <p>{(requestVmcMutation.error as Error).message}</p>
+              </div>
+            )}
+            {requestVmcMutation.isSuccess && (
+              <p className="muted">
+                Requested the member's reciprocal VMC. They'll send it back
+                asynchronously; refresh to see it above.
+              </p>
+            )}
           </section>
 
           <section className="card">
@@ -901,19 +937,6 @@ function MemberDetail() {
               </section>
             )}
 
-            {requestVmcMutation.error && (
-              <section className="card error">
-                <h3>Request failed</h3>
-                <p>{(requestVmcMutation.error as Error).message}</p>
-              </section>
-            )}
-            {requestVmcMutation.isSuccess && (
-              <p className="muted">
-                Requested the member's reciprocal VMC. They'll send it back
-                asynchronously; refresh to see it under Credentials.
-              </p>
-            )}
-
             <div className="form-actions">
               <button
                 type="button"
@@ -937,19 +960,6 @@ function MemberDetail() {
                   : query.data.role === "admin"
                     ? "Already admin"
                     : "Promote to admin"}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={requestVmcMutation.isPending}
-                title="Ask this member to issue and send their reciprocal VMC (member → VTC half of the membership pair)"
-                onClick={() => requestVmcMutation.mutate(decoded)}
-              >
-                {requestVmcMutation.isPending
-                  ? "Requesting…"
-                  : query.data.memberVmcId
-                    ? "Re-request member VMC"
-                    : "Request member VMC"}
               </button>
             </div>
 
