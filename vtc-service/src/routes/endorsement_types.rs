@@ -214,10 +214,16 @@ pub async fn list(
 /// of a three-way `DeleteResponse` collision, is what surfaced a
 /// violation that predated the rename.
 ///
-/// `utoipa::ToSchema` cannot be derived on a foreign type, so the
-/// OpenAPI body is documented with [`EndorsementTypeDelete01Response`],
-/// whose schema is rendered from the specification's own rather than
-/// described a second time here.
+/// `utoipa::ToSchema` cannot be derived on a foreign type, so the handler
+/// returns [`EndorsementTypeDelete01Response`] — the `spec_types!` newtype
+/// whose schema is rendered from the specification's own — wrapping the
+/// generated value rather than describing the shape a second time.
+///
+/// Returning the wrapper, not the bare generated type, is what
+/// `openapi_response_census` requires: the `body =` annotation and the
+/// handler's return type must name the same thing, because that annotation
+/// is what generates the console's `wire.ts` and a mismatch ships a console
+/// reading a shape the daemon never sends.
 #[utoipa::path(
     delete, path = "/endorsement-types/{type_uri}",
     operation_id = "endorsementTypeDelete", tag = "endorsement-types",
@@ -234,7 +240,7 @@ pub async fn delete(
     auth: AdminAuth,
     State(state): State<AppState>,
     Path(type_uri): Path<String>,
-) -> Result<(StatusCode, Json<DeleteTaskResponse>), AppError> {
+) -> Result<(StatusCode, Json<EndorsementTypeDelete01Response>), AppError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -286,14 +292,15 @@ pub async fn delete(
 
     Ok((
         StatusCode::OK,
-        Json(
-            DeleteTaskResponse::builder()
+        Json({
+            let body: DeleteTaskResponse = DeleteTaskResponse::builder()
                 .type_uri(type_uri)
                 .try_into()
                 .map_err(|e| {
                     AppError::Internal(format!("delete response does not match its schema: {e}"))
-                })?,
-        ),
+                })?;
+            body.into()
+        }),
     ))
 }
 
