@@ -2016,6 +2016,8 @@
         "tags": [
           "endorsement-types"
         ],
+        "summary": "The response is the **generated** `vtc/endorsement-types/delete/0.1`\ntype, not a local restatement of it.",
+        "description": "A hand-written `{ typeUri }` lived here until the census in\n`vta-sdk/tests/generated_wire_types_census.rs` named it. It had been\ninvisible to that census only because it carried no doc comment\nsaying which task it restated — giving it one, while renaming it out\nof a three-way `DeleteResponse` collision, is what surfaced a\nviolation that predated the rename.\n\n`utoipa::ToSchema` cannot be derived on a foreign type, so the\nOpenAPI body is documented with [`EndorsementTypeDelete01Response`],\nwhose schema is rendered from the specification's own rather than\ndescribed a second time here.",
         "operationId": "endorsementTypeDelete",
         "parameters": [
           {
@@ -2034,7 +2036,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EndorsementTypeDeleteResponse"
+                  "$ref": "#/components/schemas/VtcEndorsementTypesDeleteV0_1Response"
                 }
               }
             }
@@ -6564,18 +6566,6 @@
           }
         }
       },
-      "EndorsementTypeDeleteResponse": {
-        "type": "object",
-        "description": "`{ typeUri }` — the shape `vtc/endorsement-types/delete/0.1`\npublishes.\n\nNamed for its route rather than `DeleteResponse`: three structs\nin this crate carried that name, utoipa's component registry\nkeeps one, and `routes::schemas`' `{ id }` won — so\n`openapi.json` documented this route as returning `{ id }`, and\nthe console's generated `wire.ts` carried that error. The JSON\nbody is unchanged.",
-        "required": [
-          "typeUri"
-        ],
-        "properties": {
-          "typeUri": {
-            "type": "string"
-          }
-        }
-      },
       "ExportResponse": {
         "type": "object",
         "description": "`POST /v1/admin/config/export` response — canonical\n`vtc/config/export/0.1#response`. The document is returned under a\nnamed member rather than as the bare body: the registry response\nconvention requires `additionalProperties: false` plus an `ext`\nextension point, and neither attaches to a bare `$ref`.",
@@ -10545,6 +10535,28 @@
             "description": "The statement's `id`."
           }
         }
+      },
+      "VtcEndorsementTypesDeleteV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcEndorsementTypesDeleteV0_1Response": {
+        "type": "object",
+        "required": [
+          "typeUri"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcEndorsementTypesDeleteV0_1Ext"
+          },
+          "typeUri": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
       },
       "VtcJoinRequestsManifestV0_2ClaimType": {
         "type": "string",

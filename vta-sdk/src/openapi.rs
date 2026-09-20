@@ -48,6 +48,7 @@ use utoipa::openapi::schema::{
 use utoipa::openapi::{Ref, RefOr};
 
 use crate::protocols::vetting::vetters;
+use trust_tasks_rs::specs::vtc::endorsement_types;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
 
@@ -127,6 +128,8 @@ spec_types! {
     VetterList01Response(vetters::list::v0_1::Response);
     /// `vtc/vetting/vetters/resend/0.1#response`.
     VetterResend01Response(vetters::resend::v0_1::Response);
+    /// `vtc/endorsement-types/delete/0.1#response`.
+    EndorsementTypeDelete01Response(endorsement_types::delete::v0_1::Response);
     /// `vtc/vetting/vetters/profile/0.1`'s `VettingMethod`.
     VetterProfile01VettingMethod(vetters::profile::v0_1::VettingMethod)
         in vetters::profile::v0_1::Payload as "VettingMethod";
@@ -441,6 +444,7 @@ mod tests {
         check::<VetterList01Payload>();
         check::<VetterList01Response>();
         check::<VetterResend01Response>();
+        check::<EndorsementTypeDelete01Response>();
         check::<VetterProfile01VettingMethod>();
         check::<JoinManifest01Response>();
         check::<JoinManifest02Response>();

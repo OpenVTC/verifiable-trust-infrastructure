@@ -780,6 +780,21 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /**
+         * The response is the **generated** `vtc/endorsement-types/delete/0.1`
+         *     type, not a local restatement of it.
+         * @description A hand-written `{ typeUri }` lived here until the census in
+         *     `vta-sdk/tests/generated_wire_types_census.rs` named it. It had been
+         *     invisible to that census only because it carried no doc comment
+         *     saying which task it restated — giving it one, while renaming it out
+         *     of a three-way `DeleteResponse` collision, is what surfaced a
+         *     violation that predated the rename.
+         *
+         *     `utoipa::ToSchema` cannot be derived on a foreign type, so the
+         *     OpenAPI body is documented with [`EndorsementTypeDelete01Response`],
+         *     whose schema is rendered from the specification's own rather than
+         *     described a second time here.
+         */
         delete: operations["endorsementTypeDelete"];
         options?: never;
         head?: never;
@@ -2758,20 +2773,6 @@ export interface components {
              * @description The type URI. Primary key — URL-encoded into the
              *     keyspace key.
              */
-            typeUri: string;
-        };
-        /**
-         * @description `{ typeUri }` — the shape `vtc/endorsement-types/delete/0.1`
-         *     publishes.
-         *
-         *     Named for its route rather than `DeleteResponse`: three structs
-         *     in this crate carried that name, utoipa's component registry
-         *     keeps one, and `routes::schemas`' `{ id }` won — so
-         *     `openapi.json` documented this route as returning `{ id }`, and
-         *     the console's generated `wire.ts` carried that error. The JSON
-         *     body is unchanged.
-         */
-        EndorsementTypeDeleteResponse: {
             typeUri: string;
         };
         /**
@@ -5216,6 +5217,14 @@ export interface components {
             /** @description The statement's `id`. */
             statementId: string;
         };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcEndorsementTypesDeleteV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcEndorsementTypesDeleteV0_1Response: {
+            ext?: components["schemas"]["VtcEndorsementTypesDeleteV0_1Ext"];
+            typeUri: string;
+        };
         /**
          * @description The vocabulary token naming what a value IS — `name.legal`, `phone.mobile`, `address.postal`, `person.birthDate`. Dotted, most-general segment first, so that a consumer with no knowledge of the specific token can still group by its prefix.
          *
@@ -7601,7 +7610,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EndorsementTypeDeleteResponse"];
+                    "application/json": components["schemas"]["VtcEndorsementTypesDeleteV0_1Response"];
                 };
             };
             /** @description Missing or invalid bearer token */

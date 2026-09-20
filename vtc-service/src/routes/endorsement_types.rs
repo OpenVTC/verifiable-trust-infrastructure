@@ -46,6 +46,9 @@ use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
+use trust_tasks_rs::specs::vtc::endorsement_types::delete::v0_1::Response as DeleteTaskResponse;
+use vta_sdk::openapi::EndorsementTypeDelete01Response;
+
 use crate::endorsement_types::{
     EndorsementType, RESERVED_TYPE_URIS, TYPE_URI_MAX_BYTES, delete_type, get_type, list_types,
     store_type,
@@ -201,29 +204,27 @@ pub async fn list(
 
 // ─── Delete ──────────────────────────────────────────────
 
-/// `{ typeUri }` — the shape `vtc/endorsement-types/delete/0.1`
-/// publishes.
+/// The response is the **generated** `vtc/endorsement-types/delete/0.1`
+/// type, not a local restatement of it.
 ///
-/// Named for its route rather than `DeleteResponse`: three structs
-/// in this crate carried that name, utoipa's component registry
-/// keeps one, and `routes::schemas`' `{ id }` won — so
-/// `openapi.json` documented this route as returning `{ id }`, and
-/// the console's generated `wire.ts` carried that error. The JSON
-/// body is unchanged.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct EndorsementTypeDeleteResponse {
-    pub type_uri: String,
-}
-
+/// A hand-written `{ typeUri }` lived here until the census in
+/// `vta-sdk/tests/generated_wire_types_census.rs` named it. It had been
+/// invisible to that census only because it carried no doc comment
+/// saying which task it restated — giving it one, while renaming it out
+/// of a three-way `DeleteResponse` collision, is what surfaced a
+/// violation that predated the rename.
+///
+/// `utoipa::ToSchema` cannot be derived on a foreign type, so the
+/// OpenAPI body is documented with [`EndorsementTypeDelete01Response`],
+/// whose schema is rendered from the specification's own rather than
+/// described a second time here.
 #[utoipa::path(
     delete, path = "/endorsement-types/{type_uri}",
     operation_id = "endorsementTypeDelete", tag = "endorsement-types",
     security(("bearer_jwt" = [])),
     params(("type_uri" = String, Path, description = "Endorsement type URI")),
     responses(
-        (status = 200, description = "Endorsement type deleted", body = EndorsementTypeDeleteResponse),
+        (status = 200, description = "Endorsement type deleted", body = EndorsementTypeDelete01Response),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "Endorsement type not found"),
@@ -233,7 +234,7 @@ pub async fn delete(
     auth: AdminAuth,
     State(state): State<AppState>,
     Path(type_uri): Path<String>,
-) -> Result<(StatusCode, Json<EndorsementTypeDeleteResponse>), AppError> {
+) -> Result<(StatusCode, Json<DeleteTaskResponse>), AppError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -285,7 +286,14 @@ pub async fn delete(
 
     Ok((
         StatusCode::OK,
-        Json(EndorsementTypeDeleteResponse { type_uri }),
+        Json(
+            DeleteTaskResponse::builder()
+                .type_uri(type_uri)
+                .try_into()
+                .map_err(|e| {
+                    AppError::Internal(format!("delete response does not match its schema: {e}"))
+                })?,
+        ),
     ))
 }
 
