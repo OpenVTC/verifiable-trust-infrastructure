@@ -1168,6 +1168,41 @@ export interface paths {
         patch: operations["update_member"];
         trace?: never;
     };
+    "/v1/members/{did}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /members/{did}/credentials — the membership pair's bodies. Auth: Admin.
+         * @description Unknown member → 404 carrying `vtc/members/credentials:notFound`. A member
+         *     who holds no credentials is **not** that: it is a 200 with every document
+         *     absent and `memberVmcBound: false`, which is the case the task exists to
+         *     make visible.
+         *
+         *     "Unknown" is judged exactly as `members/show` judges it — a member row
+         *     **and** its ACL row. A departed (tombstoned) member keeps a row but not an
+         *     ACL entry, and tombstoning clears every credential body anyway; answering
+         *     for one here while `show` says not-found would be two definitions of "is a
+         *     member" one route apart.
+         *
+         *     Every successful read is audited (`MemberCredentialsRead`): the
+         *     specification says a maintainer SHOULD record it, and a disclosure of
+         *     credential bodies that leaves no trace cannot be reviewed afterwards. The
+         *     audit write happens before the bodies are returned — a read that could not
+         *     be recorded is refused rather than disclosed silently.
+         */
+        get: operations["memberCredentials"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/members/{did}/personhood": {
         parameters: {
             query?: never;
@@ -5411,6 +5446,29 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        VtcMembersCredentialsV0_1Did: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcMembersCredentialsV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The documents the community holds for this member. Every credential member is optional; absent means the community holds no such document, which is a real answer rather than a failure. */
+        VtcMembersCredentialsV0_1Response: {
+            did: components["schemas"]["VtcMembersCredentialsV0_1Did"];
+            ext?: components["schemas"]["VtcMembersCredentialsV0_1Ext"];
+            /** @description The member-issued reciprocal VMC — the acknowledgement that completes the edge. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2. */
+            memberVmc?: Record<string, never>;
+            /** @description Whether the acknowledgement's digest was verified against the grant. REQUIRED so that 'not verified' is stated rather than inferred from silence. Declares no `default` on purpose — a declared default is materialised by the generated bindings and breaks round-trip idempotence for every existing document. */
+            memberVmcBound: boolean;
+            /**
+             * Format: date-time
+             * @description When the acknowledgement arrived. Paired with `memberVmc`; a maintainer must not send one without the other.
+             */
+            memberVmcReceivedAt?: string;
+            /** @description The community-issued Verifiable Membership Credential — the grant. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2. */
+            membershipCredential?: Record<string, never>;
+            /** @description The role Verifiable Endorsement Credential. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2. */
+            roleCredential?: Record<string, never>;
+        };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcRegistryRecordsListV0_1Ext: {
             [key: string]: unknown;
@@ -8630,6 +8688,57 @@ export interface operations {
             };
             /** @description Target is already an admin */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    memberCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Member DID */
+                did: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The credential documents the community holds for this member */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcMembersCredentialsV0_1Response"];
+                };
+            };
+            /** @description `did` is not a DID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such member (`vtc/members/credentials:notFound`) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

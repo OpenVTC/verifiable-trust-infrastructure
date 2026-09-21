@@ -16,11 +16,14 @@
 //   - `relationships/list/0.2` for the relationship credentials naming this
 //     member, bodies included.
 //
-// The membership credential + role VEC *bodies* are not here: the
-// `members/show/0.1` response is `additionalProperties: false` and its own text
-// says "The credential body is not echoed here", so surfacing them needs a task
-// authored upstream rather than a field added locally. Their ids and receipt
-// state are shown, which is what that schema does carry.
+// The membership credential, role VEC and member-issued VMC *bodies* come from
+// a third source, `members/credentials/0.1` (#1215): the `members/show/0.1`
+// response is `additionalProperties: false` and its own text says "The
+// credential body is not echoed here", so the bodies needed a task of their
+// own rather than a field added to the shared row. That task also states
+// `memberVmcBound`, and where it is false the Credentials card lays out the
+// evidence — which grant is on record, which digest the acknowledgement names —
+// so the operator can see why before reaching for "Request member VMC".
 
 import { useState } from "react";
 import {
@@ -83,6 +86,8 @@ const TRUST_TASK_REMOVED =
   "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const TRUST_TASK_PURGE =
   "https://trusttasks.org/spec/vtc/members/purge/0.1";
+const TRUST_TASK_CREDENTIALS =
+  "https://trusttasks.org/spec/vtc/members/credentials/0.1";
 const TRUST_TASK_REQUEST_VMC =
   "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1";
 // Naming a vetter issues a revocable vetter role credential; it is withdrawn
@@ -98,9 +103,16 @@ const VETTER_ROLE = "vetter";
 // The endorsement list has no subject filter; walking it stops here.
 const MAX_ENDORSEMENT_PAGES = 50;
 
+import {
+  claimedDigest,
+  credentialDocuments,
+  credentialId,
+  unboundReason,
+} from "@/lib/member-credentials";
 import type {
   EndorsementRow,
   EndorsementsPage,
+  MemberCredentials,
   MemberEnvelope,
   MemberRow,
   MembersPage,
@@ -177,6 +189,15 @@ async function fetchMember(did: string): Promise<MemberRow> {
     { trustTask: TRUST_TASK_SHOW },
   );
   return body.member;
+}
+
+/** The membership pair's bodies for one member. Admin-only, and audited
+ * server-side: every call records that an administrator read them. */
+async function fetchMemberCredentials(did: string): Promise<MemberCredentials> {
+  return getJson<MemberCredentials>(
+    `/v1/members/${encodeURIComponent(did)}/credentials`,
+    { trustTask: TRUST_TASK_CREDENTIALS },
+  );
 }
 
 /** Ask an active member to issue + send their reciprocal VMC (member →
@@ -523,6 +544,115 @@ function MembersList() {
   );
 }
 
+/** A stored credential, collapsed, with its JSON one click away — the same
+ * `<details>` + copy pattern the published-relationships list uses. */
+function CredentialBody({ label, doc }: { label: string; doc: unknown }) {
+  const json = JSON.stringify(doc, null, 2);
+  const id = credentialId(doc);
+  return (
+    <li style={{ marginBottom: "var(--space-3)" }}>
+      <strong>{label}</strong>
+      {id && (
+        <span className="muted">
+          {" "}
+          · <code>{id}</code>
+        </span>
+      )}
+      <CopyButton
+        value={json}
+        label="Copy credential JSON"
+        successMessage="Credential copied"
+      />
+      <details>
+        <summary className="muted">Credential</summary>
+        <pre style={{ overflowX: "auto", fontSize: "var(--text-sm)" }}>
+          {json}
+        </pre>
+      </details>
+    </li>
+  );
+}
+
+/** The bodies from `members/credentials/0.1`, and — where the acknowledgement
+ * is not bound to the grant — the evidence for why. */
+function MemberCredentialDocuments({
+  query,
+}: {
+  query: { isPending: boolean; isError: boolean; data?: MemberCredentials };
+}) {
+  if (query.isPending) return <p className="muted">Loading credentials…</p>;
+  if (query.isError || !query.data) {
+    return <p className="muted">Could not load this member's credentials.</p>;
+  }
+  const c = query.data;
+  const docs = credentialDocuments(c);
+  const reason = unboundReason(c);
+  const digest = claimedDigest(c.memberVmc);
+  const grantId = credentialId(c.membershipCredential);
+
+  return (
+    <>
+      <h4>Documents</h4>
+      {docs.length === 0 ? (
+        <p className="muted">
+          This community holds no credential documents for this member.
+        </p>
+      ) : (
+        <ul style={{ paddingLeft: "1.1em", margin: 0 }}>
+          {docs.map((d) => (
+            <CredentialBody key={d.key} label={d.label} doc={d.doc} />
+          ))}
+        </ul>
+      )}
+
+      {reason && (
+        <div className="finding warn">
+          <strong>Why the acknowledgement is not bound to the grant</strong>
+          <dl>
+            <dt>Grant on record</dt>
+            <dd>
+              {c.membershipCredential ? (
+                <code>{grantId ?? "(credential without an id)"}</code>
+              ) : (
+                <span className="muted">
+                  none — this grant was issued before credential bodies were
+                  kept, so there is nothing to check an acknowledgement against
+                </span>
+              )}
+            </dd>
+            <dt>Acknowledgement names</dt>
+            <dd>
+              {!c.memberVmc ? (
+                <span className="muted">no acknowledgement received</span>
+              ) : digest ? (
+                <>
+                  <code>{digest.value}</code>
+                  <span className="muted"> in {digest.property}</span>
+                </>
+              ) : (
+                <span className="muted">
+                  no digest — the member's client predates the digest
+                  requirement, so it does not say which grant it acknowledges
+                </span>
+              )}
+            </dd>
+          </dl>
+          <span className="muted">
+            {reason === "no-acknowledgement" &&
+              "The member has not sent their half of the pair. Request it below."}
+            {reason === "no-digest" &&
+              "Without a digest the acknowledgement cannot be tied to this grant. Request a fresh one below; a current client binds it."}
+            {reason === "no-grant" &&
+              "The acknowledgement names a digest, but no grant body was held to check it against when it arrived. Request a fresh one below to check it against the grant on record."}
+            {reason === "unchecked" &&
+              "The acknowledgement arrived before its grant's body was kept, so the digest was never checked. Request a fresh one below."}
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
 function MemberDetail() {
   const { did = "" } = useParams<{ did: string }>();
   const navigate = useNavigate();
@@ -544,6 +674,12 @@ function MemberDetail() {
   const graph = useQuery<RelationshipsGraph>({
     queryKey: ["relationships-graph"],
     queryFn: fetchRelationshipsGraph,
+    enabled: decoded.length > 0,
+  });
+
+  const credentials = useQuery<MemberCredentials>({
+    queryKey: ["member-credentials", decoded],
+    queryFn: () => fetchMemberCredentials(decoded),
     enabled: decoded.length > 0,
   });
 
@@ -724,6 +860,8 @@ function MemberDetail() {
                 )}
               </dd>
             </dl>
+
+            <MemberCredentialDocuments query={credentials} />
 
             {/* The action belongs to the row above it, not to Admin
              * actions where it used to sit. Membership edge is the thing

@@ -5,6 +5,8 @@
 //!
 //! - `GET /v1/members` — paginated list.
 //! - `GET /v1/members/{did}` — single member.
+//! - `GET /v1/members/{did}/credentials` — that member's credential bodies
+//!   (`vtc/members/credentials/0.1`, see `credentials.rs`).
 //! - `PATCH /v1/members/{did}` — role + profile fields, including
 //!   role=Admin. That one transition additionally requires a live
 //!   step-up elevation on the caller's session (spec §10.4's UV
@@ -20,6 +22,7 @@
 //! non-Admin authenticated sessions; the Member-role policy
 //! surface is Phase 2+).
 
+pub mod credentials;
 pub mod personhood;
 pub mod read;
 pub mod relationships;
