@@ -969,8 +969,13 @@ impl SessionStore {
             return Ok(client);
         }
 
-        // Priority 2: Resolve VTA DID for transport selection
-        match resolve_vta_endpoint(&session_vta_did).await {
+        // Priority 2: Resolve VTA DID for transport selection. An explicit
+        // `--url` replaces whatever REST base the resolution produced — see
+        // `VtaEndpoint::with_rest_override`.
+        match resolve_vta_endpoint(&session_vta_did)
+            .await
+            .map(|e| e.with_rest_override(url_override))
+        {
             Ok(VtaEndpoint::Tsp {
                 vta_did,
                 mediator_did,
@@ -1853,6 +1858,55 @@ pub enum VtaEndpoint {
         didcomm_mediator_did: Option<String>,
         rest_url: Option<String>,
     },
+}
+
+impl VtaEndpoint {
+    /// Apply an explicit `--url` / `VTA_URL` override to whatever this
+    /// resolution produced.
+    ///
+    /// An operator who names a host means it. Without this, a resolved
+    /// endpoint's advertised `rest_url` wins and the override is silently
+    /// discarded on every path except forced `--transport rest` — so a command
+    /// that later reads [`crate::client::VtaClient::rest_url`] talks to the
+    /// host the DID document names, not the one on the command line, and
+    /// nothing says so. That is Keyring's VTI-14, reported against `cnm
+    /// vetting` because that is where it is felt: `vetting` builds its
+    /// `VtcClient` from `rest_url()`, so pointing `cnm` at a host had no
+    /// effect on where vetting actually talked. The cause is here, and it is
+    /// shared by every authenticated command that reads `rest_url()`.
+    ///
+    /// The transport choice is deliberately untouched. `--url` names a REST
+    /// base; it is not a statement about whether to speak TSP or DIDComm, and
+    /// an operator wanting that says `--transport rest`.
+    fn with_rest_override(self, override_url: Option<&str>) -> Self {
+        let Some(url) = override_url else {
+            return self;
+        };
+        let url = url.to_string();
+        match self {
+            Self::Rest { .. } => Self::Rest { url },
+            Self::DIDComm {
+                vta_did,
+                mediator_did,
+                ..
+            } => Self::DIDComm {
+                vta_did,
+                mediator_did,
+                rest_url: Some(url),
+            },
+            Self::Tsp {
+                vta_did,
+                mediator_did,
+                didcomm_mediator_did,
+                ..
+            } => Self::Tsp {
+                vta_did,
+                mediator_did,
+                didcomm_mediator_did,
+                rest_url: Some(url),
+            },
+        }
+    }
 }
 
 /// Operator transport selection for
@@ -4369,6 +4423,86 @@ mod tests {
         &WHOLE[..WHOLE
             .find(marker)
             .expect("session.rs must have a test module")]
+    }
+
+    /// Keyring VTI-14: an explicit `--url` / `VTA_URL` must survive endpoint
+    /// resolution, on every transport and not only forced `--transport rest`.
+    ///
+    /// Reported against `cnm vetting`, which is where it is felt — `vetting`
+    /// builds its `VtcClient` from `VtaClient::rest_url()`, so a discarded
+    /// override sends it to the host the DID document advertises while the
+    /// operator watches the host they named stay idle. Nothing in the output
+    /// says which one it used, which is what made it cost them a fork of the
+    /// tool rather than an afternoon.
+    #[test]
+    fn an_explicit_url_survives_endpoint_resolution_on_every_transport() {
+        let url = "https://named-by-the-operator.example/v1";
+
+        // TSP: the richest variant, and the one a dual-transport VTA resolves
+        // to — so the arm most likely to be reached in a real deployment.
+        let tsp = VtaEndpoint::Tsp {
+            vta_did: "did:webvh:example:vta".into(),
+            mediator_did: "did:webvh:example:tsp-mediator".into(),
+            didcomm_mediator_did: Some("did:webvh:example:didcomm-mediator".into()),
+            rest_url: Some("https://advertised-by-the-did-doc.example/v1".into()),
+        };
+        match tsp.with_rest_override(Some(url)) {
+            VtaEndpoint::Tsp {
+                rest_url,
+                mediator_did,
+                didcomm_mediator_did,
+                ..
+            } => {
+                assert_eq!(rest_url.as_deref(), Some(url));
+                // The override names a REST base. It is not a statement about
+                // transport, so both mediators must survive it untouched.
+                assert_eq!(mediator_did, "did:webvh:example:tsp-mediator");
+                assert_eq!(
+                    didcomm_mediator_did.as_deref(),
+                    Some("did:webvh:example:didcomm-mediator")
+                );
+            }
+            _ => panic!("an override must not change the Tsp variant"),
+        }
+
+        // DIDComm, including the case the DID document advertises no REST at
+        // all — the override is then the only REST base there is, and
+        // discarding it leaves `rest_url()` empty rather than merely wrong.
+        let didcomm = VtaEndpoint::DIDComm {
+            vta_did: "did:webvh:example:vta".into(),
+            mediator_did: "did:webvh:example:mediator".into(),
+            rest_url: None,
+        };
+        match didcomm.with_rest_override(Some(url)) {
+            VtaEndpoint::DIDComm { rest_url, .. } => assert_eq!(rest_url.as_deref(), Some(url)),
+            _ => panic!("an override must not change the DIDComm variant"),
+        }
+
+        let rest = VtaEndpoint::Rest {
+            url: "https://advertised-by-the-did-doc.example/v1".into(),
+        };
+        match rest.with_rest_override(Some(url)) {
+            VtaEndpoint::Rest { url: got } => assert_eq!(got, url),
+            _ => panic!("an override must not change the Rest variant"),
+        }
+    }
+
+    /// The other half: with no override, resolution is left exactly as it was.
+    /// A fix that always rewrote `rest_url` would pass the test above and
+    /// break every operator who relies on the advertisement.
+    #[test]
+    fn absent_an_override_the_resolved_endpoint_is_untouched() {
+        let advertised = "https://advertised-by-the-did-doc.example/v1";
+        let before = VtaEndpoint::Tsp {
+            vta_did: "did:webvh:example:vta".into(),
+            mediator_did: "did:webvh:example:tsp-mediator".into(),
+            didcomm_mediator_did: None,
+            rest_url: Some(advertised.into()),
+        };
+        match before.with_rest_override(None) {
+            VtaEndpoint::Tsp { rest_url, .. } => assert_eq!(rest_url.as_deref(), Some(advertised)),
+            _ => panic!("an absent override must not change the Tsp variant"),
+        }
     }
 
     /// Body of the item starting at `signature`, up to `terminator`
