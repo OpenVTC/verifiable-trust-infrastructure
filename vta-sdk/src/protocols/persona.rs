@@ -428,6 +428,10 @@ pub struct PersonaBindingSetBody {
     /// context receives with no per-disclosure decision.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub public_entries: Vec<String>,
+    /// What the context may call the face worn there. A context-scoped
+    /// reader is given this, never the holder's own name for the face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Optimistic-concurrency precondition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_version: Option<u64>,
@@ -826,6 +830,10 @@ pub struct PersonaLocalBindingSetBody {
     /// The context-local profile to bind. Omit to clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
+    /// What the context may call the face worn there. A context-scoped
+    /// reader is given this, never the holder's own name for the face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Optimistic-concurrency precondition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_version: Option<u64>,

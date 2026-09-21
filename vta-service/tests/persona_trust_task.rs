@@ -2656,3 +2656,177 @@ async fn a_matching_candidate_is_a_conformant_finding() {
     assert_eq!(findings.len(), 1, "{body}");
     assert!(findings[0].get("attributeId").is_none());
 }
+
+/// A name change, end to end: the context is told only the name the holder
+/// chose for it; an edit says where it landed and which faces held back; and
+/// the history then says which verifier holds the old value.
+///
+/// Three answers the persona family owed and did not give. `binding/get`
+/// handed any caller in the context the holder's own name for the face.
+/// `attribute/put` reported that it saved and nothing about where. And
+/// `disclosure/history` had only ever been read empty — its rows serialised
+/// the store's record, whose members the published row does not define, so a
+/// non-empty history failed validation whole.
+#[tokio::test]
+async fn a_name_change_is_answerable_end_to_end() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "rename-holder", "admin", &[]).await;
+    let scoped = authed(&ctx, "rename-scoped", "admin", &[CTX]).await;
+    let persona = "did:key:z6MkPersonaRename";
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({
+            "type": "name.display", "value": "Ada", "valueType": "string",
+            "provenance": { "kind": "selfAsserted" },
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/put: {status} {body}");
+    let attr = payload_of(&body)["attributeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let first_version = payload_of(&body)["version"].as_u64().unwrap();
+
+    let face = |name: &str, entry: Value| {
+        let (router, holder) = (router.clone(), holder.clone());
+        let name = name.to_string();
+        async move {
+            let (status, body) = post(
+                &router,
+                &holder,
+                PROFILE_PUT,
+                json!({ "name": name, "entries": [entry] }),
+            )
+            .await;
+            assert!(!refused(status, &body), "profile/put: {status} {body}");
+            payload_of(&body)["profileId"].as_str().unwrap().to_string()
+        }
+    };
+    // The holder's own name for the face says a great deal more than the face.
+    let live = face("the divorce", json!({ "ref": attr })).await;
+    let pinned = face("bank", json!({ "ref": attr, "pinVersion": first_version })).await;
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({
+            "contextId": CTX, "personaDid": persona, "profileId": live,
+            "label": "Ada at the co-op",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+
+    // The context reads the label, never the holder's filing.
+    let (status, body) = post(
+        &router,
+        &scoped,
+        BINDING_GET,
+        json!({ "contextId": CTX, "personaDid": persona }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/get: {status} {body}");
+    let got = payload_of(&body);
+    assert_eq!(got["label"], "Ada at the co-op");
+    assert!(
+        got.get("profileName").is_none(),
+        "a context-scoped caller was handed the holder's own name for the face: {got}"
+    );
+    let (_, body) = post(&router, &scoped, BINDING_LIST, json!({ "contextId": CTX })).await;
+    let row = &payload_of(&body)["personas"][0];
+    assert_eq!(row["label"], "Ada at the co-op");
+    assert!(row.get("profileName").is_none(), "{row}");
+    // The holder still sees their own name.
+    let (_, body) = post(
+        &router,
+        &holder,
+        BINDING_GET,
+        json!({ "contextId": CTX, "personaDid": persona }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["profileName"], "the divorce");
+
+    // Disclose, then read the history: current.
+    let (status, body) = post(
+        &router,
+        &scoped,
+        PREVIEW,
+        json!({
+            "contextId": CTX, "personaDid": persona,
+            "verifierDid": "did:key:z6MkVerifierRename", "purpose": "membership",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "preview: {status} {body}");
+    let preview_id = payload_of(&body)["previewId"].as_str().unwrap().to_string();
+    let (status, body) = post(
+        &router,
+        &scoped,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": preview_id }),
+    )
+    .await;
+    assert!(!refused(status, &body), "present: {status} {body}");
+
+    let history = || {
+        let (router, holder) = (router.clone(), holder.clone());
+        async move {
+            let (status, body) = post(&router, &holder, DISCLOSURE_HISTORY, json!({})).await;
+            assert!(
+                !refused(status, &body),
+                "disclosure/history: {status} {body}"
+            );
+            let payload = payload_of(&body).clone();
+            serde_json::from_value::<
+                trust_tasks_rs::specs::persona::disclosure::history::v1_0::Response,
+            >(payload.clone())
+            .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
+            payload
+        }
+    };
+    let before = history().await;
+    let rec = &before["disclosures"][0];
+    assert_eq!(rec["claimTypes"], json!(["name.display"]));
+    assert_eq!(rec["claimCurrency"], json!(["current"]), "{rec}");
+
+    // The name changes.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({
+            "attributeId": attr, "type": "name.display", "value": "Grace",
+            "valueType": "string", "provenance": { "kind": "selfAsserted" },
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/put: {status} {body}");
+    let put = payload_of(&body).clone();
+    serde_json::from_value::<trust_tasks_rs::specs::persona::attribute::put::v1_0::Response>(
+        put.clone(),
+    )
+    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{put:#}"));
+    assert_eq!(
+        put["refreshed"],
+        json!([{ "profileId": live, "contextId": CTX, "personaDid": persona }]),
+        "{put}"
+    );
+    assert_eq!(
+        put["heldByPin"],
+        json!([{ "profileId": pinned, "pinVersion": first_version }]),
+        "{put}"
+    );
+
+    // And the verifier now holds the old one.
+    let after = history().await;
+    assert_eq!(
+        after["disclosures"][0]["claimCurrency"],
+        json!(["changed"]),
+        "{after}"
+    );
+}

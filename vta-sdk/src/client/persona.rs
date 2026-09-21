@@ -282,6 +282,7 @@ impl VtaClient {
         persona_did: &str,
         profile_id: Option<&str>,
         public_entries: Vec<String>,
+        label: Option<&str>,
         expected_version: Option<u64>,
     ) -> Result<Value, VtaError> {
         let payload = body(PersonaBindingSetBody {
@@ -289,6 +290,7 @@ impl VtaClient {
             persona_did: persona_did.to_string(),
             profile_id: profile_id.map(str::to_string),
             public_entries,
+            label: label.map(str::to_string),
             expected_version,
             ext: None,
         })?;
@@ -700,12 +702,14 @@ impl VtaClient {
         context_id: &str,
         persona_did: &str,
         profile_id: Option<&str>,
+        label: Option<&str>,
         expected_version: Option<u64>,
     ) -> Result<Value, VtaError> {
         let payload = body(PersonaLocalBindingSetBody {
             context_id: context_id.to_string(),
             persona_did: persona_did.to_string(),
             profile_id: profile_id.map(str::to_string),
+            label: label.map(str::to_string),
             expected_version,
             ext: None,
         })?;

@@ -159,6 +159,7 @@ async fn binding(client: &VtaClient, command: PersonaBindingCommands) -> CmdResu
             persona_did,
             profile_id,
             public_entries,
+            label,
             expected_version,
         } => {
             p::cmd_binding_set(
@@ -167,6 +168,7 @@ async fn binding(client: &VtaClient, command: PersonaBindingCommands) -> CmdResu
                 persona_did,
                 profile_id,
                 public_entries,
+                label,
                 expected_version,
             )
             .await
@@ -334,10 +336,18 @@ async fn local(client: &VtaClient, command: PersonaLocalCommands) -> CmdResult {
                 context,
                 persona_did,
                 profile_id,
+                label,
                 expected_version,
             } => {
-                p::cmd_local_binding_set(client, context, persona_did, profile_id, expected_version)
-                    .await
+                p::cmd_local_binding_set(
+                    client,
+                    context,
+                    persona_did,
+                    profile_id,
+                    label,
+                    expected_version,
+                )
+                .await
             }
         },
     }

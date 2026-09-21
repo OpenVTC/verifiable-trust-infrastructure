@@ -375,6 +375,14 @@ impl PersonaStore {
                 .map(|c| DisclosedClaim {
                     r#type: c.r#type.clone(),
                     rung: c.rung,
+                    // Fingerprinted here because this is the only moment the
+                    // value that left is in hand. Keyed with the agent's own
+                    // key, so the record holds no value and nothing a context
+                    // could reverse.
+                    value_blind: c
+                        .value
+                        .as_ref()
+                        .map(|v| crate::correlation::blind(&self.correlation_key, v)),
                 })
                 .collect(),
         );
@@ -544,9 +552,16 @@ mod tests {
             }],
         );
         s.put_profile(p.clone(), None).await.unwrap();
-        s.set_binding("ctx", "did:persona:a", Some(&p.profile_id), vec![], None)
-            .await
-            .unwrap();
+        s.set_binding(
+            "ctx",
+            "did:persona:a",
+            Some(&p.profile_id),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         p.profile_id
     }
 
@@ -567,9 +582,16 @@ mod tests {
             }],
         );
         s.put_profile(p.clone(), None).await.unwrap();
-        s.set_binding("ctx", "did:persona:a", Some(&p.profile_id), vec![], None)
-            .await
-            .unwrap();
+        s.set_binding(
+            "ctx",
+            "did:persona:a",
+            Some(&p.profile_id),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         (p.profile_id, a.attribute_id)
     }
 
@@ -601,7 +623,7 @@ mod tests {
         let mut a = s.get(&id).await.unwrap().unwrap();
         a.release = Some(crate::claim_types::ReleaseRequirement::StepUp);
         s.put(a, None).await.unwrap();
-        s.set_binding("ctx", "did:persona:a", Some(&p), vec![], None)
+        s.set_binding("ctx", "did:persona:a", Some(&p), vec![], None, None)
             .await
             .unwrap();
         let now_gated = s
@@ -625,7 +647,7 @@ mod tests {
         let mut a2 = s2.get(&id2).await.unwrap().unwrap();
         a2.release = Some(crate::claim_types::ReleaseRequirement::Consent);
         s2.put(a2, None).await.unwrap();
-        s2.set_binding("ctx", "did:persona:a", Some(&p2), vec![], None)
+        s2.set_binding("ctx", "did:persona:a", Some(&p2), vec![], None, None)
             .await
             .unwrap();
         let now_open = s2
@@ -673,9 +695,16 @@ mod tests {
             ],
         );
         s.put_profile(p.clone(), None).await.unwrap();
-        s.set_binding("ctx", "did:persona:a", Some(&p.profile_id), vec![], None)
-            .await
-            .unwrap();
+        s.set_binding(
+            "ctx",
+            "did:persona:a",
+            Some(&p.profile_id),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let name_only = s
             .create_preview(
@@ -829,9 +858,16 @@ mod tests {
             }],
         );
         s.put_profile(p.clone(), None).await.unwrap();
-        s.set_binding("ctx", "did:persona:a", Some(&p.profile_id), vec![], None)
-            .await
-            .unwrap();
+        s.set_binding(
+            "ctx",
+            "did:persona:a",
+            Some(&p.profile_id),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         p.profile_id
     }
 

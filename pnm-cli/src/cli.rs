@@ -3590,6 +3590,10 @@ pub(crate) enum PersonaBindingCommands {
         /// Repeatable.
         #[arg(long = "public")]
         public_entries: Vec<String>,
+        /// What this context may call the face. The context is never told
+        /// your own name for it; omit this and it is given no name at all.
+        #[arg(long)]
+        label: Option<String>,
         /// Require the binding to be at exactly this version.
         #[arg(long = "expected-version")]
         expected_version: Option<u64>,
@@ -3856,6 +3860,10 @@ pub(crate) enum PersonaLocalBindingCommands {
         /// The context-local profile. Omit to clear.
         #[arg(long = "profile-id")]
         profile_id: Option<String>,
+        /// What this context may call the face. The context is never told
+        /// your own name for it; omit this and it is given no name at all.
+        #[arg(long)]
+        label: Option<String>,
         /// Require the binding to be at exactly this version.
         #[arg(long = "expected-version")]
         expected_version: Option<u64>,

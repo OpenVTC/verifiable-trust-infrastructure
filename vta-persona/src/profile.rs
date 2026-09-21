@@ -664,6 +664,7 @@ impl PersonaStore {
         context_id: &str,
         persona_did: &str,
         profile_id: Option<&str>,
+        label: Option<String>,
     ) -> Result<Version, AppError> {
         if let Some(id) = profile_id
             && self.get_local_profile(context_id, id).await?.is_none()
@@ -741,6 +742,7 @@ impl PersonaStore {
                 bound_at: crate::store::now_rfc3339(),
             },
             profile_name,
+            label: profile_id.and(label),
             claims,
         };
         self.ks
@@ -826,7 +828,7 @@ mod local_tests {
         s.put_profile(pool.clone(), None).await.unwrap();
 
         let err = s
-            .set_local_binding("ctx", "did:p", Some(&pool.profile_id))
+            .set_local_binding("ctx", "did:p", Some(&pool.profile_id), None)
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
@@ -835,7 +837,7 @@ mod local_tests {
         s.put_local_profile("ctx", local.clone(), None)
             .await
             .unwrap();
-        s.set_local_binding("ctx", "did:p", Some(&local.profile_id))
+        s.set_local_binding("ctx", "did:p", Some(&local.profile_id), None)
             .await
             .expect("a local profile binds");
     }

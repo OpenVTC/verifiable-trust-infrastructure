@@ -39,6 +39,32 @@ pub struct DisclosedClaim {
     /// different disclosures, and a holder reviewing what they have done needs
     /// to see which they did.
     pub rung: ProofRung,
+    /// A keyed hash of the value that left, so a later read can say whether
+    /// the verifier still holds what the persona presents — never the value,
+    /// which the record exists to describe rather than to keep.
+    ///
+    /// Absent for a predicate claim, which disclosed no value, and for a record
+    /// written before fingerprints existed. Either reads as
+    /// [`ClaimCurrency::Unknown`], never as current.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_blind: Option<String>,
+}
+
+/// Whether the value a verifier received is still what the persona presents
+/// in that context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClaimCurrency {
+    /// The persona still presents exactly this value.
+    Current,
+    /// The persona now presents a different value of this type: the verifier
+    /// holds an outdated copy. This is the re-present list.
+    Changed,
+    /// The persona no longer presents this type at all. The verifier keeps what
+    /// it received — a disclosure cannot be recalled.
+    Removed,
+    /// No fingerprint to compare — a predicate, or a record that predates them.
+    Unknown,
 }
 
 /// A permanent record of one release.
@@ -151,6 +177,47 @@ impl PersonaStore {
         Ok(out)
     }
 
+    /// For each claim in `record`, whether the verifier's copy is still current.
+    ///
+    /// Answered from the persona's **current projection in the record's own
+    /// context** — the materialised copy the binding pushed down — so nothing
+    /// above the boundary is read. A fingerprint matching any value of the same
+    /// type the persona now presents is `current`: a persona showing two phone
+    /// numbers has not "changed" the one it still shows.
+    pub async fn claim_currency(
+        &self,
+        record: &DisclosureRecord,
+    ) -> Result<Vec<ClaimCurrency>, AppError> {
+        let now = self
+            .materialised_claims(&record.context_id, &record.persona_did)
+            .await?;
+        Ok(record
+            .claims
+            .iter()
+            .map(|c| {
+                let Some(fingerprint) = &c.value_blind else {
+                    return ClaimCurrency::Unknown;
+                };
+                let mut same_type = now.iter().filter(|m| m.r#type == c.r#type).peekable();
+                if same_type.peek().is_none() {
+                    return ClaimCurrency::Removed;
+                }
+                if same_type.any(|m| {
+                    m.value.as_ref().is_some_and(|v| {
+                        crate::correlation::matches(
+                            &crate::correlation::blind(&self.correlation_key, v),
+                            fingerprint,
+                        )
+                    })
+                }) {
+                    ClaimCurrency::Current
+                } else {
+                    ClaimCurrency::Changed
+                }
+            })
+            .collect())
+    }
+
     /// Which contexts a claim type has reached.
     ///
     /// The specific question the agent-scoped pool owes the holder: having put
@@ -218,6 +285,7 @@ mod tests {
             .map(|(t, r)| DisclosedClaim {
                 r#type: (*t).into(),
                 rung: *r,
+                value_blind: None,
             })
             .collect()
     }
