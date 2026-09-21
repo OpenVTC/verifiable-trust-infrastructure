@@ -503,6 +503,7 @@ pub async fn provision_integration(
                 did_resolver,
                 didcomm_bridge: &state.didcomm_bridge,
                 auth_locks: &state.webvh_auth_locks,
+                acl_ks: Some(&state.acl_ks),
                 // `ProvisionIntegrationDeps` carries no mediator socket, so the
                 // seam falls to DIDComm here. Provisioning is also the one moment
                 // the VTA has not yet learned anything about the host, so there is

@@ -247,6 +247,7 @@ pub async fn run_create_did(
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
         auth_locks: &auth_locks,
+        acl_ks: None,
         // Offline: no mediator socket to lend, so the seam cannot choose
         // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]

@@ -140,6 +140,23 @@ pub enum Capability {
     DeviceAdmin,
     Sign,
     KeyMint,
+    /// Taking a key's private material **out** of the VTA —
+    /// `keys/export-secret/0.1`.
+    ///
+    /// Distinct from [`Capability::Sign`] because VTI-VTA-003 requires it: an
+    /// export "MUST be gated by a capability distinct from the capability to
+    /// use the key". The two are not degrees of one power. `Sign` asks the VTA
+    /// to act and loses that ability the moment the entry changes; an exported
+    /// key stays with whoever holds it after their authority is withdrawn,
+    /// which is why VTI-VTA-002 makes performing the operation the norm.
+    ///
+    /// Derived by [`Role::Admin`] alone, so every admin keeps what the role
+    /// check used to give them. What changes is that it is now a capability:
+    /// an operator can narrow it away from a particular admin, which a role
+    /// floor could not express. It is deliberately **not** derived by
+    /// [`Role::Initiator`] — an initiator that needs to act as a key does so
+    /// through `Sign`, and the key never leaves.
+    KeyExport,
     /// Per-envelope Trust Task signing via `vault/sign-trust-task/0.1` —
     /// distinct from `ProxyLogin` (which mints a session credential) and
     /// from `Sign` (the generic signing oracle). Keeping it separate lets
@@ -340,6 +357,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::Sign,
             Capability::SignTrustTask,
             Capability::KeyMint,
+            Capability::KeyExport,
         ],
         Role::Initiator => vec![
             Capability::VaultRead,
@@ -1585,6 +1603,62 @@ mod tests {
             !entry_has_capability(&entry, Capability::MemoryWrite),
             "narrowed, what the entry did not name is gone even though the role has it"
         );
+    }
+
+    // ── Key export (VTI-VTA-003) ────────────────────────────────────
+
+    /// Every admin keeps what the role check used to give them.
+    #[test]
+    fn an_admin_derives_key_export() {
+        assert!(role_has_capability(&Role::Admin, Capability::KeyExport));
+    }
+
+    /// And no other role derives it. This is the half that matters: an
+    /// initiator holds `Sign` and must not thereby hold `KeyExport`, because
+    /// VTI-VTA-003 requires export to be distinct from use, and an exported
+    /// key stays with whoever holds it after their access is revoked.
+    #[test]
+    fn only_admin_derives_key_export() {
+        for role in [
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+            Role::Monitor,
+        ] {
+            assert!(
+                !role_has_capability(&role, Capability::KeyExport),
+                "{role:?} must not derive KeyExport"
+            );
+        }
+        assert!(role_has_capability(&Role::Initiator, Capability::Sign));
+    }
+
+    /// The point of making it a capability: an admin can now have export
+    /// narrowed away, which a role floor could not express. It also means an
+    /// admin narrowed before this capability existed does not have it, since
+    /// its stored set could not name it — the narrowing working as intended.
+    #[test]
+    fn key_export_can_be_narrowed_away_from_an_admin() {
+        let mut entry = AclEntry::new("did:key:zOperator", Role::Admin, "did:key:zRoot");
+        assert!(entry_has_capability(&entry, Capability::KeyExport));
+
+        entry.capabilities = vec![Capability::Sign, Capability::KeyMint];
+        assert!(entry_has_capability(&entry, Capability::Sign));
+        assert!(
+            !entry_has_capability(&entry, Capability::KeyExport),
+            "a narrowed admin holds only what its narrowing names"
+        );
+    }
+
+    /// Nor can a narrowing grant it: naming `KeyExport` on an initiator yields
+    /// nothing, because it is role-derived rather than additive. Anything that
+    /// genuinely needs the raw key is an admin act by design.
+    #[test]
+    fn naming_key_export_does_not_grant_it_to_an_initiator() {
+        let mut entry = AclEntry::new("did:key:zManager", Role::Initiator, "did:key:zRoot");
+        entry.capabilities = vec![Capability::Sign, Capability::KeyExport];
+        assert!(!entry_has_capability(&entry, Capability::KeyExport));
+        assert!(!is_additive(Capability::KeyExport));
     }
 
     // ── Additive capabilities ───────────────────────────────────────
