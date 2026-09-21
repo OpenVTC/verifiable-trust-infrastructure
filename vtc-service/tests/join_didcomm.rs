@@ -232,6 +232,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
         vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
         registry_consent: false,
         extensions: json!({}),
+        attributes: Vec::new(),
     };
     let verdict: VerdictResponse = serde_json::from_value(response_payload(
         mock.client
@@ -505,6 +506,7 @@ async fn didcomm_try_request_classifies_reject_and_keeps_going() {
         vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
         registry_consent: false,
         extensions: json!({}),
+        attributes: Vec::new(),
     };
     let outcome = mock
         .client
@@ -547,6 +549,7 @@ async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
         vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
         registry_consent: false,
         extensions: json!({}),
+        attributes: Vec::new(),
     };
 
     // First submit → real `submit_inner`, default policy defers to pending so the

@@ -117,6 +117,7 @@ pub async fn manifest_v0_2(state: &AppState) -> Result<v0_2::Response, AppError>
         community_did(state).await?,
         list_accepts(&state.schemas_ks).await?,
         branding,
+        crate::community::requested_attributes::load_requested(&state.community_ks).await?,
     )
 }
 
@@ -151,6 +152,7 @@ pub fn response_v0_2(
     community_did: String,
     stored: Vec<AcceptsCriterion>,
     branding: Option<v0_2::CommunityBranding>,
+    requested_attributes: Vec<v0_2::ResponseRequestedAttributesItem>,
 ) -> Result<v0_2::Response, AppError> {
     let branding = branding.filter(|branding| {
         if branding.check_shape().is_ok() {
@@ -173,7 +175,10 @@ pub fn response_v0_2(
         v0_2::Response::builder()
             .community_did(community_did)
             .criteria(criteria)
-            .branding(branding),
+            .branding(branding)
+            // Absent when the community asks for nothing: an empty array is
+            // omitted by the generated type, and "asks nothing" is the answer.
+            .requested_attributes(requested_attributes),
     )
     .map_err(|e| AppError::Internal(format!("manifest 0.2: {e}")))
 }
@@ -382,6 +387,7 @@ mod tests {
                 "did:web:vtc.example".into(),
                 vec![stored(None)],
                 Some(branding(logo)),
+                Vec::new(),
             )
             .expect("branding must never fail the manifest an applicant joins by")
         };

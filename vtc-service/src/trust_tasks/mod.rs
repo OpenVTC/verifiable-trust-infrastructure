@@ -753,6 +753,13 @@ async fn handle_submit(
         body.vp,
         body.registry_consent,
         body.extensions,
+        body.attributes
+            .into_iter()
+            .map(|a| crate::join::SubmittedAttribute {
+                r#type: a.claim_type,
+                value: a.value,
+            })
+            .collect(),
         None,
         ctx.transport,
     )
@@ -782,6 +789,28 @@ async fn handle_submit(
                     "status": status.to_string(),
                 })),
                 reasons::CONFLICT,
+            );
+        }
+        // The specification's own codes, with the types in `details`, so a
+        // client can ask the applicant for exactly what is missing — or drop
+        // exactly what it over-shared — without parsing a sentence.
+        Err(crate::join::SubmitRefusal::AttributesMissing(types)) => {
+            let details = serde_json::json!({ "types": types });
+            return reject_with_code(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING),
+                AppError::from(crate::join::SubmitRefusal::AttributesMissing(types)).to_string(),
+                Some(details),
+            );
+        }
+        Err(crate::join::SubmitRefusal::AttributesUnrequested(types)) => {
+            let details = serde_json::json!({ "types": types });
+            return reject_with_code(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED),
+                AppError::from(crate::join::SubmitRefusal::AttributesUnrequested(types))
+                    .to_string(),
+                Some(details),
             );
         }
         Err(crate::join::SubmitRefusal::Other(e)) => return app_error_to_reject(&doc, &e),

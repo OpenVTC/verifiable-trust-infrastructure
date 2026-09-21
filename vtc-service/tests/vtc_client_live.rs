@@ -320,6 +320,7 @@ async fn submit_join_signs_and_gets_a_verdict() {
         }),
         registry_consent: false,
         extensions: serde_json::json!({}),
+        attributes: Vec::new(),
     };
 
     let verdict = client
@@ -362,6 +363,7 @@ async fn submitted_request_is_attributed_to_the_signing_did() {
         }),
         registry_consent: false,
         extensions: serde_json::json!({}),
+        attributes: Vec::new(),
     };
     applicant
         .submit_join(&body, &applicant_did, &applicant_key)

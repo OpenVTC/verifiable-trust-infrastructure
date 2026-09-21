@@ -121,6 +121,12 @@ pub async fn submit(
         req.vp,
         req.registry_consent,
         req.extensions,
+        // This legacy route's holder signature covers a fixed set of members,
+        // and `attributes` is not one of them — an answer carried here would
+        // be unsigned. Requested attributes arrive on the Trust Task form,
+        // whose document proof covers the whole payload; a community that
+        // requires one refuses this route with `attributesMissing`.
+        Vec::new(),
         Some(HolderBinding {
             signature_hex: &req.signature,
             audience: &req.audience,

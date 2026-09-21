@@ -133,6 +133,7 @@ async fn a_join_submitted_over_tsp_is_dispatched_and_recorded() {
                 vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
                 registry_consent: false,
                 extensions: json!({}),
+                attributes: Vec::new(),
             })
             .expect("serialise submit body"),
         )
@@ -189,6 +190,7 @@ async fn a_join_over_tsp_is_recorded_in_either_carriage() {
                     vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
                     registry_consent: false,
                     extensions: json!({}),
+                    attributes: Vec::new(),
                 })
                 .expect("serialise submit body"),
                 carriage,

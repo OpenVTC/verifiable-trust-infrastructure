@@ -705,6 +705,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/community/requested-attributes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What the community asks applicants to tell it; an empty array when nothing. */
+        get: operations["communityRequestedAttributesShow"];
+        /**
+         * Replace what the community asks applicants to tell it. An empty array asks
+         *     for nothing.
+         */
+        put: operations["communityRequestedAttributesUpdate"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/credentials/endorsements": {
         parameters: {
             query?: never;
@@ -3304,6 +3325,14 @@ export interface components {
         /** @description One join request. Stored under `join_requests:<id>`. */
         JoinRequest: {
             applicantDid: string;
+            /**
+             * @description What the applicant told the community about themselves, answering the
+             *     manifest's `requestedAttributes`. **Self-asserted** — the applicant's
+             *     own statement, bound to them by the submission's proof and attested by
+             *     nobody — so it is shown to reviewers as that and never read by the join
+             *     policy. Absent when none were asked for or given.
+             */
+            attributes?: components["schemas"]["SubmittedAttribute"][];
             decision?: null | components["schemas"]["JoinDecision"];
             /**
              * @description Community-defined extensions slot (spec §3-M). Bounded by
@@ -3705,6 +3734,14 @@ export interface components {
         Paginated_JoinRequest: {
             items: {
                 applicantDid: string;
+                /**
+                 * @description What the applicant told the community about themselves, answering the
+                 *     manifest's `requestedAttributes`. **Self-asserted** — the applicant's
+                 *     own statement, bound to them by the submission's proof and attested by
+                 *     nobody — so it is shown to reviewers as that and never read by the join
+                 *     policy. Absent when none were asked for or given.
+                 */
+                attributes?: components["schemas"]["SubmittedAttribute"][];
                 decision?: null | components["schemas"]["JoinDecision"];
                 /**
                  * @description Community-defined extensions slot (spec §3-M). Bounded by
@@ -4909,6 +4946,14 @@ export interface components {
             field: string;
             truthy?: boolean | null;
         };
+        /**
+         * @description One answer an applicant gave to the manifest's `requestedAttributes`: a
+         *     claim type and its value, as they sent it.
+         */
+        SubmittedAttribute: {
+            type: string;
+            value: components["schemas"]["Value"];
+        };
         /** @enum {string} */
         SupervisorKind: "manual" | "systemd" | "kubernetes";
         TestBody: {
@@ -5278,11 +5323,28 @@ export interface components {
         VtcJoinRequestsManifestV0_2Ext: {
             [key: string]: unknown;
         };
+        VtcJoinRequestsManifestV0_2RequestedAttribute: {
+            /** @description Why the community asks, in words shown to the applicant before they disclose. */
+            purpose?: string;
+            /** @description False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing. */
+            required?: boolean;
+            /** @description A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token. */
+            type: string;
+        };
         VtcJoinRequestsManifestV0_2Response: {
             branding?: components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
             communityDid: string;
             criteria: components["schemas"]["VtcJoinRequestsManifestV0_2Criterion"][];
             ext?: components["schemas"]["VtcJoinRequestsManifestV0_2Ext"];
+            /** @description What the community asks an applicant to tell it about themselves, as claim types — never values. Answered in persona terms: the applicant's agent discloses those attributes from the face the applicant chooses, and they arrive on vtc/join-requests/submit as `attributes`. SELF-ASSERTED: a community MUST NOT describe an answer as verified, and MUST NOT make a decision that assumes it is. Outside every criterion, so no `requirementsDigest` covers it. Absent when the community asks nothing. */
+            requestedAttributes?: {
+                /** @description Why the community asks, in words shown to the applicant before they disclose. */
+                purpose?: string;
+                /** @description False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing. */
+                required?: boolean;
+                /** @description A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token. */
+                type: string;
+            }[];
         };
         /** @description A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead. */
         VtcJoinRequestsManifestV0_2VettingDocumentation: string;
@@ -7315,6 +7377,86 @@ export interface operations {
             };
             /** @description Community profile not initialised */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    communityRequestedAttributesShow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The manifest's `requestedAttributes` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    communityRequestedAttributesUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Replaces the whole list. `type` is a persona claim-type token such as `name.display`. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
+            };
+        };
+        responses: {
+            /** @description What is now requested */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
+                };
+            };
+            /** @description An entry breaks its bounds, a type is requested twice, or more than 32 are given */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audit writer not configured — change refused */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

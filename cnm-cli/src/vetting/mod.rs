@@ -76,6 +76,15 @@ pub enum VettingCommands {
         command: BrandingCommands,
     },
 
+    /// What the community asks an applicant to tell it about themselves
+    /// (`join-requests/manifest/0.2` `requestedAttributes`). Answers are the
+    /// applicant's own statement, never verified; ask for a credential in a
+    /// criterion when you need one that is.
+    Ask {
+        #[command(subcommand)]
+        command: AskCommands,
+    },
+
     /// Vetting statement withdrawal notices, and the admissions each touches.
     Revocations,
 
@@ -160,6 +169,129 @@ pub enum BrandingCommands {
     },
 }
 
+/// `cnm vetting ask …`
+#[derive(Subcommand)]
+pub enum AskCommands {
+    /// What the community asks applicants for now.
+    Show,
+    /// Replace what the community asks for. Omit every flag, or pass
+    /// `--nothing`, to ask for nothing.
+    Set {
+        /// A claim type every applicant must answer, e.g. `name.display`.
+        /// Repeatable.
+        #[arg(long = "require")]
+        require: Vec<String>,
+        /// A claim type an applicant may decline, e.g. `address.country`.
+        /// Repeatable.
+        #[arg(long = "optional")]
+        optional: Vec<String>,
+        /// Why you ask, shown to the applicant before they answer:
+        /// `<type>=<words>`. Repeatable.
+        #[arg(long = "purpose")]
+        purpose: Vec<String>,
+        /// Ask for nothing.
+        #[arg(long, conflicts_with_all = ["require", "optional", "purpose"])]
+        nothing: bool,
+    },
+}
+
+/// Build the requested-attribute list from the `ask set` flags, in the order
+/// given — required first. Refuses a purpose for a type that is not asked, and
+/// a type asked both ways.
+fn requested_from_flags(
+    require: &[String],
+    optional: &[String],
+    purpose: &[String],
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut purposes = std::collections::BTreeMap::new();
+    for p in purpose {
+        let (t, words) = p
+            .split_once('=')
+            .ok_or_else(|| format!("--purpose {p}: expected `<type>=<words>`"))?;
+        purposes.insert(t.trim().to_string(), words.trim().to_string());
+    }
+    if let Some(both) = require.iter().find(|t| optional.contains(t)) {
+        return Err(format!("{both} is both --require and --optional; pick one"));
+    }
+    if let Some(stray) = purposes
+        .keys()
+        .find(|t| !require.contains(t) && !optional.contains(t))
+    {
+        return Err(format!("--purpose names {stray}, which is not asked for"));
+    }
+    Ok(require
+        .iter()
+        .map(|t| (t, true))
+        .chain(optional.iter().map(|t| (t, false)))
+        .map(|(t, required)| {
+            let mut o = serde_json::json!({ "type": t, "required": required });
+            if let Some(w) = purposes.get(t) {
+                o["purpose"] = serde_json::json!(w);
+            }
+            o
+        })
+        .collect())
+}
+
+async fn cmd_ask_show(vtc: &VtcClient) -> CliResult {
+    let asked = vtc
+        .requested_attributes()
+        .await
+        .map_err(|e| guidance(e, Op::AskShow))?;
+    print_asked(&asked)
+}
+
+async fn cmd_ask_set(
+    vtc: &VtcClient,
+    require: Vec<String>,
+    optional: Vec<String>,
+    purpose: Vec<String>,
+) -> CliResult {
+    let list = requested_from_flags(&require, &optional, &purpose)?;
+    let requested = serde_json::from_value::<
+        Vec<vtc_client::join_requests::manifest::v0_2::ResponseRequestedAttributesItem>,
+    >(serde_json::Value::Array(list))
+    .map_err(|e| {
+        format!(
+            "{e}.
+A type is a claim-type token such as `name.display` or `x:handle`; a purpose              is at most 256 characters."
+        )
+    })?;
+    let stored = vtc
+        .set_requested_attributes(&requested)
+        .await
+        .map_err(|e| guidance(e, Op::AskSet))?;
+    if !is_json_output() {
+        println!("{GREEN}✓{RESET} Applicants are now asked for this.");
+    }
+    print_asked(&stored)
+}
+
+fn print_asked(
+    asked: &[vtc_client::join_requests::manifest::v0_2::ResponseRequestedAttributesItem],
+) -> CliResult {
+    if is_json_output() {
+        println!("{}", serde_json::to_string_pretty(asked)?);
+        return Ok(());
+    }
+    if asked.is_empty() {
+        println!("Applicants are asked for nothing about themselves.");
+        return Ok(());
+    }
+    for a in asked {
+        let kind = if a.required { "required" } else { "optional" };
+        match &a.purpose {
+            Some(p) => println!("  {} ({kind}) — {}", a.type_.as_str(), p.as_str()),
+            None => println!("  {} ({kind})", a.type_.as_str()),
+        }
+    }
+    println!(
+        "Answers are the applicant's own statement. Ask for a credential in a criterion when you \
+         need one that is verified."
+    );
+    Ok(())
+}
+
 /// A branding member `--clear` can remove.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum BrandingField {
@@ -195,6 +327,15 @@ pub async fn run(command: VettingCommands, client: &VtaClient, keyring_key: &str
                 sweep_minutes,
                 validity,
             } => cmd_auto_grant_set(&vtc, enabled, sweep_minutes, validity.as_deref()).await,
+        },
+        VettingCommands::Ask { command } => match command {
+            AskCommands::Show => cmd_ask_show(&vtc).await,
+            AskCommands::Set {
+                require,
+                optional,
+                purpose,
+                nothing: _,
+            } => cmd_ask_set(&vtc, require, optional, purpose).await,
         },
         VettingCommands::Branding { command } => match command {
             BrandingCommands::Show => cmd_branding_show(&vtc).await,
@@ -783,6 +924,8 @@ enum Op<'a> {
     AutoGrantSet,
     BrandingShow,
     BrandingSet,
+    AskShow,
+    AskSet,
     Revocations,
     Members,
 }
@@ -796,6 +939,7 @@ impl Op<'_> {
             Self::Resend { .. } => "/v1/vetting/vetters/{memberDid}/resend",
             Self::AutoGrantShow | Self::AutoGrantSet => "/v1/vetting/auto-grant",
             Self::BrandingShow | Self::BrandingSet => "/v1/community/branding",
+            Self::AskShow | Self::AskSet => "/v1/community/requested-attributes",
             Self::Revocations => "/v1/vetting/revocations",
             Self::Members => "/v1/members",
         }
@@ -854,6 +998,10 @@ fn guidance(err: VtcError, op: Op<'_>) -> Box<dyn std::error::Error> {
                 (Op::AutoGrantSet, 503) => format!(
                     "the community refused to change automatic grants because its audit log is \
                      not configured ({detail}). Configure the VTC's audit writer and retry."
+                ),
+                (Op::AskSet, 400) => format!(
+                    "the community refused the list: {detail}\nEach type once, at most 32, and a \
+                     purpose of at most 256 characters."
                 ),
                 (Op::BrandingSet, 400) => format!(
                     "the community refused the branding: {detail}\nA display name is 1–128 \
@@ -1130,5 +1278,25 @@ mod tests {
         )
         .to_string();
         assert!(old_vtc.contains("/v1/vetting/auto-grant") && old_vtc.contains("Upgrade"));
+    }
+
+    #[test]
+    fn ask_set_builds_required_then_optional_with_purposes() {
+        let list = requested_from_flags(
+            &["name.display".into()],
+            &["address.country".into()],
+            &["name.display=So members know what to call you".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::Value::Array(list),
+            serde_json::json!([
+                { "type": "name.display", "required": true,
+                  "purpose": "So members know what to call you" },
+                { "type": "address.country", "required": false },
+            ])
+        );
+        assert!(requested_from_flags(&["a.b".into()], &["a.b".into()], &[]).is_err());
+        assert!(requested_from_flags(&[], &[], &["a.b=why".into()]).is_err());
     }
 }

@@ -144,6 +144,12 @@ spec_types! {
     /// VTC's `GET`/`PUT /v1/community/branding`.
     JoinManifest02CommunityBranding(manifest::v0_2::CommunityBranding)
         in manifest::v0_2::Response as "CommunityBranding";
+    /// One entry of `vtc/join-requests/manifest/0.2`'s `requestedAttributes` —
+    /// also the item of a VTC's `GET`/`PUT /v1/community/requested-attributes`.
+    /// Declared inline in the specification, so rendered from its pointer.
+    JoinManifest02RequestedAttribute(manifest::v0_2::ResponseRequestedAttributesItem)
+        in manifest::v0_2::Response
+        as "RequestedAttribute@/$defs/Response/properties/requestedAttributes/items";
     /// `vtc/registry/sync-jobs/list/0.1` payload.
     RegistrySyncJobsList01Payload(sync_jobs::list::v0_1::Payload);
     /// `vtc/registry/sync-jobs/list/0.1#response`.
@@ -174,6 +180,12 @@ struct Rendered {
 
 /// Render the type `definition` names in `C`'s embedded schema — or, when it
 /// names none, `C` itself.
+///
+/// `definition` is a `$defs` name, or `Name@<json-pointer>` for a type the
+/// specification declares inline rather than as a named definition (an array's
+/// item type, say). The node is still taken from `C`'s own published schema, so
+/// the document cannot drift from the specification; the name before `@` is
+/// only what the component is called.
 fn rendered<C: trust_tasks_rs::Payload>(definition: Option<&str>) -> Rendered {
     let prefix = component_prefix(C::TYPE_URI);
     let schema: Value = C::PAYLOAD_SCHEMA
@@ -194,6 +206,19 @@ fn rendered<C: trust_tasks_rs::Payload>(definition: Option<&str>) -> Rendered {
             .and_then(|r| r.strip_prefix("#/$defs/"))
             .map(str::to_string)
     });
+    if let Some((label, pointer)) = own.as_deref().and_then(|d| d.split_once('@')) {
+        return Rendered {
+            name: format!("{prefix}{label}"),
+            schema: convert(
+                schema.pointer(pointer).unwrap_or(&Value::Bool(true)),
+                &prefix,
+            ),
+            definitions: definitions
+                .iter()
+                .map(|(definition, node)| (format!("{prefix}{definition}"), convert(node, &prefix)))
+                .collect(),
+        };
+    }
     let (name, node) = match &own {
         Some(definition) => (
             format!("{prefix}{definition}"),
@@ -450,6 +475,7 @@ mod tests {
         check::<JoinManifest02Response>();
         check::<JoinManifest02VettingRequirements>();
         check::<JoinManifest02CommunityBranding>();
+        check::<JoinManifest02RequestedAttribute>();
         check::<RegistrySyncJobsList01Payload>();
         check::<RegistrySyncJobsList01Response>();
         check::<RegistrySyncJobsRetry01Payload>();

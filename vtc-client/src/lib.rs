@@ -1069,6 +1069,33 @@ impl VtcClient {
         Ok(expect_success(resp).await?.json().await?)
     }
 
+    /// What the community asks an applicant to tell it about themselves
+    /// (`GET /community/requested-attributes`) — the join manifest 0.2
+    /// `requestedAttributes`. Admin token.
+    pub async fn requested_attributes(
+        &self,
+    ) -> Result<Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>, VtcError> {
+        let url = self.api_url(&["community", "requested-attributes"])?;
+        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// Replace what the community asks applicants to tell it
+    /// (`PUT /community/requested-attributes`). Admin token. An empty list asks
+    /// for nothing.
+    pub async fn set_requested_attributes(
+        &self,
+        requested: &[join_requests::manifest::v0_2::ResponseRequestedAttributesItem],
+    ) -> Result<Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>, VtcError> {
+        let url = self.api_url(&["community", "requested-attributes"])?;
+        let resp = self
+            .untasked(reqwest::Method::PUT, url)?
+            .json(requested)
+            .send()
+            .await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
     /// Every vetting statement withdrawal notice, newest first, with the
     /// admissions each touches (`GET /vetting/revocations`). Admin token.
     pub async fn vetting_revocations(&self) -> Result<Vec<VettingRevocation>, VtcError> {

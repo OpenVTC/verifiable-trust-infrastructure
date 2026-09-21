@@ -82,6 +82,12 @@ pub enum SubmitRefusal {
         request_id: Uuid,
         status: JoinStatus,
     },
+    /// A required requested attribute was not answered. Carries the types.
+    AttributesMissing(Vec<String>),
+    /// An answer named a type the community does not request. Carries the
+    /// types. Refused rather than trimmed — see
+    /// [`crate::community::requested_attributes`].
+    AttributesUnrequested(Vec<String>),
     /// Everything else, unchanged.
     Other(AppError),
 }
@@ -101,6 +107,15 @@ impl From<SubmitRefusal> for AppError {
                 "an open join request already exists (id {request_id}, status {status}); \
                  withdraw it with vtc/join-requests/withdraw/0.1, or await its decision, \
                  before resubmitting"
+            )),
+            SubmitRefusal::AttributesMissing(types) => AppError::Validation(format!(
+                "this community asks for {} and the submission does not answer it; add it and \
+                 resubmit",
+                types.join(", ")
+            )),
+            SubmitRefusal::AttributesUnrequested(types) => AppError::Validation(format!(
+                "this community does not ask for {}; remove it and resubmit — nothing was stored",
+                types.join(", ")
             )),
             SubmitRefusal::Other(e) => e,
         }
@@ -128,6 +143,7 @@ pub async fn submit_inner(
     vp: JsonValue,
     registry_consent: bool,
     extensions: JsonValue,
+    attributes: Vec<super::SubmittedAttribute>,
     binding: Option<HolderBinding<'_>>,
     transport: JoinTransport,
 ) -> Result<JoinSubmitOutcome, SubmitRefusal> {
@@ -171,6 +187,26 @@ pub async fn submit_inner(
             b.created,
             b.signature_hex,
         )?;
+    }
+
+    // 1b. Requested attributes: answered as the manifest asks, and nothing
+    // more. Checked before dedup and before anything is stored, so an
+    // over-shared value is never written anywhere — not even onto a request
+    // that is then refused for another reason.
+    let requested =
+        crate::community::requested_attributes::load_requested(&state.community_ks).await?;
+    let answers: Vec<crate::community::requested_attributes::Answer> = attributes
+        .iter()
+        .map(|a| (a.r#type.clone(), a.value.clone()))
+        .collect();
+    match crate::community::requested_attributes::check_answers(&requested, &answers) {
+        Ok(()) => {}
+        Err(crate::community::requested_attributes::AnswersRefused::Missing(t)) => {
+            return Err(SubmitRefusal::AttributesMissing(t));
+        }
+        Err(crate::community::requested_attributes::AnswersRefused::Unrequested(t)) => {
+            return Err(SubmitRefusal::AttributesUnrequested(t));
+        }
     }
 
     // 2. Dedup: at most one open (Pending/Deferred) request per applicant
@@ -308,6 +344,7 @@ pub async fn submit_inner(
         vp_claims,
         registry_consent,
         extensions,
+        attributes,
         verdict,
         transport,
         consume_invitation_id,
@@ -537,6 +574,7 @@ pub async fn realize_join_verdict(
     vp_claims: JsonValue,
     registry_consent: bool,
     extensions: JsonValue,
+    attributes: Vec<super::SubmittedAttribute>,
     verdict: Verdict,
     transport: JoinTransport,
     consume_invitation_id: Option<String>,
@@ -550,6 +588,7 @@ pub async fn realize_join_verdict(
     request.vp_claims = vp_claims;
     request.registry_consent = registry_consent;
     request.extensions = extensions;
+    request.attributes = attributes;
 
     let rejected = matches!(verdict, Verdict::Deny(_));
     let admit = apply_verdict_to_request(
