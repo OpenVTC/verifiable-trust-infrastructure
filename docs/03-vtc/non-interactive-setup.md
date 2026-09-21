@@ -93,6 +93,12 @@ vault_k8s_role    = "vtc"
 Phase 2 prints a terse, scrape-friendly block (`vtc_did=…`, `admin_did=…`,
 `install_url=…`, `claim_code=…`); it never prints the admin private key.
 
+**The VTC's ACL is still empty at this point.** `admin_did` cannot
+authenticate until the install URL is claimed or an ACL entry is added
+offline, and a headless deploy usually needs its own automation key as well.
+The [bootstrap runbook](bootstrap-runbook.md) gives both paths, and the order
+that admits the community's first vetter.
+
 ## Choosing a secret-store backend
 
 Set `[secrets] backend` to select the store **explicitly** — recommended

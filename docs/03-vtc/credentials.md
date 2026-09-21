@@ -197,6 +197,8 @@ pnm vtc rotate --to did:key:z6MkNew...
 
 - [Community lifecycle](community-lifecycle.md) — when credentials
   get issued in the broader join → renew → leave flow.
+- [Credential delivery](credential-delivery.md) — how an admitted
+  member receives its VMC and role VEC.
 - [Personhood + relationships](personhood-and-graph.md) — the VRC
   graph + personhood ceremony.
 - [VTC MVP spec §6](../05-design-notes/vtc-mvp.md) — full

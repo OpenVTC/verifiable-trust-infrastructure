@@ -51,6 +51,7 @@ VTA via the `vtc-host` DID template.
 | Decide between VTA and VTC | [Root README — Which service do you need?](../README.md#which-service-do-you-need) |
 | Stand up a VTA from scratch | [VTA cold-start](02-vta/cold-start.md) |
 | Stand up a VTC on an existing VTA | [VTC getting started](03-vtc/getting-started.md) |
+| Get a new community's first admin signed in and its first vetter named | [VTC bootstrap runbook](03-vtc/bootstrap-runbook.md) |
 | Add at-rest encryption to a self-hosted (non-TEE) VTA | [Hardened configuration](02-vta/non-interactive-setup.md#hardened-configuration) |
 | Pick where to store the master seed | [VTA secret backends](02-vta/secret-backends.md) |
 | Deploy a VTA inside a Nitro Enclave | [TEE architecture](02-vta/tee-architecture.md) |
@@ -147,12 +148,18 @@ How to operate and integrate against a VTC.
 
 - **[Getting started](03-vtc/getting-started.md)** — a working VTC
   in 10 minutes (assumes an already-running VTA).
+- **[Bootstrap runbook](03-vtc/bootstrap-runbook.md)** — after setup:
+  how the first admin authenticates, and the order that admits a
+  community's first vetter.
 - **[Architecture](03-vtc/architecture.md)** — VTC module layout,
   keyspaces, dependency on the VTA.
 - **[Community lifecycle](03-vtc/community-lifecycle.md)** —
   member CRUD, join requests, removal dispositions, policies.
 - **[Credentials](03-vtc/credentials.md)** — VMC, VEC, status
   lists, renewal, DID rotation, custom endorsements.
+- **[Credential delivery](03-vtc/credential-delivery.md)** — how an
+  admitted member receives its credentials, and the Eucalyptus
+  migration note for clients that read them from the verdict.
 - **[Trust-registry integration](03-vtc/trust-registry.md)** —
   registry publish, membership sync, cross-community recognition.
 - **[Trust-registry deployment](03-vtc/trust-registry-deployment.md)** —
