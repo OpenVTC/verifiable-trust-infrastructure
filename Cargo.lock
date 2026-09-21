@@ -445,6 +445,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-messaging-mediator-admin"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c78d1289df4575bb8133127812809531e300bff76304c157af6e343da386fca"
+dependencies = [
+ "affinidi-messaging-didcomm",
+ "affinidi-messaging-sdk",
+ "affinidi-secrets-resolver",
+ "affinidi-tdk-common",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha256",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "trust-tasks-rs",
+]
+
+[[package]]
 name = "affinidi-messaging-mediator-common"
 version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -496,10 +517,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "affinidi-messaging-sdk"
-version = "0.26.12"
+name = "affinidi-messaging-mediator-tui"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cba180f9d47c1e782a042fe7ca1f8e889642a3593a14e1730c53f890335e1d1"
+checksum = "6005c8a2e6e28ef571fde691dbbf03b7487647487d6f1a0ac5679fbc664b7118"
+dependencies = [
+ "affinidi-messaging-mediator-admin",
+ "chrono",
+ "clap",
+ "crossterm",
+ "futures-util",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha256",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "affinidi-messaging-sdk"
+version = "0.26.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5406cb8a30e968afe08f03fa32d4677d6e26e830b85c8be83545932b94cc1620"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -516,6 +556,7 @@ dependencies = [
  "ahash",
  "async-trait",
  "base64 0.23.1",
+ "chrono",
  "futures-util",
  "rand 0.10.2",
  "regex",
@@ -528,6 +569,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
+ "trust-tasks-proof",
  "trust-tasks-rs",
  "uuid",
 ]
@@ -2936,6 +2978,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix",
@@ -7552,6 +7595,10 @@ version = "0.19.1"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-mediator-admin",
+ "affinidi-messaging-mediator-tui",
+ "affinidi-secrets-resolver",
+ "async-trait",
  "base64 0.23.1",
  "chrono",
  "clap",
@@ -7561,6 +7608,7 @@ dependencies = [
  "hex",
  "multibase",
  "rand 0.10.2",
+ "ratatui",
  "reqwest",
  "serde",
  "serde_json",
