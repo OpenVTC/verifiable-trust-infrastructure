@@ -2,6 +2,57 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.45.1...vta-sdk-v0.46.0) — 2026-09-21
+
+
+### Added
+
+- **persona**: Keep a pinned value through an edit, and let the holder purge it ([#1606](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1606))
+
+Implements the retention half of trustoverip/dtgwg-trust-tasks-tf#538
+  (design note docs/05-design-notes/persona-context-first.md §9.1).
+
+  A pin ({ref, pinVersion}) is for the counterparty who verified a value
+  and must keep being shown it -- after a name change, the bank that has
+  not been told yet. The store did not keep the version an edit replaced,
+  so a pin resolved stale from the first edit onward: pinning worked only
+  until the one event it exists for.
+
+  Retained by reference (new vta-persona `retention` module, `pav:` keys):
+  - An edit keeps the version it replaces when a face pins it, and a pin
+    is served from that copy.
+  - A kept version is reaped the moment no face pins it (after profile put
+    and delete); an edit nothing pins keeps nothing.
+  - Deleting the attribute drops every kept version with it.
+  - Attribute.retained_versions lists what is kept and the faces pinning
+    it, on attribute/list; filled on read, never stored.
+  - A face pinning a kept version still presents that value, so the
+    correlation index counts it among what the face carries, and a face's
+    own analysis treats such a pin as carried rather than as the live
+    attribute.
+
+  The holder's override: persona/attribute/purge-version/1.0 removes kept
+  versions (named, or all), re-pushes and names every face that pinned one
+  (stalePins). Those faces present the entry as stale -- never the current
+  value, which the holder did not choose for that counterparty. The current
+  version is refused (currentVersion); that is attribute/delete. New
+  PersonaStore::purge_versions, VtaClient::persona_attribute_purge_version,
+  `pnm persona attribute purge-version`.
+
+  profile/put now refuses a pin to a version neither current nor kept with
+  the spec's pinnedVersionUnavailable code, naming the pins, instead of
+  storing a face that presents nothing for that entry.
+
+- **persona**: Say which entry is a face's name — entry slots ([#1605](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1605))
+
+* build: require trust-tasks-rs 0.21.8 for persona slots and kept versions
+
+  0.21.8 publishes trustoverip/dtgwg-trust-tasks-tf#538: the optional
+  ProfileEntry and ResolvedClaim `slot`, Attribute.retainedVersions, the
+  duplicateSlot codes, and persona/attribute/purge-version/1.0.
+
+
+
 ## [0.45.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.45.0...vta-sdk-v0.45.1) — 2026-09-21
 
 
