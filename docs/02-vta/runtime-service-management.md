@@ -111,9 +111,10 @@ exposes the same `mediator_did`.
 
 TSP (Trust Spanning Protocol) is the **preferred** transport wherever both
 parties advertise it — see [`tsp.md`](./tsp.md) for the full picture. It is
-**off by default** and gated behind the `tsp` build feature. TSP advertises the
-**same mediator** as DIDComm (the `#tsp` service's `serviceEndpoint` is the
-mediator DID), so enable DIDComm first. Unlike DIDComm, TSP has **no drain** (its
+**on by default** for a new VTA (the `tsp` build feature is a default one, and
+setup enables it), while an existing VTA keeps whatever it runs today until you
+change it here. TSP advertises the **same mediator** as DIDComm (the `#tsp`
+service's `serviceEndpoint` is the mediator DID). Unlike DIDComm, TSP has **no drain** (its
 inter-mediator relay is stateless) and **no first-enable handshake**.
 
 | Task | Command |

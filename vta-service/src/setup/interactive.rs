@@ -291,15 +291,55 @@ fn validate_services(sel: &ServiceSelection) -> Result<(), String> {
     Ok(())
 }
 
-/// Prompt which services to enable. At least one, and TSP implies
-/// DIDComm; anything else re-asks rather than proceeding.
+/// Whether TSP stays selected once the existing mediator it would ride has
+/// been checked (Keyring VTI-33), telling the operator what was found.
+///
+/// A mediator that does not carry TSP drops it from the selection, since
+/// advertising `#tsp` through it would send TSP-preferring peers nowhere —
+/// unless TSP was the only transport chosen, when there is nothing left to set
+/// up and the refusal `--from` gives is the answer. A mediator that could not
+/// be resolved keeps it, with a warning: setup runs offline too.
+fn keep_tsp_after_mediator_check(
+    did: &str,
+    verdict: &super::MediatorTsp,
+    another_transport: bool,
+) -> Result<bool, DynErr> {
+    match verdict {
+        super::MediatorTsp::Carried => {
+            eprintln!("  \x1b[2mMediator {did} advertises TSP.\x1b[0m");
+            Ok(true)
+        }
+        super::MediatorTsp::NotCarried if !another_transport => {
+            Err(super::from_toml::mediator_lacks_tsp(did).into())
+        }
+        super::MediatorTsp::NotCarried => {
+            eprintln!(
+                "  \x1b[33mMediator {did} advertises no TSPTransport service, so it does not \
+                 route TSP. TSP will not be advertised; add it later with `pnm services tsp \
+                 enable` once the mediator carries it.\x1b[0m"
+            );
+            Ok(false)
+        }
+        super::MediatorTsp::Unknown(why) => {
+            eprintln!(
+                "  \x1b[33mWarning: {why}. Could not confirm that mediator {did} carries TSP; \
+                 `#tsp` will be advertised through it regardless. If it does not route TSP, \
+                 run `pnm services tsp disable` once the VTA is up.\x1b[0m"
+            );
+            Ok(true)
+        }
+    }
+}
+
+/// Prompt which services to enable. At least one; anything else re-asks
+/// rather than proceeding.
 fn prompt_services(p: &dyn Prompter) -> Result<ServiceSelection, DynErr> {
     let items = service_items();
-    // TSP is not pre-ticked even in a build that can serve it: whether it
-    // works depends on the operator's mediator, which nothing here can
-    // check. Opting in should be a decision, not a default someone
-    // accepted by pressing enter.
-    let defaults: Vec<bool> = items.iter().map(|it| *it != TSP_ITEM).collect();
+    // Everything this build offers is pre-ticked, TSP included: it is the
+    // preferred transport. Whether the mediator carries it is checked once the
+    // mediator is known — a minted one is minted with `#tsp`, and an existing
+    // one's DID document is read (Keyring VTI-33).
+    let defaults: Vec<bool> = vec![true; items.len()];
     loop {
         let selected = p.multiselect(
             "Services to enable (select at least one)",
@@ -318,9 +358,8 @@ fn prompt_services(p: &dyn Prompter) -> Result<ServiceSelection, DynErr> {
                  pointing at the same mediator as DIDComm.\x1b[0m"
             );
             eprintln!(
-                "  \x1b[2mNothing here can verify that mediator routes TSP — its services \
-                 belong to its own controller. If it doesn't, peers that prefer TSP fail \
-                 rather than fall back.\x1b[0m"
+                "  \x1b[2mAn existing mediator is checked for TSP once you name it; a mediator \
+                 created here is created with it.\x1b[0m"
             );
             eprintln!(
                 "  \x1b[2mThis is changeable later: `pnm services tsp enable` / \
@@ -961,7 +1000,7 @@ async fn gather_inputs(
     let ServiceSelection {
         rest: enable_rest,
         didcomm: enable_didcomm,
-        tsp: enable_tsp,
+        tsp: mut enable_tsp,
     } = prompt_services(p)?;
 
     // 4. Server host + port + REST URL (URL asked after the port so the
@@ -1169,14 +1208,24 @@ async fn gather_inputs(
                  mediator's own document.\x1b[0m"
             );
             eprintln!(
-                "  \x1b[2mThe questions below configure that mediator. It must route TSP; \
-                 nothing here can verify that it does.\x1b[0m"
+                "  \x1b[2mThe questions below configure that mediator. It must route TSP; an \
+                 existing one is checked for it.\x1b[0m"
             );
         }
         configure_messaging(p).await?
     } else {
         MessagingInput::Skip
     };
+
+    // A mediator the operator brings must carry the TSP advertised through it
+    // (Keyring VTI-33). Asked here, where the answer can still change the
+    // selection, rather than left for `apply_inputs` to refuse after every
+    // question has been answered. A mediator this wizard mints is minted with
+    // `#tsp`, so needs no check.
+    if enable_tsp && let MessagingInput::Existing { did, .. } = &messaging {
+        let verdict = super::existing_mediator_tsp(did, resolver_url.as_deref()).await;
+        enable_tsp = keep_tsp_after_mediator_check(did, &verdict, enable_rest || enable_didcomm)?;
+    }
 
     // 13. VTA DID.
     let vta_did = create_vta_did(p)?;
@@ -1429,6 +1478,8 @@ mod tests {
             rest     = true
             didcomm  = true
             webauthn = true
+            # The script above unticks TSP, which a setup file defaults on.
+            tsp      = false
 
             [server]
             host            = "0.0.0.0"
@@ -1811,6 +1862,23 @@ mod tests {
         assert!(gathered.services.tsp, "ticking TSP must set services.tsp");
         assert!(gathered.services.didcomm);
         assert!(!gathered.services.rest);
+    }
+
+    /// Keyring VTI-33: what the wizard does with TSP once it has read the
+    /// existing mediator's DID document.
+    #[test]
+    fn an_existing_mediator_without_tsp_drops_it_from_the_selection() {
+        use super::super::MediatorTsp;
+        let did = "did:web:mediator.example";
+        assert!(keep_tsp_after_mediator_check(did, &MediatorTsp::Carried, true).unwrap());
+        assert!(!keep_tsp_after_mediator_check(did, &MediatorTsp::NotCarried, true).unwrap());
+        // TSP alone, through a mediator that does not carry it: nothing to set up.
+        let err = keep_tsp_after_mediator_check(did, &MediatorTsp::NotCarried, false)
+            .expect_err("a TSP-only VTA cannot drop its only transport");
+        assert!(err.to_string().contains("services.tsp = false"), "{err}");
+        // Unresolvable: kept, with a warning — setup runs offline too.
+        let unknown = MediatorTsp::Unknown("offline".into());
+        assert!(keep_tsp_after_mediator_check(did, &unknown, true).unwrap());
     }
 
     /// Selecting TSP without DIDComm re-asks instead of proceeding.

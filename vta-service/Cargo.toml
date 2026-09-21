@@ -35,12 +35,13 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["setup", "keyring", "rest", "didcomm", "cli-synthesis"]
+default = ["setup", "keyring", "rest", "didcomm", "tsp", "cli-synthesis"]
 rest = []
 didcomm = []
-# Trust Spanning Protocol transport. Additive and OFF by default (TSP rolls out
-# gated; DIDComm stays in `default`). Enables the SDK's `tsp` capability; later
-# PRs add the TSP listener + `services tsp` surface behind this flag.
+# Trust Spanning Protocol transport — the preferred transport, ON by default
+# alongside DIDComm (Keyring VTI-33: a VTA that could not receive TSP was the
+# default, while every peer prefers it). A build without it refuses
+# `services.tsp = true` at startup rather than advertising what it cannot serve.
 tsp = [
     # No `didcomm` edge. TSP still *rides* the mediator socket the DIDComm
     # transport owns (ADR 0005 — one websocket per DID), but that socket

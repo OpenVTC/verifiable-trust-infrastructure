@@ -19,11 +19,10 @@ name = "vta-enclave"
 path = "src/main.rs"
 
 [features]
-default = ["rest", "didcomm"]
+default = ["rest", "didcomm", "tsp"]
 rest = ["vta-service/rest"]
 didcomm = ["vta-service/didcomm"]
-# TSP transport pass-through. Off by default (not in `default`); enable
-# explicitly for a TSP-capable enclave build once the transport lands.
+# TSP transport pass-through. On by default, as it is for `vta-service`.
 tsp = ["vta-service/tsp"]
 webvh = ["vta-service/webvh"]
 vsock-store = ["vta-service/vsock-store"]

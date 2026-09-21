@@ -164,12 +164,14 @@ summary.
   `pnm services {kind} {enable,disable}` persist to a fjall keyspace
   (`service_state`), not back into `config.toml`. Hand-editing this block after
   first boot has no effect — use the runtime commands.
-  `tsp = true` additionally advertises `#tsp` in the VTA DID document at mint,
-  pointing at the same mediator as DIDComm. It requires `didcomm = true` (that
-  is where the mediator is configured) and a binary built with
-  `--features tsp`; setup refuses either combination by name rather than
-  publishing a transport the VTA cannot answer on. Nothing checks that the
-  mediator actually routes TSP — its services belong to its own controller.
+  `tsp` is **on by default** in a setup file — when `[services]` is omitted and
+  when the block does not mention it — and advertises `#tsp` in the VTA DID
+  document at mint, pointing at the same mediator as DIDComm. It needs a
+  mediator and a binary built with the `tsp` feature (on by default); setup
+  refuses `tsp = true` on a build without it. A `kind = "existing"` mediator is
+  resolved first, and setup refuses if its DID document advertises no
+  `TSPTransport` service — set `tsp = false`, or use a mediator that carries
+  TSP. One that does not resolve gets a warning, not a refusal.
 - **`[server]`** — `host = "0.0.0.0"`, `port = 8100`. Also `trust_xff_cidrs` and the
   per-IP rate limits (`rate_limit_interval_secs` / `rate_limit_burst` for the
   auth endpoints, `did_log_rate_limit_interval_secs` / `did_log_rate_limit_burst`
