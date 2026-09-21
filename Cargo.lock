@@ -10260,9 +10260,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.21.9"
+version = "0.21.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "070b378f991d9d8cc41434fbd744e996471a0ad97c083285d24085f4083b61c6"
+checksum = "379658098b4b9458d711e557d4ffcf346f683b9eab138aec300937e0d5a2ceda"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10930,6 +10930,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
+ "trust-tasks-rs",
  "vta-sdk",
  "vtc-client",
  "vti-common",
