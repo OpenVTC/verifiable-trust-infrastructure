@@ -168,6 +168,32 @@ impl VtaClient {
         .await
     }
 
+    /// `persona/attribute/purge-version/1.0` — permanently remove earlier
+    /// versions of an attribute that the VTA kept because a face pins them.
+    ///
+    /// The holder's override on retention. `versions: None` removes every kept
+    /// version; the current one is never removed here (that is
+    /// [`persona_attribute_delete`](Self::persona_attribute_delete)). The faces
+    /// that pinned a removed version come back in `stalePins`: they now present
+    /// nothing for that entry rather than falling back to the current value.
+    pub async fn persona_attribute_purge_version(
+        &self,
+        attribute_id: &str,
+        versions: Option<&[u64]>,
+    ) -> Result<trust_tasks_rs::specs::persona::attribute::purge_version::v1_0::Response, VtaError>
+    {
+        let mut payload = serde_json::json!({ "attributeId": attribute_id });
+        if let Some(v) = versions {
+            payload["versions"] = serde_json::json!(v);
+        }
+        self.rpc_tt(
+            trust_tasks::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
+            payload,
+            PERSONA_TT_TIMEOUT,
+        )
+        .await
+    }
+
     // -----------------------------------------------------------------------
     // Profiles — holder-scoped
     // -----------------------------------------------------------------------

@@ -3505,6 +3505,20 @@ pub(crate) enum PersonaAttributeCommands {
         #[arg(long = "expected-version")]
         expected_version: Option<u64>,
     },
+    /// Permanently remove earlier versions your agent kept because a face pins
+    /// them — an old name after a name change. Faces that pinned a removed
+    /// version show nothing for it afterwards; they are listed. `persona
+    /// attribute list` shows what is kept, and for which face.
+    PurgeVersion {
+        /// The attribute id.
+        #[arg(long = "attribute-id")]
+        attribute_id: String,
+        /// A kept version to remove. Repeatable; omit to remove every kept
+        /// version. The current value is never removed here — that is
+        /// `delete`.
+        #[arg(long = "version")]
+        versions: Vec<u64>,
+    },
 }
 
 /// `pnm persona profile …`

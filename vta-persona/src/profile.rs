@@ -100,6 +100,20 @@ impl PersonaStore {
                 dangling.join(", ")
             )));
         }
+        // A pin to a version neither current nor kept would present nothing
+        // from the moment it is written.
+        let unavailable = self.unavailable_pins(&profile.entries).await?;
+        if !unavailable.is_empty() {
+            return Err(AppError::Validation(format!(
+                "profile pins {} version(s) this store does not hold: {}",
+                unavailable.len(),
+                unavailable
+                    .iter()
+                    .map(|(a, v)| format!("{a}@{v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
 
         let existing = self.profile_slot(&profile.profile_id).await?;
         let current_version = match &existing {
@@ -143,6 +157,9 @@ impl PersonaStore {
         };
         self.reindex_face(None, &profile.profile_id, old_profile, Some(&profile))
             .await?;
+        let old_pins: Vec<ProfileEntry> =
+            old_profile.map(|p| p.entries.clone()).unwrap_or_default();
+        let new_pins: Vec<ProfileEntry> = profile.entries.clone();
 
         let profile_id = profile.profile_id.clone();
         self.ks
@@ -156,6 +173,12 @@ impl PersonaStore {
         // it presents. Same reasoning as the attribute path in `store.rs`: the
         // push belongs to the write, because a context cannot pull.
         self.push_profile_locked(&profile_id).await?;
+
+        // A pin this write dropped may have been the last reason to keep an
+        // earlier version.
+        for attribute_id in pinned_refs(old_pins.iter().chain(new_pins.iter())) {
+            self.reap_unpinned(&attribute_id).await?;
+        }
 
         Ok(Written { version, created })
     }
@@ -254,11 +277,46 @@ impl PersonaStore {
             });
         };
 
-        // A pin names a version this store no longer holds. Prior versions are
-        // not retained yet, so a pin to anything but the current version cannot
-        // be honoured — and is reported rather than silently served the current
-        // value, which is the whole point of pinning.
-        let stale = pin.is_some_and(|p| p != a.version);
+        // A pin to an earlier version is served from the copy kept for it
+        // (`retention`). A pin to a version the store no longer holds — purged
+        // by the holder — is reported stale rather than silently served the
+        // current value, which would defeat the whole point of pinning.
+        if let Some(p) = pin
+            && p != a.version
+        {
+            let Some(old) = self.retained(attribute_id, p).await? else {
+                return Ok(ResolvedClaim {
+                    attribute_id: Some(a.attribute_id.clone()),
+                    r#type: a.r#type.clone(),
+                    value: None,
+                    value_type: a.value_type,
+                    label: a.label.clone(),
+                    slot: None,
+                    provenance: a.provenance.clone(),
+                    version: Some(p),
+                    updated_at: None,
+                    stale: true,
+                    release: a.release,
+                });
+            };
+            return Ok(ResolvedClaim {
+                attribute_id: Some(old.attribute_id.clone()),
+                r#type: old.r#type.clone(),
+                value: old.value.clone(),
+                value_type: old.value_type,
+                label: old.label.clone(),
+                slot: None,
+                provenance: old.provenance.clone(),
+                version: Some(old.version),
+                updated_at: Some(old.updated_at.clone()),
+                stale: old.stale.unwrap_or(false),
+                // The holder's decision about letting the attribute leave is
+                // about the attribute, not one version of it: the current one
+                // answers for the kept copy too.
+                release: a.release,
+            });
+        }
+        let stale = false;
 
         Ok(ResolvedClaim {
             attribute_id: Some(a.attribute_id.clone()),
@@ -313,6 +371,9 @@ impl PersonaStore {
         // After the tombstone, so a crash between leaves a stale edge.
         self.reindex_face(None, profile_id, Some(&existing), None)
             .await?;
+        for attribute_id in pinned_refs(existing.entries.iter()) {
+            self.reap_unpinned(&attribute_id).await?;
+        }
         Ok(true)
     }
 
@@ -346,6 +407,17 @@ pub fn new_profile(name: impl Into<String>, entries: Vec<ProfileEntry>) -> Profi
         created_at: now.clone(),
         updated_at: now,
     }
+}
+
+/// The attributes a set of entries pins, each once.
+fn pinned_refs<'a>(entries: impl Iterator<Item = &'a ProfileEntry>) -> Vec<String> {
+    let set: std::collections::BTreeSet<String> = entries
+        .filter_map(|e| match e {
+            ProfileEntry::Pinned { r#ref, .. } => Some(r#ref.clone()),
+            _ => None,
+        })
+        .collect();
+    set.into_iter().collect()
 }
 
 /// Refuse a face in which two entries claim one slot — see
@@ -564,8 +636,10 @@ mod tests {
         ));
     }
 
+    /// A pin to a version the store does not hold is refused when written:
+    /// it would present nothing from that moment on.
     #[tokio::test]
-    async fn an_unhonourable_pin_is_reported_not_silently_served() {
+    async fn a_pin_to_a_version_that_was_never_held_is_refused() {
         let (_d, s) = fresh().await;
         let a = attr("v1");
         let w = s.put(a.clone(), None).await.unwrap();
@@ -577,12 +651,190 @@ mod tests {
                 pin_version: w.version + 99,
             }],
         );
-        s.put_profile(p.clone(), None).await.unwrap();
+        let err = s.put_profile(p.clone(), None).await.unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+        assert!(s.get_profile(&p.profile_id).await.unwrap().is_none());
+    }
 
-        let claims = s.resolve_profile(&p.profile_id).await.unwrap();
-        // Serving the current value would defeat the whole point of pinning.
+    async fn renamed(s: &PersonaStore) -> (crate::Attribute, Version, Profile, Profile) {
+        // A name, a face that follows it, and a face — the bank — pinned to it.
+        let mut a = new_attribute(
+            "name.legal",
+            ValueType::String,
+            serde_json::json!("Ada Lovelace"),
+            Provenance::SelfAsserted,
+        );
+        let v1 = s.put(a.clone(), None).await.unwrap().version;
+        let live = new_profile(
+            "Friends",
+            vec![ProfileEntry::Ref {
+                r#ref: a.attribute_id.clone(),
+                slot: None,
+            }],
+        );
+        let bank = new_profile(
+            "Bank",
+            vec![ProfileEntry::Pinned {
+                r#ref: a.attribute_id.clone(),
+                pin_version: v1,
+                slot: None,
+            }],
+        );
+        s.put_profile(live.clone(), None).await.unwrap();
+        s.put_profile(bank.clone(), None).await.unwrap();
+        a.value = Some(serde_json::json!("Ada King"));
+        s.put(a.clone(), None).await.unwrap();
+        (a, v1, live, bank)
+    }
+
+    /// The case pinning exists for: after a name change, the face that
+    /// follows shows the new name and the pinned face keeps the old one.
+    #[tokio::test]
+    async fn a_pin_keeps_the_value_it_pinned_after_an_edit() {
+        let (_d, s) = fresh().await;
+        let (a, v1, live, bank) = renamed(&s).await;
+
+        let now = s.resolve_profile(&live.profile_id).await.unwrap();
+        assert_eq!(now[0].value, Some(serde_json::json!("Ada King")));
+        let kept = s.resolve_profile(&bank.profile_id).await.unwrap();
+        assert!(!kept[0].stale, "the pin was not honoured");
+        assert_eq!(kept[0].value, Some(serde_json::json!("Ada Lovelace")));
+        assert_eq!(kept[0].version, Some(v1));
+
+        // And the holder can see that the old name is kept, and why.
+        let listed = s
+            .list_attributes(None, crate::ValueVisibility::Metadata)
+            .await
+            .unwrap()
+            .attributes;
+        let row = listed
+            .iter()
+            .find(|x| x.attribute_id == a.attribute_id)
+            .unwrap();
+        assert_eq!(row.retained_versions.len(), 1);
+        assert_eq!(row.retained_versions[0].version, v1);
+        assert_eq!(
+            row.retained_versions[0].pinned_by,
+            vec![bank.profile_id.clone()]
+        );
+    }
+
+    /// Kept by reference: an edit nothing pins keeps nothing, and dropping the
+    /// last pin drops the copy.
+    #[tokio::test]
+    async fn a_kept_version_lives_exactly_as_long_as_a_pin() {
+        let (_d, s) = fresh().await;
+        let mut plain = attr("+61 1");
+        s.put(plain.clone(), None).await.unwrap();
+        plain.value = Some(serde_json::json!("+61 2"));
+        s.put(plain.clone(), None).await.unwrap();
+        assert!(
+            s.retained_versions(&plain.attribute_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let (a, _v1, _live, mut bank) = renamed(&s).await;
+        assert_eq!(s.retained_versions(&a.attribute_id).await.unwrap().len(), 1);
+        bank.entries = vec![ProfileEntry::Ref {
+            r#ref: a.attribute_id.clone(),
+            slot: None,
+        }];
+        s.put_profile(bank, None).await.unwrap();
+        assert!(
+            s.retained_versions(&a.attribute_id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a version no face pins was kept"
+        );
+    }
+
+    /// The holder's override: purge the old name even though a face pins it.
+    /// The face goes stale — it does not quietly start showing the new name to
+    /// a counterparty the holder did not choose it for.
+    #[tokio::test]
+    async fn purging_a_kept_version_leaves_its_pins_stale() {
+        let (_d, s) = fresh().await;
+        let (a, v1, _live, bank) = renamed(&s).await;
+
+        let current = s.get(&a.attribute_id).await.unwrap().unwrap().version;
+        let err = s
+            .purge_versions(&a.attribute_id, Some(&[current]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Conflict(_)),
+            "the live value was purgeable"
+        );
+
+        let out = s.purge_versions(&a.attribute_id, None).await.unwrap();
+        assert_eq!(out.purged, vec![v1]);
+        assert_eq!(out.stale_pins.len(), 1);
+        assert_eq!(out.stale_pins[0].profile_id, bank.profile_id);
+
+        let claims = s.resolve_profile(&bank.profile_id).await.unwrap();
         assert!(claims[0].stale);
-        assert_eq!(claims[0].value, None);
+        assert_eq!(
+            claims[0].value, None,
+            "a purged pin fell back to another value"
+        );
+        // Converges.
+        assert!(
+            s.purge_versions(&a.attribute_id, None)
+                .await
+                .unwrap()
+                .purged
+                .is_empty()
+        );
+    }
+
+    /// Deleting the attribute takes its kept versions with it.
+    #[tokio::test]
+    async fn deleting_an_attribute_drops_what_was_kept_for_it() {
+        let (_d, s) = fresh().await;
+        let (a, _v1, _live, _bank) = renamed(&s).await;
+        s.delete(&a.attribute_id, true).await.unwrap();
+        assert!(
+            s.retained_versions(&a.attribute_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A pinned old value is still a value this face shows, so the correlation
+    /// guard must still see it after it stops being current.
+    #[tokio::test]
+    async fn a_kept_value_is_still_correlated() {
+        let (_d, s) = fresh().await;
+        let (_a, _v1, _live, bank) = renamed(&s).await;
+        // Another face typing the old name.
+        let other = new_profile(
+            "Club",
+            vec![ProfileEntry::Inline {
+                slot: None,
+                inline: InlineValue {
+                    r#type: "name.display".into(),
+                    value_type: ValueType::String,
+                    value: serde_json::json!("Ada Lovelace"),
+                    label: None,
+                    provenance: Provenance::SelfAsserted,
+                },
+            }],
+        );
+        s.put_local_profile("ctx", other.clone(), None)
+            .await
+            .unwrap();
+        let findings = s.analyze_correlation(None, None).await.unwrap();
+        let named: std::collections::BTreeSet<_> = findings
+            .iter()
+            .flat_map(|f| f.shared_with.iter())
+            .filter_map(|w| w.profile_id.clone())
+            .collect();
+        assert!(named.contains(&bank.profile_id), "{findings:?}");
+        assert!(named.contains(&other.profile_id), "{findings:?}");
     }
 
     #[tokio::test]

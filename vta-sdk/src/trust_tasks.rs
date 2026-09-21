@@ -1001,6 +1001,10 @@ pub const TASK_PERSONA_ATTRIBUTE_LIST_1_0: &str =
 pub const TASK_PERSONA_ATTRIBUTE_DELETE_1_0: &str =
     "https://trusttasks.org/spec/persona/attribute/delete/1.0";
 
+/// `spec/persona/attribute/purge-version/1.0`
+pub const TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0: &str =
+    "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
+
 /// `spec/persona/profile/put/1.0`
 pub const TASK_PERSONA_PROFILE_PUT_1_0: &str =
     "https://trusttasks.org/spec/persona/profile/put/1.0";
@@ -2172,6 +2176,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_ATTRIBUTE_PUT_1_0,
     TASK_PERSONA_ATTRIBUTE_LIST_1_0,
     TASK_PERSONA_ATTRIBUTE_DELETE_1_0,
+    TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
     TASK_PERSONA_PROFILE_PUT_1_0,
     TASK_PERSONA_PROFILE_GET_1_0,
     TASK_PERSONA_PROFILE_LIST_1_0,

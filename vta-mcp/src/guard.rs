@@ -255,6 +255,9 @@ const READ_VERBS: &[&str] = &[
 const DESTRUCTIVE_VERBS: &[&str] = &[
     "delete",
     "purge",
+    // `persona/attribute/purge-version`: destroys kept earlier values of an
+    // attribute for good.
+    "purge-version",
     "remove",
     "revoke",
     "revoke-session",

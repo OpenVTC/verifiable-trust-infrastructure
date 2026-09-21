@@ -594,6 +594,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_PERSONA_ATTRIBUTE_DELETE_1_0,
         RetrySafety::RetrySafe,
     ),
+    // Converges: a version already purged is not held, so a retry purges
+    // nothing and succeeds.
+    (
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
+        RetrySafety::RetrySafe,
+    ),
     (
         trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0,
         RetrySafety::Keyed,

@@ -81,15 +81,64 @@ pub(crate) struct CarriedClaim {
 }
 
 impl PersonaStore {
-    fn blinds_of(&self, profile: Option<&Profile>) -> BTreeSet<String> {
-        profile
-            .map(|p| {
-                carried_values(p)
-                    .into_iter()
-                    .map(|v| correlation::blind(&self.correlation_key, v))
-                    .collect()
-            })
-            .unwrap_or_default()
+    /// Every value a face presents that the attribute index does not hold:
+    /// what it carries itself, and what it pins to a version that is no longer
+    /// current. The second is the face showing a retained earlier value — a
+    /// name before a name change — which no attribute holds any more, so
+    /// without it the guard could not see the one value this face still shows
+    /// that its pool attribute does not.
+    pub(crate) async fn face_blinds(
+        &self,
+        profile: Option<&Profile>,
+    ) -> Result<BTreeSet<String>, AppError> {
+        let Some(p) = profile else {
+            return Ok(BTreeSet::new());
+        };
+        let mut out: BTreeSet<String> = carried_values(p)
+            .into_iter()
+            .map(|v| correlation::blind(&self.correlation_key, v))
+            .collect();
+        for entry in &p.entries {
+            if let ProfileEntry::Pinned {
+                r#ref, pin_version, ..
+            } = entry
+                && let Some(v) = self.pinned_retained_value(r#ref, *pin_version).await?
+            {
+                out.insert(correlation::blind(&self.correlation_key, &v));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Move one face's edges from `before` to `after`. **Caller must hold
+    /// `write_lock`.** Split from [`Self::reindex_face`] for the writes that
+    /// change what a face presents without changing the face — an attribute
+    /// edit that leaves a pin pointing at a now-retained version.
+    pub(crate) async fn apply_face_edges(
+        &self,
+        context_id: Option<&str>,
+        profile_id: &str,
+        before: &BTreeSet<String>,
+        after: &BTreeSet<String>,
+    ) -> Result<(), AppError> {
+        let carrier = FaceCarrier {
+            profile_id: profile_id.to_string(),
+            context_id: context_id.map(str::to_string),
+        };
+        let suffix = carrier.key_suffix();
+        // Added before removed: a crash between the two leaves a stale edge,
+        // which over-warns, rather than a missing one, which under-warns.
+        for blind in after.difference(before) {
+            self.ks
+                .insert(storage::face_value_key(blind, &suffix), &carrier)
+                .await?;
+        }
+        for blind in before.difference(after) {
+            self.ks
+                .remove(storage::face_value_key(blind, &suffix))
+                .await?;
+        }
+        Ok(())
     }
 
     /// Bring one face's edges from `old` to `new`. **Caller must hold
@@ -105,27 +154,10 @@ impl PersonaStore {
         old: Option<&Profile>,
         new: Option<&Profile>,
     ) -> Result<(), AppError> {
-        let carrier = FaceCarrier {
-            profile_id: profile_id.to_string(),
-            context_id: context_id.map(str::to_string),
-        };
-        let suffix = carrier.key_suffix();
-        let before = self.blinds_of(old);
-        let after = self.blinds_of(new);
-
-        // Added before removed: a crash between the two leaves a stale edge,
-        // which over-warns, rather than a missing one, which under-warns.
-        for blind in after.difference(&before) {
-            self.ks
-                .insert(storage::face_value_key(blind, &suffix), &carrier)
-                .await?;
-        }
-        for blind in before.difference(&after) {
-            self.ks
-                .remove(storage::face_value_key(blind, &suffix))
-                .await?;
-        }
-        Ok(())
+        let before = self.face_blinds(old).await?;
+        let after = self.face_blinds(new).await?;
+        self.apply_face_edges(context_id, profile_id, &before, &after)
+            .await
     }
 
     /// Every face carrying the value behind `blind`.
@@ -221,6 +253,21 @@ impl PersonaStore {
                         claim_type,
                         provenance,
                     });
+                }
+                ProfileEntry::Pinned {
+                    r#ref, pin_version, ..
+                } => {
+                    if let Some(old) = self.retained(r#ref, *pin_version).await?
+                        && old
+                            .value
+                            .as_ref()
+                            .is_some_and(|v| correlation::blind(&self.correlation_key, v) == blind)
+                    {
+                        out.push(CarriedClaim {
+                            claim_type: old.r#type,
+                            provenance: old.provenance,
+                        });
+                    }
                 }
                 _ => {}
             }

@@ -2068,6 +2068,9 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_DELETE_1_0 => persona::handle_attribute_delete
         [ Destructive None false ],
+    // Destroys kept earlier values for good; names ids and versions only.
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0 => persona::handle_attribute_purge_version
+        [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0 => persona::handle_profile_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_GET_1_0 => persona::handle_profile_get
