@@ -45,6 +45,10 @@ pub struct ResolvedClaim {
     /// What the value is. An inline entry carries its own; a pool-backed one
     /// takes the attribute's.
     pub value_type: crate::ValueType,
+    /// The holder's own words for this claim — the override's where it gives
+    /// one, else the pool attribute's, else the inline entry's. Never
+    /// disclosed: it is for the holder's own view of what a face shows.
+    pub label: Option<String>,
     pub provenance: crate::Provenance,
     /// The pool attribute's version and last-write time — `None` for an inline
     /// entry, which has no pool record behind it and so has neither. The
@@ -178,8 +182,11 @@ impl PersonaStore {
                 }
                 ProfileEntry::Override { r#ref, r#override } => {
                     let mut c = self.claim_from_pool(r#ref, None).await?;
-                    // Value only. Provenance is inherited, deliberately.
+                    // Value and label. Provenance is inherited, deliberately.
                     c.value = Some(r#override.value.clone());
+                    if r#override.label.is_some() {
+                        c.label = r#override.label.clone();
+                    }
                     c
                 }
                 ProfileEntry::Inline { inline } => ResolvedClaim {
@@ -187,6 +194,7 @@ impl PersonaStore {
                     r#type: inline.r#type.clone(),
                     value: Some(inline.value.clone()),
                     value_type: inline.value_type,
+                    label: inline.label.clone(),
                     provenance: inline.provenance.clone(),
                     version: None,
                     updated_at: None,
@@ -213,6 +221,7 @@ impl PersonaStore {
                 r#type: String::new(),
                 value: None,
                 value_type: crate::ValueType::String,
+                label: None,
                 provenance: crate::Provenance::SelfAsserted,
                 version: None,
                 updated_at: None,
@@ -232,6 +241,7 @@ impl PersonaStore {
             r#type: a.r#type.clone(),
             value: if stale { None } else { a.value.clone() },
             value_type: a.value_type,
+            label: a.label.clone(),
             provenance: a.provenance.clone(),
             version: Some(a.version),
             updated_at: Some(a.updated_at.clone()),
@@ -347,6 +357,60 @@ mod tests {
             serde_json::json!(v),
             Provenance::SelfAsserted,
         )
+    }
+
+    /// The holder's label reaches the resolved view, and an override's wins.
+    ///
+    /// `OverrideValue.label` was accepted, stored, and then dropped on
+    /// resolution while the form's own documentation said it replaced the
+    /// label — so a holder who named an override lost the name everywhere
+    /// they would look for it.
+    #[tokio::test]
+    async fn a_resolved_claim_carries_the_holders_label() {
+        let (_d, s) = fresh().await;
+        let mut a = attr("+61 4");
+        a.label = Some("personal mobile".into());
+        s.put(a.clone(), None).await.unwrap();
+        let p = new_profile(
+            "Work",
+            vec![
+                ProfileEntry::Ref {
+                    r#ref: a.attribute_id.clone(),
+                },
+                ProfileEntry::Override {
+                    r#ref: a.attribute_id.clone(),
+                    r#override: OverrideValue {
+                        value: serde_json::json!("+61 9"),
+                        label: Some("work line".into()),
+                    },
+                },
+                ProfileEntry::Inline {
+                    inline: InlineValue {
+                        r#type: "x:handle".into(),
+                        value_type: ValueType::String,
+                        value: serde_json::json!("ada"),
+                        label: Some("gaming".into()),
+                        provenance: Provenance::SelfAsserted,
+                    },
+                },
+            ],
+        );
+        s.put_profile(p.clone(), None).await.unwrap();
+        let labels: Vec<_> = s
+            .resolve_profile(&p.profile_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                Some("personal mobile".to_string()),
+                Some("work line".to_string()),
+                Some("gaming".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]
