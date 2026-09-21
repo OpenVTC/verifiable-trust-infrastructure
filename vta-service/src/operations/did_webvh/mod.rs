@@ -247,6 +247,17 @@ pub struct CreateDidWebvhDeps<'a> {
     /// refresh/reauth against a hosting daemon. Only used when
     /// publishing to a registered server (not serverless / did:key).
     pub auth_locks: &'a WebvhAuthLocks,
+    /// The ACL keyspace, so the `KeyMint` gate can read the caller's **entry**
+    /// and honour a narrowing on the very next call — the rule every other
+    /// capability gate follows since #1279.
+    ///
+    /// `None` is for the offline CLI and first-boot setup only. Their claims
+    /// are synthesized under a DID that is deliberately in no ACL, so reading
+    /// the store would find no entry and fall back to the role — `None` takes
+    /// that answer directly without opening another keyspace. A live transport
+    /// passing `None` would skip narrowings, so both `from_*` constructors pass
+    /// `Some`.
+    pub acl_ks: Option<&'a KeyspaceHandle>,
     /// What lets the outbound seam choose TSP when publishing to a webvh host.
     /// See the note on [`WebvhDeps::tsp`] — `None` is a real answer.
     #[cfg(feature = "tsp")]
@@ -282,6 +293,7 @@ impl<'a> CreateDidWebvhDeps<'a> {
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
+            acl_ks: Some(&s.acl_ks),
             #[cfg(feature = "tsp")]
             tsp: crate::operations::outbound::TspSender::from_app_state(s),
         }
@@ -310,6 +322,7 @@ impl<'a> CreateDidWebvhDeps<'a> {
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
+            acl_ks: Some(&s.acl_ks),
             // See the same field on `WebvhDeps::from_vta_state`: a DIDComm
             // handler's state holds no TSP socket to lend.
             #[cfg(feature = "tsp")]
@@ -856,6 +869,47 @@ async fn authenticated_server_transport<'a>(
     )
     .await
 }
+/// The `webvh/dids/create` gate: the caller must hold `KeyMint`.
+///
+/// `KeyMint`, not the admin role (Keyring VTI-23). Minting a DID mints its
+/// keys, which `initiator` is already trusted to do, so requiring admin made a
+/// least-privilege manager impossible for the persona lifecycle.
+///
+/// Reads the caller's entry when a keyspace is available, so a narrowing that
+/// removes `KeyMint` stops the next call — the rule every capability gate
+/// follows. `None` is for offline callers only; see
+/// [`CreateDidWebvhDeps::acl_ks`].
+async fn ensure_may_mint(
+    acl_ks: Option<&KeyspaceHandle>,
+    auth: &AuthClaims,
+) -> Result<(), AppError> {
+    use vti_common::acl::{Capability, entry_has_capability, get_acl_entry, role_has_capability};
+
+    let may_mint = match acl_ks {
+        Some(ks) => match get_acl_entry(ks, &auth.did).await {
+            Ok(Some(entry)) => entry_has_capability(&entry, Capability::KeyMint),
+            // No entry: the role decides, as it does at every other gate.
+            Ok(None) => role_has_capability(&auth.role, Capability::KeyMint),
+            // A store error must not become a grant.
+            Err(e) => {
+                tracing::error!(
+                    error = %e, did = %auth.did,
+                    "could not read the ACL entry for the KeyMint check; refusing"
+                );
+                false
+            }
+        },
+        None => role_has_capability(&auth.role, Capability::KeyMint),
+    };
+    if may_mint {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(format!(
+            "webvh/dids/create denied: {} does not carry the KeyMint capability",
+            auth.did
+        )))
+    }
+}
 
 pub async fn create_did_webvh(
     deps: &CreateDidWebvhDeps<'_>,
@@ -878,13 +932,15 @@ pub async fn create_did_webvh(
         did_resolver,
         didcomm_bridge,
         auth_locks,
+        acl_ks,
         // `tsp` is deliberately not destructured here: every other field is a
         // shared reference and so `Copy`, while a `TspSender` is not. Cloning
         // it at the one place it is used keeps `*deps` a copy.
         ..
     } = *deps;
 
-    auth.require_admin()?;
+    // `KeyMint` decides *whether*; the context check below still bounds *where*.
+    ensure_may_mint(acl_ks, auth).await?;
     auth.require_context(&params.context_id)?;
 
     // Template is mutually exclusive with raw did_document / did_log — it
@@ -2796,6 +2852,80 @@ mod tests {
         auth_b
             .require_context(&record.context_id)
             .expect("ctx-B admin passes require_context for ctx-b");
+    }
+
+    fn claims_as(did: &str, role: Role) -> AuthClaims {
+        AuthClaims {
+            did: did.to_string(),
+            role,
+            allowed_contexts: vec!["acme".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        }
+    }
+
+    fn acl_keyspace() -> (TempDir, KeyspaceHandle) {
+        let dir = TempDir::new().expect("tempdir");
+        let store = Store::open(&VtiStoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        let ks = store.keyspace(crate::keyspaces::ACL).expect("acl keyspace");
+        (dir, ks)
+    }
+
+    /// Keyring VTI-23: a least-privilege manager on `initiator` can mint a
+    /// persona. Before, `create_did_webvh` demanded the admin role.
+    #[tokio::test]
+    async fn an_initiator_may_mint_a_did() {
+        let (_dir, ks) = acl_keyspace();
+        ensure_may_mint(Some(&ks), &claims_as("did:key:zManager", Role::Initiator))
+            .await
+            .expect("initiator derives KeyMint");
+    }
+
+    /// A role that does not derive `KeyMint` is still refused.
+    #[tokio::test]
+    async fn a_reader_may_not_mint_a_did() {
+        let (_dir, ks) = acl_keyspace();
+        let err = ensure_may_mint(Some(&ks), &claims_as("did:key:zReader", Role::Reader))
+            .await
+            .expect_err("reader does not derive KeyMint");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    /// The entry is read, so a narrowing removing `KeyMint` binds the next call
+    /// — even for an admin. A role-only check would have let this through.
+    #[tokio::test]
+    async fn a_narrowing_without_key_mint_stops_the_next_mint() {
+        use vti_common::acl::{AclEntry, Capability, store_acl_entry};
+        let (_dir, ks) = acl_keyspace();
+        let auth = claims_as("did:key:zNarrowed", Role::Admin);
+        store_acl_entry(
+            &ks,
+            &AclEntry::new(&auth.did, Role::Admin, "did:key:zRoot")
+                .with_contexts(vec!["acme".to_string()])
+                .with_capabilities(vec![Capability::Sign]),
+        )
+        .await
+        .expect("store the narrowed entry");
+
+        let err = ensure_may_mint(Some(&ks), &auth)
+            .await
+            .expect_err("narrowed away, KeyMint is gone");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    /// Offline callers pass no keyspace and fall back to the role, which is
+    /// what reading the store would give them anyway (their DID is in no ACL).
+    #[tokio::test]
+    async fn without_a_keyspace_the_role_decides() {
+        ensure_may_mint(None, &claims_as("cli:setup", Role::Admin))
+            .await
+            .expect("the offline admin path still mints");
     }
 
     async fn sample_did_log_for_refresh() -> (String, String, serde_json::Value) {

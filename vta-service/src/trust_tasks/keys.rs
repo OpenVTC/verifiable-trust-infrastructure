@@ -226,8 +226,8 @@ pub(super) async fn handle_set_exportability(
 
 /// Handler for `keys/export-secret/0.1`.
 ///
-/// Admin **of the key's own scope**: `require_admin` is the role floor and
-/// `get_key_secret`'s own `require_context` is the scope, so an admin of one
+/// `KeyExport` **in the key's own scope**: the capability is the gate and
+/// `get_key_secret`'s own `require_context` is the scope, so a holder in one
 /// context reaches no other context's keys. The URI this replaces
 /// (`vta/seeds/export-mnemonic/1.0`) demanded global Admin for the same act,
 /// which handed a caller wanting one key authority over everything else.
@@ -242,8 +242,22 @@ pub(super) async fn handle_export_secret(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
+    // `KeyExport`, not the admin role — VTI-VTA-003: an export "MUST be gated
+    // by a capability distinct from the capability to use the key". Only
+    // `admin` derives it, so no current admin loses anything; what changes is
+    // that an operator can now narrow it away from a particular admin, which a
+    // role floor could not express. Scope is still enforced inside
+    // `get_key_secret`, and the export is still audited there.
+    if let Err(reject) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        vti_common::acl::Capability::KeyExport,
+        "keys/export-secret",
+    )
+    .await
+    {
+        return reject;
     }
     let req: GetKeySecretBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -574,5 +588,103 @@ pub(super) async fn handle_import(
     {
         Ok(body) => success_response(&doc, ImportKeyResponseBody { key: body }),
         Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+#[cfg(test)]
+mod key_export_tests {
+    use super::*;
+    use crate::acl::Role;
+    use crate::test_support::build_signing_test_app_state;
+    use serde_json::json;
+    use trust_tasks_rs::TypeUri;
+    use vti_common::acl::{AclEntry, Capability, store_acl_entry};
+
+    fn claims(did: &str, role: Role) -> AuthClaims {
+        AuthClaims {
+            did: did.into(),
+            role,
+            allowed_contexts: vec!["acme".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        }
+    }
+
+    /// A key id that exists nowhere. The capability gate runs before the key
+    /// is looked up, so a caller refused by the gate is told "denied", while a
+    /// caller that passes it reaches the lookup and is told the key is absent.
+    /// That difference is what these tests read.
+    fn export_doc() -> TrustTask<Value> {
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1
+            .parse()
+            .expect("export-secret uri");
+        TrustTask::new(
+            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            uri,
+            json!({ "keyId": "did:key:zNoSuchKey#key-0" }),
+        )
+    }
+
+    fn refused_by_the_gate(out: &super::super::helpers::TrustTaskOutcome) -> bool {
+        let doc: Value = serde_json::from_slice(&out.body).expect("response is JSON");
+        doc.pointer("/payload/code").and_then(Value::as_str) == Some("permissionDenied")
+    }
+
+    /// Keyring VTI-23 / VTI-VTA-003: an initiator holds `Sign` and must not
+    /// thereby export. It acts as a key through the signing oracle instead.
+    #[tokio::test]
+    async fn an_initiator_cannot_export_a_secret() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = handle_export_secret(
+            &state,
+            &claims("did:key:zManager", Role::Initiator),
+            export_doc(),
+        )
+        .await;
+        assert!(
+            refused_by_the_gate(&out),
+            "an initiator must be refused at the KeyExport gate"
+        );
+    }
+
+    /// An admin passes the gate — it derives `KeyExport` — and reaches the
+    /// lookup, which is what proves the refusal above was the capability and
+    /// not some other check.
+    #[tokio::test]
+    async fn an_admin_passes_the_key_export_gate() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = handle_export_secret(
+            &state,
+            &claims("did:key:zOperator", Role::Admin),
+            export_doc(),
+        )
+        .await;
+        assert!(
+            !refused_by_the_gate(&out),
+            "an admin derives KeyExport and must reach the key lookup"
+        );
+    }
+
+    /// What the role floor could not express: export narrowed away from one
+    /// admin, who keeps everything else.
+    #[tokio::test]
+    async fn an_admin_narrowed_without_key_export_is_refused() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = claims("did:key:zNarrowed", Role::Admin);
+        let narrowed = AclEntry::new(&auth.did, Role::Admin, "did:key:zRoot")
+            .with_contexts(vec!["acme".to_string()])
+            .with_capabilities(vec![Capability::Sign, Capability::KeyMint]);
+        store_acl_entry(&state.acl_ks, &narrowed)
+            .await
+            .expect("store the narrowed entry");
+
+        let out = handle_export_secret(&state, &auth, export_doc()).await;
+        assert!(
+            refused_by_the_gate(&out),
+            "a narrowing without key-export removes it, even from an admin"
+        );
     }
 }
