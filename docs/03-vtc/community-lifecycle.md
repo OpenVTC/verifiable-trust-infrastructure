@@ -221,6 +221,10 @@ for the conventions every CLI verb follows.
 
 - [Credentials](credentials.md) — VMC / VEC details + status-list
   mechanics.
+- [Credential delivery](credential-delivery.md) — how the admitted
+  member receives its credentials.
+- [Bootstrap runbook](bootstrap-runbook.md) — the first admin and
+  the first vetter of a new community.
 - [Trust-registry integration](trust-registry.md) — publication
   + cross-community recognition.
 - [Personhood + relationships](personhood-and-graph.md) — VRC

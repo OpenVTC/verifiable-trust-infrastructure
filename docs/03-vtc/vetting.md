@@ -143,7 +143,9 @@ the grant, delivers the credential to the member, and answers with the grant:
 ```
 
 Only an admin may grant, and only to a current member. Granting again while the
-member holds a live grant returns that grant. A grant is audited as
+member holds a live grant returns that grant. An admin is not a member, so a new
+community's first vetter is a separate identity, admitted *before* any criterion
+requires vetting — the order is in the [bootstrap runbook](bootstrap-runbook.md#part-2--the-first-vetter). A grant is audited as
 `VetterGranted`, with a `VecIssued` for the credential.
 
 The vetter shows the credential to applicants: it answers a

@@ -32,8 +32,8 @@ A running `vtc` binary on port 8200 with:
 - A `vtc_did` minted by your VTA's `vtc-host` template.
 - A `config.toml` written by the setup wizard.
 - A populated fjall store at `<data_dir>/`.
-- An admin DID with a bearer JWT credential (kept in the OS keyring
-  by default).
+- An admin DID and a one-shot install URL. Claiming the URL is what
+  puts the admin DID on the VTC's (initially empty) ACL.
 - A default landing page at `GET /` and the admin SPA at
   `/admin/*`.
 
@@ -209,26 +209,19 @@ embedded admin SPA serving the install flow:
    doesn't grant admin.
 2. The browser registers a passkey via WebAuthn (any algorithm the
    authenticator supports — ES256, RS256, EdDSA all work).
-3. The SPA submits `POST /v1/install/claim/start` and `…/finish`.
+3. The SPA submits `POST /v1/install/claim/start` and `…/finish`,
+   then `POST /v1/admin/bootstrap`. That last call writes the first
+   admin's ACL entry. **Until it runs, the VTC's ACL is empty and
+   the admin DID cannot authenticate.**
 4. The token row transitions `Issued` → `Consumed` and can never be
    redeemed again.
-5. The page prints the admin DID + a one-time admin credential
-   bundle.
+5. The page shows the admin DID. Sign in at `/admin/` with the
+   passkey.
 
-Import the bundle into the CNM CLI:
-
-```sh
-cnm auth login <paste-bundle-here>
-```
-
-The CLI imports the credential into the OS keyring, runs the
-challenge-response handshake, caches the JWT, and confirms the
-identity. Subsequent commands authenticate automatically:
-
-```sh
-cnm health
-cnm community profile show
-```
+The page does not hand you a CLI credential. To authenticate a
+script or CLI, or to get the admin in without a browser, and for
+the order that admits a community's first vetter, follow the
+**[bootstrap runbook](bootstrap-runbook.md)**.
 
 ## Step 4 — Configure policy (optional)
 
@@ -272,8 +265,9 @@ cnm join approve <request-id>
 ```
 
 The VTC issues a VMC + (optionally) VECs, allocates a status-list
-slot for revocation, and returns the credential bundle to the
-member.
+slot for revocation, and delivers each credential to the member as
+its own `credential-exchange/issue` message — see
+[`credential-delivery.md`](credential-delivery.md).
 
 ## Step 6 — Configure a public website (optional)
 
@@ -296,6 +290,8 @@ full surface.
 
 | If you want to… | Read |
 |---|---|
+| Authenticate the first admin, and admit the first vetter | [`bootstrap-runbook.md`](bootstrap-runbook.md) |
+| Know how an admitted member receives its credentials | [`credential-delivery.md`](credential-delivery.md) |
 | Understand the module layout | [`architecture.md`](architecture.md) |
 | Author policies + manage members | [`community-lifecycle.md`](community-lifecycle.md) |
 | Issue credentials + revoke them | [`credentials.md`](credentials.md) |
