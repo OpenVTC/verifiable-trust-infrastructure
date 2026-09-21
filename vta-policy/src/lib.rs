@@ -41,7 +41,8 @@ pub mod storage;
 pub mod types;
 
 pub use defaults::{
-    install_default_policy, remove_stale_config_consent_policy, seed_declarative_approvals,
+    UnenforcedPolicies, install_default_policy, remove_stale_config_consent_policy,
+    seed_declarative_approvals, unenforced_policies,
 };
 pub use engine::{CompiledPolicy, compile, evaluate_decision};
 pub use input::build_policy_input;
