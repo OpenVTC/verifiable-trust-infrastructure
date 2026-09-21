@@ -39,6 +39,12 @@ pub use vta_sdk::protocols::did_management::update::{
 pub struct UpdateDidWebvhOptions {
     /// New DID document. `None` = keep existing. When `Some`, forces a
     /// parallel rotation of `update_keys` + pre-rotation commitments.
+    ///
+    /// This is a complete replacement document, not a patch. Callers that
+    /// derive it from a prior read should set [`Self::expected_version_id`] so
+    /// an intervening update is rejected rather than overwritten. Internal
+    /// semantic document mutations have the same requirement; a shared
+    /// lock serializes log appends but cannot make a prebuilt document current.
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub document: Option<Value>,

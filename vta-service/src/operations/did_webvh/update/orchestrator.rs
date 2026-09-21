@@ -24,7 +24,7 @@ use super::validate::{validate_document_for_update, validate_watchers, validate_
 use crate::audit;
 use crate::auth::AuthClaims;
 use crate::keys::paths::peek_path_counter;
-use crate::operations::did_webvh::concurrency::RecordSnapshot;
+use crate::operations::did_webvh::concurrency::{DID_UPDATE_LOCKS, RecordSnapshot};
 use crate::operations::did_webvh::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
 use crate::webvh_store;
 
@@ -517,9 +517,32 @@ async fn run_update(
     //    `server_id` from `serverless` → `webvh-prod` is a real
     //    race that the previous ad-hoc `log_entry_count` check
     //    silently missed.
-    let mut record = find_record_by_scid(webvh_ks, scid)
+    let record = find_record_by_scid(webvh_ks, scid)
         .await?
         .ok_or_else(|| UpdateDidWebvhError::NotFound(format!("SCID {scid} not found")))?;
+    // Serialise the entire append path for one DID. The wait in
+    // `next_version_time` is inside this guard, so a queued update re-reads
+    // the first update's committed head before choosing its own timestamp.
+    // Plans stay lock-free because they perform no writes and advertise no
+    // reservation; execution re-checks its derivation-counter pin below.
+    let _update_guard = match mode {
+        Mode::Plan => None,
+        Mode::Execute => Some(DID_UPDATE_LOCKS.acquire(&record.did).await),
+    };
+    // The initial read identifies the lock key. Reload after acquiring it: a
+    // preceding holder may have appended while this request was waiting.
+    let mut record = match mode {
+        Mode::Plan => record,
+        Mode::Execute => webvh_store::get_did(webvh_ks, &record.did)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_did: {e}")))?
+            .ok_or_else(|| {
+                UpdateDidWebvhError::NotFound(format!(
+                    "DID {} disappeared while waiting to update",
+                    record.did
+                ))
+            })?,
+    };
     // `scid` may arrive as a full `did:webvh:…` (the delegated-update path,
     // `trust_tasks/webvh.rs`) or as a bare SCID (the CLI path). `find_record_by_scid`
     // accepts either form for lookup, but the `webvh_keys` handle keyspace is
@@ -605,8 +628,6 @@ async fn run_update(
     let last_state = state.log_entries().last().ok_or_else(|| {
         UpdateDidWebvhError::Library(format!("DID {} has no log entries", record.did))
     })?;
-    // Index for the new entry's backdated versionTime (count already in the chain).
-    let new_entry_index = state.log_entries().len();
 
     // 4a. Optimistic-concurrency precondition. Check BEFORE key
     //     derivation / signing so a stale `get → edit → save` cycle
@@ -732,10 +753,8 @@ async fn run_update(
     let prior_document = last_state.log_entry.get_state().clone();
     // Snapshotted for the same reason, and needed for the same invariant the
     // other two serve: the new entry's `versionTime` must be strictly later
-    // than this one. `next_version_time` cannot derive that from the entry
-    // index alone — the index assumes every earlier entry was stamped by the
-    // same policy, which is false for any chain whose genesis predates it
-    // (a TEE VTA provisioned before PR #1456, say).
+    // than this one — `next_version_time` clamps against it directly, making
+    // no assumption about how the previous entry itself was stamped.
     let prior_version_time = last_state.log_entry.get_version_time();
     // Pre-rotation is "active" when the previous entry committed
     // `next_key_hashes`. The library's `check_signing_key` consults
@@ -941,11 +960,12 @@ async fn run_update(
     let mut builder = UpdateDIDConfig::<Secret, Secret>::builder_generic()
         .state(state)
         .signing_key(signing_secret)
-        // Backdated, index-spaced timestamp, clamped to stay strictly after the
-        // previous entry — see `next_version_time`. `didwebvh-rs` checks neither
-        // property at write time, so getting this wrong signs and publishes an
-        // entry that no resolver will accept and no later entry can repair.
-        .version_time(next_version_time(new_entry_index, Some(prior_version_time)));
+        // Strictly after the previous entry — see `next_version_time`. This
+        // waits out a same-second collision rather than backdating; either
+        // way, `didwebvh-rs` checks neither monotonicity nor futureness at
+        // write time, so getting this wrong signs and publishes an entry that
+        // no resolver will accept and no later entry can repair.
+        .version_time(next_version_time(Some(prior_version_time)).await);
     // The update_keys this entry sets, or `None` to leave the previous entry's
     // in force — webvh parameters are a delta, so "not restated" means
     // "unchanged", NOT "removed".

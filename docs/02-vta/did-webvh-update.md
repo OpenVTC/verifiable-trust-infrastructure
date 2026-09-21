@@ -57,7 +57,8 @@ Body:
   "witnesses":          { "threshold": 1, "witnesses": [{ "id": "z6Mk..." }] } | null,
   "watchers":           ["https://watcher.example.com"] | null,
   "ttl":                3600 | null,
-  "label":              "rotate after audit" | null
+  "label":              "rotate after audit" | null,
+  "expectedVersionId":  "2-zMk..." | null
 }
 ```
 
@@ -210,7 +211,17 @@ the new convention; subsequent updates use the fast path.
   version's handles move from `webvh:` to `superseded:webvh:` for
   audit / recovery. The legacy `key:{key_id}` records are left alone.
 - **Concurrent updates** are detected via optimistic concurrency on
-  `WebvhDidRecord.log_entry_count`. The second caller gets `409`.
+  `WebvhDidRecord.log_entry_count`. Within one VTA process, updates to the
+  same DID are serialized from log-head read through persistence and publish,
+  so rapid callers append consecutive entries with distinct whole-second
+  `versionTime` values. The VTA waits for the next valid second when needed;
+  it never writes a future-dated timestamp. This process-local lock matches
+  the VTA's single-process deployment model and does not coordinate replicas.
+- **Replacement documents require a version precondition.** `document` is a
+  complete replacement, not a patch. A caller deriving it from an earlier read
+  must send that entry's `expectedVersionId`; otherwise a later, structurally
+  valid append can replace an intervening document edit. Serialization protects
+  the append and timestamp invariants, not a document prepared before the lock.
 - **Witness DIDs are resolved (not signature-verified).** The VTA
   checks each witness DID resolves through the cache resolver within
   5 seconds. Witness signature verification happens at log-entry

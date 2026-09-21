@@ -41,7 +41,43 @@
 //! positives (e.g. operator B touched the record but the change is
 //! benign for our purposes) are vastly preferable to silent overwrites.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex};
+
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use vta_sdk::webvh::WebvhDidRecord;
+
+/// Per-DID execution locks for mutations that append to a did:webvh log.
+///
+/// A log update reads its current head, derives and signs the next entry, then
+/// persists and possibly publishes it. Those are separate store and network
+/// operations, so they must remain under one lock: otherwise two requests can
+/// both build a successor of the same head and one can overwrite the other's
+/// local log. The lock is process-local, matching VTA's single-process owner
+/// model; it intentionally does not promise coordination between replicas.
+#[derive(Clone, Default)]
+pub struct DidUpdateLocks {
+    inner: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+}
+
+impl DidUpdateLocks {
+    /// Acquire the lock for `did`, creating it on first use.
+    pub async fn acquire(&self, did: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(locks.entry(did.to_string()).or_default())
+        };
+        lock.lock_owned().await
+    }
+}
+
+/// Process-wide registry shared by every WebVH update entry point, including
+/// REST, DIDComm, Trust Task, and offline CLI callers.
+pub static DID_UPDATE_LOCKS: std::sync::LazyLock<DidUpdateLocks> =
+    std::sync::LazyLock::new(DidUpdateLocks::default);
 
 /// Snapshot of the record fields we treat as the optimistic-concurrency
 /// version vector. Captured at the start of an op; re-checked just
@@ -164,6 +200,7 @@ pub enum RaceDetected {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
 
     fn record(did: &str, count: u32, ts: i64, server: &str) -> WebvhDidRecord {
         WebvhDidRecord {
@@ -246,5 +283,36 @@ mod tests {
         let snap = RecordSnapshot::capture(&before);
         snap.assert_unchanged(&after)
             .expect("only log_entry_count, updated_at, server_id are version-vector fields");
+    }
+
+    #[tokio::test]
+    async fn did_update_lock_serializes_same_did() {
+        let locks = DidUpdateLocks::default();
+        let first = locks.acquire("did:webvh:scid:example.com:agent").await;
+        let (started_tx, started_rx) = oneshot::channel();
+        let (acquired_tx, mut acquired_rx) = oneshot::channel();
+        let waiting_locks = locks.clone();
+
+        let waiting = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            let _second = waiting_locks
+                .acquire("did:webvh:scid:example.com:agent")
+                .await;
+            let _ = acquired_tx.send(());
+        });
+
+        started_rx.await.expect("waiting task started");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut acquired_rx)
+                .await
+                .is_err(),
+            "the second update must wait for the first holder"
+        );
+
+        drop(first);
+        acquired_rx
+            .await
+            .expect("second update acquired after release");
+        waiting.await.expect("waiting task joined");
     }
 }
