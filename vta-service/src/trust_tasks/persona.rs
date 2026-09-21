@@ -100,6 +100,10 @@ pub const REACH: &[(&str, Reach)] = &[
     (uris::TASK_PERSONA_ATTRIBUTE_PUT_1_0, Reach::Holder),
     (uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, Reach::Holder),
     (uris::TASK_PERSONA_ATTRIBUTE_DELETE_1_0, Reach::Holder),
+    (
+        uris::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
+        Reach::Holder,
+    ),
     (uris::TASK_PERSONA_PROFILE_PUT_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_LIST_1_0, Reach::Holder),
@@ -782,6 +786,86 @@ pub(super) async fn handle_attribute_delete(
     )
 }
 
+pub(super) async fn handle_attribute_purge_version(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::attribute::purge_version::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    // Holder-only: it destroys pool data, and pool data is not any context's.
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
+        None,
+    )
+    .await
+    {
+        return reject(&doc, e);
+    }
+
+    let id = req.attribute_id.to_string();
+    let versions: Option<Vec<u64>> = req
+        .versions
+        .as_ref()
+        .map(|vs| vs.iter().map(|v| v.get()).collect());
+    let s = store(state);
+
+    // The current value is `delete`'s, never this task's. Checked here so the
+    // refusal carries the specification's code; the store refuses it too.
+    if let (Some(asked), Ok(Some(current))) = (&versions, s.get(&id).await)
+        && asked.contains(&current.version)
+    {
+        return reject_with_code(
+            &doc,
+            ext(&slug_from_doc(&doc), "currentVersion"),
+            format!(
+                "version {} is the current value; remove it with persona/attribute/delete",
+                current.version
+            ),
+            None,
+        );
+    }
+
+    let out = match s.purge_versions(&id, versions.as_deref()).await {
+        Ok(o) => o,
+        Err(e) => return reject(&doc, e),
+    };
+
+    // Versions and face ids, never values: what was destroyed must not be
+    // re-recorded in a store the purge does not reach.
+    let detail = format!(
+        "attribute {id}: purged {} kept version(s) {:?}; {} face(s) left presenting that \
+         entry as stale",
+        out.purged.len(),
+        out.purged,
+        out.stale_pins.len(),
+    );
+    audit_persona(
+        state,
+        "persona.attribute.purge_version",
+        auth,
+        Some(&id),
+        None,
+        Some(&detail),
+    )
+    .await;
+
+    let mut body = json!({ "attributeId": id, "purged": out.purged });
+    if !out.stale_pins.is_empty() {
+        body["stalePins"] = out
+            .stale_pins
+            .iter()
+            .take(256)
+            .map(|h| json!({ "profileId": h.profile_id, "pinVersion": h.pin_version }))
+            .collect();
+    }
+    success_response(&doc, body)
+}
+
 // ─── Profiles ────────────────────────────────────────────────────────────
 
 pub(super) async fn handle_profile_put(
@@ -825,6 +909,30 @@ pub(super) async fn handle_profile_put(
             format!("two entries of this face both claim the slot {slot}"),
             Some(json!({ "slot": slot })),
         );
+    }
+
+    // A pin to a version this VTA neither holds nor kept presents nothing from
+    // the moment it is written. Refused with the specification's code, naming
+    // the pins, so a caller can repin rather than guess.
+    match store(state).unavailable_pins(&entries).await {
+        Ok(missing) if !missing.is_empty() => {
+            return reject_with_code(
+                &doc,
+                ext(&slug_from_doc(&doc), "pinnedVersionUnavailable"),
+                format!(
+                    "{} pin(s) name a version this VTA does not hold",
+                    missing.len()
+                ),
+                Some(json!({
+                    "pins": missing
+                        .iter()
+                        .map(|(a, v)| json!({ "attributeId": a, "pinVersion": v }))
+                        .collect::<Vec<_>>(),
+                })),
+            );
+        }
+        Ok(_) => {}
+        Err(e) => return reject(&doc, e),
     }
 
     let mut profile = vta_persona::new_profile(req.name.to_string(), entries);

@@ -34,6 +34,7 @@ use vti_common::auth::session::{Session, SessionState, now_epoch, store_session}
 const ATTR_PUT: &str = "https://trusttasks.org/spec/persona/attribute/put/1.0";
 const ATTR_LIST: &str = "https://trusttasks.org/spec/persona/attribute/list/1.0";
 const ATTR_DELETE: &str = "https://trusttasks.org/spec/persona/attribute/delete/1.0";
+const ATTR_PURGE_VERSION: &str = "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
 const PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/profile/put/1.0";
 const PROFILE_GET: &str = "https://trusttasks.org/spec/persona/profile/get/1.0";
 const PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/profile/list/1.0";
@@ -2945,5 +2946,156 @@ async fn a_face_names_itself_by_slot_and_only_once() {
     assert_eq!(
         payload_of(&body)["code"],
         "persona/local/profile/put:duplicateSlot"
+    );
+}
+
+/// A name change a pinned face does not follow, and the holder's override.
+///
+/// The bank verified the old name and must keep seeing it until it is told;
+/// every other face follows the edit. Pinning used to work only until the first
+/// edit — the replaced version was not kept, so the pin read stale — which is to
+/// say it never worked, since an edit is the only reason to pin. Now the old
+/// version is kept while a face pins it, the holder can see that it is, and can
+/// remove it anyway; the pinned face then shows nothing for it rather than the
+/// new name the holder did not choose for that counterparty.
+#[tokio::test]
+async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "pin-holder", "admin", &[]).await;
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({ "type": "name.legal", "value": "Ada Lovelace", "valueType": "string",
+                "provenance": { "kind": "selfAsserted" } }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/put: {status} {body}");
+    let attr = payload_of(&body)["attributeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let v1 = payload_of(&body)["version"].as_u64().unwrap();
+
+    // A pin to a version never held is refused, naming it.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "name": "typo", "entries": [{ "ref": attr, "pinVersion": v1 + 1000 }] }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/profile/put:pinnedVersionUnavailable"
+    );
+    assert_eq!(
+        payload_of(&body)["details"]["pins"][0]["attributeId"],
+        attr.as_str()
+    );
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "name": "bank", "entries": [{ "ref": attr, "pinVersion": v1 }] }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/put: {status} {body}");
+    let bank = payload_of(&body)["profileId"].as_str().unwrap().to_string();
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({ "attributeId": attr, "type": "name.legal", "value": "Ada King",
+                "valueType": "string", "provenance": { "kind": "selfAsserted" } }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/put: {status} {body}");
+    let v2 = payload_of(&body)["version"].as_u64().unwrap();
+
+    let resolved = || {
+        let (router, holder, bank) = (router.clone(), holder.clone(), bank.clone());
+        async move {
+            let (status, body) = post(
+                &router,
+                &holder,
+                PROFILE_GET,
+                json!({ "profileId": bank, "resolve": true }),
+            )
+            .await;
+            assert!(!refused(status, &body), "profile/get: {status} {body}");
+            payload_of(&body)["resolved"][0].clone()
+        }
+    };
+    let kept = resolved().await;
+    assert_eq!(
+        kept["value"], "Ada Lovelace",
+        "the pin was not honoured: {kept}"
+    );
+    assert_eq!(kept["stale"], false);
+
+    // The holder can see what is kept, and why — and the listing conforms.
+    let (status, body) = post(&router, &holder, ATTR_LIST, json!({})).await;
+    assert!(!refused(status, &body), "attribute/list: {status} {body}");
+    let payload = payload_of(&body).clone();
+    serde_json::from_value::<trust_tasks_rs::specs::persona::attribute::list::v1_0::Response>(
+        payload.clone(),
+    )
+    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
+    let row = payload["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["attributeId"] == attr.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        row["retainedVersions"],
+        json!([{ "version": v1, "updatedAt": row["retainedVersions"][0]["updatedAt"], "pinnedBy": [bank] }]),
+        "{row}"
+    );
+
+    // The current value is not purgeable here.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PURGE_VERSION,
+        json!({ "attributeId": attr, "versions": [v2] }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/attribute/purge-version:currentVersion"
+    );
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PURGE_VERSION,
+        json!({ "attributeId": attr }),
+    )
+    .await;
+    assert!(!refused(status, &body), "purge-version: {status} {body}");
+    let out = payload_of(&body).clone();
+    serde_json::from_value::<
+        trust_tasks_rs::specs::persona::attribute::purge_version::v1_0::Response,
+    >(out.clone())
+    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
+    assert_eq!(out["purged"], json!([v1]));
+    assert_eq!(
+        out["stalePins"],
+        json!([{ "profileId": bank, "pinVersion": v1 }])
+    );
+
+    let gone = resolved().await;
+    assert_eq!(gone["stale"], true, "{gone}");
+    assert!(
+        gone.get("value").is_none() || gone["value"].is_null(),
+        "a purged pin fell back to another value: {gone}"
     );
 }

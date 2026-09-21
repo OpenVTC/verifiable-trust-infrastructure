@@ -225,8 +225,25 @@ pub struct Attribute {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseRequirement>,
     pub version: Version,
+    /// Earlier versions the store still holds, and the faces that are the
+    /// reason. Filled on read — never stored with the record — so a holder who
+    /// overwrote a value learns it is not gone, and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained_versions: Vec<RetainedVersion>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// An earlier version of an attribute, kept because a face pins it. Values are
+/// not included: the holder reads one through the face that pins it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct RetainedVersion {
+    pub version: Version,
+    pub updated_at: String,
+    /// The faces pinning it. Never empty: a version nothing pins is not kept.
+    pub pinned_by: Vec<Ulid>,
 }
 
 /// One line of a profile, in exactly one of four forms.

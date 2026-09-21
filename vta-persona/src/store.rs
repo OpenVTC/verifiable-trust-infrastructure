@@ -229,6 +229,16 @@ impl PersonaStore {
         let version = self.next_version().await?;
         let created = current_version.is_none();
         attribute.version = version;
+        // Filled on read only; a caller echoing a listing must not persist it.
+        attribute.retained_versions.clear();
+
+        // Keep the version this edit replaces if a face pins it — the bank
+        // that must go on seeing the name it verified. Before the record, so a
+        // crash leaves a kept copy nothing needs rather than a pin to a value
+        // that is gone.
+        if let Some(Slot::Live(old)) = &existing {
+            self.retain_if_pinned(old).await?;
+        }
 
         // Index maintenance before the record, so a crash leaves an index entry
         // with no record — which reads as a false positive in the correlation
@@ -317,6 +327,9 @@ impl PersonaStore {
         if !value_blind.is_empty() {
             self.unindex_value(&value_blind, attribute_id).await?;
         }
+        // Before the reverse-index edges go: finding the faces that pinned a
+        // retained version walks them.
+        self.drop_all_retained(attribute_id).await?;
         for profile_id in &referring {
             self.ks
                 .remove(storage::reverse_index_key(attribute_id, profile_id))
@@ -377,7 +390,7 @@ impl PersonaStore {
             .await?;
 
         let mut withheld_sensitive = 0usize;
-        let attributes = rows
+        let mut attributes: Vec<Attribute> = rows
             .into_iter()
             .filter_map(|(_k, v)| match serde_json::from_slice::<Slot>(&v) {
                 Ok(Slot::Live(a)) => Some(a),
@@ -403,6 +416,13 @@ impl PersonaStore {
                 a
             })
             .collect();
+
+        // What the store still holds beyond the current value, and why. A
+        // holder who overwrote a name may reasonably believe the old one gone;
+        // this is where they learn it is kept, and for which face.
+        for a in &mut attributes {
+            a.retained_versions = self.retained_versions(&a.attribute_id).await?;
+        }
 
         Ok(Listing {
             attributes,
@@ -540,6 +560,7 @@ pub fn new_attribute(
         // Same, for the same reason.
         release: None,
         version: 0,
+        retained_versions: Vec::new(),
         created_at: now.clone(),
         updated_at: now,
     }

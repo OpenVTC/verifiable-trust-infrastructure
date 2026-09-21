@@ -113,6 +113,10 @@ async fn attribute(client: &VtaClient, command: PersonaAttributeCommands) -> Cmd
             cascade,
             expected_version,
         } => p::cmd_attribute_delete(client, attribute_id, cascade, expected_version).await,
+        PersonaAttributeCommands::PurgeVersion {
+            attribute_id,
+            versions,
+        } => p::cmd_attribute_purge_version(client, attribute_id, versions).await,
     }
 }
 

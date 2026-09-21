@@ -675,10 +675,25 @@ impl crate::PersonaStore {
         let ctx = self.analysis_context().await?;
         let mut findings = Vec::new();
 
+        // A pin to a kept earlier version presents that version, not the
+        // current one, so it is analysed with what the face carries below
+        // rather than as the live attribute.
         let mut drawn: BTreeSet<&str> = BTreeSet::new();
         for entry in &face.entries {
-            if let ProfileEntry::Ref { r#ref, .. } | ProfileEntry::Pinned { r#ref, .. } = entry {
-                drawn.insert(r#ref);
+            match entry {
+                ProfileEntry::Ref { r#ref, .. } => {
+                    drawn.insert(r#ref);
+                }
+                ProfileEntry::Pinned {
+                    r#ref, pin_version, ..
+                } if self
+                    .pinned_retained_value(r#ref, *pin_version)
+                    .await?
+                    .is_none() =>
+                {
+                    drawn.insert(r#ref);
+                }
+                _ => {}
             }
         }
         for id in drawn {
@@ -693,12 +708,8 @@ impl crate::PersonaStore {
             profile_id: face.profile_id.clone(),
             context_id,
         };
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        for value in crate::face_values::carried_values(&face) {
-            let b = blind(&self.correlation_key, value);
-            if seen.insert(b.clone())
-                && let Some(f) = self.face_value_finding(&carrier, &b, &ctx).await?
-            {
+        for b in self.face_blinds(Some(&face)).await? {
+            if let Some(f) = self.face_value_finding(&carrier, &b, &ctx).await? {
                 findings.push(f);
             }
         }

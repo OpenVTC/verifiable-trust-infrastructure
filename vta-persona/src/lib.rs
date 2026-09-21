@@ -47,6 +47,7 @@ pub mod facet;
 pub mod model;
 pub mod present;
 pub mod profile;
+mod retention;
 pub mod storage;
 pub mod store;
 
@@ -64,10 +65,11 @@ pub use disclosure::{
 pub use facet::{FacetPlacement, PlacedElsewhere, new_facet};
 pub use model::{
     Attribute, Binding, Facet, FacetColour, InlineValue, OverrideValue, Profile, ProfileEntry,
-    ProofRung, Provenance, StaleReason, Ulid, ValueType, Version,
+    ProofRung, Provenance, RetainedVersion, StaleReason, Ulid, ValueType, Version,
 };
 pub use present::{PREVIEW_TTL_SECONDS, Preview, PreviewClaim, Renderer, renderer};
 pub use profile::{ResolvedClaim, is_pool_free, new_profile};
+pub use retention::Purged;
 pub use store::{Deleted, Listing, PersonaStore, ValueVisibility, Written, new_attribute};
 
 #[cfg(test)]

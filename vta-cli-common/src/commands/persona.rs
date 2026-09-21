@@ -149,6 +149,37 @@ pub async fn cmd_attribute_delete(
     print_result("Result:", &result)
 }
 
+/// `persona attribute purge-version` — remove kept earlier values for good.
+pub async fn cmd_attribute_purge_version(
+    client: &VtaClient,
+    attribute_id: String,
+    versions: Vec<u64>,
+) -> CmdResult {
+    let out = client
+        .persona_attribute_purge_version(
+            &attribute_id,
+            (!versions.is_empty()).then_some(versions.as_slice()),
+        )
+        .await?;
+    let result = serde_json::to_value(&out)?;
+    if !is_json_output() {
+        let stale = out.stale_pins.len();
+        if out.purged.is_empty() {
+            println!("{DIM}Nothing to remove — no kept version of {attribute_id} matched.{RESET}");
+        } else if stale > 0 {
+            println!(
+                "{YELLOW}{stale} face(s) pinned what was removed, and now show nothing for it. \
+                 Repin or edit them if they should show something.{RESET}"
+            );
+        }
+        println!(
+            "{DIM}Removed from your agent. Anyone already shown the old value keeps it — \
+             `persona disclosure history` says who.{RESET}"
+        );
+    }
+    print_result("Result:", &result)
+}
+
 // ---------------------------------------------------------------------------
 // Profiles
 // ---------------------------------------------------------------------------

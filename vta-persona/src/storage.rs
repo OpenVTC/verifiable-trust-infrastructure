@@ -92,6 +92,24 @@ pub fn face_carrier(context_id: Option<&str>, profile_id: &str) -> String {
 /// indexed. Its absence is what makes the first analysis backfill.
 pub const FACE_VALUE_INDEX_BUILT_KEY: &str = "pxfv";
 
+/// An earlier version of one attribute, kept because a profile pins it.
+///
+/// **Retained by reference**: written when an edit replaces a version some
+/// profile pins, removed once no profile does
+/// ([`crate::PersonaStore::reap_unpinned`]) or when the holder purges it. Zero-
+/// padded so a prefix scan returns versions in numeric order. Agent-scoped: it
+/// is a copy of a pool value, and nothing below the boundary may address one.
+#[must_use]
+pub fn retained_key(attribute_id: &str, version: u64) -> String {
+    format!("pav:{attribute_id}:{version:020}")
+}
+
+/// Every retained version of one attribute.
+#[must_use]
+pub fn retained_prefix(attribute_id: &str) -> String {
+    format!("pav:{attribute_id}:")
+}
+
 /// Attribute → profile reverse index, so a delete can name its referring
 /// profiles without scanning every profile.
 #[must_use]
@@ -195,6 +213,7 @@ const PREFIX_SCOPES: &[(&str, Scope)] = &[
     ("pxi:", Scope::Agent),
     ("pxr:", Scope::Agent),
     ("pxf:", Scope::Agent),
+    ("pav:", Scope::Agent),
     ("pb:", Scope::Context),
     ("pc:", Scope::Context),
     ("pcr:", Scope::Context),

@@ -3181,6 +3181,21 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            u::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
+            (
+                json!({ "attributeId": ATTR, "versions": [3] }),
+                parses::<specs::persona::attribute::purge_version::v1_0::Payload>,
+                validates::<specs::persona::attribute::purge_version::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "attributeId": ATTR, "purged": [3],
+                    "stalePins": [{ "profileId": PROFILE, "pinVersion": 3 }]
+                }),
+                parses::<specs::persona::attribute::purge_version::v1_0::Response>,
+            ),
+        ),
+        (
             u::TASK_PERSONA_PROFILE_PUT_1_0,
             (
                 // One entry of each referencing form the pool supports, so the
