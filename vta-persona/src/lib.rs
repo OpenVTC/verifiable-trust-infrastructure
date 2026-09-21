@@ -39,6 +39,7 @@
 
 pub mod binding;
 pub mod claim_types;
+pub mod compose;
 pub mod contact;
 pub mod correlation;
 pub mod disclosure;
@@ -58,6 +59,10 @@ pub use binding::{
 // path: at the crate root their names say nothing about which registry, and
 // there will be more than one thing with defaults.
 pub use claim_types::{Axes, MaskStyle, ReleaseRequirement, Sensitivity};
+pub use compose::{
+    ComposeClaim, ComposeRefusal, ComposeRequest, Composed, ComposedBinding, FaceScope, Pooled,
+    Promoted, PromotedEntry, Share,
+};
 pub use contact::{Contact, ContactClaim, ContactDocument, ContactRevision, ContactSummary, Filed};
 pub use disclosure::{
     ClaimCurrency, DisclosedClaim, DisclosureRecord, HistoryQuery, new_disclosure,

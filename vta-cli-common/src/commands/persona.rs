@@ -149,6 +149,28 @@ pub async fn cmd_attribute_delete(
     print_result("Result:", &result)
 }
 
+/// `persona attribute promote` — make a local face's values reusable. One-way.
+pub async fn cmd_attribute_promote(
+    client: &VtaClient,
+    context: String,
+    profile_id: String,
+    entries: Vec<u64>,
+    expected_version: u64,
+) -> CmdResult {
+    let out = client
+        .persona_attribute_promote(&context, &profile_id, &entries, expected_version)
+        .await?;
+    let result = serde_json::to_value(&out)?;
+    if !is_json_output() {
+        println!(
+            "{DIM}{profile_id} is now a face in your pool — same id, still worn by {} persona(s). \
+             The promoted values can be shown by your other faces; this cannot be undone.{RESET}",
+            out.rebound_persona_dids.len()
+        );
+    }
+    print_result("Promoted:", &result)
+}
+
 /// `persona attribute purge-version` — remove kept earlier values for good.
 pub async fn cmd_attribute_purge_version(
     client: &VtaClient,
@@ -202,6 +224,50 @@ pub async fn cmd_profile_put(
             expected_version,
         )
         .await?;
+    print_result("Face:", &result)
+}
+
+/// `persona profile compose` — a face made for one context, and optionally
+/// worn there.
+pub async fn cmd_profile_compose(
+    client: &VtaClient,
+    context: String,
+    name: String,
+    claims: Vec<Value>,
+    persona_did: Option<String>,
+    label: Option<String>,
+) -> CmdResult {
+    let mut body = serde_json::json!({ "contextId": context, "name": name, "claims": claims });
+    if let Some(d) = persona_did {
+        body["personaDid"] = d.into();
+    }
+    if let Some(l) = label {
+        body["label"] = l.into();
+    }
+    // Read into the generated payload here, so a malformed claim is reported
+    // against the published shape before anything is sent.
+    let payload: trust_tasks_rs::specs::persona::profile::compose::v1_0::Payload =
+        serde_json::from_value(body).map_err(|e| format!("not a valid compose: {e}"))?;
+    let out = client.persona_profile_compose(&payload).await?;
+    let result = serde_json::to_value(&out)?;
+    if !is_json_output() {
+        let reused = out.pooled.iter().filter(|p| !p.created).count();
+        match out.scope.to_string().as_str() {
+            "local" => println!(
+                "{DIM}Kept in this context: nothing you typed is reusable elsewhere. `persona \
+                 attribute promote` makes a value reusable later.{RESET}"
+            ),
+            _ => println!(
+                "{DIM}A face in your pool, so it can be worn in other contexts too.{RESET}"
+            ),
+        }
+        if reused > 0 {
+            println!(
+                "{YELLOW}{reused} shared value(s) were already kept, so this face now draws on the \
+                 same fact as whatever else shows it — an edit changes both.{RESET}"
+            );
+        }
+    }
     print_result("Face:", &result)
 }
 

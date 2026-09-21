@@ -573,6 +573,13 @@ mod tests {
     /// this — `classify` defaults to `Mutating` without consulting it, so a
     /// runtime miss is safe and a compile-time miss is loud.
     const MUTATING_VERBS: &[&str] = &[
+        // `persona/profile/compose`: makes a face, may pool a value and bind
+        // it. Creates; removes nothing.
+        "compose",
+        // `persona/attribute/promote`: widens a local value into the pool.
+        // One-way, but it removes no value and no access — the face and its
+        // wearers carry on presenting exactly what they did.
+        "promote",
         // Mints a KeyPackage and retains its private half. Consequential, but
         // what it emits is public by construction — hence Mutating rather than
         // Sensitive, unlike its siblings `welcome` and `open`.

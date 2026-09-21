@@ -3519,6 +3519,25 @@ pub(crate) enum PersonaAttributeCommands {
         #[arg(long = "version")]
         versions: Vec<u64>,
     },
+    /// Make values a context-local face carries reusable across your faces.
+    /// The face moves into the pool, keeping its id and everyone wearing it.
+    /// One-way: a value made reusable cannot be made local again.
+    Promote {
+        /// The trust context the local face lives in.
+        #[arg(long)]
+        context: String,
+        /// The context-local face.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+        /// Position of an entry to promote, counting from 0, as `persona local
+        /// profile get` lists them. Repeatable.
+        #[arg(long = "entry", required = true)]
+        entries: Vec<u64>,
+        /// The face's version as you read it. Required: a position into a face
+        /// edited since would promote a different value than you chose.
+        #[arg(long = "expected-version")]
+        expected_version: u64,
+    },
 }
 
 /// `pnm persona profile …`
@@ -3555,6 +3574,41 @@ pub(crate) enum PersonaProfileCommands {
         /// Require the profile to be at exactly this version.
         #[arg(long = "expected-version")]
         expected_version: Option<u64>,
+    },
+    /// Compose a face for one context, where it is asked for — and wear it
+    /// there with `--persona-did`. Typed values stay in this face unless you
+    /// share them: a face of only `--claim`s lives in the context alone; any
+    /// `--share` or `--held` makes a face in your pool, worn here.
+    Compose {
+        /// The trust context the face is for.
+        #[arg(long)]
+        context: String,
+        /// Your name for the face. Never shown to anyone.
+        #[arg(long)]
+        name: String,
+        /// A value to show here and nowhere else, as `TYPE=VALUE`
+        /// (`name.display=Ada`). Repeatable.
+        #[arg(long = "claim", value_name = "TYPE=VALUE")]
+        claims: Vec<String>,
+        /// A value to make reusable across your faces, as `TYPE=VALUE`. One
+        /// you already keep is reused rather than copied. Repeatable.
+        #[arg(long = "share", value_name = "TYPE=VALUE")]
+        shared: Vec<String>,
+        /// An attribute you already keep, by id. Repeatable.
+        #[arg(long = "held", value_name = "ATTRIBUTE_ID")]
+        held: Vec<String>,
+        /// Path to a JSON array of claims (or `-` for stdin), for values that
+        /// are not strings or claims that need a slot or label. Each is
+        /// `{"type":…,"valueType":…,"value":…,"share":"local"|"pool"}` or
+        /// `{"attributeId":…}`, either with an optional `"slot"`.
+        #[arg(long = "claims-file", conflicts_with_all = ["claims", "shared", "held"])]
+        claims_file: Option<String>,
+        /// Wear the face as this persona in the context.
+        #[arg(long = "persona-did")]
+        persona_did: Option<String>,
+        /// What the context may call the face. Needs `--persona-did`.
+        #[arg(long, requires = "persona_did")]
+        label: Option<String>,
     },
     /// Read one profile.
     Get {

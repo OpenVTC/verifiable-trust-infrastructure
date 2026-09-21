@@ -297,6 +297,34 @@ pre-population puts the same values into several faces at once.
 
 `persona/attribute/promote` performs §2.1. It is one-way and the UI must say so.
 
+**As built** (trust-tasks-tf #569):
+
+- **Named `persona/profile/compose`, not `face/compose`.** Every other task in
+  the family says `profile`, and a second noun in the URI space for the same
+  record is the vocabulary problem §7 item 3 already raises. If "face" wins,
+  it should win everywhere at once.
+- **No inline `correlationFindings`.** The warning that matters is the one
+  *before* the write, and `correlation/analyze` with `candidate` already gives
+  it per value, holder-authorized, with identifiers. The compose response
+  carries the advisory count `profile/put` carries, so the family's rule —
+  writes return counts, analyze returns identifiers — holds.
+- **No `facetId`.** A facet is arranged with `facet/put`; composing does not
+  also arrange.
+- **Reuse matches self-asserted attributes only.** A credential-backed
+  attribute holding the same value presents an issuer's attestation and goes
+  stale with its credential; a value typed at compose is neither.
+- **§9.7 is not folded in.** `personaDid` is optional and binds an existing
+  persona. A persona in openvtc is a `did:webvh` minted from a DID template
+  with its own services — not something the persona store can mint — so
+  "wear this face here without naming a DID" needs the minting step designed
+  on its own.
+- **Promote keeps the face's id.** The pool and the local address space are
+  separate, and the correlation index's carriers already distinguish a local
+  face from a pool one, so the same id in both for the length of a promote is
+  safe — and it means a client holding the id keeps working. The steps are
+  ordered so an interrupted promote leaves the local face worn, and a retry
+  finishes it.
+
 ### 5.4 `FaceReach` and `persona/face/usage`
 
 A face gains an opt-in allow-list, enforced in `set_binding`:

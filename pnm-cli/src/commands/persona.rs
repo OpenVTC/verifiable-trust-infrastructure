@@ -117,6 +117,12 @@ async fn attribute(client: &VtaClient, command: PersonaAttributeCommands) -> Cmd
             attribute_id,
             versions,
         } => p::cmd_attribute_purge_version(client, attribute_id, versions).await,
+        PersonaAttributeCommands::Promote {
+            context,
+            profile_id,
+            entries,
+            expected_version,
+        } => p::cmd_attribute_promote(client, context, profile_id, entries, expected_version).await,
     }
 }
 
@@ -141,6 +147,19 @@ async fn profile(client: &VtaClient, command: PersonaProfileCommands) -> CmdResu
                 expected_version,
             )
             .await
+        }
+        PersonaProfileCommands::Compose {
+            context,
+            name,
+            claims,
+            shared,
+            held,
+            claims_file,
+            persona_did,
+            label,
+        } => {
+            let claims = compose_claims(claims, shared, held, claims_file)?;
+            p::cmd_profile_compose(client, context, name, claims, persona_did, label).await
         }
         PersonaProfileCommands::Get {
             profile_id,
@@ -551,6 +570,49 @@ fn local_entries(path: &str) -> Result<Vec<LocalProfileEntry>, String> {
 }
 
 /// Read a JSON document from a file path, or stdin when `path` is `-`.
+/// The claims of a compose, from its flags or a file.
+///
+/// Flags give string values only and fix the order: local claims, then shared,
+/// then held. Anything else — another value type, a slot, a label, a mixed
+/// order — is what `--claims-file` is for.
+fn compose_claims(
+    claims: Vec<String>,
+    shared: Vec<String>,
+    held: Vec<String>,
+    claims_file: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    if let Some(path) = claims_file {
+        return match read_json(&path)? {
+            serde_json::Value::Array(items) => Ok(items),
+            _ => Err(format!("{path}: expected a JSON array of claims")),
+        };
+    }
+    let typed = |raw: &str, share: &str| -> Result<serde_json::Value, String> {
+        let (t, v) = raw
+            .split_once('=')
+            .ok_or_else(|| format!("{raw}: expected TYPE=VALUE, as name.display=Ada"))?;
+        Ok(serde_json::json!({
+            "type": t, "valueType": "string", "value": v, "share": share
+        }))
+    };
+    let mut out = Vec::new();
+    for c in &claims {
+        out.push(typed(c, "local")?);
+    }
+    for c in &shared {
+        out.push(typed(c, "pool")?);
+    }
+    for id in held {
+        out.push(serde_json::json!({ "attributeId": id }));
+    }
+    if out.is_empty() {
+        return Err(
+            "a face needs at least one claim: --claim, --share, --held or --claims-file".into(),
+        );
+    }
+    Ok(out)
+}
+
 fn read_json(path: &str) -> Result<serde_json::Value, String> {
     let contents = if path == "-" {
         let mut buf = String::new();

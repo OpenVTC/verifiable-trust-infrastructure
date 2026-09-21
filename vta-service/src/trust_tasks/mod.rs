@@ -2071,6 +2071,13 @@ dispatch_table! {
     // Destroys kept earlier values for good; names ids and versions only.
     vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0 => persona::handle_attribute_purge_version
         [ Destructive None false ],
+    // Moves a local face into the pool: creates attributes, replaces the face,
+    // rebinds. Identifiers and positions only on the wire.
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0 => persona::handle_attribute_promote
+        [ Mutating None false ],
+    // Values arrive in new claims; the response is identifiers and counts.
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0 => persona::handle_profile_compose
+        [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0 => persona::handle_profile_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_GET_1_0 => persona::handle_profile_get

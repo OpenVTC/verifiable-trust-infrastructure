@@ -104,6 +104,13 @@ pub const REACH: &[(&str, Reach)] = &[
         uris::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
         Reach::Holder,
     ),
+    // Widens a context's value into the pool; a context that could trigger it
+    // could spread what it was told into everything the holder composes later.
+    (uris::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0, Reach::Holder),
+    // Can reach the pool (a `share: pool` or held claim) and can bind — even a
+    // compose whose every claim is local. The context-callable way to make a
+    // local face is `local/profile/put`, which cannot reach the pool at all.
+    (uris::TASK_PERSONA_PROFILE_COMPOSE_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_PUT_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_LIST_1_0, Reach::Holder),
@@ -983,6 +990,279 @@ pub(super) async fn handle_profile_put(
             "updatedAt": chrono::Utc::now().to_rfc3339(),
         }),
     )
+}
+
+/// `persona/profile/compose` — a face made where it is asked for, local by
+/// default, and optionally worn in the same act. Design note
+/// `persona-context-first.md` §5.3.
+pub(super) async fn handle_profile_compose(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::profile::compose::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_COMPOSE_1_0, None).await {
+        return reject(&doc, e);
+    }
+
+    use spec::profile::compose::v1_0 as wire;
+    let mut claims = Vec::with_capacity(req.claims.len());
+    for claim in &req.claims {
+        claims.push(match claim {
+            wire::ComposeClaim::HeldClaim(h) => vta_persona::ComposeClaim::Held {
+                attribute_id: h.attribute_id.to_string(),
+                slot: h.slot.as_ref().map(|s| s.to_string()),
+            },
+            wire::ComposeClaim::NewClaim(n) => {
+                // Through the wire spelling, as `attribute/put` does: the
+                // generated enum is `#[non_exhaustive]`, and a wildcard arm is
+                // where a variant added upstream would land silently.
+                let Some(value_type) = serde_json::to_value(n.value_type)
+                    .ok()
+                    .and_then(|v| serde_json::from_value::<ValueType>(v).ok())
+                else {
+                    return reject(&doc, AppError::Validation("unrecognised valueType".into()));
+                };
+                let share = match n.share {
+                    wire::NewClaimShare::Local => vta_persona::Share::Local,
+                    wire::NewClaimShare::Pool => vta_persona::Share::Pool,
+                    // A sharing mode this build does not know must not be
+                    // read as either of the two it does: `local` would keep a
+                    // value the holder meant to share, `pool` would widen one
+                    // they meant to keep.
+                    #[allow(unreachable_patterns)]
+                    _ => {
+                        return reject(&doc, AppError::Validation("unrecognised share".into()));
+                    }
+                };
+                vta_persona::ComposeClaim::New {
+                    r#type: n.type_.to_string(),
+                    value_type,
+                    value: n.value.clone(),
+                    label: n.label.as_ref().map(|l| l.to_string()),
+                    slot: n.slot.as_ref().map(|s| s.to_string()),
+                    share,
+                }
+            }
+            #[allow(unreachable_patterns)]
+            _ => return reject(&doc, AppError::Validation("unrecognised claim".into())),
+        });
+    }
+    let request = vta_persona::ComposeRequest {
+        context_id: req.context_id.to_string(),
+        name: req.name.to_string(),
+        claims,
+        persona_did: req.persona_did.as_ref().map(|d| d.to_string()),
+        label: req.label.as_ref().map(|l| l.to_string()),
+    };
+
+    let s = store(state);
+    // Checked here to carry the specification's code for each refusal; the
+    // store runs the same check, so no other path can skip it.
+    let slug = slug_from_doc(&doc);
+    match s.compose_refusal(&request).await {
+        Ok(None) => {}
+        Ok(Some(vta_persona::ComposeRefusal::UnresolvedReference(ids))) => {
+            return reject_with_code(
+                &doc,
+                ext(&slug, "unresolvedReference"),
+                format!(
+                    "the face draws on {} attribute(s) the pool does not hold",
+                    ids.len()
+                ),
+                Some(json!({ "attributeIds": ids })),
+            );
+        }
+        Ok(Some(vta_persona::ComposeRefusal::DuplicateSlot(slot))) => {
+            return reject_with_code(
+                &doc,
+                ext(&slug, "duplicateSlot"),
+                format!("two claims of this face both claim the slot {slot}"),
+                Some(json!({ "slot": slot })),
+            );
+        }
+        Ok(Some(vta_persona::ComposeRefusal::LabelWithoutPersona)) => {
+            return reject_with_code(
+                &doc,
+                ext(&slug, "labelWithoutPersona"),
+                "a label names the face to the context it is worn in; give a personaDid or \
+                 leave the label off",
+                None,
+            );
+        }
+        Ok(Some(other)) => {
+            return reject(&doc, AppError::Validation(format!("{other:?}")));
+        }
+        Err(e) => return reject(&doc, e),
+    }
+
+    let claim_count = request.claims.len();
+    let context_id = request.context_id.clone();
+    let composed = match s.compose(request).await {
+        Ok(c) => c,
+        Err(e) => return reject(&doc, e),
+    };
+
+    let scope = match composed.scope {
+        vta_persona::FaceScope::Local => "local",
+        vta_persona::FaceScope::Pool => "pool",
+    };
+    // Counts, scope and identifiers; never a value — see `audit_persona`.
+    let detail = format!(
+        "composed {scope} face {} for context {context_id} with {claim_count} claim(s), {} \
+         pooled ({} created){}",
+        composed.profile_id,
+        composed.pooled.len(),
+        composed.pooled.iter().filter(|p| p.created).count(),
+        composed
+            .binding
+            .as_ref()
+            .map_or_else(String::new, |b| format!(", worn by {}", b.persona_did)),
+    );
+    audit_persona(
+        state,
+        "persona.profile.compose",
+        auth,
+        Some(&composed.profile_id),
+        Some(&context_id),
+        Some(&detail),
+    )
+    .await;
+
+    let mut body = json!({
+        "profileId": composed.profile_id,
+        "scope": scope,
+        "version": composed.version,
+        "correlation": {
+            "severity": if composed.shared_count > 0 { "high" } else { "none" },
+            "sharedAttributeCount": composed.shared_count,
+        },
+    });
+    if !composed.pooled.is_empty() {
+        body["pooled"] = composed
+            .pooled
+            .iter()
+            .map(|p| json!({ "attributeId": p.attribute_id, "created": p.created }))
+            .collect();
+    }
+    if let Some(b) = &composed.binding {
+        body["binding"] = json!({
+            "personaDid": b.persona_did,
+            "version": b.version,
+            "alsoBoundPersonaCount": b.also_bound_persona_count,
+        });
+    }
+    success_response(&doc, body)
+}
+
+/// `persona/attribute/promote` — the deliberate widening of a local value.
+/// One-way; design note `persona-context-first.md` §2.1.
+pub(super) async fn handle_attribute_promote(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::attribute::promote::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0, None).await {
+        return reject(&doc, e);
+    }
+
+    let context_id = req.context_id.to_string();
+    let profile_id = req.profile_id.to_string();
+    let expected = u64::from(req.expected_version.0);
+    let positions: Vec<usize> = req
+        .entries
+        .iter()
+        .map(|p| usize::try_from(*p).unwrap_or(usize::MAX))
+        .collect();
+    let s = store(state);
+
+    // Checked here for the specification's codes; the store checks both again
+    // under the same read, so no other path can skip them.
+    match s.get_local_profile(&context_id, &profile_id).await {
+        Ok(Some(face)) => {
+            let slug = slug_from_doc(&doc);
+            if face.version != expected {
+                return reject_with_code(
+                    &doc,
+                    ext(&slug, "versionConflict"),
+                    format!(
+                        "expectedVersion {expected} does not match current version {}",
+                        face.version
+                    ),
+                    Some(json!({ "currentVersion": face.version })),
+                );
+            }
+            if positions.iter().any(|&p| p >= face.entries.len()) {
+                return reject_with_code(
+                    &doc,
+                    ext(&slug, "entryOutOfRange"),
+                    format!("the face has {} entries", face.entries.len()),
+                    Some(json!({ "entryCount": face.entries.len() })),
+                );
+            }
+        }
+        Ok(None) => {
+            return reject(
+                &doc,
+                AppError::NotFound(format!(
+                    "{profile_id} is not a context-local face in {context_id}"
+                )),
+            );
+        }
+        Err(e) => return reject(&doc, e),
+    }
+
+    let promoted = match s
+        .promote(&context_id, &profile_id, &positions, expected)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => return reject(&doc, e),
+    };
+
+    let detail = format!(
+        "promoted {} entr{} of face {profile_id} from context {context_id} into the pool ({} \
+         attribute(s) created); {} persona(s) rebound, now at version {}",
+        promoted.promoted.len(),
+        if promoted.promoted.len() == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        promoted.promoted.iter().filter(|p| p.created).count(),
+        promoted.rebound_persona_dids.len(),
+        promoted.version,
+    );
+    audit_persona(
+        state,
+        "persona.attribute.promote",
+        auth,
+        Some(&profile_id),
+        Some(&context_id),
+        Some(&detail),
+    )
+    .await;
+
+    let mut body = json!({
+        "profileId": promoted.profile_id,
+        "version": promoted.version,
+        "promoted": promoted
+            .promoted
+            .iter()
+            .map(|p| json!({ "entry": p.entry, "attributeId": p.attribute_id, "created": p.created }))
+            .collect::<Vec<_>>(),
+    });
+    if !promoted.rebound_persona_dids.is_empty() {
+        body["reboundPersonaDids"] = json!(promoted.rebound_persona_dids);
+    }
+    success_response(&doc, body)
 }
 
 pub(super) async fn handle_profile_get(
