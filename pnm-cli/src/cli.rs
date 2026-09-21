@@ -3520,9 +3520,16 @@ pub(crate) enum PersonaProfileCommands {
         /// Reference a pool attribute, live. Repeatable.
         #[arg(long = "ref")]
         refs: Vec<String>,
+        /// The attribute this face calls itself by — its `displayName`. A face
+        /// may show several names (a legal one, a preferred one); this says
+        /// which one is the face's own. Added as a live reference if it is not
+        /// already one of the `--ref`s.
+        #[arg(long = "display-name", conflicts_with = "entries_file")]
+        display_name: Option<String>,
         /// Path to a JSON array of profile entries (or `-` for stdin). Each
         /// is one of `{"ref":…}`, `{"ref":…,"pinVersion":n}`,
-        /// `{"ref":…,"override":{…}}` or `{"inline":{…}}`.
+        /// `{"ref":…,"override":{…}}` or `{"inline":{…}}`, and any of them may
+        /// add `"slot":"displayName"` (or another role) — unique per face.
         #[arg(long = "entries-file", conflicts_with = "refs")]
         entries_file: Option<String>,
         /// Tag a credential as belonging with this profile. Repeatable.

@@ -121,12 +121,13 @@ async fn profile(client: &VtaClient, command: PersonaProfileCommands) -> CmdResu
         PersonaProfileCommands::Put {
             name,
             refs,
+            display_name,
             entries_file,
             credential_refs,
             profile_id,
             expected_version,
         } => {
-            let entries = profile_entries(refs, entries_file)?;
+            let entries = profile_entries(refs, display_name, entries_file)?;
             p::cmd_profile_put(
                 client,
                 name,
@@ -483,7 +484,8 @@ fn build_provenance(
 
 /// Profile entries from either the `--ref` shorthand or a JSON file.
 fn profile_entries(
-    refs: Vec<String>,
+    mut refs: Vec<String>,
+    display_name: Option<String>,
     entries_file: Option<String>,
 ) -> Result<Vec<ProfileEntry>, String> {
     if let Some(path) = entries_file {
@@ -496,6 +498,11 @@ fn profile_entries(
             )
         });
     }
+    if let Some(id) = &display_name
+        && !refs.contains(id)
+    {
+        refs.insert(0, id.clone());
+    }
     if refs.is_empty() {
         return Err(
             "a profile needs entries — pass --ref <attribute-id> (repeatable) or --entries-file"
@@ -504,7 +511,11 @@ fn profile_entries(
     }
     Ok(refs
         .into_iter()
-        .map(|attribute_id| ProfileEntry::Ref { attribute_id })
+        .map(|attribute_id| ProfileEntry::Ref {
+            slot: (display_name.as_deref() == Some(attribute_id.as_str()))
+                .then(|| "displayName".to_string()),
+            attribute_id,
+        })
         .collect())
 }
 
@@ -656,7 +667,8 @@ mod tests {
     /// `--ref` shorthand produces live references, not pins.
     #[test]
     fn the_ref_shorthand_produces_live_references() {
-        let entries = profile_entries(vec!["01J8".into(), "01J9".into()], None).expect("builds");
+        let entries =
+            profile_entries(vec!["01J8".into(), "01J9".into()], None, None).expect("builds");
         assert_eq!(entries.len(), 2);
         assert!(
             entries
@@ -665,11 +677,46 @@ mod tests {
         );
     }
 
+    /// `--display-name` marks one entry as the face's name, adding it when it
+    /// is not already a `--ref`, and marks nothing else.
+    #[test]
+    fn display_name_marks_exactly_one_entry() {
+        let slots = |refs: Vec<&str>, name: &str| {
+            profile_entries(
+                refs.into_iter().map(String::from).collect(),
+                Some(name.into()),
+                None,
+            )
+            .expect("builds")
+            .into_iter()
+            .map(|e| match e {
+                ProfileEntry::Ref { attribute_id, slot } => (attribute_id, slot),
+                other => panic!("expected a live reference, got {other:?}"),
+            })
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            slots(vec!["01A", "01N"], "01N"),
+            vec![
+                ("01A".to_string(), None),
+                ("01N".to_string(), Some("displayName".to_string())),
+            ]
+        );
+        // Not already a --ref: added, first.
+        assert_eq!(
+            slots(vec!["01A"], "01N"),
+            vec![
+                ("01N".to_string(), Some("displayName".to_string())),
+                ("01A".to_string(), None),
+            ]
+        );
+    }
+
     /// A profile with no entries is a mistake worth catching before the round
     /// trip: it would discloses nothing, which is never what was meant.
     #[test]
     fn a_profile_with_no_entries_is_refused() {
-        let err = profile_entries(Vec::new(), None).expect_err("must refuse");
+        let err = profile_entries(Vec::new(), None, None).expect_err("must refuse");
         assert!(err.contains("--ref"), "got: {err}");
     }
 }

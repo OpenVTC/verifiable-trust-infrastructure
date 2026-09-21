@@ -548,6 +548,7 @@ mod tests {
         let p = new_profile(
             "Work",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
             }],
         );
@@ -578,6 +579,7 @@ mod tests {
         let p = new_profile(
             "Work",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
             }],
         );
@@ -687,9 +689,11 @@ mod tests {
             "Both",
             vec![
                 ProfileEntry::Ref {
+                    slot: None,
                     r#ref: card.attribute_id.clone(),
                 },
                 ProfileEntry::Ref {
+                    slot: None,
                     r#ref: name.attribute_id.clone(),
                 },
             ],
@@ -854,6 +858,7 @@ mod tests {
         let p = new_profile(
             "Work",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
             }],
         );

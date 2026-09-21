@@ -49,6 +49,9 @@ pub struct ResolvedClaim {
     /// one, else the pool attribute's, else the inline entry's. Never
     /// disclosed: it is for the holder's own view of what a face shows.
     pub label: Option<String>,
+    /// The role the entry this claim came from plays in its face —
+    /// `displayName` for what the face calls itself.
+    pub slot: Option<String>,
     pub provenance: crate::Provenance,
     /// The pool attribute's version and last-write time — `None` for an inline
     /// entry, which has no pool record behind it and so has neither. The
@@ -78,6 +81,7 @@ impl PersonaStore {
         mut profile: Profile,
         expected_version: Option<Version>,
     ) -> Result<Written, AppError> {
+        refuse_duplicate_slot(&profile.entries)?;
         let _guard = self.write_lock.lock().await;
 
         // Validate before taking a version, so a refused write consumes nothing.
@@ -186,12 +190,14 @@ impl PersonaStore {
 
         let mut out = Vec::with_capacity(profile.entries.len());
         for entry in &profile.entries {
-            out.push(match entry {
-                ProfileEntry::Ref { r#ref } => self.claim_from_pool(r#ref, None).await?,
-                ProfileEntry::Pinned { r#ref, pin_version } => {
-                    self.claim_from_pool(r#ref, Some(*pin_version)).await?
-                }
-                ProfileEntry::Override { r#ref, r#override } => {
+            let mut claim = match entry {
+                ProfileEntry::Ref { r#ref, .. } => self.claim_from_pool(r#ref, None).await?,
+                ProfileEntry::Pinned {
+                    r#ref, pin_version, ..
+                } => self.claim_from_pool(r#ref, Some(*pin_version)).await?,
+                ProfileEntry::Override {
+                    r#ref, r#override, ..
+                } => {
                     let mut c = self.claim_from_pool(r#ref, None).await?;
                     // Value and label. Provenance is inherited, deliberately.
                     c.value = Some(r#override.value.clone());
@@ -200,19 +206,25 @@ impl PersonaStore {
                     }
                     c
                 }
-                ProfileEntry::Inline { inline } => ResolvedClaim {
+                ProfileEntry::Inline { inline, .. } => ResolvedClaim {
                     attribute_id: None,
                     r#type: inline.r#type.clone(),
                     value: Some(inline.value.clone()),
                     value_type: inline.value_type,
                     label: inline.label.clone(),
+                    slot: None,
                     provenance: inline.provenance.clone(),
                     version: None,
                     updated_at: None,
                     stale: false,
                     release: None,
                 },
-            });
+            };
+            // Carried from the entry whatever its form, so a consumer finds
+            // "what this face calls itself" by role rather than by guessing
+            // from a claim type the face may hold twice.
+            claim.slot = entry.slot().map(str::to_string);
+            out.push(claim);
         }
         Ok(out)
     }
@@ -233,6 +245,7 @@ impl PersonaStore {
                 value: None,
                 value_type: crate::ValueType::String,
                 label: None,
+                slot: None,
                 provenance: crate::Provenance::SelfAsserted,
                 version: None,
                 updated_at: None,
@@ -253,6 +266,7 @@ impl PersonaStore {
             value: if stale { None } else { a.value.clone() },
             value_type: a.value_type,
             label: a.label.clone(),
+            slot: None,
             provenance: a.provenance.clone(),
             version: Some(a.version),
             updated_at: Some(a.updated_at.clone()),
@@ -334,6 +348,18 @@ pub fn new_profile(name: impl Into<String>, entries: Vec<ProfileEntry>) -> Profi
     }
 }
 
+/// Refuse a face in which two entries claim one slot — see
+/// [`crate::model::duplicate_slot`]. The dispatcher checks first so it can
+/// carry the spec's error code; this is the check no write path can skip.
+fn refuse_duplicate_slot(entries: &[ProfileEntry]) -> Result<(), AppError> {
+    match crate::model::duplicate_slot(entries) {
+        Some(slot) => Err(AppError::Validation(format!(
+            "two entries of this face both claim the slot {slot}"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Whether every entry is inline — the condition a context-local profile must
 /// satisfy.
 ///
@@ -389,9 +415,11 @@ mod tests {
             "Work",
             vec![
                 ProfileEntry::Ref {
+                    slot: None,
                     r#ref: a.attribute_id.clone(),
                 },
                 ProfileEntry::Override {
+                    slot: None,
                     r#ref: a.attribute_id.clone(),
                     r#override: OverrideValue {
                         value: serde_json::json!("+61 9"),
@@ -399,6 +427,7 @@ mod tests {
                     },
                 },
                 ProfileEntry::Inline {
+                    slot: None,
                     inline: InlineValue {
                         r#type: "x:handle".into(),
                         value_type: ValueType::String,
@@ -433,6 +462,7 @@ mod tests {
         let p = new_profile(
             "Work",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: "01MISSING".into(),
             }],
         );
@@ -450,6 +480,7 @@ mod tests {
         let p = new_profile(
             "Work",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
             }],
         );
@@ -478,6 +509,7 @@ mod tests {
         let mut p = new_profile(
             "Work",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
             }],
         );
@@ -512,6 +544,7 @@ mod tests {
         let p = new_profile(
             "Gaming",
             vec![ProfileEntry::Override {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
                 r#override: OverrideValue {
                     value: serde_json::json!("masked"),
@@ -539,6 +572,7 @@ mod tests {
         let p = new_profile(
             "Work",
             vec![ProfileEntry::Pinned {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
                 pin_version: w.version + 99,
             }],
@@ -555,6 +589,7 @@ mod tests {
     async fn inline_entries_resolve_without_the_pool_and_are_pool_free() {
         let (_d, s) = fresh().await;
         let entries = vec![ProfileEntry::Inline {
+            slot: None,
             inline: InlineValue {
                 r#type: "x:guild".into(),
                 value_type: ValueType::String,
@@ -585,6 +620,7 @@ mod tests {
         let p = new_profile(
             "Work",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
             }],
         );
@@ -625,6 +661,7 @@ impl PersonaStore {
         mut profile: Profile,
         expected_version: Option<Version>,
     ) -> Result<Written, AppError> {
+        refuse_duplicate_slot(&profile.entries)?;
         if !is_pool_free(&profile.entries) {
             return Err(AppError::Validation(
                 "a context-local profile may carry inline entries only; a reference to the \
@@ -767,7 +804,7 @@ impl PersonaStore {
                     p.entries
                         .iter()
                         .filter_map(|e| match e {
-                            ProfileEntry::Inline { inline } => Some(crate::MaterialisedClaim {
+                            ProfileEntry::Inline { inline, .. } => Some(crate::MaterialisedClaim {
                                 r#type: inline.r#type.clone(),
                                 value: Some(inline.value.clone()),
                                 provenance: inline.provenance.clone(),
@@ -837,6 +874,7 @@ mod local_tests {
 
     fn inline(v: &str) -> ProfileEntry {
         ProfileEntry::Inline {
+            slot: None,
             inline: InlineValue {
                 r#type: "x:handle".into(),
                 value_type: ValueType::String,
@@ -853,6 +891,7 @@ mod local_tests {
         let p = new_profile(
             "Throwaway",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: "01ABC".into(),
             }],
         );

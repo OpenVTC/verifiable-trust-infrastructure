@@ -677,7 +677,7 @@ impl crate::PersonaStore {
 
         let mut drawn: BTreeSet<&str> = BTreeSet::new();
         for entry in &face.entries {
-            if let ProfileEntry::Ref { r#ref } | ProfileEntry::Pinned { r#ref, .. } = entry {
+            if let ProfileEntry::Ref { r#ref, .. } | ProfileEntry::Pinned { r#ref, .. } = entry {
                 drawn.insert(r#ref);
             }
         }

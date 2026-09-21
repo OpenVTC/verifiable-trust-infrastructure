@@ -493,8 +493,10 @@ impl PersonaStore {
             let mut live = false;
             for entry in &face.entries {
                 match entry {
-                    crate::ProfileEntry::Ref { r#ref } if r#ref == attribute_id => live = true,
-                    crate::ProfileEntry::Pinned { r#ref, pin_version } if r#ref == attribute_id => {
+                    crate::ProfileEntry::Ref { r#ref, .. } if r#ref == attribute_id => live = true,
+                    crate::ProfileEntry::Pinned {
+                        r#ref, pin_version, ..
+                    } if r#ref == attribute_id => {
                         reach.held_by_pin.push(HeldByPin {
                             profile_id: profile_id.clone(),
                             pin_version: *pin_version,
@@ -564,6 +566,7 @@ mod tests {
         let p = new_profile(
             "Work",
             vec![ProfileEntry::Ref {
+                slot: None,
                 r#ref: a.attribute_id.clone(),
             }],
         );
