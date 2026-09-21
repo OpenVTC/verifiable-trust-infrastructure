@@ -2,6 +2,57 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.6](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.16.5...cnm-cli-v0.16.6) — 2026-09-20
+
+
+### Fixed
+
+- **resolver**: Take the shared DID resolver instead of building one ([#1581](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1581))
+
+* fix(resolver): take the shared DID resolver instead of building one
+
+  Twelve call sites across `vta-service`, `cnm-cli` and `vtc-service` each
+  constructed their own `DIDCacheClient`. A client owns its cache, so the
+  same DID was fetched once per construction rather than once per process,
+  and a `did:webvh` host saw a burst of requests for what is one logical
+  operation — enough to earn a 429 from its own rate limiter.
+
+  Every one of them built
+  `DIDCacheConfigBuilder::default().with_host_policy(webvh_host_policy())`,
+  which is byte-for-byte what `build_did_cache_config(None)` produces, so
+  taking `shared_did_resolver_from_env()` preserves behaviour and collapses
+  twelve caches into the one the SDK already keeps per runtime, sidecar URL
+  and host policy.
+
+  It also fixes a second problem those sites had: by calling
+  `DIDCacheClient::new` directly they never read `PNM_RESOLVER_URL`, so an
+  operator who had configured a resolver sidecar — the documented mitigation
+  for exactly this load — did not get it on any of these paths. The env var
+  existed to spare the SDK's public API, and these call sites went around
+  it.
+
+  Three sites are deliberately left alone, and each looks convertible:
+
+  - `vtc-service/src/server.rs` and `room-host/src/main.rs` build a plain
+    default with no host policy. Converting them would add
+    `webvh_host_policy()` and change which hosts are permitted — a
+    security-relevant change, not a caching one, and not one to make inside
+    this change.
+  - `pnm-cli/src/bootstrap.rs` passes `None` on purpose. Bootstrap resolves
+    the DID locally so the operator verifies the SCID and signed log on
+    their own machine rather than trusting a sidecar; that `None` is the
+    trust boundary, not an oversight.
+
+  Adds the test that was missing for the property all of this now rests on:
+  that two callers on one runtime get one resolver. Sharing could have
+  broken and every converted site would have quietly gone back to a private
+  cache with nothing failing.
+
+  Reported as VTI-19 by the Keyring wallet team, who saw one command fetch
+  `/.well-known/did.jsonl` forty times in five minutes.
+
+
+
 ## [0.16.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.16.4...cnm-cli-v0.16.5) — 2026-09-18
 
 

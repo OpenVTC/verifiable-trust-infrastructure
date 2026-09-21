@@ -2,6 +2,189 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.19.3...vti-common-v0.20.0) — 2026-09-20
+
+
+### Added
+
+- **vtc**: Add vtc/join-requests/withdraw/0.1 — the applicant closes their own request ([#1591](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1591))
+
+Keyring finding KR-03. An applicant could open a join request and then had no
+  way to close it. A `deferred` request — the community answered `requestMore` —
+  was the sharp case: it stays open forever, the dedup guard in `submit_inner`
+  keeps matching the row so no resubmission is possible, and the only exit was
+  to ask a community admin to reject it, which records the wrong outcome for
+  what is actually the applicant changing their mind. Nothing but the retention
+  sweeper ever closed it, on a schedule neither party controls.
+
+  The task was spec'd upstream first (dtgwg-trust-tasks-tf #518, shipped in
+  trust-tasks-rs 0.21.5) and is implemented here against the generated types.
+  Payload, response and the `withdrawn` status all come from
+  `trust_tasks_rs::specs::vtc::join_requests::withdraw` — never a local copy.
+
+  ## Authorization is ownership, not membership
+
+  An applicant holds neither a role nor a capability; that is what they are
+  applying for. So the entitlement is that the proven caller is the applicant
+  recorded on the request. `resolve_holder` supplies the proof — authcrypt
+  sender on DIDComm, document proof signer on REST — exactly as `self-remove`
+  does.
+
+  ## The two refusals are shaped differently on purpose
+
+    * A request that does not exist and one belonging to somebody else both
+      answer `notFound`. Separating them would let a caller probe whether a
+      given request id exists on this community — the same enumeration-
+      resistance reasoning the vault read paths use.
+    * An already-decided request answers `alreadyDecided`, because the applicant
+      is entitled to the outcome of their own request and no retry changes it.
+
+  Both go out as the extended codes the spec declares rather than through the
+  generic `AppError` → reject mapping, which flattens `NotFound` and `Gone` into
+  a bare `taskFailed` carrying only English. Telling "nothing to withdraw" apart
+  from "already decided" without parsing prose is the whole reason the spec
+  declares two codes, so a dispatcher-level test pins them.
+
+  ## requestId is optional
+
+  For the same reason it is optional on the status poll: an applicant whose
+  submit response was lost never received one, and the id-less form is all they
+  have. A supplied id is preferred over inferring from the caller, as the spec
+  requires.
+
+  ## Where the applicant's reason goes
+
+  To the audit log, not onto the row. `JoinRequest` is a canonically-typed wire
+  shape with no member for it, and `decision` means *refusal* — writing it there
+  would make a withdrawn request read as rejected.
+  `AuditEvent::JoinRequestWithdrawn` carries the reason alongside the previous
+  status, and is the one join event whose actor and subject are the same party.
+  `AuditEvent` is `#[non_exhaustive]`, so the new variant is additive.
+
+  ## Also, partially, KR-04
+
+  The same defect seen from the other side: the duplicate-submit `Conflict` said
+  "withdraw or await its decision" while naming neither the status nor any
+  withdraw mechanism. It now names both — `pending` is waiting on the community
+  and will move on its own, `deferred` is waiting on the applicant and is the
+  case this task exists for.
+
+  KR-04's remaining half is not in this PR and needs an upstream change first:
+  making that refusal a *typed* answer requires a `requestAlreadyOpen` code on
+  `vtc/join-requests/submit`, which declares no such code today. Likewise the
+  second half of KR-03 — letting a deferred applicant supplement the existing
+  request rather than open a second one — is a task that does not exist yet.
+  Both are follow-ups.
+
+  ## Dependency
+
+  The `trust-tasks-rs` workspace requirement moves 0.21.4 -> 0.21.5 because
+  `vta-sdk` re-exports the generated module in its public API, so a consumer
+  resolving 0.21.4 would not build. The three unrelated lines in Cargo.lock
+  (`syn`, two `base64`) are pre-existing drift between the committed lock and
+  what cargo resolves — any `cargo update` of any package rewrites them.
+
+  A conformance witness is added in `trust_tasks/conformance.rs`, projected
+  through the same generated builder the handler returns through rather than
+  transcribed.
+
+- **vtc**: Keep an active admin signed in, and make the idle timeout settable ([#1586](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1586))
+
+An admin was thrown out of the console on a hard cliff, with no warning and
+  no way to change it. The cliff was also shorter than the config suggested
+  and differed by sign-in door: passkey login mints at `acr=aal2`, and the
+  aal2 access TTL is a third of the base, so the cookie died after 300s —
+  of wall-clock, not idle time. Working continuously made no difference,
+  because the request path never wrote to the session row. The first sign of
+  expiry was a request failing.
+
+  Tokens stay short and rotating. The idle timeout becomes a separate
+  server-side policy measured on `Session.last_seen`:
+
+  - `last_seen` advances on cookie-borne requests — the console doing
+    something — and not on bearer ones, which are the CLIs and service
+    integrations, have no idle timeout, and would otherwise pay a store
+    write per call.
+  - `handle_refresh` refuses once `now - last_seen` exceeds the configured
+    timeout, with its own error rather than the generic "authentication
+    failed" the other auth failures share. Reaching that point proves
+    possession of a valid refresh token, so there is nobody left to withhold
+    the reason from, and "you were away" sends an operator somewhere
+    different from "your session hit its ceiling".
+  - The console renews before expiry, single-flight, and re-probes `whoami`
+    before declaring a session dead — rotation is atomic, so two tabs
+    renewing together means one is refused on a perfectly live session.
+
+  Refresh no longer resets `last_seen`. It used to set it to `now`, which
+  would have made the timeout unreachable: the renewal timer would push the
+  deadline out on every cycle. Rotating a token is the client's timer, not
+  the operator. Safe for the sweeper, which judges refresh-bearing sessions
+  by `refresh_expires_at` and never reads `last_seen`.
+
+  `/v1/auth/refresh` is no longer CSRF-exempt. That exemption was sound only
+  while the sole credential was a token in the request body, which an
+  attacker cannot read. A refresh cookie the browser attaches automatically
+  removes the property, and a forged cross-site refresh would rotate the
+  victim's token away — a logout DoS. Body-token callers carry no session
+  cookie and still pass unenforced, so SDK and CLI clients are unaffected.
+
+  `auth.admin_idle_timeout` joins the runtime config registry, bounded
+  60s-86400s by a new `U64Range` kind so a scripted `config/patch` is held to
+  the same limits as the console. Save is PATCH + reload, because PATCH alone
+  persists the override without touching the running config.
+
+
+
+### Fixed
+
+- **tsp**: Take the SDK's re-establish fix and drop the local copy ([#1588](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1588))
+
+#1582 worked around a race inside `TspOps::send_reestablishing`: its readiness
+  read and its `SendInvite` are two separate awaits on the relationship store, and
+  the peer can move our half between them — its own invite arrives, `None` +
+  `ReceiveInvite` leaves us `InviteReceived`, and `SendInvite` is legal only from
+  `None`. The refused invite took the payload down with it, and the D6 recovery
+  reported a peer that "did not answer" a request it had never been sent.
+
+  The workaround was a local copy of the SDK's three steps with the tolerance
+  added. `affinidi-messaging-sdk` 0.26.12 (affinidi-tdk-rs#838) does that re-read
+  itself, so `TspTransport::send_reestablishing` delegates again and the local
+  `invite_refusal_is_benign` and its tests are gone — one owner for the decision
+  rather than two that can drift.
+
+  Two things this bump settles beyond the deletion:
+
+  - **`vtc-service` is fixed by it.** Its registry client
+    (`registry::messaging::send_tsp`) calls the SDK's form directly and never had
+    the workaround. #1582 left it alone because the syncer's backoff — the one
+    retry owner on that path — re-sent through the transient failure, so it
+    self-healed on the next attempt. Now it does not fail in the first place.
+  - **The requirement names the patch: `0.26.12`, not `0.26`.** Every
+    `affinidi-messaging-sdk` requirement in the workspace moves, because on `^0.26`
+    a lockfile resolving 0.26.11 would put the race back with nothing local left to
+    catch it. A floor that is load-bearing rather than tidy.
+
+  What stays from #1582 is the part the SDK cannot fix: `recover_send_tsp` telling
+  `Timeout`, `Cancelled` and `SendFailed(reason)` apart instead of reporting all
+  three as a silent peer, and the `AnsweringPeer` harness recording what it
+  received and sent. That is what made the upstream defect readable in one CI run,
+  and it is VTA-side either way.
+
+  Design note `tsp-relationship-recovery.md` D6a updated to say where the fix now
+  lives.
+
+- **rate-limit**: Key the per-IP limiter on trusted-proxy CIDRs, not a global XFF flag ([#1562](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1562))
+
+* fix(rate-limit)!: key the per-IP limiter on trusted-proxy CIDRs, not a global XFF flag
+
+  Replaces the boolean `trust_xff` flag with `trust_xff_cidrs: Vec<CIDR>` (VTA + VTC). The per-IP rate limiter now reads `X-Forwarded-For` only when the request's peer address falls inside an explicit trusted-proxy CIDR allowlist, keying on the rightmost entry.
+
+  Fixes two issues with the old flag: an untrusted peer could forge a leading XFF entry to evade its own limit, and every request behind a trusted proxy shared one bucket — one client's burst could 429 unrelated clients.
+
+  Breaking config change: replace `trust_xff = true/false` with `trust_xff_cidrs = ["<cidr>", ...]`.
+
+
+
 ## [0.19.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.19.2...vti-common-v0.19.3) — 2026-09-18
 
 
