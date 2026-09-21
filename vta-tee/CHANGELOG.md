@@ -2,6 +2,25 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.2.10...vta-tee-v0.3.0) — 2026-09-21
+
+
+### Fixed
+
+- **did-webvh**: Serialize versionTime log updates ([#1599](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1599))
+
+* fix(did-webvh): serialize versionTime log updates
+
+  Use one current-time policy for TEE genesis and runtime did:webvh
+  updates. Wait for the next valid whole-second boundary, rechecking
+  after wall-clock rollback, instead of backdating entries.
+
+  Serialize same-DID log appends within a VTA process and add regression
+  coverage for rapid updates, concurrent appends, legacy timestamps, and
+  TEE genesis followed by an immediate validated update.
+
+
+
 ## [0.2.10](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.2.9...vta-tee-v0.2.10) — 2026-09-20
 
 
