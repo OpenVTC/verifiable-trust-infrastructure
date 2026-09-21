@@ -641,11 +641,15 @@ mod pre_rotation_e2e_tests {
     use serde_json::json;
     use tokio::time::sleep;
 
-    /// webvh requires `currentVersionTime > previousVersionTime`
-    /// (strict, second precision). A `create_did` immediately
-    /// followed by `update_did` in the same wall-clock second falls
-    /// foul of this. Tests sleep just past the second boundary
-    /// between log-entry-producing calls.
+    /// webvh requires `currentVersionTime > previousVersionTime` (strict,
+    /// second precision). `next_version_time` now guarantees that itself —
+    /// it waits out a same-second collision rather than requiring the
+    /// caller to space calls apart (see
+    /// `create_then_didcomm_enable_back_to_back_resolves` below, which
+    /// deliberately omits this sleep to prove it). Most tests here still add
+    /// it anyway, purely to keep the suite's real wall-clock time down when
+    /// running many sequential updates that would otherwise all queue up
+    /// waiting on the same second.
     const VERSION_TIME_GAP: Duration = Duration::from_millis(1100);
 
     use super::state::state_from_jsonl;
@@ -1825,7 +1829,7 @@ mod pre_rotation_e2e_tests {
     }
 
     /// Regression test for the same-second `versionTime` collision
-    /// (PR #600, `backdated_version_time`).
+    /// (PR #600, `vta_support::version_time::next_version_time`).
     ///
     /// The VTA creates its `did:webvh` at `vta setup` and updates it
     /// moments later — e.g. `services didcomm enable` patching in the
@@ -1839,14 +1843,16 @@ mod pre_rotation_e2e_tests {
     /// success and wrote `config.toml`, yet the resolved DID document
     /// still advertised REST-only at version 1.
     ///
-    /// Every other test in this module dodges the collision by sleeping
-    /// past the second boundary ([`VERSION_TIME_GAP`]); operators
-    /// running `setup` then `enable` back-to-back had no such luxury.
-    /// This test deliberately drives create → didcomm-enable **with no
-    /// sleep in between** and asserts the chain still validates and
-    /// advertises DIDCommMessaging at version 2 — i.e.
-    /// `backdated_version_time` keeps the log strictly increasing
-    /// regardless of how fast the entries are minted.
+    /// Most other tests in this module additionally sleep past the
+    /// second boundary ([`VERSION_TIME_GAP`]) between operations —
+    /// belt-and-suspenders, not a requirement; operators running
+    /// `setup` then `enable` back-to-back had no such luxury. This test
+    /// deliberately drives create → didcomm-enable **with no sleep in
+    /// between** and asserts the chain still validates and advertises
+    /// DIDCommMessaging at version 2 — i.e. `next_version_time` keeps the
+    /// log strictly increasing regardless of how fast the entries are
+    /// minted, by waiting out the collision internally rather than
+    /// requiring the caller to.
     #[tokio::test]
     async fn create_then_didcomm_enable_back_to_back_resolves() {
         use crate::operations::protocol::document::{
@@ -1922,6 +1928,150 @@ mod pre_rotation_e2e_tests {
         let svc = current_didcomm_service(&final_doc)
             .expect("DIDCommMessaging service advertised after enable");
         assert_eq!(svc.mediator_did, mediator_did);
+    }
+
+    /// Two updates launched together that carry **no replacement document**
+    /// must append sequentially. The per-DID lock makes the second caller
+    /// re-read the first caller's committed entry before selecting its
+    /// versionTime, so both land and the chain stays valid.
+    ///
+    /// Options like `ttl` compose onto whichever head they find, which is
+    /// exactly the case serialization is for. The document case is the
+    /// opposite and is pinned by the test below.
+    #[tokio::test]
+    async fn concurrent_non_document_updates_append_a_valid_three_entry_chain() {
+        let (ts, seed_store) = setup("ctx-concurrent-updates").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-concurrent-updates",
+            0,
+        )
+        .await;
+
+        let (first, second) = tokio::join!(
+            update_did_webvh(
+                &deps,
+                &auth,
+                &scid,
+                UpdateDidWebvhOptions {
+                    ttl: Some(3600),
+                    ..Default::default()
+                },
+                None,
+                "test",
+            ),
+            update_did_webvh(
+                &deps,
+                &auth,
+                &scid,
+                UpdateDidWebvhOptions {
+                    ttl: Some(7200),
+                    ..Default::default()
+                },
+                None,
+                "test",
+            ),
+        );
+
+        let versions = [
+            first
+                .expect("first concurrent update succeeds")
+                .new_version_id,
+            second
+                .expect("second concurrent update succeeds")
+                .new_version_id,
+        ];
+        assert!(versions.iter().any(|version| version.starts_with("2-")));
+        assert!(versions.iter().any(|version| version.starts_with("3-")));
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// A `document` is a whole replacement built from a head the caller read
+    /// earlier, so serializing the append does not make it current: the
+    /// second writer would produce a structurally valid entry that silently
+    /// discards the first writer's edit.
+    ///
+    /// This is the case the per-DID lock would otherwise *hide*. Before the
+    /// lock, both callers snapshotted the old `log_entry_count` and the loser
+    /// was refused at the final write. The lock reloads the record, which
+    /// re-bases that snapshot on the newer head — so the refusal has to be
+    /// made explicitly, against the head as it stood before queueing.
+    ///
+    /// Exactly one caller must win, the loser must get `Conflict`, and the
+    /// surviving chain must be two entries — not three with an edit missing.
+    #[tokio::test]
+    async fn concurrent_document_updates_refuse_the_stale_one() {
+        let (ts, seed_store) = setup("ctx-concurrent-docs").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-concurrent-docs",
+            0,
+        )
+        .await;
+
+        let (first, second) = tokio::join!(
+            update_did_webvh(
+                &deps,
+                &auth,
+                &scid,
+                UpdateDidWebvhOptions {
+                    document: Some(doc_patch(&did, "concurrent-a")),
+                    ..Default::default()
+                },
+                None,
+                "test",
+            ),
+            update_did_webvh(
+                &deps,
+                &auth,
+                &scid,
+                UpdateDidWebvhOptions {
+                    document: Some(doc_patch(&did, "concurrent-b")),
+                    ..Default::default()
+                },
+                None,
+                "test",
+            ),
+        );
+
+        let (winner, loser) = match (first, second) {
+            (Ok(w), Err(l)) | (Err(l), Ok(w)) => (w, l),
+            (Ok(a), Ok(b)) => panic!(
+                "both document updates were accepted ({}, {}) — one silently \
+                 overwrote the other",
+                a.new_version_id, b.new_version_id
+            ),
+            (Err(a), Err(b)) => panic!("neither document update was accepted: {a}, {b}"),
+        };
+
+        assert!(winner.new_version_id.starts_with("2-"));
+        assert!(
+            matches!(loser, super::UpdateDidWebvhError::Conflict(_)),
+            "the stale writer must be refused as a conflict, got {loser:?}"
+        );
+        assert_chain_validates(&ts, &did).await;
     }
 
     // ── plan/apply: what the plan reports must be what the execution does ────

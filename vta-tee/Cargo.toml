@@ -76,3 +76,7 @@ tokio-vsock = { workspace = true, optional = true }
 # `authorized_reinit_leaves_no_state_sealed_against_the_old_seed` opens a real
 # fjall store to assert what the reinit clear leaves behind.
 tempfile = "3"
+# `test-util` for `#[tokio::test(start_paused = true)]`: the genesis/update
+# `version_time` tests exercise the same-second wait without spending it for
+# real on every run.
+tokio = { workspace = true, features = ["test-util"] }

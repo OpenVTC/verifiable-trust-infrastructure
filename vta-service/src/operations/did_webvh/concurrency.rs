@@ -41,7 +41,60 @@
 //! positives (e.g. operator B touched the record but the change is
 //! benign for our purposes) are vastly preferable to silent overwrites.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex, Weak};
+
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use vta_sdk::webvh::WebvhDidRecord;
+
+/// Per-DID execution locks for mutations that append to a did:webvh log.
+///
+/// A log update reads its current head, derives and signs the next entry, then
+/// persists and possibly publishes it. Those are separate store and network
+/// operations, so they must remain under one lock: otherwise two requests can
+/// both build a successor of the same head and one can overwrite the other's
+/// local log. The lock is process-local, matching VTA's single-process owner
+/// model; it intentionally does not promise coordination between replicas.
+#[derive(Clone, Default)]
+pub struct DidUpdateLocks {
+    inner: Arc<StdMutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
+}
+
+impl DidUpdateLocks {
+    /// Acquire the lock for `did`, creating it on first use.
+    ///
+    /// Entries are held by `Weak`, so a DID's lock is reclaimed once nothing
+    /// holds or waits on it. That is safe rather than merely tidy: a waiter
+    /// clones the `Arc` *before* awaiting, so a `Weak` that fails to upgrade
+    /// provably has no holder and no waiter, and minting a fresh mutex there
+    /// loses no mutual exclusion. Holding `Arc`s instead would grow the map by
+    /// one entry per DID for the lifetime of the process.
+    pub async fn acquire(&self, did: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match locks.get(did).and_then(Weak::upgrade) {
+                Some(live) => live,
+                None => {
+                    // Opportunistic prune, on the path that is already
+                    // inserting and only over provably dead entries.
+                    locks.retain(|_, weak| weak.strong_count() > 0);
+                    let fresh = Arc::new(AsyncMutex::new(()));
+                    locks.insert(did.to_string(), Arc::downgrade(&fresh));
+                    fresh
+                }
+            }
+        };
+        lock.lock_owned().await
+    }
+}
+
+/// Process-wide registry shared by every WebVH update entry point, including
+/// REST, DIDComm, Trust Task, and offline CLI callers.
+pub static DID_UPDATE_LOCKS: std::sync::LazyLock<DidUpdateLocks> =
+    std::sync::LazyLock::new(DidUpdateLocks::default);
 
 /// Snapshot of the record fields we treat as the optimistic-concurrency
 /// version vector. Captured at the start of an op; re-checked just
@@ -164,6 +217,7 @@ pub enum RaceDetected {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
 
     fn record(did: &str, count: u32, ts: i64, server: &str) -> WebvhDidRecord {
         WebvhDidRecord {
@@ -246,5 +300,71 @@ mod tests {
         let snap = RecordSnapshot::capture(&before);
         snap.assert_unchanged(&after)
             .expect("only log_entry_count, updated_at, server_id are version-vector fields");
+    }
+
+    #[tokio::test]
+    async fn did_update_lock_serializes_same_did() {
+        let locks = DidUpdateLocks::default();
+        let first = locks.acquire("did:webvh:scid:example.com:agent").await;
+        let (started_tx, started_rx) = oneshot::channel();
+        let (acquired_tx, mut acquired_rx) = oneshot::channel();
+        let waiting_locks = locks.clone();
+
+        let waiting = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            let _second = waiting_locks
+                .acquire("did:webvh:scid:example.com:agent")
+                .await;
+            let _ = acquired_tx.send(());
+        });
+
+        started_rx.await.expect("waiting task started");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut acquired_rx)
+                .await
+                .is_err(),
+            "the second update must wait for the first holder"
+        );
+
+        drop(first);
+        acquired_rx
+            .await
+            .expect("second update acquired after release");
+        waiting.await.expect("waiting task joined");
+    }
+
+    /// The registry is process-global and lives for the life of the VTA, so
+    /// an entry per DID that is never reclaimed is an unbounded structure.
+    /// Idle locks must drop out.
+    #[tokio::test]
+    async fn did_update_locks_are_reclaimed_when_idle() {
+        let locks = DidUpdateLocks::default();
+
+        for i in 0..10 {
+            let _guard = locks
+                .acquire(&format!("did:webvh:scid:example.com:a{i}"))
+                .await;
+        }
+
+        let live = {
+            let map = locks
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.values().filter(|w| w.strong_count() > 0).count()
+        };
+        assert_eq!(live, 0, "no lock is held, so none should still be live");
+
+        let retained = {
+            let map = locks
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.len()
+        };
+        assert!(
+            retained <= 1,
+            "dead entries must be pruned, map still holds {retained}"
+        );
     }
 }

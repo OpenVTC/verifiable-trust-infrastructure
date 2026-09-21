@@ -1461,9 +1461,10 @@ pub async fn create_did_webvh(
         .authorization_key(derived.signing_secret.clone())
         .did_document(did_document.clone())
         .parameters(parameters)
-        // Backdated genesis timestamp (no previous entry) so a follow-on update
-        // in the same second doesn't collide — see `next_version_time`.
-        .version_time(next_version_time(0, None))
+        // No previous entry to be later than — see `next_version_time`. A
+        // follow-on update lands strictly after this by clamping against the
+        // entry actually written here, not by this being backdated.
+        .version_time(next_version_time(None).await)
         .build()
         .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))?;
 

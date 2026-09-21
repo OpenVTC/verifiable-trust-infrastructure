@@ -43,3 +43,7 @@ multibase = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# `test-util` for `#[tokio::test(start_paused = true)]`: `version_time`'s
+# waiting behaviour sleeps out same-second collisions, and a paused clock lets
+# its tests assert on that without spending the real wait on every run.
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

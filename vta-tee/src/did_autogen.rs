@@ -212,7 +212,8 @@ pub async fn maybe_generate_vta_did(
         derived.signing_secret.clone(),
         did_document,
         parameters,
-    )?;
+    )
+    .await?;
 
     let result = create_did(create_config)
         .await
@@ -445,18 +446,20 @@ fn template_to_url(template: &str) -> Result<String, AppError> {
 ///
 /// Extracted from [`maybe_generate_vta_did`] so that the one property here
 /// which cannot be observed until far too late is testable without a seed
-/// store, a KMS or an enclave: the genesis entry MUST carry a backdated
-/// `versionTime`.
+/// store, a KMS or an enclave: the genesis entry MUST go through the same
+/// [`next_version_time`] policy every other entry in this workspace does.
 ///
-/// Leave it to the builder's default (`Utc::now()`) and nothing fails. The
-/// VTA's *first runtime update* is backdated a day by
-/// [`next_version_time`], so it lands earlier than genesis; `didwebvh-rs`
-/// checks monotonicity only at resolve time, so it signs, appends and
-/// publishes that entry anyway; and because the log is append-only, no later
-/// update can repair it. The DID is then permanently unresolvable — which took
+/// Leave it to the builder's default (`Utc::now()`) and nothing fails
+/// immediately. It used to fail one update later: the VTA's first runtime
+/// update was backdated by an earlier, asymmetric version of this policy, so
+/// it landed *earlier* than a wall-clock genesis; `didwebvh-rs` checks
+/// monotonicity only at resolve time, so it signed, appended and published
+/// that entry anyway, and — because the log is append-only — no later update
+/// could repair it. The DID was then permanently unresolvable — which took
 /// down mediator connection, DIDComm and backup export on TEE VTAs until
-/// PR #1456. See `vta_support::version_time`.
-fn build_genesis_create_config(
+/// PR #1456. Routing genesis through the same policy as every update removes
+/// the asymmetry rather than papering over it. See `vta_support::version_time`.
+async fn build_genesis_create_config(
     url: &str,
     authorization_key: Secret,
     did_document: serde_json::Value,
@@ -468,7 +471,7 @@ fn build_genesis_create_config(
         .did_document(did_document)
         .parameters(parameters)
         // Genesis: no previous entry to clamp against.
-        .version_time(next_version_time(0, None))
+        .version_time(next_version_time(None).await)
         .build()
         .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))
 }
@@ -476,6 +479,10 @@ fn build_genesis_create_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use didwebvh_rs::DIDWebVHState;
+    use didwebvh_rs::log_entry::LogEntry;
+    use didwebvh_rs::log_entry_state::{LogEntryState, LogEntryValidationStatus};
+    use didwebvh_rs::update::{UpdateDIDConfig, update_did};
 
     #[test]
     fn test_template_to_url_simple() {
@@ -542,26 +549,20 @@ mod tests {
         (signing, document, parameters)
     }
 
-    /// The TEE genesis entry must be stamped with a **backdated**
-    /// `versionTime`, not the builder's `Utc::now()` default.
-    ///
-    /// This is the defect PR #1456 fixed, and it is invisible at the point it
-    /// is made: a wall-clock genesis is a perfectly valid log entry. It only
-    /// surfaces one update later, when the backdated update lands *earlier*
-    /// than genesis, `didwebvh-rs` appends it regardless (it checks
-    /// monotonicity at resolve time, not write time), and the DID becomes
-    /// permanently unresolvable — mediator connection, DIDComm and backup
-    /// export all fail on a VTA that reports itself healthy.
+    /// The TEE genesis entry must carry an explicit `versionTime` from
+    /// [`next_version_time`], not the builder's bare `Utc::now()` default —
+    /// so that it goes through the exact same policy a runtime update does.
     ///
     /// Asserting on the built config rather than the helper alone is the
-    /// point: deleting the `.version_time(...)` call reintroduces the bug and
-    /// must fail here.
+    /// point: deleting the `.version_time(...)` call reintroduces the
+    /// asymmetry PR #1456 fixed and must fail here.
     #[tokio::test]
-    async fn genesis_version_time_is_backdated() {
+    async fn genesis_version_time_is_stamped_and_not_future() {
         let (signing, document, parameters) = genesis_inputs();
 
         let config =
             build_genesis_create_config("https://example.com/vta", signing, document, parameters)
+                .await
                 .expect("genesis config builds");
 
         let stamped = config
@@ -576,26 +577,36 @@ mod tests {
             "the log entry must carry the versionTime the config set"
         );
 
-        // A day back, less a minute of slack for the index offset and clock
-        // movement between building and asserting.
         let now = chrono::Utc::now().fixed_offset();
         assert!(
-            entry_time < now - chrono::Duration::hours(23),
-            "genesis must be backdated roughly a day, got {entry_time} against now={now}"
+            entry_time <= now,
+            "genesis must not be future-dated, got {entry_time} against now={now}"
+        );
+        assert!(
+            entry_time > now - chrono::Duration::seconds(5),
+            "genesis should be essentially now, not backdated, got {entry_time} against now={now}"
         );
     }
 
-    /// The genesis timestamp must also leave room *above* it, so the VTA's
-    /// first runtime update — `next_version_time(1, Some(genesis))`, the
-    /// sequence a TEE VTA runs when `services didcomm enable` follows first
-    /// boot — is strictly later. This is the two-entry chain that was broken,
-    /// asserted end to end rather than one half at a time.
+    /// The VTA's first runtime update — `next_version_time(Some(genesis))`,
+    /// the sequence a TEE VTA runs when `services didcomm enable` follows
+    /// first boot — must be strictly later than genesis, even though genesis
+    /// is no longer backdated and the two calls can land in the same wall-
+    /// clock second. This is the two-entry chain that PR #1456 fixed, asserted
+    /// end to end rather than one half at a time.
+    ///
+    /// Deliberately **not** `start_paused`: the final assertion checks against
+    /// the real wall clock (`chrono::Utc::now`), which a paused tokio clock
+    /// does not advance — `next_version_time` would then return a target a
+    /// virtual second ahead of a real clock that never actually moved, and
+    /// this test would fail on exactly the property it means to prove.
     #[tokio::test]
     async fn first_update_after_genesis_is_strictly_later() {
         let (signing, document, parameters) = genesis_inputs();
 
         let config =
             build_genesis_create_config("https://example.com/vta", signing, document, parameters)
+                .await
                 .expect("genesis config builds");
         let genesis_time = create_did(config)
             .await
@@ -603,7 +614,7 @@ mod tests {
             .log_entry()
             .get_version_time();
 
-        let update_time = next_version_time(1, Some(genesis_time));
+        let update_time = next_version_time(Some(genesis_time)).await;
 
         assert!(
             update_time > genesis_time,
@@ -616,8 +627,72 @@ mod tests {
             "must differ after did:webvh's second-granularity truncation"
         );
         assert!(
-            update_time < chrono::Utc::now().fixed_offset(),
+            update_time <= chrono::Utc::now().fixed_offset(),
             "first update must not be future-dated"
         );
+    }
+
+    /// The original failure shape: TEE genesis followed immediately by a real
+    /// update. Rebuild the resulting JSONL into a fresh state so validation
+    /// covers the serialized chain, including signature and versionTime rules.
+    #[tokio::test]
+    async fn tee_genesis_then_immediate_update_resolves() {
+        let (signing, document, parameters) = genesis_inputs();
+        let config = build_genesis_create_config(
+            "https://example.com/vta",
+            signing.clone(),
+            document,
+            parameters,
+        )
+        .await
+        .expect("genesis config builds");
+        let genesis = create_did(config).await.expect("genesis entry is created");
+        let genesis_entry = genesis.log_entry().clone();
+        let genesis_time = genesis_entry.get_version_time();
+        let mut genesis_state = DIDWebVHState::default();
+        genesis_state.log_entries_mut().push(LogEntryState {
+            log_entry: genesis_entry.clone(),
+            version_number: genesis_entry.get_version_id_fields().expect("version id").0,
+            validation_status: LogEntryValidationStatus::NotValidated,
+            validated_parameters: WebVHParameters::default(),
+        });
+        genesis_state
+            .validate()
+            .expect("genesis chain validates")
+            .assert_complete()
+            .expect("genesis chain is complete");
+
+        let update_config = UpdateDIDConfig::<Secret, Secret>::builder_generic()
+            .state(genesis_state)
+            .signing_key(signing)
+            .version_time(next_version_time(Some(genesis_time)).await)
+            .build()
+            .expect("update config builds");
+        let update = update_did(update_config)
+            .await
+            .expect("immediate update is created");
+
+        let jsonl = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&genesis_entry).expect("serialize genesis"),
+            serde_json::to_string(update.log_entry()).expect("serialize update"),
+        );
+        let mut resolved = DIDWebVHState::default();
+        for line in jsonl.lines() {
+            let entry = LogEntry::deserialize_string(line, None).expect("parse serialized entry");
+            let version_number = entry.get_version_id_fields().expect("version id").0;
+            resolved.log_entries_mut().push(LogEntryState {
+                log_entry: entry,
+                version_number,
+                validation_status: LogEntryValidationStatus::NotValidated,
+                validated_parameters: WebVHParameters::default(),
+            });
+        }
+        resolved
+            .validate()
+            .expect("TEE genesis and update chain validates")
+            .assert_complete()
+            .expect("TEE genesis and update chain is complete");
+        assert_eq!(resolved.log_entries().len(), 2);
     }
 }
