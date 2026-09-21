@@ -127,6 +127,13 @@ pub struct JoinRequest {
     /// fixture set a non-empty object and so never saw it.
     #[serde(default, skip_serializing_if = "JsonValue::is_null")]
     pub extensions: JsonValue,
+    /// What the applicant told the community about themselves, answering the
+    /// manifest's `requestedAttributes`. **Self-asserted** — the applicant's
+    /// own statement, bound to them by the submission's proof and attested by
+    /// nobody — so it is shown to reviewers as that and never read by the join
+    /// policy. Absent when none were asked for or given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<SubmittedAttribute>,
     /// Why this request was refused, for the applicant.
     ///
     /// Written by **both** rejection paths — the policy auto-deny at
@@ -175,6 +182,15 @@ pub struct JoinDecision {
     pub decided_at: DateTime<Utc>,
 }
 
+/// One answer an applicant gave to the manifest's `requestedAttributes`: a
+/// claim type and its value, as they sent it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmittedAttribute {
+    pub r#type: String,
+    pub value: JsonValue,
+}
+
 impl JoinRequest {
     /// Construct a fresh `Pending` request.
     pub fn new(applicant_did: impl Into<String>, vp: JsonValue) -> Self {
@@ -188,6 +204,7 @@ impl JoinRequest {
             policy_decision: None,
             registry_consent: false,
             extensions: JsonValue::Null,
+            attributes: Vec::new(),
             decision: None,
         }
     }

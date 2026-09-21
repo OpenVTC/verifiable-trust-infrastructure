@@ -442,6 +442,11 @@ pub enum AuditEvent {
     /// asked.
     CommunityJoinDiscoveryUpdated(CommunityJoinDiscoveryUpdatedData),
 
+    /// An admin changed what the community asks an applicant to tell it about
+    /// themselves (`PUT /v1/community/requested-attributes`), which
+    /// `join-requests/manifest/0.2` publishes as `requestedAttributes`.
+    CommunityRequestedAttributesUpdated(CommunityRequestedAttributesUpdatedData),
+
     /// An operator registered a new custom endorsement type
     /// via `POST /v1/endorsement-types`. Phase 4 M4.8.1 (D4
     /// review). The actor is the admin; the `type_uri` field
@@ -620,6 +625,7 @@ impl AuditEvent {
             Self::VetterAutoGrantSwept(..) => "VetterAutoGrantSwept",
             Self::CommunityBrandingUpdated(..) => "CommunityBrandingUpdated",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
+            Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
             Self::EndorsementTypeDeleted(..) => "EndorsementTypeDeleted",
             Self::WebsiteFileWritten(..) => "WebsiteFileWritten",
@@ -1540,6 +1546,19 @@ pub struct VetterAutoGrantSweptData {
 pub struct CommunityBrandingUpdatedData {
     /// The branding members that changed, by wire name.
     pub fields_changed: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::CommunityRequestedAttributesUpdated`].
+///
+/// Claim types only — what the community now asks for, never anything an
+/// applicant answered.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityRequestedAttributesUpdatedData {
+    /// Types asked for now and not before.
+    pub added: Vec<String>,
+    /// Types asked for before and not now.
+    pub removed: Vec<String>,
 }
 
 /// Payload for [`AuditEvent::CommunityJoinDiscoveryUpdated`].
@@ -2842,6 +2861,15 @@ mod tests {
                     fields_changed: vec![],
                 }),
                 "CommunityBrandingUpdated",
+            ),
+            (
+                AuditEvent::CommunityRequestedAttributesUpdated(
+                    CommunityRequestedAttributesUpdatedData {
+                        added: vec!["name.display".into()],
+                        removed: vec![],
+                    },
+                ),
+                "CommunityRequestedAttributesUpdated",
             ),
             (
                 AuditEvent::EndorsementTypeRegistered(EndorsementTypeRegisteredData {

@@ -124,6 +124,9 @@ pub async fn present_and_decide_join(
         vp_claims,
         false,
         JsonValue::Null,
+        // The credential-exchange path carries a presentation only; requested
+        // attributes arrive on `submit`.
+        Vec::new(),
         verdict,
         transport,
         None,

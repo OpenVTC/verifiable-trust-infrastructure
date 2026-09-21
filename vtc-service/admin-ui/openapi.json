@@ -1682,6 +1682,91 @@
         }
       }
     },
+    "/v1/community/requested-attributes": {
+      "get": {
+        "tags": [
+          "community"
+        ],
+        "summary": "What the community asks applicants to tell it; an empty array when nothing.",
+        "operationId": "communityRequestedAttributesShow",
+        "responses": {
+          "200": {
+            "description": "The manifest's `requestedAttributes`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2RequestedAttribute"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "community"
+        ],
+        "summary": "Replace what the community asks applicants to tell it. An empty array asks\nfor nothing.",
+        "operationId": "communityRequestedAttributesUpdate",
+        "requestBody": {
+          "description": "Replaces the whole list. `type` is a persona claim-type token such as `name.display`.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2RequestedAttribute"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What is now requested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2RequestedAttribute"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An entry breaks its bounds, a type is requested twice, or more than 32 are given"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "503": {
+            "description": "Audit writer not configured — change refused"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/credentials/endorsements": {
       "get": {
         "tags": [
@@ -7475,6 +7560,13 @@
           "applicantDid": {
             "type": "string"
           },
+          "attributes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubmittedAttribute"
+            },
+            "description": "What the applicant told the community about themselves, answering the\nmanifest's `requestedAttributes`. **Self-asserted** — the applicant's\nown statement, bound to them by the submission's proof and attested by\nnobody — so it is shown to reviewers as that and never read by the join\npolicy. Absent when none were asked for or given."
+          },
           "decision": {
             "oneOf": [
               {
@@ -8211,6 +8303,13 @@
               "properties": {
                 "applicantDid": {
                   "type": "string"
+                },
+                "attributes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubmittedAttribute"
+                  },
+                  "description": "What the applicant told the community about themselves, answering the\nmanifest's `requestedAttributes`. **Self-asserted** — the applicant's\nown statement, bound to them by the submission's proof and attested by\nnobody — so it is shown to reviewers as that and never read by the join\npolicy. Absent when none were asked for or given."
                 },
                 "decision": {
                   "oneOf": [
@@ -9977,6 +10076,22 @@
           }
         }
       },
+      "SubmittedAttribute": {
+        "type": "object",
+        "description": "One answer an applicant gave to the manifest's `requestedAttributes`: a\nclaim type and its value, as they sent it.",
+        "required": [
+          "type",
+          "value"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Value"
+          }
+        }
+      },
       "SupervisorKind": {
         "type": "string",
         "enum": [
@@ -10652,6 +10767,31 @@
         "additionalProperties": true,
         "minProperties": 1
       },
+      "VtcJoinRequestsManifestV0_2RequestedAttribute": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "description": "Why the community asks, in words shown to the applicant before they disclose.",
+            "maxLength": 256
+          },
+          "required": {
+            "type": "boolean",
+            "description": "False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing."
+          },
+          "type": {
+            "type": "string",
+            "description": "A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token.",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^(x:)?[a-z][A-Za-z0-9]*(\\.[a-z][A-Za-z0-9]*)*$"
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcJoinRequestsManifestV0_2Response": {
         "type": "object",
         "required": [
@@ -10674,6 +10814,36 @@
           },
           "ext": {
             "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Ext"
+          },
+          "requestedAttributes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "purpose": {
+                  "type": "string",
+                  "description": "Why the community asks, in words shown to the applicant before they disclose.",
+                  "maxLength": 256
+                },
+                "required": {
+                  "type": "boolean",
+                  "description": "False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing."
+                },
+                "type": {
+                  "type": "string",
+                  "description": "A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token.",
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^(x:)?[a-z][A-Za-z0-9]*(\\.[a-z][A-Za-z0-9]*)*$"
+                }
+              },
+              "additionalProperties": false
+            },
+            "description": "What the community asks an applicant to tell it about themselves, as claim types — never values. Answered in persona terms: the applicant's agent discloses those attributes from the face the applicant chooses, and they arrive on vtc/join-requests/submit as `attributes`. SELF-ASSERTED: a community MUST NOT describe an answer as verified, and MUST NOT make a decision that assumes it is. Outside every criterion, so no `requirementsDigest` covers it. Absent when the community asks nothing.",
+            "maxItems": 32
           }
         },
         "additionalProperties": false

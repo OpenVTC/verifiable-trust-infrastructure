@@ -93,6 +93,29 @@ pub struct JoinRequestSubmitBody {
     /// same null-into-`Option` class that shipped `keys/create/0.1` broken.
     #[serde(default, skip_serializing_if = "JsonValue::is_null")]
     pub extensions: JsonValue,
+    /// Answers to the manifest's `requestedAttributes`: what the applicant
+    /// tells the community about themselves. Self-asserted, bound to the
+    /// applicant by the document proof. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<JoinRequestAttribute>,
+}
+
+/// One answer to a requested attribute on
+/// `vtc/join-requests/submit/0.2` — a claim type and the value the applicant
+/// gives for it.
+///
+/// No `deny_unknown_fields`, and no `ext` either, because the published item
+/// is closed and defines neither: an `ext` here would let a client send a
+/// member the schema refuses. The dispatcher validates the whole payload
+/// against that schema before this type is read, and that is what refuses an
+/// extra member.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct JoinRequestAttribute {
+    #[serde(rename = "type")]
+    pub claim_type: String,
+    pub value: JsonValue,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +218,17 @@ pub const JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED: &str =
 /// pass to [`JOIN_REQUEST_WITHDRAW_TYPE`] to clear it.
 pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
     "vtc/join-requests/submit:requestAlreadyOpen";
+
+/// `vtc/join-requests/submit:attributesMissing` — a required requested
+/// attribute was not answered. `details.types` names them.
+pub const JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING: &str =
+    "vtc/join-requests/submit:attributesMissing";
+
+/// `vtc/join-requests/submit:attributesUnrequested` — an answer named a type
+/// the manifest does not request; refused, not stored. `details.types` names
+/// them.
+pub const JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED: &str =
+    "vtc/join-requests/submit:attributesUnrequested";
 
 /// Extended error code: the caller has no open request to withdraw.
 ///

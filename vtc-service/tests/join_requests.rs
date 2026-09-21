@@ -4150,3 +4150,133 @@ async fn a_coded_reject_carries_the_reason_marker_a_client_reads() {
     assert_eq!(details["requestId"], json!(pending.to_string()), "{body}");
     assert_eq!(details["status"], "pending", "{body}");
 }
+
+// ---------------------------------------------------------------------------
+// Requested attributes — what a community asks an applicant to tell it
+// ---------------------------------------------------------------------------
+
+/// A community asks for a display name (required) and a country (optional).
+/// The manifest says so; a submission missing the name, or answering what was
+/// never asked, is refused with the specification's code and stores nothing;
+/// a submission answering as asked is stored with its answers, which a
+/// reviewer then reads on `show`.
+#[tokio::test]
+async fn requested_attributes_are_published_enforced_and_kept_with_the_request() {
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_MANIFEST_0_2_TYPE, JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING,
+        JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED,
+    };
+
+    let fix = build_fixture().await;
+    let (status, body) = admin_rest(
+        &fix,
+        "PUT",
+        "/v1/community/requested-attributes",
+        Some(json!([
+            { "type": "name.display", "purpose": "So other members know what to call you" },
+            { "type": "address.country", "required": false },
+        ])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "PUT requested attributes: {body}");
+
+    // Published on manifest 0.2, and the answer conforms.
+    let mut doc = manifest_doc();
+    doc["type"] = json!(JOIN_REQUEST_MANIFEST_0_2_TYPE);
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "manifest: {body}");
+    let asked = tt_payload(&body)["requestedAttributes"].clone();
+    assert_eq!(asked[0]["type"], "name.display");
+    assert_eq!(asked[0]["required"], true, "required defaults to true");
+    assert_eq!(asked[1]["required"], false);
+
+    let submit = |attributes: Value| async move {
+        let (_did, doc) = signed_trust_task(
+            SUBMIT_TASK,
+            json!({ "vp": { "a": "b" }, "registryConsent": false, "attributes": attributes }),
+        )
+        .await;
+        doc
+    };
+
+    // Missing the required one.
+    let (status, body) = post_tt(
+        &fix.router,
+        submit(json!([{ "type": "address.country", "value": "SG" }])).await,
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a missing required attribute was accepted: {body}"
+    );
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING
+    );
+    assert_eq!(
+        body.pointer("/payload/details/types"),
+        Some(&json!(["name.display"]))
+    );
+
+    // Answering what was never asked: refused, not trimmed.
+    let (status, body) = post_tt(
+        &fix.router,
+        submit(json!([
+            { "type": "name.display", "value": "Ada" },
+            { "type": "person.birthDate", "value": "1815-12-10" },
+        ]))
+        .await,
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "an unrequested attribute was accepted: {body}"
+    );
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED
+    );
+    assert_eq!(
+        body.pointer("/payload/details/types"),
+        Some(&json!(["person.birthDate"]))
+    );
+
+    // Neither refusal stored anything.
+    let (_, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/join-requests",
+        LIST_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(0), "{body}");
+
+    // As asked — the optional one declined.
+    let (status, body) = post_tt(
+        &fix.router,
+        submit(json!([{ "type": "name.display", "value": "Ada" }])).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "submit: {body}");
+    let id = tt_payload(&body)["requestId"].as_str().unwrap().to_string();
+
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        &format!("/v1/join-requests/{id}"),
+        SHOW_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "show: {body}");
+    assert_eq!(
+        body["request"]["attributes"],
+        json!([{ "type": "name.display", "value": "Ada" }]),
+        "a reviewer must see what the applicant said"
+    );
+}

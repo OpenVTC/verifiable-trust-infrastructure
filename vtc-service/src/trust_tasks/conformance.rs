@@ -1016,6 +1016,7 @@ fn table() -> Vec<Conformance> {
                 vp: json!({ "type": ["VerifiablePresentation"] }),
                 registry_consent: true,
                 extensions: Value::Null,
+                attributes: Vec::new(),
             }),
             // The ceremony verdict envelope
             // (docs/05-design-notes/vtc-ceremony-protocol.md §3), from the
@@ -1533,6 +1534,13 @@ fn table() -> Vec<Conformance> {
                         )
                         .expect("branding"),
                     ),
+                    vec![
+                        serde_json::from_value(json!({
+                            "type": "name.display", "required": true,
+                            "purpose": "So other members know what to call you"
+                        }))
+                        .expect("requested attribute"),
+                    ],
                 )
                 .expect("the manifest projects the criterion"),
             )

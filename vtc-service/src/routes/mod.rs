@@ -473,6 +473,13 @@ fn build_api_chain(
             community::branding::get_branding,
             community::branding::put_branding
         ))
+        // What the community asks an applicant to tell it about themselves,
+        // published on `join-requests/manifest/0.2` as `requestedAttributes`.
+        // Admin REST with no Trust Task of its own, like the branding.
+        .routes(routes!(
+            community::requested_attributes::get_requested_attributes,
+            community::requested_attributes::put_requested_attributes
+        ))
         // Whether the join manifest answers a caller this community cannot
         // identify. Admin REST with no Trust Task of its own — and not a
         // member of the profile, whose `show` response is a published schema

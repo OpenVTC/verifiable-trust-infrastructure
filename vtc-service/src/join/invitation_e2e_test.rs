@@ -102,6 +102,7 @@ async fn vic_presented_in_vp_auto_admits_and_is_consumed() {
         vp,
         false,
         json!({}),
+        Vec::new(),
         None,
         JoinTransport::DIDComm,
     )
@@ -159,6 +160,7 @@ async fn vic_bound_to_another_did_cannot_be_redeemed() {
         vp,
         false,
         json!({}),
+        Vec::new(),
         None,
         JoinTransport::DIDComm,
     )

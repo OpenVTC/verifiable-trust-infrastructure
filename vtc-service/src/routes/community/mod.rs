@@ -7,3 +7,4 @@
 pub mod branding;
 pub mod join_discovery;
 pub mod profile;
+pub mod requested_attributes;
