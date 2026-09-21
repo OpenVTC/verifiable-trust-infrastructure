@@ -16,7 +16,6 @@ use crate::acl::{self, VtcRole};
 use crate::auth::session::{self, SessionState};
 use crate::config::AppConfig;
 use crate::keys::seed_store::create_secret_store;
-use crate::store::Store;
 
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
@@ -180,14 +179,21 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     }
 
     // 6. Open store (may fail if VTC is already running)
-    let store = match Store::open(&config.store) {
+    // `open_offline` distinguishes a held store from every other failure, so
+    // this no longer has to guess: a permissions error or a damaged directory
+    // used to be reported as "is VTC already running?" too.
+    let store = match crate::store::offline::open_offline(&config.store) {
         Ok(s) => s,
-        Err(_) => {
+        Err(crate::store::offline::OfflineStoreError::DaemonRunning { .. }) => {
             eprintln!();
-            eprintln!(
-                "  {YELLOW}Note:{RESET} Could not open the data store (is VTC already running?)."
-            );
+            eprintln!("  {YELLOW}Note:{RESET} The VTC daemon is running and holds the data store.");
             eprintln!("        Stop the VTC service and re-run `vtc status` for full diagnostics.");
+            eprintln!();
+            return Ok(());
+        }
+        Err(crate::store::offline::OfflineStoreError::Other(e)) => {
+            eprintln!();
+            eprintln!("  {YELLOW}Note:{RESET} Could not open the data store: {e}");
             eprintln!();
             return Ok(());
         }

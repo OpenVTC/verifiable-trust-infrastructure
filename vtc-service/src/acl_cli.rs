@@ -23,7 +23,6 @@ use crate::acl::{
     store_acl_entry,
 };
 use crate::config::AppConfig;
-use crate::store::Store;
 
 type CliResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -37,7 +36,7 @@ fn now_epoch() -> u64 {
 /// `vtc acl list` — print every ACL entry.
 pub async fn run_acl_list(config_path: Option<PathBuf>) -> CliResult {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
+    let store = crate::store::offline::open_offline(&config.store)?;
     let acl_ks = store.keyspace(keyspaces::ACL)?;
 
     let mut entries = list_acl_entries(&acl_ks).await?;
@@ -125,7 +124,7 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
     let role = VtcRole::from_str(&args.role)?;
 
     let config = AppConfig::load(args.config_path)?;
-    let store = Store::open(&config.store)?;
+    let store = crate::store::offline::open_offline(&config.store)?;
     let acl_ks = store.keyspace(keyspaces::ACL)?;
 
     let now = now_epoch();
@@ -161,7 +160,7 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
 /// `vtc acl remove` — delete the ACL entry for a DID.
 pub async fn run_acl_remove(config_path: Option<PathBuf>, did: String) -> CliResult {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
+    let store = crate::store::offline::open_offline(&config.store)?;
     let acl_ks = store.keyspace(keyspaces::ACL)?;
 
     if get_acl_entry(&acl_ks, &did).await?.is_none() {

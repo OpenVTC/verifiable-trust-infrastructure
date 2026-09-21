@@ -7,7 +7,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use crate::auth::credentials::generate_did_key;
 use crate::config::AppConfig;
-use crate::store::Store;
 
 pub struct CreateDidKeyArgs {
     pub config_path: Option<PathBuf>,
@@ -17,7 +16,7 @@ pub struct CreateDidKeyArgs {
 
 pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
-    let store = Store::open(&config.store)?;
+    let store = crate::store::offline::open_offline(&config.store)?;
 
     let (did, private_key_multibase) = generate_did_key();
 

@@ -459,7 +459,6 @@ async fn run_invite_cli(
     use vtc_service::install::{InstallTokenSigner, InstallTokenStore, mint_install_token};
     use vtc_service::keys::seed_store::create_secret_store;
     use vtc_service::setup::VtcKeyBundle;
-    use vti_common::store::Store as VtiStore;
 
     if !admin_did.starts_with("did:") {
         return Err(format!("--did must start with 'did:' (got '{admin_did}')").into());
@@ -485,10 +484,26 @@ async fn run_invite_cli(
     let ed25519 = bundle.ed25519_private_bytes()?;
     let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
 
-    // Open the install + ACL keyspaces directly. The daemon must
-    // be stopped — fjall does not allow concurrent processes on
-    // the same data dir.
-    let store = VtiStore::open(&config.store)?;
+    // Open the install + ACL keyspaces directly, which fjall allows only while
+    // the daemon is stopped. Unlike most offline commands this one has an
+    // online twin, so when the daemon holds the store the error names it —
+    // Keyring's VTI-16 concluded from the bare `FjallError: Locked` that
+    // admitting an administrator meant taking the community offline, and it
+    // never did.
+    let store = match vtc_service::store::offline::open_offline(&config.store) {
+        Ok(store) => store,
+        Err(e @ vtc_service::store::offline::OfflineStoreError::DaemonRunning { .. }) => {
+            return Err(format!(
+                "{e}.\n\nYou do not need to stop it to invite an administrator. Mint the \
+                 invite through the running daemon instead:\n  \
+                 • the admin console: Access → Invite\n  \
+                 • or `POST {base_url}/v1/admin/invites` with body {{\"did\": \"{admin_did}\"}}, \
+                 as an existing administrator"
+            )
+            .into());
+        }
+        Err(e) => return Err(e.into()),
+    };
     let install_ks = store.keyspace(keyspaces::INSTALL)?;
     let install_store = InstallTokenStore::new(install_ks);
     let acl_ks = store.keyspace(keyspaces::ACL)?;
