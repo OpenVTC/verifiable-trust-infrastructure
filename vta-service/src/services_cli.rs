@@ -36,7 +36,9 @@ use std::sync::Arc;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use tokio::sync::RwLock;
 
-use vta_cli_common::commands::services::print_serverless_hint;
+// Offline: the daemon is stopped while these run, so the new entry is served
+// once it starts again rather than now.
+use vta_cli_common::commands::services::print_serverless_hint_offline as print_serverless_hint;
 use vta_cli_common::render::print_cli_error;
 use vti_common::telemetry::{RingBufferTelemetry, SharedTelemetrySink};
 

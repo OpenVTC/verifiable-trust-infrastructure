@@ -149,24 +149,35 @@ affected.
 
 If your VTA was set up without a webvh host
 (`server_id = "serverless"`), every service mutation persists the
-new LogEntry to **local fjall storage only**. The VTA does *not*
-push it anywhere — there's nowhere to push to. Resolvers will
-keep returning the prior version until you fetch the updated
-log and redeploy it to your host.
+new LogEntry to local fjall storage — and the VTA **serves its own
+`did.jsonl` from that storage**, at the DID's canonical path, read
+per request. So the new entry is published as soon as it is
+written: there is nothing to redeploy, and no restart is needed
+(the offline `vta services …` commands run with the daemon stopped,
+so theirs is served once it starts). Resolvers see it as their
+cache expires — 60 s for the VTA's own responses, up to 5 minutes
+in a caching resolver.
 
-The CLI emits a follow-up hint after every serverless-side
-mutation so the redeploy step doesn't get forgotten:
+The CLI says so after every serverless-side mutation, naming the
+URL the log is served from:
 
 ```
 REST URL updated.
   New version ID: 7-zQm...
   Effective at:   2026-05-11T20:30:00Z
 
-  This VTA's DID is self-hosted. Fetch the updated log:
+  This VTA hosts its own DID, and now serves the updated log at
+    https://host/vta/did.jsonl
+  Nothing to redeploy. Resolvers pick up the new version as their cache
+  expires (60 s for this VTA's own responses, up to 5 min in a caching resolver).
+  Only a copy you also publish elsewhere needs replacing:
     pnm did-mgmt dids get-log did:webvh:abc:host:vta --out did.jsonl
-  then redeploy did.jsonl to your host. Until you do,
-  resolvers will keep returning the prior version.
 ```
+
+A self-hosted DID the VTA manages for **someone else** — a
+community's, edited with `pnm did-mgmt dids edit` — is different:
+the VTA does not serve it, so the new entry has to be delivered to
+wherever that DID's log is served, and the hint says that instead.
 
 Server-managed deployments — the VTA was set up with a registered
 webvh host — show no hint because the VTA already

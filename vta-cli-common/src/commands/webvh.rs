@@ -369,7 +369,13 @@ pub async fn cmd_webvh_did_edit(
     println!("  New SCID:        {}", result.new_scid);
     println!("  Update keys:     {}", result.update_keys_count);
     println!("  Pre-rotation:    {}", result.pre_rotation_key_count);
-    crate::commands::services::print_serverless_hint(result.serverless, &result.did);
+    // The VTA serves its own DID's log; any other self-hosted DID it manages —
+    // a community's, say — is served somewhere this VTA cannot write to.
+    if client.vta_did() == Some(result.did.as_str()) {
+        crate::commands::services::print_serverless_hint(result.serverless, &result.did);
+    } else {
+        crate::commands::services::print_redeploy_hint(result.serverless, &result.did);
+    }
     Ok(())
 }
 
