@@ -3865,3 +3865,225 @@ async fn a_duplicate_submit_names_the_open_request_and_its_status() {
          waiting on the community: {body}"
     );
 }
+
+// ─── vtc/join-requests/supplement/0.1 ──────────────────────────────────────
+//
+// KR-03's second half. A deferral used to be a dead end dressed as a
+// question: the community asked for more and the applicant had nowhere to put
+// it, because the dedup guard refused a second application and the only exits
+// were withdrawing or waiting for a retention sweep.
+
+/// The task's reason for existing: a deferred request takes new evidence and
+/// is re-decided, in place, without a second row.
+#[tokio::test]
+async fn supplementing_a_deferred_request_re_decides_it_in_place() {
+    let f = build_fixture().await;
+    let applicant = "did:key:zSupplementApplicant";
+    let id = seed_request(&f, applicant, JoinStatus::Deferred).await;
+
+    let before = vtc_service::join::list_join_requests(&f.state.join_requests_ks)
+        .await
+        .unwrap()
+        .len();
+
+    let out = vtc_service::join::supplement_inner(
+        &f.state,
+        applicant,
+        Some(id),
+        serde_json::json!({ "type": ["VerifiablePresentation"] }),
+        serde_json::json!({}),
+        vtc_service::join::JoinTransport::Rest,
+    )
+    .await
+    .expect("a deferred request accepts new evidence");
+
+    assert_eq!(
+        out.request.id, id,
+        "the same row is re-decided, not a new one"
+    );
+    let after = vtc_service::join::list_join_requests(&f.state.join_requests_ks)
+        .await
+        .unwrap()
+        .len();
+    assert_eq!(after, before, "no second request row is created");
+
+    let stored = get_join_request(&f.state.join_requests_ks, id)
+        .await
+        .unwrap()
+        .expect("row still exists");
+    assert_eq!(
+        stored.vp,
+        serde_json::json!({ "type": ["VerifiablePresentation"] }),
+        "the presentation is replaced, and the replacement is what persisted"
+    );
+}
+
+/// The precondition that is not an authorization rule. A `Pending` request
+/// waits on the community; accepting evidence into it would swap what a
+/// maintainer is mid-review on.
+#[tokio::test]
+async fn a_pending_request_is_not_awaiting_evidence() {
+    use vtc_service::join::SupplementRefusal;
+
+    let f = build_fixture().await;
+    let applicant = "did:key:zPendingNotDeferred";
+    let id = seed_request(&f, applicant, JoinStatus::Pending).await;
+
+    let Err(err) = vtc_service::join::supplement_inner(
+        &f.state,
+        applicant,
+        Some(id),
+        serde_json::json!({ "type": ["VerifiablePresentation"] }),
+        serde_json::json!({}),
+        vtc_service::join::JoinTransport::Rest,
+    )
+    .await
+    else {
+        panic!("nothing has been asked of this applicant, so this must refuse");
+    };
+    assert!(
+        matches!(err, SupplementRefusal::NotAwaitingEvidence { .. }),
+        "got {err:?}"
+    );
+}
+
+/// Ownership is the entitlement, and a stranger learns nothing about whether
+/// the id exists — the same conflation `withdraw` makes.
+#[tokio::test]
+async fn only_the_applicant_may_supplement_and_a_stranger_cannot_probe() {
+    use vtc_service::join::SupplementRefusal;
+
+    let f = build_fixture().await;
+    let owner = "did:key:zSupplementOwner";
+    let stranger = "did:key:zSupplementStranger";
+    let id = seed_request(&f, owner, JoinStatus::Deferred).await;
+
+    let Err(theirs) = vtc_service::join::supplement_inner(
+        &f.state,
+        stranger,
+        Some(id),
+        serde_json::json!({ "type": ["VerifiablePresentation"] }),
+        serde_json::json!({}),
+        vtc_service::join::JoinTransport::Rest,
+    )
+    .await
+    else {
+        panic!("a stranger may not supplement someone else's request");
+    };
+
+    let Err(absent) = vtc_service::join::supplement_inner(
+        &f.state,
+        stranger,
+        Some(uuid::Uuid::new_v4()),
+        serde_json::json!({ "type": ["VerifiablePresentation"] }),
+        serde_json::json!({}),
+        vtc_service::join::JoinTransport::Rest,
+    )
+    .await
+    else {
+        panic!("a request that does not exist refuses too");
+    };
+
+    // Same variant and same message: the two are indistinguishable to the
+    // caller, which is what stops the task being an id oracle.
+    assert!(
+        matches!(theirs, SupplementRefusal::NotFound(_)),
+        "{theirs:?}"
+    );
+    assert!(
+        matches!(absent, SupplementRefusal::NotFound(_)),
+        "{absent:?}"
+    );
+    assert_eq!(
+        vti_common::error::AppError::from(theirs).to_string(),
+        vti_common::error::AppError::from(absent).to_string(),
+    );
+}
+
+/// A decided request is terminal, and is told apart from an absent one
+/// because the applicant is entitled to their own outcome.
+#[tokio::test]
+async fn a_decided_request_cannot_be_supplemented() {
+    use vtc_service::join::SupplementRefusal;
+
+    let f = build_fixture().await;
+    let applicant = "did:key:zSupplementDecided";
+    let id = seed_request(&f, applicant, JoinStatus::Withdrawn).await;
+
+    let Err(err) = vtc_service::join::supplement_inner(
+        &f.state,
+        applicant,
+        Some(id),
+        serde_json::json!({ "type": ["VerifiablePresentation"] }),
+        serde_json::json!({}),
+        vtc_service::join::JoinTransport::Rest,
+    )
+    .await
+    else {
+        panic!("a withdrawn request has no open decision to supplement");
+    };
+    assert!(
+        matches!(err, SupplementRefusal::AlreadyDecided { .. }),
+        "got {err:?}"
+    );
+}
+
+/// The dispatcher path, and the three codes the spec declares. The unit tests
+/// above assert `SupplementRefusal`s, which say nothing about the wire.
+#[tokio::test]
+async fn the_supplement_task_answers_with_the_codes_its_spec_declares() {
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED,
+        JOIN_REQUEST_SUPPLEMENT_ERR_NOT_AWAITING_EVIDENCE, JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND,
+        JOIN_REQUEST_SUPPLEMENT_TYPE,
+    };
+
+    let f = build_fixture().await;
+    let seed = [0x7C; 32];
+    let vp = json!({ "vp": { "type": ["VerifiablePresentation"] } });
+
+    // Nothing open at all.
+    let (applicant, doc) =
+        signed_trust_task_seed(&seed, JOIN_REQUEST_SUPPLEMENT_TYPE, vp.clone()).await;
+    let (status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND);
+
+    // Open, but queued for the community rather than deferred to the applicant.
+    let pending = seed_request(&f, &applicant, JoinStatus::Pending).await;
+    let (_did, doc) = signed_trust_task_seed(&seed, JOIN_REQUEST_SUPPLEMENT_TYPE, vp.clone()).await;
+    let (status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUPPLEMENT_ERR_NOT_AWAITING_EVIDENCE
+    );
+    assert_eq!(
+        body.pointer("/payload/details/requestId").unwrap(),
+        &json!(pending.to_string()),
+        "the annex names the request in the way: {body}"
+    );
+
+    // Terminal.
+    let mut row = get_join_request(&f.state.join_requests_ks, pending)
+        .await
+        .unwrap()
+        .unwrap();
+    row.status = JoinStatus::Withdrawn;
+    store_join_request(&f.state.join_requests_ks, &row)
+        .await
+        .unwrap();
+    let (_did, doc) = signed_trust_task_seed(
+        &seed,
+        JOIN_REQUEST_SUPPLEMENT_TYPE,
+        json!({ "vp": { "type": ["VerifiablePresentation"] },
+                "requestId": pending.to_string() }),
+    )
+    .await;
+    let (status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED
+    );
+}

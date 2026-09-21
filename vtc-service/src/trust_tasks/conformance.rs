@@ -1027,6 +1027,33 @@ fn table() -> Vec<Conformance> {
             ))
         ),
         checked!(
+            s::join_requests::supplement::v0_1::Payload,
+            s::join_requests::supplement::v0_1::Response,
+            // `vp` is the only required member; the id-less form is what an
+            // applicant who lost their submit response has.
+            json!({ "vp": { "type": ["VerifiablePresentation"] } }),
+            // Projected through the SDK type the handler actually returns
+            // (trust_tasks/mod.rs, `outcome_to_verdict` → `verdict_response`)
+            // — the same one `submit` returns, which is the point: a
+            // supplement's response IS a submission's response. `requestMore`
+            // is the arm worth witnessing, because the community is entitled
+            // to still not be satisfied by the new evidence.
+            to_v(jr::VerdictResponse {
+                request_id: uuid(),
+                verdict: jr::Verdict {
+                    effect: jr::VerdictEffect::RequestMore,
+                    with: jr::VerdictWith {
+                        needs: vec!["agreed:code-of-conduct".into()],
+                        presentation_definition: Some(json!({
+                            "id": "pd-1",
+                            "input_descriptors": []
+                        })),
+                        ..Default::default()
+                    },
+                },
+            })
+        ),
+        checked!(
             s::join_requests::withdraw::v0_1::Payload,
             s::join_requests::withdraw::v0_1::Response,
             // Both members are optional — the id-less form is the common case
