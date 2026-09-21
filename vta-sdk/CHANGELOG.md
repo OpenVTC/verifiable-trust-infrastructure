@@ -2,6 +2,106 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.47.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.46.0...vta-sdk-v0.47.0) — 2026-09-21
+
+
+### Added
+
+- **vtc**: A community can ask an applicant to tell it about themselves ([#1614](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1614))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#543 (trust-tasks-rs 0.21.9),
+  design note docs/05-design-notes/persona-context-first.md §5.2. A join
+  manifest could ask only for credentials, so a community wanting a
+  display name had nothing to put on the "what's required" screen, and
+  nothing connected the join ceremony to an applicant's persona.
+
+  - Requested attributes are one community-level row beside the branding
+    (`community/requested-attributes`, backed up with it), managed with
+    admin GET/PUT /v1/community/requested-attributes (audited:
+    CommunityRequestedAttributesUpdated, types added/removed only), and
+    published as `requestedAttributes` on join-requests/manifest/0.2.
+  - join-requests/submit/0.2 accepts `attributes`. Before anything is
+    stored -- before the open-request dedup -- the answers are checked:
+    a required type unanswered is attributesMissing, a type the manifest
+    does not request is attributesUnrequested (refused, not trimmed), both
+    with details.types. Accepted answers are stored on the request and
+    returned by show/list as `attributes`. They are self-asserted and are
+    never fed to the join policy.
+  - Only the Trust Task form carries them: the legacy REST submit's holder
+    signature covers a fixed member set that does not include them, so an
+    answer there would be unsigned. A community that requires one refuses
+    that route with attributesMissing.
+  - VtcClient::requested_attributes / set_requested_attributes, and
+    `cnm vetting ask show|set --require/--optional/--purpose/--nothing`.
+  - vta_sdk::openapi gains JoinManifest02RequestedAttribute, rendered from
+    the specification's own schema by JSON pointer (`Name@<pointer>`),
+    because the spec declares the item inline; admin-ui openapi.json and
+    wire.ts regenerated.
+
+
+
+### Fixed
+
+- **sdk**: The vtc-host template advertises the REST base the VTC actually serves ([#1615](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1615))
+
+Keyring finding VTI-15. A VTC's DID document published
+
+      { "type": "VTCRest", "serviceEndpoint": "{URL}" }
+
+  but `vtc-service` serves its API under `/v1`, so every request a client derived
+  from the document answered 405. Its sibling `VTCStatusList` has always carried
+  `{URL}{STATUS_LIST_PATH}`; `VTCRest` never got the equivalent.
+
+  ## Why we never saw it
+
+  Nothing in this workspace consumes a `VTCRest` entry — `rest_url_from_did_doc`
+  looks for `vta-rest`. It exists for third parties, so a wrong value is invisible
+  here and costs only the integrator who trusts it. Keyring found it for that
+  reason, and it (with VTI-14, fixed in #1601) is why their repository carries its
+  own admin client.
+
+  That also corrects our remediation plan, which promised to "accept both forms on
+  the resolver side for DIDs already minted". There is no resolver side to make
+  tolerant.
+
+  ## The fix
+
+  `REST_PATH`, an optional template variable defaulting to `/v1`, exactly as
+  `STATUS_LIST_PATH` already works — so a deployment serving the API elsewhere, or
+  at the root (empty string), can say so. The VTC setup wizard already passes
+  `URL` as the host base precisely to avoid a double `/v1` in the status-list
+  endpoint; its comment now covers both variables.
+
+  ## Already-minted communities
+
+  A VTC's `did.jsonl` is write-once — it cannot re-sign its own log — so this
+  fixes new communities only. An existing one needs a VTA-side `dids edit` to
+  correct its `VTCRest` entry and a redelivered log. That is an operator action,
+  not something code here can do for them.
+
+  ## Tests
+
+  The existing test pinned the bare URL; it now asserts `/v1` and says why, so the
+  value is not quietly reverted. A new test covers the override and the empty
+  root case, and that an empty `REST_PATH` leaves no trailing slash.
+
+- **trust-tasks**: Name an upstream failure as one, not as an internal error ([#1609](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1609))
+
+A `ServiceError` at 502/504 — a DID-hosting server or other peer that did
+  not answer or refused — fell into the catch-all arm and went out as an
+  opaque `internalError`. An openvtc join that failed because the hosting
+  server's replies were refused by its mediator (`e.p.limits.queue.sender`)
+  showed the user "internal error: the consumer could not complete this
+  task", pointing at their own VTA.
+
+  It now goes out as `taskFailed` with `details.reason` =
+  `upstream_unavailable` and fixed text. The cause (peer, URL, its body)
+  stays in the operator's log, as the framework requires. The SDK recovers
+  the reason as `VtaError::Server { status: 502 }`, the variant REST
+  already produces for the same failure.
+
+
+
 ## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.45.1...vta-sdk-v0.46.0) — 2026-09-21
 
 

@@ -2,6 +2,44 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.6.12...vtc-client-v0.7.0) — 2026-09-21
+
+
+### Added
+
+- **vtc**: A community can ask an applicant to tell it about themselves ([#1614](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1614))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#543 (trust-tasks-rs 0.21.9),
+  design note docs/05-design-notes/persona-context-first.md §5.2. A join
+  manifest could ask only for credentials, so a community wanting a
+  display name had nothing to put on the "what's required" screen, and
+  nothing connected the join ceremony to an applicant's persona.
+
+  - Requested attributes are one community-level row beside the branding
+    (`community/requested-attributes`, backed up with it), managed with
+    admin GET/PUT /v1/community/requested-attributes (audited:
+    CommunityRequestedAttributesUpdated, types added/removed only), and
+    published as `requestedAttributes` on join-requests/manifest/0.2.
+  - join-requests/submit/0.2 accepts `attributes`. Before anything is
+    stored -- before the open-request dedup -- the answers are checked:
+    a required type unanswered is attributesMissing, a type the manifest
+    does not request is attributesUnrequested (refused, not trimmed), both
+    with details.types. Accepted answers are stored on the request and
+    returned by show/list as `attributes`. They are self-asserted and are
+    never fed to the join policy.
+  - Only the Trust Task form carries them: the legacy REST submit's holder
+    signature covers a fixed member set that does not include them, so an
+    answer there would be unsigned. A community that requires one refuses
+    that route with attributesMissing.
+  - VtcClient::requested_attributes / set_requested_attributes, and
+    `cnm vetting ask show|set --require/--optional/--purpose/--nothing`.
+  - vta_sdk::openapi gains JoinManifest02RequestedAttribute, rendered from
+    the specification's own schema by JSON pointer (`Name@<pointer>`),
+    because the spec declares the item inline; admin-ui openapi.json and
+    wire.ts regenerated.
+
+
+
 ## [0.6.12](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.6.11...vtc-client-v0.6.12) — 2026-09-21
 
 
