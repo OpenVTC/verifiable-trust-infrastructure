@@ -42,6 +42,7 @@ pub mod claim_types;
 pub mod contact;
 pub mod correlation;
 pub mod disclosure;
+mod face_values;
 pub mod facet;
 pub mod model;
 pub mod present;

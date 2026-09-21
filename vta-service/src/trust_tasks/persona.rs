@@ -1460,19 +1460,33 @@ pub(super) async fn handle_correlation_analyze(
     }
 
     let s = store(state);
-    let findings = match s
-        .analyze_correlation(
-            req.attribute_id.as_ref().map(|a| a.to_string()).as_deref(),
-            req.candidate
-                .as_ref()
-                .and_then(|c| serde_json::to_value(&c.value).ok())
-                .as_ref(),
-        )
-        .await
-    {
-        Ok(f) => f,
-        Err(e) => return reject(&doc, e),
-    };
+    let attribute_id = req.attribute_id.as_ref().map(|a| a.to_string());
+    let candidate = req
+        .candidate
+        .as_ref()
+        .and_then(|c| serde_json::to_value(&c.value).ok());
+
+    // `profileId` names a face to analyse. It was accepted and ignored before
+    // this, so `pnm persona correlate --profile-id` analysed the whole pool and
+    // reported it as the face.
+    let mut findings = Vec::new();
+    if let Some(profile_id) = &req.profile_id {
+        match s.analyze_face_correlation(&profile_id.to_string()).await {
+            Ok(f) => findings.extend(f),
+            Err(e) => return reject(&doc, e),
+        }
+    }
+    // The whole store is analysed only when nothing narrower was named.
+    if req.profile_id.is_none() || attribute_id.is_some() || candidate.is_some() {
+        match s
+            .analyze_correlation(attribute_id.as_deref(), candidate.as_ref())
+            .await
+        {
+            Ok(f) => findings.extend(f),
+            Err(e) => return reject(&doc, e),
+        }
+    }
+    findings.truncate(256);
 
     audit_persona(state, "persona.correlation.analyze", auth, None, None, None).await;
     success_response(&doc, json!({ "findings": findings }))
