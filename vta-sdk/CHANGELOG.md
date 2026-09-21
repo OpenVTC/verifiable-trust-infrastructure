@@ -2,6 +2,55 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.45.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.45.0...vta-sdk-v0.45.1) — 2026-09-21
+
+
+### Fixed
+
+- **sdk**: A task's declared `:notFound` is VtaError::NotFound ([#1602](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1602))
+
+#1580 made the contexts family answer its specification's error codes,
+  so a missing context now arrives as `vta/contexts/get:notFound`. The
+  client recovered NotFound only from the `details.reason` marker, which
+  those codes do not carry, so the rejection became a flat
+  Protocol("trust task failed [vta/contexts/get:notFound]: …").
+
+  Every Trust-Task caller that treats an absent context as a normal state
+  -- look it up, create it if missing -- therefore failed instead. OpenVTC's
+  community_context_e2e tests are the ones that caught it, on the bump to
+  vta-sdk 0.45 (OpenVTC/openvtc#362). The same applies to app-state's and
+  the persona family's declared :notFound.
+
+  Match the local part `notFound` on any extended code, as the client
+  already does for `transportUnavailable`. A different local code that
+  merely contains the word (`parentNotFound`) stays a Protocol error.
+
+- **sdk**: Honour an explicit --url on every transport, not only forced REST ([#1601](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1601))
+
+Keyring finding VTI-14: pointing `cnm` at a host had no effect, because the
+  community was resolved from the DID document instead. With VTI-15 this made
+  the CLI unusable against their stack, and is why their repository carries its
+  own admin client — an adoption cost, not just a bug.
+
+  ## The cause is a layer below where it is felt
+
+  The finding is filed against `cnm`'s vetting subcommands, and that is where an
+  operator meets it: `vetting::connect` builds its `VtcClient` from
+  `VtaClient::rest_url()`, so a discarded override sends it to the host the DID
+  document advertises while the operator watches the host they named stay idle.
+
+  But the discard happens in `session::connect_with_transport`. `url_override`
+  was honoured on exactly two paths — forced `--transport rest`, and the
+  priority-1 config `mediator_did` hint. The priority-2 path, which is what a
+  DID with an advertised endpoint actually takes, destructured `rest_url` out of
+  `resolve_vta_endpoint` and threaded that through, dropping `--url` on the
+  floor. So this affected **every** authenticated command that later reads
+  `rest_url()`, not only vetting.
+
+  ## The fix, and what it deliberately does not do
+
+
+
 ## [0.45.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.44.0...vta-sdk-v0.45.0) — 2026-09-21
 
 
