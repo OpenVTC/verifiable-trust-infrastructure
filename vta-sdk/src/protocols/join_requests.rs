@@ -139,6 +139,47 @@ pub const JOIN_REQUEST_WITHDRAW_TYPE: &str =
 pub const JOIN_REQUEST_WITHDRAW_RESPONSE_TYPE: &str =
     <withdraw::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// The generated `vtc/join-requests/supplement` module.
+///
+/// Re-exported rather than mirrored by hand, for the same reason
+/// [`withdraw`] is: the task has a generated module (`trust-tasks-rs` 0.21.6,
+/// from spec PR #526).
+pub use trust_tasks_rs::specs::vtc::join_requests::supplement;
+
+/// Trust Task `type` for supplementing a join request: the applicant answers a
+/// community's request for more evidence against the request they already have
+/// open, rather than opening a second one.
+pub const JOIN_REQUEST_SUPPLEMENT_TYPE: &str =
+    <supplement::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Trust Task `type` for the supplement response. The payload is the same
+/// `{requestId, verdict}` [`VerdictResponse`] a submission returns — a
+/// supplement has exactly the outcomes a submission has.
+pub const JOIN_REQUEST_SUPPLEMENT_RESPONSE_TYPE: &str =
+    <supplement::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Extended error code: the caller has no open request to supplement.
+///
+/// Also the answer when a supplied `requestId` names somebody else's request —
+/// conflated deliberately, so the task cannot be used to probe which request
+/// ids exist on this community.
+pub const JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND: &str = "vtc/join-requests/supplement:notFound";
+
+/// Extended error code: the request is open, but the community has asked this
+/// applicant for nothing — it is queued for a decision the community owes.
+///
+/// Distinct from [`JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND`] because the request
+/// does exist and is theirs; the applicant simply has no question to answer
+/// yet. Accepting evidence into it would replace what a maintainer is
+/// mid-review on.
+pub const JOIN_REQUEST_SUPPLEMENT_ERR_NOT_AWAITING_EVIDENCE: &str =
+    "vtc/join-requests/supplement:notAwaitingEvidence";
+
+/// Extended error code: the request has been approved, rejected or withdrawn,
+/// so there is no open decision left to supplement.
+pub const JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED: &str =
+    "vtc/join-requests/supplement:alreadyDecided";
+
 /// Extended error code: the applicant already has an open request, so this
 /// submit is a duplicate rather than a new application.
 ///

@@ -459,6 +459,7 @@ async fn dispatch_typed(
         }
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::JOIN_REQUEST_WITHDRAW_TYPE => handle_withdraw(state, ctx, doc).await,
+        jr::JOIN_REQUEST_SUPPLEMENT_TYPE => handle_supplement(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
         vetting_wire::VETTING_REVOKE_STATEMENT_TYPE => {
@@ -662,6 +663,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // poll is how they learn the community asked for more, and this is how
     // they decline to supply it.
     jr::JOIN_REQUEST_WITHDRAW_TYPE,
+    // The applicant answering the community's request for more, against the
+    // request they already have open. The third of the trio a deferral needs:
+    // `status` is how they learn what is wanted, this is how they supply it,
+    // and `withdraw` is how they decline to.
+    jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
     jr::MEMBER_SELF_REMOVE_TYPE,
     mem::MEMBER_VMC_TYPE,
     // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
@@ -1159,6 +1165,102 @@ async fn handle_status(
 ///
 /// The bare-body handler stays for existing senders; both produce the same
 /// receipt payload, so a migrating client sees no behaviour change.
+/// `vtc/join-requests/supplement/0.1` — the applicant answers the community's
+/// request for more evidence, against the request they already have open.
+///
+/// Holder-bound like `withdraw`: [`resolve_holder`] proves the caller, and
+/// that proven identity is the authorization, because ownership of the request
+/// is the entitlement and an applicant holds nothing else to check.
+///
+/// The success path deliberately runs through [`outcome_to_verdict`] and
+/// [`verdict_response`] — submit's own — because a supplement's response *is*
+/// submit's response. A second projection here would be a second place for the
+/// four verdict effects to be rendered, and they would drift.
+async fn handle_supplement(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::join::SupplementRefusal;
+
+    let applicant_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: jr::supplement::v0_1::Payload = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+
+    let request_id = match body.request_id.as_ref().map(|r| uuid::Uuid::parse_str(r)) {
+        None => None,
+        Some(Ok(id)) => Some(id),
+        Some(Err(e)) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("requestId is not a UUID: {e}"),
+                },
+            );
+        }
+    };
+
+    let outcome = match crate::join::supplement_inner(
+        state,
+        &applicant_did,
+        request_id,
+        Value::Object(body.vp.clone()),
+        Value::Object(body.extensions.clone()),
+        ctx.transport,
+    )
+    .await
+    {
+        Ok(o) => o,
+        // All three are spec-declared, so each goes out as itself. The generic
+        // mapping would flatten them into one `taskFailed`, and "nothing to
+        // supplement", "nothing has been asked of you" and "already decided"
+        // are three different things for an applicant to do next.
+        Err(e @ SupplementRefusal::NotFound(_)) => {
+            return reject_with_code(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND),
+                AppError::from(e).to_string(),
+                None,
+            );
+        }
+        Err(SupplementRefusal::NotAwaitingEvidence { request_id, status }) => {
+            let refusal = SupplementRefusal::NotAwaitingEvidence { request_id, status };
+            return reject_with_code(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUPPLEMENT_ERR_NOT_AWAITING_EVIDENCE),
+                AppError::from(refusal).to_string(),
+                Some(serde_json::json!({
+                    "requestId": request_id.to_string(),
+                    "status": status.to_string(),
+                })),
+            );
+        }
+        Err(SupplementRefusal::AlreadyDecided { request_id, status }) => {
+            let refusal = SupplementRefusal::AlreadyDecided { request_id, status };
+            return reject_with_code(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED),
+                AppError::from(refusal).to_string(),
+                Some(serde_json::json!({
+                    "requestId": request_id.to_string(),
+                    "status": status.to_string(),
+                })),
+            );
+        }
+        Err(SupplementRefusal::Other(e)) => return app_error_to_reject(&doc, &e),
+    };
+
+    match outcome_to_verdict(&outcome) {
+        Ok(v) => verdict_response(&doc, v),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
 /// `vtc/join-requests/withdraw/0.1` — the applicant closes their own request.
 ///
 /// Holder-bound like `self-remove`: [`resolve_holder`] proves the caller
@@ -1579,6 +1681,7 @@ mod tests {
             jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
             jr::JOIN_REQUEST_STATUS_TYPE,
             jr::JOIN_REQUEST_WITHDRAW_TYPE,
+            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
             jr::MEMBER_SELF_REMOVE_TYPE,
             mem::MEMBER_VMC_TYPE,
             vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,

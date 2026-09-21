@@ -18,7 +18,7 @@ use uuid::Uuid;
 use affinidi_vc::VerifiableCredential;
 use vti_common::audit::{
     AuditEvent, AuditWriter, CredentialIssuedData, JoinRequestData, JoinRequestRejectedData,
-    JoinRequestWithdrawnData, MemberAddedData,
+    JoinRequestSupplementedData, JoinRequestWithdrawnData, MemberAddedData,
 };
 use vti_common::error::AppError;
 
@@ -383,30 +383,27 @@ pub async fn decide_join(
 /// `allow` (the [`EffectPlan::Admit`] executor issues the VMC), and write the
 /// audit event. Shared by the VP submit and the credential-exchange present path.
 #[allow(clippy::too_many_arguments)]
-pub async fn realize_join_verdict(
+/// Apply a policy verdict to a join request row: set its status, record the
+/// decision, and run the admit effect when the verdict allows.
+///
+/// Extracted from [`realize_join_verdict`] so that a *second* decision on an
+/// existing request can reach the same code. `realize_join_verdict` decides a
+/// request it is creating; [`supplement_inner`] decides one that already
+/// exists, and the two must agree about what each effect means — a supplement
+/// that admitted an applicant by a different path than a submission would be a
+/// second implementation of admission, which is the thing worth not having.
+///
+/// Mutates `request` in place and returns the admit outcome when there is one.
+async fn apply_verdict_to_request(
     state: &AppState,
+    request: &mut JoinRequest,
+    verdict: &Verdict,
     applicant_did: &str,
-    vp: JsonValue,
-    vp_claims: JsonValue,
-    registry_consent: bool,
-    extensions: JsonValue,
-    verdict: Verdict,
-    transport: JoinTransport,
     consume_invitation_id: Option<String>,
-) -> Result<JoinSubmitOutcome, AppError> {
-    let audit_writer = state
-        .audit_writer
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
-
-    let mut request = JoinRequest::new(applicant_did.to_string(), vp);
-    request.vp_claims = vp_claims;
-    request.registry_consent = registry_consent;
-    request.extensions = extensions;
-
+    audit_writer: &AuditWriter,
+) -> Result<Option<Box<AdmitOutcome>>, AppError> {
     let mut admit: Option<Box<AdmitOutcome>> = None;
-    let rejected = matches!(verdict, Verdict::Deny(_));
-    match &verdict {
+    match verdict {
         Verdict::Allow(allow) => {
             // Auto-admit: the join effect (admit + issue VMC) runs now.
             // A duplicate ACL (re-submit by an existing member) surfaces
@@ -514,11 +511,11 @@ pub async fn realize_join_verdict(
         Verdict::Refer(_) => request.status = JoinStatus::Pending,
         Verdict::RequestMore(_) => {
             request.status = JoinStatus::Deferred;
-            request.policy_decision = Some(serde_json::to_value(&verdict)?);
+            request.policy_decision = Some(serde_json::to_value(verdict)?);
         }
         Verdict::Deny(d) => {
             request.status = JoinStatus::Rejected;
-            request.policy_decision = Some(serde_json::to_value(&verdict)?);
+            request.policy_decision = Some(serde_json::to_value(verdict)?);
             // The same refusal, in the shape the applicant's poll reads.
             // `policy_decision` keeps the whole verdict for the audit
             // trail; this carries the part the applicant is owed, plus
@@ -530,6 +527,40 @@ pub async fn realize_join_verdict(
             });
         }
     }
+    Ok(admit)
+}
+
+pub async fn realize_join_verdict(
+    state: &AppState,
+    applicant_did: &str,
+    vp: JsonValue,
+    vp_claims: JsonValue,
+    registry_consent: bool,
+    extensions: JsonValue,
+    verdict: Verdict,
+    transport: JoinTransport,
+    consume_invitation_id: Option<String>,
+) -> Result<JoinSubmitOutcome, AppError> {
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+
+    let mut request = JoinRequest::new(applicant_did.to_string(), vp);
+    request.vp_claims = vp_claims;
+    request.registry_consent = registry_consent;
+    request.extensions = extensions;
+
+    let rejected = matches!(verdict, Verdict::Deny(_));
+    let admit = apply_verdict_to_request(
+        state,
+        &mut request,
+        &verdict,
+        applicant_did,
+        consume_invitation_id,
+        audit_writer,
+    )
+    .await?;
     store_join_request(&state.join_requests_ks, &request).await?;
 
     // Audit — Rejected for a policy deny; Submitted otherwise.
@@ -872,6 +903,226 @@ fn signing_bytes(payload: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+/// Why a supplement was refused. Shaped like [`SubmitRefusal`] and for the
+/// same reason: the Trust Task surface answers each of these with its own
+/// spec-declared code, and the generic `AppError` mapping would flatten all
+/// three into one `taskFailed` carrying only prose.
+#[derive(Debug)]
+pub enum SupplementRefusal {
+    /// No open request for this applicant, or the named one is not theirs.
+    /// Conflated deliberately — see [`withdraw_inner`].
+    NotFound(String),
+    /// The request is open and theirs, but the community has asked them for
+    /// nothing: it is queued for a decision the community owes.
+    NotAwaitingEvidence {
+        request_id: Uuid,
+        status: JoinStatus,
+    },
+    /// Approved, rejected or already withdrawn.
+    AlreadyDecided {
+        request_id: Uuid,
+        status: JoinStatus,
+    },
+    /// Everything else, unchanged.
+    Other(AppError),
+}
+
+impl From<AppError> for SupplementRefusal {
+    fn from(e: AppError) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl From<SupplementRefusal> for AppError {
+    fn from(r: SupplementRefusal) -> Self {
+        match r {
+            SupplementRefusal::NotFound(m) => AppError::NotFound(m),
+            SupplementRefusal::NotAwaitingEvidence { request_id, status } => {
+                AppError::Conflict(format!(
+                    "join request {request_id} is {status}, not deferred — the community has not \
+                     asked for more evidence, so there is nothing to supplement"
+                ))
+            }
+            SupplementRefusal::AlreadyDecided { request_id, status } => AppError::Gone(format!(
+                "join request {request_id} is already {status} and cannot be supplemented"
+            )),
+            SupplementRefusal::Other(e) => e,
+        }
+    }
+}
+
+/// Answer a community's request for more evidence, against the request the
+/// applicant already has open (`vtc/join-requests/supplement/0.1`).
+///
+/// The applicant is the authority, exactly as on [`withdraw_inner`]:
+/// `applicant_did` is the proven caller and a request is supplementable only
+/// by the applicant recorded on it.
+///
+/// ## The presentation replaces; it does not accumulate
+///
+/// `vp` becomes the request's presentation outright, and the policy is
+/// re-evaluated against it alone. Merging it with what came before would
+/// produce a claim set the applicant never presented and no single proof
+/// covers, so the community could not say what was actually asserted at the
+/// moment it admitted them.
+///
+/// **Vetting travels in the presentation and is therefore replaced with it.**
+/// `vetting_facts` reads attestations out of the VP's `verifiableCredential`
+/// array, so a supplement that omits them is one with no vetting and the
+/// policy reads it that way. The per-request `StoredVettingFacts` row is a
+/// record — the admin view, the vetter sweep, tracing a withdrawn statement to
+/// the admissions it counted toward — and is deliberately *not* fed back into
+/// this decision; doing so would count evidence the applicant is no longer
+/// presenting. The spec says this normatively, after a first draft of it said
+/// the opposite (dtgwg-trust-tasks-tf #531).
+///
+/// ## Only a deferred request
+///
+/// A `Pending` request waits on the community, not on the applicant. Accepting
+/// evidence into it would replace what a maintainer is reviewing underneath
+/// them, so it is refused with `NotAwaitingEvidence`.
+#[allow(clippy::too_many_arguments)]
+pub async fn supplement_inner(
+    state: &AppState,
+    applicant_did: &str,
+    request_id: Option<Uuid>,
+    vp: JsonValue,
+    extensions: JsonValue,
+    transport: JoinTransport,
+) -> Result<JoinSubmitOutcome, SupplementRefusal> {
+    let ks = &state.join_requests_ks;
+    let not_found =
+        || SupplementRefusal::NotFound(format!("no open join request for {applicant_did}"));
+
+    // The spec's rule: prefer a supplied id over inferring from the caller.
+    let id = match request_id {
+        Some(id) => id,
+        None => find_open_request(ks, applicant_did)
+            .await?
+            .ok_or_else(not_found)?,
+    };
+    let mut request = crate::join::storage::get_join_request(ks, id)
+        .await?
+        .ok_or_else(not_found)?;
+    if request.applicant_did != applicant_did {
+        return Err(not_found());
+    }
+
+    let previous_status = request.status;
+    match previous_status {
+        JoinStatus::Deferred => {}
+        JoinStatus::Pending => {
+            return Err(SupplementRefusal::NotAwaitingEvidence {
+                request_id: id,
+                status: previous_status,
+            });
+        }
+        decided => {
+            return Err(SupplementRefusal::AlreadyDecided {
+                request_id: id,
+                status: decided,
+            });
+        }
+    }
+
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+
+    // An invitation presented now counts exactly as one presented at submit:
+    // the policy re-runs over the whole new presentation, and an invitation in
+    // it is part of that presentation. Consumption is the extracted verdict
+    // applier's job, so the burn happens once, on the same path as a
+    // submission's.
+    // Mirrors the submit spine's shape, including the `is_consumed` lookup —
+    // the policy fact must be able to say "this invite was already redeemed".
+    let invitation_fact = match verify_presented_invitation(state, applicant_did, &vp).await? {
+        Some(vi) => {
+            let consumed = crate::credentials::invitation_verify::is_consumed(
+                &state.consumed_invitations_ks,
+                &vi.id,
+            )
+            .await?;
+            Some((vi.id.clone(), vi.to_fact(consumed)))
+        }
+        None => None,
+    };
+    let consume_invitation_id = invitation_fact.as_ref().map(|(id, _)| id.clone());
+    let invitation = invitation_fact.map(|(_, fact)| fact);
+
+    let presentation = presentation_from_vp(applicant_did, &vp);
+    let vetting =
+        crate::vetting::vetting_facts(state, applicant_did, &vp, &extensions, chrono::Utc::now())
+            .await?;
+    let vetting_record = vetting.clone();
+    let verdict = decide_join(
+        state,
+        applicant_did,
+        presentation,
+        invitation,
+        vetting,
+        None,
+    )
+    .await?;
+
+    // The replacement itself, before the verdict is applied: the row the
+    // policy's effects act on is the one carrying the evidence it read.
+    request.vp_claims = extract_vp_claims(&vp);
+    request.vp = vp;
+    request.extensions = extensions;
+
+    let admit = apply_verdict_to_request(
+        state,
+        &mut request,
+        &verdict,
+        applicant_did,
+        consume_invitation_id,
+        audit_writer,
+    )
+    .await?;
+    store_join_request(ks, &request).await?;
+
+    // Not `JoinRequestSubmitted`: nothing was submitted. Conflating them would
+    // make a community's audit trail report more applications than it
+    // received, and lose that an admission was granted on the second set of
+    // evidence rather than the first.
+    audit_writer
+        .write(
+            applicant_did,
+            Some(applicant_did),
+            AuditEvent::JoinRequestSupplemented(JoinRequestSupplementedData {
+                request_id: id.to_string(),
+                verdict_effect: verdict.effect().to_string(),
+                previous_status: previous_status.to_string(),
+            }),
+        )
+        .await?;
+
+    // The vetting record follows the evidence: after the request is durable,
+    // and best effort, exactly as the submit spine does it.
+    if let Some(facts) = vetting_record
+        && let Err(e) =
+            super::storage::store_vetting_facts(ks, id, &facts, chrono::Utc::now()).await
+    {
+        warn!(
+            request = %id,
+            error = %e,
+            "vetting facts not recorded for a supplemented join request"
+        );
+    }
+
+    info!(
+        request_id = %id,
+        applicant = %applicant_did,
+        transport = transport.as_str(),
+        verdict = verdict.effect(),
+        previous_status = %previous_status,
+        "join request supplemented"
+    );
+    Ok(JoinSubmitOutcome { request, admit })
+}
+
 /// Close an applicant's own open join request.
 ///
 /// The applicant is the authority: `applicant_did` is the **proven** caller

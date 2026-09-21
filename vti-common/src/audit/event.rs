@@ -197,6 +197,17 @@ pub enum AuditEvent {
     /// member for it, and `JoinDecision` means *refusal*, so writing it
     /// there would make a withdrawn request read as rejected.
     JoinRequestWithdrawn(JoinRequestWithdrawnData),
+    /// The **applicant** answered a community's request for more evidence
+    /// against their existing request (`vtc/join-requests/supplement/0.1`),
+    /// and the community re-ran its policy.
+    ///
+    /// Kept distinct from `JoinRequestSubmitted` because nothing was
+    /// submitted: the request already existed, and what changed is the
+    /// evidence it will be decided on. Conflating the two would make a
+    /// community's audit trail report more applications than it received, and
+    /// would lose the fact that an admission was granted on the *second* set
+    /// of evidence rather than the first.
+    JoinRequestSupplemented(JoinRequestSupplementedData),
 
     /// New member row written. Companion event to
     /// `JoinRequestApproved` — the latter is what an audit
@@ -572,6 +583,7 @@ impl AuditEvent {
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
             Self::JoinRequestWithdrawn(..) => "JoinRequestWithdrawn",
+            Self::JoinRequestSupplemented(..) => "JoinRequestSupplemented",
             Self::MemberAdded(..) => "MemberAdded",
             Self::MemberRemoved(..) => "MemberRemoved",
             Self::MembershipReciprocated(..) => "MembershipReciprocated",
@@ -1024,6 +1036,23 @@ pub struct JoinRequestData {
     /// Transport the request arrived over (`"rest"` / `"didcomm"`),
     /// recorded for diagnostics.
     pub transport: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestSupplementedData {
+    /// UUID of the JoinRequest row whose evidence was replaced.
+    pub request_id: String,
+    /// The effect the re-run policy returned — `allow`, `deny`, `refer` or
+    /// `requestMore`. Recorded because it is the answer to "what did the new
+    /// evidence change?", which the request row alone cannot give: the row
+    /// carries only the latest state, so a request deferred twice looks
+    /// identical to one deferred once.
+    pub verdict_effect: String,
+    /// What the request's status was before the supplement. Always
+    /// `deferred` today — the task refuses any other state — and recorded
+    /// rather than assumed so the record stays readable if that ever widens.
+    pub previous_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
