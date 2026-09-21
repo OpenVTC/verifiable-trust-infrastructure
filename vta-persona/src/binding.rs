@@ -67,6 +67,11 @@ pub(crate) struct BindingRecord {
     /// Cached label so a context-scoped read can name the composition without
     /// reaching across the boundary to the profile.
     pub profile_name: Option<String>,
+    /// What the holder said this context may call the face — the only name a
+    /// context-scoped caller is given. `profile_name` is the holder's own and
+    /// stays holder-only; see `persona/binding/set` `label`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub claims: Vec<MaterialisedClaim>,
 }
 
@@ -81,9 +86,36 @@ pub struct BindingSummary {
     pub persona_did: String,
     pub bound: bool,
     pub profile_id: Option<Ulid>,
+    /// The holder's own name for the face. **Holder-only**: a dispatcher MUST
+    /// NOT hand it to a context-scoped caller, which reads [`Self::label`].
     pub profile_name: Option<String>,
+    /// The name the holder chose for this context to call the face.
+    pub label: Option<String>,
     pub claim_count: usize,
     pub bound_at: Option<String>,
+}
+
+/// Where an attribute edit landed — see [`PersonaStore::attribute_reach`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AttributeReach {
+    pub refreshed: Vec<RefreshedBinding>,
+    pub held_by_pin: Vec<HeldByPin>,
+}
+
+/// One binding whose projection an attribute edit re-pushed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefreshedBinding {
+    pub profile_id: Ulid,
+    pub context_id: String,
+    pub persona_did: String,
+}
+
+/// One face that pins an attribute and so did not follow an edit to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldByPin {
+    pub profile_id: Ulid,
+    pub pin_version: Version,
 }
 
 /// Outcome of a push.
@@ -112,6 +144,7 @@ impl PersonaStore {
         persona_did: &str,
         profile_id: Option<&str>,
         public_entries: Vec<Ulid>,
+        label: Option<String>,
         expected_version: Option<Version>,
     ) -> Result<Bound, AppError> {
         let _guard = self.write_lock.lock().await;
@@ -156,6 +189,8 @@ impl PersonaStore {
                 bound_at: now_rfc3339(),
             },
             profile_name,
+            // A cleared binding wears no face, so it has nothing to name.
+            label: profile_id.and(label),
             claims,
         };
         let count = record.claims.len();
@@ -213,6 +248,7 @@ impl PersonaStore {
                 bound: false,
                 profile_id: None,
                 profile_name: None,
+                label: None,
                 claim_count: 0,
                 bound_at: None,
             },
@@ -225,6 +261,7 @@ impl PersonaStore {
                 bound: r.binding.profile_id.is_some(),
                 profile_id: r.binding.profile_id.clone(),
                 profile_name: r.profile_name.clone(),
+                label: r.label.clone(),
                 claim_count: r.claims.len(),
                 bound_at: Some(r.binding.bound_at.clone()),
             },
@@ -291,6 +328,7 @@ impl PersonaStore {
                 bound: r.binding.profile_id.is_some(),
                 profile_id: r.binding.profile_id,
                 profile_name: r.profile_name,
+                label: r.label,
                 claim_count: r.claims.len(),
                 bound_at: Some(r.binding.bound_at),
             })
@@ -379,6 +417,7 @@ impl PersonaStore {
             }
             record.binding.profile_id = None;
             record.profile_name = None;
+            record.label = None;
             record.claims.clear();
             self.ks.insert(k, &record).await?;
             cleared += 1;
@@ -433,6 +472,48 @@ impl PersonaStore {
             refreshed += 1;
         }
         Ok(refreshed)
+    }
+
+    /// Where an edit to one attribute lands: the bindings that present it
+    /// live, and the faces that pin it and so do not follow.
+    ///
+    /// The answer `persona/attribute/put` returns as `refreshed` and
+    /// `heldByPin`. An edit propagating is the point of a pool and also the
+    /// surprise — a holder told only that the write succeeded cannot tell
+    /// whether it changed what one counterparty sees or nine.
+    ///
+    /// An `override` entry is in neither list: the face shows its own value,
+    /// so the edit changes nothing it presents.
+    pub async fn attribute_reach(&self, attribute_id: &str) -> Result<AttributeReach, AppError> {
+        let mut reach = AttributeReach::default();
+        for profile_id in self.referring_profiles(attribute_id).await? {
+            let Some(face) = self.get_profile(&profile_id).await? else {
+                continue;
+            };
+            let mut live = false;
+            for entry in &face.entries {
+                match entry {
+                    crate::ProfileEntry::Ref { r#ref } if r#ref == attribute_id => live = true,
+                    crate::ProfileEntry::Pinned { r#ref, pin_version } if r#ref == attribute_id => {
+                        reach.held_by_pin.push(HeldByPin {
+                            profile_id: profile_id.clone(),
+                            pin_version: *pin_version,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            if live {
+                for (context_id, persona_did) in self.bindings_to_anywhere(&profile_id).await? {
+                    reach.refreshed.push(RefreshedBinding {
+                        profile_id: profile_id.clone(),
+                        context_id,
+                        persona_did,
+                    });
+                }
+            }
+        }
+        Ok(reach)
     }
 
     /// Push every profile that references one attribute.
@@ -500,13 +581,88 @@ mod tests {
     /// breaks a naive `split(':')`: an implementation taking a fixed element
     /// returns `"did"` as the context id, which is not obviously wrong when
     /// read and is completely wrong when acted on.
+    /// A record with a fingerprint and one type, for the currency tests.
+    fn disclosed(s: &PersonaStore, value: Option<&str>) -> crate::DisclosureRecord {
+        crate::new_disclosure(
+            "ctx",
+            "did:v",
+            "did:p",
+            vec![crate::DisclosedClaim {
+                r#type: "phone.mobile".into(),
+                rung: crate::ProofRung::Whole,
+                value_blind: value
+                    .map(|v| crate::correlation::blind(&s.correlation_key, &serde_json::json!(v))),
+            }],
+        )
+    }
+
+    #[tokio::test]
+    async fn currency_says_whether_the_verifier_still_holds_what_is_presented() {
+        use crate::ClaimCurrency as C;
+        let (_d, s) = fresh().await;
+        let (attr, profile) = pool_profile(&s, "+61 400").await;
+        s.set_binding("ctx", "did:p", Some(&profile), vec![], None, None)
+            .await
+            .unwrap();
+
+        let rec = disclosed(&s, Some("+61 400"));
+        assert_eq!(s.claim_currency(&rec).await.unwrap(), vec![C::Current]);
+
+        // The value changes and the push re-materialises the binding.
+        let mut a = s.get(&attr).await.unwrap().unwrap();
+        a.value = Some(serde_json::json!("+61 999"));
+        s.put(a, None).await.unwrap();
+        assert_eq!(s.claim_currency(&rec).await.unwrap(), vec![C::Changed]);
+
+        // The persona stops presenting it; the verifier keeps what it got.
+        s.set_binding("ctx", "did:p", None, vec![], None, None)
+            .await
+            .unwrap();
+        assert_eq!(s.claim_currency(&rec).await.unwrap(), vec![C::Removed]);
+
+        // No fingerprint — a predicate, or a record from before them — is
+        // never reported as current.
+        let old = disclosed(&s, None);
+        assert_eq!(s.claim_currency(&old).await.unwrap(), vec![C::Unknown]);
+    }
+
+    #[tokio::test]
+    async fn a_cleared_binding_keeps_no_label() {
+        // A persona wearing no face has nothing to name, and a stale label
+        // would name a face it no longer wears.
+        let (_d, s) = fresh().await;
+        let (_attr, profile) = pool_profile(&s, "+61 400").await;
+        s.set_binding(
+            "ctx",
+            "did:p",
+            Some(&profile),
+            vec![],
+            Some("Co-op".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            s.binding_summary("ctx", "did:p")
+                .await
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("Co-op")
+        );
+        s.set_binding("ctx", "did:p", None, vec![], Some("Co-op".into()), None)
+            .await
+            .unwrap();
+        assert_eq!(s.binding_summary("ctx", "did:p").await.unwrap().label, None);
+    }
+
     #[tokio::test]
     async fn a_binding_is_reported_with_the_context_it_lives_in() {
         let (_d, s) = fresh().await;
         let (_a, profile) = pool_profile(&s, "+61 400 000 000").await;
         let persona = "did:peer:2.Ez6LSbXq3.Vz6MkfR9c";
 
-        s.set_binding("ctx-employer", persona, Some(&profile), vec![], None)
+        s.set_binding("ctx-employer", persona, Some(&profile), vec![], None, None)
             .await
             .unwrap();
 
@@ -534,9 +690,16 @@ mod tests {
         // the type — because what crosses the boundary is what was written.
         let (_d, s) = fresh().await;
         let (attr_id, profile_id) = pool_profile(&s, "+61 4").await;
-        s.set_binding("ctx", "did:persona:a", Some(&profile_id), vec![], None)
-            .await
-            .unwrap();
+        s.set_binding(
+            "ctx",
+            "did:persona:a",
+            Some(&profile_id),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let raw =
             s.ks.get_raw(storage::binding_key("ctx", "did:persona:a"))
@@ -560,7 +723,14 @@ mod tests {
         // nothing.
         let (_d, s) = fresh().await;
         let err = s
-            .set_binding("ctx", "did:persona:a", Some("01MISSING"), vec![], None)
+            .set_binding(
+                "ctx",
+                "did:persona:a",
+                Some("01MISSING"),
+                vec![],
+                None,
+                None,
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
@@ -570,12 +740,12 @@ mod tests {
     async fn clearing_is_a_first_class_state_not_an_absence() {
         let (_d, s) = fresh().await;
         let (_a, p) = pool_profile(&s, "x").await;
-        s.set_binding("ctx", "did:p", Some(&p), vec![], None)
+        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None)
             .await
             .unwrap();
         assert!(s.binding_summary("ctx", "did:p").await.unwrap().bound);
 
-        s.set_binding("ctx", "did:p", None, vec![], None)
+        s.set_binding("ctx", "did:p", None, vec![], None, None)
             .await
             .unwrap();
         let sum = s.binding_summary("ctx", "did:p").await.unwrap();
@@ -597,13 +767,13 @@ mod tests {
         let (_a, p) = pool_profile(&s, "x").await;
 
         let first = s
-            .set_binding("ctx", "did:p1", Some(&p), vec![], None)
+            .set_binding("ctx", "did:p1", Some(&p), vec![], None, None)
             .await
             .unwrap();
         assert_eq!(first.also_bound_persona_count, 0);
 
         let second = s
-            .set_binding("ctx", "did:p2", Some(&p), vec![], None)
+            .set_binding("ctx", "did:p2", Some(&p), vec![], None, None)
             .await
             .unwrap();
         assert_eq!(second.also_bound_persona_count, 1);
@@ -613,7 +783,7 @@ mod tests {
     async fn a_summary_names_the_composition_and_never_its_contents() {
         let (_d, s) = fresh().await;
         let (_a, p) = pool_profile(&s, "+61 4xx secret").await;
-        s.set_binding("ctx", "did:p", Some(&p), vec![], None)
+        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None)
             .await
             .unwrap();
 
@@ -631,7 +801,7 @@ mod tests {
         // from above, not a read from below.
         let (_d, s) = fresh().await;
         let (attr_id, p) = pool_profile(&s, "old").await;
-        s.set_binding("ctx", "did:p", Some(&p), vec![], None)
+        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -654,7 +824,7 @@ mod tests {
     async fn a_context_sees_only_its_own_bindings() {
         let (_d, s) = fresh().await;
         let (_a, p) = pool_profile(&s, "x").await;
-        s.set_binding("ctx-a", "did:p", Some(&p), vec![], None)
+        s.set_binding("ctx-a", "did:p", Some(&p), vec![], None, None)
             .await
             .unwrap();
 

@@ -50,13 +50,17 @@ pub mod profile;
 pub mod storage;
 pub mod store;
 
-pub use binding::{BindingSummary, Bound, MaterialisedClaim};
+pub use binding::{
+    AttributeReach, BindingSummary, Bound, HeldByPin, MaterialisedClaim, RefreshedBinding,
+};
 // Types only. `defaults_for` and `sensitivity_of` keep their module in the
 // path: at the crate root their names say nothing about which registry, and
 // there will be more than one thing with defaults.
 pub use claim_types::{Axes, MaskStyle, ReleaseRequirement, Sensitivity};
 pub use contact::{Contact, ContactClaim, ContactDocument, ContactRevision, ContactSummary, Filed};
-pub use disclosure::{DisclosedClaim, DisclosureRecord, HistoryQuery, new_disclosure};
+pub use disclosure::{
+    ClaimCurrency, DisclosedClaim, DisclosureRecord, HistoryQuery, new_disclosure,
+};
 pub use facet::{FacetPlacement, PlacedElsewhere, new_facet};
 pub use model::{
     Attribute, Binding, Facet, FacetColour, InlineValue, OverrideValue, Profile, ProfileEntry,

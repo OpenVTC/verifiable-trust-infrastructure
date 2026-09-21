@@ -172,6 +172,13 @@ pub fn reach_of(uri: &str) -> Option<Reach> {
 /// A store error is not a grant. It is logged with the real reason and answered
 /// as "no", because the alternative — treating an unreadable ACL as permission —
 /// turns a database blip into a boundary crossing.
+/// Whether the caller acts for the holder — the same test [`authorize`] applies
+/// to a holder-reach task, for the members of a context-reach response that
+/// only the holder may read.
+async fn is_holder(state: &AppState, claims: &AuthClaims) -> bool {
+    claims.is_super_admin() || holder_capability_granted(state, claims).await
+}
+
 async fn holder_capability_granted(state: &AppState, claims: &AuthClaims) -> bool {
     match vti_common::acl::get_acl_entry(&state.acl_ks, &claims.did).await {
         Ok(Some(entry)) => vti_common::acl::entry_has_capability(
@@ -607,19 +614,47 @@ pub(super) async fn handle_attribute_put(
     )
     .await;
 
-    success_response(
-        &doc,
-        serde_json::json!({
-            "attributeId": attribute_id,
-            "version": written.version,
-            "created": written.created,
-            "updatedAt": chrono::Utc::now().to_rfc3339(),
-            "correlation": {
-                "severity": if shared > 0 { "high" } else { "none" },
-                "sharedWithProfileCount": shared,
-            }
-        }),
-    )
+    // Where the edit landed. Nothing references a brand-new attribute, so a
+    // create has nothing to report and the scan is skipped.
+    let reach = if written.created {
+        vta_persona::AttributeReach::default()
+    } else {
+        s.attribute_reach(&attribute_id).await.unwrap_or_default()
+    };
+
+    let mut body = serde_json::json!({
+        "attributeId": attribute_id,
+        "version": written.version,
+        "created": written.created,
+        "updatedAt": chrono::Utc::now().to_rfc3339(),
+        "correlation": {
+            "severity": if shared > 0 { "high" } else { "none" },
+            "sharedWithProfileCount": shared,
+        },
+    });
+    if !reach.refreshed.is_empty() {
+        body["refreshed"] = reach
+            .refreshed
+            .iter()
+            .take(256)
+            .map(|r| {
+                json!({
+                    "profileId": r.profile_id,
+                    "contextId": r.context_id,
+                    "personaDid": r.persona_did,
+                })
+            })
+            .collect();
+    }
+    if !reach.held_by_pin.is_empty() {
+        body["heldByPin"] = reach
+            .held_by_pin
+            .iter()
+            .take(256)
+            .map(|h| json!({ "profileId": h.profile_id, "pinVersion": h.pin_version }))
+            .collect();
+    }
+    success_response(&doc, body)
 }
 
 pub(super) async fn handle_attribute_list(
@@ -1022,6 +1057,7 @@ pub(super) async fn handle_binding_set(
             &persona,
             profile_id.as_deref(),
             public,
+            req.label.as_ref().map(|l| l.to_string()),
             req.expected_version.map(|v| *v),
         )
         .await
@@ -1117,7 +1153,14 @@ pub(super) async fn handle_binding_get(
         "claimCount": sum.claim_count,
     });
     put_opt(&mut body, "profileId", sum.profile_id);
-    put_opt(&mut body, "profileName", sum.profile_name);
+    put_opt(&mut body, "label", sum.label);
+    // The holder's OWN name for the face, which a context-scoped caller must
+    // not be handed: it is their filing ("the divorce"), and wearing a face in
+    // a context is not consent to tell the context what they call it. The
+    // context reads `label`, the name the holder chose for it.
+    if is_holder(state, auth).await {
+        put_opt(&mut body, "profileName", sum.profile_name);
+    }
     put_opt(&mut body, "boundAt", sum.bound_at);
     success_response(&doc, body)
 }
@@ -1141,6 +1184,8 @@ pub(super) async fn handle_binding_list(
         Err(e) => return reject(&doc, e),
     };
     audit_persona(state, "persona.binding.list", auth, None, Some(&ctx), None).await;
+    // See `handle_binding_get`: the face's own name is the holder's alone.
+    let holder = is_holder(state, auth).await;
     let personas: Vec<Value> = sums
         .iter()
         .map(|s| {
@@ -1149,7 +1194,10 @@ pub(super) async fn handle_binding_list(
                 "bound": s.bound,
                 "claimCount": s.claim_count,
             });
-            put_opt(&mut row, "profileName", s.profile_name.clone());
+            put_opt(&mut row, "label", s.label.clone());
+            if holder {
+                put_opt(&mut row, "profileName", s.profile_name.clone());
+            }
             row
         })
         .collect();
@@ -1424,6 +1472,39 @@ pub(super) async fn handle_disclosure_history(
         Err(e) => return reject(&doc, e),
     };
 
+    // Built member by member against the published row rather than by
+    // serialising `DisclosureRecord`, whose shape is the store's: its `claims`
+    // pairs and `citedContactRevisions` are not members of the row, which is
+    // `additionalProperties: false`, so a non-empty history failed validation
+    // whole. It went unnoticed because the only test read an empty one.
+    let s = store(state);
+    let mut rows = Vec::with_capacity(records.len());
+    for r in &records {
+        let currency = match s.claim_currency(r).await {
+            Ok(c) => c,
+            Err(e) => return reject(&doc, e),
+        };
+        let mut row = json!({
+            "disclosureId": r.disclosure_id,
+            "contextId": r.context_id,
+            "verifierDid": r.verifier_did,
+            "personaDid": r.persona_did,
+            "claimTypes": r.claims.iter().map(|c| c.r#type.clone()).collect::<Vec<_>>(),
+            "rungs": r.claims.iter().map(|c| c.rung).collect::<Vec<_>>(),
+            "claimCurrency": currency,
+            "disclosedAt": r.disclosed_at,
+        });
+        put_opt(&mut row, "subject", r.subject.clone());
+        put_opt(&mut row, "purpose", r.purpose.clone());
+        put_opt(&mut row, "renderer", r.renderer.clone());
+        put_opt(
+            &mut row,
+            "durableCredentialId",
+            r.durable_credential_id.clone(),
+        );
+        rows.push(row);
+    }
+
     audit_persona(
         state,
         "persona.disclosure.history",
@@ -1433,7 +1514,7 @@ pub(super) async fn handle_disclosure_history(
         None,
     )
     .await;
-    success_response(&doc, json!({ "disclosures": records }))
+    success_response(&doc, json!({ "disclosures": rows }))
 }
 
 pub(super) async fn handle_correlation_analyze(
@@ -1918,7 +1999,7 @@ pub(super) async fn handle_local_profile_delete(
         };
         unbound = bound.len();
         for persona_did in bound {
-            if let Err(e) = s.set_local_binding(&ctx, &persona_did, None).await {
+            if let Err(e) = s.set_local_binding(&ctx, &persona_did, None, None).await {
                 return reject(&doc, e);
             }
         }
@@ -1978,7 +2059,12 @@ pub(super) async fn handle_local_binding_set(
     // the whole distinction from binding/set, and it lives in one place so this
     // handler cannot forget it.
     let version = match store(state)
-        .set_local_binding(&ctx, &persona, profile_id.as_deref())
+        .set_local_binding(
+            &ctx,
+            &persona,
+            profile_id.as_deref(),
+            req.label.as_ref().map(|l| l.to_string()),
+        )
         .await
     {
         Ok(v) => v,

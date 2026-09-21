@@ -228,15 +228,18 @@ pub async fn cmd_binding_set(
     persona_did: String,
     profile_id: Option<String>,
     public_entries: Vec<String>,
+    label: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
     let clearing = profile_id.is_none();
+    let unlabelled = !clearing && label.is_none();
     let result = client
         .persona_binding_set(
             &context_id,
             &persona_did,
             profile_id.as_deref(),
             public_entries,
+            label.as_deref(),
             expected_version,
         )
         .await?;
@@ -249,6 +252,12 @@ pub async fn cmd_binding_set(
                  {context_id}. Editing an attribute refreshes it; copies go down, and nothing reads \
                  up.{RESET}"
             );
+            if unlabelled {
+                println!(
+                    "{DIM}No --label: {context_id} is given no name for this face. Your own name \
+                     for it stays yours.{RESET}"
+                );
+            }
         }
     }
     print_result("Binding:", &result)
@@ -687,6 +696,7 @@ pub async fn cmd_local_binding_set(
     context_id: String,
     persona_did: String,
     profile_id: Option<String>,
+    label: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
     let result = client
@@ -694,6 +704,7 @@ pub async fn cmd_local_binding_set(
             &context_id,
             &persona_did,
             profile_id.as_deref(),
+            label.as_deref(),
             expected_version,
         )
         .await?;
