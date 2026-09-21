@@ -503,27 +503,87 @@ fn print_rollback_result(kind: &str, resp: &vta_sdk::protocol::services::Rollbac
     print_serverless_hint(resp.serverless, &resp.vta_did);
 }
 
-/// Print the "fetch did.jsonl + redeploy" hint when the mutation
-/// just wrote a LogEntry to a self-hosted VTA DID.
+/// Tell the operator where the new log entry went, after a mutation of the
+/// VTA's **own** DID on a running VTA.
 ///
-/// Silent when `serverless` is false (the VTA published to a host
-/// as part of the call — no follow-up needed) and when `vta_did`
-/// is empty (no LogEntry was written, e.g. no-op rollback).
+/// Silent when `serverless` is false (the VTA published to a did-hosting
+/// server as part of the call) and when `vta_did` is empty (no LogEntry was
+/// written, e.g. a no-op rollback).
 ///
-/// Suffix is two operator-actionable lines: the command and the
-/// reason. Operators running scripted updates will see the line
-/// every time on serverless deployments — that's intentional,
-/// since the alternative is stale resolvers without an obvious
-/// cause.
+/// A self-hosted ("serverless") VTA serves its own `did.jsonl` from its store
+/// at the DID's canonical path, read per request — so the entry just written is
+/// already being served, and there is nothing to redeploy. Advising a redeploy
+/// here sent operators to copy a log to the host that was already serving it
+/// (Keyring VTI-36). The one case that still needs a copy is a log the operator
+/// *also* publishes somewhere else, which is said last.
 pub fn print_serverless_hint(serverless: bool, vta_did: &str) {
     if !serverless || vta_did.is_empty() {
         return;
     }
+    print_self_hosted_notice(vta_did, "now serves");
+}
+
+/// [`print_serverless_hint`] for the offline `vta services …` surface, which
+/// runs with the daemon stopped: the entry is served once the VTA starts.
+pub fn print_serverless_hint_offline(serverless: bool, vta_did: &str) {
+    if !serverless || vta_did.is_empty() {
+        return;
+    }
+    print_self_hosted_notice(vta_did, "will serve, once it is running again,");
+}
+
+fn print_self_hosted_notice(vta_did: &str, serves: &str) {
     println!();
-    println!("  This VTA's DID is self-hosted. Fetch the updated log:");
+    match webvh_log_url(vta_did) {
+        Some(url) => {
+            println!("  This VTA hosts its own DID, and {serves} the updated log at");
+            println!("    {url}");
+        }
+        None => println!("  This VTA hosts its own DID, and {serves} the updated log itself."),
+    }
+    println!("  Nothing to redeploy. Resolvers pick up the new version as their cache");
+    println!("  expires (60 s for this VTA's own responses, up to 5 min in a caching resolver).");
+    println!("  Only a copy you also publish elsewhere needs replacing:");
     println!("    pnm did-mgmt dids get-log {vta_did} --out did.jsonl");
-    println!("  then redeploy did.jsonl to your host. Until you do,");
-    println!("  resolvers will keep returning the prior version.");
+}
+
+/// After a mutation of a DID this VTA does **not** serve itself — a
+/// self-hosted DID it manages for someone else, such as a community's. The
+/// new entry exists only in the VTA's store until it is delivered to wherever
+/// that DID's log is served.
+pub fn print_redeploy_hint(serverless: bool, did: &str) {
+    if !serverless || did.is_empty() {
+        return;
+    }
+    println!();
+    println!("  This DID is self-hosted, and not by this VTA. Fetch the updated log:");
+    println!("    pnm did-mgmt dids get-log {did} --out did.jsonl");
+    match webvh_log_url(did) {
+        Some(url) => println!("  then install it where {url} is served from."),
+        None => println!("  then install it where the DID's log is served from."),
+    }
+    println!("  Until you do, resolvers will keep returning the prior version.");
+}
+
+/// The HTTPS URL a `did:webvh` DID's log is resolved from (did:webvh v1.0,
+/// DID-to-HTTPS transformation): `did:webvh:<scid>:<host>[:<path>…]` becomes
+/// `https://<host>/<path…>/did.jsonl`, or `/.well-known/did.jsonl` with no
+/// path. `%3A` in the host is a port separator. `None` for anything else.
+fn webvh_log_url(did: &str) -> Option<String> {
+    let rest = did.strip_prefix("did:webvh:")?;
+    let mut parts = rest.split(':');
+    let _scid = parts.next().filter(|s| !s.is_empty())?;
+    let host = parts.next().filter(|s| !s.is_empty())?;
+    let host = host.replace("%3A", ":").replace("%3a", ":");
+    let path: Vec<&str> = parts.collect();
+    if path.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    Some(if path.is_empty() {
+        format!("https://{host}/.well-known/did.jsonl")
+    } else {
+        format!("https://{host}/{}/did.jsonl", path.join("/"))
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -540,5 +600,24 @@ impl std::str::FromStr for ReportFormat {
             "table" => Ok(Self::Table),
             other => Err(format!("unknown format `{other}` — use `json` or `table`")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Keyring VTI-36: the hint names the URL the log is resolved from.
+    #[test]
+    fn webvh_log_url_follows_the_did_to_https_transform() {
+        use super::webvh_log_url;
+        assert_eq!(
+            webvh_log_url("did:webvh:QmScid:vta.example.com").as_deref(),
+            Some("https://vta.example.com/.well-known/did.jsonl")
+        );
+        assert_eq!(
+            webvh_log_url("did:webvh:QmScid:example.com%3A8100:dids:vta").as_deref(),
+            Some("https://example.com:8100/dids/vta/did.jsonl")
+        );
+        assert_eq!(webvh_log_url("did:key:z6Mk"), None);
+        assert_eq!(webvh_log_url("did:webvh:QmScid"), None);
     }
 }
