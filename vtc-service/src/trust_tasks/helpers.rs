@@ -28,6 +28,7 @@ use trust_tasks_rs::{
     ErrorPayload, ErrorResponse, RejectReason, TrustTask, TrustTaskCode, TypeUri,
 };
 use uuid::Uuid;
+use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 use vti_common::error::AppError;
 
 use crate::server::AppState;
@@ -82,8 +83,12 @@ pub(crate) fn parse_payload<T: serde::de::DeserializeOwned>(
 ///   `permission_denied`
 /// - `Validation` / `TrustTaskMalformed` / `TrustTaskMissing` /
 ///   `InvalidCursor` → `malformed_request`
-/// - `NotFound` / `Conflict` / `IdempotencyKeyConflict` → `task_failed`
-/// - everything else → `internal_error`
+/// - `NotFound` / `Conflict` / `IdempotencyKeyConflict` / `Gone` →
+///   `task_failed`, each discriminated by a `details.reason` from
+///   [`vta_sdk::protocols::trust_task_reject_reasons`] so the client recovers
+///   the typed variant
+/// - everything else → `internal_error`, with the cause logged and **not**
+///   sent
 pub(crate) fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> TrustTaskOutcome {
     let message = err.to_string();
     let reason = match err {
@@ -95,20 +100,111 @@ pub(crate) fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> Trus
         | AppError::TrustTaskMalformed(_)
         | AppError::TrustTaskMissing
         | AppError::InvalidCursor => RejectReason::MalformedRequest { reason: message },
-        // `Gone` is a terminal caller-visible outcome, not a server fault —
-        // keep it out of the `internal_error` fallback, which would tell the
+        // These have no standard code of their own — §8.3 defines no
+        // `notFound` / `conflict` / `gone` — so all of them ride out under
+        // `taskFailed`. That is the correct wire code and it is not enough on
+        // its own: a caller cannot tell "the row you asked for is absent",
+        // very often a *normal* state it knows how to handle, from "this
+        // operation genuinely failed", and the distinction that REST keeps in
+        // an HTTP status is simply lost.
+        //
+        // So the discriminator goes in `details.reason`, which is what
+        // `VtaClient::trust_task_error` reads back into the same typed
+        // `VtaError` variant the REST and problem-report paths produce. The
+        // VTA has done this since its own gate went in; the VTC never did, so
+        // every `NotFound`, `Conflict` and `Gone` this service produced
+        // reached a Trust Task client as an opaque `Protocol(String)` — the
+        // exact collapse `CLAUDE.md` names ("never collapse a Conflict into a
+        // string"), and the same defect #1602 fixed from the client end for
+        // the one code whose local part happens to be `notFound`.
+        //
+        // `Gone` is a terminal caller-visible outcome, not a server fault, so
+        // it stays out of the `internal_error` fallback, which would tell the
         // client to retry a permanently-consumed resource.
-        AppError::NotFound(_)
-        | AppError::Conflict(_)
-        | AppError::Gone(_)
-        | AppError::IdempotencyKeyConflict => RejectReason::TaskFailed {
-            reason: message,
-            details: None,
-        },
-        _ => RejectReason::InternalError { reason: message },
+        AppError::NotFound(_) => task_failed_because(message, reasons::NOT_FOUND),
+        AppError::Conflict(_) | AppError::IdempotencyKeyConflict => {
+            task_failed_because(message, reasons::CONFLICT)
+        }
+        AppError::Gone(_) => task_failed_because(message, reasons::GONE),
+        // Framework 0.5.0, *What a `message` May Not Say*: a `message` MUST
+        // NOT reveal consumer-internal state. Passing `err.to_string()` out
+        // sent the cause verbatim — "vtc_did not configured",
+        // "audit_writer not initialised", a fjall or serde failure — which
+        // tells an unauthenticated caller the deployment's shape and which
+        // internal invariant just broke.
+        //
+        // The producer needs one fact from an `internalError`: the failure was
+        // not its document's doing, so re-sending may work. The cause is what
+        // the *operator* needs, and it goes to the log where the operator is.
+        // Every other arm above describes the caller's own request back to it,
+        // which is not consumer-internal state, and passes through unchanged.
+        other => {
+            tracing::error!(cause = %other, "trust task failed with an internal error");
+            RejectReason::InternalError {
+                reason: OPAQUE_INTERNAL_ERROR.to_string(),
+            }
+        }
     };
     reject_with(doc, reason)
 }
+
+/// A `taskFailed` carrying the `details.reason` discriminator a client reads
+/// back into a typed [`vta_sdk::error::VtaError`]. Twin of `vta-service`'s
+/// function of the same name — the two services must not disagree about how a
+/// missing row reaches a caller.
+fn task_failed_because(message: String, reason: &str) -> RejectReason {
+    RejectReason::TaskFailed {
+        reason: message,
+        details: Some(serde_json::json!({ "reason": reason })),
+    }
+}
+
+/// [`reject_with_code`] plus the `details.reason` discriminator.
+///
+/// An extended code is what a client *should* branch on, but only if it knows
+/// that code. SPEC §8.5's fallback says one that does not treats the error as
+/// `taskFailed` — at which point it is back to needing the marker to tell an
+/// absent row from a failure. #1602 recovered `NotFound` for codes whose local
+/// part is literally `notFound`; nothing recovers `Conflict` or `Gone`, so a
+/// declared `:alreadyDecided` or `:requestAlreadyOpen` reached every client as
+/// an opaque `Protocol(String)`.
+///
+/// Carrying both means a client that knows the code gets the precise reason
+/// and one that does not still gets the right typed variant.
+pub(crate) fn reject_with_code_because<P>(
+    doc: &TrustTask<P>,
+    code: TrustTaskCode,
+    message: impl Into<String>,
+    details: Option<Value>,
+    reason: &str,
+) -> TrustTaskOutcome {
+    let details = match details {
+        // Merge rather than replace: the spec'd annex members (`requestId`,
+        // `status`) are what the applicant's client acts on.
+        Some(Value::Object(mut map)) => {
+            map.insert("reason".into(), Value::String(reason.to_string()));
+            Value::Object(map)
+        }
+        // A non-object `details` is not a shape this service emits, and
+        // silently dropping it would hide that. Nothing calls it that way.
+        Some(other) => {
+            tracing::warn!(
+                "non-object `details` on a coded reject; the reason marker was added beside it"
+            );
+            serde_json::json!({ "reason": reason, "details": other })
+        }
+        None => serde_json::json!({ "reason": reason }),
+    };
+    reject_with_code(doc, code, message, Some(details))
+}
+
+/// What an `internalError` says instead of the cause.
+///
+/// It tells the producer the one thing it can act on — the failure was not its
+/// document's fault — and nothing an unauthenticated caller could probe with.
+/// Deliberately the same sentence `vta-service` uses.
+pub(crate) const OPAQUE_INTERNAL_ERROR: &str =
+    "the consumer could not complete this task; the request itself was accepted";
 
 /// Framework 0.5.0, *Bounding `details`*: where a specification declares no
 /// bound, 4096 bytes of JCS and 16 immediate members apply.
@@ -336,6 +432,61 @@ mod tests {
             .parse()
             .expect("acl/list Type URI parses");
         TrustTask::new("urn:uuid:test", uri, json!({}))
+    }
+
+    /// Framework 0.5.0, *What a `message` May Not Say*: an `internalError`
+    /// must not carry consumer-internal state. This service used to send
+    /// `err.to_string()` verbatim, so an unauthenticated caller learned which
+    /// internal invariant broke and, with it, the deployment's shape.
+    ///
+    /// The cause still has to reach the operator, so it goes to the log. This
+    /// test only pins that it does not reach the wire.
+    #[test]
+    fn an_internal_error_does_not_send_its_cause() {
+        let secret = "vtc_did not configured";
+        let out = app_error_to_reject(&doc(), &AppError::Internal(secret.into()));
+        let body = String::from_utf8(out.body).expect("the reject body is UTF-8");
+
+        assert!(
+            !body.contains(secret),
+            "the cause must not reach the wire: {body}"
+        );
+        assert!(
+            body.contains(OPAQUE_INTERNAL_ERROR),
+            "and the opaque sentence must: {body}"
+        );
+
+        // A second cause of a different shape, because the leak was in a
+        // catch-all arm rather than in `Internal` alone.
+        let out = app_error_to_reject(
+            &doc(),
+            &AppError::SecretStore("keyring backend unavailable at /run/user/1000".into()),
+        );
+        let body = String::from_utf8(out.body).expect("the reject body is UTF-8");
+        assert!(!body.contains("keyring backend"), "{body}");
+        assert!(body.contains(OPAQUE_INTERNAL_ERROR), "{body}");
+    }
+
+    /// The three caller-visible outcomes carry the marker a client reads back
+    /// into a typed `VtaError`, and still say what happened in prose — they
+    /// describe the caller's own request, which is not internal state.
+    #[test]
+    fn caller_visible_failures_carry_their_reason_marker() {
+        for (err, want) in [
+            (AppError::NotFound("no such row".into()), reasons::NOT_FOUND),
+            (AppError::Conflict("already open".into()), reasons::CONFLICT),
+            (AppError::Gone("withdrawn".into()), reasons::GONE),
+            (AppError::IdempotencyKeyConflict, reasons::CONFLICT),
+        ] {
+            let out = app_error_to_reject(&doc(), &err);
+            let body: Value = serde_json::from_slice(&out.body).expect("reject body is JSON");
+            assert_eq!(
+                body.pointer("/payload/details/reason")
+                    .and_then(Value::as_str),
+                Some(want),
+                "{err:?} must carry {want}: {body}"
+            );
+        }
     }
 
     /// The unrouted body-parse error must claim the same document type as a

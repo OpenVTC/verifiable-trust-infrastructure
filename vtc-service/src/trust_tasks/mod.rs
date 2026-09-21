@@ -56,6 +56,7 @@ use serde_json::Value;
 use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_1 as pa, challenge::v0_1 as pc};
 use trust_tasks_rs::{RejectReason, TrustTask};
 
+use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 use vti_common::error::AppError;
 
 use vta_sdk::protocols::join_requests::{
@@ -77,7 +78,7 @@ pub(crate) use helpers::TrustTaskOutcome;
 pub(crate) use helpers::framework_error_type_uri;
 use helpers::{
     app_error_to_reject, body_parse_error_response, parse_payload, reject_with, reject_with_code,
-    success_response, verdict_response, verify_trust_task_proof,
+    reject_with_code_because, success_response, verdict_response, verify_trust_task_proof,
 };
 
 /// The transport-resolved caller identity threaded into the dispatcher.
@@ -772,7 +773,7 @@ async fn handle_submit(
         // additive for every existing caller.
         Err(crate::join::SubmitRefusal::AlreadyOpen { request_id, status }) => {
             let refusal = crate::join::SubmitRefusal::AlreadyOpen { request_id, status };
-            return reject_with_code(
+            return reject_with_code_because(
                 &doc,
                 extended_code(jr::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN),
                 AppError::from(refusal).to_string(),
@@ -780,6 +781,7 @@ async fn handle_submit(
                     "requestId": request_id.to_string(),
                     "status": status.to_string(),
                 })),
+                reasons::CONFLICT,
             );
         }
         Err(crate::join::SubmitRefusal::Other(e)) => return app_error_to_reject(&doc, &e),
@@ -1016,11 +1018,15 @@ async fn handle_vetter_resend(
     }
     match crate::vetting::vetters::resend(state, &vetter_did, &vetter_did).await {
         Ok(response) => success_response(&doc, response),
-        Err(AppError::NotFound(reason)) => reject_with_code(
+        // `notGranted` is a `NotFound` underneath, and its local part is not
+        // `notFound`, so #1602's client-side rule does not recover it — the
+        // marker is the only thing that does.
+        Err(AppError::NotFound(reason)) => reject_with_code_because(
             &doc,
             extended_code(vetting_wire::VETTING_VETTER_RESEND_ERR_NOT_GRANTED),
             reason,
             None,
+            reasons::NOT_FOUND,
         ),
         Err(AppError::ServiceError { status, message })
             if status == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
@@ -1221,16 +1227,17 @@ async fn handle_supplement(
         // supplement", "nothing has been asked of you" and "already decided"
         // are three different things for an applicant to do next.
         Err(e @ SupplementRefusal::NotFound(_)) => {
-            return reject_with_code(
+            return reject_with_code_because(
                 &doc,
                 extended_code(jr::JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND),
                 AppError::from(e).to_string(),
                 None,
+                reasons::NOT_FOUND,
             );
         }
         Err(SupplementRefusal::NotAwaitingEvidence { request_id, status }) => {
             let refusal = SupplementRefusal::NotAwaitingEvidence { request_id, status };
-            return reject_with_code(
+            return reject_with_code_because(
                 &doc,
                 extended_code(jr::JOIN_REQUEST_SUPPLEMENT_ERR_NOT_AWAITING_EVIDENCE),
                 AppError::from(refusal).to_string(),
@@ -1238,11 +1245,12 @@ async fn handle_supplement(
                     "requestId": request_id.to_string(),
                     "status": status.to_string(),
                 })),
+                reasons::CONFLICT,
             );
         }
         Err(SupplementRefusal::AlreadyDecided { request_id, status }) => {
             let refusal = SupplementRefusal::AlreadyDecided { request_id, status };
-            return reject_with_code(
+            return reject_with_code_because(
                 &doc,
                 extended_code(jr::JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED),
                 AppError::from(refusal).to_string(),
@@ -1250,6 +1258,7 @@ async fn handle_supplement(
                     "requestId": request_id.to_string(),
                     "status": status.to_string(),
                 })),
+                reasons::GONE,
             );
         }
         Err(SupplementRefusal::Other(e)) => return app_error_to_reject(&doc, &e),
@@ -1331,17 +1340,19 @@ async fn handle_withdraw(
         // applicant's client cannot branch on — and telling "nothing to
         // withdraw" apart from "already decided" is the whole point of
         // declaring two codes.
-        Err(e @ AppError::NotFound(_)) => reject_with_code(
+        Err(e @ AppError::NotFound(_)) => reject_with_code_because(
             &doc,
             extended_code(jr::JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND),
             e.to_string(),
             None,
+            reasons::NOT_FOUND,
         ),
-        Err(e @ AppError::Gone(_)) => reject_with_code(
+        Err(e @ AppError::Gone(_)) => reject_with_code_because(
             &doc,
             extended_code(jr::JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED),
             e.to_string(),
             None,
+            reasons::GONE,
         ),
         Err(e) => app_error_to_reject(&doc, &e),
     }

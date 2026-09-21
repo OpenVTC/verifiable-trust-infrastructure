@@ -4087,3 +4087,66 @@ async fn the_supplement_task_answers_with_the_codes_its_spec_declares() {
         JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED
     );
 }
+
+/// The client half of the coded rejects: a `details.reason` marker rides
+/// alongside the extended code so a caller that does not know the code still
+/// recovers the right typed `VtaError`.
+///
+/// SPEC §8.5 says an unrecognised extended code degrades to `taskFailed` —
+/// which is exactly the point at which a caller needs the marker to tell an
+/// absent row from a genuine failure. #1602 recovered `NotFound` for codes
+/// whose local part is literally `notFound`; nothing recovered `Conflict` or
+/// `Gone`, so `:alreadyDecided` and `:requestAlreadyOpen` arrived as an opaque
+/// `Protocol(String)` — the collapse CLAUDE.md names by name.
+#[tokio::test]
+async fn a_coded_reject_carries_the_reason_marker_a_client_reads() {
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_SUPPLEMENT_TYPE, JOIN_REQUEST_WITHDRAW_TYPE,
+    };
+    use vta_sdk::protocols::trust_task_reject_reasons as reasons;
+
+    let f = build_fixture().await;
+    let seed = [0x8D; 32];
+
+    // `notFound` — belt and braces with #1602's local-part rule.
+    let (applicant, doc) =
+        signed_trust_task_seed(&seed, JOIN_REQUEST_WITHDRAW_TYPE, json!({})).await;
+    let (_status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(
+        body.pointer("/payload/details/reason").unwrap(),
+        reasons::NOT_FOUND,
+        "{body}"
+    );
+
+    // `alreadyDecided` → Gone. Nothing else recovers this one.
+    let id = seed_request(&f, &applicant, JoinStatus::Withdrawn).await;
+    let (_did, doc) = signed_trust_task_seed(
+        &seed,
+        JOIN_REQUEST_WITHDRAW_TYPE,
+        json!({ "requestId": id.to_string() }),
+    )
+    .await;
+    let (_status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(
+        body.pointer("/payload/details/reason").unwrap(),
+        reasons::GONE,
+        "{body}"
+    );
+
+    // `notAwaitingEvidence` → Conflict, and the spec'd annex survives the
+    // merge — a marker that overwrote `requestId` would take away the thing
+    // the applicant acts on.
+    let pending = seed_request(&f, &applicant, JoinStatus::Pending).await;
+    let (_did, doc) = signed_trust_task_seed(
+        &seed,
+        JOIN_REQUEST_SUPPLEMENT_TYPE,
+        json!({ "vp": { "type": ["VerifiablePresentation"] },
+                "requestId": pending.to_string() }),
+    )
+    .await;
+    let (_status, body) = post_tt(&f.router, doc).await;
+    let details = body.pointer("/payload/details").unwrap();
+    assert_eq!(details["reason"], reasons::CONFLICT, "{body}");
+    assert_eq!(details["requestId"], json!(pending.to_string()), "{body}");
+    assert_eq!(details["status"], "pending", "{body}");
+}
