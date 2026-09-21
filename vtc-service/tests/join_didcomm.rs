@@ -583,19 +583,43 @@ async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
         .await;
     match outcome {
         ReplyOutcome::Problem(p) => {
-            assert_eq!(
-                p.code, "taskFailed",
-                "duplicate open join request is a business-rule conflict → the framework \
-                 `taskFailed` reject code, not `internalError`: {p:?}",
+            // #485's original point, unchanged: this is a business-rule
+            // refusal, so it must never arrive in the `internalError` bucket
+            // that the fuzzer flags and that tells a client to blame the server.
+            assert_ne!(
+                p.code, "internalError",
+                "a duplicate open join request is an expected condition, not a server fault: {p:?}",
             );
+            // And it is now *named*, rather than merely not-a-fault. The code
+            // is consumer-minted under the submit slug (SPEC.md §8.5); a client
+            // that does not know it still reads `taskFailed` by that section's
+            // fallback rule, which is what keeps this additive.
+            assert_eq!(
+                p.code,
+                vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN,
+                "the duplicate-submit refusal carries its own code: {p:?}",
+            );
+            // The annex is the half a client can act on without parsing prose:
+            // `requestId` is what it passes to withdraw, and `status` is what
+            // says whether the open request is waiting on the community
+            // (`pending`) or on the applicant (`deferred`).
+            let details = p
+                .body
+                .pointer("/payload/details")
+                .unwrap_or_else(|| panic!("no payload.details in {p:?}"));
+            assert!(
+                details["requestId"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty()),
+                "details names the request in the way: {p:?}",
+            );
+            assert_eq!(details["status"], "pending", "{p:?}");
             assert!(
                 p.comment.contains("already exists"),
                 "message names the open-request conflict: {p:?}",
             );
         }
-        other => {
-            panic!("expected a taskFailed trust-task-error for the duplicate submit, got {other:?}")
-        }
+        other => panic!("expected a trust-task-error for the duplicate submit, got {other:?}"),
     }
 
     mock.shutdown().await;

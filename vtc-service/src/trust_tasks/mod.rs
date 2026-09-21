@@ -752,7 +752,31 @@ async fn handle_submit(
     .await
     {
         Ok(o) => o,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        // The applicant already has an open request. Answered as a typed code
+        // with a machine-readable annex rather than the bare `taskFailed` the
+        // generic mapping would produce: the whole defect Keyring reported
+        // (VTI-04) was that a client could not tell this apart from any other
+        // submit failure, nor learn which request was in the way, without
+        // parsing English prose.
+        //
+        // `vtc/join-requests/submit` declares no code for this, so the code is
+        // consumer-minted under the slug of the request being processed, which
+        // SPEC.md §8.5 permits explicitly. A client that does not recognise it
+        // falls back to `taskFailed` by the same section's rule, so this is
+        // additive for every existing caller.
+        Err(crate::join::SubmitRefusal::AlreadyOpen { request_id, status }) => {
+            let refusal = crate::join::SubmitRefusal::AlreadyOpen { request_id, status };
+            return reject_with_code(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN),
+                AppError::from(refusal).to_string(),
+                Some(serde_json::json!({
+                    "requestId": request_id.to_string(),
+                    "status": status.to_string(),
+                })),
+            );
+        }
+        Err(crate::join::SubmitRefusal::Other(e)) => return app_error_to_reject(&doc, &e),
     };
 
     match outcome_to_verdict(&outcome) {

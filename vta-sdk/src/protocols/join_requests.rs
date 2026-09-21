@@ -139,6 +139,22 @@ pub const JOIN_REQUEST_WITHDRAW_TYPE: &str =
 pub const JOIN_REQUEST_WITHDRAW_RESPONSE_TYPE: &str =
     <withdraw::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// Extended error code: the applicant already has an open request, so this
+/// submit is a duplicate rather than a new application.
+///
+/// Consumer-minted, not declared by `vtc/join-requests/submit` — SPEC.md §8.5
+/// permits a consumer to mint a namespaced code for an invariant the spec did
+/// not enumerate, and the namespace is the slug of the request being
+/// processed. A client that does not recognise it treats the error as
+/// `taskFailed` by the same rule, so adding it breaks no existing caller.
+///
+/// The error carries a `details` annex of `{requestId, status}`: `status` is
+/// what tells the applicant whether the open request is waiting on the
+/// community (`pending`) or on them (`deferred`), and `requestId` is what they
+/// pass to [`JOIN_REQUEST_WITHDRAW_TYPE`] to clear it.
+pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
+    "vtc/join-requests/submit:requestAlreadyOpen";
+
 /// Extended error code: the caller has no open request to withdraw.
 ///
 /// Also the answer when a supplied `requestId` names a request belonging to

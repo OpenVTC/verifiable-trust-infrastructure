@@ -27,7 +27,7 @@ use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 pub use orchestrate::{
-    HolderBinding, JOIN_REQUEST_SUBMIT_DOMAIN_TAG, JoinSubmitOutcome, decide_join,
+    HolderBinding, JOIN_REQUEST_SUBMIT_DOMAIN_TAG, JoinSubmitOutcome, SubmitRefusal, decide_join,
     emit_admit_audit, realize_join_verdict, submit_inner,
 };
 pub use retention::{JoinRequestsConfig, RetentionSweeper, default_retention_days};

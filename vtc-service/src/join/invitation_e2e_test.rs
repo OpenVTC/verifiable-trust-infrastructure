@@ -163,7 +163,10 @@ async fn vic_bound_to_another_did_cannot_be_redeemed() {
         JoinTransport::DIDComm,
     )
     .await;
-    match result {
+    // Through the `AppError` conversion, so this still reads the refusal the
+    // REST route and the problem-report path see — the typed `SubmitRefusal`
+    // variant is only about the duplicate-submit case, which this is not.
+    match result.map_err(vti_common::error::AppError::from) {
         Err(vti_common::error::AppError::Forbidden(_)) => {}
         Err(other) => panic!("expected Forbidden, got {other:?}"),
         Ok(_) => panic!("a VIC bound to someone else must be refused"),
