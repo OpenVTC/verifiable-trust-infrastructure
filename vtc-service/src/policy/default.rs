@@ -301,6 +301,114 @@ pub async fn upgrade_legacy_ceremony_defaults(
     Ok(upgraded)
 }
 
+/// The probe [`upgrade_unbound_witness_personhood_default`] runs: a
+/// `WitnessCredential` from a non-empty issuer whose digest the host could
+/// **not** bind. The pre-#1068 default allowed it; the shipped default must not.
+fn unbound_witness_probe() -> serde_json::Value {
+    serde_json::json!({
+        "applicant_did": "did:example:probe-applicant",
+        "community_did": "did:example:probe-community",
+        "vp_claims": {
+            "holder": "did:example:probe-applicant",
+            "credentials": [{
+                "type": ["VerifiableCredential", "DTGCredential", "WitnessCredential"],
+                "issuer": "did:example:probe-witness",
+                "credentialSubject": { "id": "did:example:probe-applicant" },
+                "witness_binding": { "state": "absent" }
+            }]
+        }
+    })
+}
+
+/// Whether `policy` grants personhood on a witness whose digest binds nothing.
+fn allows_unbound_witness(policy: &Policy) -> bool {
+    let Ok(compiled) = compile(&policy.rego_source, policy.id) else {
+        return false;
+    };
+    evaluate(
+        &compiled,
+        "data.vtc.personhood.allow",
+        unbound_witness_probe(),
+    )
+    .ok()
+    .and_then(|r| {
+        r.pointer("/result/0/expressions/0/value")
+            .and_then(serde_json::Value::as_bool)
+    })
+    .unwrap_or(false)
+}
+
+/// Replace a **workspace-shipped** personhood default that predates the witness
+/// digest binding (#1068) with the current one.
+///
+/// [`install_defaults`] only fills missing pointers, so a VTC first booted on
+/// an earlier binary keeps the personhood default it installed then — and that
+/// default granted personhood on any `WitnessCredential` with a non-empty
+/// issuer, whatever edge (if any) its digest named. Shipping the fix in the
+/// source alone would protect new communities and leave every existing one on
+/// the permissive rule.
+///
+/// Two conditions, both required, so an operator's policy is never touched:
+///
+/// 1. the active row's `author_did` is [`DEFAULTS_AUTHOR`] — the workspace
+///    installed it, no operator uploaded it; and
+/// 2. it **behaves** like the superseded default: it allows
+///    [`unbound_witness_probe`]. Decided by evaluation rather than by a list
+///    of historical source hashes, for the same reason
+///    [`upgrade_legacy_ceremony_defaults`] asks whether a policy yields a
+///    decision rather than what its bytes are.
+///
+/// Fail-forward like its sibling: a new revision at `max_version + 1`, the
+/// active pointer moved to it. Returns whether an upgrade happened.
+pub async fn upgrade_unbound_witness_personhood_default(
+    policies_ks: &KeyspaceHandle,
+    active_policies_ks: &KeyspaceHandle,
+) -> Result<bool, AppError> {
+    let purpose = PolicyPurpose::Personhood;
+    let Some(active_id) = get_active_policy_id(active_policies_ks, purpose).await? else {
+        return Ok(false); // install_defaults handles the missing case
+    };
+    let Some(active) = get_policy(policies_ks, active_id).await? else {
+        return Ok(false);
+    };
+    if active.author_did != DEFAULTS_AUTHOR || !allows_unbound_witness(&active) {
+        return Ok(false);
+    }
+
+    let source = default_source(purpose);
+    let id = Uuid::new_v4();
+    let compiled = compile(source, id).map_err(|e| {
+        AppError::Internal(format!(
+            "default policy for {} failed to compile: {e}",
+            purpose.as_str()
+        ))
+    })?;
+    let sha = *compiled.source_sha256();
+    let version = max_version_for(policies_ks, purpose).await? + 1;
+
+    let mut policy = new_policy(
+        purpose,
+        source.to_string(),
+        sha,
+        DEFAULTS_AUTHOR.to_string(),
+        version,
+    );
+    policy.id = id;
+    policy.activated_at = Some(Utc::now());
+
+    store_policy(policies_ks, &policy).await?;
+    set_active_policy_id(active_policies_ks, purpose, id).await?;
+
+    warn!(
+        purpose = purpose.as_str(),
+        replaced = %active_id,
+        policy_id = %id,
+        "upgraded the shipped personhood default: it admitted a witness credential whose \
+         digest binds no edge (#1068)"
+    );
+    Ok(true)
+}
+
 /// Verify every [`PolicyPurpose`] has an active pointer. Called
 /// after [`install_defaults`] succeeds — under normal boot every
 /// purpose should be live. A gap here means a default-install
@@ -1002,30 +1110,194 @@ mod tests {
         );
     }
 
-    #[test]
-    fn personhood_default_allows_witness_credential_with_issuer() {
+    /// A personhood assertion carrying one `WitnessCredential` whose host
+    /// verdict is `binding` (`None` = no `witness_binding` member at all).
+    fn witness_input(binding: Option<serde_json::Value>) -> serde_json::Value {
+        let mut cred = json!({
+            "type": ["VerifiableCredential", "DTGCredential", "WitnessCredential"],
+            "issuer": "did:key:zWitness",
+            "credentialSubject": { "id": "did:key:zX" }
+        });
+        if let Some(b) = binding {
+            cred["witness_binding"] = b;
+        }
+        json!({
+            "applicant_did": "did:key:zX",
+            "community_did": "did:webvh:community.example",
+            "vp_claims": { "holder": "did:key:zX", "credentials": [cred] }
+        })
+    }
+
+    fn personhood_allows(input: serde_json::Value) -> bool {
         let c = compile_default(PolicyPurpose::Personhood);
-        let r = evaluate(
-            &c,
-            "data.vtc.personhood.allow",
-            json!({
-                "applicant_did": "did:key:zX",
-                "vp_claims": {
-                    "holder": "did:key:zX",
-                    "credentials": [
-                        {
-                            "type": ["VerifiableCredential", "WitnessCredential"],
-                            "issuer": "did:key:zWitness"
-                        }
-                    ]
-                }
-            }),
-        )
-        .unwrap();
-        assert!(
-            pluck_bool(&r),
-            "WitnessCredential with non-empty issuer must allow"
+        pluck_bool(&evaluate(&c, "data.vtc.personhood.allow", input).unwrap())
+    }
+
+    /// DTG Credentials Security Considerations 6 (*Digest integrity*): a VWC
+    /// whose digest the host bound to an edge this community holds is evidence
+    /// of that edge, and the default admits it (#1068).
+    #[test]
+    fn personhood_default_allows_a_witness_bound_to_a_held_edge() {
+        assert!(personhood_allows(witness_input(Some(json!({
+            "state": "bound",
+            "relationship_id": Uuid::new_v4()
+        })))));
+    }
+
+    /// The pre-#1068 rule admitted any `WitnessCredential` with a non-empty
+    /// issuer. Every verdict short of `bound` is now refused — including
+    /// `unresolved`, which is *not* forgery (the edge may live on another
+    /// community) but is not something this community can see either; an
+    /// operator who trusts foreign edges accepts it in their own policy.
+    #[test]
+    fn personhood_default_refuses_a_witness_whose_digest_does_not_bind() {
+        for state in ["unresolved", "absent", "malformed"] {
+            assert!(
+                !personhood_allows(witness_input(Some(json!({ "state": state })))),
+                "`{state}` must not grant personhood"
+            );
+        }
+    }
+
+    /// No verdict at all — a projection the host never annotated, or an
+    /// input from a caller that does not compute one — is not a pass.
+    #[test]
+    fn personhood_default_refuses_a_witness_with_no_binding_verdict() {
+        assert!(!personhood_allows(witness_input(None)));
+    }
+
+    /// The verdict is host-owned but the rule must not treat a string lookalike
+    /// or a missing `state` as `bound`.
+    #[test]
+    fn personhood_default_reads_only_a_bound_state() {
+        for b in [
+            json!("bound"),
+            json!({}),
+            json!({ "state": "Bound" }),
+            json!({ "relationship_id": Uuid::new_v4() }),
+        ] {
+            assert!(!personhood_allows(witness_input(Some(b.clone()))), "{b}");
+        }
+    }
+
+    /// The pre-#1068 witness rule, as the shipped default carried it.
+    const SUPERSEDED_PERSONHOOD_DEFAULT: &str = r#"package vtc.personhood
+
+import rego.v1
+
+default allow := false
+
+asserted if allow
+
+allow if {
+	some i
+	cred := input.vp_claims.credentials[i]
+	"WitnessCredential" in cred.type
+	cred.issuer != ""
+}
+
+allow if {
+	input.current_personhood == true
+}
+"#;
+
+    async fn activate_personhood(
+        policies_ks: &KeyspaceHandle,
+        active_ks: &KeyspaceHandle,
+        source: &str,
+        author: &str,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        let sha = *compile_policy(source, id).unwrap().source_sha256();
+        let mut p = new_policy(
+            PolicyPurpose::Personhood,
+            source.to_string(),
+            sha,
+            author.into(),
+            1,
         );
+        p.id = id;
+        p.activated_at = Some(Utc::now());
+        store_policy(policies_ks, &p).await.unwrap();
+        set_active_policy_id(active_ks, PolicyPurpose::Personhood, id)
+            .await
+            .unwrap();
+        id
+    }
+
+    /// A VTC first booted before #1068 keeps the personhood default it
+    /// installed then; `install_defaults` never revisits a filled pointer. The
+    /// upgrade moves it to the shipped default, fail-forward, once.
+    #[tokio::test]
+    async fn the_superseded_personhood_default_is_upgraded() {
+        let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+        let old = activate_personhood(
+            &policies_ks,
+            &active_ks,
+            SUPERSEDED_PERSONHOOD_DEFAULT,
+            DEFAULTS_AUTHOR,
+        )
+        .await;
+
+        assert!(
+            upgrade_unbound_witness_personhood_default(&policies_ks, &active_ks)
+                .await
+                .unwrap()
+        );
+        let now = get_active_policy_id(&active_ks, PolicyPurpose::Personhood)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(now, old, "the active pointer moved forward");
+        let active = get_policy(&policies_ks, now).await.unwrap().unwrap();
+        assert_eq!(
+            active.rego_source,
+            default_source(PolicyPurpose::Personhood)
+        );
+        assert_eq!(active.version, 2, "a new revision, not an in-place rewrite");
+        assert!(
+            get_policy(&policies_ks, old).await.unwrap().is_some(),
+            "the superseded revision is kept"
+        );
+
+        assert!(
+            !upgrade_unbound_witness_personhood_default(&policies_ks, &active_ks)
+                .await
+                .unwrap(),
+            "idempotent: the shipped default is not itself superseded"
+        );
+    }
+
+    /// The same permissive source, uploaded by an operator, is the operator's
+    /// decision and is never replaced.
+    #[tokio::test]
+    async fn an_operator_personhood_policy_is_never_upgraded() {
+        let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+        let theirs = activate_personhood(
+            &policies_ks,
+            &active_ks,
+            SUPERSEDED_PERSONHOOD_DEFAULT,
+            "did:key:zOperator",
+        )
+        .await;
+
+        assert!(
+            !upgrade_unbound_witness_personhood_default(&policies_ks, &active_ks)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            get_active_policy_id(&active_ks, PolicyPurpose::Personhood)
+                .await
+                .unwrap(),
+            Some(theirs)
+        );
+    }
+
+    /// The probe is only meaningful if the shipped default refuses it.
+    #[test]
+    fn the_shipped_personhood_default_refuses_the_upgrade_probe() {
+        assert!(!personhood_allows(unbound_witness_probe()));
     }
 
     /// Build the in-person vetting evidence: an endorsement the

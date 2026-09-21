@@ -406,11 +406,11 @@ pub(crate) async fn assert_inner(
         .await
         .map_err(|e| AppError::Forbidden(format!("personhood-proof-invalid: {e}")))?;
 
-    // 5. Extract vp_claims for policy input. (Per D2 review,
-    //    embedded-VC proofs are surfaced to the policy via
-    //    extract but not verified at the route — operators
-    //    wanting strict VC verification upload custom rego.)
-    let vp_claims = extract_vp_claims(presentation);
+    // 5. Extract vp_claims for policy input, with the host's witness
+    //    binding verdict attached. (Per D2 review, embedded-VC proofs are
+    //    surfaced to the policy via extract but not verified at the route —
+    //    operators wanting strict VC verification upload custom rego.)
+    let vp_claims = policy_projection(state, presentation).await;
 
     // 6. Run personhood.rego.
     let allow =
@@ -735,6 +735,25 @@ async fn verify_vp_proof(
     Ok(())
 }
 
+/// The `vp_claims` the personhood policy reads: the canonical projection, plus
+/// the host's [`WitnessBinding`](crate::credentials::witness::WitnessBinding)
+/// verdict on every `WitnessCredential` in it.
+///
+/// Without the verdict the default policy could only ask whether a
+/// `WitnessCredential` had a non-empty issuer — a question anyone can answer
+/// yes to — and admit personhood on a witness that witnessed nothing, or an
+/// edge this community has never seen (#1068). The verdict is computed here,
+/// where the relationships keyspace is in hand, for the same reason the join
+/// path computes it at presentation: the policy branches on a settled state
+/// instead of doing cryptography, and DTG Credentials Security Considerations
+/// 6 (*Digest integrity*) makes recomputing the digest against the referenced
+/// edge credential the verifier's job.
+async fn policy_projection(state: &AppState, presentation: &JsonValue) -> JsonValue {
+    let mut vp_claims = extract_vp_claims(presentation);
+    crate::credentials::witness::annotate_vp_claims(&state.relationships_ks, &mut vp_claims).await;
+    vp_claims
+}
+
 /// Eval the active `personhood.rego` with the assert-path
 /// input shape:
 ///
@@ -995,5 +1014,147 @@ mod single_membership_tests {
             err.to_string().contains("personhood-pseudonym-missing"),
             "an unaccepted pseudonym is absent, not present-and-rejected: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod witness_binding_tests {
+    //! The personhood `assert` path's policy step, end to end from the
+    //! presented VP: projection, the host's witness binding verdict, and the
+    //! shipped default policy (#1068).
+
+    use super::*;
+    use crate::relationships::Relationship;
+    use crate::relationships::storage::store_relationship;
+    use crate::test_support::{TestVtc, dtg_json};
+    use dtg_credentials::DTGCredential;
+
+    const COMMUNITY: &str = "did:webvh:acme.example";
+    const WITNESS: &str = "did:webvh:witness.example";
+    const ALICE: &str = "did:key:zAlice";
+    const BOB: &str = "did:key:zBob";
+    const SESSION: &str = "urn:uuid:0b7d8f3e-2c4a-4e57-9a3b-5d1e6c8f9a20";
+
+    /// A VTC running the shipped default policies, holding the published
+    /// Alice → Bob edge (signed, as publication stores it).
+    async fn vtc_holding_an_edge() -> (TestVtc, DTGCredential) {
+        let vtc = TestVtc::builder().build().await;
+        crate::policy::default::install_defaults(
+            &vtc.state.policies_ks,
+            &vtc.state.active_policies_ks,
+        )
+        .await
+        .expect("install defaults");
+
+        let vrc = DTGCredential::new_vrc(ALICE.into(), BOB.into(), Utc::now(), None);
+        let mut vrc_jsonld = dtg_json(&vrc);
+        vrc_jsonld["proof"] = json!({
+            "type": "DataIntegrityProof",
+            "cryptosuite": "eddsa-jcs-2022",
+            "verificationMethod": format!("{ALICE}#key-0"),
+            "proofPurpose": "assertionMethod",
+            "proofValue": "z3FXQjecWufY46yg5abdVZsXqLhxhueuSoZgNSARiKBk"
+        });
+        let rel = Relationship {
+            id: Uuid::new_v4(),
+            issuer_did: ALICE.into(),
+            subject_did: BOB.into(),
+            vrc_digest_multibase: crate::credentials::ingress::digest_multibase(&vrc_jsonld)
+                .unwrap(),
+            vrc_jsonld,
+            created_at: Utc::now(),
+            persona: None,
+            lifecycle: Default::default(),
+        };
+        store_relationship(
+            &vtc.state.relationships_ks,
+            &vtc.state.relationships_by_did_ks,
+            &rel,
+        )
+        .await
+        .expect("store edge");
+        (vtc, vrc)
+    }
+
+    /// A catalog-built VWC over `digest`, presented by Alice.
+    fn presentation_with_witness(digest: Option<String>) -> JsonValue {
+        let vwc = DTGCredential::new_vwc(
+            WITNESS.into(),
+            ALICE.into(),
+            Utc::now(),
+            None,
+            SESSION.into(),
+            digest,
+            None,
+        );
+        json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiablePresentation"],
+            "holder": ALICE,
+            "verifiableCredential": [dtg_json(&vwc)]
+        })
+    }
+
+    async fn decide(vtc: &TestVtc, presentation: &JsonValue) -> bool {
+        let vp_claims = policy_projection(&vtc.state, presentation).await;
+        evaluate_personhood_assert(&vtc.state, ALICE, COMMUNITY, &vp_claims)
+            .await
+            .expect("evaluate")
+    }
+
+    /// A witness whose `digestMultibase` recomputes to an edge this community
+    /// holds is personhood evidence under the shipped default.
+    #[tokio::test]
+    async fn assert_accepts_a_witness_bound_to_a_held_edge() {
+        let (vtc, vrc) = vtc_holding_an_edge().await;
+        let digest = vrc.digest_multibase().expect("catalog digest");
+        assert!(decide(&vtc, &presentation_with_witness(Some(digest))).await);
+    }
+
+    /// DTG Credentials Security Considerations 6: a witness whose digest does
+    /// not bind to the referenced edge is not evidence of it. Before #1068
+    /// the default admitted every one of these on the issuer alone.
+    #[tokio::test]
+    async fn assert_refuses_a_witness_whose_digest_does_not_bind() {
+        let (vtc, vrc) = vtc_holding_an_edge().await;
+
+        // A well-formed digest of an edge this community does not hold.
+        let elsewhere = DTGCredential::new_vrc(
+            "did:key:zCarol".into(),
+            "did:key:zDave".into(),
+            Utc::now(),
+            None,
+        )
+        .digest_multibase()
+        .unwrap();
+        // The right edge, digested proof-included — the framework digest, a
+        // plausible string that is not the value DTG Credentials specifies.
+        let mut signed = dtg_json(&vrc);
+        signed["proof"] = json!({ "type": "DataIntegrityProof", "proofValue": "zSig" });
+        let wrong_coverage = crate::credentials::ingress::digest_multibase(&signed).unwrap();
+
+        for (why, digest) in [
+            ("names an edge not held here", Some(elsewhere)),
+            ("digest over the wrong coverage", Some(wrong_coverage)),
+            ("no digest at all", None),
+            ("not a multihash", Some("not-a-digest".to_string())),
+        ] {
+            assert!(
+                !decide(&vtc, &presentation_with_witness(digest)).await,
+                "{why}: must not grant personhood"
+            );
+        }
+    }
+
+    /// The verdict in the policy input is the host's. A presenter who writes
+    /// `witness_binding: bound` onto an unbound witness does not get it past
+    /// the projection.
+    #[tokio::test]
+    async fn assert_ignores_a_presenter_supplied_verdict() {
+        let (vtc, _) = vtc_holding_an_edge().await;
+        let mut vp = presentation_with_witness(None);
+        vp["verifiableCredential"][0]["witness_binding"] =
+            json!({ "state": "bound", "relationship_id": Uuid::new_v4() });
+        assert!(!decide(&vtc, &vp).await);
     }
 }
