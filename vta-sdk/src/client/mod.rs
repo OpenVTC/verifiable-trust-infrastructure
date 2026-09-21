@@ -2361,6 +2361,23 @@ impl VtaClient {
             }
         }
 
+        // A task's own declared `<slug>:notFound` means the same thing as the
+        // `details.reason` marker above, and is the form a family that answers
+        // its specification's error codes sends — `vta/contexts/get:notFound`,
+        // `vta/app-state/…:notFound`, `persona/…:notFound`. Matching only the
+        // marker turned every one of those into a flat `Protocol` string when
+        // the contexts family started answering its declared codes (#1580), so
+        // a caller treating "absent" as a normal state — create it if missing —
+        // failed instead. The local part is matched, as for
+        // `transportUnavailable` below, because every task declaring it means
+        // it the same way.
+        if code
+            .rsplit_once(':')
+            .is_some_and(|(_, local)| local == "notFound")
+        {
+            return Some(VtaError::NotFound(message.to_string()));
+        }
+
         // `permissionDenied` is the caller's authorization, which is a
         // different thing to fix from every other rejection and already has a
         // typed home. Left in `Protocol` it was a sentence a consumer had to
@@ -2778,6 +2795,41 @@ mod tests {
                 "{code}"
             );
         }
+    }
+
+    /// A task's declared `:notFound` is `NotFound`, whichever family sends it.
+    /// The contexts family sending its declared code without the
+    /// `details.reason` marker made `get_context` report a missing context as
+    /// a protocol failure, so "create it if absent" stopped working for every
+    /// Trust-Task caller.
+    #[test]
+    fn a_declared_not_found_code_is_not_found() {
+        for code in [
+            "vta/contexts/get:notFound",
+            "vta/app-state/get:notFound",
+            "persona/profile/get:notFound",
+        ] {
+            let payload = serde_json::json!({
+                "code": code,
+                "message": "no context with that id is reachable by this caller",
+            });
+            assert!(
+                matches!(
+                    VtaClient::trust_task_error(&payload),
+                    Some(VtaError::NotFound(_))
+                ),
+                "{code}"
+            );
+        }
+        // A different local code that merely contains the word is not one.
+        let payload = serde_json::json!({
+            "code": "vta/contexts/create:parentNotFound",
+            "message": "no context with that parent id is reachable by this caller",
+        });
+        assert!(matches!(
+            VtaClient::trust_task_error(&payload),
+            Some(VtaError::Protocol(_))
+        ));
     }
 
     /// Every other failure keeps its existing shape — the new variant must not
