@@ -2,6 +2,20 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.3.10...vta-persona-v0.4.0) — 2026-09-21
+
+
+### Added
+
+- **persona**: Say who holds an old value, where an edit landed, and what a context may call a face ([#1597](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1597))
+
+
+### Fixed
+
+- **persona**: Carry the holder's label into resolved claims ([#1596](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1596))
+- **persona**: Correlate values faces carry, and honour profileId ([#1594](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1594))
+
+
 ## [0.3.10](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.3.9...vta-persona-v0.3.10) — 2026-09-20
 
 

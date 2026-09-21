@@ -2,6 +2,81 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.20.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.20.0...vti-common-v0.20.1) — 2026-09-21
+
+
+### Added
+
+- **vtc**: Implement vtc/join-requests/supplement/0.1 — answer a deferral in place ([#1593](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1593))
+
+Closes the second half of Keyring's KR-03, the one `join-requests/withdraw`
+  ([#1591](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1591)) left open. A community that cannot decide a request on what it was
+  given defers it and says what more it needs — and the applicant had nowhere to
+  put the answer. The request stays open, the dedup guard refuses a second
+  application, and the only exits were withdrawing (losing your place) or waiting
+  for a retention sweep neither party controls. A deferral was a dead end dressed
+  as a question.
+
+  Spec'd upstream first (dtgwg-trust-tasks-tf #526, corrected by #531, shipped in
+  trust-tasks-rs 0.21.6) and implemented here against the generated types.
+
+  ## Submit and supplement now share one definition of every verdict effect
+
+  `apply_verdict_to_request` is extracted out of `realize_join_verdict`, which
+  could not be reused as-is because it opens with `JoinRequest::new` — it decides
+  a request it is creating, and a supplement decides one that already exists. The
+  extraction is the point rather than a tidy-up: an admission granted by a
+  supplement must mean exactly what one granted by a submission means, and two
+  copies of the effect table would eventually disagree.
+
+  The response needs no such care because it is already shared —
+  `outcome_to_verdict` and `verdict_response` are submit's, and a supplement's
+  `{requestId, verdict}` *is* a submission's. A client reads both with one code
+  path, which is why the spec chose that shape.
+
+  ## Vetting travels in the presentation, and the first draft of the spec said otherwise
+
+  `vetting_facts` reads attestations out of the VP's `verifiableCredential`
+  array (`vetting_credentials(vp)`). The per-request `StoredVettingFacts` row
+  looks like it contradicts that — it is keyed by request id and written on every
+  submit — but nothing reads it into a decision: it serves the admin view, the
+  vetter sweep, and tracing a withdrawn statement to the admissions it counted
+  toward.
+
+  So a supplement that omits the attestations is one with no vetting, and this
+  implementation does not quietly carry the superseded ones forward. Doing so
+  would decide the request on evidence the applicant is no longer presenting —
+  the same defect as merging the two presentations, by a different route. #526
+  asserted the opposite; I found it writing this code, and #531 corrected the
+  specification.
+
+  ## Other decisions
+
+  **Only a deferred request.** A `Pending` one waits on the community, not the
+  applicant; accepting evidence into it would replace what a maintainer is
+  mid-review on, leaving the document they were reading no longer the one they
+  were asked to decide. `notAwaitingEvidence`, with an annex naming the request.
+
+  **An invitation presented now counts.** The policy re-runs over the whole new
+  presentation, and a VIC in it is part of that presentation. Consumption routes
+  through the extracted applier, so the burn happens once and on the same path a
+  submission's does.
+
+  **`JoinRequestSupplemented`, not `JoinRequestSubmitted`.** Nothing was
+  submitted. Conflating them would make a community's audit trail report more
+  applications than it received, and lose that an admission was granted on the
+  second set of evidence. `AuditEvent` is `#[non_exhaustive]`, so additive.
+
+  ## Tests
+
+  Five, including a dispatcher-level one pinning all three spec-declared codes.
+  The deferred-only guard was verified to fail its test when removed. The
+  ownership test asserts the *rendered messages* of "not yours" and "does not
+  exist" are equal, not merely that both refuse — equality is what makes the task
+  useless as an id oracle.
+
+
+
 ## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.19.3...vti-common-v0.20.0) — 2026-09-20
 
 
