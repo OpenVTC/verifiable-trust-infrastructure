@@ -69,12 +69,13 @@ admin_label = "ops-bootstrap"
 # Hand-editing it later has no effect.
 rest    = true
 didcomm = true
-# TSP (off by default). Advertises `#tsp` in the VTA DID document at mint,
-# pointing at the same mediator as DIDComm. Requires `didcomm = true` and a
-# binary built with `--features tsp`; setup refuses either combination rather
-# than publishing a transport this VTA cannot serve. Nothing checks that the
-# mediator actually routes TSP — see docs/02-vta/tsp.md.
-# tsp = true
+# TSP (ON by default here, even when this block omits it). Advertises `#tsp`
+# in the VTA DID document at mint, pointing at the same mediator as DIDComm.
+# Needs a mediator and a binary built with the `tsp` feature (on by default);
+# setup refuses `tsp = true` on a build without it. An existing mediator is
+# resolved and must advertise `TSPTransport`, or setup refuses — see
+# docs/02-vta/tsp.md. Set `tsp = false` to leave it out.
+# tsp = false
 
 [server]
 host = "0.0.0.0"

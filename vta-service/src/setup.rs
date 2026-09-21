@@ -266,9 +266,81 @@ pub(crate) fn prompt_webvh_url(label: &str) -> Result<WebVHURL, Box<dyn std::err
     }
 }
 
+/// What resolving an operator-supplied mediator told us about TSP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MediatorTsp {
+    /// Its DID document advertises a `TSPTransport` service.
+    Carried,
+    /// It resolved, and advertises no `TSPTransport` service.
+    NotCarried,
+    /// It did not resolve, so nothing is known. Carries the reason.
+    Unknown(String),
+}
+
+/// Whether an existing mediator carries TSP, read from its own DID document.
+///
+/// TSP is on by default, and `#tsp` in the VTA's document names the mediator,
+/// so a VTA that advertises TSP through a mediator that does not route it sends
+/// every TSP-preferring peer into nothing (Keyring VTI-33). A mediator setup
+/// mints is minted with `#tsp` when the VTA speaks it; one the operator brings is
+/// checked here instead. Matched on the service `type`, through the same matcher
+/// every transport choice uses, never on the `#id`.
+pub(crate) async fn existing_mediator_tsp(did: &str, resolver_url: Option<&str>) -> MediatorTsp {
+    let resolver = match vta_sdk::resolver::shared_did_resolver(resolver_url).await {
+        Ok(r) => r,
+        Err(e) => return MediatorTsp::Unknown(format!("could not build a DID resolver: {e}")),
+    };
+    let resolved = match resolver.resolve(did).await {
+        Ok(r) => r,
+        Err(e) => return MediatorTsp::Unknown(format!("could not resolve {did}: {e}")),
+    };
+    match serde_json::to_value(&resolved.doc) {
+        Ok(doc) => mediator_tsp_from_document(&doc),
+        Err(e) => MediatorTsp::Unknown(format!("could not read {did}'s DID document: {e}")),
+    }
+}
+
+/// The pure half of [`existing_mediator_tsp`].
+pub(crate) fn mediator_tsp_from_document(doc: &JsonValue) -> MediatorTsp {
+    if vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(doc)
+        .tsp
+        .is_some()
+    {
+        MediatorTsp::Carried
+    } else {
+        MediatorTsp::NotCarried
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keyring VTI-33: a mediator is judged by the `type` of its services.
+    #[test]
+    fn a_mediator_carries_tsp_only_when_its_document_says_so() {
+        let with = json!({ "id": "did:web:m", "service": [
+            { "id": "did:web:m#didcomm", "type": "DIDCommMessaging",
+              "serviceEndpoint": { "uri": "https://m.example/inbound" } },
+            { "id": "did:web:m#whatever", "type": "TSPTransport",
+              "serviceEndpoint": "https://m.example/inbound" },
+        ]});
+        assert_eq!(mediator_tsp_from_document(&with), MediatorTsp::Carried);
+
+        let without = json!({ "id": "did:web:m", "service": [
+            { "id": "did:web:m#tsp", "type": "DIDCommMessaging",
+              "serviceEndpoint": { "uri": "https://m.example/inbound" } },
+        ]});
+        // `#tsp` as an id means nothing: only the type counts.
+        assert_eq!(
+            mediator_tsp_from_document(&without),
+            MediatorTsp::NotCarried
+        );
+        assert_eq!(
+            mediator_tsp_from_document(&json!({ "id": "did:web:m" })),
+            MediatorTsp::NotCarried
+        );
+    }
 
     /// Matrix coverage for the VTA DID document's `additional_services`
     /// array — the bug-prone surface that originally let a REST-only

@@ -61,9 +61,10 @@ Two paths:
   multi-select — selectable on its own — and a `vta setup --from <toml>` file
   takes `[services] tsp = true`. Selecting TSP (with or without DIDComm) leads
   into the `[messaging]` mediator questions, since `#tsp` names a mediator. A
-  binary built without `--features tsp` refuses `tsp = true` by name and never
-  offers the option, rather than publishing a transport it cannot serve. TSP is
-  not pre-ticked in the wizard, for the reason in *Rollout posture* below.
+  binary built without the `tsp` feature (it is on by default) refuses
+  `tsp = true` by name and never offers the option, rather than publishing a
+  transport it cannot serve. TSP is pre-ticked in the wizard and on by default
+  in a setup file, for the reasons in *Rollout posture* below.
   Choosing it here puts `#tsp` in the DID document from log v1, rather than
   adding it in a later log entry.
 
@@ -91,10 +92,24 @@ gone.
 
 ## Rollout posture
 
-TSP is **verify-then-enable**, not on-by-default. Advertise TSP only once it's
-exercised against your mediator — a peer that sees `#tsp` will prefer it, so an
-unverified TSP path would fail real traffic. DIDComm remains advertised and is
-the automatic fallback for any peer that doesn't speak TSP.
+TSP is **on by default** in a new VTA: the `tsp` build feature is in
+`vta-service`'s (and `vta-enclave`'s) defaults, the wizard pre-ticks it, and a
+setup file enables it unless it says `tsp = false`. DIDComm stays advertised
+alongside it as the fallback for any peer that does not speak TSP.
+
+On-by-default is safe only if the mediator `#tsp` names actually routes TSP — a
+peer that sees `#tsp` prefers it, and does not fall back. So setup checks:
+
+- A mediator setup **creates** is created with `#tsp` in its own DID document.
+- A mediator you **name** is resolved and its document read for a
+  `TSPTransport` service. Without one, the wizard drops TSP and says so;
+  `vta setup --from` refuses, naming `services.tsp = false` as the fix. If the
+  mediator does not resolve (offline setup, a log not yet published) setup
+  warns and advertises TSP anyway — check it, and `pnm services tsp disable` if
+  it does not route TSP.
+
+An existing VTA is unchanged by the new default: its enabled transports are
+runtime state, and `pnm services tsp enable` adds TSP to it.
 
 ## Current status
 

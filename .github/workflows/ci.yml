@@ -928,8 +928,13 @@ jobs:
         run: cargo check -p vta-service --no-default-features --features aws-secrets,keyring,rest
       - name: vta-service azure-secrets
         run: cargo check -p vta-service --no-default-features --features azure-secrets,keyring,rest
-      - name: vta-service tsp transport
-        run: cargo check -p vta-service --features tsp
+      # The default build carries `tsp`, so the build that needs its own step
+      # is the one without it: a VTA that must refuse `services.tsp = true`
+      # rather than advertise a transport it cannot receive (Keyring VTI-34),
+      # and whose setup wizard must not offer it. `-D warnings` because the
+      # `cfg(not(feature = "tsp"))` arms compile nowhere else.
+      - name: vta-service without tsp
+        run: cargo clippy -p vta-service --no-default-features --features setup,keyring,rest,didcomm,cli-synthesis --all-targets -- -D warnings
       # `room-host`'s mediator listener is behind a non-default feature, so
       # `cargo test --workspace` never compiles it — the same hole the transport
       # harness sat in (CHANGELOG, "CI now runs the harness"). Tested rather than

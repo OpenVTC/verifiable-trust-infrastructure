@@ -90,8 +90,13 @@ pub struct WizardInputs {
     #[serde(default)]
     pub data_dir_exists: ExistingDataDirPolicy,
 
-    /// Which services to enable. Defaults to both REST and DIDComm.
-    #[serde(default = "default_services")]
+    /// Which services to enable. Defaults to REST, DIDComm and — where this
+    /// build can serve it — TSP, whether the block is omitted or only some of
+    /// its keys are given (see [`SetupServices`]).
+    #[serde(
+        default = "default_services",
+        deserialize_with = "deserialize_setup_services"
+    )]
     pub services: ServicesConfig,
 
     /// HTTP server bind. Defaults to `0.0.0.0:8100`.
@@ -200,10 +205,53 @@ fn default_services() -> ServicesConfig {
         // `services webauthn enable`, and the existing `services.rest`
         // continues to be the discoverable HTTP surface until they do.
         webauthn: false,
-        // TSP defaults off — operators enable it via `services tsp enable`
-        // (or the setup wizard once it learns TSP). DIDComm stays default.
-        tsp: false,
+        tsp: default_setup_tsp(),
     }
+}
+
+/// TSP is on by default in a new VTA wherever the build can serve it, riding
+/// the same mediator as DIDComm. A build without the `tsp` feature defaults it
+/// off, rather than into the refusal `validate_inputs` gives a `tsp = true`
+/// that build cannot honour.
+fn default_setup_tsp() -> bool {
+    cfg!(feature = "tsp")
+}
+
+/// `[services]` as a setup file states it.
+///
+/// The runtime [`ServicesConfig`] defaults `tsp` to `false`, and has to: a VTA
+/// started from a hand-written config that never mentions TSP must not begin
+/// claiming it, and on a build without the feature it would refuse to start.
+/// A setup file is different — it mints a new VTA, where TSP is on by default —
+/// so a block that names `rest` and `didcomm` but not `tsp` gets TSP too, not
+/// the runtime's `false`.
+#[derive(Deserialize)]
+struct SetupServices {
+    #[serde(default = "setup_true")]
+    rest: bool,
+    #[serde(default = "setup_true")]
+    didcomm: bool,
+    #[serde(default)]
+    webauthn: bool,
+    #[serde(default = "default_setup_tsp")]
+    tsp: bool,
+}
+
+fn setup_true() -> bool {
+    true
+}
+
+fn deserialize_setup_services<'de, D>(d: D) -> Result<ServicesConfig, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = SetupServices::deserialize(d)?;
+    Ok(ServicesConfig {
+        rest: s.rest,
+        didcomm: s.didcomm,
+        webauthn: s.webauthn,
+        tsp: s.tsp,
+    })
 }
 
 /// What to do when `data_dir` already holds a store.
@@ -646,6 +694,25 @@ pub async fn apply_inputs(
     // 2. Validate cross-field constraints. `messaging.create_mediator`
     //    needs `services.didcomm = true`, and so on.
     validate_inputs(&inputs)?;
+
+    // 2.5. A mediator the operator brings must carry the TSP this VTA would
+    //      advertise through it (Keyring VTI-33). Checked before anything is
+    //      minted, so a refusal leaves nothing half-built. One that does not
+    //      resolve is not refused: setup runs offline, and before a mediator's
+    //      log is published, and the operator named it deliberately.
+    if inputs.services.tsp
+        && let MessagingInput::Existing { did, .. } = &inputs.messaging
+    {
+        match super::existing_mediator_tsp(did, inputs.resolver_url.as_deref()).await {
+            super::MediatorTsp::Carried => {}
+            super::MediatorTsp::NotCarried => return Err(mediator_lacks_tsp(did).into()),
+            super::MediatorTsp::Unknown(why) => eprintln!(
+                "  Warning: {why}. Could not confirm that mediator {did} carries TSP; \
+                 `#tsp` will be advertised through it regardless. If it does not route \
+                 TSP, run `pnm services tsp disable` once the VTA is up."
+            ),
+        }
+    }
 
     // 3. Handle data_dir conflict per policy. The gate is "does this
     //    directory hold a *store*", not "does this directory exist" — a
@@ -1139,6 +1206,18 @@ pub async fn apply_inputs(
     eprintln!();
 
     Ok(())
+}
+
+/// The refusal for a `services.tsp = true` VTA whose existing mediator
+/// advertises no `TSPTransport`: every peer that prefers TSP would pick `#tsp`
+/// and fail, rather than fall back to DIDComm.
+pub(crate) fn mediator_lacks_tsp(did: &str) -> String {
+    format!(
+        "services.tsp = true, but mediator {did} advertises no TSPTransport service, \
+         so it does not route TSP and the VTA's `#tsp` would lead peers nowhere. Use a \
+         mediator built with TSP (the mediator's `tsp` feature, on by default), or set \
+         services.tsp = false"
+    )
 }
 
 fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Error>> {
@@ -2746,6 +2825,34 @@ mod tests {
         validate_inputs(&inputs).expect("resolver_url should validate");
     }
 
+    /// Keyring VTI-33: TSP is on by default in a new VTA — when `[services]` is
+    /// omitted, and when it is given without a `tsp` key. Only a build that can
+    /// serve it defaults it on; `tsp = false` still turns it off.
+    #[test]
+    fn a_setup_file_defaults_tsp_on_where_the_build_serves_it() {
+        let head = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://trust.example.com"
+
+            [secrets]
+            backend = "keyring"
+        "#;
+        let omitted = parse(head).expect("parses");
+        assert_eq!(omitted.services.tsp, cfg!(feature = "tsp"));
+
+        let partial = parse(&format!(
+            "{head}\n[services]\nrest = true\ndidcomm = true\n"
+        ))
+        .expect("parses");
+        assert_eq!(partial.services.tsp, cfg!(feature = "tsp"));
+        assert!(partial.services.rest && partial.services.didcomm);
+        assert!(!partial.services.webauthn);
+
+        let off = parse(&format!("{head}\n[services]\ntsp = false\n")).expect("parses");
+        assert!(!off.services.tsp);
+    }
+
     #[test]
     fn empty_resolver_url_rejected() {
         let raw = r#"
@@ -2841,6 +2948,8 @@ mod tests {
 
     #[test]
     fn create_mediator_without_didcomm_rejected() {
+        // `tsp = false` stated: TSP is on by default and rides the mediator
+        // too, so without it this is no longer a mediator no transport uses.
         let raw = r#"
             config_path = "/tmp/vta-test/config.toml"
             data_dir    = "/tmp/vta-test/data"
@@ -2848,6 +2957,7 @@ mod tests {
             [services]
             rest    = true
             didcomm = false
+            tsp     = false
 
             [secrets]
             backend = "keyring"
