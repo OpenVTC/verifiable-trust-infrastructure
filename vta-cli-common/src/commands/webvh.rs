@@ -409,14 +409,41 @@ pub async fn cmd_webvh_did_create(
         println!("Log Entry (did.jsonl):");
         println!("{}", log_entry);
         println!();
-        println!("To self-host this DID, place the log entry in a file named `did.jsonl`");
-        println!("at the URL path corresponding to your DID URL.");
+        for line in hosting_guidance(result.server_id.as_deref()) {
+            println!("{line}");
+        }
     }
 
     Ok(())
 }
 
-/// Helper that reads optional file inputs before building a `CreateDidWebvhRequest`.
+/// What an operator must do with the log entry a mint just printed — which
+/// depends entirely on whether a hosting server took it.
+///
+/// Keyring's VTI-20. The log entry comes back for **both** kinds of mint, and
+/// the output used to say the same thing for both: "To self-host this DID,
+/// place the log entry…". That was wrong in each direction. For a serverless
+/// mint it read as an option, when it is the only way the DID will ever
+/// resolve — the VTA that minted it does not serve it, so its URL answers 404
+/// until someone publishes the file by hand. For a server-managed mint it told
+/// the operator to do something the server had already done.
+fn hosting_guidance(server_id: Option<&str>) -> Vec<String> {
+    match server_id {
+        None => vec![
+            "This DID is serverless: nothing is hosting it, and it will NOT resolve".to_string(),
+            "until you publish the log entry above yourself. Save it as `did.jsonl`".to_string(),
+            "at the location your DID encodes (the `--did-url` path, or".to_string(),
+            "`/.well-known/did.jsonl` for a bare domain). The VTA that minted it does".to_string(),
+            "not serve it — its URL answers 404 until you do.".to_string(),
+        ],
+        Some(server) => vec![format!(
+            "Hosted by server `{server}`, which is already serving this log. \
+             No action is needed; the entry is printed for your records."
+        )],
+    }
+}
+
+/// Helper that reads optional file inputs before building a `CreateDidWebvhRequest`./// Helper that reads optional file inputs before building a `CreateDidWebvhRequest`.
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_webvh_did_create_with_files(
     client: &VtaClient,
@@ -753,6 +780,28 @@ pub async fn cmd_webvh_did_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// VTI-20: a serverless mint must say the DID will not resolve until the
+    /// operator publishes it — not offer self-hosting as one option among
+    /// several, which is how the old text read.
+    #[test]
+    fn a_serverless_mint_says_the_operator_must_host_it() {
+        let text = hosting_guidance(None).join(" ");
+        assert!(text.contains("will NOT resolve"), "{text}");
+        assert!(text.contains("404"), "{text}");
+        assert!(text.contains("/.well-known/did.jsonl"), "{text}");
+    }
+
+    /// And a server-managed mint must not tell the operator to do what the
+    /// server already did.
+    #[test]
+    fn a_server_managed_mint_does_not_ask_the_operator_to_host_it() {
+        let text = hosting_guidance(Some("prod-host")).join(" ");
+        assert!(text.contains("prod-host"), "{text}");
+        assert!(text.contains("No action is needed"), "{text}");
+        assert!(!text.contains("will NOT resolve"), "{text}");
+        assert!(!text.to_lowercase().contains("self-host"), "{text}");
+    }
 
     /// The header and the widths must describe the same columns. They are
     /// separate lists in ratatui, and a short widths list silently drops the
