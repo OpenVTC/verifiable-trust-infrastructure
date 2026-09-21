@@ -1331,9 +1331,10 @@ async fn run_provision_quietly(
     setup_key: &EphemeralSetupKey,
 ) -> Result<ProvisionResultV2, AppError> {
     let mut vars = BTreeMap::new();
-    // The template appends `STATUS_LIST_PATH` (default `/v1/status-lists`)
-    // to `URL`, so `URL` must be the host base — passing the API base
-    // with `/v1` here renders a double-`/v1` endpoint in the DID doc.
+    // The template appends both `REST_PATH` (default `/v1`) and
+    // `STATUS_LIST_PATH` (default `/v1/status-lists`) to `URL`, so `URL` must
+    // be the host base — passing the API base with `/v1` here renders a
+    // double-`/v1` in both endpoints of the DID doc.
     vars.insert(
         "URL".to_string(),
         JsonValue::String(inputs.base_url.clone()),

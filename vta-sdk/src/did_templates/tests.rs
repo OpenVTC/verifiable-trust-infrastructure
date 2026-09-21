@@ -844,6 +844,39 @@ fn did_host_didcomm_builtin_rejects_unknown_placeholder_in_template() {
 // ─── vtc-host built-in ───────────────────────────────────────────────
 
 #[test]
+fn vtc_host_rest_path_is_overridable_and_can_be_emptied() {
+    // A deployment that serves the API somewhere other than `/v1` — or at the
+    // root — must be able to say so, the same way `STATUS_LIST_PATH` already
+    // allows. The default exists because `/v1` is what `vtc-service` serves,
+    // not because the path is fixed.
+    let tpl = load_embedded("vtc-host").unwrap();
+
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
+    vars.insert_string("URL", "https://vtc.example.com");
+    vars.insert_string("REST_PATH", "/api/v2");
+    let out = tpl.render(&vars).unwrap();
+    assert_eq!(
+        out["service"][0]["serviceEndpoint"],
+        "https://vtc.example.com/api/v2"
+    );
+
+    // Empty means the root, and must not leave a trailing slash behind — the
+    // template's own rule about `URL` is what keeps this clean.
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("PQ_SIGNING_KEY_MB", "zPqSigning");
+    vars.insert_string("URL", "https://vtc.example.com");
+    vars.insert_string("REST_PATH", "");
+    let out = tpl.render(&vars).unwrap();
+    assert_eq!(
+        out["service"][0]["serviceEndpoint"],
+        "https://vtc.example.com"
+    );
+}
+
+#[test]
 fn vtc_host_renders_with_minimal_vars() {
     let tpl = load_embedded("vtc-host").unwrap();
     let mut vars = ambient_vars();
@@ -874,15 +907,20 @@ fn vtc_host_renders_with_minimal_vars() {
     assert_eq!(out["authentication"][0], "did:webvh:abc:example.com#key-0");
     assert_eq!(out["keyAgreement"][0], "did:webvh:abc:example.com#key-1");
 
-    // Two services: #vtc-rest at the URL, #vtc-status-list at URL + default path.
+    // Two services, each at URL + its default path.
     assert_eq!(
         out["service"][0]["id"],
         "did:webvh:abc:example.com#vtc-rest"
     );
     assert_eq!(out["service"][0]["type"], "VTCRest");
+    // `/v1`, not the bare URL. The bare form is what a VTC advertised until
+    // Keyring's VTI-15: `vtc-service` serves its API under `/v1`, so every
+    // request a client derived from the document answered 405. Nothing in
+    // this workspace reads this entry — it exists for third parties — so a
+    // wrong value is invisible here and costs only the integrator.
     assert_eq!(
         out["service"][0]["serviceEndpoint"],
-        "https://vtc.example.com"
+        "https://vtc.example.com/v1"
     );
     assert_eq!(
         out["service"][1]["id"],
