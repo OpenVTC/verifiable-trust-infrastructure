@@ -42,7 +42,7 @@
 //! benign for our purposes) are vastly preferable to silent overwrites.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use vta_sdk::webvh::WebvhDidRecord;
@@ -57,18 +57,35 @@ use vta_sdk::webvh::WebvhDidRecord;
 /// model; it intentionally does not promise coordination between replicas.
 #[derive(Clone, Default)]
 pub struct DidUpdateLocks {
-    inner: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+    inner: Arc<StdMutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
 }
 
 impl DidUpdateLocks {
     /// Acquire the lock for `did`, creating it on first use.
+    ///
+    /// Entries are held by `Weak`, so a DID's lock is reclaimed once nothing
+    /// holds or waits on it. That is safe rather than merely tidy: a waiter
+    /// clones the `Arc` *before* awaiting, so a `Weak` that fails to upgrade
+    /// provably has no holder and no waiter, and minting a fresh mutex there
+    /// loses no mutual exclusion. Holding `Arc`s instead would grow the map by
+    /// one entry per DID for the lifetime of the process.
     pub async fn acquire(&self, did: &str) -> OwnedMutexGuard<()> {
         let lock = {
             let mut locks = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(locks.entry(did.to_string()).or_default())
+            match locks.get(did).and_then(Weak::upgrade) {
+                Some(live) => live,
+                None => {
+                    // Opportunistic prune, on the path that is already
+                    // inserting and only over provably dead entries.
+                    locks.retain(|_, weak| weak.strong_count() > 0);
+                    let fresh = Arc::new(AsyncMutex::new(()));
+                    locks.insert(did.to_string(), Arc::downgrade(&fresh));
+                    fresh
+                }
+            }
         };
         lock.lock_owned().await
     }
@@ -314,5 +331,40 @@ mod tests {
             .await
             .expect("second update acquired after release");
         waiting.await.expect("waiting task joined");
+    }
+
+    /// The registry is process-global and lives for the life of the VTA, so
+    /// an entry per DID that is never reclaimed is an unbounded structure.
+    /// Idle locks must drop out.
+    #[tokio::test]
+    async fn did_update_locks_are_reclaimed_when_idle() {
+        let locks = DidUpdateLocks::default();
+
+        for i in 0..10 {
+            let _guard = locks
+                .acquire(&format!("did:webvh:scid:example.com:a{i}"))
+                .await;
+        }
+
+        let live = {
+            let map = locks
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.values().filter(|w| w.strong_count() > 0).count()
+        };
+        assert_eq!(live, 0, "no lock is held, so none should still be live");
+
+        let retained = {
+            let map = locks
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.len()
+        };
+        assert!(
+            retained <= 1,
+            "dead entries must be pruned, map still holds {retained}"
+        );
     }
 }

@@ -520,6 +520,10 @@ async fn run_update(
     let record = find_record_by_scid(webvh_ks, scid)
         .await?
         .ok_or_else(|| UpdateDidWebvhError::NotFound(format!("SCID {scid} not found")))?;
+    // The head as it stood before we queued. Compared against the reload
+    // below to bound what the lock is allowed to hide — see the stale-document
+    // check that follows.
+    let head_before_lock = record.log_entry_count;
     // Serialise the entire append path for one DID. The wait in
     // `next_version_time` is inside this guard, so a queued update re-reads
     // the first update's committed head before choosing its own timestamp.
@@ -543,6 +547,40 @@ async fn run_update(
                 ))
             })?,
     };
+    // The lock must not widen the window `RecordSnapshot` covers.
+    //
+    // `document` is a whole replacement, built by the caller from a head it
+    // read earlier — `agent_name_op` above, and every
+    // `operations::protocol::*` service patcher, do exactly that. Before the
+    // lock existed, a queued caller captured its snapshot at the *old*
+    // `log_entry_count` and step 11 refused it. Now the reload above re-bases
+    // the snapshot on the newer head, so step 11 would pass and the stale
+    // document would silently replace whatever the first caller had just
+    // written — turning a conflict the operator sees into a lost edit nobody
+    // does. `concurrency`'s module docs are explicit that false positives beat
+    // silent overwrites.
+    //
+    // So refuse here instead, restoring exactly the pre-lock guarantee. Only
+    // when the caller supplied no `expected_version_id`: if they did, the
+    // precondition at step 4a governs, and it knows about the
+    // unpublished-head heal path this check does not. Updates that carry no
+    // replacement document (key rotation, witnesses, watchers, ttl) are
+    // unaffected — they compose onto whatever head they find, which is the
+    // serialisation the lock exists to provide.
+    if mode == Mode::Execute
+        && opts.document.is_some()
+        && opts.expected_version_id.is_none()
+        && record.log_entry_count != head_before_lock
+    {
+        return Err(UpdateDidWebvhError::Conflict(format!(
+            "DID {} moved from {head_before_lock} to {} log entries while this update \
+             waited its turn, and the supplied document was built from the older \
+             version — applying it would discard the intervening change. Re-read the \
+             DID document, re-apply the edit, and send it with `expectedVersionId` set \
+             to the version you read.",
+            record.did, record.log_entry_count
+        )));
+    }
     // `scid` may arrive as a full `did:webvh:…` (the delegated-update path,
     // `trust_tasks/webvh.rs`) or as a bare SCID (the CLI path). `find_record_by_scid`
     // accepts either form for lookup, but the `webvh_keys` handle keyspace is

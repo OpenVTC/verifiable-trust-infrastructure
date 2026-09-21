@@ -1930,11 +1930,16 @@ mod pre_rotation_e2e_tests {
         assert_eq!(svc.mediator_did, mediator_did);
     }
 
-    /// Two updates launched together against the same chain head must append
-    /// sequentially. The per-DID lock makes the second caller re-read the
-    /// first caller's committed entry before selecting its versionTime.
+    /// Two updates launched together that carry **no replacement document**
+    /// must append sequentially. The per-DID lock makes the second caller
+    /// re-read the first caller's committed entry before selecting its
+    /// versionTime, so both land and the chain stays valid.
+    ///
+    /// Options like `ttl` compose onto whichever head they find, which is
+    /// exactly the case serialization is for. The document case is the
+    /// opposite and is pinned by the test below.
     #[tokio::test]
-    async fn concurrent_updates_append_a_valid_three_entry_chain() {
+    async fn concurrent_non_document_updates_append_a_valid_three_entry_chain() {
         let (ts, seed_store) = setup("ctx-concurrent-updates").await;
         let cfg = ts_app_config(&ts);
         let auth = admin_auth();
@@ -1950,6 +1955,78 @@ mod pre_rotation_e2e_tests {
             &resolver,
             &bridge,
             "ctx-concurrent-updates",
+            0,
+        )
+        .await;
+
+        let (first, second) = tokio::join!(
+            update_did_webvh(
+                &deps,
+                &auth,
+                &scid,
+                UpdateDidWebvhOptions {
+                    ttl: Some(3600),
+                    ..Default::default()
+                },
+                None,
+                "test",
+            ),
+            update_did_webvh(
+                &deps,
+                &auth,
+                &scid,
+                UpdateDidWebvhOptions {
+                    ttl: Some(7200),
+                    ..Default::default()
+                },
+                None,
+                "test",
+            ),
+        );
+
+        let versions = [
+            first
+                .expect("first concurrent update succeeds")
+                .new_version_id,
+            second
+                .expect("second concurrent update succeeds")
+                .new_version_id,
+        ];
+        assert!(versions.iter().any(|version| version.starts_with("2-")));
+        assert!(versions.iter().any(|version| version.starts_with("3-")));
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// A `document` is a whole replacement built from a head the caller read
+    /// earlier, so serializing the append does not make it current: the
+    /// second writer would produce a structurally valid entry that silently
+    /// discards the first writer's edit.
+    ///
+    /// This is the case the per-DID lock would otherwise *hide*. Before the
+    /// lock, both callers snapshotted the old `log_entry_count` and the loser
+    /// was refused at the final write. The lock reloads the record, which
+    /// re-bases that snapshot on the newer head — so the refusal has to be
+    /// made explicitly, against the head as it stood before queueing.
+    ///
+    /// Exactly one caller must win, the loser must get `Conflict`, and the
+    /// surviving chain must be two entries — not three with an edit missing.
+    #[tokio::test]
+    async fn concurrent_document_updates_refuse_the_stale_one() {
+        let (ts, seed_store) = setup("ctx-concurrent-docs").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-concurrent-docs",
             0,
         )
         .await;
@@ -1979,16 +2056,21 @@ mod pre_rotation_e2e_tests {
             ),
         );
 
-        let versions = [
-            first
-                .expect("first concurrent update succeeds")
-                .new_version_id,
-            second
-                .expect("second concurrent update succeeds")
-                .new_version_id,
-        ];
-        assert!(versions.iter().any(|version| version.starts_with("2-")));
-        assert!(versions.iter().any(|version| version.starts_with("3-")));
+        let (winner, loser) = match (first, second) {
+            (Ok(w), Err(l)) | (Err(l), Ok(w)) => (w, l),
+            (Ok(a), Ok(b)) => panic!(
+                "both document updates were accepted ({}, {}) — one silently \
+                 overwrote the other",
+                a.new_version_id, b.new_version_id
+            ),
+            (Err(a), Err(b)) => panic!("neither document update was accepted: {a}, {b}"),
+        };
+
+        assert!(winner.new_version_id.starts_with("2-"));
+        assert!(
+            matches!(loser, super::UpdateDidWebvhError::Conflict(_)),
+            "the stale writer must be refused as a conflict, got {loser:?}"
+        );
         assert_chain_validates(&ts, &did).await;
     }
 

@@ -214,14 +214,21 @@ the new convention; subsequent updates use the fast path.
   `WebvhDidRecord.log_entry_count`. Within one VTA process, updates to the
   same DID are serialized from log-head read through persistence and publish,
   so rapid callers append consecutive entries with distinct whole-second
-  `versionTime` values. The VTA waits for the next valid second when needed;
-  it never writes a future-dated timestamp. This process-local lock matches
-  the VTA's single-process deployment model and does not coordinate replicas.
-- **Replacement documents require a version precondition.** `document` is a
-  complete replacement, not a patch. A caller deriving it from an earlier read
-  must send that entry's `expectedVersionId`; otherwise a later, structurally
-  valid append can replace an intervening document edit. Serialization protects
-  the append and timestamp invariants, not a document prepared before the lock.
+  `versionTime` values. The VTA waits for the next valid second when needed,
+  up to a few seconds; past that it stamps the entry anyway rather than
+  parking the request, because a timestamp briefly ahead of a peer's clock
+  self-heals whereas a non-increasing one bricks the DID. This process-local
+  lock matches the VTA's single-process deployment model and does not
+  coordinate replicas.
+- **Serialization does not make a prebuilt document current.** `document` is a
+  complete replacement, not a patch, so an update carrying one is refused with
+  `409` if the chain moved while that update waited its turn — otherwise a
+  later, structurally valid append would silently replace an intervening edit.
+  A caller deriving `document` from an earlier read should send that entry's
+  `expectedVersionId`, which pins the version explicitly and takes the richer
+  precondition path. Updates that carry no document (key rotation, witnesses,
+  watchers, ttl) compose onto whichever head they find and are never refused
+  on this ground.
 - **Witness DIDs are resolved (not signature-verified).** The VTA
   checks each witness DID resolves through the cache resolver within
   5 seconds. Witness signature verification happens at log-entry
