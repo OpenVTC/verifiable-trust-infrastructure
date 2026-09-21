@@ -617,6 +617,25 @@ pub async fn build_app_state(
     })
 }
 
+/// Whether this build can **receive** TSP. One definition, so the startup check
+/// and `enable_tsp` cannot disagree about it. It lives here rather than beside
+/// `enable_tsp` because `operations::protocol` is compiled only under `webvh`,
+/// and the startup check has to run in every build. `tsp` is not a default feature, so
+/// a default `vta-service` build answers `false`.
+pub(crate) const TSP_BUILT: bool = cfg!(feature = "tsp");
+
+/// Why a `services.tsp = true` setting cannot be honoured by a build, if it
+/// cannot (Keyring VTI-34). Pure, and parameterised on the build, so both
+/// answers are testable from one build — `cfg!` alone would only ever exercise
+/// whichever branch the test binary was compiled with.
+pub(crate) fn tsp_configured_but_unbuilt(configured: bool, built: bool) -> Option<&'static str> {
+    (configured && !built).then_some(
+        "services.tsp is true, but this VTA was built without the `tsp` feature, so it \
+         cannot receive TSP. Rebuild with `--features tsp`, or set `services.tsp = false` \
+         (and `pnm services tsp disable` if `#tsp` was already published).",
+    )
+}
+
 // `config` is only mutated when the `webvh` feature is on (mirror of
 // runtime-state into the in-memory `config.services`). Allow the lint
 // in other feature combos so `cargo check -D warnings` stays clean.
@@ -818,6 +837,19 @@ pub async fn run(
     // {enable,disable}`).
     let rest_enabled = cfg!(feature = "rest") && config.services.rest;
     let didcomm_enabled = cfg!(feature = "didcomm") && config.services.didcomm;
+
+    // `services.tsp` gets no silent `cfg!` AND like the two lines above, on
+    // purpose. REST and DIDComm default to `true`, so a reduced build
+    // (`--no-default-features --features rest`, which CI runs) depends on the
+    // AND quietly dropping a transport it was never built with. TSP defaults to
+    // `false`, so `tsp = true` is always an operator's explicit choice — and on
+    // a build without the feature it was accepted and did nothing, while
+    // anything that had published `#tsp` sent peers into a transport no one
+    // was listening on (Keyring VTI-34). Refusing to start is the only honest
+    // answer to a setting the build cannot honour.
+    if let Some(reason) = tsp_configured_but_unbuilt(config.services.tsp, TSP_BUILT) {
+        return Err(AppError::Config(reason.into()));
+    }
 
     if !rest_enabled && !didcomm_enabled {
         return Err(AppError::Config(
@@ -2892,5 +2924,28 @@ mod tests {
             result.is_err(),
             "malformed preload input should not seed resolver cache"
         );
+    }
+}
+
+#[cfg(test)]
+mod tsp_build_tests {
+    use super::tsp_configured_but_unbuilt;
+
+    /// Keyring VTI-34: asked for and not built is the one combination refused.
+    #[test]
+    fn tsp_asked_for_but_not_built_is_refused() {
+        let reason = tsp_configured_but_unbuilt(true, false).expect("must refuse");
+        assert!(reason.contains("--features tsp"), "{reason}");
+        assert!(reason.contains("pnm services tsp disable"), "{reason}");
+    }
+
+    /// Every other combination starts. In particular a default build — no
+    /// `tsp` feature — with the default `services.tsp = false` must not be
+    /// touched, or every ordinary VTA would stop starting.
+    #[test]
+    fn every_other_combination_is_allowed() {
+        assert!(tsp_configured_but_unbuilt(false, false).is_none());
+        assert!(tsp_configured_but_unbuilt(false, true).is_none());
+        assert!(tsp_configured_but_unbuilt(true, true).is_none());
     }
 }

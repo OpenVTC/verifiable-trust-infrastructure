@@ -125,6 +125,20 @@ pub async fn enable_tsp(
     ctx: OpContext,
     channel: &str,
 ) -> Result<EnableTspResult, EnableTspError> {
+    // A build without the `tsp` feature has no TSP receive path, so advertising
+    // `#tsp` from it would publish a transport it cannot serve — and peers
+    // follow the stack's TSP-first preference, so they would send into nothing
+    // (Keyring VTI-34; VTI-33 is the same failure in the mediator). This op is
+    // compiled into every build, so the refusal has to be explicit.
+    if !crate::server::TSP_BUILT {
+        return Err(EnableTspError::Validation(
+            "this VTA was built without the `tsp` feature, so it cannot receive TSP; \
+             advertising it would send peers into nothing. Rebuild with `--features tsp` \
+             first."
+                .into(),
+        ));
+    }
+
     // TSP persists "enabled" as runtime state (fjall) + the in-memory flag.
     // If this fails after publish, the LogEntry advertises TSP but config
     // disagrees — same risk window as REST; operator retries.
