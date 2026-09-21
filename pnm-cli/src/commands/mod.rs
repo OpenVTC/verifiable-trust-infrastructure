@@ -24,6 +24,7 @@ pub(crate) mod did_templates;
 pub(crate) mod health;
 pub(crate) mod keys;
 pub(crate) mod memory;
+pub(crate) mod messaging;
 pub(crate) mod persona;
 pub(crate) mod policy;
 pub(crate) mod rooms;

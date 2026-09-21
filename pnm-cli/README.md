@@ -315,6 +315,35 @@ Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password
 | `vta info`    | Show current VTA details                              |
 | `vta restart` | Trigger a soft restart (reloads config, reconnects)   |
 
+### Messaging
+
+| Command | Description |
+| ------- | ----------- |
+| `messaging console [--context ID] [--mediator DID]` | Open the mediator console as the DID of a context |
+| `messaging console --as-session` | Open it as this pnm session's own `did:key` |
+
+`pnm messaging console` opens a full-screen console for an Affinidi messaging
+mediator, acting as a DID this VTA manages — no profile file or secrets to keep:
+
+- an **administrator** DID sees the whole mediator: statistics, every account's
+  queues with green-to-red quota bars, any account's messages (inspect, delete,
+  preview-then-confirm purges), the audit log, and a live traffic monitor;
+- **any other** DID manages its own queues and messages and watches its own
+  traffic.
+
+The mediator decides which, from its own record of the DID. The mediator comes
+from `--mediator`, else the DID document's `DIDCommMessaging` service, else this
+pnm's configured mediator. Screens and keys are documented with the console
+itself: [`affinidi-messaging-mediator-tui`](https://github.com/affinidi/affinidi-tdk-rs/tree/main/crates/messaging/affinidi-messaging-mediator-tui).
+
+**What it needs from the VTA.** The console signs requests and decrypts the
+mediator's replies, and the VTA cannot do key agreement on its behalf, so the
+DID's keys are exported for the session — one at a time with `keys/export-secret`,
+which needs the **`KeyExport`** capability and is audited on every export
+(VTI-VTA-003). Only the DID's own verification-method keys are exported; a key
+marked non-exportable is refused; the keys are held in memory and gone when the
+console closes. `--as-session` exports nothing — pnm's own key is already here.
+
 ## Additional Resources
 
 - [VTA Service & Architecture](../README.md)

@@ -80,10 +80,27 @@ pub fn sign_unseal_challenge(
         .try_into()
         .map_err(|v: Vec<u8>| format!("challenge must be 32 bytes (got {} bytes)", v.len()))?;
 
+    let seed_bytes = session_seed(&session)?;
+    let signing_key = SigningKey::from_bytes(&seed_bytes);
+    let signature = signing_key.sign(&challenge_bytes);
+
+    eprintln!();
+    eprintln!("  Admin DID: {}", session.client_did);
+    eprintln!("  Signature (hex):");
+    println!("{}", hex::encode(signature.to_bytes()));
+    eprintln!();
+    eprintln!("  Paste the DID and signature above into the `vta unseal` prompt.");
+    eprintln!();
+    Ok(())
+}
+
+/// The session's Ed25519 seed, decoded from its stored multibase.
+pub(crate) fn session_seed(
+    session: &vta_sdk::session::SessionInfo,
+) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     // The session stores the Ed25519 secret as a multibase-encoded
     // 32-byte seed (matches `derive_and_store_did_key`'s
-    // `encode_private_multibase` for KeyType::Ed25519). Decode and
-    // construct the SigningKey directly.
+    // `encode_private_multibase` for KeyType::Ed25519).
     let (_, decoded) = multibase::decode(&session.private_key_multibase)
         .map_err(|e| format!("stored private key is not valid multibase: {e}"))?;
     // Strip the multicodec prefix `[0x80, 0x26]` (ed25519-priv,
@@ -106,17 +123,7 @@ pub fn sign_unseal_challenge(
         .into());
     };
 
-    let signing_key = SigningKey::from_bytes(&seed_bytes);
-    let signature = signing_key.sign(&challenge_bytes);
-
-    eprintln!();
-    eprintln!("  Admin DID: {}", session.client_did);
-    eprintln!("  Signature (hex):");
-    println!("{}", hex::encode(signature.to_bytes()));
-    eprintln!();
-    eprintln!("  Paste the DID and signature above into the `vta unseal` prompt.");
-    eprintln!();
-    Ok(())
+    Ok(seed_bytes)
 }
 
 /// Load the stored session for diagnostics.

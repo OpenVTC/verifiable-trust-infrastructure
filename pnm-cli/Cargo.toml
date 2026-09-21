@@ -42,6 +42,12 @@ affinidi-did-resolver-cache-sdk = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 dialoguer = { workspace = true }
+# `pnm messaging console`: the mediator console and its engine.
+affinidi-messaging-mediator-admin = "0.1"
+affinidi-messaging-mediator-tui = "0.1"
+affinidi-secrets-resolver = { workspace = true }
+async-trait = "0.1"
+ratatui = { workspace = true }
 dirs = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = "0.4"

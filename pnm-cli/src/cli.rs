@@ -334,6 +334,44 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: RoomCommands,
     },
+
+    /// Operate an Affinidi messaging mediator as a DID this VTA manages.
+    #[command(name = "messaging")]
+    Messaging {
+        #[command(subcommand)]
+        command: MessagingCommands,
+    },
+}
+
+/// Mediator operations as a VTA-managed DID.
+#[derive(Subcommand)]
+pub(crate) enum MessagingCommands {
+    /// Open the mediator console as a DID from one of your contexts.
+    ///
+    /// An administrator account sees the whole mediator — statistics, every
+    /// account's queues, any account's messages, the audit log, live traffic;
+    /// any other account manages its own queues and messages. Which one is up
+    /// to the mediator's record of the DID.
+    ///
+    /// The console needs the DID's private keys for the session, so its
+    /// verification-method keys are exported with `keys/export-secret`: this
+    /// needs the `KeyExport` capability and every export is audited
+    /// (VTI-VTA-003). The keys stay in memory and are gone when the console
+    /// closes. `--as-session` uses pnm's own identity instead and exports
+    /// nothing.
+    Console {
+        /// Context whose DID to act as. Asked for when omitted and there is
+        /// more than one.
+        #[arg(long)]
+        context: Option<String>,
+        /// Mediator DID. Defaults to the DID document's DIDCommMessaging
+        /// service, then this pnm's configured mediator.
+        #[arg(long)]
+        mediator: Option<String>,
+        /// Act as this pnm session's own did:key.
+        #[arg(long, conflicts_with = "context")]
+        as_session: bool,
+    },
 }
 
 /// Member-side room verbs. Each mints its own presentation for exactly the
