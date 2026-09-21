@@ -20,6 +20,16 @@ use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::members::{Member, store_member};
 use vtc_service::test_support::TestVtc;
 
+/// The code `vtc/members/credentials/0.1` declares for an unknown member, read
+/// from the generated bindings rather than spelled out (#1600).
+const MEMBER_CREDENTIALS_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::members::credentials::v0_1::error_codes::NOT_FOUND.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
 const REMOVED_TASK: &str = "https://trusttasks.org/spec/vtc/members/removed/0.1";
@@ -583,7 +593,11 @@ async fn member_credentials_for_an_unknown_member_is_the_declared_not_found() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "got {body}");
-    assert_eq!(body["code"], "vtc/members/credentials:notFound", "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        MEMBER_CREDENTIALS_ERR_NOT_FOUND,
+        "{body}"
+    );
     assert!(
         credentials_read_events(&fix).await.is_empty(),
         "nothing was disclosed, so nothing is audited as a read"
@@ -609,7 +623,11 @@ async fn member_credentials_for_a_departed_member_is_not_found() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "got {body}");
-    assert_eq!(body["code"], "vtc/members/credentials:notFound");
+    assert_eq!(
+        rest_error_code(&body),
+        MEMBER_CREDENTIALS_ERR_NOT_FOUND,
+        "{body}"
+    );
 }
 
 #[tokio::test]

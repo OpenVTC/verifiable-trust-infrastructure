@@ -186,7 +186,8 @@ pub const JOIN_REQUEST_SUPPLEMENT_RESPONSE_TYPE: &str =
 /// Also the answer when a supplied `requestId` names somebody else's request —
 /// conflated deliberately, so the task cannot be used to probe which request
 /// ids exist on this community.
-pub const JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND: &str = "vtc/join-requests/supplement:notFound";
+pub const JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND: &str =
+    supplement::v0_1::error_codes::NOT_FOUND.code;
 
 /// Extended error code: the request is open, but the community has asked this
 /// applicant for nothing — it is queued for a decision the community owes.
@@ -196,12 +197,12 @@ pub const JOIN_REQUEST_SUPPLEMENT_ERR_NOT_FOUND: &str = "vtc/join-requests/suppl
 /// yet. Accepting evidence into it would replace what a maintainer is
 /// mid-review on.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_NOT_AWAITING_EVIDENCE: &str =
-    "vtc/join-requests/supplement:notAwaitingEvidence";
+    supplement::v0_1::error_codes::NOT_AWAITING_EVIDENCE.code;
 
 /// Extended error code: the request has been approved, rejected or withdrawn,
 /// so there is no open decision left to supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED: &str =
-    "vtc/join-requests/supplement:alreadyDecided";
+    supplement::v0_1::error_codes::ALREADY_DECIDED.code;
 
 /// Extended error code: the applicant already has an open request, so this
 /// submit is a duplicate rather than a new application.
@@ -216,19 +217,25 @@ pub const JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED: &str =
 /// what tells the applicant whether the open request is waiting on the
 /// community (`pending`) or on them (`deferred`), and `requestId` is what they
 /// pass to [`JOIN_REQUEST_WITHDRAW_TYPE`] to clear it.
+///
+/// The one literal left in this file: because the specification does not
+/// declare it, there is no generated `error_codes` constant to read. The VTC's
+/// error-code census lists it as consumer-minted and fails the day the
+/// specification declares it, asking for the generated constant instead.
 pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
     "vtc/join-requests/submit:requestAlreadyOpen";
 
 /// `vtc/join-requests/submit:attributesMissing` — a required requested
 /// attribute was not answered. `details.types` names them.
 pub const JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING: &str =
-    "vtc/join-requests/submit:attributesMissing";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_2::error_codes::ATTRIBUTES_MISSING.code;
 
 /// `vtc/join-requests/submit:attributesUnrequested` — an answer named a type
 /// the manifest does not request; refused, not stored. `details.types` names
 /// them.
 pub const JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED: &str =
-    "vtc/join-requests/submit:attributesUnrequested";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_2::error_codes::ATTRIBUTES_UNREQUESTED
+        .code;
 
 /// Extended error code: the caller has no open request to withdraw.
 ///
@@ -236,7 +243,7 @@ pub const JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED: &str =
 /// somebody else. The spec conflates the two deliberately — distinguishing
 /// them would let a caller probe whether a given id exists on this community —
 /// and the code's own registry entry records that reasoning.
-pub const JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND: &str = "vtc/join-requests/withdraw:notFound";
+pub const JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND: &str = withdraw::v0_1::error_codes::NOT_FOUND.code;
 
 /// Extended error code: the request has already been approved, rejected or
 /// withdrawn, so there is nothing left to close.
@@ -245,7 +252,7 @@ pub const JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND: &str = "vtc/join-requests/withdra
 /// *is* entitled to the outcome of their own request, and because no retry
 /// will change it.
 pub const JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED: &str =
-    "vtc/join-requests/withdraw:alreadyDecided";
+    withdraw::v0_1::error_codes::ALREADY_DECIDED.code;
 
 /// Trust Task `type` for a join-request manifest request: discover the
 /// community's join evidence requirements. Public read; empty payload.

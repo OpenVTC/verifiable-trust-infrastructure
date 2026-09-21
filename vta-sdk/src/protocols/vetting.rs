@@ -171,27 +171,31 @@ pub const VETTING_VETTER_RESEND_RESPONSE_TYPE: &str =
 
 // ---------------------------------------------------------------------------
 // Extended error codes, as each specification's front matter declares them.
-// The codegen carries no error codes, so these are the one place they are
-// spelled.
+// Read from the generated `error_codes` constants, so a code the specification
+// does not declare cannot be spelled here (#1600).
 // ---------------------------------------------------------------------------
 
 /// `vetting/request` refusal: a scanned ticket's secret did not match. Never
 /// sent for a short code — see the module docs.
-pub const VETTING_REQUEST_ERR_INVALID_TICKET: &str = "vetting/request:invalidTicket";
+pub const VETTING_REQUEST_ERR_INVALID_TICKET: &str =
+    request::v0_1::error_codes::INVALID_TICKET.code;
 /// `vetting/request` refusal: the vetter has no capacity.
-pub const VETTING_REQUEST_ERR_CAPACITY: &str = "vetting/request:capacity";
+pub const VETTING_REQUEST_ERR_CAPACITY: &str = request::v0_1::error_codes::CAPACITY.code;
 /// `vetting/request` refusal: the addressee is not currently a vetter for the
 /// named community.
-pub const VETTING_REQUEST_ERR_NOT_ELIGIBLE: &str = "vetting/request:notEligible";
+pub const VETTING_REQUEST_ERR_NOT_ELIGIBLE: &str = request::v0_1::error_codes::NOT_ELIGIBLE.code;
 /// `vetting/request` refusal: the vetter declines, without a reason.
-pub const VETTING_REQUEST_ERR_DECLINED: &str = "vetting/request:declined";
+pub const VETTING_REQUEST_ERR_DECLINED: &str = request::v0_1::error_codes::DECLINED.code;
 /// `vetting/request` refusal: the vetter does not offer the requested method.
-pub const VETTING_REQUEST_ERR_METHOD_UNAVAILABLE: &str = "vetting/request:methodUnavailable";
+pub const VETTING_REQUEST_ERR_METHOD_UNAVAILABLE: &str =
+    request::v0_1::error_codes::METHOD_UNAVAILABLE.code;
 /// `vtc/vetting/vetters/profile` refusal: the sender is not an active member
 /// holding a live vetter grant.
-pub const VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE: &str = "vtc/vetting/vetters/profile:notEligible";
+pub const VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE: &str =
+    vetters::profile::v0_1::error_codes::NOT_ELIGIBLE.code;
 /// `vtc/vetting/vetters/resend` refusal: the sender holds no live vetter grant.
-pub const VETTING_VETTER_RESEND_ERR_NOT_GRANTED: &str = "vtc/vetting/vetters/resend:notGranted";
+pub const VETTING_VETTER_RESEND_ERR_NOT_GRANTED: &str =
+    vetters::resend::v0_1::error_codes::NOT_GRANTED.code;
 
 // ---------------------------------------------------------------------------
 // Shared vocabulary that no schema carries

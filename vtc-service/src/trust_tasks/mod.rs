@@ -52,6 +52,13 @@ pub(crate) mod helpers;
 #[cfg(test)]
 mod conformance;
 
+// The declared-error-code census (#1600): every extended error code a bound,
+// published `spec/vtc/*` task declares must be witnessed by a test that
+// observes the service emitting it. Derived from the same census as
+// `conformance`, and from `trust_tasks_rs::schema_index::error_codes_for`.
+#[cfg(test)]
+mod error_code_census;
+
 use serde_json::Value;
 use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_1 as pa, challenge::v0_1 as pc};
 use trust_tasks_rs::{RejectReason, TrustTask};
