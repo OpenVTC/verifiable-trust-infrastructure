@@ -174,7 +174,7 @@ futures-util = "0.3"
 dtg-credentials = "0.9.1"
 
 # JSON Schema validation (issue-time credentialSchema checks)
-jsonschema = "0.55"
+jsonschema = "0.56"
 
 # Async runtime. 1.49 stabilised `runtime::Id`, which
 # `vta_sdk::resolver::shared_did_resolver` keys on.
