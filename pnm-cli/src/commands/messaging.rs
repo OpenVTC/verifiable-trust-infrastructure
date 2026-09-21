@@ -40,6 +40,7 @@ pub(crate) async fn run(
     match command {
         MessagingCommands::Console {
             context,
+            did,
             mediator,
             as_session,
         } => {
@@ -47,7 +48,7 @@ pub(crate) async fn run(
                 client,
                 keyring_key: keyring_key.to_string(),
             };
-            let choice = choose(&source, context.as_deref(), as_session).await?;
+            let choice = choose(&source, context.as_deref(), did.as_deref(), as_session).await?;
             let mut identity = source.load(&choice).await?;
             identity.mediator_did = mediator.clone();
 
@@ -72,25 +73,70 @@ pub(crate) async fn run(
     }
 }
 
-/// Pick the identity: `--as-session`, `--context`, the only DID-bearing
-/// context, or ask.
+/// Pick the identity: `--as-session`; else the DIDs `--context` and `--did`
+/// narrow to; else every context DID. One candidate is taken, several are
+/// asked about.
 async fn choose(
     source: &VtaIdentitySource<'_>,
     context: Option<&str>,
+    did: Option<&str>,
     as_session: bool,
 ) -> Result<IdentityChoice, Box<dyn std::error::Error>> {
     let choices = source.list().await?;
     if as_session {
-        return pick(&choices, SESSION_CHOICE);
+        return first(
+            narrow(&choices, Some(SESSION_CHOICE), None),
+            SESSION_CHOICE,
+            None,
+        );
     }
-    if let Some(context) = context {
-        return pick(&choices, context);
+    let candidates = narrow(&choices, context, did);
+    match candidates.len() {
+        0 => first(candidates, context.unwrap_or("any context"), did),
+        1 => Ok(candidates[0].clone()),
+        // Asked about only when nothing narrowed the choice: the whole list,
+        // pnm's own session included.
+        _ if context.is_none() && did.is_none() => ask(&choices),
+        _ => ask(&candidates.into_iter().cloned().collect::<Vec<_>>()),
     }
-    let contexts: Vec<&IdentityChoice> =
-        choices.iter().filter(|c| c.id != SESSION_CHOICE).collect();
-    if contexts.len() == 1 {
-        return Ok(contexts[0].clone());
-    }
+}
+
+/// The choices in `context` (or any, the session aside) that are `did` (or
+/// any DID).
+fn narrow<'a>(
+    choices: &'a [IdentityChoice],
+    context: Option<&str>,
+    did: Option<&str>,
+) -> Vec<&'a IdentityChoice> {
+    choices
+        .iter()
+        .filter(|c| match context {
+            Some(context) => c.id == context,
+            None => c.id != SESSION_CHOICE,
+        })
+        .filter(|c| did.is_none() || c.did.as_deref() == did)
+        .collect()
+}
+
+fn first(
+    candidates: Vec<&IdentityChoice>,
+    context: &str,
+    did: Option<&str>,
+) -> Result<IdentityChoice, Box<dyn std::error::Error>> {
+    candidates.first().map(|c| (*c).clone()).ok_or_else(|| {
+        let what = match did {
+            Some(did) => format!("{did} in {context}"),
+            None => format!("'{context}'"),
+        };
+        format!(
+            "no usable identity {what}: it must be a DID whose keys are in a context you may \
+             act in, or --as-session"
+        )
+        .into()
+    })
+}
+
+fn ask(choices: &[IdentityChoice]) -> Result<IdentityChoice, Box<dyn std::error::Error>> {
     let labels: Vec<String> = choices
         .iter()
         .map(|c| match &c.detail {
@@ -106,21 +152,9 @@ async fn choose(
     Ok(choices[i].clone())
 }
 
-fn pick(
-    choices: &[IdentityChoice],
-    id: &str,
-) -> Result<IdentityChoice, Box<dyn std::error::Error>> {
-    choices.iter().find(|c| c.id == id).cloned().ok_or_else(|| {
-        format!(
-            "no usable identity '{id}': it must be a context with a DID you may act in, \
-                 or --as-session"
-        )
-        .into()
-    })
-}
-
-/// The DIDs this pnm session may act as: every context it can see that has a
-/// DID, and the session's own `did:key`.
+/// The DIDs this pnm session may act as: every DID whose keys are in a
+/// context it can see (a context's own DID first), and the session's own
+/// `did:key`. Each choice's `id` is its context.
 struct VtaIdentitySource<'a> {
     client: &'a VtaClient,
     keyring_key: String,
@@ -134,19 +168,25 @@ impl IdentitySource for VtaIdentitySource<'_> {
             .list_contexts()
             .await
             .map_err(|e| ConsoleError::Identity(format!("listing contexts: {e}")))?;
-        let mut choices: Vec<IdentityChoice> = contexts
-            .contexts
-            .into_iter()
-            .filter_map(|c| {
-                let did = c.did?;
-                Some(IdentityChoice {
+        let mut choices = Vec::new();
+        for c in contexts.contexts {
+            let dids = self.context_dids(&c.id, c.did.as_deref()).await?;
+            let several = dids.len() > 1;
+            for did in dids {
+                choices.push(IdentityChoice {
                     id: c.id.clone(),
                     label: c.name.clone(),
-                    detail: Some(format!("context {}", c.id)),
+                    // With several DIDs in one context, the DID is what tells
+                    // the choices apart.
+                    detail: Some(if several {
+                        format!("{did} — context {}", c.id)
+                    } else {
+                        format!("context {}", c.id)
+                    }),
                     did: Some(did),
-                })
-            })
-            .collect();
+                });
+            }
+        }
         if let Some(session) = crate::auth::loaded_session(&self.keyring_key) {
             choices.push(IdentityChoice {
                 id: SESSION_CHOICE.into(),
@@ -180,6 +220,40 @@ impl IdentitySource for VtaIdentitySource<'_> {
 }
 
 impl VtaIdentitySource<'_> {
+    /// The DIDs whose keys are in `context_id`, read from the key records
+    /// alone (nothing is exported): `primary`, the context's own DID, first
+    /// when its keys are there, then the rest in order.
+    async fn context_dids(
+        &self,
+        context_id: &str,
+        primary: Option<&str>,
+    ) -> affinidi_messaging_mediator_admin::Result<Vec<String>> {
+        let mut dids = std::collections::BTreeSet::new();
+        let mut offset = 0;
+        loop {
+            let page = self
+                .client
+                .list_keys(offset, KEY_PAGE, Some("active"), Some(context_id))
+                .await
+                .map_err(|e| {
+                    ConsoleError::Identity(format!("listing keys of {context_id}: {e}"))
+                })?;
+            if page.keys.is_empty() {
+                break;
+            }
+            for key in &page.keys {
+                if let Some(did) = key_did(&key.key_id, key.label.as_deref()) {
+                    dids.insert(did);
+                }
+            }
+            offset += page.keys.len() as u64;
+            if offset >= page.total {
+                break;
+            }
+        }
+        Ok(order_dids(dids, primary))
+    }
+
     /// Export the DID's verification-method keys one at a time through
     /// `keys/export-secret` (KeyExport-gated, audited — VTI-VTA-003). Keys in
     /// the context that are not verification methods of the DID are never
@@ -252,6 +326,32 @@ impl VtaIdentitySource<'_> {
     }
 }
 
+/// The DID a key record belongs to: the part of its verification-method id
+/// before `#`, by the same rule [`select_secret_kid`] uses to pick the kid.
+fn key_did(key_id: &str, label: Option<&str>) -> Option<String> {
+    let vm_id =
+        |s: &str| s.starts_with("did:") && s.contains('#') && !s.chars().any(char::is_whitespace);
+    let id = if vm_id(key_id) {
+        key_id
+    } else {
+        label.filter(|l| vm_id(l))?
+    };
+    let did = id.split('#').next()?;
+    select_secret_kid(did, key_id, label).map(|_| did.to_string())
+}
+
+/// `primary` first when present, then the others in order.
+fn order_dids(mut dids: std::collections::BTreeSet<String>, primary: Option<&str>) -> Vec<String> {
+    let mut ordered = Vec::with_capacity(dids.len());
+    if let Some(primary) = primary
+        && dids.remove(primary)
+    {
+        ordered.push(primary.to_string());
+    }
+    ordered.extend(dids);
+    ordered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,19 +365,83 @@ mod tests {
         }
     }
 
+    fn in_context(id: &str, did: &str) -> IdentityChoice {
+        IdentityChoice {
+            did: Some(did.into()),
+            ..choice(id)
+        }
+    }
+
     #[test]
     fn a_named_context_or_the_session_is_picked_by_id() {
         let choices = vec![choice("ctx-a"), choice(SESSION_CHOICE)];
-        assert_eq!(pick(&choices, "ctx-a").unwrap().id, "ctx-a");
-        assert_eq!(pick(&choices, SESSION_CHOICE).unwrap().id, SESSION_CHOICE);
+        assert_eq!(narrow(&choices, Some("ctx-a"), None)[0].id, "ctx-a");
+        assert_eq!(
+            narrow(&choices, Some(SESSION_CHOICE), None)[0].id,
+            SESSION_CHOICE
+        );
+        // Unnarrowed, the session is not a context candidate.
+        assert_eq!(narrow(&choices, None, None).len(), 1);
+    }
+
+    #[test]
+    fn a_did_picks_one_of_several_in_a_context() {
+        let choices = vec![
+            in_context("ctx-a", "did:example:one"),
+            in_context("ctx-a", "did:example:two"),
+            in_context("ctx-b", "did:example:three"),
+        ];
+        assert_eq!(narrow(&choices, Some("ctx-a"), None).len(), 2);
+        let two = narrow(&choices, Some("ctx-a"), Some("did:example:two"));
+        assert_eq!(two.len(), 1);
+        assert_eq!(two[0].did.as_deref(), Some("did:example:two"));
+        // --did alone finds it in whichever context holds it.
+        assert_eq!(
+            narrow(&choices, None, Some("did:example:three"))[0].id,
+            "ctx-b"
+        );
+        assert!(narrow(&choices, Some("ctx-b"), Some("did:example:one")).is_empty());
     }
 
     #[test]
     fn an_unusable_context_says_why() {
-        let err = pick(&[choice("ctx-a")], "ctx-b").unwrap_err().to_string();
+        let err = first(vec![], "ctx-b", None).unwrap_err().to_string();
         assert!(
             err.contains("ctx-b") && err.contains("--as-session"),
             "{err}"
         );
+        let err = first(vec![], "ctx-b", Some("did:example:x"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("did:example:x in ctx-b"), "{err}");
+    }
+
+    #[test]
+    fn a_key_belongs_to_the_did_its_id_or_label_names() {
+        assert_eq!(
+            key_did("did:webvh:Qm:ex.com#key-0", None).as_deref(),
+            Some("did:webvh:Qm:ex.com")
+        );
+        // A bare key id with a verification-method label.
+        assert_eq!(
+            key_did("z6Mkabc", Some("did:peer:2.Vz#key-1")).as_deref(),
+            Some("did:peer:2.Vz")
+        );
+        // A decorative label is not a verification-method id (PR #337).
+        assert_eq!(key_did("z6Mkabc", Some("did:key:z6Mk signing key")), None);
+        assert_eq!(key_did("z6Mkabc", None), None);
+    }
+
+    #[test]
+    fn the_context_did_comes_first() {
+        let dids: std::collections::BTreeSet<String> =
+            ["did:a", "did:b", "did:c"].map(String::from).into();
+        assert_eq!(
+            order_dids(dids.clone(), Some("did:c")),
+            ["did:c", "did:a", "did:b"]
+        );
+        assert_eq!(order_dids(dids.clone(), None), ["did:a", "did:b", "did:c"]);
+        // A context DID with no keys in the context is not offered.
+        assert_eq!(order_dids(dids, Some("did:z")), ["did:a", "did:b", "did:c"]);
     }
 }

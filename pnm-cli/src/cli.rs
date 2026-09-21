@@ -364,6 +364,10 @@ pub(crate) enum MessagingCommands {
         /// more than one.
         #[arg(long)]
         context: Option<String>,
+        /// The DID to act as, when a context holds several. Asked for when
+        /// omitted and the choice is ambiguous.
+        #[arg(long, conflicts_with = "as_session")]
+        did: Option<String>,
         /// Mediator DID. Defaults to the DID document's DIDCommMessaging
         /// service, then this pnm's configured mediator.
         #[arg(long)]
