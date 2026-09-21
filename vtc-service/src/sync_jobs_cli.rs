@@ -38,7 +38,7 @@ use crate::config::AppConfig;
 use crate::registry::{
     SyncJob, SyncJobState, delete_sync_job, get_sync_job, list_sync_jobs, store_sync_job,
 };
-use crate::store::{Store, keyspaces};
+use crate::store::keyspaces;
 use vta_sdk::display_name::shorten_did;
 
 type CliResult = Result<(), Box<dyn std::error::Error>>;
@@ -46,7 +46,7 @@ type CliResult = Result<(), Box<dyn std::error::Error>>;
 /// Open the `sync_queue` keyspace on a stopped daemon.
 fn open(config_path: Option<PathBuf>) -> Result<KeyspaceHandle, Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
+    let store = crate::store::offline::open_offline(&config.store)?;
     Ok(store.keyspace(keyspaces::SYNC_QUEUE)?)
 }
 
@@ -262,6 +262,7 @@ mod tests {
 
     use super::*;
     use crate::registry::SyncJobKind;
+    use crate::store::Store;
     use vti_common::config::StoreConfig;
 
     async fn temp_queue() -> (KeyspaceHandle, tempfile::TempDir) {
