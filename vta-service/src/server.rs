@@ -620,8 +620,8 @@ pub async fn build_app_state(
 /// Whether this build can **receive** TSP. One definition, so the startup check
 /// and `enable_tsp` cannot disagree about it. It lives here rather than beside
 /// `enable_tsp` because `operations::protocol` is compiled only under `webvh`,
-/// and the startup check has to run in every build. `tsp` is not a default feature, so
-/// a default `vta-service` build answers `false`.
+/// and the startup check has to run in every build, including those built
+/// without `tsp`.
 pub(crate) const TSP_BUILT: bool = cfg!(feature = "tsp");
 
 /// Why a `services.tsp = true` setting cannot be honoured by a build, if it
@@ -841,9 +841,10 @@ pub async fn run(
     // `services.tsp` gets no silent `cfg!` AND like the two lines above, on
     // purpose. REST and DIDComm default to `true`, so a reduced build
     // (`--no-default-features --features rest`, which CI runs) depends on the
-    // AND quietly dropping a transport it was never built with. TSP defaults to
-    // `false`, so `tsp = true` is always an operator's explicit choice — and on
-    // a build without the feature it was accepted and did nothing, while
+    // AND quietly dropping a transport it was never built with. `services.tsp`
+    // defaults to `false` in a config, so `tsp = true` is always written on
+    // purpose — by an operator, or by setup on a build that has the feature —
+    // and on a build without it the setting was accepted and did nothing, while
     // anything that had published `#tsp` sent peers into a transport no one
     // was listening on (Keyring VTI-34). Refusing to start is the only honest
     // answer to a setting the build cannot honour.
