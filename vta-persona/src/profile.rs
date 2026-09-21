@@ -125,6 +125,17 @@ impl PersonaStore {
             }
         }
 
+        // Values the face carries itself are indexed before the record lands,
+        // for the reason the attribute path indexes first: a crash then leaves
+        // an edge with no face (a false warning), never a face with no edge (a
+        // false all-clear).
+        let old_profile = match &existing {
+            Some(ProfileSlot::Live(p)) => Some(p),
+            _ => None,
+        };
+        self.reindex_face(None, &profile.profile_id, old_profile, Some(&profile))
+            .await?;
+
         let profile_id = profile.profile_id.clone();
         self.ks
             .insert(
@@ -274,6 +285,9 @@ impl PersonaStore {
                     deleted_at: now_rfc3339(),
                 },
             )
+            .await?;
+        // After the tombstone, so a crash between leaves a stale edge.
+        self.reindex_face(None, profile_id, Some(&existing), None)
             .await?;
         Ok(true)
     }
@@ -568,6 +582,23 @@ impl PersonaStore {
         let created = current.is_none();
         profile.version = version;
         profile.updated_at = now_rfc3339();
+
+        // Indexed above the boundary although the face lives below it — see
+        // `storage::face_value_key`. A per-context index could not see the
+        // same value typed into two contexts, and a throwaway identity is
+        // exactly where somebody reuses a real one.
+        let old_profile = match &existing {
+            Some(ProfileSlot::Live(p)) => Some(p),
+            _ => None,
+        };
+        self.reindex_face(
+            Some(context_id),
+            &profile.profile_id,
+            old_profile,
+            Some(&profile),
+        )
+        .await?;
+
         self.ks.insert(key, &ProfileSlot::Live(profile)).await?;
         Ok(Written { version, created })
     }
@@ -610,14 +641,14 @@ impl PersonaStore {
     ) -> Result<bool, AppError> {
         let _guard = self.write_lock.lock().await;
         let key = storage::local_profile_key(context_id, profile_id);
-        let existed = matches!(
-            self.ks.get::<ProfileSlot>(key.clone()).await?,
-            Some(ProfileSlot::Live(_))
-        );
-        if existed {
-            self.ks.remove(key).await?;
-        }
-        Ok(existed)
+        let Some(ProfileSlot::Live(existing)) = self.ks.get::<ProfileSlot>(key.clone()).await?
+        else {
+            return Ok(false);
+        };
+        self.ks.remove(key).await?;
+        self.reindex_face(Some(context_id), profile_id, Some(&existing), None)
+            .await?;
+        Ok(true)
     }
 
     /// Bind a **context-local** profile to a persona in the same context.

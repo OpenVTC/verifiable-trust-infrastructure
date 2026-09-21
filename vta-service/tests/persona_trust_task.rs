@@ -2519,3 +2519,140 @@ async fn a_bound_approval_asked_in_0_2_still_elevates() {
         .expect("session still there");
     assert_eq!(stored.acr, "aal2", "{stored:?}");
 }
+
+/// Two context-local faces typing the same value are one finding, and
+/// `profileId` narrows the analysis to one face.
+///
+/// Both halves were missing on the wire. Values a face carries itself
+/// (`inline`, `override`) were never correlation-indexed, so the throwaway
+/// identity — precisely where somebody reuses a real value — produced no
+/// finding. And `profileId` was accepted and ignored: `pnm persona correlate
+/// --profile-id` analysed the whole pool and presented it as the face.
+#[tokio::test]
+async fn two_local_faces_sharing_a_value_are_a_finding_and_profile_id_narrows() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "correlate-local", "admin", &[]).await;
+
+    let mut faces = Vec::new();
+    for name in ["market", "forum"] {
+        let (status, body) = post(
+            &router,
+            &holder,
+            LOCAL_PROFILE_PUT,
+            json!({
+                "contextId": CTX,
+                "name": name,
+                "entries": [{
+                    "inline": {
+                        "type": "email.personal",
+                        "value": "throw@away.test",
+                        "valueType": "string",
+                    }
+                }],
+            }),
+        )
+        .await;
+        assert!(
+            !refused(status, &body),
+            "local/profile/put: {status} {body}"
+        );
+        faces.push(
+            payload_of(&body)
+                .get("profileId")
+                .and_then(Value::as_str)
+                .expect("profileId")
+                .to_string(),
+        );
+    }
+    // A value no other face shows: a face narrowed to it must report nothing.
+    let (status, body) = post(
+        &router,
+        &holder,
+        LOCAL_PROFILE_PUT,
+        json!({
+            "contextId": CTX,
+            "name": "alone",
+            "entries": [{
+                "inline": { "type": "x:handle", "value": "unique", "valueType": "string" }
+            }],
+        }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/put: {status} {body}"
+    );
+    let alone = payload_of(&body)
+        .get("profileId")
+        .and_then(Value::as_str)
+        .expect("profileId")
+        .to_string();
+
+    let analyse = |payload: Value| {
+        let router = router.clone();
+        let holder = holder.clone();
+        async move {
+            let (status, body) = post(&router, &holder, CORRELATION, payload).await;
+            assert!(
+                !refused(status, &body),
+                "correlation/analyze: {status} {body}"
+            );
+            let payload = payload_of(&body).clone();
+            serde_json::from_value::<
+                trust_tasks_rs::specs::persona::correlation::analyze::v1_0::Response,
+            >(payload.clone())
+            .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"))
+        }
+    };
+
+    let whole = analyse(json!({})).await;
+    assert_eq!(whole.findings.len(), 1, "{:?}", whole.findings);
+    let named: std::collections::BTreeSet<String> = whole.findings[0]
+        .shared_with
+        .iter()
+        .filter_map(|s| s.profile_id.as_ref().map(|p| p.to_string()))
+        .collect();
+    assert_eq!(named, faces.iter().cloned().collect());
+
+    let one = analyse(json!({ "profileId": faces[0] })).await;
+    assert_eq!(one.findings.len(), 1, "{:?}", one.findings);
+
+    let none = analyse(json!({ "profileId": alone })).await;
+    assert!(
+        none.findings.is_empty(),
+        "profileId was ignored and the whole store analysed: {:?}",
+        none.findings
+    );
+}
+
+/// A candidate that matches a held value produces a conformant finding.
+///
+/// It produced a 500: the finding carried `"attributeId": null`, which the
+/// schema's `string` refuses, so the guard errored precisely when it had
+/// something to warn about.
+#[tokio::test]
+async fn a_matching_candidate_is_a_conformant_finding() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "correlate-candidate", "admin", &[]).await;
+    put_attribute(&router, &holder, "phone.mobile", "+61 400 555 000").await;
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        CORRELATION,
+        json!({ "candidate": {
+            "type": "phone.work", "valueType": "string", "value": "+61 400 555 000"
+        } }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "correlation/analyze: {status} {body}"
+    );
+    let findings = payload_of(&body)["findings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(findings.len(), 1, "{body}");
+    assert!(findings[0].get("attributeId").is_none());
+}

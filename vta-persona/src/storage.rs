@@ -50,6 +50,48 @@ pub fn correlation_key(value_hmac_hex: &str) -> String {
 
 pub const CORRELATION_PREFIX: &str = "pxi:";
 
+/// Correlation index over values a **face** carries itself — an `override` or
+/// an `inline` entry — rather than draws from the pool.
+///
+/// One key per `(value, face)` edge, so a rewrite touches only the edges that
+/// changed and no row is ever read-modified-written. `carrier` is
+/// [`face_carrier`]'s, and the record under the key says which face it is; the
+/// suffix is only there to make the key unique.
+///
+/// **Agent-scoped, including for a context-local face.** That looks like a
+/// context-scoped record filed above the boundary and is not one: what crosses
+/// is a keyed hash that reveals nothing under a dump, and only holder-reach
+/// tasks can address this prefix. The alternative — a per-context index —
+/// cannot see the same value in two contexts, which is the one linkage the
+/// guard exists to report.
+#[must_use]
+pub fn face_value_key(value_hmac_hex: &str, carrier: &str) -> String {
+    format!("pxf:{value_hmac_hex}:{carrier}")
+}
+
+/// Every face carrying one value. The HMAC is hex, so it contains no `:` and
+/// the prefix cannot match a longer HMAC.
+#[must_use]
+pub fn face_value_prefix(value_hmac_hex: &str) -> String {
+    format!("pxf:{value_hmac_hex}:")
+}
+
+pub const FACE_VALUE_PREFIX: &str = "pxf:";
+
+/// The unique suffix naming one face in [`face_value_key`]: `p:{id}` for a
+/// pool face, `l:{context}:{id}` for a context-local one.
+#[must_use]
+pub fn face_carrier(context_id: Option<&str>, profile_id: &str) -> String {
+    match context_id {
+        None => format!("p:{profile_id}"),
+        Some(ctx) => format!("l:{ctx}:{profile_id}"),
+    }
+}
+
+/// Set once every face written before [`FACE_VALUE_PREFIX`] existed has been
+/// indexed. Its absence is what makes the first analysis backfill.
+pub const FACE_VALUE_INDEX_BUILT_KEY: &str = "pxfv";
+
 /// Attribute → profile reverse index, so a delete can name its referring
 /// profiles without scanning every profile.
 #[must_use]
@@ -152,6 +194,7 @@ const PREFIX_SCOPES: &[(&str, Scope)] = &[
     ("pf:", Scope::Agent),
     ("pxi:", Scope::Agent),
     ("pxr:", Scope::Agent),
+    ("pxf:", Scope::Agent),
     ("pb:", Scope::Context),
     ("pc:", Scope::Context),
     ("pcr:", Scope::Context),
