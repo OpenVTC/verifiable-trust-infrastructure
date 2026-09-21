@@ -926,6 +926,7 @@ pub(super) async fn handle_profile_get(
                     });
                     // Absent, not null — see `put_opt`.
                     put_opt(&mut row, "attributeId", c.attribute_id.clone());
+                    put_opt(&mut row, "label", c.label.clone());
                     put_opt(&mut row, "version", c.version);
                     put_opt(&mut row, "updatedAt", c.updated_at.clone());
                     row
