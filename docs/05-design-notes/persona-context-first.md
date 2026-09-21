@@ -480,17 +480,35 @@ equivalent) is a guided edit over the reverse index and §5.4's `face/usage`:
 ### 9.2 Who still has the old value
 
 The disclosure record names claim *types* and never values, for the right
-reason. But it also does not record **which version** was disclosed, so after a
-change the question "who has my old name" is answerable only by date
-arithmetic.
+reason. But a type says what kind of thing went, not whether what went is still
+true, so after a change the question "who has my old name" is answerable only by
+date arithmetic.
 
-Add `version: Option<Version>` to `DisclosedClaim`. A number, not a value, so
-the record's own rule is kept. The query "verifiers holding `name.legal` at a
-version below the current" then has an exact answer, and it directly powers the
-one screen a person wants after a change: **a re-present list** — parties who
-received a claim you have since changed, one tap to send the new one.
+**Revised during implementation.** This section first proposed recording the
+attribute's `version` on each disclosed claim. That is wrong twice. A version is
+the store-wide write counter, so carrying it down in `MaterialisedClaim` would
+tell anyone who can read a context how much the holder writes. And it is
+ambiguous: with two `name.display` attributes, "version 38" does not say *which*
+attribute without an attribute id — which is exactly what must never cross the
+boundary.
 
-This is the cheapest change in the note and probably the most valuable.
+Instead, `present` records a **keyed hash** (`blind`) of each value that left —
+it has the value in hand and the key is the agent's own — and
+`disclosure/history` compares it at read time with what the same persona
+presents *now* in the same context:
+
+| `claimCurrency` | meaning |
+|---|---|
+| `current` | the verifier holds what the persona still presents |
+| `changed` | the persona presents a different value — the verifier's copy is outdated |
+| `removed` | the persona no longer presents that type; the verifier keeps what it got |
+| `unknown` | recorded before fingerprints existed — never read as `current` |
+
+Nothing above the boundary is read, no value is stored, and no identifier or
+counter crosses. `changed` rows are the **re-present list** — parties holding a
+value you have since changed, one tap to send the new one — which is the one
+screen a person wants after a change. Specified in dtgwg-trust-tasks-tf as
+`disclosure/history` `claimCurrency`.
 
 ### 9.3 An edit must say what it touched
 
@@ -608,7 +626,7 @@ The lifecycle items slot into §8 as follows. Two of them move ahead of the
 compose work because they change what the compose screens can promise.
 
 1. **5.1** correlation index
-2. **9.2** version on the disclosure record; **9.3** edit reports what it
+2. **9.2** disclosure currency; **9.3** edit reports what it
    touched — both tiny, both change what every later screen can say
 3. small findings (3.3, 3.4/5.6, 3.5)
 4. **9.1** retain-by-reference and honest pinning; purge
