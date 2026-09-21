@@ -108,6 +108,8 @@ fn task_failed_because(message: String, reason: &str) -> RejectReason {
 /// - `Validation` / `TrustTaskMalformed` / `InvalidCursor` → `malformed_request`
 /// - `NotFound` / `Conflict` / `Gone` → `task_failed`, each discriminated by a
 ///   `details.reason` from [`vta_sdk::protocols::trust_task_reject_reasons`]
+/// - `ServiceError` at `502` / `504` → `task_failed`, `details.reason`
+///   `upstream_unavailable`: a peer failed, not this VTA
 /// - everything else → `internal_error`
 pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> TrustTaskOutcome {
     let message = err.to_string();
@@ -167,6 +169,28 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
         // Every other arm above is safe to pass through: they describe the
         // caller's own request back to it (`not found`, `malformed`,
         // `permission denied`), which is not consumer-internal state.
+        // A peer this VTA had to reach — a DID-hosting server, another agent —
+        // did not answer or refused. Left in the catch-all below it went out as
+        // `internalError`, which tells the producer "this VTA broke" and points
+        // everyone at the wrong machine: a join that failed because the hosting
+        // server never answered its TSP request read, in openvtc, as an
+        // unexplained internal error in the user's own VTA.
+        //
+        // The cause still does not go on the wire. A bad-gateway message can
+        // carry a peer's URL, its transport error and, from `send_rest`, the
+        // body it sent back — the same class of detail the `Internal` arm
+        // keeps off the wire. What the producer can act on is the *kind* of
+        // failure, so that is what the fixed text and `details.reason` say;
+        // which peer, and how it failed, is in the operator's log.
+        AppError::ServiceError { status, message }
+            if status == StatusCode::BAD_GATEWAY || status == StatusCode::GATEWAY_TIMEOUT =>
+        {
+            tracing::error!(cause = %message, "trust task failed: an upstream peer did not answer or refused");
+            task_failed_because(
+                UPSTREAM_UNAVAILABLE_MESSAGE.to_string(),
+                reasons::UPSTREAM_UNAVAILABLE,
+            )
+        }
         AppError::Internal(cause) => {
             tracing::error!(cause = %cause, "trust task failed with an internal error");
             RejectReason::InternalError {
@@ -194,6 +218,12 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
 /// document's fault — and nothing an unauthenticated caller could probe with.
 pub(super) const OPAQUE_INTERNAL_ERROR: &str =
     "the consumer could not complete this task; the request itself was accepted";
+
+/// What an upstream failure says on the wire. Fixed for the same reason as
+/// [`OPAQUE_INTERNAL_ERROR`]; see the `ServiceError` arm of
+/// [`app_error_to_reject`].
+pub(super) const UPSTREAM_UNAVAILABLE_MESSAGE: &str = "a service this VTA depends on did not answer or refused the request; \
+     the VTA's log names which one and why";
 
 /// Framework 0.5.0, *Bounding `details`*: where a specification declares no
 /// bound, 4096 bytes of JCS and 16 immediate members apply.
@@ -632,12 +662,17 @@ mod tests {
         assert_eq!(details_of(outcome)["reason"], reasons::GONE);
     }
 
-    /// The three reasons must stay distinct. Collapsing any pair would let a
-    /// caller act on the wrong one — retrying a `Gone` that can never succeed,
-    /// or reading a `Conflict` as "absent" and creating a duplicate.
+    /// The reasons must stay distinct. Collapsing any pair would let a caller
+    /// act on the wrong one — retrying a `Gone` that can never succeed, or
+    /// reading a `Conflict` as "absent" and creating a duplicate.
     #[test]
-    fn the_three_reasons_are_distinct() {
-        let all = [reasons::NOT_FOUND, reasons::CONFLICT, reasons::GONE];
+    fn the_reasons_are_distinct() {
+        let all = [
+            reasons::NOT_FOUND,
+            reasons::CONFLICT,
+            reasons::GONE,
+            reasons::UPSTREAM_UNAVAILABLE,
+        ];
         let mut seen = std::collections::BTreeSet::new();
         for r in all {
             assert!(seen.insert(r), "`{r}` is used for more than one outcome");
@@ -894,6 +929,53 @@ mod tests {
         assert!(!message.contains("10.0.0.7"), "{message}");
         assert!(!message.contains("vault backend"), "{message}");
         assert!(message.contains(OPAQUE_INTERNAL_ERROR), "{message}");
+    }
+
+    /// REGRESSION (2026-09-21): an openvtc join failed because the DID-hosting
+    /// server never answered the VTA's TSP request, and the user saw only
+    /// "internal error: the consumer could not complete this task" — a
+    /// failure in *their own VTA*, by that wording. An upstream failure is a
+    /// `taskFailed` with its own reason, and still says nothing about which
+    /// peer or how.
+    #[test]
+    fn an_upstream_failure_is_named_as_one_without_its_cause() {
+        for status in [StatusCode::BAD_GATEWAY, StatusCode::GATEWAY_TIMEOUT] {
+            let err = || AppError::ServiceError {
+                status,
+                message: "bad gateway: `did:webvh:QmHost:dids.example` at \
+                          https://10.0.0.7/trust-tasks did not answer"
+                    .into(),
+            };
+            let parsed: Value = serde_json::from_slice(&app_error_to_reject(&doc(), err()).body)
+                .expect("error doc parses");
+            assert_eq!(parsed["payload"]["code"], "taskFailed", "{status}");
+            assert_eq!(
+                parsed["payload"]["details"]["reason"],
+                reasons::UPSTREAM_UNAVAILABLE,
+                "{status}"
+            );
+            let message = message_of(app_error_to_reject(&doc(), err()));
+            assert!(message.contains(UPSTREAM_UNAVAILABLE_MESSAGE), "{message}");
+            assert!(!message.contains("10.0.0.7"), "{message}");
+            assert!(!message.contains("QmHost"), "{message}");
+            assert!(!message.contains(OPAQUE_INTERNAL_ERROR), "{message}");
+        }
+    }
+
+    /// Only the gateway statuses are upstream failures. Any other
+    /// `ServiceError` (a key-derivation or attestation failure) is this VTA's
+    /// own and stays opaque.
+    #[test]
+    fn other_service_errors_stay_internal() {
+        let message = message_of(app_error_to_reject(
+            &doc(),
+            AppError::ServiceError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "key derivation failed at m/26'/2'".into(),
+            },
+        ));
+        assert!(message.contains(OPAQUE_INTERNAL_ERROR), "{message}");
+        assert!(!message.contains("m/26'"), "{message}");
     }
 
     /// The unrouted body-parse error must claim the same document type as a
