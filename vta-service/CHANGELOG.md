@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.37.0...vta-service-v0.37.1) — 2026-09-21
+
+
+### Fixed
+
+- **trust-tasks**: Name an upstream failure as one, not as an internal error ([#1609](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1609))
+
+A `ServiceError` at 502/504 — a DID-hosting server or other peer that did
+  not answer or refused — fell into the catch-all arm and went out as an
+  opaque `internalError`. An openvtc join that failed because the hosting
+  server's replies were refused by its mediator (`e.p.limits.queue.sender`)
+  showed the user "internal error: the consumer could not complete this
+  task", pointing at their own VTA.
+
+  It now goes out as `taskFailed` with `details.reason` =
+  `upstream_unavailable` and fixed text. The cause (peer, URL, its body)
+  stays in the operator's log, as the framework requires. The SDK recovers
+  the reason as `VtaError::Server { status: 502 }`, the variant REST
+  already produces for the same failure.
+
+
+
 ## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.36.0...vta-service-v0.37.0) — 2026-09-21
 
 

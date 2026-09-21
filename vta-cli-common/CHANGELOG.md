@@ -2,6 +2,45 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.20.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.20.0...vta-cli-common-v0.20.1) — 2026-09-21
+
+
+### Fixed
+
+- **cli**: A serverless mint says the operator must host it, and a hosted one says nothing ([#1616](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1616))
+
+Keyring finding VTI-20. `pnm did-mgmt dids create` returns the new DID's log
+  entry for **both** kinds of mint, and printed the same advice for both:
+
+      To self-host this DID, place the log entry in a file named `did.jsonl`
+      at the URL path corresponding to your DID URL.
+
+  That was wrong in each direction:
+
+  - **Serverless**, it read as one option among several, when it is the only way
+    the DID will ever resolve. The VTA that minted it does not serve it; its URL
+    answers 404 until someone publishes the file by hand.
+  - **Server-managed**, it told the operator to do something the hosting server
+    had already done.
+
+  The advice now branches on `server_id`. A serverless mint says plainly that the
+  DID will not resolve until the operator publishes it, and where it goes — the
+  `--did-url` path, or `/.well-known/did.jsonl` for a bare domain, which is the
+  `didwebvh-rs` mapping. A server-managed mint names the server and says no action
+  is needed.
+
+  The exact URL is described rather than computed. Computing it would mean adding
+  `didwebvh-rs` as a real dependency of `vta-cli-common` (it is only a
+  dev-dependency of `vta-sdk`), or a new member on a published wire type — both
+  out of proportion to one line of output, and the finding asked only that the
+  output say serverless means *you* host it.
+
+  Two similar messages in `vta-service` (the offline `vta did-webvh` path and the
+  setup wizard) are left as they are: different surfaces, the first already names
+  the exact URL, and neither is what was reported.
+
+
+
 ## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.19.0...vta-cli-common-v0.20.0) — 2026-09-21
 
 
