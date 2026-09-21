@@ -587,6 +587,28 @@ into a default.
 **Decided (2026-09-21):** expiry retires, never deletes. A holder who wants no
 trace uses the delete and purge paths deliberately (§9.1, §9.4).
 
+**As built** (trust-tasks-tf #570, §9.4 and §9.5 together):
+
+- `persona/profile/retire` and `persona/profile/reinstate`, for pool and
+  context-local faces alike. Retire marks the face before clearing its
+  bindings, so an interrupted retire leaves a face that cannot be newly worn,
+  and a repeat finishes the clearing. Reinstate binds nothing.
+- **A lapsed binding is cleared at read time**, not only when the sweeper
+  runs: every binding read decodes through `BindingRecord::into_read`, and
+  `present` refuses a preview whose persona no longer wears a face. The
+  sweeper (`expire_bindings`, on the storage thread, audited as
+  `persona.binding.expire`) makes the clear durable and does the retiring.
+- **Expiry retires a face only when it is then worn nowhere.** An `until` is
+  about one context; retiring a face still worn in another would take it off
+  contexts the holder said nothing about.
+- **`disclosedTo`** counts distinct verifiers and contexts. Disclosure records
+  now carry the face they were made through; an older record is attributed
+  through the binding it was made under where that still wears the face, which
+  can only undercount.
+- **Not yet:** `until` on `persona/profile/compose`. It belongs there — the
+  weekend face is usually composed at the door — and waits for the next spec
+  change to that task.
+
 ### 9.6 One timeline per face
 
 Every event above is recorded somewhere — attribute versions, bindings,

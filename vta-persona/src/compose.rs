@@ -317,6 +317,7 @@ impl PersonaStore {
                             did,
                             Some(&profile_id),
                             request.label.clone(),
+                            None,
                         )
                         .await
                         .map(|version| (version, 0)),
@@ -327,6 +328,7 @@ impl PersonaStore {
                             Some(&profile_id),
                             Vec::new(),
                             request.label.clone(),
+                            None,
                             None,
                         )
                         .await
@@ -445,6 +447,9 @@ impl PersonaStore {
                 Some(profile_id),
                 Vec::new(),
                 record.label.clone(),
+                // Promotion changes where the face lives, not how long it is
+                // worn here.
+                record.binding.until.clone(),
                 None,
             )
             .await?;

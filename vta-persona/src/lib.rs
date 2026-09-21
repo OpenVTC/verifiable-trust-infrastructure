@@ -45,6 +45,7 @@ pub mod correlation;
 pub mod disclosure;
 mod face_values;
 pub mod facet;
+pub mod lifecycle;
 pub mod model;
 pub mod present;
 pub mod profile;
@@ -68,9 +69,10 @@ pub use disclosure::{
     ClaimCurrency, DisclosedClaim, DisclosureRecord, HistoryQuery, new_disclosure,
 };
 pub use facet::{FacetPlacement, PlacedElsewhere, new_facet};
+pub use lifecycle::{DisclosedTo, Lapsed, Retired};
 pub use model::{
     Attribute, Binding, Facet, FacetColour, InlineValue, OverrideValue, Profile, ProfileEntry,
-    ProofRung, Provenance, RetainedVersion, StaleReason, Ulid, ValueType, Version,
+    ProfileStatus, ProofRung, Provenance, RetainedVersion, StaleReason, Ulid, ValueType, Version,
 };
 pub use present::{PREVIEW_TTL_SECONDS, Preview, PreviewClaim, Renderer, renderer};
 pub use profile::{ResolvedClaim, is_pool_free, new_profile};

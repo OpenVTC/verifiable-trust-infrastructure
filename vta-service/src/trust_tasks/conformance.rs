@@ -3246,6 +3246,33 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            u::TASK_PERSONA_PROFILE_RETIRE_1_0,
+            (
+                json!({ "profileId": PROFILE, "expectedVersion": 3 }),
+                parses::<specs::persona::profile::retire::v1_0::Payload>,
+                validates::<specs::persona::profile::retire::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "profileId": PROFILE, "version": 4, "retiredAt": NOW,
+                    "unbound": [{ "contextId": CTX, "personaDid": PERSONA_DID }]
+                }),
+                parses::<specs::persona::profile::retire::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_PROFILE_REINSTATE_1_0,
+            (
+                json!({ "profileId": PROFILE, "contextId": CTX }),
+                parses::<specs::persona::profile::reinstate::v1_0::Payload>,
+                validates::<specs::persona::profile::reinstate::v1_0::Payload>,
+            ),
+            (
+                json!({ "profileId": PROFILE, "version": 5 }),
+                parses::<specs::persona::profile::reinstate::v1_0::Response>,
+            ),
+        ),
+        (
             u::TASK_PERSONA_PROFILE_PUT_1_0,
             (
                 // One entry of each referencing form the pool supports, so the

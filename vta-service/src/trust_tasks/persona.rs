@@ -111,6 +111,10 @@ pub const REACH: &[(&str, Reach)] = &[
     // compose whose every claim is local. The context-callable way to make a
     // local face is `local/profile/put`, which cannot reach the pool at all.
     (uris::TASK_PERSONA_PROFILE_COMPOSE_1_0, Reach::Holder),
+    // Take a face off every context, or make one wearable again — the holder's
+    // decision about their own identity, including for a context-local face.
+    (uris::TASK_PERSONA_PROFILE_RETIRE_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_PROFILE_REINSTATE_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_PUT_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_LIST_1_0, Reach::Holder),
@@ -1265,6 +1269,96 @@ pub(super) async fn handle_attribute_promote(
     success_response(&doc, body)
 }
 
+/// `persona/profile/retire` — stop wearing a face anywhere, and keep it.
+/// Design note `persona-context-first.md` §9.4.
+pub(super) async fn handle_profile_retire(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::profile::retire::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_RETIRE_1_0, None).await {
+        return reject(&doc, e);
+    }
+    let id = req.profile_id.to_string();
+    let ctx = req.context_id.as_ref().map(|c| c.to_string());
+    let retired = match store(state)
+        .retire_profile(&id, ctx.as_deref(), req.expected_version.map(|v| *v))
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return reject(&doc, e),
+    };
+    let detail = format!(
+        "retired {}face {id}; {} binding(s) cleared, now at version {}",
+        if ctx.is_some() { "context-local " } else { "" },
+        retired.unbound.len(),
+        retired.version,
+    );
+    audit_persona(
+        state,
+        "persona.profile.retire",
+        auth,
+        Some(&id),
+        ctx.as_deref(),
+        Some(&detail),
+    )
+    .await;
+    let mut body = json!({
+        "profileId": id,
+        "version": retired.version,
+        "retiredAt": retired.retired_at,
+    });
+    if !retired.unbound.is_empty() {
+        body["unbound"] = retired
+            .unbound
+            .iter()
+            .take(256)
+            .map(|(c, p)| json!({ "contextId": c, "personaDid": p }))
+            .collect();
+    }
+    success_response(&doc, body)
+}
+
+/// `persona/profile/reinstate` — make a retired face wearable again. Binds
+/// nothing.
+pub(super) async fn handle_profile_reinstate(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::profile::reinstate::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_REINSTATE_1_0, None).await {
+        return reject(&doc, e);
+    }
+    let id = req.profile_id.to_string();
+    let ctx = req.context_id.as_ref().map(|c| c.to_string());
+    let version = match store(state)
+        .reinstate_profile(&id, ctx.as_deref(), req.expected_version.map(|v| *v))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => return reject(&doc, e),
+    };
+    let detail = format!("reinstated face {id}, worn nowhere, now at version {version}");
+    audit_persona(
+        state,
+        "persona.profile.reinstate",
+        auth,
+        Some(&id),
+        ctx.as_deref(),
+        Some(&detail),
+    )
+    .await;
+    success_response(&doc, json!({ "profileId": id, "version": version }))
+}
+
 pub(super) async fn handle_profile_get(
     state: &AppState,
     auth: &AuthClaims,
@@ -1300,8 +1394,21 @@ pub(super) async fn handle_profile_get(
         None
     };
 
+    // How far this face has spoken — what a holder is shown before deleting it,
+    // because a delete does not un-tell anyone.
+    let disclosed = match s.disclosed_to(&id).await {
+        Ok(d) => d,
+        Err(e) => return reject(&doc, e),
+    };
+
     audit_persona(state, "persona.profile.get", auth, Some(&id), None, None).await;
-    let mut body = json!({ "profile": profile });
+    let mut body = json!({
+        "profile": profile,
+        "disclosedTo": {
+            "partyCount": disclosed.party_count,
+            "contextCount": disclosed.context_count,
+        },
+    });
     if let Some(r) = resolved {
         // A resolved entry is a `ResolvedClaim`, not the pool `Attribute`, so an
         // INLINE entry is describable: `attributeId`, `version` and `updatedAt`
@@ -1343,7 +1450,7 @@ pub(super) async fn handle_profile_list(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let _req: spec::profile::list::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::profile::list::v1_0::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1352,8 +1459,13 @@ pub(super) async fn handle_profile_list(
     }
     // No resolve option, deliberately: resolving every profile at once would
     // decrypt the holder's entire pool to answer a question about names.
-    let profiles = match store(state).list_profiles().await {
-        Ok(p) => p,
+    let profiles: Vec<_> = match store(state).list_profiles().await {
+        // A retired face is one the holder has stopped being; offering it back
+        // in a picker would undo that by accident.
+        Ok(p) => p
+            .into_iter()
+            .filter(|f| req.include_retired || f.status.is_active())
+            .collect(),
         Err(e) => return reject(&doc, e),
     };
     audit_persona(state, "persona.profile.list", auth, None, None, None).await;
@@ -1392,6 +1504,12 @@ pub(super) async fn handle_profile_delete(
             doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload),
         );
     }
+    // Read before the delete. The records outlive it — a delete does not
+    // un-tell anyone — and the response says so in numbers.
+    let disclosed = match s.disclosed_to(&id).await {
+        Ok(d) => d,
+        Err(e) => return reject(&doc, e),
+    };
     if req.unbind
         && let Err(e) = s.unbind_everywhere(&id).await
     {
@@ -1424,10 +1542,14 @@ pub(super) async fn handle_profile_delete(
         Some(&detail),
     )
     .await;
-    success_response(
-        &doc,
-        json!({ "profileId": id, "existed": existed, "unboundPersonas": bound }),
-    )
+    let mut body = json!({ "profileId": id, "existed": existed, "unboundPersonas": bound });
+    if existed {
+        body["disclosedTo"] = json!({
+            "partyCount": disclosed.party_count,
+            "contextCount": disclosed.context_count,
+        });
+    }
+    success_response(&doc, body)
 }
 
 // ─── Bindings ────────────────────────────────────────────────────────────
@@ -1452,14 +1574,22 @@ pub(super) async fn handle_binding_set(
     let persona = req.persona_did.to_string();
     let profile_id = req.profile_id.as_ref().map(|p| p.to_string());
     let public = req.public_entries.iter().map(|e| e.to_string()).collect();
+    let until = req.until.map(|u| u.to_rfc3339());
+    let s = store(state);
+    if let Some(refused) =
+        refuse_binding(&doc, &s, None, profile_id.as_deref(), until.as_deref()).await
+    {
+        return refused;
+    }
 
-    let bound = match store(state)
+    let bound = match s
         .set_binding(
             &ctx,
             &persona,
             profile_id.as_deref(),
             public,
             req.label.as_ref().map(|l| l.to_string()),
+            until.clone(),
             req.expected_version.map(|v| *v),
         )
         .await
@@ -1491,23 +1621,66 @@ pub(super) async fn handle_binding_set(
         Some(&detail),
     )
     .await;
-    success_response(
-        &doc,
-        json!({
-            "contextId": ctx,
-            "personaDid": persona,
-            "profileId": profile_id,
-            "version": bound.version,
-            "materialisedClaimCount": bound.materialised_claim_count,
-            "correlation": {
-                // Binding one profile to a second persona makes them the same
-                // person by construction, and no later narrowing undoes it.
-                "severity": if bound.also_bound_persona_count > 0 { "high" } else { "none" },
-                "alsoBoundPersonaCount": bound.also_bound_persona_count,
-            },
-            "boundAt": chrono::Utc::now().to_rfc3339(),
-        }),
-    )
+    let mut body = json!({
+        "contextId": ctx,
+        "personaDid": persona,
+        "profileId": profile_id,
+        "version": bound.version,
+        "materialisedClaimCount": bound.materialised_claim_count,
+        "correlation": {
+            // Binding one profile to a second persona makes them the same
+            // person by construction, and no later narrowing undoes it.
+            "severity": if bound.also_bound_persona_count > 0 { "high" } else { "none" },
+            "alsoBoundPersonaCount": bound.also_bound_persona_count,
+        },
+        "boundAt": chrono::Utc::now().to_rfc3339(),
+    });
+    // Absent, not null — see `put_opt`.
+    put_opt(&mut body, "until", until);
+    success_response(&doc, body)
+}
+
+/// Refuse a binding the specification says must not be written, with its
+/// code: a retired face (`profileRetired`), or an `until` in the past or on a
+/// cleared binding (`untilNotFuture`). `context_id` is the context of a
+/// context-local face; `None` looks in the pool.
+///
+/// The store refuses both too, so no other path can write one; this is where
+/// the refusal gets the code a client can act on.
+async fn refuse_binding(
+    doc: &TrustTask<Value>,
+    s: &PersonaStore,
+    context_id: Option<&str>,
+    profile_id: Option<&str>,
+    until: Option<&str>,
+) -> Option<TrustTaskOutcome> {
+    let slug = slug_from_doc(doc);
+    if let Some(u) = until {
+        let future = chrono::DateTime::parse_from_rfc3339(u).is_ok_and(|t| t > chrono::Utc::now());
+        if profile_id.is_none() || !future {
+            return Some(reject_with_code(
+                doc,
+                ext(&slug, "untilNotFuture"),
+                "`until` must be in the future, and ends a face being worn — a cleared binding \
+                 has none",
+                None,
+            ));
+        }
+    }
+    let id = profile_id?;
+    let face = match context_id {
+        None => s.get_profile(id).await,
+        Some(ctx) => s.get_local_profile(ctx, id).await,
+    };
+    match face {
+        Ok(Some(f)) if !f.status.is_active() => Some(reject_with_code(
+            doc,
+            ext(&slug, "profileRetired"),
+            format!("profile {id} is retired; reinstate it before wearing it"),
+            None,
+        )),
+        _ => None,
+    }
 }
 
 pub(super) async fn handle_binding_get(
@@ -1564,6 +1737,7 @@ pub(super) async fn handle_binding_get(
         put_opt(&mut body, "profileName", sum.profile_name);
     }
     put_opt(&mut body, "boundAt", sum.bound_at);
+    put_opt(&mut body, "until", sum.until);
     success_response(&doc, body)
 }
 
@@ -1597,6 +1771,7 @@ pub(super) async fn handle_binding_list(
                 "claimCount": s.claim_count,
             });
             put_opt(&mut row, "label", s.label.clone());
+            put_opt(&mut row, "until", s.until.clone());
             if holder {
                 put_opt(&mut row, "profileName", s.profile_name.clone());
             }
@@ -2414,7 +2589,10 @@ pub(super) async fn handle_local_profile_delete(
         };
         unbound = bound.len();
         for persona_did in bound {
-            if let Err(e) = s.set_local_binding(&ctx, &persona_did, None, None).await {
+            if let Err(e) = s
+                .set_local_binding(&ctx, &persona_did, None, None, None)
+                .await
+            {
                 return reject(&doc, e);
             }
         }
@@ -2469,16 +2647,30 @@ pub(super) async fn handle_local_binding_set(
 
     let persona = req.persona_did.to_string();
     let profile_id = req.profile_id.as_ref().map(|p| p.to_string());
+    let until = req.until.map(|u| u.to_rfc3339());
+    let s = store(state);
+    if let Some(refused) = refuse_binding(
+        &doc,
+        &s,
+        Some(&ctx),
+        profile_id.as_deref(),
+        until.as_deref(),
+    )
+    .await
+    {
+        return refused;
+    }
 
     // The store refuses an identifier naming a POOL profile. That refusal is
     // the whole distinction from binding/set, and it lives in one place so this
     // handler cannot forget it.
-    let version = match store(state)
+    let version = match s
         .set_local_binding(
             &ctx,
             &persona,
             profile_id.as_deref(),
             req.label.as_ref().map(|l| l.to_string()),
+            until,
         )
         .await
     {

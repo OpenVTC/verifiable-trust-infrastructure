@@ -258,6 +258,10 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
     // `persona/attribute/purge-version`: destroys kept earlier values of an
     // attribute for good.
     "purge-version",
+    // `persona/profile/retire`: takes a face off every context it is worn in.
+    // Reversible and nothing is erased, but it withdraws access everywhere at
+    // once — the kind of act a host should confirm, like `disable`.
+    "retire",
     "remove",
     "revoke",
     "revoke-session",
@@ -580,6 +584,8 @@ mod tests {
         // One-way, but it removes no value and no access — the face and its
         // wearers carry on presenting exactly what they did.
         "promote",
+        // `persona/profile/reinstate`: makes a face wearable; binds nothing.
+        "reinstate",
         // Mints a KeyPackage and retains its private half. Consequential, but
         // what it emits is public by construction — hence Mutating rather than
         // Sensitive, unlike its siblings `welcome` and `open`.

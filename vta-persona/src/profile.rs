@@ -403,6 +403,8 @@ pub fn new_profile(name: impl Into<String>, entries: Vec<ProfileEntry>) -> Profi
         name: name.into(),
         entries,
         credential_refs: Vec::new(),
+        status: crate::model::ProfileStatus::Active,
+        retired_at: None,
         version: 0,
         created_at: now.clone(),
         updated_at: now,
@@ -1018,13 +1020,27 @@ impl PersonaStore {
         persona_did: &str,
         profile_id: Option<&str>,
         label: Option<String>,
+        until: Option<String>,
     ) -> Result<Version, AppError> {
-        if let Some(id) = profile_id
-            && self.get_local_profile(context_id, id).await?.is_none()
+        if let Some(reason) = crate::binding::until_refusal(until.as_deref(), profile_id.is_some())
         {
-            return Err(AppError::Validation(format!(
-                "{id} does not name a context-local profile; a pool profile cannot be bound here"
-            )));
+            return Err(AppError::Validation(reason));
+        }
+        if let Some(id) = profile_id {
+            match self.get_local_profile(context_id, id).await? {
+                None => {
+                    return Err(AppError::Validation(format!(
+                        "{id} does not name a context-local profile; a pool profile cannot be \
+                         bound here"
+                    )));
+                }
+                Some(p) if !p.status.is_active() => {
+                    return Err(AppError::Validation(format!(
+                        "profile {id} is retired; reinstate it before wearing it"
+                    )));
+                }
+                Some(_) => {}
+            }
         }
 
         // Written as an ordinary binding record, in the ordinary binding
@@ -1093,6 +1109,7 @@ impl PersonaStore {
                 public_entries: Vec::new(),
                 version,
                 bound_at: crate::store::now_rfc3339(),
+                until: profile_id.and(until),
             },
             profile_name,
             label: profile_id.and(label),
@@ -1183,7 +1200,7 @@ mod local_tests {
         s.put_profile(pool.clone(), None).await.unwrap();
 
         let err = s
-            .set_local_binding("ctx", "did:p", Some(&pool.profile_id), None)
+            .set_local_binding("ctx", "did:p", Some(&pool.profile_id), None, None)
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
@@ -1192,7 +1209,7 @@ mod local_tests {
         s.put_local_profile("ctx", local.clone(), None)
             .await
             .unwrap();
-        s.set_local_binding("ctx", "did:p", Some(&local.profile_id), None)
+        s.set_local_binding("ctx", "did:p", Some(&local.profile_id), None, None)
             .await
             .expect("a local profile binds");
     }

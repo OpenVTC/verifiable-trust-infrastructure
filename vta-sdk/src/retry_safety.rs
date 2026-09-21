@@ -609,6 +609,16 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
         RetrySafety::Keyed,
     ),
+    // Both converge: a repeat retire takes no version and clears whatever is
+    // still bound; a repeat reinstate of an active face changes nothing.
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_RETIRE_1_0,
+        RetrySafety::RetrySafe,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_REINSTATE_1_0,
+        RetrySafety::RetrySafe,
+    ),
     // Each execution makes a new face with a new id.
     (
         trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0,

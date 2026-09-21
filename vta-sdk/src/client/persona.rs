@@ -298,10 +298,12 @@ impl VtaClient {
         &self,
         limit: Option<std::num::NonZeroU64>,
         cursor: Option<&str>,
+        include_retired: bool,
     ) -> Result<Value, VtaError> {
         let payload = body(PersonaProfileListBody {
             limit,
             cursor: cursor.map(str::to_string),
+            include_retired: include_retired.then_some(true),
             ext: None,
         })?;
         self.dispatch_trust_task(
@@ -337,6 +339,53 @@ impl VtaClient {
         .await
     }
 
+    /// `persona/profile/retire/1.0` — stop wearing a face anywhere, and keep
+    /// it. `context_id` names the context of a context-local face; `None` for
+    /// a pool face. Every binding to it is cleared and returned in `unbound`.
+    pub async fn persona_profile_retire(
+        &self,
+        profile_id: &str,
+        context_id: Option<&str>,
+        expected_version: Option<u64>,
+    ) -> Result<trust_tasks_rs::specs::persona::profile::retire::v1_0::Response, VtaError> {
+        let mut payload = serde_json::json!({ "profileId": profile_id });
+        if let Some(c) = context_id {
+            payload["contextId"] = c.into();
+        }
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = v.into();
+        }
+        self.rpc_tt(
+            trust_tasks::TASK_PERSONA_PROFILE_RETIRE_1_0,
+            payload,
+            PERSONA_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `persona/profile/reinstate/1.0` — make a retired face wearable again.
+    /// It is worn nowhere afterwards.
+    pub async fn persona_profile_reinstate(
+        &self,
+        profile_id: &str,
+        context_id: Option<&str>,
+        expected_version: Option<u64>,
+    ) -> Result<trust_tasks_rs::specs::persona::profile::reinstate::v1_0::Response, VtaError> {
+        let mut payload = serde_json::json!({ "profileId": profile_id });
+        if let Some(c) = context_id {
+            payload["contextId"] = c.into();
+        }
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = v.into();
+        }
+        self.rpc_tt(
+            trust_tasks::TASK_PERSONA_PROFILE_REINSTATE_1_0,
+            payload,
+            PERSONA_TT_TIMEOUT,
+        )
+        .await
+    }
+
     // -----------------------------------------------------------------------
     // Bindings — context-scoped
     // -----------------------------------------------------------------------
@@ -355,6 +404,7 @@ impl VtaClient {
         profile_id: Option<&str>,
         public_entries: Vec<String>,
         label: Option<&str>,
+        until: Option<&str>,
         expected_version: Option<u64>,
     ) -> Result<Value, VtaError> {
         let payload = body(PersonaBindingSetBody {
@@ -363,6 +413,7 @@ impl VtaClient {
             profile_id: profile_id.map(str::to_string),
             public_entries,
             label: label.map(str::to_string),
+            until: until.map(str::to_string),
             expected_version,
             ext: None,
         })?;
@@ -775,6 +826,7 @@ impl VtaClient {
         persona_did: &str,
         profile_id: Option<&str>,
         label: Option<&str>,
+        until: Option<&str>,
         expected_version: Option<u64>,
     ) -> Result<Value, VtaError> {
         let payload = body(PersonaLocalBindingSetBody {
@@ -782,6 +834,7 @@ impl VtaClient {
             persona_did: persona_did.to_string(),
             profile_id: profile_id.map(str::to_string),
             label: label.map(str::to_string),
+            until: until.map(str::to_string),
             expected_version,
             ext: None,
         })?;
