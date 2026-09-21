@@ -194,9 +194,55 @@ impl VtaClient {
         .await
     }
 
+    /// `persona/attribute/promote/1.0` — make values a context-local face
+    /// carries reusable across the holder's faces.
+    ///
+    /// `entries` are zero-based positions in the face as read at
+    /// `expected_version`. The face moves into the pool keeping its id and
+    /// every persona that wore it; the step is one-way, so a caller shows the
+    /// holder that before sending.
+    pub async fn persona_attribute_promote(
+        &self,
+        context_id: &str,
+        profile_id: &str,
+        entries: &[u64],
+        expected_version: u64,
+    ) -> Result<trust_tasks_rs::specs::persona::attribute::promote::v1_0::Response, VtaError> {
+        self.rpc_tt(
+            trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
+            serde_json::json!({
+                "contextId": context_id,
+                "profileId": profile_id,
+                "entries": entries,
+                "expectedVersion": expected_version,
+            }),
+            PERSONA_TT_TIMEOUT,
+        )
+        .await
+    }
+
     // -----------------------------------------------------------------------
     // Profiles — holder-scoped
     // -----------------------------------------------------------------------
+
+    /// `persona/profile/compose/1.0` — compose a face for one context where it
+    /// is asked for, local by default, and optionally wear it there.
+    ///
+    /// Takes the generated payload: a claim is either typed now
+    /// (`NewClaim`, `share: local` unless the holder chose to pool it) or an
+    /// attribute already held (`HeldClaim`). Where the face lives comes back
+    /// in `scope`.
+    pub async fn persona_profile_compose(
+        &self,
+        payload: &trust_tasks_rs::specs::persona::profile::compose::v1_0::Payload,
+    ) -> Result<trust_tasks_rs::specs::persona::profile::compose::v1_0::Response, VtaError> {
+        self.rpc_tt(
+            trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0,
+            body(payload)?,
+            PERSONA_TT_TIMEOUT,
+        )
+        .await
+    }
 
     /// `persona/profile/put/1.0` — create or update an agent-scoped profile.
     pub async fn persona_profile_put(

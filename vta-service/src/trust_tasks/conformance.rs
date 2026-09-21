@@ -3196,6 +3196,56 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            u::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
+            (
+                json!({
+                    "contextId": CTX, "profileId": PROFILE,
+                    "entries": [1], "expectedVersion": 4
+                }),
+                parses::<specs::persona::attribute::promote::v1_0::Payload>,
+                validates::<specs::persona::attribute::promote::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "profileId": PROFILE, "version": 5,
+                    "promoted": [{ "entry": 1, "attributeId": ATTR, "created": true }],
+                    "reboundPersonaDids": [PERSONA_DID]
+                }),
+                parses::<specs::persona::attribute::promote::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_PROFILE_COMPOSE_1_0,
+            (
+                // One claim of each form, so the witness exercises the
+                // untagged discrimination between a typed and a held claim.
+                json!({
+                    "contextId": CTX,
+                    "name": "Co-op",
+                    "claims": [
+                        { "type": "name.display", "valueType": "string", "value": "Fixture",
+                          "slot": "displayName" },
+                        { "type": "email.personal", "valueType": "string",
+                          "value": "fixture@example.test", "share": "pool" },
+                        { "attributeId": ATTR }
+                    ],
+                    "personaDid": PERSONA_DID,
+                    "label": "Fixture at the co-op"
+                }),
+                parses::<specs::persona::profile::compose::v1_0::Payload>,
+                validates::<specs::persona::profile::compose::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "profileId": PROFILE, "scope": "pool", "version": 3,
+                    "pooled": [{ "attributeId": ATTR, "created": false }],
+                    "binding": { "personaDid": PERSONA_DID, "version": 4, "alsoBoundPersonaCount": 0 },
+                    "correlation": { "severity": "high", "sharedAttributeCount": 1 }
+                }),
+                parses::<specs::persona::profile::compose::v1_0::Response>,
+            ),
+        ),
+        (
             u::TASK_PERSONA_PROFILE_PUT_1_0,
             (
                 // One entry of each referencing form the pool supports, so the

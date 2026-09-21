@@ -600,6 +600,20 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
         RetrySafety::RetrySafe,
     ),
+    // Converges in effect — the steps are ordered so a retry of an interrupted
+    // promote finishes it, reusing the attributes it made — but a retry of a
+    // COMPLETED one finds no local face and answers notFound, which reads as a
+    // failure to a caller whose first attempt succeeded. Keyed, so the replay
+    // returns the first response.
+    (
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
+        RetrySafety::Keyed,
+    ),
+    // Each execution makes a new face with a new id.
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0,
+        RetrySafety::Keyed,
+    ),
     (
         trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0,
         RetrySafety::Keyed,

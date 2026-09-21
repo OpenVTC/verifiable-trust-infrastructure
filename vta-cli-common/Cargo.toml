@@ -16,6 +16,9 @@ repository.workspace = true
 agent-names = ["vta-sdk/agent-names"]
 
 [dependencies]
+# The generated Trust Task payloads, for commands that build one from flags
+# and want it checked against the published shape before it is sent.
+trust-tasks-rs = { workspace = true }
 # `time` for the consent loop's bounded wait between polls.
 tokio = { workspace = true, features = ["time"] }
 vta-sdk = { path = "../vta-sdk", version = "0.47", features = [

@@ -35,6 +35,8 @@ const ATTR_PUT: &str = "https://trusttasks.org/spec/persona/attribute/put/1.0";
 const ATTR_LIST: &str = "https://trusttasks.org/spec/persona/attribute/list/1.0";
 const ATTR_DELETE: &str = "https://trusttasks.org/spec/persona/attribute/delete/1.0";
 const ATTR_PURGE_VERSION: &str = "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
+const ATTR_PROMOTE: &str = "https://trusttasks.org/spec/persona/attribute/promote/1.0";
+const PROFILE_COMPOSE: &str = "https://trusttasks.org/spec/persona/profile/compose/1.0";
 const PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/profile/put/1.0";
 const PROFILE_GET: &str = "https://trusttasks.org/spec/persona/profile/get/1.0";
 const PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/profile/list/1.0";
@@ -272,6 +274,23 @@ async fn a_context_admin_cannot_reach_the_pool_over_the_wire() {
         ),
         (CORRELATION, json!({ "candidate": { "value": "Ada" } })),
         (DISCLOSURE_HISTORY, json!({})),
+        // Even a compose whose every claim is local: this task can reach the
+        // pool, and the context-callable way to make a local face is
+        // `local/profile/put`, which cannot.
+        (
+            PROFILE_COMPOSE,
+            json!({
+                "contextId": CTX, "name": "here",
+                "claims": [{ "type": "name.display", "valueType": "string", "value": "Ada" }]
+            }),
+        ),
+        (
+            ATTR_PROMOTE,
+            json!({
+                "contextId": CTX, "profileId": "01J0000000000000000000000A",
+                "entries": [0], "expectedVersion": 1
+            }),
+        ),
     ];
 
     for (uri, payload) in holder_only {
@@ -3098,4 +3117,212 @@ async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
         gone.get("value").is_none() || gone["value"].is_null(),
         "a purged pin fell back to another value: {gone}"
     );
+}
+
+/// `persona/profile/compose` then `persona/attribute/promote`, over the wire:
+/// a face made where it is asked for stays in its context until the holder
+/// widens it, and widening keeps its id and its wearer. Design note
+/// `persona-context-first.md` §2.1, §5.3.
+#[tokio::test]
+async fn a_face_composed_in_a_context_stays_there_until_promoted() {
+    use trust_tasks_rs::specs::persona::{attribute::promote, profile::compose};
+
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "compose", "admin", &[]).await;
+    let persona = "did:key:z6MkComposedPersona";
+
+    // Refusals carry the specification's codes and write nothing.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({
+            "contextId": CTX, "name": "Co-op", "label": "the co-op one",
+            "claims": [{ "type": "name.display", "valueType": "string", "value": "Ada" }]
+        }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/profile/compose:labelWithoutPersona"
+    );
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({
+            "contextId": CTX, "name": "Co-op",
+            "claims": [{ "attributeId": "01J0000000000000000000000A" }]
+        }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/profile/compose:unresolvedReference"
+    );
+
+    // Typed values only: a face in the context, worn, and nothing in the pool.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({
+            "contextId": CTX, "name": "Co-op",
+            "claims": [
+                { "type": "name.display", "valueType": "string", "value": "Ada",
+                  "slot": "displayName" },
+                { "type": "email.personal", "valueType": "string", "value": "ada@example.org" }
+            ],
+            "personaDid": persona,
+            "label": "Ada at the co-op"
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "compose: {status} {body}");
+    let out = payload_of(&body).clone();
+    serde_json::from_value::<compose::v1_0::Response>(out.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
+    assert_eq!(out["scope"], "local");
+    assert!(out.get("pooled").is_none(), "{out}");
+    assert_eq!(out["binding"]["personaDid"], persona);
+    let face = out["profileId"].as_str().unwrap().to_string();
+
+    let (_, body) = post(&router, &holder, ATTR_LIST, json!({})).await;
+    assert_eq!(
+        payload_of(&body)["attributes"],
+        json!([]),
+        "a typed value reached the pool"
+    );
+    let (status, body) = post(
+        &router,
+        &holder,
+        LOCAL_PROFILE_GET,
+        json!({ "contextId": CTX, "profileId": face }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/get: {status} {body}"
+    );
+    let local_version = payload_of(&body)["profile"]["version"]
+        .as_u64()
+        .or_else(|| payload_of(&body)["version"].as_u64())
+        .unwrap_or_else(|| panic!("no version: {body}"));
+    let (_, body) = post(
+        &router,
+        &holder,
+        BINDING_GET,
+        json!({ "contextId": CTX, "personaDid": persona }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["label"], "Ada at the co-op", "{body}");
+
+    // Promote refuses a stale read and a position past the end.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PROMOTE,
+        json!({ "contextId": CTX, "profileId": face, "entries": [1],
+                "expectedVersion": local_version + 1 }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/attribute/promote:versionConflict"
+    );
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PROMOTE,
+        json!({ "contextId": CTX, "profileId": face, "entries": [2],
+                "expectedVersion": local_version }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/attribute/promote:entryOutOfRange"
+    );
+    assert_eq!(payload_of(&body)["details"]["entryCount"], 2);
+
+    // The email becomes reusable; the face moves up with it.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PROMOTE,
+        json!({ "contextId": CTX, "profileId": face, "entries": [1],
+                "expectedVersion": local_version }),
+    )
+    .await;
+    assert!(!refused(status, &body), "promote: {status} {body}");
+    let out = payload_of(&body).clone();
+    serde_json::from_value::<promote::v1_0::Response>(out.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
+    assert_eq!(out["profileId"], face.as_str());
+    assert_eq!(out["reboundPersonaDids"], json!([persona]));
+    let email = out["promoted"][0]["attributeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_GET,
+        json!({ "profileId": face, "resolve": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/get: {status} {body}");
+    let values: Vec<Value> = payload_of(&body)["resolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["value"].clone())
+        .collect();
+    assert_eq!(values, vec![json!("Ada"), json!("ada@example.org")]);
+    let (_, body) = post(
+        &router,
+        &holder,
+        LOCAL_PROFILE_GET,
+        json!({ "contextId": CTX, "profileId": face }),
+    )
+    .await;
+    assert!(
+        refused(StatusCode::OK, &body),
+        "the local face should be gone: {body}"
+    );
+    let (_, body) = post(
+        &router,
+        &holder,
+        BINDING_GET,
+        json!({ "contextId": CTX, "personaDid": persona }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["bound"], true, "{body}");
+    assert_eq!(payload_of(&body)["label"], "Ada at the co-op", "{body}");
+
+    // A second face sharing the same email reuses the promoted attribute and
+    // is told it now shares a fact.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({
+            "contextId": "ctx-other", "name": "Club",
+            "claims": [{ "type": "email.personal", "valueType": "string",
+                         "value": "ada@example.org", "share": "pool" }]
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "compose: {status} {body}");
+    let out = payload_of(&body);
+    assert_eq!(out["scope"], "pool");
+    assert_eq!(
+        out["pooled"],
+        json!([{ "attributeId": email, "created": false }])
+    );
+    assert_eq!(out["correlation"]["severity"], "high", "{out}");
 }
