@@ -2357,6 +2357,15 @@ impl VtaClient {
                 r::NOT_FOUND => return Some(VtaError::NotFound(message.to_string())),
                 r::CONFLICT => return Some(VtaError::Conflict(message.to_string())),
                 r::GONE => return Some(VtaError::Gone(message.to_string())),
+                // What the REST path's `from_http` already makes of a 502, so a
+                // caller matching on `Server` sees the same thing whichever
+                // transport carried the call.
+                r::UPSTREAM_UNAVAILABLE => {
+                    return Some(VtaError::Server {
+                        status: 502,
+                        body: message.to_string(),
+                    });
+                }
                 _ => {}
             }
         }
@@ -2905,6 +2914,25 @@ mod tests {
             VtaClient::trust_task_error(&payload),
             Some(VtaError::Gone(_))
         ));
+    }
+
+    /// A peer the VTA depends on failing is not the VTA failing. It arrives as
+    /// the same `Server { status: 502 }` a REST caller already gets, so a
+    /// consumer can say "the hosting server did not answer" rather than
+    /// "the VTA had an internal error".
+    #[test]
+    fn an_upstream_failure_arrives_as_a_bad_gateway() {
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "task failed: a service this VTA depends on did not answer",
+            "details": { "reason": "upstream_unavailable" }
+        });
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::Server { status: 502, body }) => {
+                assert!(body.contains("did not answer"), "{body}")
+            }
+            other => panic!("expected Server {{ status: 502 }}, got {other:?}"),
+        }
     }
 
     /// A `taskFailed` carrying no `details` is a genuine failure and must stay

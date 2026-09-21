@@ -121,6 +121,15 @@ pub mod trust_task_reject_reasons {
     ///
     /// [`VtaError::Gone`]: crate::error::VtaError::Gone
     pub const GONE: &str = "gone";
+    /// A peer the VTA had to reach to complete the task — a DID-hosting
+    /// server, another agent — did not answer, or refused. Nothing in the
+    /// request was at fault and the VTA itself did not fail, so neither
+    /// fixing the request nor reporting a VTA bug is the next step: the peer
+    /// is. Recovers [`VtaError::Server`] with status `502`, the variant the
+    /// REST transport already produces for the same failure.
+    ///
+    /// [`VtaError::Server`]: crate::error::VtaError::Server
+    pub const UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
 }
 
 /// Machine-readable `details` members the VTA puts on an
