@@ -191,6 +191,10 @@ pub enum ProfileEntry {
     Ref {
         #[serde(rename = "ref")]
         attribute_id: String,
+        /// The role this entry plays in the face — `displayName` for what the
+        /// face calls itself. Unique within a face.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
     },
     /// Track one specific version of the pool attribute.
     #[serde(rename_all = "camelCase")]
@@ -198,6 +202,10 @@ pub enum ProfileEntry {
         #[serde(rename = "ref")]
         attribute_id: String,
         pin_version: ::std::num::NonZeroU64,
+        /// The role this entry plays in the face — `displayName` for what the
+        /// face calls itself. Unique within a face.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
     },
     /// Take the pool attribute's identity but present a different value.
     Override {
@@ -205,9 +213,19 @@ pub enum ProfileEntry {
         attribute_id: String,
         #[serde(rename = "override")]
         override_value: OverrideValue,
+        /// The role this entry plays in the face — `displayName` for what the
+        /// face calls itself. Unique within a face.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
     },
     /// A value that exists only in this profile.
-    Inline { inline: InlineValue },
+    Inline {
+        inline: InlineValue,
+        /// The role this entry plays in the face — `displayName` for what the
+        /// face calls itself. Unique within a face.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
+    },
 }
 
 /// One line of a **context-local** profile.
@@ -223,6 +241,10 @@ pub enum ProfileEntry {
 pub struct LocalProfileEntry {
     /// The value, carried in full. There is no other form.
     pub inline: InlineValue,
+    /// The role this entry plays in the face — `displayName` for what the
+    /// face calls itself. Unique within a face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +907,34 @@ mod tests {
                         "valueType": "string",
                         "provenance": { "kind": "selfAsserted" },
                     }
+                }),
+            ),
+            (
+                "ref+slot",
+                serde_json::json!({ "ref": "01J0000000000000000000000A", "slot": "displayName" }),
+            ),
+            (
+                "pinned+slot",
+                serde_json::json!({ "ref": "01J0000000000000000000000A", "pinVersion": 3, "slot": "primaryPhone" }),
+            ),
+            (
+                "override+slot",
+                serde_json::json!({
+                    "ref": "01J0000000000000000000000A",
+                    "override": { "value": "Mickey" },
+                    "slot": "displayName",
+                }),
+            ),
+            (
+                "inline+slot",
+                serde_json::json!({
+                    "inline": {
+                        "type": "name.display",
+                        "value": "Donald",
+                        "valueType": "string",
+                        "provenance": { "kind": "selfAsserted" },
+                    },
+                    "slot": "displayName",
                 }),
             ),
         ];

@@ -2830,3 +2830,120 @@ async fn a_name_change_is_answerable_end_to_end() {
         "{after}"
     );
 }
+
+/// A face says which entry is its name, and says it once.
+///
+/// Two names in one face — a legal name and the one it goes by — used to leave
+/// a consumer guessing which the face calls itself, because entries carried no
+/// role. `slot` is the role, it survives a write and a resolved read, and a
+/// face claiming one slot twice is refused with the specification's code
+/// rather than stored for a consumer to pick from by position.
+#[tokio::test]
+async fn a_face_names_itself_by_slot_and_only_once() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "slot-holder", "admin", &[]).await;
+    let legal = put_attribute(&router, &holder, "name.legal", "Donald Fauntleroy Duck").await;
+    let known_as = put_attribute(&router, &holder, "name.display", "Donald").await;
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({
+            "name": "pond",
+            "entries": [
+                { "ref": legal },
+                { "ref": known_as, "slot": "displayName" },
+            ],
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/put: {status} {body}");
+    let face = payload_of(&body)["profileId"].as_str().unwrap().to_string();
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_GET,
+        json!({ "profileId": face, "resolve": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/get: {status} {body}");
+    let payload = payload_of(&body).clone();
+    serde_json::from_value::<trust_tasks_rs::specs::persona::profile::get::v1_0::Response>(
+        payload.clone(),
+    )
+    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
+    let named: Vec<&Value> = payload["resolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["slot"] == "displayName")
+        .collect();
+    assert_eq!(named.len(), 1, "{payload:#}");
+    assert_eq!(named[0]["value"], "Donald");
+    assert_eq!(payload["profile"]["entries"][1]["slot"], "displayName");
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({
+            "name": "confused",
+            "entries": [
+                { "ref": legal, "slot": "displayName" },
+                { "ref": known_as, "slot": "displayName" },
+            ],
+        }),
+    )
+    .await;
+    assert!(
+        refused(status, &body),
+        "a face claimed one slot twice: {status} {body}"
+    );
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/profile/put:duplicateSlot"
+    );
+    assert_eq!(payload_of(&body)["details"]["slot"], "displayName");
+
+    // The context-local form, for a face that never touches the pool.
+    let scoped = authed(&ctx, "slot-scoped", "admin", &[CTX]).await;
+    let local = |slot_twice: bool| {
+        let (router, scoped) = (router.clone(), scoped.clone());
+        async move {
+            let second = if slot_twice {
+                json!("displayName")
+            } else {
+                json!("avatar")
+            };
+            post(
+                &router,
+                &scoped,
+                LOCAL_PROFILE_PUT,
+                json!({
+                    "contextId": CTX,
+                    "name": "market",
+                    "entries": [
+                        { "inline": { "type": "name.display", "value": "Mickey", "valueType": "string" },
+                          "slot": "displayName" },
+                        { "inline": { "type": "x:img", "value": "m.png", "valueType": "string" },
+                          "slot": second },
+                    ],
+                }),
+            )
+            .await
+        }
+    };
+    let (status, body) = local(false).await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/put: {status} {body}"
+    );
+    let (status, body) = local(true).await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/local/profile/put:duplicateSlot"
+    );
+}

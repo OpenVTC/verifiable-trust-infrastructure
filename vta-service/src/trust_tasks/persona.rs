@@ -802,7 +802,7 @@ pub(super) async fn handle_profile_put(
     // wire form means the untagged discrimination is exercised exactly as a
     // peer's document would exercise it, rather than by a hand-written match
     // that could disagree with the schema.
-    let entries = match serde_json::to_value(&req.entries)
+    let entries: Vec<vta_persona::ProfileEntry> = match serde_json::to_value(&req.entries)
         .ok()
         .and_then(|v| serde_json::from_value(v).ok())
     {
@@ -814,6 +814,18 @@ pub(super) async fn handle_profile_put(
             );
         }
     };
+
+    // A slot answers one question with one entry, so a face repeating one is
+    // refused whole, naming the slot. Checked here to carry the spec's code;
+    // the store refuses it too, so no other write path can store one.
+    if let Some(slot) = vta_persona::model::duplicate_slot(&entries) {
+        return reject_with_code(
+            &doc,
+            ext(&slug_from_doc(&doc), "duplicateSlot"),
+            format!("two entries of this face both claim the slot {slot}"),
+            Some(json!({ "slot": slot })),
+        );
+    }
 
     let mut profile = vta_persona::new_profile(req.name.to_string(), entries);
     if let Some(id) = &req.profile_id {
@@ -927,6 +939,7 @@ pub(super) async fn handle_profile_get(
                     // Absent, not null — see `put_opt`.
                     put_opt(&mut row, "attributeId", c.attribute_id.clone());
                     put_opt(&mut row, "label", c.label.clone());
+                    put_opt(&mut row, "slot", c.slot.clone());
                     put_opt(&mut row, "version", c.version);
                     put_opt(&mut row, "updatedAt", c.updated_at.clone());
                     row
@@ -1771,12 +1784,25 @@ pub(super) async fn handle_local_profile_put(
                     label: e.inline.label.as_ref().map(|l| l.to_string()),
                     provenance: vta_persona::Provenance::SelfAsserted,
                 },
+                slot: e.slot.as_ref().map(|s| s.to_string()),
             })
         })
         .collect();
     let Some(entries) = entries else {
         return reject(&doc, AppError::Validation("unrecognised valueType".into()));
     };
+
+    // A slot answers one question with one entry, so a face repeating one is
+    // refused whole, naming the slot. Checked here to carry the spec's code;
+    // the store refuses it too, so no other write path can store one.
+    if let Some(slot) = vta_persona::model::duplicate_slot(&entries) {
+        return reject_with_code(
+            &doc,
+            ext(&slug_from_doc(&doc), "duplicateSlot"),
+            format!("two entries of this face both claim the slot {slot}"),
+            Some(json!({ "slot": slot })),
+        );
+    }
 
     let mut profile = vta_persona::new_profile(req.name.to_string(), entries);
     if let Some(id) = &req.profile_id {
@@ -1802,7 +1828,7 @@ pub(super) async fn handle_local_profile_put(
         Ok(Some(p)) => {
             let mut found = false;
             for entry in &p.entries {
-                if let vta_persona::ProfileEntry::Inline { inline } = entry
+                if let vta_persona::ProfileEntry::Inline { inline, .. } = entry
                     && s.correlation_count(&inline.value, "").await.unwrap_or(0) > 0
                 {
                     found = true;

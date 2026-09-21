@@ -68,7 +68,7 @@ pub(crate) fn carried_values(profile: &Profile) -> Vec<&serde_json::Value> {
         .iter()
         .filter_map(|e| match e {
             ProfileEntry::Override { r#override, .. } => Some(&r#override.value),
-            ProfileEntry::Inline { inline } => Some(&inline.value),
+            ProfileEntry::Inline { inline, .. } => Some(&inline.value),
             ProfileEntry::Ref { .. } | ProfileEntry::Pinned { .. } => None,
         })
         .collect()
@@ -199,7 +199,7 @@ impl PersonaStore {
         let mut out = Vec::new();
         for entry in &face.entries {
             match entry {
-                ProfileEntry::Inline { inline }
+                ProfileEntry::Inline { inline, .. }
                     if correlation::blind(&self.correlation_key, &inline.value) == blind =>
                 {
                     out.push(CarriedClaim {
@@ -207,9 +207,9 @@ impl PersonaStore {
                         provenance: inline.provenance.clone(),
                     });
                 }
-                ProfileEntry::Override { r#ref, r#override }
-                    if correlation::blind(&self.correlation_key, &r#override.value) == blind =>
-                {
+                ProfileEntry::Override {
+                    r#ref, r#override, ..
+                } if correlation::blind(&self.correlation_key, &r#override.value) == blind => {
                     let (claim_type, provenance) = match self.slot(r#ref).await? {
                         Some(Slot::Live(a)) => (a.r#type, a.provenance),
                         // The attribute went away behind the face. The value is
@@ -306,6 +306,7 @@ mod tests {
 
     fn inline(t: &str, v: &str) -> ProfileEntry {
         ProfileEntry::Inline {
+            slot: None,
             inline: InlineValue {
                 r#type: t.into(),
                 value_type: ValueType::String,
@@ -375,6 +376,7 @@ mod tests {
         let face = new_profile(
             "Work",
             vec![ProfileEntry::Override {
+                slot: None,
                 r#ref: work.attribute_id.clone(),
                 r#override: OverrideValue {
                     value: serde_json::json!("+61 400"),
@@ -483,6 +485,7 @@ mod tests {
             "Home",
             vec![
                 ProfileEntry::Ref {
+                    slot: None,
                     r#ref: shared.attribute_id.clone(),
                 },
                 inline("name.display", "Ada"),

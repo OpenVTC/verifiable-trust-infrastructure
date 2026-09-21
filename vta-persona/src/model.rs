@@ -264,13 +264,21 @@ pub struct Attribute {
 pub enum ProfileEntry {
     /// Reference the pool attribute, live. Editing the pool updates every
     /// profile referencing it, which is the point.
-    Ref { r#ref: Ulid },
+    Ref {
+        r#ref: Ulid,
+        /// The role this entry plays in the face — see [`ProfileEntry::slot`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
+    },
     /// Reference it as it was at a version. For a profile that must keep
     /// presenting the value a counterparty already verified.
     Pinned {
         r#ref: Ulid,
         #[serde(rename = "pinVersion")]
         pin_version: Version,
+        /// The role this entry plays in the face — see [`ProfileEntry::slot`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
     },
     /// The same attribute, a different value here.
     ///
@@ -281,10 +289,18 @@ pub enum ProfileEntry {
     Override {
         r#ref: Ulid,
         r#override: OverrideValue,
+        /// The role this entry plays in the face — see [`ProfileEntry::slot`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
     },
     /// A value that never enters the pool, and so can never leak into another
     /// profile.
-    Inline { inline: InlineValue },
+    Inline {
+        inline: InlineValue,
+        /// The role this entry plays in the face — see [`ProfileEntry::slot`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -314,12 +330,44 @@ impl ProfileEntry {
     #[must_use]
     pub fn referenced(&self) -> Option<&str> {
         match self {
-            Self::Ref { r#ref } | Self::Pinned { r#ref, .. } | Self::Override { r#ref, .. } => {
+            Self::Ref { r#ref, .. } | Self::Pinned { r#ref, .. } | Self::Override { r#ref, .. } => {
                 Some(r#ref)
             }
             Self::Inline { .. } => None,
         }
     }
+
+    /// The role this entry plays in its face, where the holder named one —
+    /// `displayName` for what the face calls itself.
+    ///
+    /// On every form, because a face may call itself by a pool value, a pinned
+    /// one, an override or a value typed only here. Unique within a face:
+    /// [`duplicate_slot`] finds the first repeat.
+    #[must_use]
+    pub fn slot(&self) -> Option<&str> {
+        match self {
+            Self::Ref { slot, .. }
+            | Self::Pinned { slot, .. }
+            | Self::Override { slot, .. }
+            | Self::Inline { slot, .. } => slot.as_deref(),
+        }
+    }
+}
+
+/// The first slot two entries of one face both claim, if any.
+///
+/// A slot answers one question — "what does this face call itself" — with one
+/// entry, and two answers is no answer: a consumer would pick one by position,
+/// and which one it picked would change the moment the holder reordered the
+/// face. So a face repeating a slot is refused whole, by both the pool and the
+/// context-local write paths.
+#[must_use]
+pub fn duplicate_slot(entries: &[ProfileEntry]) -> Option<&str> {
+    let mut seen = std::collections::BTreeSet::new();
+    entries
+        .iter()
+        .filter_map(ProfileEntry::slot)
+        .find(|s| !seen.insert(*s))
 }
 
 /// A named projection over the pool. **Agent-scoped**, like the pool it draws
@@ -462,6 +510,7 @@ mod tests {
         // This is what makes a context-local profile checkable: it is valid
         // exactly when no entry references the pool.
         let inline = ProfileEntry::Inline {
+            slot: None,
             inline: InlineValue {
                 r#type: "x:handle".into(),
                 value_type: ValueType::String,
@@ -473,6 +522,7 @@ mod tests {
         assert!(inline.referenced().is_none());
 
         let by_ref = ProfileEntry::Ref {
+            slot: None,
             r#ref: "01J8".into(),
         };
         assert_eq!(by_ref.referenced(), Some("01J8"));
@@ -514,6 +564,34 @@ mod tests {
                     }
                 }),
             ),
+            (
+                "ref+slot",
+                serde_json::json!({ "ref": "01J8", "slot": "displayName" }),
+            ),
+            (
+                "pinned+slot",
+                serde_json::json!({ "ref": "01J8", "pinVersion": 3, "slot": "primaryPhone" }),
+            ),
+            (
+                "override+slot",
+                serde_json::json!({
+                    "ref": "01J8",
+                    "override": { "value": "Mickey" },
+                    "slot": "displayName",
+                }),
+            ),
+            (
+                "inline+slot",
+                serde_json::json!({
+                    "inline": {
+                        "type": "name.display",
+                        "value": "Donald",
+                        "valueType": "string",
+                        "provenance": { "kind": "selfAsserted" },
+                    },
+                    "slot": "displayName",
+                }),
+            ),
         ];
 
         for (label, doc) in cases {
@@ -522,6 +600,42 @@ mod tests {
             let back = serde_json::to_value(&parsed).expect("re-encodes");
             assert_eq!(back, doc, "{label} form did not survive the round trip");
         }
+    }
+
+    /// A slotted pin must not become a slotted live reference. `slot` is on
+    /// every form, so it cannot be what discriminates them — the rest of the
+    /// members still must, and this is the case where getting that wrong
+    /// presents a value the holder froze as whatever the pool holds now.
+    #[test]
+    fn a_slotted_pin_is_still_a_pin() {
+        let parsed: ProfileEntry = serde_json::from_value(serde_json::json!({
+            "ref": "01J8", "pinVersion": 7, "slot": "displayName"
+        }))
+        .expect("parses");
+        assert!(
+            matches!(&parsed, ProfileEntry::Pinned { pin_version: 7, slot: Some(s), .. } if s == "displayName"),
+            "a slotted pin parsed as {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_repeated_slot_is_found_and_distinct_slots_are_not() {
+        let e = |slot: Option<&str>| ProfileEntry::Ref {
+            r#ref: "01J8".into(),
+            slot: slot.map(str::to_string),
+        };
+        assert_eq!(
+            duplicate_slot(&[e(Some("displayName")), e(None), e(None)]),
+            None
+        );
+        assert_eq!(
+            duplicate_slot(&[e(Some("displayName")), e(Some("avatar"))]),
+            None
+        );
+        assert_eq!(
+            duplicate_slot(&[e(Some("displayName")), e(None), e(Some("displayName"))]),
+            Some("displayName")
+        );
     }
 
     /// The failure with teeth, stated on its own: a pin that quietly becomes a
