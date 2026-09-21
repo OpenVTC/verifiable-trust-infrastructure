@@ -2,6 +2,141 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.45.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.44.0...vta-sdk-v0.45.0) — 2026-09-21
+
+
+### Added
+
+- **persona**: Say who holds an old value, where an edit landed, and what a context may call a face ([#1597](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1597))
+- **vtc**: Implement vtc/join-requests/supplement/0.1 — answer a deferral in place ([#1593](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1593))
+
+Closes the second half of Keyring's KR-03, the one `join-requests/withdraw`
+  ([#1591](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1591)) left open. A community that cannot decide a request on what it was
+  given defers it and says what more it needs — and the applicant had nowhere to
+  put the answer. The request stays open, the dedup guard refuses a second
+  application, and the only exits were withdrawing (losing your place) or waiting
+  for a retention sweep neither party controls. A deferral was a dead end dressed
+  as a question.
+
+  Spec'd upstream first (dtgwg-trust-tasks-tf #526, corrected by #531, shipped in
+  trust-tasks-rs 0.21.6) and implemented here against the generated types.
+
+  ## Submit and supplement now share one definition of every verdict effect
+
+  `apply_verdict_to_request` is extracted out of `realize_join_verdict`, which
+  could not be reused as-is because it opens with `JoinRequest::new` — it decides
+  a request it is creating, and a supplement decides one that already exists. The
+  extraction is the point rather than a tidy-up: an admission granted by a
+  supplement must mean exactly what one granted by a submission means, and two
+  copies of the effect table would eventually disagree.
+
+  The response needs no such care because it is already shared —
+  `outcome_to_verdict` and `verdict_response` are submit's, and a supplement's
+  `{requestId, verdict}` *is* a submission's. A client reads both with one code
+  path, which is why the spec chose that shape.
+
+  ## Vetting travels in the presentation, and the first draft of the spec said otherwise
+
+  `vetting_facts` reads attestations out of the VP's `verifiableCredential`
+  array (`vetting_credentials(vp)`). The per-request `StoredVettingFacts` row
+  looks like it contradicts that — it is keyed by request id and written on every
+  submit — but nothing reads it into a decision: it serves the admin view, the
+  vetter sweep, and tracing a withdrawn statement to the admissions it counted
+  toward.
+
+  So a supplement that omits the attestations is one with no vetting, and this
+  implementation does not quietly carry the superseded ones forward. Doing so
+  would decide the request on evidence the applicant is no longer presenting —
+  the same defect as merging the two presentations, by a different route. #526
+  asserted the opposite; I found it writing this code, and #531 corrected the
+  specification.
+
+  ## Other decisions
+
+  **Only a deferred request.** A `Pending` one waits on the community, not the
+  applicant; accepting evidence into it would replace what a maintainer is
+  mid-review on, leaving the document they were reading no longer the one they
+  were asked to decide. `notAwaitingEvidence`, with an annex naming the request.
+
+  **An invitation presented now counts.** The policy re-runs over the whole new
+  presentation, and a VIC in it is part of that presentation. Consumption routes
+  through the extracted applier, so the burn happens once and on the same path a
+  submission's does.
+
+  **`JoinRequestSupplemented`, not `JoinRequestSubmitted`.** Nothing was
+  submitted. Conflating them would make a community's audit trail report more
+  applications than it received, and lose that an admission was granted on the
+  second set of evidence. `AuditEvent` is `#[non_exhaustive]`, so additive.
+
+  ## Tests
+
+  Five, including a dispatcher-level one pinning all three spec-declared codes.
+  The deferred-only guard was verified to fail its test when removed. The
+  ownership test asserts the *rendered messages* of "not yours" and "does not
+  exist" are equal, not merely that both refuse — equality is what makes the task
+  useless as an id oracle.
+
+
+
+### Fixed
+
+- **vtc**: Name the open request when a duplicate submit is refused ([#1592](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1592))
+
+Keyring finding KR-04, the other half of the withdraw work in #1591. When the
+  dedup guard refuses a second application, the refusal now says *which* request
+  is in the way and what state it is in, as a typed code with a machine-readable
+  annex rather than English prose on a bare `taskFailed`.
+
+  The applicant's actual question is "wait, or withdraw?", and it is not
+  answerable without the status. A `pending` request is waiting on the community
+  and will resolve on its own; a `deferred` one is waiting on the applicant, so
+  "await its decision" is advice that would never come true. That is the position
+  Keyring's applicants were left in.
+
+  ## The code is consumer-minted, not a spec change
+
+  `vtc/join-requests/submit` declares no code for this. SPEC.md §8.5 permits a
+  consumer — not only the spec author — to mint a namespaced code for an
+  invariant the specification did not enumerate, provided the namespace is the
+  slug of the request being processed. The same section's fallback rule means a
+  client that does not recognise the code reads it as `taskFailed`, so this is
+  additive for every existing caller and needs no upstream round-trip.
+
+  (#1591's body claimed this half was blocked on an upstream change. That was
+  wrong — §8.5 covers it.)
+
+  ## Why a typed refusal rather than a re-read
+
+  `submit_inner` now returns `SubmitRefusal`, whose `AlreadyOpen` variant carries
+  the request id and status the dedup guard already held at the moment it fired.
+  The alternative — have the Trust Task handler re-read the open request to
+  describe it — would race a concurrent decision on the very request being
+  described, and would report a status that was never the one the guard matched.
+
+  `From<SubmitRefusal> for AppError` is what keeps one wording for one refusal:
+  the prose lives there, and the handler renders it through the conversion rather
+  than restating it.
+
+  Both live submit surfaces move together, and deliberately so. Submit is
+  reachable only as a Trust Task — over HTTPS (`post_tt`) and over DIDComm — and
+  both now carry the code, which is why the two existing dedup tests changed.
+  Worth recording for whoever reads those test names: the one called
+  `rest_submit_dedups_...` posts a Trust Task document over HTTPS, so "REST"
+  there means the transport binding, not a flat-JSON route.
+
+  There is a flat-JSON `routes::join_requests::submit::submit` handler that
+  answers 409, and it is **not mounted on any router** — `read`, `manifest`,
+  `decide` and `present` are registered in `routes/mod.rs`, submit is not. It
+  is dead code, left alone here because deleting it is separate scope.
+
+  `AppError` was the obvious place for this and is the wrong one: it is not
+  `#[non_exhaustive]`, so a structured variant there would be a breaking change
+  to published `vti-common` for a refusal that concerns one task.
+
+  ## Tests
+
+
+
 ## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.43.1...vta-sdk-v0.44.0) — 2026-09-20
 
 

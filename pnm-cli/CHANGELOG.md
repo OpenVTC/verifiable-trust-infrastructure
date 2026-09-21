@@ -2,6 +2,14 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.17.5...pnm-cli-v0.18.0) — 2026-09-21
+
+
+### Added
+
+- **persona**: Say who holds an old value, where an edit landed, and what a context may call a face ([#1597](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1597))
+
+
 ## [0.17.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.17.4...pnm-cli-v0.17.5) — 2026-09-20
 
 
