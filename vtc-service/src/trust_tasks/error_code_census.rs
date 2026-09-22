@@ -573,6 +573,12 @@ fn witnesses() -> Vec<Witness> {
             "install_claim.rs",
             "the_claim_start_task_answers_with_the_code_its_spec_declares"
         ),
+        witness!(
+            s::members::update::v0_1::error_codes::ADMIN_ROLE_FORBIDDEN,
+            crate::routes::members::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
+            "members_crud.rs",
+            "the_update_task_answers_with_the_admin_role_forbidden_code_its_spec_declares"
+        ),
     ]
 }
 
@@ -593,7 +599,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE,
         s::invitations::revoke::v0_1::error_codes::NOT_FOUND,
         s::join_requests::submit::v0_2::error_codes::POLICY_UNSATISFIED,
-        s::members::update::v0_1::error_codes::ADMIN_ROLE_FORBIDDEN,
         s::vetting::revoke_statement::v0_1::error_codes::DIGEST_MISMATCH,
         s::vetting::revoke_statement::v0_1::error_codes::ISSUER_MISMATCH,
         // BASELINE-END
@@ -603,7 +608,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The length of [`unwitnessed`], asserted. Lower it as witnesses land; raising
 /// it means a newly bound task declares codes nothing tests, which is the
 /// thing this census exists to stop.
-const UNWITNESSED: usize = 12;
+const UNWITNESSED: usize = 11;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

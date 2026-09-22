@@ -964,22 +964,45 @@ See §6.3. Unconditional on ACL membership.
 
 ### 10.4 Role change
 
-> **Status: superseded.** The separate `POST
-> /v1/members/{did}/promote-to-admin/{start,finish}` pair described below was
-> retired. Admin promotion is now `PATCH /v1/members/{did}` with `{"role":
-> "admin"}` on a session carrying a **live step-up elevation**, obtained via
+> **Status: superseded, twice.** Admin promotion is `acl/change-role/0.1` —
+> `PATCH /v1/acl/{did}` with `{"fromRole": …, "toRole": "admin"}` — on a
+> session carrying a **live step-up elevation**, obtained via
 > `auth/passkey/login/{start,finish}/0.2` with `purpose: stepUp`.
 >
-> The fused endpoint put a second implementation of passkey UV inline with the
-> role change, and made the proof of user presence authorise exactly one
-> operation. Splitting the ceremony from the operation makes the elevation a
-> reusable property of the session, and lets both halves be one canonical
-> Trust Task each. Every security property carried over — UV required, the
-> caller's *own* passkey, self-promotion refused, serialised against concurrent
-> role writes, `role_change.rego` governed, `AdminPromoted` audit. Two things
-> changed: the authorising credential id moved to its own `AuthSteppedUp`
-> audit row (joined to `AdminPromoted` by `authorisingSessionId`), and
-> promoting an existing admin is now an idempotent `200` rather than a `409`.
+> **First move (retiring the fused endpoint).** The separate `POST
+> /v1/members/{did}/promote-to-admin/{start,finish}` pair described below put a
+> second implementation of passkey UV inline with the role change, and made the
+> proof of user presence authorise exactly one operation. Splitting the ceremony
+> from the operation makes the elevation a reusable property of the session, and
+> lets both halves be one canonical Trust Task each. Promotion landed on `PATCH
+> /v1/members/{did}` with `{"role": "admin"}`, gated by an in-handler
+> `require_fresh_step_up`. Two things changed with it: the authorising credential
+> id moved to its own `AuthSteppedUp` audit row (joined to `AdminPromoted` by
+> `authorisingSessionId`), and promoting an existing admin became an idempotent
+> `200` rather than a `409`.
+>
+> **Second move (#1645, the security fix).** That gate bounded one *route*, not
+> the operation. `acl/change-role` and `acl/grant` assign the same `admin` role
+> to the same ACL row, and neither asked for a step-up, refused self-promotion,
+> or ran the role-change pipeline — so the elevation could be walked around by
+> using a different door. `vtc/members/update/0.1` also *declares*
+> `adminRoleForbidden` for exactly this: promotion is a separate, gated flow,
+> not a metadata update.
+>
+> So the gate moved onto the transition. `role_change_via_pipeline` resolves the
+> caller's elevation from their **live session** rather than taking a boolean
+> from a handler, and two host invariants — `StepUpForAdmin` (VTI-OPS-051) and
+> `SelfPromotion` (VTI-OPS-050) — are applied around the policy in
+> `ceremony::decide`, where no operator policy edit reaches them. The VTC has no
+> `policy.enforcement` switch; the pipeline always runs, so there is no
+> configuration in which these lapse. `acl/grant` of the `admin` role checks the
+> same predicate directly (it writes an entry rather than moving one, so there is
+> no transition to hang an invariant on), and refuses a self-mint.
+> `vtc/members/update` now answers `adminRoleForbidden` and names the
+> replacement. Everything the members/update path carried came with it:
+> self-promotion refused, serialised on the promote lock, `role_change.rego`
+> governed, role VEC re-minted, admin sister record created, `AdminPromoted`
+> audit.
 >
 > Historical description follows.
 

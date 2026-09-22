@@ -124,7 +124,10 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller lacks manage authority"
+            "description": "Caller lacks manage authority / granting `admin` without a live step-up / granting `admin` to yourself"
+          },
+          "409": {
+            "description": "Entry exists at a different role — use acl/change-role"
           }
         },
         "security": [
@@ -258,10 +261,13 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not an admin / promoting to `admin` without a live step-up / self-promotion / denied by the role-change policy"
           },
           "404": {
             "description": "ACL entry not found"
+          },
+          "409": {
+            "description": "`fromRole` does not match the stored role, or the row moved under the promote lock"
           }
         },
         "security": [
@@ -3209,17 +3215,17 @@
               }
             }
           },
+          "400": {
+            "description": "role was `admin` (adminRoleForbidden) — use acl/change-role"
+          },
           "401": {
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin / role change denied by policy / step-up required for role=admin"
+            "description": "Caller is not an admin / role change denied by policy"
           },
           "404": {
             "description": "Member not found"
-          },
-          "409": {
-            "description": "Target is already an admin"
           }
         },
         "security": [

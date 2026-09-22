@@ -20,7 +20,17 @@
 //!   sanctioned admin-promotion path, but only with a verified
 //!   step-up. The host re-checks that any `allow{role:admin}` carries
 //!   `evidence.request.step_up == true`, so a policy edit can't grant
-//!   admin without the reauth ceremony.
+//!   admin without the reauth ceremony. VTI-OPS-051.
+//! - **No self-promotion (role-change)** — a caller may not grant
+//!   themselves `admin`. A second factor proves *who* is at the
+//!   keyboard, never that a second person agreed, so the step-up above
+//!   is not a substitute for this one. VTI-OPS-050.
+//!
+//! The `step_up` fact these read is resolved by the orchestration from
+//! the caller's live session ([`crate::acl::elevation`]), not supplied
+//! by a route handler — a handler that could pass `true` would be the
+//! gate, and then the invariant would only be checking that somebody
+//! said so.
 //!
 //! ## Where the other §5 invariants live
 //!
@@ -57,6 +67,8 @@ pub enum Invariant {
     PrivilegeCeiling,
     /// Role-change tried to grant `admin` without a verified step-up.
     StepUpForAdmin,
+    /// Role-change tried to grant `admin` to the caller themselves.
+    SelfPromotion,
 }
 
 impl Invariant {
@@ -65,6 +77,7 @@ impl Invariant {
         match self {
             Invariant::PrivilegeCeiling => "privilege-ceiling",
             Invariant::StepUpForAdmin => "step-up-required",
+            Invariant::SelfPromotion => "self-promotion",
         }
     }
 }
@@ -109,6 +122,15 @@ pub fn enforce(facts: &Facts, verdict: Verdict) -> Result<Verdict, InvariantViol
             invariant: Invariant::PrivilegeCeiling,
             detail: "join policy may not grant the admin role".into(),
         }),
+        // Nobody promotes themselves, however well authenticated. Checked
+        // before the step-up guard so a self-promotion is named as one rather
+        // than sending the caller off to run a ceremony that cannot help.
+        Purpose::RoleChange if grants_admin && facts.actor.did == facts.subject.did => {
+            Err(InvariantViolation {
+                invariant: Invariant::SelfPromotion,
+                detail: "admin elevation requires a separate admin caller".into(),
+            })
+        }
         // Role-change may grant admin only behind a verified step-up.
         Purpose::RoleChange if grants_admin && !step_up_verified(facts) => {
             Err(InvariantViolation {
@@ -227,6 +249,36 @@ mod tests {
         // Absent step_up reads the same as false.
         let f2 = facts(Purpose::RoleChange, json!({ "target_role": "admin" }));
         assert!(enforce(&f2, allow_role("admin")).is_err());
+    }
+
+    /// VTI-OPS-050: a caller may not promote themselves, and a live
+    /// step-up does not buy it — a second factor is not a second person.
+    #[test]
+    fn role_change_admin_to_self_is_vetoed_even_with_step_up() {
+        let mut f = facts(
+            Purpose::RoleChange,
+            json!({ "target_role": "admin", "step_up": true }),
+        );
+        f.subject.did = f.actor.did.clone();
+        let violation =
+            enforce(&f, allow_role("admin")).expect_err("self-promotion must be vetoed");
+        assert_eq!(violation.invariant, Invariant::SelfPromotion);
+        match violation.into_deny() {
+            Verdict::Deny(d) => assert_eq!(d.code, "self-promotion"),
+            other => panic!("expected deny, got {other:?}"),
+        }
+    }
+
+    /// Self-*demotion* is a different act and stays allowed — the guard is
+    /// about conferring admin on yourself, not about touching your own row.
+    #[test]
+    fn role_change_to_self_at_a_lesser_role_passes() {
+        let mut f = facts(Purpose::RoleChange, json!({ "target_role": "member" }));
+        f.subject.did = f.actor.did.clone();
+        assert_eq!(
+            enforce(&f, allow_role("member")).unwrap(),
+            allow_role("member")
+        );
     }
 
     /// Role-change to a non-admin role doesn't engage the step-up

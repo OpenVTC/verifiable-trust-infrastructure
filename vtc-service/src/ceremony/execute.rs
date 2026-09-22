@@ -100,7 +100,13 @@ pub struct RemintOutcome {
     pub previous_role: VtcRole,
     /// The role VEC re-minted at the new role. The DID + VMC are
     /// unchanged; only the role assertion is re-issued.
-    pub role_vec: VerifiableCredential,
+    ///
+    /// `None` when the subject holds an ACL entry but **no member row** — an
+    /// integration or operator DID reached through `acl/change-role`. A role
+    /// VEC asserts community membership at a role; there is nobody to assert
+    /// it about and nothing to repoint, and minting one anyway would make an
+    /// ACL role change impossible on a VTC without a credential signer.
+    pub role_vec: Option<VerifiableCredential>,
 }
 
 /// The result of a member departure.
@@ -356,16 +362,22 @@ async fn remint(
     acl.role = new_role.clone();
     store_acl_entry(&state.acl_ks, &acl).await?;
 
-    // Re-mint the role VEC at the new role + repoint the member.
-    let role_vec = issue_role_vec(state, subject_did, new_role).await?;
-    if let Some(mut member) = get_member(&state.members_ks, subject_did).await? {
-        let role_vec_value = serde_json::to_value(&role_vec)
-            .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
-        // The grant is untouched by a role change, so the member's
-        // acknowledgement of it still stands — only the VEC is repointed.
-        member.record_role_vec(role_vec_value);
-        store_member(&state.members_ks, &member).await?;
-    }
+    // Re-mint the role VEC at the new role + repoint the member — only where
+    // there *is* a member. An ACL-only subject has no role assertion to
+    // re-issue (see `RemintOutcome::role_vec`).
+    let role_vec = match get_member(&state.members_ks, subject_did).await? {
+        Some(mut member) => {
+            let role_vec = issue_role_vec(state, subject_did, new_role).await?;
+            let role_vec_value = serde_json::to_value(&role_vec)
+                .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+            // The grant is untouched by a role change, so the member's
+            // acknowledgement of it still stands — only the VEC is repointed.
+            member.record_role_vec(role_vec_value);
+            store_member(&state.members_ks, &member).await?;
+            Some(role_vec)
+        }
+        None => None,
+    };
 
     Ok(RemintOutcome {
         previous_role,

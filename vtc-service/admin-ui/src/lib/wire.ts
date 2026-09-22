@@ -6092,8 +6092,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller lacks manage authority */
+            /** @description Caller lacks manage authority / granting `admin` without a live step-up / granting `admin` to yourself */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Entry exists at a different role — use acl/change-role */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6219,7 +6226,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not an admin / promoting to `admin` without a live step-up / self-promotion / denied by the role-change policy */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6228,6 +6235,13 @@ export interface operations {
             };
             /** @description ACL entry not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `fromRole` does not match the stored role, or the row moved under the promote lock */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9003,6 +9017,13 @@ export interface operations {
                     "application/json": components["schemas"]["MemberEnvelope"];
                 };
             };
+            /** @description role was `admin` (adminRoleForbidden) — use acl/change-role */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Missing or invalid bearer token */
             401: {
                 headers: {
@@ -9010,7 +9031,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin / role change denied by policy / step-up required for role=admin */
+            /** @description Caller is not an admin / role change denied by policy */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9019,13 +9040,6 @@ export interface operations {
             };
             /** @description Member not found */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Target is already an admin */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

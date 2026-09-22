@@ -1173,7 +1173,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::update::v0_1::Payload,
             s::members::update::v0_1::Response,
-            // `UpdateMemberRequest` — routes/members/update.rs:61.
+            // `UpdateMemberRequest` — routes/members/update.rs:57.
             json!({ "did": DID, "role": "moderator", "label": "Ada Lovelace",
                     "publishConsent": true, "departurePreference": "historical",
                     "extensions": { "org": "acme" } }),

@@ -18,6 +18,7 @@ import { deleteJson, getJson, postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Field } from "@/components/Field";
 import { formatIso, shorten, shortenDid } from "@/lib/format";
+import { stepUpSession } from "@/lib/step-up";
 import { useToast } from "@/lib/toast";
 import { SessionTimeoutCard } from "@/plugins/SessionTimeoutCard";
 
@@ -63,6 +64,14 @@ async function fetchAcl(scope: string | null): Promise<AclListResponse> {
 }
 
 async function createAcl(req: CreateAclRequest): Promise<AclEntry> {
+  // Granting `admin` needs a live step-up (#1645) — the same gate the
+  // promotion path carries, because this is the same authority by another
+  // route. The daemon only demands it where the write actually widens what the
+  // subject holds, so a label edit (`patchAclLabel`, which re-grants at the
+  // existing role and the existing scopes) is deliberately not routed here.
+  if (req.entry.role.trim() === "admin") {
+    await stepUpSession();
+  }
   const body = await postJson<AclEntryEnvelope>("/v1/acl", req, {
     trustTask: TRUST_TASK_GRANT,
   });
@@ -806,6 +815,11 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
           onChange={(e) => setRole(e.target.value)}
           required
         />
+        {role.trim() === "admin" && (
+          <p className="muted">
+            Granting admin asks for your passkey before the entry is written.
+          </p>
+        )}
       </Field>
       <Field label="Label (optional)">
         <input
