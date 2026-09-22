@@ -137,10 +137,45 @@ the install claim, or it trips the `409` rule above.
   (`vta_sdk::auth_di::sign_authenticate_doc`). The response carries the bearer
   token.
 
-`cnm vetting …` drives the vetting admin routes too
-([`vetting.md`](vetting.md) §7), but it needs a `cnm` community session holding
-a key that is on this VTC's ACL. `cnm` imports credentials only as sealed
-bundles (`cnm auth login --credential-bundle`), and a VTC does not produce one.
+### `cnm` needs its own super-admin row
+
+`cnm vetting …`, `cnm audit verify`, `cnm backup …` and `cnm did-log install`
+drive this VTC's admin routes ([`vetting.md`](vetting.md) §7). They sign in to
+the VTC directly, with the VTC's DID as the audience, as the `cnm` community
+profile's **own** DID: the one the community VTA provisioned for it, which
+`cnm auth status` shows as `Client DID`. A fresh VTC's ACL has no entry for
+that DID, and `backup` and `audit verify` need a **super-admin**: an `admin`
+entry with no contexts.
+
+1. **Tell `cnm` which VTC.** The DID is the one `vtc setup` printed for the
+   community, not the community VTA's:
+
+   ```sh
+   cnm community set-vtc <VTC DID>
+   ```
+
+   `cnm` then calls the API base that DID's document advertises as `VTCRest`.
+   Use `cnm --vtc-did <VTC DID> …` for a single command, and
+   `cnm --url https://<host>/v1 …` to override the API base. `cnm` never reads
+   the VTC's DID from the server: it is the audience the sign-in is signed for,
+   so the operator names it.
+2. **Add the profile's DID as a super-admin.** `set-vtc` prints the command
+   with the DID filled in. With the daemon **stopped**:
+
+   ```sh
+   vtc --config /srv/vtc/config.toml acl add --did <cnm Client DID> --role admin --label cnm
+   ```
+
+   From a running console, use **Access control → Add entry** with role
+   `admin` and no contexts.
+
+When the VTC refuses the sign-in, `cnm` prints that same `vtc acl add`
+command. A VTC gives the same refusal whether or not the DID is enrolled, so
+also check that the DID named is the one `cnm auth status` shows now. A
+profile provisioned from a temporary `did:key` rotates to a new one the first
+time it signs in to the VTA, so run a VTA command (`cnm acl list`) before you
+add the row.
+
 Nothing below depends on `cnm`.
 
 ## Part 2 — the first vetter
@@ -240,6 +275,7 @@ invitation alone answers `request_more` (`needs: ["vetting"]`).
 |---|---|
 | The admin can sign in | Console sign-in with the passkey, or `vtc acl list` (daemon stopped) shows an `admin` entry |
 | A script can authenticate | `POST /v1/auth/` returns a token, not `403` |
+| `cnm` can administer the community | `cnm vetting vetters list` answers; if it prints `vtc acl add`, run that |
 | The first vetter is a member | **Members** lists the DID |
 | The vetter grant is live | **Vetting → Vetters** shows the grant as `live` |
 | Vetting is required only now | **Vetting → Requirements** has a vetting criterion, added after the grant |

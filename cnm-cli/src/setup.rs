@@ -229,12 +229,18 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
     // The REST URL isn't persisted — `community_url` is derived from
     // `community_did` at runtime on every call.
     let _ = community_url;
+    // Re-running setup for a slug keeps the VTC it was pointed at.
+    let vtc_did = config
+        .communities
+        .get(&community_slug)
+        .and_then(|c| c.vtc_did.clone());
     config.communities.insert(
         community_slug.clone(),
         CommunityConfig {
             name: community_name,
             context_id,
             vta_did: community_vta_did_for_config,
+            vtc_did,
         },
     );
 
@@ -281,12 +287,17 @@ pub async fn add_community() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!();
     auth::login(&bundle, &community_url, &keyring_key).await?;
 
+    let vtc_did = config
+        .communities
+        .get(&community_slug)
+        .and_then(|c| c.vtc_did.clone());
     config.communities.insert(
         community_slug.clone(),
         CommunityConfig {
             name: community_name,
             context_id: None,
             vta_did: Some(community_did),
+            vtc_did,
         },
     );
 

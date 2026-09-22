@@ -171,11 +171,8 @@ The Issuer role is granted via a VEC; checking the Issuer role
 reads the VTC's ACL directly (the JWT-level role degrades Issuer →
 Reader, per the Phase 1 deviation).
 
-Revocation:
-
-```sh
-cnm credentials endorsements revoke <endorsement-id>
-```
+Revocation is `DELETE /v1/credentials/endorsements/{endorsement-id}` (Trust
+Task `vtc/endorsements/revoke/0.1`), or the member's page in the admin console.
 
 This emits a paired audit:
 
@@ -197,27 +194,24 @@ slot doesn't change, so an external verifier who pinned the
 `credentialStatus.statusListIndex` sees continuous, uninterrupted
 membership across renewals and rotations.
 
-## CLI quick reference
+## Quick reference
 
-```sh
-# Endorsement types
-cnm endorsement-types list
-cnm endorsement-types create --type-uri 'https://example.com/types/AlumniStatus' \
-    --schema '{ "type": "object", "properties": {...} }'
-cnm endorsement-types delete --type-uri '...'
+There is no CLI for endorsements, endorsement types, renewal or rotation;
+neither `cnm` nor `pnm` has these commands. They are REST routes (under `/v1`,
+each needing its `Trust-Task` header and a bearer token):
 
-# Endorsements
-cnm credentials endorsements issue \
-    --subject did:key:z6Mk... \
-    --type 'https://example.com/types/AlumniStatus' \
-    --claim '{"yearGraduated":2026}'
-cnm credentials endorsements list --subject did:key:z6Mk...
-cnm credentials endorsements revoke <id>
+| Task | Route | Who |
+|---|---|---|
+| List, register, delete endorsement types | `GET /endorsement-types`, `POST /endorsement-types`, `DELETE /endorsement-types/{type_uri}` | admin |
+| Issue an endorsement | `POST /credentials/endorsements` | issuer or admin |
+| List, show endorsements | `GET /credentials/endorsements`, `GET /credentials/endorsements/{id}` | issuer or admin |
+| Revoke an endorsement | `DELETE /credentials/endorsements/{id}` | issuer or admin |
+| Renew membership | `POST /members/me/renew` | the member |
+| Rotate the member's DID | `POST /members/me/rotate/challenge`, then `POST /members/me/rotate` | the member |
 
-# Renewal + rotation (member-side, via pnm)
-pnm vtc renew
-pnm vtc rotate --to did:key:z6MkNew...
-```
+`cnm vetting vetters revoke <endorsement-id>` revokes a vetter grant, which is
+an endorsement, but is meant for vetter grants only (see
+[vetting](vetting.md)).
 
 ## See also
 

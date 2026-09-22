@@ -104,20 +104,20 @@ pub fn status(keyring_key: &str) {
     }
 }
 
-/// Ensure we have a valid access token. Returns the token string.
-pub async fn ensure_authenticated(
-    base_url: &str,
-    keyring_key: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    store().ensure_authenticated(base_url, keyring_key).await
-}
+// There is deliberately no "give me a token for this base URL" here. The stored
+// session is bound to the community VTA: `SessionStore::ensure_authenticated`
+// signs for the VTA's DID as the audience, whatever URL it is handed. A wrapper
+// taking a bare URL is how `cnm vetting`, `cnm audit` and `cnm backup` came to
+// authenticate to a VTC with the VTA's DID, which the VTC cannot accept. The
+// VTC is reached through `crate::vtc`, which names the VTC's DID explicitly.
 
-/// An authenticated client that can also *sign* what it sends.
+/// An authenticated client for the session's **VTA** that can also *sign* what
+/// it sends.
 ///
-/// [`ensure_authenticated`] returns a bearer token, which authenticates the
-/// connection and nothing else. SPEC §7.2 item 7a makes a per-document proof
-/// mandatory for most tasks, so a client built from the token alone has every
-/// call refused. This carries the session's DID and key across too.
+/// A bearer token alone authenticates the connection and nothing else. SPEC
+/// §7.2 item 7a makes a per-document proof mandatory for most tasks, so a
+/// client built from the token alone has every call refused. This carries the
+/// session's DID and key across too.
 pub async fn authenticated_client(
     base_url: &str,
     keyring_key: &str,

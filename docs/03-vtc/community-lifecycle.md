@@ -29,14 +29,19 @@ The VTC tracks every state transition in the audit log
 
 ## Policies that gate the lifecycle
 
-| Policy | Trigger | Default | Where to author |
+| Policy | Trigger | Default | Purpose |
 |---|---|---|---|
-| `join.rego` | `POST /v1/join-requests` | deny-all | `cnm policies upload --purpose join` |
-| `removal.rego` | `DELETE /v1/members/{did}` | deny-all | `cnm policies upload --purpose removal` |
-| `personhood.rego` | `POST /v1/members/{did}/personhood/assert` | allow if VP carries a `WitnessCredential` whose digest binds to an edge this community holds, or this community's own `IdentityVerification` endorsement | `cnm policies upload --purpose personhood` |
-| `relationships.rego` | `POST /v1/relationships` | allow if both parties are current members | `cnm policies upload --purpose relationships` |
-| `registry.rego` | `MembershipSyncer` reconciliation | `publish_on_join: true; default_departure: tombstone` | `cnm policies upload --purpose registry` |
-| `cross_community_roles.rego` | `POST /v1/auth/recognise` | deny-all (no peer recognition) | `cnm policies upload --purpose cross-community-roles` |
+| `join.rego` | `POST /v1/join-requests` | deny-all | `join` |
+| `removal.rego` | `DELETE /v1/members/{did}` | deny-all | `removal` |
+| `personhood.rego` | `POST /v1/members/{did}/personhood/assert` | allow if VP carries a `WitnessCredential` whose digest binds to an edge this community holds, or this community's own `IdentityVerification` endorsement | `personhood` |
+| `relationships.rego` | `POST /v1/relationships` | allow if both parties are current members | `relationships` |
+| `registry.rego` | `MembershipSyncer` reconciliation | `publish_on_join: true; default_departure: tombstone` | `registry` |
+| `cross_community_roles.rego` | `POST /v1/auth/recognise` | deny-all (no peer recognition) | `crossCommunityRoles` |
+
+Policies are authored over the admin REST API: upload a revision with
+`POST /v1/policies`, dry-run it with `POST /v1/policies/{id}/test`, and put it
+in force with `POST /v1/policies/{id}/activate`. There is no `cnm` command for
+policies.
 
 Each policy gets a canonical input shape supplied by the VTC. See
 the VTC spec [§8](../05-design-notes/vtc-mvp.md) for the full input
@@ -60,7 +65,7 @@ sequenceDiagram
     else policy admits
         VTC->>VTC: Persist join request
         VTC->>Admin: (notification surface — Phase 6+)
-        Admin->>VTC: cnm join approve <id>
+        Admin->>VTC: POST /v1/join-requests/{id}/decide<br/>{"decision": "approved"}
         VTC->>VTC: Allocate status-list slot
         VTC->>VTC: Insert ACL entry (role=Member)
         VTC->>VTC: Mint VMC + status-list credential
@@ -192,26 +197,38 @@ moves to the new DID. `did:key` and `did:webvh` are both supported;
 for `did:webvh` rotations the VTC resolves the new DID document
 and verifies the signing key against it.
 
-## CLI quick reference
+## Quick reference
+
+Member, join-queue, policy and credential administration happens in the admin
+console or over the admin REST API. `cnm` has no commands for these. Every
+route needs a `Trust-Task` header and an admin bearer token
+([bootstrap runbook](bootstrap-runbook.md#authenticating-a-script)).
+
+| Task | Admin console | REST (under `/v1`) |
+|---|---|---|
+| List members, show one | **Members** | `GET /members`, `GET /members/{did}` |
+| Remove a member | **Members** | `DELETE /members/{did}`, body `{"disposition": "tombstone"}` |
+| List join requests | **Join requests** | `GET /join-requests` |
+| Approve or reject a request | **Join requests** | `POST /join-requests/{id}/decide`, body `{"decision": "approved"}` or `"rejected"` |
+| Upload, test, activate a policy | — | `POST /policies`, `POST /policies/{id}/test`, `POST /policies/{id}/activate` |
+| Issue an endorsement | — | `POST /credentials/endorsements` |
+| Revoke an endorsement | **Members** | `DELETE /credentials/endorsements/{id}` |
+
+`cnm` covers the rest of community administration. It needs the community
+profile to name the VTC (`cnm community set-vtc <vtc-did>`) and the profile's
+DID to hold a super-admin row in the VTC's ACL
+([bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row)):
 
 ```sh
-# Member management
-cnm members list
-cnm members show <did>
-cnm members remove <did> --disposition tombstone
-cnm join list
-cnm join approve <request-id>
-cnm join reject <request-id>
-
-# Policy
-cnm policies list
-cnm policies upload --purpose join --rego ./join.rego
-cnm policies activate --id <id>
-cnm policies test --id <id> --input ./fixture.json
-
-# Credentials
-cnm credentials issue --did <did> --endorsement-type <uri>
-cnm credentials revoke --id <credential-id>
+cnm vetting vetters {list,grant,revoke,resend}   # vetter grants
+cnm vetting auto-grant {show,set}                # automatic vetter grants
+cnm vetting ask {show,set}                       # what applicants are asked
+cnm vetting branding {show,set}                  # how the community presents itself
+cnm vetting revocations                          # vetting statement withdrawals
+cnm vetting bootstrap-pgp …                      # first vetters from a PGP web of trust
+cnm audit verify                                 # the community's audit chain
+cnm backup {export,import}                       # encrypted full-state backup
+cnm did-log install --file did.jsonl             # a self-hosted community's DID log
 ```
 
 See [`../04-reference/cli-style.md`](../04-reference/cli-style.md)

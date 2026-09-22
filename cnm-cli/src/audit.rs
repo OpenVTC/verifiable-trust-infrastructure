@@ -4,64 +4,27 @@
 //! VTA's own audit tail, which lives on `pnm`), so the verification
 //! surface belongs here.
 //!
-//! Like `cnm backup`, this is a REST-only super-admin route, so we make
-//! a direct authenticated GET (forcing REST regardless of the session's
-//! preferred transport) and attach the `Trust-Task` header the route
-//! requires.
+//! Like `cnm backup`, this is a super-admin route on the VTC, so it
+//! authenticates to the VTC itself — with the VTC's DID as the audience, as
+//! [`crate::vtc`] explains — rather than riding the profile's VTA session.
 
 use serde_json::Value;
-use vta_cli_common::render::{DIM, GREEN, RED, RESET};
-use vta_sdk::client::VtaClient;
+use vta_cli_common::render::{DIM, GREEN, RED, RESET, bin_name};
 
-use crate::auth;
-
-/// Canonical HTTP header carrying the Trust-Task URL (mirrors
-/// `vti_common::trust_task::HEADER_NAME`).
-const TRUST_TASK_HEADER: &str = "Trust-Task";
-const VERIFY_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
-/// Largest verification report read into memory. The report is a handful of
-/// counters and identifiers; this is generous headroom.
-const MAX_VERIFY_RESPONSE_BYTES: usize = 1024 * 1024;
+use crate::vtc::{self, VtcTarget};
 
 /// `cnm audit verify` — walk the community's audit chain and report.
 ///
 /// Exits non-zero when the chain does not verify, so this is usable as
 /// a scheduled check (`cnm audit verify || alert`).
 pub async fn cmd_verify(
-    client: &VtaClient,
     keyring_key: &str,
+    target: &VtcTarget,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let base = client
-        .rest_url()
-        .ok_or("VTC audit verify requires a REST connection to the VTC")?;
-    let token = auth::ensure_authenticated(base, keyring_key).await?;
-
-    // The SDK client: finite timeouts, and no redirect off the VTC's origin.
-    let resp = vta_sdk::http::rest_client()
-        .get(format!("{base}/audit/verify"))
-        .bearer_auth(&token)
-        .header(TRUST_TASK_HEADER, VERIFY_TASK)
-        .send()
-        .await?;
-    let status = resp.status();
-    // Headers before body: a 429 from the VTC's limiter is typed so the CLI
-    // names the VTC and the wait rather than a bare "verify failed".
-    let headers = resp.headers().clone();
-    let url = format!("{base}/audit/verify");
-    let bytes = vta_sdk::http::read_body_capped(resp, MAX_VERIFY_RESPONSE_BYTES)
-        .await
-        .map_err(|e| format!("VTC audit verify ({status}): {e}"))?;
-    let text = String::from_utf8_lossy(&bytes);
-    if !status.is_success() {
-        if let Some(rl) =
-            vta_sdk::error::VtaError::rate_limited_from_http(status, &headers, &text, &url)
-        {
-            return Err(rl.into());
-        }
-        return Err(format!("VTC audit verify failed ({status}): {text}").into());
-    }
-    let body: Value = serde_json::from_str(&text)
-        .map_err(|e| format!("could not parse VTC response: {e} (body: {text})"))?;
+    let vtc = vtc::connect(keyring_key, target).await?;
+    let body: Value = vtc.client.audit_verify().await.map_err(|e| {
+        vtc::super_admin_call_error("VTC audit verify", e, &vtc.client_did, bin_name())
+    })?;
 
     let verified = body["verified"].as_bool().unwrap_or(false);
     let examined = body["entriesExamined"].as_u64().unwrap_or(0);
@@ -101,10 +64,13 @@ pub async fn cmd_verify(
     // adversary. Printed after the chain result and *before* the exit
     // decision, because a green chain over a truncated log is precisely the
     // case an operator must not skim past.
-    let checkpoints = &body["checkpoints"];
+    let checkpoints = checkpoint_block(&body);
     let cp_status = checkpoints["status"].as_str().unwrap_or("unknown");
     let cp_detail = checkpoints["detail"].as_str();
-    let cp_broken = matches!(cp_status, "truncated" | "headMismatch" | "chainBroken");
+    // Anything but a status the VTC is known to report as sound fails the
+    // command: a block this client cannot read is not a pass, and reading it
+    // as one is how a truncated log would exit 0.
+    let cp_broken = !matches!(cp_status, "consistent" | "noCheckpoints");
     println!();
     match cp_status {
         "consistent" => {
@@ -174,12 +140,52 @@ pub async fn cmd_verify(
     // checkpoints exist to catch.
     if cp_broken {
         println!();
-        println!(
-            "{RED}The hash chain is internally consistent but contradicts a signature made\n\
-             with the community key. That is what a store-level tamper looks like:\n\
-             the surviving log was re-stamped to look correct.{RESET}"
-        );
+        if matches!(cp_status, "truncated" | "headMismatch" | "chainBroken") {
+            println!(
+                "{RED}The hash chain is internally consistent but contradicts a signature made\n\
+                 with the community key. That is what a store-level tamper looks like:\n\
+                 the surviving log was re-stamped to look correct.{RESET}"
+            );
+        } else {
+            println!(
+                "{RED}The VTC's report carries no checkpoint result this client can read\n\
+                 (status `{cp_status}`), so the signed half is unverified. Upgrade `cnm` or\n\
+                 the VTC so both speak the same audit/verify report.{RESET}"
+            );
+        }
         return Err("audit checkpoint verification failed".into());
     }
     Ok(())
+}
+
+/// The signed-checkpoint result in a verify report.
+///
+/// Under `ext["org.openvtc"].checkpoints` since #1110 — the canonical
+/// `audit/verify/0.1` response defines no checkpoint member — and top-level
+/// before it. Reading only the old place made every report look like it had no
+/// checkpoint result, so a truncated log that the community key contradicts
+/// passed as long as its hash chain did.
+fn checkpoint_block(body: &Value) -> &Value {
+    let ext = &body["ext"]["org.openvtc"]["checkpoints"];
+    if ext.is_object() {
+        ext
+    } else {
+        &body["checkpoints"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkpoint_block;
+    use serde_json::json;
+
+    #[test]
+    fn checkpoints_are_read_from_ext_and_from_the_old_top_level_place() {
+        let current = json!({ "verified": true,
+            "ext": { "org.openvtc": { "checkpoints": { "status": "truncated" } } } });
+        assert_eq!(checkpoint_block(&current)["status"], "truncated");
+        let legacy = json!({ "verified": true, "checkpoints": { "status": "consistent" } });
+        assert_eq!(checkpoint_block(&legacy)["status"], "consistent");
+        assert!(checkpoint_block(&json!({}))["status"].is_null());
+    }
 }

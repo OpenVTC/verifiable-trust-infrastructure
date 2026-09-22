@@ -14,11 +14,10 @@
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use vta_cli_common::render::{BOLD, DIM, GREEN, RESET, bin_name};
-use vtc_client::VtcClient;
+use vta_cli_common::render::{BOLD, DIM, GREEN, RESET};
 use vtc_client::did_register::v0_1 as register;
 
-use crate::auth;
+use crate::vtc::{self, VtcTarget};
 
 type CliResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -98,27 +97,13 @@ async fn cmd_install(keyring_key: &str, url: Option<&str>, file: &Path) -> CliRe
 
     // Not the profile's VTA session: that authenticates with the *VTA's* DID
     // as the audience, which a VTC refuses. The same identity, authenticated
-    // to the community with the community's DID as the audience.
-    let session = auth::loaded_session(keyring_key).ok_or_else(|| {
-        format!(
-            "no stored identity for this community profile. Run `{} setup` first.",
-            bin_name()
-        )
-    })?;
-    let vtc = VtcClient::connect(
-        &base,
-        &did,
-        &session.client_did,
-        &session.private_key_multibase,
-    )
-    .await
-    .map_err(|e| {
-        format!(
-            "could not authenticate to {base} as {}: {e}\n\nThat DID needs a super-admin \
-                 entry in the community's ACL — on the VTC host, `vtc acl` can add it.",
-            session.client_did
-        )
-    })?;
+    // to the community with the community's DID — the log's own — as the
+    // audience.
+    let target = VtcTarget {
+        did: did.clone(),
+        base,
+    };
+    let vtc = vtc::connect(keyring_key, &target).await?.client;
     let response = vtc.install_did_log(&payload).await.map_err(|e| {
         format!(
             "{e}\n\nThe community refuses a log that does not verify, is for another DID, or \

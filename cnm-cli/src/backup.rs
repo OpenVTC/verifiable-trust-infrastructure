@@ -7,77 +7,23 @@
 //! struct, just save/load/forward — so this stays decoupled from the
 //! vtc-service crate.
 //!
-//! Backup is REST-only + super-admin, so we make a direct authenticated
-//! POST (forcing REST regardless of the session's preferred transport)
-//! and attach the `Trust-Task` header the routes require.
+//! Backup is REST-only and super-admin, so it authenticates to the VTC itself —
+//! with the VTC's DID as the audience, as [`crate::vtc`] explains — rather than
+//! riding the profile's VTA session.
 
 use std::io::Write;
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
-use vta_cli_common::render::{DIM, GREEN, RED, RESET};
+use serde_json::Value;
+use vta_cli_common::render::{DIM, GREEN, RED, RESET, bin_name};
 use vta_cli_common::secure_file;
-use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
-use crate::auth;
+use crate::vtc::{self, Connected, VtcTarget};
 
-/// Canonical HTTP header carrying the Trust-Task URL (mirrors
-/// `vti_common::trust_task::HEADER_NAME`).
-const TRUST_TASK_HEADER: &str = "Trust-Task";
-const EXPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
-const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
-/// Largest VTC backup response read into memory. Matches the VTC's cap on a
-/// backup import request body, so an export larger than this could not be
-/// restored anyway.
-const MAX_BACKUP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
-
-/// Authenticated REST POST to a VTC `/v1/backup/*` route. `client.rest_url()`
-/// already carries the `/v1` mount, so the path here is relative to it.
-async fn authed_post(
-    client: &VtaClient,
-    keyring_key: &str,
-    path: &str,
-    task: &str,
-    body: Value,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let base = client
-        .rest_url()
-        .ok_or("VTC backup requires a REST connection to the VTC")?;
-    // Refresh / mint a REST bearer token for the VTC (aud = "VTC").
-    let token = auth::ensure_authenticated(base, keyring_key).await?;
-    // The SDK client: finite timeouts, and no redirect off the VTC's origin.
-    let resp = vta_sdk::http::rest_client()
-        .post(format!("{base}{path}"))
-        .bearer_auth(&token)
-        .header(TRUST_TASK_HEADER, task)
-        .json(&body)
-        .send()
-        .await?;
-    let status = resp.status();
-    // Headers before body: a 429 from the VTC's limiter carries
-    // `x-rate-limit-source: vtc` and `retry-after`, which the typed error reads.
-    let headers = resp.headers().clone();
-    let url = format!("{base}{path}");
-    let bytes = vta_sdk::http::read_body_capped(resp, MAX_BACKUP_RESPONSE_BYTES)
-        .await
-        .map_err(|e| format!("VTC backup request ({status}): {e}"))?;
-    let text = String::from_utf8_lossy(&bytes);
-    if !status.is_success() {
-        // A rate limit must stay typed so the CLI names the VTC and the wait,
-        // rather than surfacing a bare "request failed" the operator reads as a
-        // backup fault.
-        if let Some(rl) =
-            vta_sdk::error::VtaError::rate_limited_from_http(status, &headers, &text, &url)
-        {
-            return Err(rl.into());
-        }
-        // Surface the server's error body verbatim — it carries the
-        // actionable message (short password, vtc_did mismatch, …).
-        return Err(format!("VTC backup request failed ({status}): {text}").into());
-    }
-    serde_json::from_str(&text)
-        .map_err(|e| format!("could not parse VTC response: {e} (body: {text})").into())
+/// An operator error for a failed backup call.
+fn backup_error(vtc: &Connected, err: vtc_client::VtcError) -> Box<dyn std::error::Error> {
+    vtc::super_admin_call_error("VTC backup request", err, &vtc.client_did, bin_name()).into()
 }
 
 fn str_field<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -85,8 +31,8 @@ fn str_field<'a>(v: &'a Value, key: &str) -> &'a str {
 }
 
 pub(crate) async fn cmd_export(
-    client: &VtaClient,
     keyring_key: &str,
+    target: &VtcTarget,
     include_audit: bool,
     output: Option<PathBuf>,
     force: bool,
@@ -102,15 +48,13 @@ pub(crate) async fn cmd_export(
         .interact()?;
     validate_backup_password(&password)?;
 
+    let vtc = vtc::connect(keyring_key, target).await?;
     println!("Exporting community backup...");
-    let envelope = authed_post(
-        client,
-        keyring_key,
-        "/backup/export",
-        EXPORT_TASK,
-        json!({ "password": password, "includeAudit": include_audit }),
-    )
-    .await?;
+    let envelope = vtc
+        .client
+        .export_backup(&password, include_audit)
+        .await
+        .map_err(|e| backup_error(&vtc, e))?;
 
     let source_did = envelope.get("sourceDid").and_then(Value::as_str);
     let path = output.unwrap_or_else(|| {
@@ -143,8 +87,8 @@ pub(crate) async fn cmd_export(
 }
 
 pub(crate) async fn cmd_import(
-    client: &VtaClient,
     keyring_key: &str,
+    target: &VtcTarget,
     file: PathBuf,
     preview_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -174,15 +118,13 @@ pub(crate) async fn cmd_import(
     validate_backup_password(&password)?;
 
     // Preview first (confirm=false) — no mutation, just row counts.
+    let vtc = vtc::connect(keyring_key, target).await?;
     println!("Validating backup...");
-    let preview = authed_post(
-        client,
-        keyring_key,
-        "/backup/import",
-        IMPORT_TASK,
-        json!({ "backup": envelope, "password": password, "confirm": false }),
-    )
-    .await?;
+    let preview = vtc
+        .client
+        .import_backup(&envelope, &password, false)
+        .await
+        .map_err(|e| backup_error(&vtc, e))?;
     print_counts(&preview);
 
     if preview_only {
@@ -202,14 +144,11 @@ pub(crate) async fn cmd_import(
     }
 
     println!("Importing...");
-    let result = authed_post(
-        client,
-        keyring_key,
-        "/backup/import",
-        IMPORT_TASK,
-        json!({ "backup": envelope, "password": password, "confirm": true }),
-    )
-    .await?;
+    let result = vtc
+        .client
+        .import_backup(&envelope, &password, true)
+        .await
+        .map_err(|e| backup_error(&vtc, e))?;
     println!(
         "{GREEN}✓{RESET} {}",
         result
@@ -261,6 +200,7 @@ fn file_stamp(envelope: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn file_stamp_uses_created_at_digits() {

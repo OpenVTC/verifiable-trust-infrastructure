@@ -5,6 +5,7 @@ mod config;
 mod did_log;
 mod setup;
 mod vetting;
+mod vtc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{community_keyring_key, resolve_community};
@@ -33,9 +34,22 @@ use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_section
                     a community admin needs to provision application identities."
 )]
 struct Cli {
-    /// Base URL of the VTA service (overrides config)
+    /// Base URL of the VTA service (overrides config).
+    ///
+    /// For the commands that talk to the community's VTC instead — `vetting`,
+    /// `audit`, `backup`, `did-log` — this is the VTC's API base, including
+    /// its mount (`https://<vtc-host>/v1`), and overrides the `VTCRest`
+    /// endpoint the VTC's DID document advertises.
     #[arg(long, env = "VTA_URL")]
     url: Option<String>,
+
+    /// The community's VTC DID, for `vetting`, `audit` and `backup`.
+    ///
+    /// Overrides the one recorded in the community profile
+    /// (`cnm community set-vtc`). It is the audience `cnm` authenticates to
+    /// the VTC with, and the DID whose document names the VTC's API base.
+    #[arg(long, global = true, env = "CNM_VTC_DID")]
+    vtc_did: Option<String>,
 
     /// Override the active community for this command
     #[arg(short = 'c', long, global = true)]
@@ -422,6 +436,18 @@ enum CommunityCommands {
     Status,
     /// Send a DIDComm trust-ping to the community VTA
     Ping,
+    /// Record the community's VTC DID in the active community profile
+    /// (`-c <name>` for another).
+    ///
+    /// `cnm vetting`, `cnm audit` and `cnm backup` authenticate to the VTC
+    /// with this DID as the audience, and call the API base its DID document
+    /// advertises (`VTCRest`). It is the DID `vtc setup` printed for the
+    /// community, not the community VTA's.
+    #[command(name = "set-vtc")]
+    SetVtc {
+        /// The VTC's DID (`did:webvh:…`).
+        did: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -860,9 +886,31 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Setup
             | Commands::Community { .. }
             | Commands::Bootstrap { .. }
-            // Authenticates to the community itself, not to the VTA.
+            // These authenticate to the community itself — the VTC, with the
+            // VTC's DID as the audience — not to the VTA, so they neither need
+            // nor want a VTA connection first. See `vtc.rs`.
             | Commands::DidLog { .. }
+            | Commands::Vetting { .. }
+            | Commands::Audit { .. }
+            | Commands::Backup { .. }
     )
+}
+
+/// The active community's keyring key and the VTC it administers.
+///
+/// The VTC's DID is `--vtc-did`, else the profile's `vtc_did`; the API base is
+/// `--url`, else what that DID's document advertises. See
+/// [`vtc::resolve_target`] for why the DID never comes from the server.
+async fn community_vtc(
+    community: &Option<String>,
+    vtc_did: &Option<String>,
+    url: &Option<String>,
+    cnm_config: &config::CnmConfig,
+) -> Result<(String, vtc::VtcTarget), Box<dyn std::error::Error>> {
+    let (slug, profile) = resolve_community(community.as_deref(), cnm_config)?;
+    let did = vtc_did.as_deref().or(profile.vtc_did.as_deref());
+    let target = vtc::resolve_target(did, url.as_deref()).await?;
+    Ok((community_keyring_key(&slug), target))
 }
 
 /// `cnm bootstrap request --out <PATH> [--label <NAME>]`
@@ -1136,7 +1184,9 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Setup => setup::run_setup_wizard().await,
-        Commands::Community { command } => cmd_community(command, &cnm_config).await,
+        Commands::Community { command } => {
+            cmd_community(command, &cnm_config, cli.community.as_deref()).await
+        }
         Commands::Health => cmd_health(&client, &keyring_key, &cnm_config).await,
         Commands::Auth { command } => match command {
             AuthCommands::Login {
@@ -1355,20 +1405,35 @@ async fn main() {
                 Err(e) => Err(e),
             },
         },
-        Commands::Backup { command } => match command {
-            BackupCommands::Export {
-                include_audit,
-                output,
-                force,
-            } => backup::cmd_export(&client, &keyring_key, include_audit, output, force).await,
-            BackupCommands::Import { file, preview } => {
-                backup::cmd_import(&client, &keyring_key, file, preview).await
+        Commands::Backup { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => match command {
+                    BackupCommands::Export {
+                        include_audit,
+                        output,
+                        force,
+                    } => backup::cmd_export(&key, &target, include_audit, output, force).await,
+                    BackupCommands::Import { file, preview } => {
+                        backup::cmd_import(&key, &target, file, preview).await
+                    }
+                },
+                Err(e) => Err(e),
             }
-        },
-        Commands::Audit { command } => match command {
-            AuditCommands::Verify => audit::cmd_verify(&client, &keyring_key).await,
-        },
-        Commands::Vetting { command } => vetting::run(command, &client, &keyring_key).await,
+        }
+        Commands::Audit { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => match command {
+                    AuditCommands::Verify => audit::cmd_verify(&key, &target).await,
+                },
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Vetting { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => vetting::run(command, &key, &target).await,
+                Err(e) => Err(e),
+            }
+        }
         Commands::DidLog { command } => {
             match resolve_community(cli.community.as_deref(), &cnm_config) {
                 Ok((slug, _)) => {
@@ -1477,6 +1542,7 @@ async fn main() {
 async fn cmd_community(
     command: CommunityCommands,
     cnm_config: &config::CnmConfig,
+    community_override: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         CommunityCommands::List => {
@@ -1495,6 +1561,9 @@ async fn cmd_community(
                 }
                 if let Some(ref ctx) = community.context_id {
                     println!("    Context: {ctx}");
+                }
+                if let Some(ref vtc) = community.vtc_did {
+                    println!("    VTC:  {vtc}");
                 }
                 println!();
             }
@@ -1577,6 +1646,13 @@ async fn cmd_community(
                     if let Some(ref ctx) = community.context_id {
                         println!("  Context: {ctx}");
                     }
+                    match community.vtc_did.as_deref() {
+                        Some(vtc) => println!("  VTC:  {vtc}"),
+                        None => println!(
+                            "  VTC:  (not set — `cnm community set-vtc <vtc-did>` for vetting, \
+                             audit and backup)"
+                        ),
+                    }
                     let key = community_keyring_key(&slug);
                     auth::status(&key);
                 }
@@ -1588,7 +1664,70 @@ async fn cmd_community(
             Ok(())
         }
         CommunityCommands::Ping => cmd_community_ping(cnm_config).await,
+        CommunityCommands::SetVtc { did } => {
+            cmd_community_set_vtc(cnm_config, community_override, did.trim()).await
+        }
     }
+}
+
+/// Whether `url` has no path beyond `/`.
+fn url_has_no_path(url: &str) -> bool {
+    let rest = url
+        .split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .trim_end_matches('/');
+    !rest.contains('/')
+}
+
+/// `cnm community set-vtc <did>` — record the VTC the profile administers.
+async fn cmd_community_set_vtc(
+    cnm_config: &config::CnmConfig,
+    community_override: Option<&str>,
+    did: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (slug, _) = resolve_community(community_override, cnm_config)?;
+    if !did.starts_with("did:") {
+        return Err(format!("`{did}` is not a DID; the VTC's DID starts with `did:`").into());
+    }
+    // Resolve before saving so a typo shows now rather than at the next
+    // `cnm vetting`. An unresolvable DID is still saved: the operator may be
+    // on a network that cannot reach it yet, and `--url` covers the API base
+    // meanwhile.
+    let resolved = vtc::resolve_target(Some(did), None).await;
+    let mut config = config::load_config()?;
+    let entry = config
+        .communities
+        .get_mut(&slug)
+        .ok_or_else(|| format!("community '{slug}' not found in config."))?;
+    entry.vtc_did = Some(did.to_string());
+    config::save_config(&config)?;
+    println!("{GREEN}✓{RESET} Community '{slug}' administers VTC {did}.");
+    match resolved {
+        Ok(target) => {
+            println!("  API:  {} (from its DID document)", target.base);
+            // A community minted before #1615 advertises its bare base URL,
+            // and every call to it then answers 405. Only a deployment that
+            // mounts the API at the root means that.
+            if url_has_no_path(&target.base) {
+                println!(
+                    "  {YELLOW}That names no API mount.{RESET} A VTC serves its API under `/v1` \
+                     unless configured otherwise; if calls answer 405, pass\n  \
+                     `cnm --url {}/v1 …`.",
+                    target.base
+                );
+            }
+        }
+        Err(e) => println!("  {YELLOW}Its API base could not be resolved yet:{RESET} {e}"),
+    }
+    if let Some(session) = auth::loaded_session(&community_keyring_key(&slug)) {
+        println!(
+            "\n`cnm` authenticates to it as {client}. That DID needs a super-admin entry in the \
+             VTC's ACL. On the VTC host, with the daemon stopped:\n  vtc --config \
+             <config.toml> acl add --did {client} --role admin --label cnm",
+            client = session.client_did
+        );
+    }
+    Ok(())
 }
 
 async fn cmd_community_ping(
@@ -2075,11 +2214,23 @@ mod tests {
     }
 
     #[test]
-    fn test_requires_auth_vetting_true() {
+    fn test_requires_auth_vtc_commands_false() {
+        // Vetting, audit and backup administer the VTC and authenticate to it
+        // with its own DID as the audience; connecting to the VTA first is
+        // what made them authenticate to the wrong audience.
         let cmd = Commands::Vetting {
             command: vetting::VettingCommands::Revocations,
         };
-        assert!(requires_auth(&cmd));
+        assert!(!requires_auth(&cmd));
+        assert!(!requires_auth(&Commands::Audit {
+            command: AuditCommands::Verify
+        }));
+        assert!(!requires_auth(&Commands::Backup {
+            command: BackupCommands::Import {
+                file: "x.vtcbak".into(),
+                preview: true
+            }
+        }));
     }
 
     /// The contract's command shapes parse (CONTRACT-vetter-registry §9).
@@ -2147,6 +2298,13 @@ mod tests {
                 panic!("{argv:?} should parse: {e}");
             }
         }
+    }
+
+    #[test]
+    fn a_bare_origin_names_no_api_mount() {
+        assert!(url_has_no_path("https://vtc.example.com"));
+        assert!(url_has_no_path("https://vtc.example.com/"));
+        assert!(!url_has_no_path("https://vtc.example.com/v1"));
     }
 
     #[test]
