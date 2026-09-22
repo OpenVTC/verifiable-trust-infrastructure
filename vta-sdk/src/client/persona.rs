@@ -51,6 +51,10 @@ use crate::protocols::persona::{
     PersonaRenderersListBody, ProfileEntry, Provenance, ValueType,
 };
 use crate::trust_tasks;
+use trust_tasks_rs::specs::persona::claim_types::list::v1_0 as claim_types_list;
+use trust_tasks_rs::specs::persona::facet::delete::v1_0 as facet_delete;
+use trust_tasks_rs::specs::persona::facet::list::v1_0 as facet_list;
+use trust_tasks_rs::specs::persona::facet::put::v1_0 as facet_put;
 
 /// Round-trip timeout (seconds) for persona trust tasks. Matches the
 /// application-state and memory slices: these are local store operations, and
@@ -63,6 +67,17 @@ const PERSONA_TT_TIMEOUT: u64 = 30;
 fn body(value: impl serde::Serialize) -> Result<Value, VtaError> {
     serde_json::to_value(value)
         .map_err(|e| VtaError::Validation(format!("encode persona payload: {e}")))
+}
+
+/// Read a response into its generated type.
+///
+/// The older methods on this slice return `Value`, because they predate the
+/// generated modules. The four that do not — facets and the claim-type
+/// registry — decode here, so a response the specification does not describe
+/// is an error at the call rather than a `None` three screens later.
+fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, VtaError> {
+    serde_json::from_value(value)
+        .map_err(|e| VtaError::Protocol(format!("decode persona response: {e}")))
 }
 
 impl VtaClient {
@@ -774,6 +789,93 @@ impl VtaClient {
             PERSONA_TT_TIMEOUT,
         )
         .await
+    }
+
+    // -----------------------------------------------------------------------
+    // Facets and the claim-type registry
+    // -----------------------------------------------------------------------
+
+    /// `persona/facet/put/1.0` — name a part of a life, and say which faces
+    /// and attributes belong to it.
+    ///
+    /// **Both lists replace.** Omitting `face_ids` empties the facet rather
+    /// than leaving it as it was — the specification is explicit that a member
+    /// whose absence meant "keep" would make emptying one impossible. Read the
+    /// facet first and send the list you want to end up with.
+    ///
+    /// A face belongs to at most one facet (`faceAlreadyPlaced`); an attribute
+    /// may belong to several, because a mobile number is genuinely both work
+    /// and home.
+    pub async fn persona_facet_put(
+        &self,
+        payload: facet_put::Payload,
+    ) -> Result<facet_put::Response, VtaError> {
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_PERSONA_FACET_PUT_1_0,
+                body(payload)?,
+                PERSONA_TT_TIMEOUT,
+            )
+            .await?;
+        decode(value)
+    }
+
+    /// `persona/facet/list/1.0` — the parts of a life the holder has named.
+    ///
+    /// `limit` is a page size, never a cap: follow `nextCursor` to the end, or
+    /// draw a partial picture of how someone has arranged their identity.
+    pub async fn persona_facet_list(
+        &self,
+        payload: facet_list::Payload,
+    ) -> Result<facet_list::Response, VtaError> {
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_PERSONA_FACET_LIST_1_0,
+                body(payload)?,
+                PERSONA_TT_TIMEOUT,
+            )
+            .await?;
+        decode(value)
+    }
+
+    /// `persona/facet/delete/1.0` — unname a part of a life.
+    ///
+    /// Every face and attribute that belonged to it stays exactly where it
+    /// was. There is deliberately no cascading form: an arrangement that could
+    /// take its members with it is a folder, and a holder who reads it as a
+    /// folder is right to be afraid of it. The response's `releasedFaces` is
+    /// how many faces now belong to no facet — the honest end of a sentence
+    /// that would otherwise read only "deleted".
+    pub async fn persona_facet_delete(
+        &self,
+        payload: facet_delete::Payload,
+    ) -> Result<facet_delete::Response, VtaError> {
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_PERSONA_FACET_DELETE_1_0,
+                body(payload)?,
+                PERSONA_TT_TIMEOUT,
+            )
+            .await?;
+        decode(value)
+    }
+
+    /// `persona/claim-types/list/1.0` — the claim-type registry this VTA
+    /// resolves against.
+    ///
+    /// Read it rather than shipping a copy: the registry decides what a client
+    /// masks on screen and what it gates behind a step-up, and a stale local
+    /// table silently shows a value that should have been hidden. Names the
+    /// agent's vocabulary, never the holder's data.
+    pub async fn persona_claim_types_list(&self) -> Result<claim_types_list::Response, VtaError> {
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_PERSONA_CLAIM_TYPES_LIST_1_0,
+                body(claim_types_list::Payload::default())?,
+                PERSONA_TT_TIMEOUT,
+            )
+            .await?;
+        decode(value)
     }
 
     // -----------------------------------------------------------------------
