@@ -74,6 +74,24 @@ pub const DELETE_ERR_NOT_FOUND: &str = et_spec::delete::v0_1::error_codes::NOT_F
 /// still references the type.
 pub const DELETE_ERR_IN_USE: &str = et_spec::delete::v0_1::error_codes::IN_USE.code;
 
+/// `malformedRequest` — the **framework** standard code (SPEC §8.3), for a
+/// `claimSchema` that is not itself valid JSON Schema.
+///
+/// `vtc/endorsement-types/register/0.1` declares exactly three codes —
+/// `invalidUri`, `reserved`, `exists` — and none of them is about the schema:
+/// `invalidUri` is "empty or over 512 bytes" and is about `typeUri`. Nothing
+/// declared covers the body being well-formed JSON that is not a schema, so
+/// this refusal carries the standard code rather than one minted under the
+/// task's namespace. It is therefore not a census entry: the census tracks the
+/// codes a `spec/vtc/*` task *declares*, and `CONSUMER_MINTED` is for codes
+/// namespaced under the task slug, which a framework code is not.
+///
+/// Not a `const`, because `StandardCode::as_str` is not a `const fn`. It is
+/// still `trust_tasks_rs`' spelling of the code, not a literal.
+fn malformed_request_code() -> &'static str {
+    trust_tasks_rs::StandardCode::MalformedRequest.as_str()
+}
+
 // ─── Register ────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +153,25 @@ pub async fn register(
             REGISTER_ERR_EXISTS,
             AppError::Conflict(format!(
                 "endorsement-type-exists: '{uri}' already registered"
+            )),
+        ));
+    }
+    // A `claimSchema` that is not itself valid JSON Schema is refused here,
+    // where the operator can still fix it. Registration stored the document
+    // unread until #1649 made `vtc/endorsements/issue/0.1` enforce it, at which
+    // point a malformed one stopped being inert and became an opaque 500 on
+    // every issuance of the type — a fault the issuing caller could neither
+    // cause nor diagnose. Refusing at the one call that supplies the document
+    // is the fix; naming the bad keyword is what makes the refusal actionable.
+    if let Some(schema) = body.claim_schema.as_ref()
+        && let Err(detail) = crate::schemas::check_schema(schema)
+    {
+        return Err(TaskError::declared(
+            malformed_request_code(),
+            AppError::Validation(format!(
+                "claimSchema is not a valid JSON Schema — {detail}. Correct the schema \
+                 and register again; a type whose stored schema will not compile cannot \
+                 have endorsements issued against it."
             )),
         ));
     }

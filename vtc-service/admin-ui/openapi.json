@@ -7000,7 +7000,7 @@
               },
               {
                 "$ref": "#/components/schemas/Value",
-                "description": "Optional JSON Schema for the claim body. Reserved for\nfuture per-type validation; the Phase 4 issuance path\nonly checks \"type is registered\" without consulting\nthe schema. Operators can read the schema from\n`GET /v1/endorsement-types/{uri}` and validate\nclient-side."
+                "description": "Optional JSON Schema every claim of this type must satisfy. Issuance\nvalidates the claim against it and refuses a violation."
               }
             ]
           },
@@ -8602,7 +8602,7 @@
                     },
                     {
                       "$ref": "#/components/schemas/Value",
-                      "description": "Optional JSON Schema for the claim body. Reserved for\nfuture per-type validation; the Phase 4 issuance path\nonly checks \"type is registered\" without consulting\nthe schema. Operators can read the schema from\n`GET /v1/endorsement-types/{uri}` and validate\nclient-side."
+                      "description": "Optional JSON Schema every claim of this type must satisfy. Issuance\nvalidates the claim against it and refuses a violation."
                     }
                   ]
                 },

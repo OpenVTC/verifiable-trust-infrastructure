@@ -812,6 +812,13 @@ pub async fn run(
         warn!(error = %e, "admin-entry heal scan failed");
     }
 
+    // Name any endorsement type whose stored `claimSchema` will not compile.
+    // Registration refuses one now, but a row written before that check makes
+    // every issuance of its type fail — and until an issuance is attempted,
+    // nothing says so. The scan is advisory: a read failure is logged and
+    // never stops boot, exactly like the approval-rule warning (#1633).
+    report_invalid_claim_schemas(&state).await;
+
     // One-shot heal for daemons bootstrapped before the install
     // ceremony initialised the community profile. New installs land
     // here as a no-op because `POST /v1/admin/bootstrap` now writes
@@ -1365,6 +1372,43 @@ pub async fn run(
 
     info!("server shut down");
     Ok(())
+}
+
+/// WARN for every registered endorsement type whose stored `claimSchema` is
+/// not valid JSON Schema, naming the type and the part of the document that
+/// is wrong.
+///
+/// Issuance against such a type cannot succeed: `vtc/endorsements/issue/0.1`
+/// has enforced `claimSchema` since #1649, and a schema that will not compile
+/// fails the compile rather than the claim. Registration refuses one now, so
+/// anything this finds was written before that gate — and the only other way
+/// to learn of it is for a member to be refused an endorsement. One line per
+/// broken type at boot is what turns that into something an operator can act
+/// on before it bites.
+///
+/// Advisory: a read failure is logged and never stops boot.
+async fn report_invalid_claim_schemas(state: &AppState) {
+    let types = match crate::endorsement_types::all_types(&state.endorsement_types_ks).await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(error = %e, "could not scan endorsement types for invalid claimSchemas");
+            return;
+        }
+    };
+    for t in &types {
+        let Some(schema) = t.claim_schema.as_ref() else {
+            continue;
+        };
+        if let Err(detail) = crate::schemas::check_schema(schema) {
+            warn!(
+                type_uri = %t.type_uri,
+                %detail,
+                "endorsement type has an invalid stored claimSchema — every issuance of \
+                 this type will fail. Delete the type and register it again with a valid \
+                 JSON Schema (or with none).",
+            );
+        }
+    }
 }
 
 /// Walk the ACL keyspace for `Admin` entries; for each, if a

@@ -26,7 +26,7 @@ pub use accepts::{
     validate_accepts_query,
 };
 pub use defaults::{DEFAULT_ISSUES_TYPES, seed_default_issues};
-pub use validate::{validate_instance, validate_issued};
+pub use validate::{check_schema, validate_instance, validate_issued};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
