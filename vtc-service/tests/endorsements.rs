@@ -554,6 +554,44 @@ async fn delete_type(fix: &Fixture, uri: &str) -> (StatusCode, Value) {
     body_value(fix.router.clone().oneshot(req).await.unwrap()).await
 }
 
+/// A `credentialSchema` supplied by an admin must not make the service read a
+/// local file (or fetch a URL) while compiling it.
+///
+/// The `jsonschema` crate enables `resolve-http`/`resolve-file` by default;
+/// the workspace manifest turns both off, because every schema this service
+/// compiles arrives from a caller. The referenced file really exists and is a
+/// valid schema, so this registration would succeed if the resolver were on.
+#[tokio::test]
+async fn register_schema_refuses_an_external_ref() {
+    let fix = build().await;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let target = dir.path().join("ref-target.json");
+    std::fs::write(&target, br#"{"type": "string"}"#).expect("write target");
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/schemas")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "typeUri": "https://example.test/ExternalRefCredential",
+                "dtgType": "ExternalRefCredential",
+                "kind": "issues",
+                "credentialSchema": { "$ref": format!("file://{}", target.display()) },
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a schema with a file:// $ref must be refused, not resolved: {body}"
+    );
+}
+
 /// An Accepts criterion counting statements of `statement_type`. The DCQL
 /// query references `EndorsementCredential`, so that per-type schema is
 /// registered first — `store_accepts` refuses a dangling type reference.
