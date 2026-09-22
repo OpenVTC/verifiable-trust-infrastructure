@@ -579,6 +579,24 @@ fn witnesses() -> Vec<Witness> {
             "members_crud.rs",
             "the_update_task_answers_with_the_admin_role_forbidden_code_its_spec_declares"
         ),
+        witness!(
+            s::auth::admin_session::v0_1::error_codes::INVALID_TOKEN,
+            crate::routes::auth::ADMIN_SESSION_ERR_INVALID_TOKEN,
+            "cookie_session.rs",
+            "the_admin_session_task_answers_with_the_invalid_token_code_its_spec_declares"
+        ),
+        witness!(
+            s::auth::recognise::v0_2::error_codes::ROLE_NOT_MAPPED,
+            crate::routes::recognise::RECOGNISE_ERR_ROLE_NOT_MAPPED,
+            "recognise.rs",
+            "the_recognise_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::auth::recognise::v0_2::error_codes::CREDENTIAL_INVALID,
+            crate::routes::recognise::RECOGNISE_ERR_CREDENTIAL_INVALID,
+            "recognise.rs",
+            "the_recognise_task_answers_with_the_codes_its_spec_declares"
+        ),
     ]
 }
 
@@ -591,11 +609,21 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
     vec![
         // BASELINE-BEGIN — generated from this test's own failure output.
         s::admin::invites::revoke::v0_1::error_codes::ALREADY_CONSUMED,
-        s::auth::admin_session::v0_1::error_codes::INVALID_TOKEN,
+        // Both remaining auth codes need infrastructure this workspace does not
+        // have, not a test someone forgot to write:
+        //
+        // `rateLimited` is declared by the challenge task, but the limiter in
+        // front of it is the chain-wide per-IP governor, and
+        // `governor_error_response` is handed a `GovernorError` with no request
+        // — it cannot know which route was refused, so it cannot name a
+        // route-scoped code. Emitting this one means giving the limiter route
+        // context first.
         s::auth::recognise::challenge::v0_1::error_codes::RATE_LIMITED,
-        s::auth::recognise::v0_2::error_codes::CREDENTIAL_INVALID,
+        // `issuerNotRecognised` comes from the trust registry answering "no".
+        // Every fixture here wires `registry_client: None`, so the route stops
+        // at the registry pre-flight and the gate never runs. Witnessing it
+        // means building a registry stub.
         s::auth::recognise::v0_2::error_codes::ISSUER_NOT_RECOGNISED,
-        s::auth::recognise::v0_2::error_codes::ROLE_NOT_MAPPED,
         s::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE,
         s::invitations::revoke::v0_1::error_codes::NOT_FOUND,
         s::join_requests::submit::v0_2::error_codes::POLICY_UNSATISFIED,
@@ -608,7 +636,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The length of [`unwitnessed`], asserted. Lower it as witnesses land; raising
 /// it means a newly bound task declares codes nothing tests, which is the
 /// thing this census exists to stop.
-const UNWITNESSED: usize = 11;
+const UNWITNESSED: usize = 8;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

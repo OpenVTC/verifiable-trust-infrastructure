@@ -3,7 +3,7 @@ pub(crate) mod admin;
 #[cfg(feature = "admin-ui")]
 mod admin_ui;
 mod audit;
-mod auth;
+pub mod auth;
 mod backup;
 mod ceremonies;
 pub(crate) mod community;
