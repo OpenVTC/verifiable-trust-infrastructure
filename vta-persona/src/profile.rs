@@ -317,29 +317,43 @@ impl PersonaStore {
                     release: a.release,
                 });
             };
+            // A kept value is still a credential's claim: a pin holds the
+            // *value* a counterparty verified, not a licence to present it
+            // after the credential behind it has been withdrawn.
+            let withdrawn = matches!(
+                self.rederive(&old.provenance).await?,
+                Some(crate::Derived::Stale(_))
+            );
             return Ok(ResolvedClaim {
                 attribute_id: Some(old.attribute_id.clone()),
                 r#type: old.r#type.clone(),
-                value: old.value.clone(),
+                value: if withdrawn { None } else { old.value.clone() },
                 value_type: old.value_type,
                 label: old.label.clone(),
                 slot: None,
                 provenance: old.provenance.clone(),
                 version: Some(old.version),
                 updated_at: Some(old.updated_at.clone()),
-                stale: old.stale.unwrap_or(false),
+                stale: withdrawn || old.stale.unwrap_or(false),
                 // The holder's decision about letting the attribute leave is
                 // about the attribute, not one version of it: the current one
                 // answers for the kept copy too.
                 release: a.release,
             });
         }
-        let stale = false;
+        // The credential is the truth and the stored value a cache: derive it
+        // now, and present nothing for a credential that can no longer back
+        // it. See `crate::derive`.
+        let (value, stale) = match self.rederive(&a.provenance).await? {
+            None => (a.value.clone(), false),
+            Some(crate::Derived::Value(v)) => (Some(v), false),
+            Some(crate::Derived::Stale(_)) => (None, true),
+        };
 
         Ok(ResolvedClaim {
             attribute_id: Some(a.attribute_id.clone()),
             r#type: a.r#type.clone(),
-            value: if stale { None } else { a.value.clone() },
+            value: if stale { None } else { value },
             value_type: a.value_type,
             label: a.label.clone(),
             slot: None,

@@ -14,6 +14,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The credential-derivation hook (`derive::CredentialSource`) is an async trait
+# the service implements over the vault, so this crate need not depend on it.
+async-trait = "0.1"
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
 vti-common = { path = "../vti-common", version = "0.22", features = ["encryption"] }
 serde = { workspace = true }

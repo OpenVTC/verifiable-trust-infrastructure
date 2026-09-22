@@ -3746,3 +3746,141 @@ async fn a_derived_value_stays_derived_and_an_endorsement_must_be_held() {
         "{claims:?}"
     );
 }
+
+/// A credential-backed attribute is the credential's claim: refused when the
+/// vault does not hold the credential, written with the credential's value
+/// when it does, and stale — shown with the reason, presenting nothing — once
+/// the credential is revoked. `persona/attribute/put` rule 3 and the
+/// Provenance contract ("a maintainer MUST re-derive it on read and MUST fail
+/// closed").
+#[tokio::test]
+async fn a_credential_backed_value_follows_its_credential_and_fails_closed() {
+    use vta_service::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "credbacked", "admin", &[]).await;
+    let backed = json!({
+        "kind": "credentialBacked",
+        "credentialId": "cred-degree",
+        "claimPath": "/credentialSubject/name",
+    });
+
+    // Not held: refused, with the code.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({ "type": "name.legal", "valueType": "string", "value": "Typed",
+                "provenance": backed }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/attribute/put:credentialNotFound"
+    );
+
+    // Held: the value comes from the credential, not from what was typed.
+    let mut cred = StoredCredential {
+        id: "cred-degree".into(),
+        format: CredentialFormat::EddsaJcs2022,
+        types: vec!["VerifiableCredential".into()],
+        schema_id: None,
+        community_did: None,
+        context_id: None,
+        subject_did: None,
+        issuer_did: Some("did:web:university.test".into()),
+        purpose: None,
+        status: CredentialStatus::Valid,
+        valid_from: None,
+        valid_until: None,
+        received_at: "2026-01-01T00:00:00Z".into(),
+        source: None,
+        tags: Default::default(),
+        body: serde_json::to_vec(&json!({
+            "type": ["VerifiableCredential"],
+            "credentialSubject": { "name": "Ada Lovelace" }
+        }))
+        .unwrap(),
+        lifecycle: vti_common::vault::VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
+    };
+    vta_service::vault::storage::put(&ctx.vault_ks, &cred)
+        .await
+        .unwrap();
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({ "type": "name.legal", "valueType": "string", "value": "Typed",
+                "provenance": backed }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/put: {status} {body}");
+    let attribute = payload_of(&body)["attributeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let listed = |body: &Value| {
+        payload_of(body)["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["attributeId"] == attribute.as_str())
+            .cloned()
+            .unwrap()
+    };
+    let (_, body) = post(
+        &router,
+        &holder,
+        ATTR_LIST,
+        json!({ "includeValues": true }),
+    )
+    .await;
+    assert_eq!(listed(&body)["value"], "Ada Lovelace", "{body}");
+
+    // Revoked: stale, with the reason, and a face shows nothing for it.
+    cred.status = CredentialStatus::Revoked;
+    vta_service::vault::storage::put(&ctx.vault_ks, &cred)
+        .await
+        .unwrap();
+    let (_, body) = post(
+        &router,
+        &holder,
+        ATTR_LIST,
+        json!({ "includeValues": true }),
+    )
+    .await;
+    let row = listed(&body);
+    assert_eq!(row["stale"], true, "{row}");
+    assert_eq!(row["staleReason"], "revoked", "{row}");
+    assert!(
+        row.get("value").is_none() || row["value"].is_null(),
+        "{row}"
+    );
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "name": "Degree", "entries": [{ "ref": attribute }] }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/put: {status} {body}");
+    let face = payload_of(&body)["profileId"].as_str().unwrap().to_string();
+    let (_, body) = post(
+        &router,
+        &holder,
+        PROFILE_GET,
+        json!({ "profileId": face, "resolve": true }),
+    )
+    .await;
+    let claim = &payload_of(&body)["resolved"][0];
+    assert_eq!(claim["stale"], true, "{body}");
+    assert!(
+        claim.get("value").is_none() || claim["value"].is_null(),
+        "{body}"
+    );
+}

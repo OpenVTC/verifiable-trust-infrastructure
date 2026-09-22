@@ -416,10 +416,16 @@ the whole rung, and correlates the way a typed value does, since there is no
 issuer signature to link. `endorsements` is checked at write: every id must
 name a credential the vault holds (`endorsementNotFound`).
 
-**Found while building it:** `attribute/put` rule 3 — resolve a
-`credentialBacked` provenance's credential at write, `credentialNotFound` —
-is not implemented; the VTA accepts any `credentialId`. The endorsement check
-added here is the same shape, and the credential-backed one should follow it.
+**Found while building it, and fixed:** credential-backed values were never
+resolved against their credential — not at write (`attribute/put` rule 3,
+`credentialNotFound`) and, worse, not on read, where the Provenance contract
+requires re-derivation and failing closed. A revoked credential's value went
+on being presented. Now the persona store takes a `CredentialSource` the
+service implements over the vault (`vta_persona::derive`), and asks it
+wherever a credential-backed value is about to be believed: on write (taking
+the credential's value, refusing one it cannot back), resolving a face,
+listing the pool (stale, with the reason), building a preview, and again at
+present — a credential revoked between preview and present is not presented.
 
 ### 5.8 Facets become suggested
 
@@ -664,6 +670,18 @@ With that, the concept count a first-time user meets drops from nine
 disclosure) to three: **who I am**, **who I am to X**, **what I have told
 whom**. The rest is discovered — the pool appears the first time a second face
 reuses a value; worlds appear when faces cluster (§4).
+
+**Decided (2026-09-22): reuse on the agent; mint on its own path**
+(trust-tasks-tf #589). `binding/set` takes an omitted `personaDid` and
+`compose` takes `wear: true`: the agent uses the persona the holder already
+uses in that context — the one DID with a binding there, current or cleared.
+None is refused (`noPersonaHere`), several are refused (`personaAmbiguous`,
+naming them). Neither task mints. A persona in openvtc is a `did:webvh` with
+keys, a hosting server and services, minted client-side on a webvh server; a
+persona write that could half-create one would leave a published identity
+nobody holds, which is the R2.1 failure this family has avoided everywhere
+else. The "no DID noun" goal is met by the client: it mints once, through the
+path that already exists, and every later face is worn by saying "here".
 
 ### 9.8 Face templates are the manifest, from the other side
 

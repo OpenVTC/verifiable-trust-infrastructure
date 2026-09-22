@@ -145,6 +145,8 @@ pub struct PersonaStore {
     /// Cached counter, guarded by `write_lock` and re-read from the store on
     /// first use so a restart never reuses a number.
     pub(crate) counter: Arc<Mutex<Option<Version>>>,
+    /// Where credential-backed values are derived from — see [`crate::derive`].
+    pub(crate) credentials: Option<crate::derive::SharedCredentialSource>,
 }
 
 impl PersonaStore {
@@ -155,6 +157,7 @@ impl PersonaStore {
             correlation_key,
             write_lock: Arc::new(Mutex::new(())),
             counter: Arc::new(Mutex::new(None)),
+            credentials: None,
         }
     }
 
@@ -207,6 +210,22 @@ impl PersonaStore {
         mut attribute: Attribute,
         expected_version: Option<Version>,
     ) -> Result<Written, AppError> {
+        // A credential-backed attribute is resolved against its credential
+        // before it is written, and takes the credential's value: the supplied
+        // one is an initial display cache the specification lets the maintainer
+        // overwrite. One whose credential cannot back it is refused rather than
+        // stored — it would read back stale forever (`persona/attribute/put`
+        // rule 3). The dispatcher asks `credential_refusal` first to carry the
+        // code; this is the check no write path can skip.
+        match self.rederive(&attribute.provenance).await? {
+            None => {}
+            Some(crate::Derived::Value(v)) => attribute.value = Some(v),
+            Some(crate::Derived::Stale(reason)) => {
+                return Err(AppError::Validation(format!(
+                    "the credential behind this attribute cannot back it ({reason:?})"
+                )));
+            }
+        }
         if !attribute
             .value
             .as_ref()
@@ -311,6 +330,20 @@ impl PersonaStore {
         }
 
         Ok(Written { version, created })
+    }
+
+    /// Why a credential-backed provenance cannot be written — the credential
+    /// is not held, or is held in a state no value can be derived from — or
+    /// `None` when it can (or is not credential-backed). The code-carrying
+    /// half of the check [`Self::put`] makes.
+    pub async fn credential_refusal(
+        &self,
+        provenance: &crate::Provenance,
+    ) -> Result<Option<crate::StaleReason>, AppError> {
+        Ok(match self.rederive(provenance).await? {
+            Some(crate::Derived::Stale(reason)) => Some(reason),
+            _ => None,
+        })
     }
 
     /// Remove one attribute, leaving a tombstone.
@@ -447,6 +480,24 @@ impl PersonaStore {
         // this is where they learn it is kept, and for which face.
         for a in &mut attributes {
             a.retained_versions = self.retained_versions(&a.attribute_id).await?;
+            // A credential-backed value is re-derived before it is shown, and
+            // a withdrawn credential shows the attribute stale — with the
+            // reason — rather than the cached value (`crate::derive`). A value
+            // this listing withheld stays withheld: deriving is not a reason to
+            // disclose.
+            match self.rederive(&a.provenance).await? {
+                None => {}
+                Some(crate::Derived::Value(v)) => {
+                    if a.value.is_some() {
+                        a.value = Some(v);
+                    }
+                }
+                Some(crate::Derived::Stale(reason)) => {
+                    a.value = None;
+                    a.stale = Some(true);
+                    a.stale_reason = Some(reason);
+                }
+            }
         }
 
         Ok(Listing {

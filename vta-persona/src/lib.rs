@@ -42,6 +42,7 @@ pub mod claim_types;
 pub mod compose;
 pub mod contact;
 pub mod correlation;
+pub mod derive;
 pub mod disclosure;
 mod face_values;
 pub mod facet;
@@ -66,6 +67,7 @@ pub use compose::{
     Promoted, PromotedEntry, Share,
 };
 pub use contact::{Contact, ContactClaim, ContactDocument, ContactRevision, ContactSummary, Filed};
+pub use derive::{CredentialSource, Derived, SharedCredentialSource};
 pub use disclosure::{
     ClaimCurrency, DisclosedClaim, DisclosureRecord, HistoryQuery, new_disclosure,
 };
