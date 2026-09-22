@@ -80,6 +80,32 @@ VMC. Inside the community the ACL is authoritative — expired VMC
 does NOT lock the member out (renewal is unconditional on ACL
 membership).
 
+## Reading a member's credentials
+
+`GET /v1/members/{did}/credentials` (Trust Task
+`vtc/members/credentials/0.1`, admin only) returns the documents the
+community holds for one member, verbatim:
+
+- `membershipCredential` — the VMC this community issued (the grant);
+- `roleCredential` — the role VEC;
+- `memberVmc` + `memberVmcReceivedAt` — the member-issued reciprocal VMC
+  (the acknowledgement that completes the edge), always as a pair;
+- `memberVmcBound` — always present: whether the acknowledgement's digest
+  was verified against the grant when it arrived.
+
+A missing document is a real answer, not an error: a member who has not
+sent their half of the pair comes back with `memberVmcBound: false` and no
+`memberVmc`. An unknown member is a 404 carrying
+`code: "vtc/members/credentials:notFound"`. `members/show` still carries
+only the identifiers — this task is for one member, never a roster.
+
+Every read writes a `MemberCredentialsRead` audit row naming the documents
+disclosed (not their contents), because the response is the credential
+bodies themselves. The admin console's member detail page reads this route
+for its **Credentials** card, and where the edge is not bound it shows the
+grant on record beside the digest the acknowledgement names, so the reason
+— and the next step, **Request member VMC** — is visible.
+
 ## Status list mechanics
 
 ```mermaid

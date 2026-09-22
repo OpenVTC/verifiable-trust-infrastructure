@@ -36,6 +36,7 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   CommunityProfileUpdated: "Community profile updated",
   AuditKeyRotated: "Audit key rotated",
   MemberUpdated: "Member record updated",
+  MemberCredentialsRead: "Admin read a member's credential bodies",
   RoleChanged: "Member role changed",
   AdminPromoted: "Member promoted to admin",
   AuthSteppedUp: "Session stepped up with a passkey",

@@ -12,6 +12,7 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::session::{Session, SessionState, store_session};
 use vti_common::store::KeyspaceHandle;
 
@@ -25,6 +26,7 @@ const REMOVED_TASK: &str = "https://trusttasks.org/spec/vtc/members/removed/0.1"
 const PURGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/purge/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";
 const UPDATE_TASK: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
+const CREDENTIALS_TASK: &str = "https://trusttasks.org/spec/vtc/members/credentials/0.1";
 
 const ADMIN_DID: &str = "did:key:zAdmin1";
 
@@ -442,6 +444,229 @@ async fn show_member_returns_404_for_unknown_did() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// #1215 — `vtc/members/credentials/0.1`
+// ---------------------------------------------------------------------------
+
+/// A signed-VC-shaped body, distinct per `id` so the test can tell which
+/// stored document came back in which response member.
+fn vc(id: &str, issuer: &str, subject: Value) -> Value {
+    json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "id": id,
+        "type": ["VerifiableCredential", "MembershipCredential"],
+        "issuer": issuer,
+        "credentialSubject": subject,
+        "proof": {
+            "type": "DataIntegrityProof",
+            "cryptosuite": "eddsa-jcs-2022",
+            "proofValue": "z3FXQdBGauhBXNZeYPvKjDkxU8vJmYKq1LrGe4tHnGZk9",
+        },
+    })
+}
+
+/// Every `MemberCredentialsRead` envelope in the store.
+async fn credentials_read_events(fix: &Fixture) -> Vec<AuditEnvelope> {
+    let raw = fix
+        ._vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap();
+    raw.iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<AuditEnvelope>(v).ok())
+        .filter(|e| matches!(e.event, AuditEvent::MemberCredentialsRead(_)))
+        .collect()
+}
+
+#[tokio::test]
+async fn member_credentials_returns_the_stored_bodies_and_audits_the_read() {
+    let fix = build_fixture().await;
+    let did = "did:key:zCredHolder";
+    seed_member(&fix, did, VtcRole::Member).await;
+
+    // Populate the row the way issuance and receipt do.
+    let grant = vc(
+        "urn:uuid:grant-1",
+        "did:web:community.example",
+        json!({ "id": did }),
+    );
+    let role = vc(
+        "urn:uuid:role-1",
+        "did:web:community.example",
+        json!({ "id": did }),
+    );
+    let ack = vc(
+        "urn:uuid:ack-1",
+        did,
+        json!({ "id": "did:web:community.example", "digestMultibase": "zQmAck" }),
+    );
+    let mut member = vtc_service::members::get_member(&fix.members_ks, did)
+        .await
+        .unwrap()
+        .unwrap();
+    member.record_issued_credentials(grant.clone(), role.clone());
+    member.record_member_vmc("urn:uuid:ack-1", ack.clone(), true);
+    store_member(&fix.members_ks, &member).await.unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        &format!("/v1/members/{did}/credentials"),
+        CREDENTIALS_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["did"], did);
+    assert_eq!(body["membershipCredential"], grant, "the grant, as stored");
+    assert_eq!(body["roleCredential"], role, "the role VEC, as stored");
+    assert_eq!(body["memberVmc"], ack, "the acknowledgement, as stored");
+    assert!(body["memberVmcReceivedAt"].is_string(), "{body}");
+    assert_eq!(body["memberVmcBound"], true);
+
+    // The specification says a maintainer SHOULD record the read: one row,
+    // naming the documents disclosed and never the bodies.
+    let events = credentials_read_events(&fix).await;
+    assert_eq!(events.len(), 1, "exactly one audit row per read");
+    let AuditEvent::MemberCredentialsRead(data) = &events[0].event else {
+        unreachable!("filtered on the variant");
+    };
+    assert_eq!(
+        data.disclosed,
+        vec!["membershipCredential", "roleCredential", "memberVmc"]
+    );
+    assert!(
+        events[0].target_did_hash.is_some(),
+        "the member is the target"
+    );
+}
+
+/// A member holding nothing is a successful answer, not `notFound` — the
+/// specification draws that line explicitly, and it is the case the task exists
+/// to make visible.
+#[tokio::test]
+async fn member_credentials_for_a_member_holding_nothing_is_ok_and_unbound() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zBare", VtcRole::Member).await;
+
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/did:key:zBare/credentials",
+        CREDENTIALS_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(
+        body,
+        json!({ "did": "did:key:zBare", "memberVmcBound": false })
+    );
+}
+
+#[tokio::test]
+async fn member_credentials_for_an_unknown_member_is_the_declared_not_found() {
+    let fix = build_fixture().await;
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/did:key:zNobody/credentials",
+        CREDENTIALS_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "got {body}");
+    assert_eq!(body["code"], "vtc/members/credentials:notFound", "{body}");
+    assert!(
+        credentials_read_events(&fix).await.is_empty(),
+        "nothing was disclosed, so nothing is audited as a read"
+    );
+}
+
+/// A departed member keeps a tombstoned row but no ACL entry. `members/show`
+/// calls that not-found; this route must agree rather than answer for them.
+#[tokio::test]
+async fn member_credentials_for_a_departed_member_is_not_found() {
+    let fix = build_fixture().await;
+    let mut gone = Member::fresh("did:key:zGone");
+    gone.tombstone();
+    store_member(&fix.members_ks, &gone).await.unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/did:key:zGone/credentials",
+        CREDENTIALS_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "got {body}");
+    assert_eq!(body["code"], "vtc/members/credentials:notFound");
+}
+
+#[tokio::test]
+async fn member_credentials_requires_authentication() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+    let (status, _) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/did:key:zM1/credentials",
+        CREDENTIALS_TASK,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// Credential bodies are admin-only. A member — including the member whose
+/// credentials they are — is refused: the task is an administrator's read.
+#[tokio::test]
+async fn member_credentials_refuses_a_non_admin() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+    let token = fix._vtc.token("did:key:zM1", "application", vec![]).await;
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/did:key:zM1/credentials",
+        CREDENTIALS_TASK,
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
+    assert!(credentials_read_events(&fix).await.is_empty());
+}
+
+/// The route is bound to its own task, so the `members/show` header does not
+/// open it.
+#[tokio::test]
+async fn member_credentials_refuses_another_tasks_header() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+    let (status, _) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/did:key:zM1/credentials",
+        SHOW_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "a mismatched Trust-Task header must be refused, got {status}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ use utoipa::openapi::{Ref, RefOr};
 use crate::protocols::vetting::vetters;
 use trust_tasks_rs::specs::vtc::endorsement_types;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
+use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
 use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
 
 /// Transparent wrappers documenting generated types, one per line.
@@ -168,6 +169,9 @@ spec_types! {
     RegistryRecordsList01Payload(records::list::v0_1::Payload);
     /// `vtc/registry/records/list/0.1#response`.
     RegistryRecordsList01Response(records::list::v0_1::Response);
+    /// `vtc/members/credentials/0.1#response` — the membership pair's bodies
+    /// for one member, plus whether the acknowledgement is bound to the grant.
+    MemberCredentials01Response(member_credentials::v0_1::Response);
 }
 
 /// One type's component, and every other definition of its schema, which the

@@ -379,6 +379,29 @@ fn member_response() -> Value {
     })
 }
 
+/// A `members/credentials/0.1` response as the route emits one.
+///
+/// Built by the production projection
+/// (`routes::members::credentials::credentials_response`) over a member row
+/// populated the way issuance and receipt populate it, not transcribed: a
+/// fixture typed by hand here would keep passing after the projection changed.
+fn member_credentials_response() -> Value {
+    let mut member = crate::members::Member::fresh(DID);
+    let mut role_vec = credential();
+    role_vec["id"] = json!("urn:uuid:8ab13f70-2c4d-4e5f-9a0b-1c2d3e4f5a6b");
+    role_vec["type"] = json!(["VerifiableCredential", "EndorsementCredential"]);
+    member.record_issued_credentials(credential(), role_vec);
+    let mut ack = credential();
+    ack["id"] = json!("urn:uuid:c0de1234-5678-4abc-9def-0123456789ab");
+    ack["issuer"] = json!(DID);
+    ack["credentialSubject"] = json!({ "id": COMMUNITY_DID, "digestMultibase": "zQmExample" });
+    member.record_member_vmc("urn:uuid:c0de1234-5678-4abc-9def-0123456789ab", ack, true);
+    to_v(
+        crate::routes::members::credentials::credentials_response(&member)
+            .expect("a populated member projects"),
+    )
+}
+
 /// The `CommunityProfile` this service serialises
 /// (`community/profile.rs:73`). Carried by profile show/update and by the
 /// config export document.
@@ -1116,6 +1139,18 @@ fn table() -> Vec<Conformance> {
             s::members::show::v0_1::Response,
             json!({ "did": DID }),
             json!({ "member": member_response() })
+        ),
+        checked!(
+            s::members::credentials::v0_1::Payload,
+            s::members::credentials::v0_1::Response,
+            // The payload names the member; over REST it rides the path
+            // segment of `GET /v1/members/{did}/credentials`.
+            json!({ "did": DID }),
+            // Projected through the handler's own `credentials_response` from a
+            // row built by the real issuance and receipt methods — every
+            // optional document present, so the witness covers the widest
+            // shape the route sends.
+            member_credentials_response()
         ),
         checked!(
             s::members::update::v0_1::Payload,

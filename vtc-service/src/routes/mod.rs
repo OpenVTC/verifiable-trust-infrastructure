@@ -699,6 +699,15 @@ fn build_api_chain(
             routes!(members::relationships::list),
             "https://trusttasks.org/spec/vtc/relationships/list/0.2",
         ))
+        // #1215 — the membership pair's bodies for one member. `members/show`
+        // carries the identifiers and its schema forbids the bodies, so this is
+        // its own task rather than a field on the shared `MemberResponse`.
+        // Under `/v1/members/{did}/` like the two above, so it too must precede
+        // the `/v1/members/{did}` catchall.
+        .routes(tt(
+            routes!(members::credentials::credentials),
+            "https://trusttasks.org/spec/vtc/members/credentials/0.1",
+        ))
         // Admin connections-graph view — the member-relationship (VRC) graph.
         .routes(tt(
             routes!(relationships::graph),

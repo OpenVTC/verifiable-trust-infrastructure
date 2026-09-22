@@ -54,6 +54,8 @@ export type MemberEnvelope = Schemas["MemberEnvelope"];
 export type MembersPage = Schemas["Paginated_MemberResponse"];
 export type RemovedMemberRow = Schemas["RemovedMember"];
 export type RemovedMembersResponse = Schemas["RemovedMembersResponse"];
+/** `vtc/members/credentials/0.1#response` — the membership pair's bodies. */
+export type MemberCredentials = Schemas["VtcMembersCredentialsV0_1Response"];
 export type EndorsementRow = Schemas["EndorsementRow"];
 export type EndorsementsPage = Schemas["Paginated_EndorsementRow"];
 export type VetterGrantResponse = Schemas["VtcVettingVettersGrantV0_1Response"];

@@ -3083,6 +3083,56 @@
         ]
       }
     },
+    "/v1/members/{did}/credentials": {
+      "get": {
+        "tags": [
+          "members"
+        ],
+        "summary": "GET /members/{did}/credentials — the membership pair's bodies. Auth: Admin.",
+        "description": "Unknown member → 404 carrying `vtc/members/credentials:notFound`. A member\nwho holds no credentials is **not** that: it is a 200 with every document\nabsent and `memberVmcBound: false`, which is the case the task exists to\nmake visible.\n\n\"Unknown\" is judged exactly as `members/show` judges it — a member row\n**and** its ACL row. A departed (tombstoned) member keeps a row but not an\nACL entry, and tombstoning clears every credential body anyway; answering\nfor one here while `show` says not-found would be two definitions of \"is a\nmember\" one route apart.\n\nEvery successful read is audited (`MemberCredentialsRead`): the\nspecification says a maintainer SHOULD record it, and a disclosure of\ncredential bodies that leaves no trace cannot be reviewed afterwards. The\naudit write happens before the bodies are returned — a read that could not\nbe recorded is refused rather than disclosed silently.",
+        "operationId": "memberCredentials",
+        "parameters": [
+          {
+            "name": "did",
+            "in": "path",
+            "description": "Member DID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The credential documents the community holds for this member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VtcMembersCredentialsV0_1Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`did` is not a DID"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "404": {
+            "description": "No such member (`vtc/members/credentials:notFound`)"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/members/{did}/personhood": {
       "post": {
         "tags": [
@@ -11008,6 +11058,58 @@
           }
         },
         "additionalProperties": true
+      },
+      "VtcMembersCredentialsV0_1Did": {
+        "type": "string",
+        "maxLength": 2048,
+        "pattern": "^did:[a-z0-9]+:.+$"
+      },
+      "VtcMembersCredentialsV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcMembersCredentialsV0_1Response": {
+        "type": "object",
+        "description": "The documents the community holds for this member. Every credential member is optional; absent means the community holds no such document, which is a real answer rather than a failure.",
+        "required": [
+          "did",
+          "memberVmcBound"
+        ],
+        "properties": {
+          "did": {
+            "$ref": "#/components/schemas/VtcMembersCredentialsV0_1Did"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcMembersCredentialsV0_1Ext"
+          },
+          "memberVmc": {
+            "type": "object",
+            "description": "The member-issued reciprocal VMC — the acknowledgement that completes the edge. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2.",
+            "minProperties": 1
+          },
+          "memberVmcBound": {
+            "type": "boolean",
+            "description": "Whether the acknowledgement's digest was verified against the grant. REQUIRED so that 'not verified' is stated rather than inferred from silence. Declares no `default` on purpose — a declared default is materialised by the generated bindings and breaks round-trip idempotence for every existing document."
+          },
+          "memberVmcReceivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the acknowledgement arrived. Paired with `memberVmc`; a maintainer must not send one without the other."
+          },
+          "membershipCredential": {
+            "type": "object",
+            "description": "The community-issued Verifiable Membership Credential — the grant. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2.",
+            "minProperties": 1
+          },
+          "roleCredential": {
+            "type": "object",
+            "description": "The role Verifiable Endorsement Credential. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2.",
+            "minProperties": 1
+          }
+        },
+        "additionalProperties": false
       },
       "VtcRegistryRecordsListV0_1Ext": {
         "type": "object",

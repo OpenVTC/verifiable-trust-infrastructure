@@ -141,6 +141,18 @@ pub enum AuditEvent {
     /// changed; values stay out of the envelope.
     MemberUpdated(MemberUpdatedData),
 
+    /// An administrator read a member's credential bodies
+    /// (`GET /v1/members/{did}/credentials`, `vtc/members/credentials/0.1`).
+    ///
+    /// A read, audited because of what it discloses: the task returns every
+    /// claim the community asserted about the member and every claim the
+    /// member asserted about the community, and its specification says a
+    /// maintainer SHOULD record that the read happened — "members are entitled
+    /// to know that their community's administrators looked". Envelope
+    /// `target_did` is the member. The bodies themselves stay out of the log;
+    /// only which documents were disclosed is recorded.
+    MemberCredentialsRead(MemberCredentialsReadData),
+
     /// `PATCH /v1/members/{did}` reassigned the member's role.
     /// Distinct event from `MemberUpdated` because role changes
     /// are security-significant — SIEM filters key on this
@@ -581,6 +593,7 @@ impl AuditEvent {
             Self::CommunityProfileUpdated(..) => "CommunityProfileUpdated",
             Self::AuditKeyRotated(..) => "AuditKeyRotated",
             Self::MemberUpdated(..) => "MemberUpdated",
+            Self::MemberCredentialsRead(..) => "MemberCredentialsRead",
             Self::RoleChanged(..) => "RoleChanged",
             Self::AdminPromoted(..) => "AdminPromoted",
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
@@ -980,6 +993,17 @@ pub struct MemberUpdatedData {
     /// pre-enrichment rows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<FieldChange>,
+}
+
+/// Payload for [`AuditEvent::MemberCredentialsRead`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberCredentialsReadData {
+    /// The response members that carried a document, by their wire name
+    /// (`membershipCredential`, `roleCredential`, `memberVmc`). Empty when the
+    /// community held none — still a disclosure of that fact, so still
+    /// recorded.
+    pub disclosed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2396,6 +2420,21 @@ mod tests {
         assert_eq!(v["type"], "PersonhoodAsserted");
         assert_eq!(v["data"]["vmcId"], "vmc-7");
         assert_eq!(v["data"]["assertedAt"], "2026-05-14T10:00:00Z");
+        round_trip(&e);
+    }
+
+    #[test]
+    fn member_credentials_read_round_trip() {
+        let e = AuditEvent::MemberCredentialsRead(MemberCredentialsReadData {
+            disclosed: vec!["membershipCredential".into(), "memberVmc".into()],
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "MemberCredentialsRead");
+        assert_eq!(e.variant_name(), "MemberCredentialsRead");
+        assert_eq!(
+            v["data"]["disclosed"],
+            serde_json::json!(["membershipCredential", "memberVmc"])
+        );
         round_trip(&e);
     }
 
