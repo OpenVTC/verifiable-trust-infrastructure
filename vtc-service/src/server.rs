@@ -516,6 +516,19 @@ pub async fn run(
         Err(e) => warn!("failed to upgrade legacy ceremony policies: {e}"),
     }
 
+    // The personhood default an earlier binary installed admitted any
+    // `WitnessCredential` with a non-empty issuer, digest unchecked (#1068).
+    // Replace it if — and only if — it is still the workspace's own row;
+    // an operator-authored personhood policy is left alone.
+    if let Err(e) = crate::policy::default::upgrade_unbound_witness_personhood_default(
+        &policies_ks,
+        &active_policies_ks,
+    )
+    .await
+    {
+        warn!("failed to upgrade the superseded personhood default: {e}");
+    }
+
     // M2.10 + M2.11: provision the two BitstringStatusLists.
     // Idempotent — only seeds decoys when the row is brand new.
     // Skipped when `public_url` is unset (pre-setup deployment) —

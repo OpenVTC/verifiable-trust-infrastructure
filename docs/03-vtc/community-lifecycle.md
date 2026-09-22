@@ -33,7 +33,7 @@ The VTC tracks every state transition in the audit log
 |---|---|---|---|
 | `join.rego` | `POST /v1/join-requests` | deny-all | `cnm policies upload --purpose join` |
 | `removal.rego` | `DELETE /v1/members/{did}` | deny-all | `cnm policies upload --purpose removal` |
-| `personhood.rego` | `POST /v1/members/{did}/personhood/assert` | allow if VP carries a `WitnessCredential` (Phase 4 default) | `cnm policies upload --purpose personhood` |
+| `personhood.rego` | `POST /v1/members/{did}/personhood/assert` | allow if VP carries a `WitnessCredential` whose digest binds to an edge this community holds, or this community's own `IdentityVerification` endorsement | `cnm policies upload --purpose personhood` |
 | `relationships.rego` | `POST /v1/relationships` | allow if both parties are current members | `cnm policies upload --purpose relationships` |
 | `registry.rego` | `MembershipSyncer` reconciliation | `publish_on_join: true; default_departure: tombstone` | `cnm policies upload --purpose registry` |
 | `cross_community_roles.rego` | `POST /v1/auth/recognise` | deny-all (no peer recognition) | `cnm policies upload --purpose cross-community-roles` |

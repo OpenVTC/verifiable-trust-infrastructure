@@ -10,7 +10,8 @@
 # The policy returns `allow == true` on either of two evidence
 # shapes:
 #
-#   - a `WitnessCredential` from a non-empty issuer — a third
+#   - a `WitnessCredential` from a non-empty issuer whose digest
+#     the host has bound to an edge this community holds — a third
 #     party vouching for the applicant; or
 #   - an `IdentityVerification` endorsement **this community
 #     itself issued to this applicant** — the in-person vetting
@@ -35,6 +36,10 @@
 #        "credentials": [ { "type": [...], "issuer": "<did>", ... }, ... ]
 #      }
 #    }
+#
+#    Every `WitnessCredential` entry also carries the host-computed
+#    `"witness_binding": { "state": "bound" | "unresolved" | "absent"
+#    | "malformed", "relationship_id": "<uuid>" (bound only) }`.
 #
 # 2. **Renewal-time re-evaluation** (M4.2.2):
 #    {
@@ -63,13 +68,35 @@ asserted if allow
 
 # ── Assert path (default minimal-allow) ────────────────────
 
-# Allow when the applicant presents at least one
-# `WitnessCredential` from a non-empty issuer.
+# Allow when the applicant presents at least one `WitnessCredential`
+# from a non-empty issuer **whose digest binds to an edge this community
+# holds**.
+#
+# `witness_binding` is the host's verdict, not the presenter's: the
+# daemon recomputes the VWC's `credentialSubject.digestMultibase` against
+# every relationship credential it stores, comparing decoded digest
+# bytes, and writes one of four states onto each witness entry (DTG
+# Credentials Security Considerations 6, *Digest integrity* — without
+# that recomputation a VWC is not evidence of which edge was witnessed):
+#
+#   - `bound`      — names an edge held here; carries `relationship_id`.
+#   - `unresolved` — a well-formed digest naming no edge held here. Not
+#                    forgery: a witness may attest an edge published on
+#                    another community. Not accepted by this default,
+#                    because this community cannot see what was
+#                    witnessed; an operator who trusts foreign edges can
+#                    accept it in a custom policy.
+#   - `absent`     — no digest; the VWC witnesses nothing in particular.
+#   - `malformed`  — a digest that is not a `sha2-256` multihash.
+#
+# Before the verdict existed this rule accepted any `WitnessCredential`
+# with a non-empty issuer (#1068).
 allow if {
 	some i
 	cred := input.vp_claims.credentials[i]
 	"WitnessCredential" in cred.type
 	cred.issuer != ""
+	cred.witness_binding.state == "bound"
 }
 
 # ── In-person vetting by this community ────────────────────

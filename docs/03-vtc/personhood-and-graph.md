@@ -51,7 +51,7 @@ sequenceDiagram
     VTC->>VTC: 1) Load Member row (404 if missing)
     VTC->>VTC: 2) Consume challenge<br/>(400 on missing/expired/wrong-DID)
     VTC->>VTC: 3) Verify VP.holder == path-DID
-    VTC->>VTC: 4) Evaluate personhood.rego<br/>(default: WitnessCredential, or this<br/>community's own IdentityVerification)
+    VTC->>VTC: 4) Evaluate personhood.rego<br/>(default: a digest-bound WitnessCredential, or this<br/>community's own IdentityVerification)
     alt policy allows
         VTC->>VTC: Set personhood=true<br/>Set asserted_at=now
         VTC->>VTC: Re-mint VMC with new flag
@@ -67,6 +67,44 @@ Verifiable Presentation. The handler verifies the VP and discards
 it — no `personhood_evidence` JSON field, no separate signed-blob
 shape. The verify-then-discard semantics keep PII out of the
 request log.
+
+### Witness credentials
+
+A Verifiable Witness Credential (VWC) names the edge it witnessed only
+by digest: `credentialSubject.digestMultibase`, a `sha2-256` multihash
+over the witnessed relationship credential's JCS canonical form with
+its top-level `proof` removed (DTG Credentials §Digest Encoding). Before
+policy runs, the VTC recomputes that digest against every relationship
+credential it holds — comparing decoded digest bytes, never encoded
+strings — and writes its verdict onto each `WitnessCredential` entry in
+`input.vp_claims.credentials` as `witness_binding`:
+
+| `witness_binding.state` | Meaning |
+|---|---|
+| `bound` | The digest names an edge this community holds; `relationship_id` says which. |
+| `unresolved` | A well-formed digest naming no edge held here. Not forgery — the edge may live on another community. |
+| `absent` | The VWC carries no digest, so it witnesses nothing in particular. |
+| `malformed` | The digest is not a `sha2-256` multihash. |
+
+The verdict is the VTC's, not the presenter's: a `witness_binding`
+member inside a presented credential never reaches the policy.
+
+The **default policy accepts only `bound`**. A community that trusts
+witnesses of edges held elsewhere can accept `unresolved` in its own
+`personhood.rego`:
+
+```rego
+allow if {
+	some cred in input.vp_claims.credentials
+	"WitnessCredential" in cred.type
+	cred.witness_binding.state in {"bound", "unresolved"}
+}
+```
+
+A VTC whose personhood policy is still the default an earlier release
+installed — which accepted any `WitnessCredential` with a non-empty
+issuer — has it replaced by the current default at boot. A personhood
+policy an operator uploaded is never replaced.
 
 ### In-person vetting
 
