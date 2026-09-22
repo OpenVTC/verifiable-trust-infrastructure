@@ -1052,6 +1052,13 @@ pub async fn run(
         // `#[non_exhaustive]`, unlike `AppState`), and the storage thread is
         // spawned after `build_app_state` anyway, so there is nothing to inject.
         let storage_app_state_locks = app_state.app_state_locks.clone();
+        // The persona store the request path uses, so the expiry sweep writes
+        // through the same keyspace (and at-rest encryption) and blinds with
+        // the same correlation key.
+        let storage_persona = vta_persona::PersonaStore::new(
+            app_state.persona_ks.clone(),
+            app_state.persona_correlation_key,
+        );
         // The wrapping-key cache reaper is a run()-path concern (build_app_state
         // just constructs the cache); arm it on the live state.
         #[cfg(any(feature = "rest", feature = "didcomm"))]
@@ -1354,6 +1361,7 @@ pub async fn run(
                     storage_app_state_ks,
                     storage_app_state_locks,
                     storage_app_state_retention_days,
+                    storage_persona,
                     storage_backup_bundles_ks,
                     storage_backup_blob_dir,
                     storage_audit_config,
@@ -1474,6 +1482,7 @@ fn run_storage_thread(
     app_state_ks: KeyspaceHandle,
     app_state_locks: crate::operations::app_state::NamespaceLocks,
     app_state_retention_days: u32,
+    persona: vta_persona::PersonaStore,
     backup_bundles_ks_storage: KeyspaceHandle,
     backup_blob_dir_storage: std::path::PathBuf,
     audit_config: crate::config::AuditConfig,
@@ -1571,6 +1580,41 @@ fn run_storage_thread(
                             }
                             Ok(_) => {}
                             Err(e) => warn!("pending-present sweeper error: {e}"),
+                        }
+                        // End every persona binding whose `until` has passed, and
+                        // retire each face that leaves worn nowhere. Reads already
+                        // treat a lapsed binding as cleared; this makes it durable
+                        // and does the retiring (persona/binding/set, `until`).
+                        match persona.expire_bindings(chrono::Utc::now()).await {
+                            Ok(lapsed) if !lapsed.is_empty() => {
+                                for l in &lapsed {
+                                    let detail = format!(
+                                        "binding of persona {} in context {} to face {} ended at \
+                                         its until{}",
+                                        l.persona_did,
+                                        l.context_id,
+                                        l.profile_id,
+                                        if l.retired { "; the face, worn nowhere else, was retired" } else { "" },
+                                    );
+                                    if let Err(e) = crate::audit::record_with_detail(
+                                        &audit_sink,
+                                        "persona.binding.expire",
+                                        "system:sweeper",
+                                        Some(&l.persona_did),
+                                        "success",
+                                        None,
+                                        Some(&l.context_id),
+                                        Some(&detail),
+                                    )
+                                    .await
+                                    {
+                                        warn!("persona expiry audit error: {e}");
+                                    }
+                                }
+                                info!(ended = lapsed.len(), "persona binding expiry sweeper");
+                            }
+                            Ok(_) => {}
+                            Err(e) => warn!("persona binding expiry sweeper error: {e}"),
                         }
                         // Hard-purge grace-expired vault + credential tombstones
                         // (soft-deleted entries past their recovery window), so

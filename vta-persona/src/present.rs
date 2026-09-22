@@ -363,6 +363,20 @@ impl PersonaStore {
             )));
         }
 
+        // The face must still be worn. A preview approved before a binding's
+        // `until` passed is not permission to disclose after it:
+        // `persona/binding/set` says a face is never disclosed through a
+        // binding whose `until` has passed, and a preview is not a binding.
+        let worn = self
+            .binding_record(&preview.context_id, &preview.persona_did)
+            .await?
+            .and_then(|r| r.binding.profile_id);
+        if worn.is_none() && !preview.claims.is_empty() {
+            return Err(AppError::Gone(
+                "the persona no longer wears a face here; preview again".into(),
+            ));
+        }
+
         let artifact = render(&preview, challenge);
 
         let mut record = new_disclosure(
@@ -389,6 +403,7 @@ impl PersonaStore {
         record.subject = Some(preview.subject.clone());
         record.purpose = preview.purpose.clone();
         record.renderer = Some(preview.renderer_id.clone());
+        record.profile_id = worn;
         if durable {
             record.durable_credential_id = Some(ulid::Ulid::generate().to_string());
         }
@@ -560,6 +575,7 @@ mod tests {
             vec![],
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -589,6 +605,7 @@ mod tests {
             "did:persona:a",
             Some(&p.profile_id),
             vec![],
+            None,
             None,
             None,
         )
@@ -625,7 +642,7 @@ mod tests {
         let mut a = s.get(&id).await.unwrap().unwrap();
         a.release = Some(crate::claim_types::ReleaseRequirement::StepUp);
         s.put(a, None).await.unwrap();
-        s.set_binding("ctx", "did:persona:a", Some(&p), vec![], None, None)
+        s.set_binding("ctx", "did:persona:a", Some(&p), vec![], None, None, None)
             .await
             .unwrap();
         let now_gated = s
@@ -649,7 +666,7 @@ mod tests {
         let mut a2 = s2.get(&id2).await.unwrap().unwrap();
         a2.release = Some(crate::claim_types::ReleaseRequirement::Consent);
         s2.put(a2, None).await.unwrap();
-        s2.set_binding("ctx", "did:persona:a", Some(&p2), vec![], None, None)
+        s2.set_binding("ctx", "did:persona:a", Some(&p2), vec![], None, None, None)
             .await
             .unwrap();
         let now_open = s2
@@ -704,6 +721,7 @@ mod tests {
             "did:persona:a",
             Some(&p.profile_id),
             vec![],
+            None,
             None,
             None,
         )
@@ -868,6 +886,7 @@ mod tests {
             "did:persona:a",
             Some(&p.profile_id),
             vec![],
+            None,
             None,
             None,
         )

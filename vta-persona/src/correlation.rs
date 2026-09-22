@@ -726,7 +726,7 @@ impl crate::PersonaStore {
 
     /// Find a context-local face by id alone, across every context. Only a
     /// holder-reach task may call this: it is a scan of every context's faces.
-    async fn find_local_profile(
+    pub(crate) async fn find_local_profile(
         &self,
         profile_id: &str,
     ) -> Result<Option<(crate::Profile, Option<String>)>, vti_common::error::AppError> {

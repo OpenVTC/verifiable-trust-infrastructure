@@ -352,8 +352,9 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # degraded feature, it is a build that does not pass.
 #
 # 0.21.11 raises it for the same reason: it is the first release carrying
-# `persona/profile/compose` and `persona/attribute/promote`.
-trust-tasks-rs = { version = "0.21.11", default-features = false, features = [
+# `persona/profile/compose` and `persona/attribute/promote`; 0.21.12, of
+# `persona/profile/{retire,reinstate}` and binding `until`.
+trust-tasks-rs = { version = "0.21.12", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

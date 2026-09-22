@@ -3666,6 +3666,36 @@ pub(crate) enum PersonaProfileCommands {
         /// Continuation token.
         #[arg(long)]
         cursor: Option<String>,
+        /// Include faces you have retired.
+        #[arg(long = "include-retired")]
+        include_retired: bool,
+    },
+    /// Stop wearing a face anywhere, and keep it: it is taken off every
+    /// context, left out of pickers, and cannot be worn until reinstated.
+    /// Nothing it carries or told anyone is removed.
+    Retire {
+        /// The face.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+        /// The context of a context-local face. Omit for a face in your pool.
+        #[arg(long)]
+        context: Option<String>,
+        /// Require the face to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+    /// Make a retired face wearable again. It is worn nowhere until you wear
+    /// it somewhere.
+    Reinstate {
+        /// The face.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+        /// The context of a context-local face. Omit for a face in your pool.
+        #[arg(long)]
+        context: Option<String>,
+        /// Require the face to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
     },
     /// Remove a profile. Refused while a persona still presents under it
     /// unless `--unbind` is given.
@@ -3707,6 +3737,11 @@ pub(crate) enum PersonaBindingCommands {
         /// your own name for it; omit this and it is given no name at all.
         #[arg(long)]
         label: Option<String>,
+        /// When wearing the face here ends on its own (RFC 3339, e.g.
+        /// 2026-10-05T18:00:00Z). The face is then retired if it is worn
+        /// nowhere else — never deleted.
+        #[arg(long, requires = "profile_id")]
+        until: Option<String>,
         /// Require the binding to be at exactly this version.
         #[arg(long = "expected-version")]
         expected_version: Option<u64>,
@@ -3977,6 +4012,11 @@ pub(crate) enum PersonaLocalBindingCommands {
         /// your own name for it; omit this and it is given no name at all.
         #[arg(long)]
         label: Option<String>,
+        /// When wearing the face here ends on its own (RFC 3339, e.g.
+        /// 2026-10-05T18:00:00Z). The face is then retired if it is worn
+        /// nowhere else — never deleted.
+        #[arg(long, requires = "profile_id")]
+        until: Option<String>,
         /// Require the binding to be at exactly this version.
         #[arg(long = "expected-version")]
         expected_version: Option<u64>,

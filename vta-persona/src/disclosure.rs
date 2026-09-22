@@ -95,6 +95,11 @@ pub struct DisclosureRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cited_contact_revisions: Vec<(Ulid, u64)>,
     pub disclosed_at: String,
+    /// The face the persona wore when this was disclosed, so a face can be
+    /// told who it has spoken to (`persona/profile/get` `disclosedTo`). `None`
+    /// on a record written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<Ulid>,
 }
 
 /// What a holder is asking when they query their own history.
@@ -259,6 +264,7 @@ pub fn new_disclosure(
         durable_credential_id: None,
         cited_contact_revisions: Vec::new(),
         disclosed_at: now_rfc3339(),
+        profile_id: None,
     }
 }
 

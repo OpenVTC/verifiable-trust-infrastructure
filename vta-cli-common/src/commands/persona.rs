@@ -288,11 +288,50 @@ pub async fn cmd_profile_list(
     client: &VtaClient,
     limit: Option<std::num::NonZeroU64>,
     cursor: Option<String>,
+    include_retired: bool,
 ) -> CmdResult {
     let result = client
-        .persona_profile_list(limit, cursor.as_deref())
+        .persona_profile_list(limit, cursor.as_deref(), include_retired)
         .await?;
     print_result("Faces:", &result)
+}
+
+/// `persona profile retire` — stop wearing a face anywhere, and keep it.
+pub async fn cmd_profile_retire(
+    client: &VtaClient,
+    profile_id: String,
+    context: Option<String>,
+    expected_version: Option<u64>,
+) -> CmdResult {
+    let out = client
+        .persona_profile_retire(&profile_id, context.as_deref(), expected_version)
+        .await?;
+    let result = serde_json::to_value(&out)?;
+    if !is_json_output() {
+        println!(
+            "{DIM}Retired: taken off {} place(s) it was worn, and kept. `persona profile \
+             reinstate` makes it wearable again.{RESET}",
+            out.unbound.len()
+        );
+    }
+    print_result("Retired:", &result)
+}
+
+/// `persona profile reinstate` — make a retired face wearable again.
+pub async fn cmd_profile_reinstate(
+    client: &VtaClient,
+    profile_id: String,
+    context: Option<String>,
+    expected_version: Option<u64>,
+) -> CmdResult {
+    let out = client
+        .persona_profile_reinstate(&profile_id, context.as_deref(), expected_version)
+        .await?;
+    let result = serde_json::to_value(&out)?;
+    if !is_json_output() {
+        println!("{DIM}Wearable again, and worn nowhere until you wear it somewhere.{RESET}");
+    }
+    print_result("Reinstated:", &result)
 }
 
 /// `persona profile delete` — remove a profile.
@@ -311,6 +350,17 @@ pub async fn cmd_profile_delete(
              it wears another. Nothing already shared is affected — that has left.{RESET}"
         );
     }
+    if !is_json_output()
+        && let Some(parties) = result["disclosedTo"]["partyCount"].as_u64()
+        && parties > 0
+    {
+        println!(
+            "{YELLOW}This face disclosed to {parties} part{} across {} context(s). Deleting it \
+             does not un-tell them.{RESET}",
+            if parties == 1 { "y" } else { "ies" },
+            result["disclosedTo"]["contextCount"].as_u64().unwrap_or(0),
+        );
+    }
     print_result("Result:", &result)
 }
 
@@ -326,6 +376,7 @@ pub async fn cmd_binding_set(
     profile_id: Option<String>,
     public_entries: Vec<String>,
     label: Option<String>,
+    until: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
     let clearing = profile_id.is_none();
@@ -337,6 +388,7 @@ pub async fn cmd_binding_set(
             profile_id.as_deref(),
             public_entries,
             label.as_deref(),
+            until.as_deref(),
             expected_version,
         )
         .await?;
@@ -794,6 +846,7 @@ pub async fn cmd_local_binding_set(
     persona_did: String,
     profile_id: Option<String>,
     label: Option<String>,
+    until: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
     let result = client
@@ -802,6 +855,7 @@ pub async fn cmd_local_binding_set(
             &persona_did,
             profile_id.as_deref(),
             label.as_deref(),
+            until.as_deref(),
             expected_version,
         )
         .await?;

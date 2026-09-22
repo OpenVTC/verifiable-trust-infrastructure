@@ -37,6 +37,8 @@ const ATTR_DELETE: &str = "https://trusttasks.org/spec/persona/attribute/delete/
 const ATTR_PURGE_VERSION: &str = "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
 const ATTR_PROMOTE: &str = "https://trusttasks.org/spec/persona/attribute/promote/1.0";
 const PROFILE_COMPOSE: &str = "https://trusttasks.org/spec/persona/profile/compose/1.0";
+const PROFILE_RETIRE: &str = "https://trusttasks.org/spec/persona/profile/retire/1.0";
+const PROFILE_REINSTATE: &str = "https://trusttasks.org/spec/persona/profile/reinstate/1.0";
 const PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/profile/put/1.0";
 const PROFILE_GET: &str = "https://trusttasks.org/spec/persona/profile/get/1.0";
 const PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/profile/list/1.0";
@@ -290,6 +292,14 @@ async fn a_context_admin_cannot_reach_the_pool_over_the_wire() {
                 "contextId": CTX, "profileId": "01J0000000000000000000000A",
                 "entries": [0], "expectedVersion": 1
             }),
+        ),
+        (
+            PROFILE_RETIRE,
+            json!({ "profileId": "01J0000000000000000000000A", "contextId": CTX }),
+        ),
+        (
+            PROFILE_REINSTATE,
+            json!({ "profileId": "01J0000000000000000000000A", "contextId": CTX }),
         ),
     ];
 
@@ -3325,4 +3335,167 @@ async fn a_face_composed_in_a_context_stays_there_until_promoted() {
         json!([{ "attributeId": email, "created": false }])
     );
     assert_eq!(out["correlation"]["severity"], "high", "{out}");
+}
+
+/// A face's lifecycle over the wire: retire takes it off everywhere and keeps
+/// it, a retired face cannot be worn, reinstate wears it nowhere, a binding's
+/// `until` is refused in the past and returned when set, and a face says how
+/// far it has spoken. Design note `persona-context-first.md` §9.4, §9.5.
+#[tokio::test]
+async fn a_face_is_retired_kept_and_reinstated_and_a_binding_can_end_on_its_own() {
+    use trust_tasks_rs::specs::persona::profile::{get, retire};
+
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "lifecycle", "admin", &[]).await;
+    let persona = "did:key:z6MkLifecyclePersona";
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({
+            "contextId": CTX, "name": "Conference",
+            "claims": [{ "type": "name.display", "valueType": "string", "value": "Ada",
+                         "share": "pool" }],
+            "personaDid": persona
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "compose: {status} {body}");
+    let face = payload_of(&body)["profileId"].as_str().unwrap().to_string();
+
+    // `until` in the past, or on a cleared binding, is refused with its code.
+    let past = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": face, "until": past }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/binding/set:untilNotFuture"
+    );
+
+    // A future `until` is kept and read back.
+    let later = (chrono::Utc::now() + chrono::Duration::days(2))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": face, "until": later }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+    let (_, body) = post(
+        &router,
+        &holder,
+        BINDING_GET,
+        json!({ "contextId": CTX, "personaDid": persona }),
+    )
+    .await;
+    let until = payload_of(&body)["until"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339(&until).unwrap(),
+        chrono::DateTime::parse_from_rfc3339(&later).unwrap(),
+        "{body}"
+    );
+
+    // The face reports how far it has spoken — nothing yet.
+    let (status, body) = post(&router, &holder, PROFILE_GET, json!({ "profileId": face })).await;
+    assert!(!refused(status, &body), "profile/get: {status} {body}");
+    let out = payload_of(&body).clone();
+    serde_json::from_value::<get::v1_0::Response>(out.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
+    assert_eq!(
+        out["disclosedTo"],
+        json!({ "partyCount": 0, "contextCount": 0 })
+    );
+
+    // Retire: off everywhere, kept, out of the default listing.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_RETIRE,
+        json!({ "profileId": face }),
+    )
+    .await;
+    assert!(!refused(status, &body), "retire: {status} {body}");
+    let out = payload_of(&body).clone();
+    serde_json::from_value::<retire::v1_0::Response>(out.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
+    assert_eq!(
+        out["unbound"],
+        json!([{ "contextId": CTX, "personaDid": persona }])
+    );
+    let (_, body) = post(&router, &holder, PROFILE_LIST, json!({})).await;
+    assert!(
+        !payload_of(&body)["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["profileId"] == face.as_str()),
+        "a retired face is left out by default: {body}"
+    );
+    let (_, body) = post(
+        &router,
+        &holder,
+        PROFILE_LIST,
+        json!({ "includeRetired": true }),
+    )
+    .await;
+    let row = payload_of(&body)["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["profileId"] == face.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("kept: {body}"));
+    assert_eq!(row["status"], "retired");
+
+    // A retired face cannot be worn.
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": face }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/binding/set:profileRetired"
+    );
+
+    // Reinstate: wearable, and worn nowhere.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_REINSTATE,
+        json!({ "profileId": face }),
+    )
+    .await;
+    assert!(!refused(status, &body), "reinstate: {status} {body}");
+    let (_, body) = post(
+        &router,
+        &holder,
+        BINDING_GET,
+        json!({ "contextId": CTX, "personaDid": persona }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["bound"], false, "{body}");
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": face }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
 }

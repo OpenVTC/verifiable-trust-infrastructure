@@ -403,9 +403,37 @@ pub struct Profile {
     /// questions and must not be read as one another.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credential_refs: Vec<String>,
+    /// Whether the holder still wears this face. A face written before the
+    /// field existed reads as active, which is what it was.
+    #[serde(default, skip_serializing_if = "ProfileStatus::is_active")]
+    pub status: ProfileStatus,
+    /// When it was retired. Present exactly when `status` is `Retired`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_at: Option<String>,
     pub version: Version,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Whether a face is still worn — `persona/profile/retire`, design note
+/// `persona-context-first.md` §9.4.
+///
+/// Mirrors the vault's archival axis rather than inventing a sibling: a retired
+/// face is out of pickers and cannot be worn, and everything it carries and
+/// every disclosure it made is kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileStatus {
+    #[default]
+    Active,
+    Retired,
+}
+
+impl ProfileStatus {
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        *self == Self::Active
+    }
 }
 
 /// A colour **name**, resolved by each consumer against its own palette.
@@ -492,6 +520,11 @@ pub struct Binding {
     pub public_entries: Vec<Ulid>,
     pub version: Version,
     pub bound_at: String,
+    /// When the binding ends on its own (RFC 3339). Past it, every read treats
+    /// the binding as cleared whether or not the sweeper has run — see
+    /// `BindingRecord::into_read`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
 }
 
 #[cfg(test)]

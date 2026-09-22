@@ -165,9 +165,21 @@ async fn profile(client: &VtaClient, command: PersonaProfileCommands) -> CmdResu
             profile_id,
             resolve,
         } => p::cmd_profile_get(client, profile_id, resolve).await,
-        PersonaProfileCommands::List { limit, cursor } => {
-            p::cmd_profile_list(client, limit, cursor).await
-        }
+        PersonaProfileCommands::List {
+            limit,
+            cursor,
+            include_retired,
+        } => p::cmd_profile_list(client, limit, cursor, include_retired).await,
+        PersonaProfileCommands::Retire {
+            profile_id,
+            context,
+            expected_version,
+        } => p::cmd_profile_retire(client, profile_id, context, expected_version).await,
+        PersonaProfileCommands::Reinstate {
+            profile_id,
+            context,
+            expected_version,
+        } => p::cmd_profile_reinstate(client, profile_id, context, expected_version).await,
         PersonaProfileCommands::Delete {
             profile_id,
             unbind,
@@ -184,6 +196,7 @@ async fn binding(client: &VtaClient, command: PersonaBindingCommands) -> CmdResu
             profile_id,
             public_entries,
             label,
+            until,
             expected_version,
         } => {
             p::cmd_binding_set(
@@ -193,6 +206,7 @@ async fn binding(client: &VtaClient, command: PersonaBindingCommands) -> CmdResu
                 profile_id,
                 public_entries,
                 label,
+                until,
                 expected_version,
             )
             .await
@@ -361,6 +375,7 @@ async fn local(client: &VtaClient, command: PersonaLocalCommands) -> CmdResult {
                 persona_did,
                 profile_id,
                 label,
+                until,
                 expected_version,
             } => {
                 p::cmd_local_binding_set(
@@ -369,6 +384,7 @@ async fn local(client: &VtaClient, command: PersonaLocalCommands) -> CmdResult {
                     persona_did,
                     profile_id,
                     label,
+                    until,
                     expected_version,
                 )
                 .await

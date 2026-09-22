@@ -1013,6 +1013,14 @@ pub const TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0: &str =
 pub const TASK_PERSONA_PROFILE_COMPOSE_1_0: &str =
     "https://trusttasks.org/spec/persona/profile/compose/1.0";
 
+/// `spec/persona/profile/retire/1.0`
+pub const TASK_PERSONA_PROFILE_RETIRE_1_0: &str =
+    "https://trusttasks.org/spec/persona/profile/retire/1.0";
+
+/// `spec/persona/profile/reinstate/1.0`
+pub const TASK_PERSONA_PROFILE_REINSTATE_1_0: &str =
+    "https://trusttasks.org/spec/persona/profile/reinstate/1.0";
+
 /// `spec/persona/profile/put/1.0`
 pub const TASK_PERSONA_PROFILE_PUT_1_0: &str =
     "https://trusttasks.org/spec/persona/profile/put/1.0";
@@ -2187,6 +2195,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
     TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
     TASK_PERSONA_PROFILE_COMPOSE_1_0,
+    TASK_PERSONA_PROFILE_RETIRE_1_0,
+    TASK_PERSONA_PROFILE_REINSTATE_1_0,
     TASK_PERSONA_PROFILE_PUT_1_0,
     TASK_PERSONA_PROFILE_GET_1_0,
     TASK_PERSONA_PROFILE_LIST_1_0,

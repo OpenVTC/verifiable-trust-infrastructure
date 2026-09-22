@@ -401,6 +401,10 @@ pub struct PersonaProfileListBody {
     /// Continuation token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Include retired faces. Off by default: a picker that offered a retired
+    /// face back would undo the holder's decision by accident.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_retired: Option<bool>,
     /// Ecosystem-defined extension members (SPEC §4.5.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
@@ -454,6 +458,10 @@ pub struct PersonaBindingSetBody {
     /// reader is given this, never the holder's own name for the face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// When the binding ends on its own (RFC 3339). At it the face stops
+    /// being worn here, and is retired if it is then worn nowhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
     /// Optimistic-concurrency precondition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_version: Option<u64>,
@@ -856,6 +864,10 @@ pub struct PersonaLocalBindingSetBody {
     /// reader is given this, never the holder's own name for the face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// When the binding ends on its own (RFC 3339). At it the face stops
+    /// being worn here, and is retired if it is then worn nowhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
     /// Optimistic-concurrency precondition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_version: Option<u64>,

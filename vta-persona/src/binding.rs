@@ -75,6 +75,59 @@ pub(crate) struct BindingRecord {
     pub claims: Vec<MaterialisedClaim>,
 }
 
+impl BindingRecord {
+    /// Whether this binding's `until` has passed at `now`.
+    pub(crate) fn lapsed_at(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.binding.profile_id.is_some()
+            && self
+                .binding
+                .until
+                .as_deref()
+                .and_then(|u| chrono::DateTime::parse_from_rfc3339(u).ok())
+                .is_some_and(|u| u <= now)
+    }
+
+    /// The binding as every reader must see it.
+    ///
+    /// A binding past its `until` reads as cleared **whether or not the sweeper
+    /// has reached it yet** — `persona/binding/set` says a face is never
+    /// disclosed through a binding whose `until` has passed, and a sweeper runs
+    /// on an interval. Making the lapse a property of the read rather than of
+    /// the sweep means no reader can forget it: they all decode through here.
+    /// The version is kept, so a conditional write still sees the row it read.
+    pub(crate) fn into_read(mut self, now: chrono::DateTime<chrono::Utc>) -> Self {
+        if self.lapsed_at(now) {
+            self.binding.profile_id = None;
+            self.binding.until = None;
+            self.profile_name = None;
+            self.label = None;
+            self.claims.clear();
+        }
+        self
+    }
+
+    /// Decode a stored row as a reader must see it.
+    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+        serde_json::from_slice::<Self>(bytes)
+            .ok()
+            .map(|r| r.into_read(chrono::Utc::now()))
+    }
+}
+
+/// Check a binding's `until` before it is written: in the future, and only on
+/// a binding that wears a face. `None` when it is acceptable.
+pub(crate) fn until_refusal(until: Option<&str>, wears_a_face: bool) -> Option<String> {
+    let until = until?;
+    if !wears_a_face {
+        return Some("an `until` ends a face being worn; a cleared binding has none".into());
+    }
+    match chrono::DateTime::parse_from_rfc3339(until) {
+        Ok(t) if t > chrono::Utc::now() => None,
+        Ok(_) => Some(format!("until {until} is not in the future")),
+        Err(e) => Some(format!("until {until} is not an RFC 3339 date-time: {e}")),
+    }
+}
+
 /// What a context-scoped caller may learn about a binding.
 ///
 /// Whether a profile is bound, the holder's label for it, and how many claims
@@ -93,6 +146,8 @@ pub struct BindingSummary {
     pub label: Option<String>,
     pub claim_count: usize,
     pub bound_at: Option<String>,
+    /// When the binding ends on its own.
+    pub until: Option<String>,
 }
 
 /// Where an attribute edit landed — see [`PersonaStore::attribute_reach`].
@@ -138,6 +193,9 @@ impl PersonaStore {
     /// `profile_id: None` clears. A persona with no profile is a legitimate and
     /// common state — a throwaway identity that presents nothing — so it is a
     /// first-class value rather than an absence to be inferred.
+    // One argument per member of `persona/binding/set`; a struct here would
+    // only be the payload again under another name.
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_binding(
         &self,
         context_id: &str,
@@ -145,8 +203,12 @@ impl PersonaStore {
         profile_id: Option<&str>,
         public_entries: Vec<Ulid>,
         label: Option<String>,
+        until: Option<String>,
         expected_version: Option<Version>,
     ) -> Result<Bound, AppError> {
+        if let Some(reason) = until_refusal(until.as_deref(), profile_id.is_some()) {
+            return Err(AppError::Validation(reason));
+        }
         let _guard = self.write_lock.lock().await;
 
         let existing = self.binding_record(context_id, persona_did).await?;
@@ -165,6 +227,13 @@ impl PersonaStore {
                         "profile {id} does not exist; refusing to bind a persona to it"
                     )));
                 };
+                // A retired face is one the holder has stopped being; binding it
+                // back by accident would undo that. Reinstate first.
+                if !p.status.is_active() {
+                    return Err(AppError::Validation(format!(
+                        "profile {id} is retired; reinstate it before wearing it"
+                    )));
+                }
                 (Some(p.name.clone()), self.materialise(id).await?)
             }
         };
@@ -187,6 +256,7 @@ impl PersonaStore {
                 public_entries,
                 version,
                 bound_at: now_rfc3339(),
+                until: profile_id.and(until),
             },
             profile_name,
             // A cleared binding wears no face, so it has nothing to name.
@@ -230,9 +300,11 @@ impl PersonaStore {
         context_id: &str,
         persona_did: &str,
     ) -> Result<Option<BindingRecord>, AppError> {
-        self.ks
+        Ok(self
+            .ks
             .get::<BindingRecord>(storage::binding_key(context_id, persona_did))
-            .await
+            .await?
+            .map(|r| r.into_read(chrono::Utc::now())))
     }
 
     /// What a context-scoped caller may learn. Never the claim values.
@@ -251,6 +323,7 @@ impl PersonaStore {
                 label: None,
                 claim_count: 0,
                 bound_at: None,
+                until: None,
             },
             Some(r) => BindingSummary {
                 persona_did: persona_did.to_string(),
@@ -264,6 +337,7 @@ impl PersonaStore {
                 label: r.label.clone(),
                 claim_count: r.claims.len(),
                 bound_at: Some(r.binding.bound_at.clone()),
+                until: r.binding.until.clone(),
             },
         })
     }
@@ -310,7 +384,7 @@ impl PersonaStore {
             .await?;
         Ok(rows
             .into_iter()
-            .filter_map(|(_k, v)| serde_json::from_slice::<BindingRecord>(&v).ok())
+            .filter_map(|(_k, v)| BindingRecord::decode(&v))
             .collect())
     }
 
@@ -331,6 +405,7 @@ impl PersonaStore {
                 label: r.label,
                 claim_count: r.claims.len(),
                 bound_at: Some(r.binding.bound_at),
+                until: r.binding.until,
             })
             .collect())
     }
@@ -347,7 +422,7 @@ impl PersonaStore {
         let rows = self.ks.prefix_iter_raw(b"pb:".to_vec()).await?;
         Ok(rows
             .into_iter()
-            .filter_map(|(_k, v)| serde_json::from_slice::<BindingRecord>(&v).ok())
+            .filter_map(|(_k, v)| BindingRecord::decode(&v))
             .filter(|r| r.binding.profile_id.as_deref() == Some(profile_id))
             .map(|r| r.binding.persona_did)
             .collect())
@@ -388,7 +463,7 @@ impl PersonaStore {
         Ok(rows
             .into_iter()
             .filter_map(|(k, v)| {
-                let record = serde_json::from_slice::<BindingRecord>(&v).ok()?;
+                let record = BindingRecord::decode(&v)?;
                 if record.binding.profile_id.as_deref() != Some(profile_id) {
                     return None;
                 }
@@ -409,7 +484,7 @@ impl PersonaStore {
         let rows = self.ks.prefix_iter_raw(b"pb:".to_vec()).await?;
         let mut cleared = 0usize;
         for (k, v) in rows {
-            let Ok(mut record) = serde_json::from_slice::<BindingRecord>(&v) else {
+            let Some(mut record) = BindingRecord::decode(&v) else {
                 continue;
             };
             if record.binding.profile_id.as_deref() != Some(profile_id) {
@@ -461,7 +536,7 @@ impl PersonaStore {
         let mut refreshed = 0usize;
         let rows = self.ks.prefix_iter_raw(b"pb:".to_vec()).await?;
         for (k, v) in rows {
-            let Ok(mut record) = serde_json::from_slice::<BindingRecord>(&v) else {
+            let Some(mut record) = BindingRecord::decode(&v) else {
                 continue;
             };
             if record.binding.profile_id.as_deref() != Some(profile_id) {
@@ -604,7 +679,7 @@ mod tests {
         use crate::ClaimCurrency as C;
         let (_d, s) = fresh().await;
         let (attr, profile) = pool_profile(&s, "+61 400").await;
-        s.set_binding("ctx", "did:p", Some(&profile), vec![], None, None)
+        s.set_binding("ctx", "did:p", Some(&profile), vec![], None, None, None)
             .await
             .unwrap();
 
@@ -618,7 +693,7 @@ mod tests {
         assert_eq!(s.claim_currency(&rec).await.unwrap(), vec![C::Changed]);
 
         // The persona stops presenting it; the verifier keeps what it got.
-        s.set_binding("ctx", "did:p", None, vec![], None, None)
+        s.set_binding("ctx", "did:p", None, vec![], None, None, None)
             .await
             .unwrap();
         assert_eq!(s.claim_currency(&rec).await.unwrap(), vec![C::Removed]);
@@ -642,6 +717,7 @@ mod tests {
             vec![],
             Some("Co-op".into()),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -653,9 +729,17 @@ mod tests {
                 .as_deref(),
             Some("Co-op")
         );
-        s.set_binding("ctx", "did:p", None, vec![], Some("Co-op".into()), None)
-            .await
-            .unwrap();
+        s.set_binding(
+            "ctx",
+            "did:p",
+            None,
+            vec![],
+            Some("Co-op".into()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(s.binding_summary("ctx", "did:p").await.unwrap().label, None);
     }
 
@@ -665,9 +749,17 @@ mod tests {
         let (_a, profile) = pool_profile(&s, "+61 400 000 000").await;
         let persona = "did:peer:2.Ez6LSbXq3.Vz6MkfR9c";
 
-        s.set_binding("ctx-employer", persona, Some(&profile), vec![], None, None)
-            .await
-            .unwrap();
+        s.set_binding(
+            "ctx-employer",
+            persona,
+            Some(&profile),
+            vec![],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let found = s.bindings_to_anywhere(&profile).await.unwrap();
         assert_eq!(
@@ -698,6 +790,7 @@ mod tests {
             "did:persona:a",
             Some(&profile_id),
             vec![],
+            None,
             None,
             None,
         )
@@ -733,6 +826,7 @@ mod tests {
                 vec![],
                 None,
                 None,
+                None,
             )
             .await
             .unwrap_err();
@@ -743,12 +837,12 @@ mod tests {
     async fn clearing_is_a_first_class_state_not_an_absence() {
         let (_d, s) = fresh().await;
         let (_a, p) = pool_profile(&s, "x").await;
-        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None)
+        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None, None)
             .await
             .unwrap();
         assert!(s.binding_summary("ctx", "did:p").await.unwrap().bound);
 
-        s.set_binding("ctx", "did:p", None, vec![], None, None)
+        s.set_binding("ctx", "did:p", None, vec![], None, None, None)
             .await
             .unwrap();
         let sum = s.binding_summary("ctx", "did:p").await.unwrap();
@@ -770,13 +864,13 @@ mod tests {
         let (_a, p) = pool_profile(&s, "x").await;
 
         let first = s
-            .set_binding("ctx", "did:p1", Some(&p), vec![], None, None)
+            .set_binding("ctx", "did:p1", Some(&p), vec![], None, None, None)
             .await
             .unwrap();
         assert_eq!(first.also_bound_persona_count, 0);
 
         let second = s
-            .set_binding("ctx", "did:p2", Some(&p), vec![], None, None)
+            .set_binding("ctx", "did:p2", Some(&p), vec![], None, None, None)
             .await
             .unwrap();
         assert_eq!(second.also_bound_persona_count, 1);
@@ -786,7 +880,7 @@ mod tests {
     async fn a_summary_names_the_composition_and_never_its_contents() {
         let (_d, s) = fresh().await;
         let (_a, p) = pool_profile(&s, "+61 4xx secret").await;
-        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None)
+        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None, None)
             .await
             .unwrap();
 
@@ -804,7 +898,7 @@ mod tests {
         // from above, not a read from below.
         let (_d, s) = fresh().await;
         let (attr_id, p) = pool_profile(&s, "old").await;
-        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None)
+        s.set_binding("ctx", "did:p", Some(&p), vec![], None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -827,7 +921,7 @@ mod tests {
     async fn a_context_sees_only_its_own_bindings() {
         let (_d, s) = fresh().await;
         let (_a, p) = pool_profile(&s, "x").await;
-        s.set_binding("ctx-a", "did:p", Some(&p), vec![], None, None)
+        s.set_binding("ctx-a", "did:p", Some(&p), vec![], None, None, None)
             .await
             .unwrap();
 
