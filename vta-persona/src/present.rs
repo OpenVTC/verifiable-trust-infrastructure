@@ -201,8 +201,21 @@ impl PersonaStore {
             {
                 continue;
             }
-            claims.push(preview_claim(m, &seen));
-            included.push(m.clone());
+            // The copy in the context carries its provenance, so a
+            // credential-backed claim is re-derived here — the holder is shown
+            // what the credential says now, and a withdrawn one shows stale
+            // before anything is approved (`crate::derive`).
+            let mut m = m.clone();
+            match self.rederive(&m.provenance).await? {
+                None => {}
+                Some(crate::Derived::Value(v)) => m.value = Some(v),
+                Some(crate::Derived::Stale(_)) => {
+                    m.value = None;
+                    m.stale = true;
+                }
+            }
+            claims.push(preview_claim(&m, &seen));
+            included.push(m);
         }
 
         if claims.is_empty() {
@@ -367,14 +380,39 @@ impl PersonaStore {
         // `until` passed is not permission to disclose after it:
         // `persona/binding/set` says a face is never disclosed through a
         // binding whose `until` has passed, and a preview is not a binding.
-        let worn = self
+        let binding = self
             .binding_record(&preview.context_id, &preview.persona_did)
-            .await?
-            .and_then(|r| r.binding.profile_id);
+            .await?;
+        let worn = binding.as_ref().and_then(|r| r.binding.profile_id.clone());
         if worn.is_none() && !preview.claims.is_empty() {
             return Err(AppError::Gone(
                 "the persona no longer wears a face here; preview again".into(),
             ));
+        }
+        // And each credential behind it must still back its claim. A preview is
+        // not a licence to present a credential revoked since it was shown:
+        // re-derived from the binding's copy, which carries the provenance the
+        // preview line does not.
+        for claim in &preview.claims {
+            if claim.provenance != "credentialBacked" {
+                continue;
+            }
+            let copies = binding.iter().flat_map(|r| r.claims.iter()).filter(|m| {
+                m.r#type == claim.r#type
+                    && matches!(m.provenance, crate::Provenance::CredentialBacked { .. })
+            });
+            for m in copies {
+                if matches!(
+                    self.rederive(&m.provenance).await?,
+                    Some(crate::Derived::Stale(_))
+                ) {
+                    return Err(AppError::Conflict(format!(
+                        "the credential behind {} no longer backs it; refusing the whole \
+                         disclosure rather than issuing a shorter one",
+                        claim.r#type
+                    )));
+                }
+            }
         }
 
         let artifact = render(&preview, challenge);

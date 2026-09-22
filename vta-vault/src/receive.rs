@@ -261,6 +261,67 @@ pub async fn receive_sd_jwt_vc(
     Ok(cred)
 }
 
+/// The claims a stored credential carries, as one JSON document — what a
+/// `claimPath` (RFC 6901) is read against.
+///
+/// - **SD-JWT-VC**: re-verified against its issuer and reconstructed with
+///   every disclosure the holder holds, exactly as [`receive_sd_jwt_vc`] reads
+///   it on arrival. The stored body is what was verified then; re-verifying is
+///   what makes this the only way the claims are read.
+/// - **Data-Integrity VC**: the document itself, verified on arrival.
+/// - **mdoc**: not readable by path here, and refused rather than guessed.
+///
+/// Fails closed: a body that does not parse, or a signature that no longer
+/// verifies, is an error, never an empty document.
+pub fn stored_claims(cred: &StoredCredential) -> Result<Value, AppError> {
+    match &cred.format {
+        CredentialFormat::SdJwtVc => {
+            let hasher = Sha256Hasher;
+            let compact = std::str::from_utf8(&cred.body)
+                .map_err(|e| AppError::Validation(format!("SD-JWT-VC body is not UTF-8: {e}")))?;
+            let sd_jwt = SdJwt::parse(compact, &hasher)
+                .map_err(|e| AppError::Validation(format!("malformed SD-JWT-VC: {e}")))?;
+            let issuer_did = sd_jwt
+                .payload()
+                .ok()
+                .and_then(|p| p.get("iss").and_then(Value::as_str).map(str::to_string))
+                .ok_or_else(|| {
+                    AppError::Validation("SD-JWT-VC is missing the `iss` claim".to_string())
+                })?;
+            let issuer_pub = affinidi_crypto::did_key::did_key_to_ed25519_pub(&issuer_did)
+                .map_err(|e| {
+                    AppError::Validation(format!("issuer {issuer_did} is not a did:key: {e}"))
+                })?;
+            let key = VerifyingKey::from_bytes(&issuer_pub)
+                .map_err(|e| AppError::Validation(format!("issuer key is not Ed25519: {e}")))?;
+            let result = verify(
+                &sd_jwt,
+                &IssuerEddsaVerifier { key },
+                &hasher,
+                &VerificationOptions::default(),
+                None,
+            )
+            .map_err(|e| {
+                AppError::Validation(format!("issuer signature no longer verifies: {e}"))
+            })?;
+            if !result.is_verified() {
+                return Err(AppError::Validation(
+                    "SD-JWT-VC verification did not succeed".to_string(),
+                ));
+            }
+            Ok(result.claims)
+        }
+        CredentialFormat::EddsaJcs2022 | CredentialFormat::Bbs2023 => {
+            serde_json::from_slice(&cred.body).map_err(|e| {
+                AppError::Validation(format!("Data-Integrity VC body is not JSON: {e}"))
+            })
+        }
+        other => Err(AppError::Validation(format!(
+            "claims of a {other:?} credential cannot be read by path"
+        ))),
+    }
+}
+
 /// Receive a **W3C Data-Integrity VC** (`eddsa-jcs-2022`) into the vault: verify
 /// the issuer proof + temporal validity, map, and store (spec D4 — the
 /// format-agnostic bridge; the W3C-DI sibling of [`receive_sd_jwt_vc`]).

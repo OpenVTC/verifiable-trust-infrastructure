@@ -307,7 +307,75 @@ use vta_persona::{
 /// The correlation key is derived per agent and lives beside the at-rest key;
 /// it never leaves the agent, which is what makes the blinded index blinded.
 pub(super) fn store(state: &AppState) -> PersonaStore {
-    PersonaStore::new(state.persona_ks.clone(), state.persona_correlation_key)
+    PersonaStore::new(state.persona_ks.clone(), state.persona_correlation_key).with_credentials(
+        std::sync::Arc::new(VaultCredentials {
+            vault: state.vault_ks.clone(),
+        }),
+    )
+}
+
+/// The credential vault, as the persona store derives credential-backed values
+/// from it (`vta_persona::derive`).
+///
+/// A credential backs a value only while it is held, active, not revoked or
+/// expired, inside its validity window, and carries the path. Anything else
+/// is stale — fail closed, and with the reason the holder is shown. A body
+/// that no longer reads, or whose signature no longer verifies, is stale too:
+/// a value nothing can vouch for is not presented as though something did.
+struct VaultCredentials {
+    vault: vti_common::store::KeyspaceHandle,
+}
+
+#[async_trait::async_trait]
+impl vta_persona::CredentialSource for VaultCredentials {
+    async fn derive(
+        &self,
+        credential_id: &str,
+        claim_path: &str,
+    ) -> Result<vta_persona::Derived, AppError> {
+        use vta_persona::{Derived, StaleReason};
+        use vti_common::vault::VaultStatus;
+
+        let Some(cred) = crate::vault::storage::get(&self.vault, credential_id).await? else {
+            return Ok(Derived::Stale(StaleReason::NotFound));
+        };
+        match cred.lifecycle {
+            VaultStatus::Deleted => return Ok(Derived::Stale(StaleReason::Deleted)),
+            VaultStatus::Archived => return Ok(Derived::Stale(StaleReason::Archived)),
+            VaultStatus::Active => {}
+        }
+        match cred.status {
+            crate::vault::CredentialStatus::Revoked => {
+                return Ok(Derived::Stale(StaleReason::Revoked));
+            }
+            crate::vault::CredentialStatus::Expired => {
+                return Ok(Derived::Stale(StaleReason::Expired));
+            }
+            // `Unknown` is the state every credential is stored in until its
+            // status list is read; treating it as withdrawn would make every
+            // credential-backed attribute stale on arrival.
+            crate::vault::CredentialStatus::Valid | crate::vault::CredentialStatus::Unknown => {}
+        }
+        let now = chrono::Utc::now();
+        let parse = |t: &Option<String>| {
+            t.as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        };
+        if parse(&cred.valid_until).is_some_and(|u| u <= now) {
+            return Ok(Derived::Stale(StaleReason::Expired));
+        }
+        // Not yet valid: nothing can be derived from it yet.
+        if parse(&cred.valid_from).is_some_and(|f| f > now) {
+            return Ok(Derived::Stale(StaleReason::NotFound));
+        }
+        let Ok(claims) = crate::vault::receive::stored_claims(&cred) else {
+            return Ok(Derived::Stale(StaleReason::NotFound));
+        };
+        Ok(match claims.pointer(claim_path) {
+            Some(v) => Derived::Value(v.clone()),
+            None => Derived::Stale(StaleReason::NotFound),
+        })
+    }
 }
 
 /// Insert `key` into a response body only when `value` is `Some`.
@@ -601,8 +669,27 @@ pub(super) async fn handle_attribute_put(
     attribute.endorsements = endorsements;
 
     let attribute_id = attribute.attribute_id.clone();
-    let value = attribute.value.clone();
     let s = store(state);
+
+    // A credential-backed attribute names a credential the vault must hold in a
+    // state its value can be derived from; one it cannot is refused with the
+    // specification's code, before anything is written (rule 3). The store
+    // makes the same check, so no other path can store one.
+    match s.credential_refusal(&attribute.provenance).await {
+        Ok(Some(reason)) => {
+            return reject_with_code(
+                &doc,
+                ext(&slug_from_doc(&doc), "credentialNotFound"),
+                format!(
+                    "the credential behind this attribute cannot back it ({})",
+                    wire_name(reason)
+                ),
+                None,
+            );
+        }
+        Ok(None) => {}
+        Err(e) => return reject(&doc, e),
+    }
 
     let written = match s.put(attribute, req.expected_version.map(|v| *v)).await {
         Ok(w) => w,
@@ -611,7 +698,15 @@ pub(super) async fn handle_attribute_put(
 
     // Advisory, and computed after the write because the write has already
     // applied — a maintainer must not refuse on correlation grounds. The
-    // holder decides.
+    // holder decides. Read back rather than taken from the request: a
+    // credential-backed value is the credential's, which the store wrote in
+    // place of the one supplied.
+    let value = s
+        .get(&attribute_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|a| a.value);
     let shared = match &value {
         Some(v) => s.correlation_count(v, &attribute_id).await.unwrap_or(0),
         None => 0,
