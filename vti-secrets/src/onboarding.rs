@@ -20,6 +20,15 @@
 //!    ```
 //!    (or `pnm acl create --did <EPHEMERAL_DID> --role application
 //!    --contexts <CTX>` against a running VTA).
+//!
+//!    **An integration that fetches its context DID's private keys** — via
+//!    `VtaClient::fetch_did_secrets_bundle` or `vta_sdk::integration::startup`,
+//!    as a mediator or a room host does — needs `--role admin` instead, still
+//!    scoped to `<CTX>`. Releasing keys needs the `key-export` capability,
+//!    which only an admin derives (VTI-VTA-003); an `application` grant is
+//!    refused at the fetch. See
+//!    [`OnboardingTicket::admin_import_did_command`]. Always name the context:
+//!    an admin with none is a super-admin.
 //! 3. **Connect + rotate** ([`IntegrationOnboarding::connect`] /
 //!    [`IntegrationOnboarding::connect_rest`]): on the first successful
 //!    authentication the session store atomically swaps the throwaway
@@ -81,9 +90,26 @@ impl OnboardingTicket {
 
     /// The `vta import-did` command the operator should run (offline / cold
     /// start) to authorize this DID in `context`.
+    ///
+    /// An `application` grant: enough to call the VTA, **not** enough to fetch
+    /// the context DID's private keys. An integration that does that wants
+    /// [`admin_import_did_command`](Self::admin_import_did_command).
     pub fn import_did_command(&self, context: &str) -> String {
         format!(
             "vta import-did --did {} --role application --context {}",
+            self.ephemeral_did, context
+        )
+    }
+
+    /// The `vta import-did` command for an integration that operates
+    /// `context`'s DID and so fetches its private keys at startup: an admin
+    /// **scoped to `context`**.
+    ///
+    /// `vta/contexts/secrets` is gated on `key-export`, which only an admin
+    /// derives, because releasing a key is an export (VTI-VTA-003).
+    pub fn admin_import_did_command(&self, context: &str) -> String {
+        format!(
+            "vta import-did --did {} --role admin --context {}",
             self.ephemeral_did, context
         )
     }
@@ -247,5 +273,19 @@ mod tests {
         assert!(cmd.contains("--role application"));
         assert!(cmd.contains("--did did:key:z6MkExample"));
         assert!(cmd.contains("--context ctx-1"));
+    }
+
+    /// VTI-VTA-003: the command for a secrets-fetching integration grants a
+    /// context-scoped admin — never an unscoped one.
+    #[test]
+    fn vti_vta_003_admin_import_did_command_is_context_scoped() {
+        let ticket = OnboardingTicket {
+            ephemeral_did: "did:key:z6MkExample".to_string(),
+            vta_did: "did:webvh:example.com:vta".to_string(),
+        };
+        assert_eq!(
+            ticket.admin_import_did_command("ctx-1"),
+            "vta import-did --did did:key:z6MkExample --role admin --context ctx-1"
+        );
     }
 }

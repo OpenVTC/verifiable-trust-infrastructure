@@ -293,14 +293,13 @@ pub const TASK_CONTEXTS_GET_1_0: &str = "https://trusttasks.org/spec/vta/context
 /// DID's private keys to decrypt what is addressed to it. It cannot delegate
 /// that per-frame, so it fetches them once at startup and caches them.
 ///
-/// Auth: **Application or higher**, and only for a context the caller may act
-/// in. That is deliberately not Admin: reading the keys of the DID you already
-/// operate is not an administrative act, and requiring Admin meant every
-/// integration was granted authority over everything else in the VTA in order
-/// to be itself.
-///
-/// The scoping is what makes the lower role safe, so it is asserted rather than
-/// described — see `contexts::handle_secrets`.
+/// Auth: the **`key-export`** capability, and only for a context the caller may
+/// act in. Releasing a DID's private keys is an export, and VTI-VTA-003 gates
+/// export on a capability distinct from the one to use the key. Only `admin`
+/// derives `key-export`, so the service operating a context's DID is an admin
+/// **scoped to that context** — what `provision-integration` mints. Scope is
+/// checked separately: an admin of one context gets no other context's keys.
+/// A refusal is `permissionDenied` naming the `pnm acl` command that fixes it.
 ///
 /// Payload:
 /// [`crate::protocols::context_management::secrets::GetContextSecretsBody`].

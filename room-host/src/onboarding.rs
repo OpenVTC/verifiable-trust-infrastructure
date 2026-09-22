@@ -97,11 +97,17 @@ pub fn grant_instructions(ephemeral_did: &str, vta_did: &str) -> String {
          It has minted a throwaway identity and is waiting to be authorized:\n\
          \n    {ephemeral_did}\n\
          \n\
-         Grant it an application role in the context that governs your rooms — from the VTA:\n\
-         \n    vta import-did --did {ephemeral_did} --role application --context <CONTEXT>\n\
+         Grant it an admin role scoped to the context that governs your rooms — from the \
+         VTA:\n\
+         \n    vta import-did --did {ephemeral_did} --role admin --context <CONTEXT>\n\
          \n\
          or against a running VTA:\n\
-         \n    pnm acl create --did {ephemeral_did} --role application --contexts <CONTEXT>\n\
+         \n    pnm acl create --did {ephemeral_did} --role admin --contexts <CONTEXT>\n\
+         \n\
+         Admin, scoped: this host fetches its DID's private keys from that context, and \
+         releasing keys needs the key-export capability, which only an admin holds \
+         (VTI-VTA-003). Always name the context — an admin with none is a super-admin \
+         of the whole VTA.\n\
          \n\
          Then start this host again. The throwaway is rotated away on first connect, so a DID \
          that travelled through a chat window does not stay live."
@@ -238,10 +244,10 @@ fn contextless_did_help(context: &str, vta_did: &str) -> String {
         "Context `{context}` on {vta_did} has no DID, so there is no identity for this host \
          to serve as.\n\
          \n\
-         This host does not create one for itself: it enrols with an `application` role, and \
-         minting a DID in a context needs an admin. That split is deliberate — a host holds \
-         ciphertext it cannot read, and giving it authority to mint identities in your \
-         context would be more power than it needs.\n\
+         This host does not create one for itself. It is enrolled as an admin of this one \
+         context only because fetching its DID's keys needs the key-export capability \
+         (VTI-VTA-003); which identity it serves as stays the operator's decision, so the \
+         DID is created from the operator's side.\n\
          \n\
          Create one against the VTA:\n\
          \n    pnm did-mgmt dids create --context {context} --server <SERVER_ID> \\\n\
@@ -335,6 +341,22 @@ mod tests {
         let told = grant_instructions(&ephemeral_did, vta);
         assert!(told.contains(&ephemeral_did));
         assert!(told.contains("<CONTEXT>"));
+        // VTI-VTA-003: the host fetches its DID's keys, which needs `key-export`,
+        // which only an admin derives. An `application` grant would enrol a host
+        // that is then refused at its first boot.
+        assert!(
+            told.contains(&format!(
+                "vta import-did --did {ephemeral_did} --role admin --context <CONTEXT>"
+            )),
+            "{told}"
+        );
+        assert!(
+            told.contains(&format!(
+                "pnm acl create --did {ephemeral_did} --role admin --contexts <CONTEXT>"
+            )),
+            "{told}"
+        );
+        assert!(!told.contains("--role application"), "{told}");
     }
 
     /// The instructions are the deliverable, so they get read here rather than

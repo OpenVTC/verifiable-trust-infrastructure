@@ -31,6 +31,7 @@ use vta_sdk::context_provision::ProvisionedDid;
 use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry, select_secret_kid};
 use vta_sdk::keys::KeyStatus;
+use vti_common::acl::Capability;
 
 /// Dependencies for the offline state-assembly helpers.
 ///
@@ -54,36 +55,41 @@ pub struct ExportDeps<'a> {
 ///
 /// A service that the VTA holds an identity for has to hold that DID's private keys to
 /// decrypt what is addressed to it — it cannot ask the VTA per frame. So it fetches them at
-/// startup. Assembling that bundle used to mean listing the context's keys and then calling
-/// the per-key export once each, and *that* export was gated on the global Admin role — so
-/// being a service required authority over the whole VTA.
+/// startup, in one call, with one authorization decision.
 ///
-/// One call, one authorization decision, about the one thing being decided: may this caller
-/// act in this context.
+/// # `KeyExport`, and why a role floor was not enough (VTI-VTA-003)
 ///
-/// # Application, not Admin, and what makes that safe
+/// This is an export: the keys leave the VTA and stay with the caller after its authority
+/// is withdrawn. VTI-VTA-003 requires that such an export "MUST be gated by a capability
+/// distinct from the capability to use the key, and MUST be audited". So the gate is
+/// [`Capability::KeyExport`] — the same capability `keys/export-secret` requires — and not
+/// the `Application` role floor this task used to have (#1625), which let any principal
+/// that could *use* a context's keys also *take* them.
 ///
-/// Reading the keys of the DID you already operate is not an administrative act. What keeps
-/// the lower role sound is that it is scoped twice, and neither check is this function being
-/// careful — both are checks the keys surface already makes:
+/// `KeyExport` is derived by `admin` alone (#1619), so the principal that operates a
+/// context's DID is an administrator **scoped to that context** — which is what
+/// `provision-integration` already mints for the mediator, did-hosting and the VTC. The gate
+/// reads the caller's **entry**, so a narrowing that removes `key-export` from an admin stops
+/// the very next fetch (the rule every capability gate follows since #1279).
+///
+/// Scope is still checked separately, and neither check is this function being careful —
+/// both are checks the keys surface already makes:
 ///
 /// - [`AuthClaims::require_context`], inside [`build_did_secrets_bundle`], on the context
-///   asked for — so naming somebody else's context is refused before a single key is read,
-///   and before the context is even looked up. A caller not entitled to an id is therefore
-///   refused for that reason whether or not the id exists, and "not found" is only ever said
-///   to a caller already entitled to hear it;
-/// - [`super::keys::get_key_secret`]'s own per-key context gate, which would refuse a key
-///   that somehow did not belong to the context it was listed under.
+///   asked for — so an admin of another context is refused before a single key is read,
+///   and before the context is even looked up. The entitlement is a scope, not a rank;
+/// - [`super::keys::get_key_secret`]'s own per-key context gate, and its per-key
+///   `key.secret_export` audit record — the "MUST be audited" half of VTI-VTA-003.
 ///
-/// A caller with `Application` in context A therefore gets A's keys and no others, and a
-/// caller with no context at all gets nothing. Asserted in the tests rather than trusted.
+/// The capability gate runs before either, and its answer does not depend on whether the
+/// context exists, so a refused caller learns nothing about ids it may not reach.
 ///
 /// # Why it delegates
 ///
 /// [`build_did_secrets_bundle`] is the whole of the traversal, and the only thing that
-/// differs between its two callers is the role floor: the offline export path runs as a
-/// local super-admin, while `vta/contexts/secrets/1.0` is reachable by an `Application`. A
-/// second traversal here would be a second set of rules to keep in step — which key ids are
+/// differs between its two callers is the gate: the offline export path runs as a local
+/// super-admin, while `vta/contexts/secrets/1.0` is reachable over the wire. A second
+/// traversal here would be a second set of rules to keep in step — which key ids are
 /// verification methods of the DID, which secrets are excluded, how the pages are walked —
 /// and those rules are exactly the part that must not drift.
 pub async fn get_context_secrets(
@@ -92,9 +98,7 @@ pub async fn get_context_secrets(
     context_id: &str,
     channel: &str,
 ) -> Result<DidSecretsBundle, AppError> {
-    // The role floor. Application or higher — a Reader may see that keys exist and a Monitor
-    // may not even do that, and neither may hold one. The scope check is the delegate's.
-    auth.require_write()?;
+    ensure_may_export(deps.acl_ks, auth).await?;
     let bundle = build_did_secrets_bundle(deps, auth, context_id, channel).await?;
     tracing::info!(
         channel,
@@ -104,6 +108,117 @@ pub async fn get_context_secrets(
         "context secrets released to the service that operates them"
     );
     Ok(bundle)
+}
+
+/// The `vta/contexts/secrets` gate: the caller must hold `KeyExport` (VTI-VTA-003).
+///
+/// Reads the caller's **entry**, as `ensure_may_mint` does for `KeyMint`, so a narrowing
+/// binds the next call. With no entry the role decides; a store error refuses.
+///
+/// The refusal names the exact command that fixes it — the caller is usually a service
+/// logging at boot, and the person reading that log is the one who has to run it.
+async fn ensure_may_export(acl_ks: &KeyspaceHandle, auth: &AuthClaims) -> Result<(), AppError> {
+    use vti_common::acl::{entry_has_capability, get_acl_entry, role_has_capability};
+
+    let entry = match get_acl_entry(acl_ks, &auth.did).await {
+        Ok(entry) => entry,
+        // A store error must not become a grant.
+        Err(e) => {
+            tracing::error!(
+                error = %e, did = %auth.did,
+                "could not read the ACL entry for the KeyExport check; refusing"
+            );
+            return Err(AppError::Forbidden(format!(
+                "vta/contexts/secrets denied: could not confirm that {} carries the \
+                 key-export capability",
+                auth.did
+            )));
+        }
+    };
+    let may_export = match &entry {
+        Some(entry) => entry_has_capability(entry, Capability::KeyExport),
+        None => role_has_capability(&auth.role, Capability::KeyExport),
+    };
+    if may_export {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "vta/contexts/secrets denied: {} does not carry the key-export capability. \
+         Releasing a DID's private keys is an export, and VTI-VTA-003 gates export on a \
+         capability distinct from using the key; only an admin derives it, so the service \
+         operating a context's DID must be an admin scoped to that context. {}",
+        auth.did,
+        key_export_fix(entry.as_ref(), &auth.did)
+    )))
+}
+
+/// The command an operator runs so `did` may fetch its context's secrets.
+///
+/// Built from the caller's stored entry, because the right command depends on it:
+///
+/// - **no entry** — create one, as an admin of the context;
+/// - **a non-admin with a context scope** — `change-role` to admin, which keeps the scope
+///   (and, like any admin grant, confers the rest of what an admin of that context holds);
+/// - **a non-admin with no context** — scope it first: promoting an entry with no contexts
+///   would make it a *super*-admin, so that is never suggested;
+/// - **an admin narrowed without `key-export`** — re-state the narrowing with `key-export`
+///   added, rather than suggesting `--capabilities-all`, which would also undo whatever
+///   else the narrowing deliberately removed.
+fn key_export_fix(entry: Option<&vti_common::acl::AclEntry>, did: &str) -> String {
+    use vta_sdk::acl::ActScope;
+
+    let Some(entry) = entry else {
+        return format!(
+            "Grant it with: pnm acl create --did {did} --role admin --contexts <CONTEXT>"
+        );
+    };
+    if entry.role != crate::acl::Role::Admin {
+        let promote = format!(
+            "pnm acl change-role --did {did} --from {} --to admin",
+            entry.role
+        );
+        let narrowed = restated_narrowing(entry);
+        return match (entry.act_scope(), narrowed) {
+            (ActScope::Contexts(_), None) => format!("Grant it with: {promote}"),
+            (ActScope::Contexts(_), Some(caps)) => {
+                format!("Grant it with: {promote} && pnm acl update {did} --capabilities {caps}")
+            }
+            // Authorized nowhere (or, defensively, anything else): scope first.
+            _ => format!(
+                "Scope it to the context first, then promote it: \
+                 pnm acl update {did} --contexts <CONTEXT> && {promote}"
+            ),
+        };
+    }
+    match restated_narrowing(entry) {
+        Some(caps) => format!("Grant it with: pnm acl update {did} --capabilities {caps}"),
+        // An un-narrowed admin derives `KeyExport`, so reaching here means something other
+        // than the narrowing withheld it — say what to look at rather than guess a command.
+        None => format!("Inspect the entry with: pnm acl get {did}"),
+    }
+}
+
+/// The entry's stored capability list with `key-export` added, as the comma-separated
+/// value `pnm acl update --capabilities` takes — or `None` when the entry is not narrowed.
+///
+/// `--capabilities` *replaces* the list, so the command has to carry every name already
+/// there; a bare `--capabilities key-export` would narrow an admin to that one power.
+fn restated_narrowing(entry: &vti_common::acl::AclEntry) -> Option<String> {
+    if entry.capabilities.is_empty() {
+        return None;
+    }
+    let name = |c: &Capability| {
+        serde_json::to_value(c)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+    };
+    let mut names: Vec<String> = entry.capabilities.iter().filter_map(name).collect();
+    if let Some(key_export) = name(&Capability::KeyExport)
+        && !names.contains(&key_export)
+    {
+        names.push(key_export);
+    }
+    Some(names.join(","))
 }
 
 /// Build a [`DidSecretsBundle`] for `context_id` by enumerating active
@@ -621,25 +736,54 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // `get_context_secrets` — the Trust Task path, and the loosening it makes.
+    // `get_context_secrets` — the Trust Task path.
     //
-    // This is the only operation that hands private keys to an `Application`.
-    // What makes that sound is that the entitlement is a *scope* and not a
-    // *rank*, so the tests below are written to fail if anyone ever implements
-    // it the other way round.
+    // VTI-VTA-003: releasing a DID's private keys is an export, gated on
+    // `KeyExport` (derived by admin alone) read from the caller's entry, and
+    // bounded by scope. These tests used to assert the opposite — that an
+    // `Application` could take the keys (#1625) — and are written so that
+    // restoring the old role floor fails them.
     // ---------------------------------------------------------------------
 
-    /// The point of the task: a service holding a context gets that context's
-    /// DID and its operating keys, at `Application` — not `Admin`.
+    /// Store an entry for [`scoped`]'s caller so the gate reads it, as it does
+    /// for every live caller.
+    async fn store_caller(
+        env: &TestEnv,
+        role: crate::acl::Role,
+        contexts: &[&str],
+        capabilities: Vec<Capability>,
+    ) -> AuthClaims {
+        let auth = scoped(role.clone(), contexts);
+        vti_common::acl::store_acl_entry(
+            &env.acl_ks,
+            &crate::acl::AclEntry::new(&auth.did, role, "did:key:zRoot")
+                .with_contexts(auth.allowed_contexts.clone())
+                .with_capabilities(capabilities),
+        )
+        .await
+        .expect("store the caller's entry");
+        auth
+    }
+
+    fn forbidden_message(err: AppError) -> String {
+        match err {
+            AppError::Forbidden(m) => m,
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
+    }
+
+    /// The operator of a context's DID is an admin scoped to that context — what
+    /// `provision-integration` mints — and it gets the context DID's operating
+    /// keys, and only those.
     #[tokio::test]
-    async fn an_application_fetches_its_own_contexts_secrets() {
+    async fn vti_vta_003_a_context_admin_fetches_its_own_contexts_secrets() {
         let env = open_env().await;
         let did = seed_context_with_keys(&env, "med-ctx").await;
-        let auth = scoped(crate::acl::Role::Application, &["med-ctx"]);
+        let auth = store_caller(&env, crate::acl::Role::Admin, &["med-ctx"], vec![]).await;
 
         let bundle = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
             .await
-            .expect("an application may read the keys of the context it operates");
+            .expect("a context admin derives KeyExport");
 
         assert_eq!(bundle.did, did);
         let mut kids: Vec<&str> = bundle.secrets.iter().map(|s| s.key_id.as_str()).collect();
@@ -647,31 +791,81 @@ mod tests {
         assert_eq!(kids, vec![format!("{did}#key-0"), format!("{did}#key-1")]);
     }
 
-    /// The check the loosening rests on. An `Application` entitled to one
-    /// context reaches nothing in another, and the refusal is about access
-    /// rather than existence.
+    /// #1625: an `Application` in this very context may *use* its keys through
+    /// the oracle, and must not thereby take them. The refusal names the fix.
     #[tokio::test]
-    async fn an_application_cannot_reach_another_contexts_secrets() {
+    async fn vti_vta_003_an_application_in_the_context_is_refused() {
         let env = open_env().await;
         seed_context_with_keys(&env, "med-ctx").await;
-        let auth = scoped(crate::acl::Role::Application, &["some-other-ctx"]);
+        let auth = store_caller(&env, crate::acl::Role::Application, &["med-ctx"], vec![]).await;
 
-        let err = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-            .await
-            .expect_err("a context you do not hold is not yours to read keys from");
-        assert!(matches!(err, AppError::Forbidden(_)), "got: {err:?}");
+        let msg = forbidden_message(
+            get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+                .await
+                .expect_err("Application does not carry KeyExport"),
+        );
+        assert!(msg.contains("key-export"), "{msg}");
+        assert!(
+            msg.contains(&format!(
+                "pnm acl change-role --did {} --from application --to admin",
+                auth.did
+            )),
+            "the refusal must print the exact fix: {msg}"
+        );
     }
 
-    /// Scope, not rank. `Admin` is the highest role there is, and it still
-    /// reaches nothing outside its `allowed_contexts` — because only an *empty*
-    /// list means "all contexts". A reimplementation that treated the
-    /// entitlement as a privilege level would hand this caller every context's
-    /// key material, so this test is the guard against that specific mistake.
+    /// An `Initiator` holds `Sign` and `KeyMint`, and #1619 deliberately withheld
+    /// `KeyExport` from it. This path must not be the way round that.
     #[tokio::test]
-    async fn an_admin_of_another_context_cannot_either() {
+    async fn vti_vta_003_an_initiator_in_the_context_is_refused() {
         let env = open_env().await;
         seed_context_with_keys(&env, "med-ctx").await;
-        let auth = scoped(crate::acl::Role::Admin, &["some-other-ctx"]);
+        let auth = store_caller(&env, crate::acl::Role::Initiator, &["med-ctx"], vec![]).await;
+
+        let msg = forbidden_message(
+            get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+                .await
+                .expect_err("Initiator does not carry KeyExport"),
+        );
+        assert!(msg.contains("--from initiator --to admin"), "{msg}");
+    }
+
+    /// The entry is read, so an admin narrowed without `key-export` is refused on
+    /// the next call — which a role check would have let through. The fix
+    /// restates the narrowing rather than suggesting `--capabilities-all`.
+    #[tokio::test]
+    async fn vti_vta_003_an_admin_narrowed_without_key_export_is_refused() {
+        let env = open_env().await;
+        seed_context_with_keys(&env, "med-ctx").await;
+        let auth = store_caller(
+            &env,
+            crate::acl::Role::Admin,
+            &["med-ctx"],
+            vec![Capability::Sign, Capability::KeyMint],
+        )
+        .await;
+
+        let msg = forbidden_message(
+            get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+                .await
+                .expect_err("narrowed away, KeyExport is gone"),
+        );
+        assert!(
+            msg.contains(&format!(
+                "pnm acl update {} --capabilities sign,key-mint,key-export",
+                auth.did
+            )),
+            "{msg}"
+        );
+    }
+
+    /// Scope, not rank. An admin holds `KeyExport`, and it still reaches nothing
+    /// outside its `allowed_contexts` — only an *empty* list means "all".
+    #[tokio::test]
+    async fn vti_vta_003_an_admin_of_another_context_is_refused() {
+        let env = open_env().await;
+        seed_context_with_keys(&env, "med-ctx").await;
+        let auth = store_caller(&env, crate::acl::Role::Admin, &["some-other-ctx"], vec![]).await;
 
         let err = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
             .await
@@ -679,14 +873,35 @@ mod tests {
         assert!(matches!(err, AppError::Forbidden(_)), "got: {err:?}");
     }
 
-    /// The role floor is real and sits below the scope check. A `Reader`
-    /// entitled to exactly this context is still refused: seeing that keys
-    /// exist is not holding them.
+    /// A non-admin authorized in no context must never be told to promote
+    /// itself as it stands: that would mint a super-admin.
     #[tokio::test]
-    async fn a_reader_of_this_very_context_is_below_the_role_floor() {
+    async fn vti_vta_003_an_unscoped_non_admin_is_told_to_scope_first() {
         let env = open_env().await;
         seed_context_with_keys(&env, "med-ctx").await;
-        let auth = scoped(crate::acl::Role::Reader, &["med-ctx"]);
+        let auth = store_caller(&env, crate::acl::Role::Application, &[], vec![]).await;
+
+        let msg = forbidden_message(
+            get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+                .await
+                .expect_err("no KeyExport"),
+        );
+        assert!(
+            msg.contains(&format!(
+                "pnm acl update {} --contexts <CONTEXT> &&",
+                auth.did
+            )),
+            "{msg}"
+        );
+    }
+
+    /// A reader is refused too — the gate replaced the role floor, and a reader
+    /// derives no `KeyExport`.
+    #[tokio::test]
+    async fn vti_vta_003_a_reader_of_this_very_context_is_refused() {
+        let env = open_env().await;
+        seed_context_with_keys(&env, "med-ctx").await;
+        let auth = store_caller(&env, crate::acl::Role::Reader, &["med-ctx"], vec![]).await;
 
         let err = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
             .await
@@ -696,32 +911,34 @@ mod tests {
 
     /// The non-leak claim the spec makes about `notFound`: entitlement is
     /// checked before existence, so a caller who is not entitled to an id gets
-    /// the *same* refusal whether or not that id exists. Comparing the two
-    /// against each other is what makes this an assertion about
-    /// indistinguishability rather than about either case alone.
+    /// the *same* refusal whether or not that id exists. Holds for both gates.
     #[tokio::test]
     async fn entitlement_is_checked_before_existence() {
         let env = open_env().await;
         seed_context_with_keys(&env, "med-ctx").await;
-        let auth = scoped(crate::acl::Role::Application, &["some-other-ctx"]);
+        for (role, ctx) in [
+            (crate::acl::Role::Admin, "some-other-ctx"),
+            (crate::acl::Role::Application, "med-ctx"),
+        ] {
+            let auth = store_caller(&env, role, &[ctx], vec![]).await;
+            let real = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+                .await
+                .expect_err("exists, not yours");
+            let imaginary = get_context_secrets(&deps_of(&env), &auth, "no-such-ctx", "test")
+                .await
+                .expect_err("does not exist, and not yours either");
 
-        let real = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-            .await
-            .expect_err("exists, not yours");
-        let imaginary = get_context_secrets(&deps_of(&env), &auth, "no-such-ctx", "test")
-            .await
-            .expect_err("does not exist, and not yours either");
-
-        assert!(matches!(real, AppError::Forbidden(_)), "got: {real:?}");
-        assert!(
-            matches!(imaginary, AppError::Forbidden(_)),
-            "an id that does not exist must not be distinguishable from one that \
-             does but is not the caller's — got: {imaginary:?}"
-        );
-        assert_eq!(
-            real.to_string().replace("med-ctx", "<id>"),
-            imaginary.to_string().replace("no-such-ctx", "<id>"),
-            "the two refusals must differ only in the id echoed back"
-        );
+            assert!(matches!(real, AppError::Forbidden(_)), "got: {real:?}");
+            assert!(
+                matches!(imaginary, AppError::Forbidden(_)),
+                "an id that does not exist must not be distinguishable from one that \
+                 does but is not the caller's — got: {imaginary:?}"
+            );
+            assert_eq!(
+                real.to_string().replace("med-ctx", "<id>"),
+                imaginary.to_string().replace("no-such-ctx", "<id>"),
+                "the two refusals must differ only in the id echoed back"
+            );
+        }
     }
 }
