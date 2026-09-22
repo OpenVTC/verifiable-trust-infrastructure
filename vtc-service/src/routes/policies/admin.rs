@@ -78,6 +78,8 @@ pub struct UploadBody {
     /// Canonical members this maintainer does not implement. Present
     /// so they are *refused* rather than silently dropped — a caller
     /// that sets `enabled: false` must not have it ignored.
+    // (`enabled: true` is the schema default and is accepted: it asks for
+    // nothing. See `unsupported`.)
     #[serde(default)]
     pub id: Option<Uuid>,
     #[serde(default)]
@@ -129,7 +131,12 @@ impl UploadBody {
         if self.priority.is_some() {
             out.push("priority");
         }
-        if self.enabled.is_some() {
+        // `enabled` defaults to `true` in the schema, so `true` is the value
+        // every module here already has — and the generated `policy/upsert`
+        // payload always serialises it, so a client built on the canonical
+        // type cannot omit it. Refusing it would refuse every canonical
+        // caller. Only `false` asks for something this maintainer cannot do.
+        if self.enabled == Some(false) {
             out.push("enabled");
         }
         if self.id.is_some() {
