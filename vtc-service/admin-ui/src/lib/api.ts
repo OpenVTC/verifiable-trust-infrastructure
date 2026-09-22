@@ -592,6 +592,33 @@ export const revokeInvitation = (
     { trustTask: REVOKE_INVITATION_TASK },
   );
 
+const DELIVER_INVITATION_TASK =
+  "https://trusttasks.org/spec/vtc/invitations/deliver/0.1";
+
+/** `message`: push an offer to the invited DID. `offer`: return it for a QR. */
+export type DeliverChannel = "message" | "offer";
+
+export interface DeliverInvitationResponse {
+  id: string;
+  channel: DeliverChannel;
+  /** OID4VCI Credential Offer — present on the `offer` channel only. */
+  offer?: Record<string, unknown>;
+  expiresAt: string;
+}
+
+/** Deliver an issued invitation to the DID it admits. The offer redeems only
+ * for that DID's key, so it is safe to show as a QR code; delivering again
+ * withdraws the previous offer. */
+export const deliverInvitation = (
+  id: string,
+  channel: DeliverChannel,
+): Promise<DeliverInvitationResponse> =>
+  postJson<DeliverInvitationResponse>(
+    "/v1/invitations/deliver",
+    { id, channel },
+    { trustTask: DELIVER_INVITATION_TASK },
+  );
+
 const RELATIONSHIPS_GRAPH_TASK =
   "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
 

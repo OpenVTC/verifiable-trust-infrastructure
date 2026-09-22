@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
 
-use vti_common::audit::{AuditEvent, InvitationIssuedData, InvitationRevokedData};
+use vti_common::audit::{
+    AuditEvent, InvitationDeliveredData, InvitationIssuedData, InvitationRevokedData,
+};
 use vti_common::auth::AuthClaims;
 use vti_common::error::AppError;
 
@@ -181,6 +183,9 @@ pub async fn issue(
             issued_at: Utc::now(),
             valid_until: valid_until.clone(),
             revoked_at: None,
+            // Kept for `deliver`, which offers it to the invitee later.
+            credential: Some(vic.clone()),
+            offer_code: None,
         },
     )
     .await?;
@@ -373,4 +378,276 @@ pub async fn revoke(
         revoked_at: now.to_rfc3339(),
         newly_revoked: true,
     }))
+}
+
+use trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes as deliver_codes;
+
+/// `vtc/invitations/deliver:notFound`, read from the generated bindings.
+pub const INVITATION_DELIVER_ERR_NOT_FOUND: &str = deliver_codes::NOT_FOUND.code;
+/// `vtc/invitations/deliver:revoked`, read from the generated bindings.
+pub const INVITATION_DELIVER_ERR_REVOKED: &str = deliver_codes::REVOKED.code;
+/// `vtc/invitations/deliver:noRoute`, read from the generated bindings.
+pub const INVITATION_DELIVER_ERR_NO_ROUTE: &str = deliver_codes::NO_ROUTE.code;
+
+/// A `deliver` refusal. The three the specification declares carry their code
+/// beside the usual `error` member; anything else renders as every other VTC
+/// error does. `expired` is the framework's standard code, reported as a 410.
+pub enum DeliverError {
+    NotFound(String),
+    Revoked(String),
+    NoRoute(String),
+    Other(AppError),
+}
+
+impl From<AppError> for DeliverError {
+    fn from(e: AppError) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl axum::response::IntoResponse for DeliverError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, code, message) = match self {
+            Self::NotFound(m) => (
+                StatusCode::NOT_FOUND,
+                INVITATION_DELIVER_ERR_NOT_FOUND,
+                format!("not found: {m}"),
+            ),
+            Self::Revoked(m) => (
+                StatusCode::CONFLICT,
+                INVITATION_DELIVER_ERR_REVOKED,
+                format!("conflict: {m}"),
+            ),
+            Self::NoRoute(m) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                INVITATION_DELIVER_ERR_NO_ROUTE,
+                m,
+            ),
+            Self::Other(e) => return e.into_response(),
+        };
+        (
+            status,
+            Json(serde_json::json!({ "error": message, "code": code })),
+        )
+            .into_response()
+    }
+}
+
+/// The delivery channels this build implements.
+#[derive(Clone, Copy)]
+enum Channel {
+    Message,
+    Offer,
+}
+
+/// How long a delivery offer lives, at most: long enough for an invitee to
+/// act on a pushed offer or a printed QR code, and never longer than the
+/// invitation itself.
+const DELIVERY_OFFER_TTL: Duration = Duration::days(7);
+
+/// The OID4VCI credential configuration an invitation is offered under.
+const VIC_CONFIGURATION: &str = "VIC";
+
+/// Deliver an issued invitation to the DID it admits
+/// (`vtc/invitations/deliver/0.1`, Keyring VTI-21 / VTI-32).
+///
+/// Records a single-use offer bound to the invited DID — withdrawing any
+/// earlier one — and either pushes it to that DID as a
+/// `credential-exchange/offer` (`message`) or returns it for a QR code
+/// (`offer`). The invitation credential is released only by
+/// `credential-exchange/request` with a key-binding proof by the invited
+/// DID's key, so the offer itself admits no one else; it is never in this
+/// response.
+#[utoipa::path(
+    post, path = "/invitations/deliver",
+    operation_id = "invitationDeliver", tag = "invitations",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::openapi::InvitationDeliver01Payload,
+    responses(
+        (status = 200, description = "Offer recorded, and sent or returned", body = vta_sdk::openapi::InvitationDeliver01Response),
+        (status = 403, description = "Caller is not Admin / Moderator / Issuer"),
+        (status = 404, description = "No such invitation"),
+        (status = 409, description = "Revoked, or issued before delivery existed"),
+        (status = 410, description = "The invitation has lapsed"),
+        (status = 422, description = "The invited DID advertises no transport this community can send over"),
+    ),
+)]
+pub async fn deliver(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Json(body): Json<vta_sdk::openapi::InvitationDeliver01Payload>,
+) -> Result<Json<vta_sdk::openapi::InvitationDeliver01Response>, DeliverError> {
+    use trust_tasks_rs::specs::vtc::invitations::deliver::v0_1 as spec;
+
+    require_inviter(&state, &auth.did).await?;
+    let payload = body.into_inner();
+    let id = payload.id.to_string();
+    // The generated channel is `#[non_exhaustive]`: a channel a later
+    // specification adds is refused here, not guessed at.
+    let channel = match payload.channel {
+        spec::PayloadChannel::Message => Channel::Message,
+        spec::PayloadChannel::Offer => Channel::Offer,
+        other => {
+            return Err(AppError::Validation(format!(
+                "this community does not deliver over channel {other:?}"
+            ))
+            .into());
+        }
+    };
+
+    let mut record = get_invitation(&state.invitations_ks, &id)
+        .await?
+        .ok_or_else(|| DeliverError::NotFound(format!("no invitation with id {id}")))?;
+    if record.is_revoked() {
+        return Err(DeliverError::Revoked(format!(
+            "invitation {id} has been revoked"
+        )));
+    }
+    let now = Utc::now();
+    let lapses = record
+        .valid_until
+        .as_deref()
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+        .map(|t| t.with_timezone(&Utc));
+    if lapses.is_some_and(|t| t <= now) {
+        return Err(AppError::Gone(format!("expired: invitation {id} has lapsed")).into());
+    }
+    let credential = record.credential.clone().ok_or_else(|| {
+        DeliverError::Other(AppError::Conflict(format!(
+            "invitation {id} was issued before delivery existed, and its credential was \
+             returned once and not kept. Issue a new invitation to {} and deliver that.",
+            record.subject_did
+        )))
+    })?;
+    let vtc_did = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
+
+    // `message` needs a route to the invitee before anything is recorded, so a
+    // refusal leaves the live offer (if any) as it was.
+    if matches!(channel, Channel::Message)
+        && !can_authcrypt_to(state.did_resolver.as_ref(), &record.subject_did).await
+    {
+        return Err(DeliverError::NoRoute(format!(
+            "{} does not resolve to a key this community can encrypt the offer to. \
+             Deliver with channel `offer` and hand it over as a QR code.",
+            record.subject_did
+        )));
+    }
+
+    let ttl = match lapses {
+        Some(t) => (t - now).min(DELIVERY_OFFER_TTL),
+        None => DELIVERY_OFFER_TTL,
+    };
+    // At most one live offer per invitation: withdraw the last one first.
+    if let Some(old) = record.offer_code.take() {
+        crate::credentials::exchange::withdraw_offer(&state.join_requests_ks, &old).await?;
+    }
+    let (offer, code) = crate::credentials::exchange::make_offer(
+        &state.join_requests_ks,
+        &vtc_did,
+        vec![VIC_CONFIGURATION.to_string()],
+        credential,
+        &record.subject_did,
+        ttl,
+        now,
+    )
+    .await?;
+    record.offer_code = Some(code);
+    store_invitation(&state.invitations_ks, &record).await?;
+    let expires_at = now + ttl;
+
+    let offer_json = serde_json::to_value(&offer)
+        .map_err(|e| AppError::Internal(format!("serialise offer: {e}")))?;
+    let returned_offer = match channel {
+        Channel::Message => {
+            let message = affinidi_messaging_didcomm::Message::build(
+                uuid::Uuid::new_v4().to_string(),
+                vta_sdk::protocols::credential_exchange::OFFER.to_string(),
+                serde_json::json!({ "credential_offer": offer_json }),
+            )
+            .from(vtc_did.clone())
+            .to(record.subject_did.clone())
+            .finalize();
+            if let Err(e) = state.send_to_member(&record.subject_did, message).await {
+                // Nothing went out, so no offer should be live for it.
+                if let Some(code) = record.offer_code.take() {
+                    crate::credentials::exchange::withdraw_offer(&state.join_requests_ks, &code)
+                        .await?;
+                    store_invitation(&state.invitations_ks, &record).await?;
+                }
+                return Err(e.into());
+            }
+            None
+        }
+        Channel::Offer => match offer_json {
+            JsonValue::Object(map) => Some(map),
+            _ => {
+                return Err(
+                    AppError::Internal("offer did not serialise to an object".into()).into(),
+                );
+            }
+        },
+    };
+
+    let channel_name = match channel {
+        Channel::Message => "message",
+        Channel::Offer => "offer",
+    };
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.did,
+                Some(&record.subject_did),
+                AuditEvent::InvitationDelivered(InvitationDeliveredData {
+                    invitation_id: id.clone(),
+                    subject_did: record.subject_did.clone(),
+                    channel: channel_name.to_string(),
+                    expires_at: expires_at.to_rfc3339(),
+                }),
+            )
+            .await?;
+    }
+    info!(actor = %auth.did, vic_id = %id, channel = channel_name, "delivered an invitation");
+
+    let response: spec::Response = spec::Response::builder()
+        .id(id)
+        .channel(match channel {
+            Channel::Message => spec::ResponseChannel::Message,
+            Channel::Offer => spec::ResponseChannel::Offer,
+        })
+        // An absent offer is an empty map: the generated type omits it then.
+        .offer(returned_offer.unwrap_or_default())
+        .expires_at(expires_at)
+        .try_into()
+        .map_err(|e| AppError::Internal(format!("build deliver response: {e}")))?;
+    Ok(Json(response.into()))
+}
+
+/// Whether an offer can be sent to `did` over DIDComm: it resolves, and names
+/// a key-agreement key to encrypt to. An advertised service is not required —
+/// a DID with none (a `did:peer:2` holding only keys) is reached through the
+/// community's mediator, as members already are for credential delivery.
+async fn can_authcrypt_to(
+    resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    did: &str,
+) -> bool {
+    let Some(resolver) = resolver else {
+        return false;
+    };
+    let Ok(resolved) = resolver.resolve(did).await else {
+        return false;
+    };
+    serde_json::to_value(&resolved.doc)
+        .ok()
+        .and_then(|doc| {
+            doc.get("keyAgreement")
+                .and_then(JsonValue::as_array)
+                .map(|a| !a.is_empty())
+        })
+        .unwrap_or(false)
 }

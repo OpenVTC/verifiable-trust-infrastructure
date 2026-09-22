@@ -150,6 +150,24 @@ fn witnesses() -> Vec<Witness> {
             "a_vetter_asks_for_the_grant_credential_again"
         ),
         witness!(
+            s::invitations::deliver::v0_1::error_codes::NOT_FOUND,
+            crate::routes::invitations::INVITATION_DELIVER_ERR_NOT_FOUND,
+            "invitations.rs",
+            "deliver_refuses_what_it_cannot_deliver"
+        ),
+        witness!(
+            s::invitations::deliver::v0_1::error_codes::REVOKED,
+            crate::routes::invitations::INVITATION_DELIVER_ERR_REVOKED,
+            "invitations.rs",
+            "deliver_refuses_what_it_cannot_deliver"
+        ),
+        witness!(
+            s::invitations::deliver::v0_1::error_codes::NO_ROUTE,
+            crate::routes::invitations::INVITATION_DELIVER_ERR_NO_ROUTE,
+            "invitations.rs",
+            "deliver_refuses_what_it_cannot_deliver"
+        ),
+        witness!(
             s::members::credentials::v0_1::error_codes::NOT_FOUND,
             crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
             "members_crud.rs",

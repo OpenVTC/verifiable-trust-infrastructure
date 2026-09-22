@@ -528,6 +528,10 @@ pub enum AuditEvent {
     /// revocation bit flipped. Envelope `target_did` is the invitee.
     InvitationRevoked(InvitationRevokedData),
 
+    /// An invitation was delivered (`vtc/invitations/deliver/0.1`): an offer
+    /// pushed to the invited DID, or returned to the inviter for a QR code.
+    InvitationDelivered(InvitationDeliveredData),
+
     /// One or more authenticated sessions were revoked by an admin
     /// (`DELETE /v1/auth/sessions/{id}` or `?did=`). Cutting off access
     /// is security-relevant and must be attributable. Envelope
@@ -656,6 +660,7 @@ impl AuditEvent {
             Self::AclRevoked(..) => "AclRevoked",
             Self::InvitationIssued(..) => "InvitationIssued",
             Self::InvitationRevoked(..) => "InvitationRevoked",
+            Self::InvitationDelivered(..) => "InvitationDelivered",
             Self::SessionRevoked(..) => "SessionRevoked",
             Self::SignedOut(..) => "SignedOut",
             Self::BackupExported(..) => "BackupExported",
@@ -733,6 +738,18 @@ pub struct InvitationRevokedData {
     pub subject_did: Option<String>,
     /// `true` if this call flipped the bit, `false` if it was already revoked.
     pub newly_revoked: bool,
+}
+
+/// Payload for [`AuditEvent::InvitationDelivered`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InvitationDeliveredData {
+    pub invitation_id: String,
+    pub subject_did: String,
+    /// `message` (pushed to the invited DID) or `offer` (returned for a QR).
+    pub channel: String,
+    /// When the offer lapses (RFC 3339).
+    pub expires_at: String,
 }
 
 /// Payload for [`AuditEvent::SessionRevoked`].
