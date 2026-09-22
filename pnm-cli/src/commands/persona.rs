@@ -189,11 +189,22 @@ async fn profile(client: &VtaClient, command: PersonaProfileCommands) -> CmdResu
             held,
             claims_file,
             persona_did,
+            wear,
             label,
             until,
         } => {
             let claims = compose_claims(claims, shared, held, claims_file)?;
-            p::cmd_profile_compose(client, context, name, claims, persona_did, label, until).await
+            p::cmd_profile_compose(
+                client,
+                context,
+                name,
+                claims,
+                persona_did,
+                wear,
+                label,
+                until,
+            )
+            .await
         }
         PersonaProfileCommands::Get {
             profile_id,

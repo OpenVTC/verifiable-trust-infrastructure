@@ -3676,14 +3676,17 @@ pub(crate) enum PersonaProfileCommands {
         #[arg(long = "claims-file", conflicts_with_all = ["claims", "shared", "held"])]
         claims_file: Option<String>,
         /// Wear the face as this persona in the context.
-        #[arg(long = "persona-did")]
+        #[arg(long = "persona-did", conflicts_with = "wear")]
         persona_did: Option<String>,
-        /// What the context may call the face. Needs `--persona-did`.
-        #[arg(long, requires = "persona_did")]
+        /// Wear the face here as the persona you already use in this context.
+        #[arg(long)]
+        wear: bool,
+        /// What the context may call the face. Needs the face worn.
+        #[arg(long)]
         label: Option<String>,
         /// When wearing it here ends on its own (RFC 3339). The face is then
-        /// retired if it is worn nowhere else. Needs `--persona-did`.
-        #[arg(long, requires = "persona_did")]
+        /// retired if it is worn nowhere else. Needs the face worn.
+        #[arg(long)]
         until: Option<String>,
     },
     /// Where a face is worn now, and where it may be.
@@ -3789,9 +3792,10 @@ pub(crate) enum PersonaBindingCommands {
         /// The trust context.
         #[arg(long)]
         context: String,
-        /// The persona DID presenting in it.
+        /// The persona DID presenting in it. Omit to use the persona you
+        /// already use in this context; refused when there is none or several.
         #[arg(long = "persona-did")]
-        persona_did: String,
+        persona_did: Option<String>,
         /// The profile to project. Omit to clear.
         #[arg(long = "profile-id")]
         profile_id: Option<String>,

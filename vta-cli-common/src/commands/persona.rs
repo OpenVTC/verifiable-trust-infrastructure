@@ -239,12 +239,16 @@ pub async fn cmd_profile_compose(
     name: String,
     claims: Vec<Value>,
     persona_did: Option<String>,
+    wear: bool,
     label: Option<String>,
     until: Option<String>,
 ) -> CmdResult {
     let mut body = serde_json::json!({ "contextId": context, "name": name, "claims": claims });
     if let Some(d) = persona_did {
         body["personaDid"] = d.into();
+    }
+    if wear {
+        body["wear"] = true.into();
     }
     if let Some(l) = label {
         body["label"] = l.into();
@@ -427,7 +431,7 @@ pub async fn cmd_profile_delete(
 pub async fn cmd_binding_set(
     client: &VtaClient,
     context_id: String,
-    persona_did: String,
+    persona_did: Option<String>,
     profile_id: Option<String>,
     public_entries: Vec<String>,
     label: Option<String>,
@@ -439,7 +443,7 @@ pub async fn cmd_binding_set(
     let result = client
         .persona_binding_set(
             &context_id,
-            &persona_did,
+            persona_did.as_deref(),
             profile_id.as_deref(),
             public_entries,
             label.as_deref(),
@@ -449,7 +453,8 @@ pub async fn cmd_binding_set(
         .await?;
     if !is_json_output() {
         if clearing {
-            println!("{DIM}Taken off — {persona_did} now shows nothing in {context_id}.{RESET}");
+            let who = result["personaDid"].as_str().unwrap_or("the persona");
+            println!("{DIM}Taken off — {who} now shows nothing in {context_id}.{RESET}");
         } else {
             println!(
                 "{DIM}A context only ever gets a copy: the face's values were written into \

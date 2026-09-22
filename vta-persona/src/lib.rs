@@ -56,7 +56,8 @@ pub mod store;
 pub mod timeline;
 
 pub use binding::{
-    AttributeReach, BindingSummary, Bound, HeldByPin, MaterialisedClaim, RefreshedBinding,
+    AttributeReach, BindingSummary, Bound, HeldByPin, MaterialisedClaim, PersonaHere,
+    RefreshedBinding,
 };
 // Types only. `defaults_for` and `sensitivity_of` keep their module in the
 // path: at the crate root their names say nothing about which registry, and

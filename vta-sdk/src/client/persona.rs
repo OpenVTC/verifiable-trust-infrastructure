@@ -458,7 +458,7 @@ impl VtaClient {
     pub async fn persona_binding_set(
         &self,
         context_id: &str,
-        persona_did: &str,
+        persona_did: Option<&str>,
         profile_id: Option<&str>,
         public_entries: Vec<String>,
         label: Option<&str>,
@@ -467,7 +467,7 @@ impl VtaClient {
     ) -> Result<Value, VtaError> {
         let payload = body(PersonaBindingSetBody {
             context_id: context_id.to_string(),
-            persona_did: persona_did.to_string(),
+            persona_did: persona_did.map(str::to_string),
             profile_id: profile_id.map(str::to_string),
             public_entries,
             label: label.map(str::to_string),

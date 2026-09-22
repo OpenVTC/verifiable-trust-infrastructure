@@ -128,6 +128,15 @@ pub(crate) fn until_refusal(until: Option<&str>, wears_a_face: bool) -> Option<S
     }
 }
 
+/// Which persona the holder uses in a context — see
+/// [`PersonaStore::persona_here`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersonaHere {
+    None,
+    One(String),
+    Several(Vec<String>),
+}
+
 /// What a context-scoped caller may learn about a binding.
 ///
 /// Whether a profile is bound, the holder's label for it, and how many claims
@@ -397,6 +406,31 @@ impl PersonaStore {
             .into_iter()
             .filter_map(|(_k, v)| BindingRecord::decode(&v))
             .collect())
+    }
+
+    /// The persona the holder already uses in a context — design note
+    /// `persona-context-first.md` §9.7, `binding/set` with `personaDid`
+    /// omitted.
+    ///
+    /// A persona "used here" is one with a binding record in the context,
+    /// current or cleared: the holder has worn a face as it here before.
+    /// Deliberately not "any DID registered in the context" — the agent's own
+    /// DIDs and integrations live in contexts too, and wearing a face as one of
+    /// those would be the agent deciding who the holder is.
+    pub async fn persona_here(&self, context_id: &str) -> Result<PersonaHere, AppError> {
+        let mut dids: Vec<String> = self
+            .list_bindings(context_id)
+            .await?
+            .into_iter()
+            .map(|r| r.binding.persona_did)
+            .collect();
+        dids.sort();
+        dids.dedup();
+        Ok(match dids.len() {
+            0 => PersonaHere::None,
+            1 => PersonaHere::One(dids.remove(0)),
+            _ => PersonaHere::Several(dids),
+        })
     }
 
     /// Summaries for every persona in a context.

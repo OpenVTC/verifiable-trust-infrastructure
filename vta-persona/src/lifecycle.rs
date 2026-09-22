@@ -345,6 +345,7 @@ mod tests {
                     share: Share::Pool,
                 }],
                 persona_did: Some(persona.into()),
+                wear: false,
                 label: None,
                 until: None,
             })

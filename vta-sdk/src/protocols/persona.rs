@@ -462,8 +462,10 @@ pub struct PersonaProfileDeleteBody {
 pub struct PersonaBindingSetBody {
     /// The context the binding lives in.
     pub context_id: String,
-    /// The persona DID this binding is for.
-    pub persona_did: String,
+    /// The persona DID this binding is for. Omit to use the persona the holder
+    /// already uses in the context — refused when there is none or several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona_did: Option<String>,
     /// The agent-scoped profile to project. Omit to clear the binding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
