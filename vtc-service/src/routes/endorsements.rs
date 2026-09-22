@@ -23,7 +23,7 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tracing::info;
+use tracing::{error, info};
 use uuid::Uuid;
 use vta_sdk::protocols::members::ENDORSEMENT_CREDENTIAL_TYPE;
 use vti_common::audit::{
@@ -242,9 +242,29 @@ pub async fn issue(
     // A type that declares a `claimSchema` binds every claim of it
     // (`vtc/endorsements/issue/0.1`, Conformance 3). Registration stored the
     // schema, but until #1600 nothing read it back, so any claim was accepted.
-    // A schema that is not itself valid JSON Schema stays a 500: the type's
-    // registration is at fault, not this claim.
+    //
+    // A stored schema that will not compile is the type's fault, not this
+    // claim's, and it is a 500 — no declared code fits, and `claimSchemaViolation`
+    // would be a lie, since that code means a claim failed a *valid* schema and
+    // tells the caller to fix the claim. Registration has refused a malformed
+    // schema since this change, so reaching here means a row written before it;
+    // the answer names the type and says the type must be re-registered, so the
+    // operator is not left reading "internal error" against a well-formed claim.
     if let Some(schema) = endorsement_type.claim_schema.as_ref() {
+        if let Err(detail) = crate::schemas::check_schema(schema) {
+            error!(
+                type_uri = %body.endorsement_type,
+                %detail,
+                "stored claimSchema is not valid JSON Schema — issuance refused",
+            );
+            return Err(AppError::Internal(format!(
+                "endorsement type '{}' has an invalid stored claimSchema ({detail}) — \
+                 the claim was not at fault. An admin must delete and re-register the \
+                 type with a valid JSON Schema before it can be issued against.",
+                body.endorsement_type
+            ))
+            .into());
+        }
         crate::schemas::validate_instance(schema, &body.claim).map_err(|e| match e {
             AppError::Validation(msg) => TaskError::declared(
                 ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,

@@ -23,7 +23,11 @@ use axum::response::{IntoResponse, Response};
 ///   in `details.reason` so a client that does not know the code still
 ///   recovers the typed variant (SPEC §8.5 fallback).
 ///
-/// `code` is always a generated `…::error_codes::X.code` — never a literal.
+/// `code` is always a generated `…::error_codes::X.code` — or, where the
+/// task's specification declares nothing for the refusal, a framework standard
+/// code from `trust_tasks_rs::StandardCode` (SPEC §8.3). Never a literal, and
+/// never a code invented here: a refusal a specification does not describe is
+/// one of the framework's, not a new name under the task's namespace.
 #[derive(Debug)]
 pub enum TaskError {
     /// Answered as the service answers every other error.

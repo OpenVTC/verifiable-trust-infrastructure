@@ -166,6 +166,21 @@ sequenceDiagram
     External->>External: Verify VEC + check status bit
 ```
 
+### `claimSchema` is checked when the type is registered
+
+A type's optional `claimSchema` binds every claim issued against it, so
+`POST /v1/endorsement-types` refuses a `claimSchema` that is not itself
+valid JSON Schema — `400` with the framework's `malformedRequest` code and
+a message naming the part of the document that is wrong (`at
+/properties/level/type: …`). Fix the schema and register again.
+
+The check exists because the schema is only read at *issuance*: a stored
+document that will not compile fails there, not here, and the caller being
+refused is the issuer with a perfectly good claim. If a type registered
+before this check carries a broken schema, issuance answers `500` naming
+the type and saying the type must be re-registered, and the daemon logs one
+`WARN` per broken type at boot. `DELETE` the type and register it again.
+
 Custom endorsement issuance is **Issuer-role gated** (or admin).
 The Issuer role is granted via a VEC; checking the Issuer role
 reads the VTC's ACL directly (the JWT-level role degrades Issuer →
