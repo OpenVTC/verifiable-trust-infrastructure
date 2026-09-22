@@ -198,6 +198,40 @@ let sig = client.sign(&key.key_id, b"hello", "EdDSA").await?;
 let bundle = client.fetch_did_secrets_bundle("my-app").await?;
 ```
 
+### Who may fetch a context's secrets
+
+`get_key_secret` and `fetch_did_secrets_bundle` (`vta/contexts/secrets/1.0`)
+take private keys **out** of the VTA, and VTI-VTA-003 requires every such
+export to be gated by a capability separate from the one to *use* the key.
+Both are gated on `key-export`, which **only `admin` derives**. The signing
+oracle (`sign`) is the use-the-key path and needs only `sign`.
+
+So an integration that operates its context's DID, and loads that DID's keys
+at startup (a mediator, a room host, anything using
+`vta_sdk::integration::startup`), must be an admin **scoped to that context**:
+
+```sh
+pnm acl create --did <integration-did> --role admin --contexts <context>
+# offline, VTA stopped:
+vta import-did --did <integration-did> --role admin --context <context>
+```
+
+`provision-integration` already mints this shape. Always name the context:
+an admin with no context is a super-admin of the whole VTA.
+
+An `application` or `initiator` entry is refused with `permissionDenied`
+(`VtaError::Forbidden` in the SDK), and the message names the command that
+fixes it for that entry. For example, for an existing `application` entry
+scoped to the context:
+
+```sh
+pnm acl change-role --did <integration-did> --from application --to admin
+```
+
+An admin whose capabilities were narrowed without `key-export` is refused
+too. The fix restates its narrowing with `key-export` added
+(`pnm acl update <did> --capabilities <existing>,key-export`).
+
 ## Alternative: REST API (Any Language)
 
 The VTA exposes a standard REST API. Any HTTP client can integrate:

@@ -188,13 +188,16 @@ pub(super) async fn handle_get(
 
 /// Handler for `spec/vta/contexts/secrets/1.0` — the private keys of a context's own DID.
 ///
-/// **Application or higher, and only for a context the caller may act in.** Deliberately not
-/// Admin: reading the keys of the DID you already operate is not an administrative act, and
-/// requiring Admin meant a service had to be granted authority over everything else in the
-/// VTA in order to be itself.
+/// **`KeyExport`, and only for a context the caller may act in** (VTI-VTA-003). Releasing a
+/// DID's keys is an export, so it is gated on the capability `keys/export-secret` also
+/// requires, which only `admin` derives — the operator of a context's DID is an admin scoped
+/// to that context. The scope check still applies on top: an admin of one context reaches
+/// no other context's keys.
 ///
-/// Both checks live in [`operations::keys::get_context_secrets`] rather than here, so a
-/// second entry point cannot acquire a different set of them.
+/// Both checks live in [`operations::export::get_context_secrets`] rather than here, so a
+/// second entry point cannot acquire a different set of them. A refusal rides out as
+/// `permissionDenied` carrying the command that fixes it, which the SDK surfaces as
+/// `VtaError::Forbidden` on every transport.
 pub(super) async fn handle_secrets(
     state: &AppState,
     auth: &AuthClaims,
@@ -381,5 +384,64 @@ pub(super) async fn handle_delete(
     match outcome {
         Ok(body) => success_response(&doc, body),
         Err(e) => reject_context_error(&doc, e),
+    }
+}
+
+#[cfg(test)]
+mod secrets_gate_tests {
+    use super::*;
+    use crate::acl::Role;
+    use crate::test_support::build_signing_test_app_state;
+    use serde_json::json;
+    use trust_tasks_rs::TypeUri;
+    use vti_common::acl::{AclEntry, store_acl_entry};
+
+    /// VTI-VTA-003 over the Trust Task transport — which REST, DIDComm and TSP
+    /// all dispatch into: the refusal is `permissionDenied` (the SDK maps it to
+    /// `VtaError::Forbidden`), and the fix command survives in the message.
+    #[tokio::test]
+    async fn vti_vta_003_refusal_is_permission_denied_and_names_the_fix() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let did = "did:key:zRoomHost";
+        store_acl_entry(
+            &state.acl_ks,
+            &AclEntry::new(did, Role::Application, "did:key:zRoot")
+                .with_contexts(vec!["rooms".to_string()]),
+        )
+        .await
+        .expect("store the caller's entry");
+        let auth = AuthClaims {
+            did: did.into(),
+            role: Role::Application,
+            allowed_contexts: vec!["rooms".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_CONTEXTS_SECRETS_1_0
+            .parse()
+            .expect("contexts/secrets uri");
+        let doc = TrustTask::new(
+            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            uri,
+            json!({ "id": "rooms" }),
+        );
+
+        let out = handle_secrets(&state, &auth, doc).await;
+        let body: Value = serde_json::from_slice(&out.body).expect("response is JSON");
+        assert_eq!(
+            body.pointer("/payload/code").and_then(Value::as_str),
+            Some("permissionDenied"),
+            "{body}"
+        );
+        let message = body.to_string();
+        assert!(
+            message.contains(
+                "pnm acl change-role --did did:key:zRoomHost --from application --to admin"
+            ),
+            "the fix command must reach the caller: {message}"
+        );
     }
 }

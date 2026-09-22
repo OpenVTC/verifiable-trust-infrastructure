@@ -97,9 +97,10 @@ struct Args {
     /// keys, and this host fetches them at startup. So the identity a member resolves and
     /// the identity this host seals with are the same by construction.
     ///
-    /// The grant an operator makes on enrolment is for this context, and it is an
-    /// `application` role — a host holds ciphertext it cannot read, so it needs to act in
-    /// the context and needs no authority over it.
+    /// The grant an operator makes on enrolment is for this context, and it is an `admin`
+    /// role **scoped to it**: the host fetches its DID's private keys at startup, and
+    /// releasing keys needs the `key-export` capability, which only an admin derives
+    /// (VTI-VTA-003). Scope it — an admin with no context is a super-admin.
     #[cfg(feature = "onboarding")]
     #[arg(long, default_value = "rooms")]
     vta_context: String,

@@ -51,10 +51,12 @@ impl VtaClient {
     /// `get_key_secret` per key. Three problems, and only the first is about
     /// speed:
     ///
-    /// - `get_key_secret` is gated on **global Admin**, so a service that
+    /// - `get_key_secret` was gated on **global Admin**, so a service that
     ///   wanted the keys of its own context had to hold authority over every
-    ///   other context in the VTA to get them. The new task is `Application`
-    ///   plus the caller's own context.
+    ///   other context in the VTA to get them. The task is gated on
+    ///   `key-export` (VTI-VTA-003) plus the caller's own context, so an admin
+    ///   *scoped to that context* suffices. An `application` or `initiator`
+    ///   entry is refused with [`VtaError::Forbidden`] naming the fix.
     /// - The kid-selection rule ([`select_secret_kid`]) had to be applied by
     ///   every caller, so a second implementation could quietly disagree about
     ///   which secrets belong to the DID. It now lives on one side.
