@@ -2084,6 +2084,11 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_REINSTATE_1_0 => persona::handle_profile_reinstate
         [ Mutating None false ],
+    // Holder-only reads of where a face is worn and what it has done.
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_USAGE_1_0 => persona::handle_profile_usage
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0 => persona::handle_profile_timeline
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0 => persona::handle_profile_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_GET_1_0 => persona::handle_profile_get

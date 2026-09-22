@@ -264,6 +264,7 @@ impl PersonaStore {
         }
 
         let attribute_id = attribute.attribute_id.clone();
+        let claim_type = attribute.r#type.clone();
         self.ks
             .insert(
                 storage::attribute_key(&attribute_id),
@@ -284,6 +285,25 @@ impl PersonaStore {
         // On a create this is a no-op: nothing references a brand-new attribute
         // yet, so the reverse index is empty and the scan does not run.
         self.push_attribute_locked(&attribute_id).await?;
+
+        // Each face showing this attribute live now shows a different value.
+        // A pinned face does not follow, and an override shows its own value,
+        // so neither changed — the timeline says only what did.
+        if !created {
+            for profile_id in self.referring_profiles(&attribute_id).await? {
+                let live = self.get_profile(&profile_id).await?.is_some_and(|f| {
+                    f.entries.iter().any(|e| {
+                        matches!(e, crate::ProfileEntry::Ref { r#ref, .. } if *r#ref == attribute_id)
+                    })
+                });
+                if live {
+                    let mut event = crate::FaceEvent::now(crate::FaceEventKind::ValueChanged);
+                    event.claim_types = vec![claim_type.clone()];
+                    event.version = Some(version);
+                    self.record_face_event(&profile_id, event).await;
+                }
+            }
+        }
 
         Ok(Written { version, created })
     }

@@ -403,6 +403,10 @@ pub struct Profile {
     /// questions and must not be read as one another.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credential_refs: Vec<String>,
+    /// Where this face may be worn. Absent reads as anywhere. A context-local
+    /// face never carries one — it is worn in its context by construction.
+    #[serde(default, skip_serializing_if = "FaceReach::is_anywhere")]
+    pub reach: FaceReach,
     /// Whether the holder still wears this face. A face written before the
     /// field existed reads as active, which is what it was.
     #[serde(default, skip_serializing_if = "ProfileStatus::is_active")]
@@ -427,6 +431,39 @@ pub enum ProfileStatus {
     #[default]
     Active,
     Retired,
+}
+
+/// Where a pool face may be worn — `persona/profile/put` `reach`, design note
+/// `persona-context-first.md` §5.4.
+///
+/// An enum, not `allowed_contexts: Vec<String>`. This workspace has been
+/// bitten three times (#746, #769, #770) by an empty context list meaning two
+/// opposite things; here "unrestricted" and "nowhere" cannot be confused,
+/// because `Only` is never empty (the wire requires one context) and nowhere
+/// is not a reach at all — it is a retired face.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum FaceReach {
+    #[default]
+    Anywhere,
+    #[serde(rename_all = "camelCase")]
+    Only { context_ids: Vec<String> },
+}
+
+impl FaceReach {
+    #[must_use]
+    pub fn is_anywhere(&self) -> bool {
+        *self == Self::Anywhere
+    }
+
+    /// Whether a face with this reach may be worn in `context_id`.
+    #[must_use]
+    pub fn admits(&self, context_id: &str) -> bool {
+        match self {
+            Self::Anywhere => true,
+            Self::Only { context_ids } => context_ids.iter().any(|c| c == context_id),
+        }
+    }
 }
 
 impl ProfileStatus {

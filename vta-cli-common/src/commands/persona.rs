@@ -212,6 +212,7 @@ pub async fn cmd_profile_put(
     name: String,
     entries: Vec<ProfileEntry>,
     credential_refs: Vec<String>,
+    reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_0::FaceReach>,
     profile_id: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
@@ -220,6 +221,7 @@ pub async fn cmd_profile_put(
             &name,
             entries,
             credential_refs,
+            reach,
             profile_id.as_deref(),
             expected_version,
         )
@@ -236,6 +238,7 @@ pub async fn cmd_profile_compose(
     claims: Vec<Value>,
     persona_did: Option<String>,
     label: Option<String>,
+    until: Option<String>,
 ) -> CmdResult {
     let mut body = serde_json::json!({ "contextId": context, "name": name, "claims": claims });
     if let Some(d) = persona_did {
@@ -243,6 +246,9 @@ pub async fn cmd_profile_compose(
     }
     if let Some(l) = label {
         body["label"] = l.into();
+    }
+    if let Some(u) = until {
+        body["until"] = u.into();
     }
     // Read into the generated payload here, so a malformed claim is reported
     // against the published shape before anything is sent.
@@ -294,6 +300,53 @@ pub async fn cmd_profile_list(
         .persona_profile_list(limit, cursor.as_deref(), include_retired)
         .await?;
     print_result("Faces:", &result)
+}
+
+/// `persona profile usage` — where a face is worn now.
+pub async fn cmd_profile_usage(
+    client: &VtaClient,
+    profile_id: String,
+    context: Option<String>,
+) -> CmdResult {
+    let out = client
+        .persona_profile_usage(&profile_id, context.as_deref())
+        .await?;
+    let result = serde_json::to_value(&out)?;
+    if !is_json_output() && out.usage.is_empty() {
+        println!("{DIM}Worn nowhere.{RESET}");
+    }
+    print_result("Worn in:", &result)
+}
+
+/// `persona profile timeline` — what a face has done, oldest first.
+pub async fn cmd_profile_timeline(
+    client: &VtaClient,
+    profile_id: String,
+    context: Option<String>,
+    since: Option<String>,
+    cursor: Option<String>,
+    limit: Option<u64>,
+) -> CmdResult {
+    let out = client
+        .persona_profile_timeline(
+            &profile_id,
+            context.as_deref(),
+            since.as_deref(),
+            cursor.as_deref(),
+            limit,
+        )
+        .await?;
+    let result = serde_json::to_value(&out)?;
+    if !is_json_output() {
+        println!(
+            "{DIM}Types and parties only — a timeline never holds a value or a name you gave \
+             something.{RESET}"
+        );
+        if let Some(next) = &out.next_cursor {
+            println!("{DIM}More follows: --cursor {}{RESET}", next.as_str());
+        }
+    }
+    print_result("Timeline:", &result)
 }
 
 /// `persona profile retire` — stop wearing a face anywhere, and keep it.

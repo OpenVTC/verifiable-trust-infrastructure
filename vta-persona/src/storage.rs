@@ -204,6 +204,23 @@ pub const VERSION_COUNTER_KEY: &str = "pver";
 /// Per-agent key for the correlation index's keyed hash.
 pub const CORRELATION_HMAC_KEY: &str = "pxkey";
 
+/// One event in a face's history, for `persona/profile/timeline`.
+///
+/// Agent-scoped and keyed by the face alone, whether the face is a pool face
+/// or a context-local one: a face's history spans every context it was worn
+/// in, and is the holder's. The suffix is a ULID, so the keys of one face sort
+/// in the order the events were recorded without taking the store's version
+/// counter — recording an event never needs the write lock.
+#[must_use]
+pub fn face_event_key(profile_id: &str, event_id: &str) -> String {
+    format!("pft:{profile_id}:{event_id}")
+}
+
+#[must_use]
+pub fn face_event_prefix(profile_id: &str) -> String {
+    format!("pft:{profile_id}:")
+}
+
 /// Every prefix this module writes under, paired with whether it is
 /// agent-scoped. The census test uses it to assert the boundary holds.
 const PREFIX_SCOPES: &[(&str, Scope)] = &[
@@ -214,6 +231,7 @@ const PREFIX_SCOPES: &[(&str, Scope)] = &[
     ("pxr:", Scope::Agent),
     ("pxf:", Scope::Agent),
     ("pav:", Scope::Agent),
+    ("pft:", Scope::Agent),
     ("pb:", Scope::Context),
     ("pc:", Scope::Context),
     ("pcr:", Scope::Context),

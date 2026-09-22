@@ -82,8 +82,9 @@ impl PersonaStore {
     ) -> Result<Retired, AppError> {
         let (face, home) = self.face_at(profile_id, context_id).await?;
         check_precondition(expected_version, Some(face.version))?;
+        let face_was_active = face.status.is_active();
 
-        let (version, retired_at) = if face.status.is_active() {
+        let (version, retired_at) = if face_was_active {
             let _guard = self.write_lock.lock().await;
             let version = self.next_version().await?;
             let retired_at = now_rfc3339();
@@ -104,6 +105,13 @@ impl PersonaStore {
         };
 
         let unbound = self.unbind_face(profile_id, &home).await?;
+        if face_was_active {
+            self.record_face_event(
+                profile_id,
+                crate::FaceEvent::now(crate::FaceEventKind::Retired),
+            )
+            .await;
+        }
         Ok(Retired {
             version,
             retired_at,
@@ -134,6 +142,12 @@ impl PersonaStore {
             ..face
         };
         self.write_face(&home, face).await?;
+        drop(_guard);
+        self.record_face_event(
+            profile_id,
+            crate::FaceEvent::now(crate::FaceEventKind::Reinstated),
+        )
+        .await;
         Ok(version)
     }
 
@@ -172,6 +186,12 @@ impl PersonaStore {
                 cleared.binding.bound_at = now_rfc3339();
                 let persona_did = cleared.binding.persona_did.clone();
                 self.ks.insert(k, &cleared).await?;
+                self.record_face_event(
+                    &profile_id,
+                    crate::FaceEvent::now(crate::FaceEventKind::Expired)
+                        .worn_by(&context_id, &persona_did),
+                )
+                .await;
                 lapsed.push(Lapsed {
                     context_id,
                     persona_did,
@@ -220,28 +240,11 @@ impl PersonaStore {
     /// still wears this face — the best answer the older record allows, and
     /// one that can only undercount.
     pub async fn disclosed_to(&self, profile_id: &str) -> Result<DisclosedTo, AppError> {
-        let rows = self.ks.prefix_iter_raw(b"pd:".to_vec()).await?;
         let mut parties = BTreeSet::new();
         let mut contexts = BTreeSet::new();
-        for (_k, v) in rows {
-            let Ok(record) = serde_json::from_slice::<crate::DisclosureRecord>(&v) else {
-                continue;
-            };
-            let through_this_face = match &record.profile_id {
-                Some(p) => p == profile_id,
-                None => self
-                    .ks
-                    .get::<BindingRecord>(storage::binding_key(
-                        &record.context_id,
-                        &record.persona_did,
-                    ))
-                    .await?
-                    .is_some_and(|b| b.binding.profile_id.as_deref() == Some(profile_id)),
-            };
-            if through_this_face {
-                parties.insert(record.verifier_did);
-                contexts.insert(record.context_id);
-            }
+        for record in self.disclosures_through(profile_id).await? {
+            parties.insert(record.verifier_did);
+            contexts.insert(record.context_id);
         }
         Ok(DisclosedTo {
             party_count: parties.len(),
@@ -343,6 +346,7 @@ mod tests {
                 }],
                 persona_did: Some(persona.into()),
                 label: None,
+                until: None,
             })
             .await
             .unwrap();

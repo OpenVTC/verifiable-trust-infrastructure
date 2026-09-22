@@ -134,20 +134,45 @@ async fn profile(client: &VtaClient, command: PersonaProfileCommands) -> CmdResu
             display_name,
             entries_file,
             credential_refs,
+            reach_only,
+            reach_anywhere,
             profile_id,
             expected_version,
         } => {
             let entries = profile_entries(refs, display_name, entries_file)?;
+            // Read into the generated type, so the wire shape is the spec's.
+            let reach = if reach_anywhere {
+                Some(serde_json::json!({ "kind": "anywhere" }))
+            } else if !reach_only.is_empty() {
+                Some(serde_json::json!({ "kind": "only", "contextIds": reach_only }))
+            } else {
+                None
+            }
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| format!("not a valid reach: {e}"))?;
             p::cmd_profile_put(
                 client,
                 name,
                 entries,
                 credential_refs,
+                reach,
                 profile_id,
                 expected_version,
             )
             .await
         }
+        PersonaProfileCommands::Usage {
+            profile_id,
+            context,
+        } => p::cmd_profile_usage(client, profile_id, context).await,
+        PersonaProfileCommands::Timeline {
+            profile_id,
+            context,
+            since,
+            cursor,
+            limit,
+        } => p::cmd_profile_timeline(client, profile_id, context, since, cursor, limit).await,
         PersonaProfileCommands::Compose {
             context,
             name,
@@ -157,9 +182,10 @@ async fn profile(client: &VtaClient, command: PersonaProfileCommands) -> CmdResu
             claims_file,
             persona_did,
             label,
+            until,
         } => {
             let claims = compose_claims(claims, shared, held, claims_file)?;
-            p::cmd_profile_compose(client, context, name, claims, persona_did, label).await
+            p::cmd_profile_compose(client, context, name, claims, persona_did, label, until).await
         }
         PersonaProfileCommands::Get {
             profile_id,

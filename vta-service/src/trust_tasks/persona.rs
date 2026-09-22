@@ -115,6 +115,10 @@ pub const REACH: &[(&str, Reach)] = &[
     // decision about their own identity, including for a context-local face.
     (uris::TASK_PERSONA_PROFILE_RETIRE_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_REINSTATE_1_0, Reach::Holder),
+    // Where a face is worn, and what it has done: the map of which personas
+    // are one face, across every context.
+    (uris::TASK_PERSONA_PROFILE_USAGE_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_PROFILE_TIMELINE_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_PUT_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_LIST_1_0, Reach::Holder),
@@ -951,8 +955,47 @@ pub(super) async fn handle_profile_put(
         profile.profile_id = id.to_string();
     }
     profile.credential_refs = req.credential_refs.iter().map(|c| (**c).clone()).collect();
+    // Through the wire spelling: the generated enum is `#[non_exhaustive]`,
+    // and a reach this build cannot read must be refused, not widened to
+    // anywhere.
+    //
+    // Absent keeps the face's current reach — the one member a put does not
+    // reset by omission. A reach is a restriction the holder set, and a client
+    // written before it existed would otherwise lift it with every edit.
+    match &req.reach {
+        Some(r) => match serde_json::to_value(r)
+            .ok()
+            .and_then(|v| serde_json::from_value::<vta_persona::FaceReach>(v).ok())
+        {
+            Some(reach) => profile.reach = reach,
+            None => return reject(&doc, AppError::Validation("unrecognised reach".into())),
+        },
+        None => match store(state).get_profile(&profile.profile_id).await {
+            Ok(Some(existing)) => profile.reach = existing.reach,
+            Ok(None) => {}
+            Err(e) => return reject(&doc, e),
+        },
+    }
     let profile_id = profile.profile_id.clone();
     let entry_count = profile.entries.len();
+    match store(state)
+        .reach_would_exclude(&profile_id, &profile.reach)
+        .await
+    {
+        Ok(excluded) if !excluded.is_empty() => {
+            return reject_with_code(
+                &doc,
+                ext(&slug_from_doc(&doc), "boundOutsideReach"),
+                format!(
+                    "the new reach excludes {} context(s) this face is worn in",
+                    excluded.len()
+                ),
+                Some(json!({ "contextIds": excluded })),
+            );
+        }
+        Ok(_) => {}
+        Err(e) => return reject(&doc, e),
+    }
 
     let written = match store(state)
         .put_profile(profile, req.expected_version.map(|v| *v))
@@ -1061,6 +1104,7 @@ pub(super) async fn handle_profile_compose(
         claims,
         persona_did: req.persona_did.as_ref().map(|d| d.to_string()),
         label: req.label.as_ref().map(|l| l.to_string()),
+        until: req.until.map(|u| u.to_rfc3339()),
     };
 
     let s = store(state);
@@ -1094,6 +1138,14 @@ pub(super) async fn handle_profile_compose(
                 ext(&slug, "labelWithoutPersona"),
                 "a label names the face to the context it is worn in; give a personaDid or \
                  leave the label off",
+                None,
+            );
+        }
+        Ok(Some(vta_persona::ComposeRefusal::UntilNotFuture)) => {
+            return reject_with_code(
+                &doc,
+                ext(&slug, "untilNotFuture"),
+                "`until` must be in the future, and needs a personaDid to wear the face",
                 None,
             );
         }
@@ -1359,6 +1411,93 @@ pub(super) async fn handle_profile_reinstate(
     success_response(&doc, json!({ "profileId": id, "version": version }))
 }
 
+/// `persona/profile/usage` — where one face is worn now. Design note
+/// `persona-context-first.md` §5.4.
+pub(super) async fn handle_profile_usage(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::profile::usage::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_USAGE_1_0, None).await {
+        return reject(&doc, e);
+    }
+    let id = req.profile_id.to_string();
+    let ctx = req.context_id.as_ref().map(|c| c.to_string());
+    let (reach, usage) = match store(state).face_usage(&id, ctx.as_deref()).await {
+        Ok(u) => u,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.profile.usage", auth, Some(&id), None, None).await;
+    let mut body = json!({
+        "profileId": id,
+        "usage": usage
+            .iter()
+            .take(1024)
+            .map(|u| {
+                let mut row = json!({
+                    "contextId": u.context_id,
+                    "personaDid": u.persona_did,
+                    "boundAt": u.bound_at,
+                });
+                put_opt(&mut row, "until", u.until.clone());
+                row
+            })
+            .collect::<Vec<_>>(),
+    });
+    put_opt(&mut body, "reach", reach);
+    success_response(&doc, body)
+}
+
+/// `persona/profile/timeline` — one face's history, oldest first, with no
+/// value and no private label in it. Design note `persona-context-first.md`
+/// §9.6.
+pub(super) async fn handle_profile_timeline(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::profile::timeline::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_TIMELINE_1_0, None).await {
+        return reject(&doc, e);
+    }
+    let id = req.profile_id.to_string();
+    let ctx = req.context_id.as_ref().map(|c| c.to_string());
+    let since = req.since.map(|t| t.to_rfc3339());
+    let limit = usize::try_from(req.limit.get()).unwrap_or(100).min(500);
+    let page = match store(state)
+        .face_timeline(
+            &id,
+            ctx.as_deref(),
+            since.as_deref(),
+            req.cursor.as_ref().map(|c| c.as_str()),
+            limit,
+        )
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(
+        state,
+        "persona.profile.timeline",
+        auth,
+        Some(&id),
+        None,
+        None,
+    )
+    .await;
+    let mut body = json!({ "profileId": id, "events": page.events });
+    put_opt(&mut body, "nextCursor", page.next_cursor);
+    success_response(&doc, body)
+}
+
 pub(super) async fn handle_profile_get(
     state: &AppState,
     auth: &AuthClaims,
@@ -1576,8 +1715,15 @@ pub(super) async fn handle_binding_set(
     let public = req.public_entries.iter().map(|e| e.to_string()).collect();
     let until = req.until.map(|u| u.to_rfc3339());
     let s = store(state);
-    if let Some(refused) =
-        refuse_binding(&doc, &s, None, profile_id.as_deref(), until.as_deref()).await
+    if let Some(refused) = refuse_binding(
+        &doc,
+        &s,
+        &ctx,
+        None,
+        profile_id.as_deref(),
+        until.as_deref(),
+    )
+    .await
     {
         return refused;
     }
@@ -1650,6 +1796,7 @@ pub(super) async fn handle_binding_set(
 async fn refuse_binding(
     doc: &TrustTask<Value>,
     s: &PersonaStore,
+    bind_context: &str,
     context_id: Option<&str>,
     profile_id: Option<&str>,
     until: Option<&str>,
@@ -1679,6 +1826,15 @@ async fn refuse_binding(
             format!("profile {id} is retired; reinstate it before wearing it"),
             None,
         )),
+        // A local face has no reach; it is worn in its context by construction.
+        Ok(Some(f)) if context_id.is_none() && !f.reach.admits(bind_context) => {
+            Some(reject_with_code(
+                doc,
+                ext(&slug, "outsideReach"),
+                format!("profile {id} may not be worn in {bind_context}"),
+                None,
+            ))
+        }
         _ => None,
     }
 }
@@ -2652,6 +2808,7 @@ pub(super) async fn handle_local_binding_set(
     if let Some(refused) = refuse_binding(
         &doc,
         &s,
+        &ctx,
         Some(&ctx),
         profile_id.as_deref(),
         until.as_deref(),

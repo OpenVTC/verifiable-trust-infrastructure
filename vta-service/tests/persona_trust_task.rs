@@ -39,6 +39,8 @@ const ATTR_PROMOTE: &str = "https://trusttasks.org/spec/persona/attribute/promot
 const PROFILE_COMPOSE: &str = "https://trusttasks.org/spec/persona/profile/compose/1.0";
 const PROFILE_RETIRE: &str = "https://trusttasks.org/spec/persona/profile/retire/1.0";
 const PROFILE_REINSTATE: &str = "https://trusttasks.org/spec/persona/profile/reinstate/1.0";
+const PROFILE_USAGE: &str = "https://trusttasks.org/spec/persona/profile/usage/1.0";
+const PROFILE_TIMELINE: &str = "https://trusttasks.org/spec/persona/profile/timeline/1.0";
 const PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/profile/put/1.0";
 const PROFILE_GET: &str = "https://trusttasks.org/spec/persona/profile/get/1.0";
 const PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/profile/list/1.0";
@@ -300,6 +302,14 @@ async fn a_context_admin_cannot_reach_the_pool_over_the_wire() {
         (
             PROFILE_REINSTATE,
             json!({ "profileId": "01J0000000000000000000000A", "contextId": CTX }),
+        ),
+        (
+            PROFILE_USAGE,
+            json!({ "profileId": "01J0000000000000000000000A" }),
+        ),
+        (
+            PROFILE_TIMELINE,
+            json!({ "profileId": "01J0000000000000000000000A" }),
         ),
     ];
 
@@ -3498,4 +3508,127 @@ async fn a_face_is_retired_kept_and_reinstated_and_a_binding_can_end_on_its_own(
     )
     .await;
     assert!(!refused(status, &body), "binding/set: {status} {body}");
+}
+
+/// Where a face may go, where it is, and what it has done, over the wire.
+/// Design note `persona-context-first.md` §5.4, §9.6.
+#[tokio::test]
+async fn a_face_goes_only_where_its_reach_allows_and_its_timeline_says_what_it_did() {
+    use trust_tasks_rs::specs::persona::profile::{timeline, usage};
+
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "reach", "admin", &[]).await;
+    let persona = "did:key:z6MkReachPersona";
+
+    let later = (chrono::Utc::now() + chrono::Duration::days(2))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({
+            "contextId": CTX, "name": "Work",
+            "claims": [{ "type": "email.work", "valueType": "string",
+                         "value": "ada@work.test", "share": "pool" }],
+            "personaDid": persona,
+            "until": later
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "compose: {status} {body}");
+    let face = payload_of(&body)["profileId"].as_str().unwrap().to_string();
+    let (_, body) = post(&router, &holder, PROFILE_GET, json!({ "profileId": face })).await;
+    let entries = payload_of(&body)["profile"]["entries"].clone();
+
+    // Narrowing past where it is worn is refused, naming the context.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "profileId": face, "name": "Work", "entries": entries,
+                "reach": { "kind": "only", "contextIds": ["ctx-other"] } }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/profile/put:boundOutsideReach"
+    );
+    assert_eq!(payload_of(&body)["details"]["contextIds"], json!([CTX]));
+
+    // A reach that keeps it holds, and an edit that omits reach keeps it too.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "profileId": face, "name": "Work", "entries": entries,
+                "reach": { "kind": "only", "contextIds": [CTX] } }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/put: {status} {body}");
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "profileId": face, "name": "Work (renamed)", "entries": entries }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/put: {status} {body}");
+
+    // Worn anywhere else is refused.
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": "ctx-other", "personaDid": persona, "profileId": face }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/binding/set:outsideReach"
+    );
+
+    // Usage: where, until when, and the reach beside it.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_USAGE,
+        json!({ "profileId": face }),
+    )
+    .await;
+    assert!(!refused(status, &body), "usage: {status} {body}");
+    let out = payload_of(&body).clone();
+    serde_json::from_value::<usage::v1_0::Response>(out.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
+    assert_eq!(out["reach"], json!({ "kind": "only", "contextIds": [CTX] }));
+    assert_eq!(out["usage"][0]["personaDid"], persona);
+    assert!(out["usage"][0]["until"].is_string(), "{out}");
+
+    // Timeline: composed then worn, and no value or private name anywhere.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_TIMELINE,
+        json!({ "profileId": face }),
+    )
+    .await;
+    assert!(!refused(status, &body), "timeline: {status} {body}");
+    let out = payload_of(&body).clone();
+    serde_json::from_value::<timeline::v1_0::Response>(out.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
+    let kinds: Vec<&str> = out["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["composed", "worn"], "{out}");
+    let wire = out.to_string();
+    for secret in ["ada@work.test", "Work"] {
+        assert!(
+            !wire.contains(secret),
+            "{secret} leaked into the timeline: {wire}"
+        );
+    }
 }

@@ -52,6 +52,7 @@ pub mod profile;
 mod retention;
 pub mod storage;
 pub mod store;
+pub mod timeline;
 
 pub use binding::{
     AttributeReach, BindingSummary, Bound, HeldByPin, MaterialisedClaim, RefreshedBinding,
@@ -71,13 +72,15 @@ pub use disclosure::{
 pub use facet::{FacetPlacement, PlacedElsewhere, new_facet};
 pub use lifecycle::{DisclosedTo, Lapsed, Retired};
 pub use model::{
-    Attribute, Binding, Facet, FacetColour, InlineValue, OverrideValue, Profile, ProfileEntry,
-    ProfileStatus, ProofRung, Provenance, RetainedVersion, StaleReason, Ulid, ValueType, Version,
+    Attribute, Binding, FaceReach, Facet, FacetColour, InlineValue, OverrideValue, Profile,
+    ProfileEntry, ProfileStatus, ProofRung, Provenance, RetainedVersion, StaleReason, Ulid,
+    ValueType, Version,
 };
 pub use present::{PREVIEW_TTL_SECONDS, Preview, PreviewClaim, Renderer, renderer};
 pub use profile::{ResolvedClaim, is_pool_free, new_profile};
 pub use retention::Purged;
 pub use store::{Deleted, Listing, PersonaStore, ValueVisibility, Written, new_attribute};
+pub use timeline::{FaceEvent, FaceEventKind, TimelinePage, Usage};
 
 #[cfg(test)]
 mod published_types {

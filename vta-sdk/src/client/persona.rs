@@ -245,11 +245,15 @@ impl VtaClient {
     }
 
     /// `persona/profile/put/1.0` — create or update an agent-scoped profile.
+    ///
+    /// `reach: None` keeps the face's current reach (anywhere, for a new one);
+    /// it is the one member a put does not reset by omission.
     pub async fn persona_profile_put(
         &self,
         name: &str,
         entries: Vec<ProfileEntry>,
         credential_refs: Vec<String>,
+        reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_0::FaceReach>,
         profile_id: Option<&str>,
         expected_version: Option<u64>,
     ) -> Result<Value, VtaError> {
@@ -257,6 +261,7 @@ impl VtaClient {
             name: name.to_string(),
             entries,
             credential_refs,
+            reach,
             profile_id: profile_id.map(str::to_string),
             expected_version,
             ext: None,
@@ -333,6 +338,57 @@ impl VtaClient {
         })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0,
+            payload,
+            PERSONA_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `persona/profile/usage/1.0` — where one face is worn now, with its
+    /// reach beside the answer. `context_id` names the context of a
+    /// context-local face.
+    pub async fn persona_profile_usage(
+        &self,
+        profile_id: &str,
+        context_id: Option<&str>,
+    ) -> Result<trust_tasks_rs::specs::persona::profile::usage::v1_0::Response, VtaError> {
+        let mut payload = serde_json::json!({ "profileId": profile_id });
+        if let Some(c) = context_id {
+            payload["contextId"] = c.into();
+        }
+        self.rpc_tt(
+            trust_tasks::TASK_PERSONA_PROFILE_USAGE_1_0,
+            payload,
+            PERSONA_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `persona/profile/timeline/1.0` — one page of a face's history, oldest
+    /// first. No value and no private label is in it.
+    pub async fn persona_profile_timeline(
+        &self,
+        profile_id: &str,
+        context_id: Option<&str>,
+        since: Option<&str>,
+        cursor: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<trust_tasks_rs::specs::persona::profile::timeline::v1_0::Response, VtaError> {
+        let mut payload = serde_json::json!({ "profileId": profile_id });
+        if let Some(c) = context_id {
+            payload["contextId"] = c.into();
+        }
+        if let Some(s) = since {
+            payload["since"] = s.into();
+        }
+        if let Some(c) = cursor {
+            payload["cursor"] = c.into();
+        }
+        if let Some(l) = limit {
+            payload["limit"] = l.into();
+        }
+        self.rpc_tt(
+            trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0,
             payload,
             PERSONA_TT_TIMEOUT,
         )

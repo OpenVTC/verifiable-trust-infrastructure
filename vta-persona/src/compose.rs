@@ -120,6 +120,8 @@ pub enum ComposeRefusal {
     LabelWithoutPersona,
     /// A new claim's value does not agree with its declared type.
     ValueDisagreesWithType(String),
+    /// `until` is in the past, or given with no persona to wear the face.
+    UntilNotFuture,
 }
 
 impl ComposeRefusal {
@@ -141,6 +143,11 @@ impl ComposeRefusal {
             Self::ValueDisagreesWithType(t) => {
                 format!("a {t} claim's value does not agree with its declared valueType")
             }
+            Self::UntilNotFuture => {
+                "`until` must be in the future, and ends the face being worn — give a \
+                 personaDid"
+                    .into()
+            }
         })
     }
 }
@@ -153,6 +160,8 @@ pub struct ComposeRequest {
     pub claims: Vec<ComposeClaim>,
     pub persona_did: Option<String>,
     pub label: Option<String>,
+    /// When wearing the face ends on its own, as `binding/set` `until`.
+    pub until: Option<String>,
 }
 
 /// One entry a promote moved to the pool.
@@ -184,6 +193,11 @@ impl PersonaStore {
     ) -> Result<Option<ComposeRefusal>, AppError> {
         if request.label.is_some() && request.persona_did.is_none() {
             return Ok(Some(ComposeRefusal::LabelWithoutPersona));
+        }
+        if crate::binding::until_refusal(request.until.as_deref(), request.persona_did.is_some())
+            .is_some()
+        {
+            return Ok(Some(ComposeRefusal::UntilNotFuture));
         }
         let mut seen = std::collections::BTreeSet::new();
         for claim in &request.claims {
@@ -317,7 +331,7 @@ impl PersonaStore {
                             did,
                             Some(&profile_id),
                             request.label.clone(),
-                            None,
+                            request.until.clone(),
                         )
                         .await
                         .map(|version| (version, 0)),
@@ -328,7 +342,7 @@ impl PersonaStore {
                             Some(&profile_id),
                             Vec::new(),
                             request.label.clone(),
-                            None,
+                            request.until.clone(),
                             None,
                         )
                         .await
@@ -456,7 +470,11 @@ impl PersonaStore {
             rebound.push(record.binding.persona_did);
         }
 
-        self.delete_local_profile(context_id, profile_id).await?;
+        self.remove_local_profile(context_id, profile_id, false)
+            .await?;
+        let mut event = crate::FaceEvent::now(crate::FaceEventKind::Promoted);
+        event.context_id = Some(context_id.to_string());
+        self.record_face_event(profile_id, event).await;
 
         Ok(Promoted {
             profile_id: profile_id.to_string(),
@@ -633,6 +651,7 @@ mod tests {
             claims,
             persona_did: None,
             label: None,
+            until: None,
         }
     }
 
