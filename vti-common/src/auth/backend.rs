@@ -208,6 +208,30 @@ pub trait SessionStore: Send + Sync + 'static {
     /// Delete a session and its refresh-token reverse-index.
     async fn delete_session(&self, session_id: &str) -> Result<(), Self::Error>;
 
+    /// Atomically take (read **and** remove) a session row — the claim that
+    /// makes a single-use challenge single-use under concurrency.
+    ///
+    /// `/auth/` consumes the challenge row with this **before** it looks up
+    /// the ACL and mints, so of any number of concurrent presentations of the
+    /// same signed envelope exactly one proceeds. See
+    /// [`Self::take_session_id_by_refresh`], which closes the same TOCTOU on
+    /// the refresh path.
+    ///
+    /// **The default implementation is not atomic.** It is a `get_session`
+    /// followed by a `delete_session`, which preserves today's behaviour for
+    /// every backend that does not override it — correct sequentially, but two
+    /// sufficiently interleaved callers can both observe `Some`. A backend
+    /// whose store offers a native claim (Redis `GETDEL`, DynamoDB
+    /// `DeleteItem ReturnValues=ALL_OLD`, a mutex over an embedded store)
+    /// should override it; `KeyspaceSessionStore` does.
+    async fn take_session(&self, session_id: &str) -> Result<Option<Session>, Self::Error> {
+        let session = self.get_session(session_id).await?;
+        if session.is_some() {
+            self.delete_session(session_id).await?;
+        }
+        Ok(session)
+    }
+
     /// Persist the `refresh_token → session_id` reverse-index.
     /// Implementors choose whether to hash the key (recommended;
     /// vti-common does, did-hosting historically does not) — the
