@@ -354,8 +354,9 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # 0.21.11 raises it for the same reason: it is the first release carrying
 # `persona/profile/compose` and `persona/attribute/promote`; 0.21.12, of
 # `persona/profile/{retire,reinstate}` and binding `until`; 0.21.14, of
-# `persona/profile/{usage,timeline}` and face `reach`.
-trust-tasks-rs = { version = "0.21.14", default-features = false, features = [
+# `persona/profile/{usage,timeline}` and face `reach`; 0.21.15, of `derived`
+# provenance and attribute `endorsements`.
+trust-tasks-rs = { version = "0.21.15", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

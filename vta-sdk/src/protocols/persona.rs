@@ -122,6 +122,16 @@ pub enum Provenance {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         per_verifier: Option<bool>,
     },
+    /// Taken from a source the holder connected or supplied — nobody signed
+    /// it, and it is never presented as attested.
+    #[serde(rename_all = "camelCase")]
+    Derived {
+        /// The kind of source (`github`, `cvUpload`) — never a handle or URL,
+        /// since provenance reaches the verifier.
+        source: String,
+        /// When the value was taken from the source (RFC 3339).
+        derived_at: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +282,10 @@ pub struct PersonaAttributePutBody {
     /// The holder's own name for it — "work mobile", "the flat".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Vault ids of credentials endorsing this value. Inventory, not
+    /// evidence: the value stays whatever its provenance says.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endorsements: Vec<String>,
     /// Address an existing attribute, or make a create idempotent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribute_id: Option<String>,

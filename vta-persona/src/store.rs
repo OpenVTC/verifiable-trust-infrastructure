@@ -43,6 +43,11 @@ use crate::storage;
 /// pulling from a watermark learns about every create and update and never
 /// learns about a delete, so deleted records resurrect on the next full rebuild
 /// and disagree with peers that saw the delete live.
+// A slot is decoded, matched and dropped within one call; it is never held in
+// a collection where the size of its larger variant would add up. Boxing the
+// live attribute would add an allocation to every read to save memory nothing
+// keeps.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum Slot {
@@ -581,6 +586,7 @@ pub fn new_attribute(
         release: None,
         version: 0,
         retained_versions: Vec::new(),
+        endorsements: Vec::new(),
         created_at: now.clone(),
         updated_at: now,
     }

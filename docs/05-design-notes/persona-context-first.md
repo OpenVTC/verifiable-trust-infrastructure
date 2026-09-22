@@ -408,6 +408,19 @@ pub endorsements: Vec<String>,   // vault credential ids
 face level — `Profile.credential_refs` is documented in exactly those terms.
 This is the same distinction one level down, and should read the same way.
 
+**As built** (trust-tasks-tf #582): `Derived { source, derivedAt }`, with
+`source` the *kind* of source (`github`, `cvUpload`) and never a handle or URL
+— provenance reaches the verifier, so a handle there would disclose an
+identifier the holder never chose to share. It is previewed as `derived` at
+the whole rung, and correlates the way a typed value does, since there is no
+issuer signature to link. `endorsements` is checked at write: every id must
+name a credential the vault holds (`endorsementNotFound`).
+
+**Found while building it:** `attribute/put` rule 3 — resolve a
+`credentialBacked` provenance's credential at write, `credentialNotFound` —
+is not implemented; the VTA accepts any `credentialId`. The endorsement check
+added here is the same shape, and the credential-backed one should follow it.
+
 ### 5.8 Facets become suggested
 
 No "Add a World" step. The CLI and UI surface facets as an offer once a cluster

@@ -63,6 +63,9 @@ async fn attribute(client: &VtaClient, command: PersonaAttributeCommands) -> Cmd
             proof,
             generator,
             per_verifier,
+            source,
+            derived_at,
+            endorsements,
             attribute_id,
             expected_version,
         } => {
@@ -70,12 +73,16 @@ async fn attribute(client: &VtaClient, command: PersonaAttributeCommands) -> Cmd
             let parsed = parse_value(&value, vt)?;
             let prov = build_provenance(
                 provenance,
-                credential_id,
-                claim_path,
-                issuer_did,
-                proof,
-                generator,
-                per_verifier,
+                ProvenanceFlags {
+                    credential_id,
+                    claim_path,
+                    issuer_did,
+                    proof,
+                    generator,
+                    per_verifier,
+                    source,
+                    derived_at,
+                },
             )?;
             p::cmd_attribute_put(
                 client,
@@ -84,6 +91,7 @@ async fn attribute(client: &VtaClient, command: PersonaAttributeCommands) -> Cmd
                 vt,
                 prov,
                 label,
+                endorsements,
                 attribute_id,
                 expected_version,
             )
@@ -465,15 +473,20 @@ fn parse_value(raw: &str, value_type: ValueType) -> Result<serde_json::Value, St
 /// gap — it is a self-asserted value wearing a credential's authority, which
 /// is the one thing provenance exists to prevent. So the incomplete
 /// combination is an error here rather than a silent downgrade anywhere.
-fn build_provenance(
-    kind: ProvenanceOpt,
+/// The provenance flags of `persona attribute put`, gathered so the builder
+/// can say which ones a chosen provenance ignores.
+struct ProvenanceFlags {
     credential_id: Option<String>,
     claim_path: Option<String>,
     issuer_did: Option<String>,
     proof: Option<ProofRungOpt>,
     generator: Option<String>,
     per_verifier: Option<bool>,
-) -> Result<Provenance, String> {
+    source: Option<String>,
+    derived_at: Option<String>,
+}
+
+fn build_provenance(kind: ProvenanceOpt, f: ProvenanceFlags) -> Result<Provenance, String> {
     let unused = |flags: &[(&str, bool)]| -> Result<(), String> {
         let set: Vec<&str> = flags
             .iter()
@@ -490,39 +503,45 @@ fn build_provenance(
                     ProvenanceOpt::SelfAsserted => "self-asserted",
                     ProvenanceOpt::CredentialBacked => "credential-backed",
                     ProvenanceOpt::Generated => "generated",
+                    ProvenanceOpt::Derived => "derived",
                 }
             ))
         }
     };
+    let credential = [
+        ("--credential-id", f.credential_id.is_some()),
+        ("--claim-path", f.claim_path.is_some()),
+        ("--issuer-did", f.issuer_did.is_some()),
+        ("--proof", f.proof.is_some()),
+    ];
+    let generated = [
+        ("--generator", f.generator.is_some()),
+        ("--per-verifier", f.per_verifier.is_some()),
+    ];
+    let derived = [
+        ("--source", f.source.is_some()),
+        ("--derived-at", f.derived_at.is_some()),
+    ];
 
     match kind {
         ProvenanceOpt::SelfAsserted => {
-            unused(&[
-                ("--credential-id", credential_id.is_some()),
-                ("--claim-path", claim_path.is_some()),
-                ("--issuer-did", issuer_did.is_some()),
-                ("--proof", proof.is_some()),
-                ("--generator", generator.is_some()),
-                ("--per-verifier", per_verifier.is_some()),
-            ])?;
+            unused(&[&credential[..], &generated[..], &derived[..]].concat())?;
             Ok(Provenance::SelfAsserted)
         }
         ProvenanceOpt::CredentialBacked => {
-            unused(&[
-                ("--generator", generator.is_some()),
-                ("--per-verifier", per_verifier.is_some()),
-            ])?;
-            let credential_id =
-                credential_id.ok_or("--provenance credential-backed requires --credential-id")?;
-            let claim_path = claim_path.ok_or(
+            unused(&[&generated[..], &derived[..]].concat())?;
+            let credential_id = f
+                .credential_id
+                .ok_or("--provenance credential-backed requires --credential-id")?;
+            let claim_path = f.claim_path.ok_or(
                 "--provenance credential-backed requires --claim-path, e.g. \
                  /credentialSubject/familyName",
             )?;
             Ok(Provenance::CredentialBacked {
                 credential_id,
                 claim_path,
-                issuer_did,
-                proof: proof.map(|r| match r {
+                issuer_did: f.issuer_did,
+                proof: f.proof.map(|r| match r {
                     ProofRungOpt::Predicate => ProofRung::Predicate,
                     ProofRungOpt::Derived => ProofRung::Derived,
                     ProofRungOpt::SelectiveDisclosure => ProofRung::SelectiveDisclosure,
@@ -531,17 +550,25 @@ fn build_provenance(
             })
         }
         ProvenanceOpt::Generated => {
-            unused(&[
-                ("--credential-id", credential_id.is_some()),
-                ("--claim-path", claim_path.is_some()),
-                ("--issuer-did", issuer_did.is_some()),
-                ("--proof", proof.is_some()),
-            ])?;
-            let generator =
-                generator.ok_or("--provenance generated requires --generator, e.g. relayEmail")?;
+            unused(&[&credential[..], &derived[..]].concat())?;
+            let generator = f
+                .generator
+                .ok_or("--provenance generated requires --generator, e.g. relayEmail")?;
             Ok(Provenance::Generated {
                 generator,
-                per_verifier,
+                per_verifier: f.per_verifier,
+            })
+        }
+        ProvenanceOpt::Derived => {
+            unused(&[&credential[..], &generated[..]].concat())?;
+            let source = f
+                .source
+                .ok_or("--provenance derived requires --source, e.g. github or cvUpload")?;
+            Ok(Provenance::Derived {
+                source,
+                derived_at: f
+                    .derived_at
+                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
             })
         }
     }
@@ -704,28 +731,37 @@ mod tests {
     /// The alternative — dropping the missing members and sending it anyway —
     /// produces a self-asserted value wearing a credential's authority, which
     /// is the single thing provenance exists to prevent.
+    fn flags() -> ProvenanceFlags {
+        ProvenanceFlags {
+            credential_id: None,
+            claim_path: None,
+            issuer_did: None,
+            proof: None,
+            generator: None,
+            per_verifier: None,
+            source: None,
+            derived_at: None,
+        }
+    }
+
     #[test]
     fn credential_backed_provenance_refuses_to_be_incomplete() {
         let err = build_provenance(
             ProvenanceOpt::CredentialBacked,
-            None,
-            Some("/credentialSubject/familyName".into()),
-            None,
-            None,
-            None,
-            None,
+            ProvenanceFlags {
+                claim_path: Some("/credentialSubject/familyName".into()),
+                ..flags()
+            },
         )
         .expect_err("must refuse without a credential id");
         assert!(err.contains("--credential-id"), "got: {err}");
 
         let err = build_provenance(
             ProvenanceOpt::CredentialBacked,
-            Some("cred-1".into()),
-            None,
-            None,
-            None,
-            None,
-            None,
+            ProvenanceFlags {
+                credential_id: Some("cred-1".into()),
+                ..flags()
+            },
         )
         .expect_err("must refuse without a claim path");
         assert!(err.contains("--claim-path"), "got: {err}");
@@ -740,27 +776,38 @@ mod tests {
     fn a_flag_the_provenance_ignores_is_refused() {
         let err = build_provenance(
             ProvenanceOpt::SelfAsserted,
-            Some("cred-1".into()),
-            None,
-            None,
-            None,
-            None,
-            None,
+            ProvenanceFlags {
+                credential_id: Some("cred-1".into()),
+                ..flags()
+            },
         )
         .expect_err("must refuse a flag it would ignore");
         assert!(err.contains("--credential-id"), "got: {err}");
+
+        // A derived source on a credential-backed value would be a second,
+        // contradictory account of where it came from.
+        let err = build_provenance(
+            ProvenanceOpt::CredentialBacked,
+            ProvenanceFlags {
+                credential_id: Some("cred-1".into()),
+                claim_path: Some("/x".into()),
+                source: Some("github".into()),
+                ..flags()
+            },
+        )
+        .expect_err("must refuse a flag it would ignore");
+        assert!(err.contains("--source"), "got: {err}");
     }
 
     #[test]
     fn a_complete_generated_provenance_builds() {
         let p = build_provenance(
             ProvenanceOpt::Generated,
-            None,
-            None,
-            None,
-            None,
-            Some("relayEmail".into()),
-            Some(true),
+            ProvenanceFlags {
+                generator: Some("relayEmail".into()),
+                per_verifier: Some(true),
+                ..flags()
+            },
         )
         .expect("builds");
         assert!(matches!(
@@ -770,6 +817,26 @@ mod tests {
                 per_verifier: Some(true)
             } if generator == "relayEmail"
         ));
+    }
+
+    #[test]
+    fn a_derived_provenance_needs_its_source_and_defaults_its_time() {
+        let err = build_provenance(ProvenanceOpt::Derived, flags())
+            .expect_err("must refuse without a source");
+        assert!(err.contains("--source"), "got: {err}");
+        let p = build_provenance(
+            ProvenanceOpt::Derived,
+            ProvenanceFlags {
+                source: Some("github".into()),
+                ..flags()
+            },
+        )
+        .expect("builds");
+        let Provenance::Derived { source, derived_at } = p else {
+            panic!("not derived: {p:?}");
+        };
+        assert_eq!(source, "github");
+        assert!(chrono::DateTime::parse_from_rfc3339(&derived_at).is_ok());
     }
 
     /// `--ref` shorthand produces live references, not pins.

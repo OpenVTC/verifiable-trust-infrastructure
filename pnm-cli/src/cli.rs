@@ -3369,6 +3369,9 @@ pub(crate) enum ProvenanceOpt {
     /// Minted by the agent — a relay address, a per-verifier alias. Requires
     /// `--generator`.
     Generated,
+    /// Taken from a source you connected or supplied — a profile, a CV — that
+    /// nobody signed. Requires `--source`.
+    Derived,
 }
 
 /// How strongly a credential-backed claim is hidden when presented, most
@@ -3454,6 +3457,9 @@ pub(crate) enum PersonaCommands {
 }
 
 /// `pnm persona attribute …`
+// Parsed once and matched in `main`, like the other subcommand enums here that
+// carry this allow; boxing `Put`'s flags would obscure the derive for nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum PersonaAttributeCommands {
     /// Store one attribute about the holder. Omit `--attribute-id` to create.
@@ -3500,6 +3506,19 @@ pub(crate) enum PersonaAttributeCommands {
         /// and there is rarely a reason to turn it off.
         #[arg(long = "per-verifier")]
         per_verifier: Option<bool>,
+        /// For `--provenance derived`: the kind of source — `github`,
+        /// `cvUpload` — never a handle or URL, since it is shown to whoever
+        /// you disclose the value to.
+        #[arg(long)]
+        source: Option<String>,
+        /// For `--provenance derived`: when the value was taken (RFC 3339).
+        /// Defaults to now.
+        #[arg(long = "derived-at")]
+        derived_at: Option<String>,
+        /// A credential in your vault in which someone endorses this value.
+        /// Repeatable. The value stays whatever its provenance says.
+        #[arg(long = "endorsement", value_name = "CREDENTIAL_ID")]
+        endorsements: Vec<String>,
         /// Update an existing attribute, or make a create idempotent.
         #[arg(long = "attribute-id")]
         attribute_id: Option<String>,

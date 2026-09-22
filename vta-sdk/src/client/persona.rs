@@ -85,6 +85,7 @@ impl VtaClient {
         value_type: ValueType,
         provenance: Provenance,
         label: Option<&str>,
+        endorsements: Vec<String>,
         attribute_id: Option<&str>,
         expected_version: Option<u64>,
     ) -> Result<Value, VtaError> {
@@ -94,6 +95,7 @@ impl VtaClient {
             value_type,
             provenance,
             label: label.map(str::to_string),
+            endorsements,
             attribute_id: attribute_id.map(str::to_string),
             expected_version,
             ext: None,

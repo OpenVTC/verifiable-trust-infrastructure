@@ -3632,3 +3632,117 @@ async fn a_face_goes_only_where_its_reach_allows_and_its_timeline_says_what_it_d
         );
     }
 }
+
+/// A derived value is stored and previewed as derived — never as attested —
+/// and an endorsement must name a credential the vault holds, without
+/// changing the value's provenance. Design note `persona-context-first.md`
+/// §5.7.
+#[tokio::test]
+async fn a_derived_value_stays_derived_and_an_endorsement_must_be_held() {
+    use vta_service::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "derived", "admin", &[]).await;
+
+    let derived =
+        json!({ "kind": "derived", "source": "github", "derivedAt": "2026-09-01T00:00:00Z" });
+
+    // An endorsement the vault does not hold is refused, naming it.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({ "type": "skill.language", "valueType": "string", "value": "Rust",
+                "provenance": derived, "endorsements": ["cred-nobody-holds"] }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/attribute/put:endorsementNotFound"
+    );
+    assert_eq!(
+        payload_of(&body)["details"]["credentialIds"],
+        json!(["cred-nobody-holds"])
+    );
+
+    // One it does hold is kept, and the provenance is untouched by it.
+    let cred = StoredCredential {
+        id: "cred-colleague-vouch".into(),
+        format: CredentialFormat::SdJwtVc,
+        types: vec!["EndorsementCredential".into()],
+        schema_id: None,
+        community_did: None,
+        context_id: None,
+        subject_did: None,
+        issuer_did: Some("did:web:colleague.test".into()),
+        purpose: None,
+        status: CredentialStatus::Valid,
+        valid_from: None,
+        valid_until: None,
+        received_at: "2026-01-01T00:00:00Z".into(),
+        source: None,
+        tags: Default::default(),
+        body: b"opaque".to_vec(),
+        lifecycle: vti_common::vault::VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
+    };
+    vta_service::vault::storage::put(&ctx.vault_ks, &cred)
+        .await
+        .unwrap();
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({ "type": "skill.language", "valueType": "string", "value": "Rust",
+                "provenance": derived, "endorsements": ["cred-colleague-vouch"] }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/put: {status} {body}");
+    let attribute = payload_of(&body)["attributeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (_, body) = post(&router, &holder, ATTR_LIST, json!({})).await;
+    let row = payload_of(&body)["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["attributeId"] == attribute.as_str())
+        .cloned()
+        .unwrap();
+    assert_eq!(row["provenance"]["kind"], "derived", "{row}");
+    assert_eq!(row["provenance"]["source"], "github");
+    assert_eq!(row["endorsements"], json!(["cred-colleague-vouch"]));
+
+    // Worn and previewed: it is shown to the holder as derived.
+    let persona = "did:key:z6MkDerivedPersona";
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({ "contextId": CTX, "name": "Dev", "claims": [{ "attributeId": attribute }],
+                "personaDid": persona }),
+    )
+    .await;
+    assert!(!refused(status, &body), "compose: {status} {body}");
+    let (status, body) = post(
+        &router,
+        &holder,
+        PREVIEW,
+        json!({ "contextId": CTX, "personaDid": persona,
+                "verifierDid": "did:web:verifier.test" }),
+    )
+    .await;
+    assert!(!refused(status, &body), "preview: {status} {body}");
+    let claims = payload_of(&body)["claims"].as_array().unwrap().clone();
+    assert!(
+        claims
+            .iter()
+            .any(|c| c["type"] == "skill.language" && c["provenance"] == "derived"),
+        "{claims:?}"
+    );
+}
