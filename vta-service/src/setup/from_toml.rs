@@ -1861,7 +1861,7 @@ async fn create_simple_webvh_did(
         // where the REST entry comes from too. Asking for a second one here
         // would be redundant — and `with_tsp_service` would decline it anyway,
         // since a caller-supplied `TSPTransport` wins.
-        add_tsp_service: false,
+        add_tsp_service: Some(false),
         additional_services,
         pre_rotation_count,
         did_document: advanced.did_document,
