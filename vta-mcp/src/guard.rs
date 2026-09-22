@@ -241,6 +241,11 @@ const READ_VERBS: &[&str] = &[
     // the whole log and nothing else — it writes nothing, and the answer being
     // "broken" is a fact about what is already there.
     "verify",
+    // `persona/profile/usage`: where a face is worn now. Reads bindings only.
+    "usage",
+    // `persona/profile/timeline`: a face's history. Reads only, and carries
+    // no value.
+    "timeline",
     // Reads the record of what was disclosed to whom. Only ever a read — the
     // disclosure itself is written by `present`, not by looking at it later.
     "history",

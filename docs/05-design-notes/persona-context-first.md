@@ -348,6 +348,15 @@ boundAt}]` for a face. Needed to audit an allow-list, and to render the
 "Contexts" list on the world screen (§4). `bindings_to_anywhere`
 (`binding.rs:345`) already computes it for correlation and is exposed nowhere.
 
+**As built** (trust-tasks-tf #577): `persona/profile/usage`, named for the
+family's noun as compose was. `reach` is a tagged object on the wire —
+`{kind: anywhere}` or `{kind: only, contextIds: [...]}` with at least one
+context — so the enum survives the JSON. **An omitted `reach` on
+`profile/put` keeps the face's current one**, the one member a put does not
+reset: a reach is a restriction, and a client written before it existed would
+otherwise lift it with every edit. Narrowing past a context the face is worn
+in is refused (`boundOutsideReach`, naming them) rather than unbinding.
+
 ### 5.5 `slot` on `ProfileEntry`
 
 An optional face-local role name. `slot: "displayName"` designates the entry
@@ -618,6 +627,16 @@ changed (type + version), un-worn, retired. **Never values, never the holder's
 private labels** — the `Facet.name` rule ("MUST NOT reach an operational log")
 applies to every private name here, and a census test should hold it for every
 persona audit `detail` string.
+
+**As built** (trust-tasks-tf #577): the pieces were not all recorded
+somewhere — a binding taken off left no trace in the one that replaced it — so
+each face gets an append-only event log (`pft:`, agent-scoped, ULID-keyed so
+recording never takes the write lock), written after the change it describes
+and never failing it. The timeline is that log joined with the disclosure
+records. A face from before the log reports its composition from `createdAt`.
+The log goes with a deleted face; a promoted face keeps it, since it keeps its
+id. `FaceEvent` has no member a value or a label could go in, and a test holds
+that none reaches the wire.
 
 ### 9.7 The persona DID should disappear from the primary flow
 

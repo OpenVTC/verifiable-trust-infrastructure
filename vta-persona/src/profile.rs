@@ -121,6 +121,17 @@ impl PersonaStore {
             _ => None,
         };
         check_precondition(expected_version, current_version)?;
+        // Narrowing where a face may go must not silently take it off where it
+        // is: the holder takes it off there first, deliberately.
+        let excluded = self
+            .reach_would_exclude(&profile.profile_id, &profile.reach)
+            .await?;
+        if !excluded.is_empty() {
+            return Err(AppError::Validation(format!(
+                "the new reach excludes context(s) this face is worn in: {}",
+                excluded.join(", ")
+            )));
+        }
 
         let version = self.next_version().await?;
         let created = current_version.is_none();
@@ -180,6 +191,13 @@ impl PersonaStore {
             self.reap_unpinned(&attribute_id).await?;
         }
 
+        if created {
+            self.record_face_event(
+                &profile_id,
+                crate::FaceEvent::now(crate::FaceEventKind::Composed),
+            )
+            .await;
+        }
         Ok(Written { version, created })
     }
 
@@ -374,6 +392,7 @@ impl PersonaStore {
         for attribute_id in pinned_refs(existing.entries.iter()) {
             self.reap_unpinned(&attribute_id).await?;
         }
+        self.forget_face_events(profile_id).await?;
         Ok(true)
     }
 
@@ -403,6 +422,7 @@ pub fn new_profile(name: impl Into<String>, entries: Vec<ProfileEntry>) -> Profi
         name: name.into(),
         entries,
         credential_refs: Vec::new(),
+        reach: crate::model::FaceReach::Anywhere,
         status: crate::model::ProfileStatus::Active,
         retired_at: None,
         version: 0,
@@ -954,7 +974,13 @@ impl PersonaStore {
         )
         .await?;
 
+        let profile_id = profile.profile_id.clone();
         self.ks.insert(key, &ProfileSlot::Live(profile)).await?;
+        if created {
+            let mut event = crate::FaceEvent::now(crate::FaceEventKind::Composed);
+            event.context_id = Some(context_id.to_string());
+            self.record_face_event(&profile_id, event).await;
+        }
         Ok(Written { version, created })
     }
 
@@ -994,6 +1020,20 @@ impl PersonaStore {
         context_id: &str,
         profile_id: &str,
     ) -> Result<bool, AppError> {
+        self.remove_local_profile(context_id, profile_id, true)
+            .await
+    }
+
+    /// Remove a local face, forgetting its history only when `forget`.
+    ///
+    /// Promotion removes the local face without forgetting: the face lives on
+    /// in the pool under the same id, and its history is its own.
+    pub(crate) async fn remove_local_profile(
+        &self,
+        context_id: &str,
+        profile_id: &str,
+        forget: bool,
+    ) -> Result<bool, AppError> {
         let _guard = self.write_lock.lock().await;
         let key = storage::local_profile_key(context_id, profile_id);
         let Some(ProfileSlot::Live(existing)) = self.ks.get::<ProfileSlot>(key.clone()).await?
@@ -1003,6 +1043,9 @@ impl PersonaStore {
         self.ks.remove(key).await?;
         self.reindex_face(Some(context_id), profile_id, Some(&existing), None)
             .await?;
+        if forget {
+            self.forget_face_events(profile_id).await?;
+        }
         Ok(true)
     }
 
@@ -1101,6 +1144,10 @@ impl PersonaStore {
         };
 
         let _guard = self.write_lock.lock().await;
+        let before = self
+            .binding_record(context_id, persona_did)
+            .await?
+            .and_then(|r| r.binding.profile_id);
         let version = self.next_version().await?;
         let record = crate::binding::BindingRecord {
             binding: crate::model::Binding {
@@ -1118,6 +1165,8 @@ impl PersonaStore {
         self.ks
             .insert(storage::binding_key(context_id, persona_did), &record)
             .await?;
+        self.record_wearing(context_id, persona_did, before.as_deref(), profile_id)
+            .await;
         Ok(version)
     }
 }

@@ -365,6 +365,9 @@ pub struct PersonaProfilePutBody {
     /// Credentials tagged as belonging with this profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credential_refs: Vec<String>,
+    /// Where the face may be worn. Omit to keep its current reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_0::FaceReach>,
     /// Address an existing profile, or make a create idempotent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,

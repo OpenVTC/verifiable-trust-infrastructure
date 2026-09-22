@@ -3610,6 +3610,17 @@ pub(crate) enum PersonaProfileCommands {
         /// Tag a credential as belonging with this profile. Repeatable.
         #[arg(long = "credential-ref")]
         credential_refs: Vec<String>,
+        /// Let this face be worn only in this context. Repeatable. Omit both
+        /// this and `--reach-anywhere` to keep the face's current reach.
+        #[arg(
+            long = "reach-only",
+            value_name = "CONTEXT",
+            conflicts_with = "reach_anywhere"
+        )]
+        reach_only: Vec<String>,
+        /// Let this face be worn in any context again.
+        #[arg(long = "reach-anywhere")]
+        reach_anywhere: bool,
         /// Update an existing profile, or make a create idempotent.
         #[arg(long = "profile-id")]
         profile_id: Option<String>,
@@ -3651,6 +3662,38 @@ pub(crate) enum PersonaProfileCommands {
         /// What the context may call the face. Needs `--persona-did`.
         #[arg(long, requires = "persona_did")]
         label: Option<String>,
+        /// When wearing it here ends on its own (RFC 3339). The face is then
+        /// retired if it is worn nowhere else. Needs `--persona-did`.
+        #[arg(long, requires = "persona_did")]
+        until: Option<String>,
+    },
+    /// Where a face is worn now, and where it may be.
+    Usage {
+        /// The face.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+        /// The context of a context-local face. Omit for a face in your pool.
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// What a face has done, oldest first: made, worn, taken off, what it told
+    /// whom, when a value it shows changed. Never a value.
+    Timeline {
+        /// The face.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+        /// The context of a context-local face. Omit for a face in your pool.
+        #[arg(long)]
+        context: Option<String>,
+        /// Only events at or after this time (RFC 3339).
+        #[arg(long)]
+        since: Option<String>,
+        /// Continue from a previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Page size.
+        #[arg(long)]
+        limit: Option<u64>,
     },
     /// Read one profile.
     Get {

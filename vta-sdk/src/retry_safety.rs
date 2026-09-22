@@ -619,6 +619,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_PERSONA_PROFILE_REINSTATE_1_0,
         RetrySafety::RetrySafe,
     ),
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_USAGE_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0,
+        RetrySafety::ReadOnly,
+    ),
     // Each execution makes a new face with a new id.
     (
         trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0,

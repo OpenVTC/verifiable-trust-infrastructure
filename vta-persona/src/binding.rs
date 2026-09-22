@@ -234,6 +234,14 @@ impl PersonaStore {
                         "profile {id} is retired; reinstate it before wearing it"
                     )));
                 }
+                // The holder said where this face may go; anywhere else is
+                // refused rather than trusted to the caller.
+                if !p.reach.admits(context_id) {
+                    return Err(AppError::Validation(format!(
+                        "profile {id} may not be worn in {context_id}; its reach does not \
+                         include it"
+                    )));
+                }
                 (Some(p.name.clone()), self.materialise(id).await?)
             }
         };
@@ -268,6 +276,9 @@ impl PersonaStore {
         self.ks
             .insert(storage::binding_key(context_id, persona_did), &record)
             .await?;
+        let before = existing.and_then(|r| r.binding.profile_id);
+        self.record_wearing(context_id, persona_did, before.as_deref(), profile_id)
+            .await;
 
         Ok(Bound {
             version,
@@ -494,8 +505,20 @@ impl PersonaStore {
             record.profile_name = None;
             record.label = None;
             record.claims.clear();
-            self.ks.insert(k, &record).await?;
+            self.ks.insert(k.clone(), &record).await?;
             cleared += 1;
+            if let Some(ctx) = String::from_utf8(k).ok().and_then(|key| {
+                key.strip_prefix("pb:")
+                    .and_then(|rest| rest.split_once(':'))
+                    .map(|(c, _)| c.to_string())
+            }) {
+                self.record_face_event(
+                    profile_id,
+                    crate::FaceEvent::now(crate::FaceEventKind::Unworn)
+                        .worn_by(&ctx, &record.binding.persona_did),
+                )
+                .await;
+            }
         }
         Ok(cleared)
     }

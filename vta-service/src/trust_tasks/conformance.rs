@@ -3273,6 +3273,47 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            u::TASK_PERSONA_PROFILE_USAGE_1_0,
+            (
+                json!({ "profileId": PROFILE }),
+                parses::<specs::persona::profile::usage::v1_0::Payload>,
+                validates::<specs::persona::profile::usage::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "profileId": PROFILE,
+                    "reach": { "kind": "only", "contextIds": [CTX] },
+                    "usage": [{ "contextId": CTX, "personaDid": PERSONA_DID, "boundAt": NOW,
+                                "until": NOW }]
+                }),
+                parses::<specs::persona::profile::usage::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_PROFILE_TIMELINE_1_0,
+            (
+                json!({ "profileId": PROFILE, "limit": 50 }),
+                parses::<specs::persona::profile::timeline::v1_0::Payload>,
+                validates::<specs::persona::profile::timeline::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "profileId": PROFILE,
+                    "events": [
+                        { "at": NOW, "kind": "composed" },
+                        { "at": NOW, "kind": "worn", "contextId": CTX, "personaDid": PERSONA_DID },
+                        { "at": NOW, "kind": "disclosed", "contextId": CTX,
+                          "personaDid": PERSONA_DID, "verifierDid": VERIFIER,
+                          "claimTypes": ["name.display"] },
+                        { "at": NOW, "kind": "valueChanged", "claimTypes": ["name.display"],
+                          "version": 7 }
+                    ],
+                    "nextCursor": "t:4"
+                }),
+                parses::<specs::persona::profile::timeline::v1_0::Response>,
+            ),
+        ),
+        (
             u::TASK_PERSONA_PROFILE_PUT_1_0,
             (
                 // One entry of each referencing form the pool supports, so the
