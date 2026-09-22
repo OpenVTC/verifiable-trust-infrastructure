@@ -252,7 +252,14 @@ pub async fn handle_refresh<B: AuthBackend>(
     // token — it is still refused, since its index is gone — whereas
     // writing the tombstone first and crashing would leave the caller
     // holding a token the store no longer honours.
-    backend
+    //
+    // A write *error* is treated the same way as the crash: logged, not
+    // returned. The rotation above is already committed, so failing the
+    // request here would withhold the only live refresh token from the
+    // client that owns it — its retry with the spent token then finds
+    // no tombstone and is refused, signing the user out over a record
+    // that exists only for detection.
+    if let Err(e) = backend
         .sessions()
         .store_refresh_tombstone(
             &input.refresh_token,
@@ -262,7 +269,14 @@ pub async fn handle_refresh<B: AuthBackend>(
             backend.refresh_token_ttl(),
         )
         .await
-        .map_err(|e| AuthError::Internal(format!("store_refresh_tombstone failed: {e:?}")))?;
+    {
+        tracing::error!(
+            session_id = %new_session_id,
+            did = %old_session.did,
+            "failed to tombstone a rotated refresh token; a replay of it \
+             will be refused but not attributed: {e:?}",
+        );
+    }
 
     backend.audit(AuthAuditEvent::Refreshed {
         did: &old_session.did,
@@ -422,6 +436,14 @@ async fn handle_unclaimed_refresh<B: AuthBackend>(
 /// of a client that never received it. Once anyone spends the successor
 /// the window shuts early, so a stolen token replayed seconds after a
 /// legitimate refresh is still caught.
+///
+/// Conformance with VTI-SES-030 (exactly one concurrent claimant
+/// succeeds): the claim itself is still the atomic take in
+/// [`handle_refresh`], and a caller racing it misses the index before
+/// the tombstone exists and is refused. What passes here is a caller
+/// arriving *after* that claim completed, and it is handed the claim's
+/// own result — no second session, no second refresh token — which is
+/// the outcome the requirement's rationale rules out.
 fn is_innocent_retry(
     session: &Session,
     tombstone: &RefreshTombstone,
@@ -486,6 +508,17 @@ async fn replay_rotation<B: AuthBackend>(
             &token_id,
         )
         .await?;
+
+    // An access token was issued, so the refresh is audited like any
+    // other (VTI-SES-041). The session id does not change on rotation
+    // either, so old == new here is the same shape a rotation records.
+    backend.audit(AuthAuditEvent::Refreshed {
+        did: &session.did,
+        old_session_id: &session.session_id,
+        new_session_id: &session.session_id,
+        amr: &amr,
+        acr: &acr,
+    });
 
     Ok(AuthenticateResponse {
         session: WireSession {
@@ -1000,5 +1033,78 @@ mod tests {
         assert_refused(&err);
         assert!(alerts(&b).is_empty(), "no tombstone, no alert");
         assert_eq!(b.store.0.session_count(), 1, "session survives");
+    }
+
+    /// A tombstone write that fails must not fail a rotation that is
+    /// already committed. Returning the error would withhold the only
+    /// live refresh token from its owner, whose retry with the spent one
+    /// then finds no tombstone and is refused — a sign-out caused by a
+    /// record that exists only for detection.
+    #[tokio::test]
+    async fn a_failed_tombstone_write_does_not_fail_the_rotation() {
+        #[derive(Default)]
+        struct FailingTombstones(MemStore);
+
+        #[async_trait]
+        impl SessionStore for FailingTombstones {
+            type Error = AppError;
+            async fn store_session(&self, s: &Session) -> Result<(), AppError> {
+                self.0.store_session(s).await
+            }
+            async fn get_session(&self, id: &str) -> Result<Option<Session>, AppError> {
+                self.0.get_session(id).await
+            }
+            async fn delete_session(&self, id: &str) -> Result<(), AppError> {
+                self.0.delete_session(id).await
+            }
+            async fn store_refresh_index(&self, t: &str, id: &str) -> Result<(), AppError> {
+                self.0.store_refresh_index(t, id).await
+            }
+            async fn take_session_id_by_refresh(
+                &self,
+                t: &str,
+            ) -> Result<Option<String>, AppError> {
+                self.0.take_session_id_by_refresh(t).await
+            }
+            async fn count_pending_challenges(&self, d: &str) -> Result<usize, AppError> {
+                self.0.count_pending_challenges(d).await
+            }
+            async fn store_refresh_tombstone(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: u64,
+                _: u64,
+            ) -> Result<(), AppError> {
+                Err(AppError::Internal("tombstone store unavailable".into()))
+            }
+            async fn get_refresh_tombstone(
+                &self,
+                t: &str,
+            ) -> Result<Option<RefreshTombstone>, AppError> {
+                self.0.get_refresh_tombstone(t).await
+            }
+        }
+
+        let b = MockBackend {
+            store: FailingTombstones::default(),
+            grace: 30,
+            alerts: Arc::new(Mutex::new(Vec::new())),
+        };
+        let first = seed(&b.store).await;
+
+        let second = handle_refresh(&b, input(&first))
+            .await
+            .expect("the rotation is committed, so the refresh must succeed")
+            .tokens
+            .refresh_token
+            .unwrap();
+
+        // The token it handed out is the live one.
+        handle_refresh(&b, input(&second))
+            .await
+            .expect("the rotated token must work");
+        assert!(alerts(&b).is_empty());
     }
 }

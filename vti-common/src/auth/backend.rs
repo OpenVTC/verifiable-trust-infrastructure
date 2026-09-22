@@ -220,7 +220,8 @@ pub trait SessionStore: Send + Sync + 'static {
     ///
     /// Invoked by `/auth/refresh` after the replacement token's index is
     /// durable, so a crash between the two costs detection of a future
-    /// replay but never the session itself.
+    /// replay but never the session itself. An `Err` from this method is
+    /// logged and does not fail the refresh, for the same reason.
     ///
     /// Implementors MUST NOT store either token in recoverable form —
     /// `rotated_token` belongs in a one-way key and `successor_token`
@@ -668,6 +669,7 @@ pub enum AuthAuditEvent<'a> {
 /// Carried on [`AuthAuditEvent::RefreshReuseDetected`] for triage: the
 /// three cases have very different operational readings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RefreshReuseReason {
     /// Presented after [`AuthBackend::refresh_reuse_grace`] elapsed.
     /// The classic stolen-token replay — a retry would have arrived in

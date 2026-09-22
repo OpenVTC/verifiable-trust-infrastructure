@@ -197,7 +197,10 @@ created_time?, session_pubkey_b58btc? }`. The canonical handler:
 9. Mint new session (new `session_id`, access token, refresh
    token; AAL preserved; TTL acr-dependent).
 10. **Tombstone the spent token** (`store_refresh_tombstone`),
-    ordered after the replacement index is durable.
+    ordered after the replacement index is durable. A write
+    failure is logged, not returned: the rotation is already
+    committed, and failing the request would withhold the only
+    live token from its owner.
 11. Emit `Refreshed` audit event.
 12. Return canonical `AuthenticateResponse`.
 
@@ -254,7 +257,16 @@ token re-minted against the session's existing `token_id` — so
 the lost copy and this one are the same token as far as the `jti`
 pin is concerned, nothing rotates, and the reported
 `refresh_expires_in` is the time actually left rather than a
-fresh TTL.
+fresh TTL. It still issues an access token, so it emits
+`Refreshed` like any refresh (VTI-SES-041).
+
+This conforms with VTI-SES-030 (exactly one concurrent claimant
+succeeds). The claim is still the atomic take of the live index; a
+caller racing it misses the index before the tombstone exists and
+is refused. Only a caller arriving *after* the claim completed is
+answered, and it gets that claim's own result — no second session
+and no second refresh token, which is what the requirement's
+rationale rules out.
 
 **The residual race, stated plainly.** While the window is open
 *and* the successor is unspent, a party replaying a stolen token
