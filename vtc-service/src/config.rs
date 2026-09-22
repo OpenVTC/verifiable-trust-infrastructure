@@ -69,8 +69,67 @@ pub struct AppConfig {
     /// origin can drive the API.
     #[serde(default)]
     pub admin_ui: AdminUiConfig,
+    /// Trust Task document-dispatch settings (#1641). Today one switch: whether
+    /// the spine holds a producer to the `proof` its task's own specification
+    /// declares REQUIRED.
+    #[serde(default)]
+    pub trust_tasks: TrustTasksConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// How strictly the Trust Task document dispatcher holds a producer to the
+/// specification the document names (`VTI-OPS-020`, `VTI-OPS-021`).
+///
+/// Everything else the dispatcher checks is unconditional — the acceptance
+/// window over `issuedAt` (`VTI-OPS-024`), the in-band `recipient`
+/// (`VTI-OPS-023`), audience binding, the replay record (`VTI-OPS-025`…`027`),
+/// and verification of any `proof` that *is* present, against the document's
+/// own `issuer`. The single switch here governs one thing: refusing a document
+/// that carries **no** proof for a task whose specification declares one
+/// REQUIRED.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TrustTasksConfig {
+    /// Refuse a document carrying no `proof` where its specification declares
+    /// `proof` REQUIRED (SPEC §7.2 item 7, VTI-OPS-021, VTI-OPS-093).
+    ///
+    /// # Why this exists at all, and why it defaults to `false`
+    ///
+    /// It should not exist, and the default should be the other way round.
+    /// Both are true, and neither is an argument for hiding the fact.
+    ///
+    /// Nine of the tasks this service dispatches declare `proof` REQUIRED, and
+    /// the DIDComm binding's own §5 says such a declaration "overrides this
+    /// binding-level allowance: the in-band `proof` is mandatory regardless of
+    /// transport". VTI-OPS-021 says the same thing from the other side: a
+    /// transport that authenticates its sender "MUST NOT be treated as
+    /// relieving a producer of addressing or signing the document it sends".
+    ///
+    /// One shipping client does not sign. `openvtc-core` builds
+    /// `join-requests/{submit,status}`, `members/{self-remove,vmc}` and
+    /// `members/personhood/assert` documents with a deliberate "no `proof` is
+    /// attached", relying on the authcrypt sender (or the TSP sender VID)
+    /// instead. Turning this on with such a client in the field refuses every
+    /// join, every status poll and every VMC collection on the community.
+    /// `pnm-browser-plugin` and this workspace's own `vtc-client` / `vta-sdk`
+    /// sign on every channel, so a deployment serving only those can turn this
+    /// on today and should.
+    ///
+    /// So the switch is transitional and the default preserves what this
+    /// service already accepted. Its removal condition is exact: when
+    /// `openvtc-core` signs the five documents above, the default flips and
+    /// this field goes with it. Until then the spine emits a `warn!` naming
+    /// `VTI-OPS-021` and the task URI on **every** document it lets through
+    /// unsigned, so the debt is counted rather than assumed away.
+    ///
+    /// The allowance is narrow even while it is on: it relaxes a *missing*
+    /// proof, only where the transport authenticated the sender, and nothing
+    /// else. A proof that is present is always verified and always bound to
+    /// the `issuer`; a REST document, which has no authenticated sender to
+    /// stand in, is refused either way.
+    #[serde(default)]
+    pub require_declared_proof: bool,
 }
 
 /// Admin UX configuration (§12.2, Phase 5 M5.7).

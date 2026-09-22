@@ -247,6 +247,14 @@ are implementer-facing rather than operator-facing.
 - **[VTC MVP spec](05-design-notes/vtc-mvp.md)** — full
   specification for the VTC's Phase 0–5 build (the source of truth
   the implementation tracks).
+- **[The VTC and the proof its tasks declare](05-design-notes/vtc-trust-task-proof-enforcement.md)** —
+  why the community's document dispatcher now holds a producer to the `proof`,
+  the `issuedAt` window and the replay bound its task's own specification
+  declares, on every transport (VTI-OPS-020/021/024/093). Re-derives the task
+  census from the router rather than trusting the divergence register, records
+  the one shipping client that does not sign and the exact condition that ends
+  the transitional allowance made for it, and sets out the migration path for
+  the 49 tasks still served on a bearer token.
 - **[Runtime service management](05-design-notes/runtime-service-management.md)** —
   design notes for the VTA's enable/disable/migrate REST + DIDComm
   surface.

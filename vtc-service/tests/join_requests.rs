@@ -178,6 +178,16 @@ async fn build_fixture() -> Fixture {
 /// post to (routing is by the document `type`, not the URL).
 const TRUST_TASKS_URI: &str = "/v1/trust-tasks";
 
+/// An `issuedAt` inside the spine's acceptance window (VTI-OPS-024).
+///
+/// This was the literal `2026-01-01T00:00:00Z` until #1641, which is a date
+/// that has since passed: a fixture that predates the window it is now
+/// measured against is refused as `expired`, whatever the test is about.
+/// `now` is also what every real producer stamps.
+fn issued_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 /// Sign a Trust Task **document** (`type` = `typ`, `payload` = `payload`) with
 /// the shared applicant key, producing the `eddsa-jcs-2022` holder proof the
 /// REST path authenticates on. `recipient` = the test VTC DID (the replay
@@ -203,7 +213,7 @@ async fn signed_trust_task_seed(seed: &[u8; 32], typ: &str, payload: Value) -> (
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "issuer": did,
         "recipient": vtc_service::test_support::TEST_VTC_DID,
-        "issuedAt": "2026-01-01T00:00:00Z",
+        "issuedAt": issued_now(),
         "expiresAt": "2099-01-01T00:00:00Z",
         "payload": payload,
     });
@@ -348,16 +358,25 @@ async fn rest_submit_rejects_wrong_signer() {
 
 #[tokio::test]
 async fn rest_submit_rejects_missing_holder_proof() {
-    // Over REST the holder is authenticated by the document proof; a document
-    // with no proof has no proven holder and is rejected (403).
+    // `vtc/join-requests/submit/0.2` declares `proof` REQUIRED, so a document
+    // carrying none is refused by the spine before any handler runs, with the
+    // framework's own code for exactly that (SPEC §7.2 item 7, VTI-OPS-020).
+    //
+    // It used to reach `resolve_holder` and come back `permissionDenied` (403)
+    // — "nobody is authenticated" rather than "you did not sign this", which
+    // sent an applicant looking at their credentials instead of at their
+    // client. The refusal is the same; the reason it gives is now the true
+    // one. 422 is the flat "understood, well-formed, and refused" bucket the
+    // HTTPS binding §4 puts every such code in — see
+    // `rest_submit_rejects_a_foreign_recipient` for why that matters.
     let fix = build_fixture().await;
     let vp = json!({});
     let (_did, mut doc) = submit_doc(&vp).await;
     doc.as_object_mut().unwrap().remove("proof");
 
     let (status, body) = post_tt(&fix.router, doc).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
-    assert_eq!(tt_error_code(&body), "permissionDenied");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "got {body}");
+    assert_eq!(tt_error_code(&body), "proofRequired");
 }
 
 // P0.13 — replay / freshness / audience binding + per-applicant dedup.
@@ -422,10 +441,23 @@ async fn rest_submit_rejects_an_expired_document() {
     // Freshness is the document `expiresAt`: a stale (expired) document is
     // rejected `expired` (422), replacing the bespoke `created` window. Same
     // flat bucket as `wrongRecipient` above — see that test for why.
+    //
+    // Both timestamps are set, and the order between them is the point.
+    // `expired` names a document that **was** once acceptable; SPEC §7.2 item
+    // 13 makes an `expiresAt` at or before its `issuedAt` `malformedRequest`
+    // instead, because such a document was never acceptable at any instant. A
+    // lone far-past `expiresAt` beside a fresh `issuedAt` is that second case,
+    // and asserting `expired` on it would pin the wrong rule.
     let fix = build_fixture().await;
     let vp = json!({});
     let (_did, mut doc) = submit_doc(&vp).await;
-    doc["expiresAt"] = json!("2000-01-01T00:00:00Z");
+    let now = chrono::Utc::now();
+    doc["issuedAt"] = json!(
+        (now - chrono::TimeDelta::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+    doc["expiresAt"] = json!(
+        (now - chrono::TimeDelta::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
 
     let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(
@@ -2783,7 +2815,7 @@ async fn only_an_identified_caller_may_list_vetters() {
         "type": VETTING_VETTER_LIST_TYPE,
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "recipient": vtc_service::test_support::TEST_VTC_DID,
-        "issuedAt": "2026-01-01T00:00:00Z",
+        "issuedAt": issued_now(),
         "expiresAt": "2099-01-01T00:00:00Z",
         "payload": {},
     });
