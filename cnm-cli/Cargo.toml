@@ -28,9 +28,11 @@ vta-cli-common = { path = "../vta-cli-common", version = "0.20", features = [
   "agent-names",
 ] }
 affinidi-did-resolver-cache-sdk = { workspace = true }
-# `cnm vetting …` drives the VTC's vetting admin REST surface through the VTC
-# client rather than hand-built requests: it carries the Trust-Task headers,
-# finite HTTP timeouts and typed errors the commands turn into guidance.
+# `cnm vetting …`, `cnm audit` and `cnm backup` drive the VTC's admin REST
+# surface through the VTC client rather than hand-built requests: it
+# authenticates with the VTC's own DID as the audience, and carries the
+# Trust-Task headers, finite HTTP timeouts and typed errors the commands turn
+# into guidance.
 vtc-client = { path = "../vtc-client", version = "0.7" }
 # `cnm vetting bootstrap-pgp`: parse an OpenPGP keyring, verify third-party
 # certifications and cleartext-signed link statements.
@@ -42,9 +44,6 @@ dialoguer = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Direct REST POST for `cnm backup` (the VTC backup routes are REST-only,
-# super-admin); forces REST regardless of the session's preferred transport.
-reqwest = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -61,6 +60,11 @@ tracing-subscriber = { workspace = true }
 # OpenPGP stack releases on a newer rand.
 rand = "0.8"
 tempfile = "3"
+# `vtc::tests` stands up a mock VTC to read the authenticate document `cnm`
+# sends it, and mints the did:key that signs it.
+wiremock = "0.6"
+ed25519-dalek = { workspace = true }
+multibase = { workspace = true }
 
 [lints]
 workspace = true

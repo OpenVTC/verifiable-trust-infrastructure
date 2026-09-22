@@ -64,7 +64,9 @@
 //!
 //! Authentication, the member roster, the admin join queue, removal, policy,
 //! the vetting admin surface (vetter grants, automatic grants, branding and
-//! statement withdrawals — what `cnm vetting` drives), and the applicant side
+//! statement withdrawals — what `cnm vetting` drives), audit-chain verification
+//! and encrypted backup / restore (what `cnm audit` / `cnm backup` drive), and
+//! the applicant side
 //! of the join ceremony
 //! ([`VtcClient::submit_join`] / [`VtcClient::submit_join_as`], which sign
 //! their own document and need no token).
@@ -113,7 +115,61 @@ pub mod task {
     pub const VETTING_VETTERS_RESEND: &str =
         "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
     pub const ENDORSEMENTS_REVOKE: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
+    pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
+    pub const BACKUP_EXPORT: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
+    pub const BACKUP_IMPORT: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
 }
+
+/// DID-document service `type` under which a VTC advertises its REST API base
+/// (the `vtc-host` template's `#vtc-rest` entry, `{URL}{REST_PATH}`).
+///
+/// Matched on `type`, never on the `#id` fragment, which is an arbitrary label.
+/// Deliberately not `VTARest`: a VTC is not a VTA, and a client that took one
+/// for the other would send it the wrong requests.
+pub const REST_SERVICE_TYPE: &str = "VTCRest";
+
+/// The REST API base a VTC's DID document advertises, if it advertises one.
+///
+/// Reads the first service whose `type` is (or includes) [`REST_SERVICE_TYPE`]
+/// and returns its endpoint with any trailing `/` removed. The endpoint is the
+/// full API base including the mount (`https://vtc.example.com/v1`), which is
+/// what [`VtcClient::connect`] takes.
+///
+/// This is the direction discovery has to run in: from the community's DID to
+/// its URL. The reverse — asking a URL which DID it is — would let whoever
+/// answers at that URL choose the audience a client signs for, and the audience
+/// exists precisely so that the client, not the server, decides that.
+pub fn api_base_from_did_document(doc: &serde_json::Value) -> Option<String> {
+    let has_type = |svc: &serde_json::Value| match svc.get("type") {
+        Some(serde_json::Value::String(t)) => t == REST_SERVICE_TYPE,
+        Some(serde_json::Value::Array(ts)) => ts.iter().any(|t| t == REST_SERVICE_TYPE),
+        _ => false,
+    };
+    fn uri(endpoint: &serde_json::Value) -> Option<String> {
+        match endpoint {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Object(map) => map.get("uri")?.as_str().map(str::to_string),
+            serde_json::Value::Array(items) => items.iter().find_map(uri),
+            _ => None,
+        }
+    }
+    doc.get("service")?
+        .as_array()?
+        .iter()
+        .filter(|svc| has_type(svc))
+        .find_map(|svc| uri(svc.get("serviceEndpoint")?))
+        .map(|u| u.trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty())
+}
+
+/// Largest audit-verification report [`VtcClient::audit_verify`] reads. The
+/// report is a handful of counters and identifiers; this is generous headroom.
+const MAX_AUDIT_VERIFY_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// Largest backup response [`VtcClient::export_backup`] /
+/// [`VtcClient::import_backup`] read. Matches the VTC's cap on a backup import
+/// request body, so an export larger than this could not be restored anyway.
+const MAX_BACKUP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Re-export of the published join-request protocol wire types, so a consumer
 /// driving the join ceremony depends on one crate.
@@ -1137,6 +1193,88 @@ impl VtcClient {
         Ok(list.revocations)
     }
 
+    // -----------------------------------------------------------------------
+    // Audit and backup — the super-admin surface `cnm audit` / `cnm backup`
+    // drive
+    // -----------------------------------------------------------------------
+
+    /// Walk the community's audit hash chain and its signed checkpoints
+    /// (`audit/verify/0.1`, over `GET /audit/verify`). Super-admin token.
+    ///
+    /// Returns the report as the VTC sends it (`verified`, `entriesExamined`,
+    /// `checkpoints`, `chainBreak`, …). A `200` is a report, not a pass: read
+    /// `verified` and `checkpoints.status`.
+    pub async fn audit_verify(&self) -> Result<serde_json::Value, VtcError> {
+        let url = self.api_url(&["audit", "verify"])?;
+        let resp = self
+            .tt(reqwest::Method::GET, url, task::AUDIT_VERIFY)?
+            .send()
+            .await?;
+        read_json_capped(expect_success(resp).await?, MAX_AUDIT_VERIFY_RESPONSE_BYTES).await
+    }
+
+    /// Export the community's state as an encrypted `vtc-backup-v1` envelope
+    /// (`vtc/backup/export/0.1`, over `POST /backup/export`). Super-admin
+    /// token.
+    ///
+    /// Returns the **envelope itself** — the object `import_backup` takes back
+    /// as `backup` — as opaque JSON, exactly as the VTC sent it: it carries the
+    /// community's signing key, and a caller only ever saves it or hands it
+    /// back. Opaque rather than typed because the ciphertext is only as good as
+    /// the bytes around it; nothing here re-serialises it.
+    ///
+    /// `vtc/backup/export/0.1` answers `{ "envelope": … }` (the VTC returned
+    /// the bare envelope before #1059). Both are accepted, and the wrapper is
+    /// removed, so a file saved from this is importable whichever VTC wrote it.
+    pub async fn export_backup(
+        &self,
+        password: &str,
+        include_audit: bool,
+    ) -> Result<serde_json::Value, VtcError> {
+        let url = self.api_url(&["backup", "export"])?;
+        let resp = self
+            .tt(reqwest::Method::POST, url, task::BACKUP_EXPORT)?
+            .json(&serde_json::json!({ "password": password, "includeAudit": include_audit }))
+            .send()
+            .await?;
+        let mut body =
+            read_json_capped(expect_success(resp).await?, MAX_BACKUP_RESPONSE_BYTES).await?;
+        match body.get_mut("envelope").map(serde_json::Value::take) {
+            Some(envelope @ serde_json::Value::Object(_)) => Ok(envelope),
+            _ if body.get("format").is_some() => Ok(body),
+            _ => Err(VtcError::Http {
+                status: 200,
+                body: "the export response carries no backup envelope".into(),
+            }),
+        }
+    }
+
+    /// Restore the community's state from a backup envelope
+    /// (`vtc/backup/import/0.1`, over `POST /backup/import`). Super-admin
+    /// token.
+    ///
+    /// With `confirm` false this is a preview: the VTC decrypts and counts the
+    /// rows and changes nothing. With `confirm` true it **replaces** the
+    /// community's state.
+    pub async fn import_backup(
+        &self,
+        backup: &serde_json::Value,
+        password: &str,
+        confirm: bool,
+    ) -> Result<serde_json::Value, VtcError> {
+        let url = self.api_url(&["backup", "import"])?;
+        let resp = self
+            .tt(reqwest::Method::POST, url, task::BACKUP_IMPORT)?
+            .json(&serde_json::json!({
+                "backup": backup,
+                "password": password,
+                "confirm": confirm,
+            }))
+            .send()
+            .await?;
+        read_json_capped(expect_success(resp).await?, MAX_BACKUP_RESPONSE_BYTES).await
+    }
+
     /// `{base}/<segments…>`, each segment percent-encoded.
     ///
     /// A DID or an id interpolated into a path with `format!` is a path the
@@ -1236,9 +1374,53 @@ async fn expect_success(resp: reqwest::Response) -> Result<reqwest::Response, Vt
     Err(VtcError::Http { status, body })
 }
 
+/// A success response's JSON body, refusing one larger than `max` bytes. The
+/// oversized body is never fully buffered.
+async fn read_json_capped(
+    resp: reqwest::Response,
+    max: usize,
+) -> Result<serde_json::Value, VtcError> {
+    let status = resp.status().as_u16();
+    let bytes = vta_sdk::http::read_body_capped(resp, max)
+        .await
+        .map_err(|e| VtcError::Http {
+            status,
+            body: e.to_string(),
+        })?;
+    serde_json::from_slice(&bytes).map_err(|e| VtcError::Http {
+        status,
+        body: format!(
+            "response is not JSON ({e}): {}",
+            String::from_utf8_lossy(&bytes)
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Discovery reads the `VTCRest` service by `type`, whatever its `#id`,
+    /// and never mistakes a VTA's `VTARest` for it.
+    #[test]
+    fn api_base_is_read_from_the_vtc_rest_service_by_type() {
+        let doc = serde_json::json!({
+            "id": "did:webvh:Qm:vtc.example.com",
+            "service": [
+                { "id": "#rest", "type": "VTARest", "serviceEndpoint": "https://vta.example.com" },
+                { "id": "#anything", "type": ["VTCRest"], "serviceEndpoint": "https://vtc.example.com/v1/" },
+            ],
+        });
+        assert_eq!(
+            api_base_from_did_document(&doc).as_deref(),
+            Some("https://vtc.example.com/v1")
+        );
+        let vta_only = serde_json::json!({
+            "service": [{ "id": "#vtc-rest", "type": "VTARest", "serviceEndpoint": "https://x" }],
+        });
+        assert_eq!(api_base_from_did_document(&vta_only), None);
+        assert_eq!(api_base_from_did_document(&serde_json::json!({})), None);
+    }
 
     /// A DID or id placed in a path is one segment, whatever it contains.
     #[test]

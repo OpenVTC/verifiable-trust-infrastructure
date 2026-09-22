@@ -41,6 +41,11 @@ keyspace overlay (its meaningful values ride in the identity snapshot above).
 
 ## Export
 
+`cnm backup` signs in to the VTC as the community profile's own DID, which must
+hold a super-admin row in the VTC's ACL, and needs the profile to name the VTC
+(`cnm community set-vtc <vtc-did>`). See the
+[bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row).
+
 ```sh
 # Prompts for the encryption password (min 15 chars), writes
 # vtc-backup-<slug>-<timestamp>.vtcbak.

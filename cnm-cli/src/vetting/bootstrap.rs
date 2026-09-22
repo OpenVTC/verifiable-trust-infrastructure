@@ -22,7 +22,6 @@ use vta_cli_common::render::{
     BOLD, DIM, GREEN, RED, RESET, YELLOW, bin_name, is_full_display, is_json_output,
     print_full_entry, print_full_list_title, print_json, print_widget,
 };
-use vta_sdk::client::VtaClient;
 
 use super::plan::{Action, PlanRow, Roster, plan};
 use super::wot::{CertStats, Keyring, LinkCheck, check_link, mark_ambiguous, shortest_paths};
@@ -113,8 +112,8 @@ enum GrantOutcome {
 
 pub(super) async fn run(
     args: BootstrapPgpArgs,
-    client: &VtaClient,
     keyring_key: &str,
+    target: &crate::vtc::VtcTarget,
 ) -> CliResult {
     let validity = args
         .validity
@@ -149,7 +148,7 @@ pub(super) async fn run(
         .collect();
     mark_ambiguous(&mut checks);
 
-    let vtc = super::connect(client, keyring_key).await?;
+    let vtc = super::connect(keyring_key, target).await?;
     let members: BTreeSet<String> = vtc
         .list_members(None)
         .await

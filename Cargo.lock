@@ -2684,10 +2684,11 @@ dependencies = [
  "clap",
  "dialoguer",
  "dirs",
+ "ed25519-dalek 3.0.0",
+ "multibase",
  "pgp",
  "rand 0.8.8",
  "ratatui",
- "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2698,6 +2699,7 @@ dependencies = [
  "vta-cli-common",
  "vta-sdk",
  "vtc-client",
+ "wiremock",
 ]
 
 [[package]]

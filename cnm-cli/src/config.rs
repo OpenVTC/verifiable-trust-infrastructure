@@ -27,6 +27,13 @@ pub struct CommunityConfig {
     /// VTA DID is the source of truth — see [`PersonalVtaConfig::vta_did`].
     #[serde(default)]
     pub vta_did: Option<String>,
+    /// The community's own DID — the VTC's, not its VTA's. Community
+    /// administration (`cnm vetting`, `cnm audit`, `cnm backup`) authenticates
+    /// to the VTC with this as the audience, and resolves the VTC's API base
+    /// from its document. Set with `cnm community set-vtc`; absent in profiles
+    /// made before it existed, which then need `--vtc-did`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vtc_did: Option<String>,
 }
 
 /// Returns `~/.config/cnm/`, creating it if it doesn't exist.
@@ -119,6 +126,7 @@ mod tests {
                 name: "Storm Network".into(),
                 context_id: Some("cnm-storm-network".into()),
                 vta_did: Some("did:key:z6MkStorm".into()),
+                vtc_did: Some("did:webvh:QmStorm:storm.example.com".into()),
             },
         );
         config.communities.insert(
@@ -127,6 +135,7 @@ mod tests {
                 name: "Acme Corp".into(),
                 context_id: None,
                 vta_did: None,
+                vtc_did: None,
             },
         );
 
@@ -141,6 +150,11 @@ mod tests {
         assert_eq!(restored.communities["storm"].name, "Storm Network");
         assert_eq!(restored.communities["acme"].name, "Acme Corp");
         assert!(restored.communities["acme"].context_id.is_none());
+        assert_eq!(
+            restored.communities["storm"].vtc_did.as_deref(),
+            Some("did:webvh:QmStorm:storm.example.com")
+        );
+        assert!(restored.communities["acme"].vtc_did.is_none());
     }
 
     /// Older CNM configs persisted `url = "..."` on PersonalVtaConfig and
@@ -194,6 +208,7 @@ vta_did = "did:key:z6MkStorm"
                 name: "Storm".into(),
                 context_id: None,
                 vta_did: None,
+                vtc_did: None,
             },
         );
         let (slug, community) = resolve_community(Some("storm"), &config).unwrap();
@@ -213,6 +228,7 @@ vta_did = "did:key:z6MkStorm"
                 name: "Acme".into(),
                 context_id: None,
                 vta_did: None,
+                vtc_did: None,
             },
         );
         let (slug, community) = resolve_community(None, &config).unwrap();

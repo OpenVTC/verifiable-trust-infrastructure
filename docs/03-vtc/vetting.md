@@ -327,10 +327,15 @@ are audited as `CommunityBrandingUpdated`.
 
 ### 7. Administer vetting from the command line
 
-`cnm` drives the same admin REST routes. Every command needs a community-admin
-session (`cnm auth login`) with a REST URL — pass `cnm --url https://<vtc>/v1 …`
-when the session has none. Tables are the default; the global `--json` prints the
-response instead, and `--full-display` prints DIDs and ids unshortened.
+`cnm` drives the same admin REST routes. It signs in to the VTC itself, with the
+VTC's DID as the audience, as the community profile's own DID. So the profile
+has to name the VTC (`cnm community set-vtc <vtc-did>`, or `--vtc-did` per
+command), and that DID needs an admin row in the VTC's ACL; see the
+[bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row).
+The API base comes from the VTC DID's `VTCRest` service; `cnm --url
+https://<vtc>/v1 …` overrides it. Tables are the default; the global `--json`
+prints the response instead, and `--full-display` prints DIDs and ids
+unshortened.
 
 | Command | Route | Prints |
 |---|---|---|

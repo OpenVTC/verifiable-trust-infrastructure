@@ -461,6 +461,19 @@ impl SessionStore {
     /// a fresh did:key is minted, the VTA ACL entry for the temp DID is
     /// mirrored onto the new DID, the temp DID is removed from the ACL,
     /// and the session is updated in place. See `rotate_key`.
+    ///
+    /// # Only for the session's own VTA
+    ///
+    /// The audience is not a parameter: it is always the session's bound VTA
+    /// DID (the authenticate envelope is encrypted to it), and the rotation
+    /// above is a VTA ACL operation. `base_url` says *where* that VTA is, not
+    /// *who* to authenticate to. Handing this a VTC's URL — or any other
+    /// service's — produces an envelope only the VTA can open, which the other
+    /// service refuses; that is how `cnm vetting`, `cnm audit` and `cnm backup`
+    /// all failed to sign in to a VTC. Authenticate to another service with
+    /// its own DID as the audience instead:
+    /// [`crate::auth_light::challenge_response_light`], or
+    /// `vtc_client::VtcClient::connect` for a VTC.
     pub async fn ensure_authenticated(
         &self,
         base_url: &str,
@@ -1667,10 +1680,11 @@ pub async fn challenge_response(
     debug!(url = %challenge_url, did = client_did, "requesting challenge");
     let challenge_resp = http
         .post(&challenge_url)
-        // Trust-Task URL header: the VTC gates every route on it (400 without);
-        // the VTA ignores it. `cnm`'s VTC backup authenticates through this
-        // function, so omitting it made that login a 400 before any handler ran.
-        // Same header the `auth_light` / `auth_rest` REST paths send.
+        // Trust-Task URL header, the same one the `auth_light` / `auth_rest`
+        // REST paths send. A VTC gates every route on it (400 without); the
+        // VTA ignores it. This function addresses a VTA, though — a VTC cannot
+        // open an envelope encrypted to the VTA's DID, which is why `cnm`'s VTC
+        // commands no longer come through here.
         .header("Trust-Task", crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1)
         .json(&ChallengeRequest {
             did: client_did.to_string(),

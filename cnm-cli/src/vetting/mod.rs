@@ -11,9 +11,9 @@
 //! trust; its graph and link logic is the pure [`wot`] and [`plan`] pair.
 //!
 //! The routes are REST-only and need a community-admin token, so every command
-//! mints a bearer token for the session's REST base (the same way `cnm backup`
-//! does) and fails with the fix when there is none. There are no retries here:
-//! a failed call is reported, not repeated.
+//! authenticates to the VTC itself, with the VTC's DID as the audience (see
+//! [`crate::vtc`]), and fails with the fix when the VTC refuses. There are no
+//! retries here: a failed call is reported, not repeated.
 
 mod bootstrap;
 pub mod plan;
@@ -33,7 +33,6 @@ use vta_cli_common::render::{
     BOLD, DIM, GREEN, RESET, YELLOW, bin_name, is_full_display, is_json_output, print_full_entry,
     print_full_list_title, print_json, print_widget,
 };
-use vta_sdk::client::VtaClient;
 use vtc_client::join_requests::manifest::v0_2::{
     CommunityBranding, CommunityBrandingAccentColor, CommunityBrandingDisplayName,
 };
@@ -47,7 +46,7 @@ use vtc_client::{VtcClient, VtcError};
 
 pub use bootstrap::BootstrapPgpArgs;
 
-use crate::auth;
+use crate::vtc::{self as vtc_target, VtcTarget};
 
 type CliResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -301,13 +300,13 @@ pub enum BrandingField {
 }
 
 /// Run a `cnm vetting` command.
-pub async fn run(command: VettingCommands, client: &VtaClient, keyring_key: &str) -> CliResult {
+pub async fn run(command: VettingCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
     if let VettingCommands::BootstrapPgp(args) = command {
         // The keyring, roots and links are read and checked before any call to
         // the community, so a mistake in them costs no round trip.
-        return bootstrap::run(args, client, keyring_key).await;
+        return bootstrap::run(args, keyring_key, target).await;
     }
-    let vtc = connect(client, keyring_key).await?;
+    let vtc = connect(keyring_key, target).await?;
     match command {
         VettingCommands::Vetters { command } => match command {
             VetterCommands::List => cmd_vetters_list(&vtc).await,
@@ -359,21 +358,10 @@ pub async fn run(command: VettingCommands, client: &VtaClient, keyring_key: &str
     }
 }
 
-/// A community-admin [`VtcClient`] for the session's REST base.
-async fn connect(client: &VtaClient, keyring_key: &str) -> CliResult<VtcClient> {
-    let base = client.rest_url().ok_or_else(|| {
-        format!(
-            "`{bin} vetting` uses the community's admin REST API, and this session has no REST \
-             URL for it.\nPass the VTC's API base before the subcommand: \
-             `{bin} --url https://<vtc-host>/v1 vetting …`",
-            bin = bin_name()
-        )
-    })?;
-    let token = auth::ensure_authenticated(base, keyring_key).await?;
-    let vtc_did = auth::loaded_session(keyring_key)
-        .and_then(|s| s.vta_did)
-        .unwrap_or_default();
-    Ok(VtcClient::with_token(base, &vtc_did, token))
+/// A community-admin [`VtcClient`], authenticated to the VTC with the VTC's
+/// DID as the audience.
+async fn connect(keyring_key: &str, target: &VtcTarget) -> CliResult<VtcClient> {
+    Ok(vtc_target::connect(keyring_key, target).await?.client)
 }
 
 // ---------------------------------------------------------------------------
@@ -950,14 +938,15 @@ impl Op<'_> {
 fn guidance(err: VtcError, op: Op<'_>) -> Box<dyn std::error::Error> {
     let bin = bin_name();
     let message = match err {
-        VtcError::Http { status: 401, .. } => format!(
-            "the VTC refused this session's token (401).\nRe-authenticate with `{bin} auth login \
-             --credential-bundle <bundle>`, or run `{bin} setup` again."
-        ),
+        VtcError::Http { status: 401, .. } => "the VTC refused this command's token (401). It \
+             was minted moments ago, so the VTC has likely revoked the session or changed its \
+             signing key; re-run the command."
+            .to_string(),
         VtcError::Http { status: 403, .. } => format!(
             "this identity is not a community admin (403); vetting administration is admin-only.\n\
-             Check the session's DID with `{bin} auth status`, and ask an existing admin to grant \
-             it the admin role."
+             `{bin} auth status` shows the DID it authenticates as (Client DID). Give it an admin \
+             entry in the VTC's ACL. On the VTC host, with the daemon stopped:\n  \
+             vtc --config <config.toml> acl add --did <client-did> --role admin"
         ),
         VtcError::Http { status, body } => {
             let detail = human_message(&body);
@@ -1021,9 +1010,7 @@ fn guidance(err: VtcError, op: Op<'_>) -> Box<dyn std::error::Error> {
              `{bin} health`."
         ),
         VtcError::NotAuthenticated => {
-            format!(
-                "no session token for the VTC. Run `{bin} auth login --credential-bundle <bundle>`."
-            )
+            format!("no token for the VTC; re-run the command (`{bin}` authenticates on each run).")
         }
         other => other.to_string(),
     };
