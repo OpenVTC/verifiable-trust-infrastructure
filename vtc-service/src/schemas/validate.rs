@@ -76,6 +76,60 @@ pub async fn validate_issued(
 }
 
 #[cfg(test)]
+mod external_ref_tests {
+    use super::validate_instance;
+    use serde_json::json;
+
+    /// A caller-supplied schema must not be able to make the VTC fetch a URL
+    /// or read a local file while it is compiled (#1657 follow-up).
+    ///
+    /// Every schema reaching `jsonschema` here is supplied by a caller — a
+    /// `credentialSchema` at registration, an endorsement type's
+    /// `claimSchema`, and both again at issuance. The crate enables
+    /// `resolve-http` and `resolve-file` by default, which turns an external
+    /// `$ref` into an outbound request or a file read. The workspace manifest
+    /// turns both off; this holds that manifest honest, since nothing else
+    /// would notice if the features came back.
+    ///
+    /// The `file:` case is the decisive one: the target really exists and
+    /// really is a valid schema, so it would compile if the resolver were on.
+    #[test]
+    fn an_external_ref_is_refused_rather_than_fetched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("ref-target.json");
+        std::fs::write(&target, br#"{"type": "string"}"#).expect("write target");
+        assert!(target.exists());
+
+        let by_file = json!({ "$ref": format!("file://{}", target.display()) });
+        let err = validate_instance(&by_file, &json!("anything"))
+            .expect_err("a file:// $ref must not be read from disk");
+        assert!(
+            matches!(err, vti_common::error::AppError::Internal(_)),
+            "the schema is at fault, not the instance: {err:?}"
+        );
+
+        // And the network case. It must be refused at compile, not attempted —
+        // an unroutable address, so a regression that restores the resolver
+        // shows up as a refusal that takes a connect timeout rather than a pass.
+        let by_http = json!({ "$ref": "http://127.0.0.1:1/schema.json" });
+        assert!(
+            validate_instance(&by_http, &json!("anything")).is_err(),
+            "an http:// $ref must not be fetched"
+        );
+
+        // An ordinary internal $ref still resolves — this removes remote
+        // resolution, not $ref itself.
+        let internal = json!({
+            "$defs": { "name": { "type": "string" } },
+            "properties": { "name": { "$ref": "#/$defs/name" } },
+            "required": ["name"],
+        });
+        assert!(validate_instance(&internal, &json!({ "name": "ok" })).is_ok());
+        assert!(validate_instance(&internal, &json!({ "name": 7 })).is_err());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::super::{SchemaEntry, SchemaKind, store_schema};
     use super::*;
