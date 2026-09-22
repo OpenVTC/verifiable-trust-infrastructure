@@ -452,9 +452,17 @@ mod binding_tests {
         // signature to take the JSON for exactly this reason; serialise first.
         let grant_wire = serde_json::to_value(grant.credential()).expect("grant serialises");
 
-        let ack = dtg_credentials::DTGCredential::new_member_vmc(&grant_wire, valid_from, None)
-            .expect("acknowledgement builds")
-            .with_id("urn:uuid:ack-1");
+        // `new_member_vmc_for` takes the member the grant is expected to name,
+        // established independently of the grant, and refuses a mismatch. The
+        // identity whose key signs the acknowledgement is the one to pass.
+        let ack = dtg_credentials::DTGCredential::new_member_vmc_for(
+            &grant_wire,
+            "did:key:zMember",
+            valid_from,
+            None,
+        )
+        .expect("acknowledgement builds")
+        .with_id("urn:uuid:ack-1");
 
         (
             grant_wire,
