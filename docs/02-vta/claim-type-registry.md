@@ -36,6 +36,10 @@ The rows are the shape the agent serves, so you can copy one out of
 `persona/claim-types/list`, change it, and put it back. The `{"entries": [...]}`
 wrapper the served document uses is accepted too.
 
+`pnm persona claim-types` is that listing from the operator's side: it prints
+what *this* agent resolves against, extensions included, which is the table to
+read before wondering why a value came back masked.
+
 Without this, a token the published registry has never heard of resolves to the
 **floor** — withheld from every listing, masked in full — because a vocabulary
 nobody has reasoned about is exactly the one nobody should render in the clear.
