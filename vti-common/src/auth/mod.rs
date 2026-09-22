@@ -10,8 +10,8 @@ pub mod siop;
 pub mod step_up;
 
 pub use backend::{
-    AttestationOutcome, AuthAuditEvent, AuthBackend, AuthError, AuthenticateInput, ChallengeInput,
-    RefreshInput, RoleResolution, SessionStore,
+    AttestationOutcome, AudienceBinding, AuthAuditEvent, AuthBackend, AuthError, AuthenticateInput,
+    ChallengeInput, RefreshInput, RoleResolution, SessionStore,
 };
 // Moved down to `vta-sdk` when a client needed the same verifier a service
 // does — re-exported so every call site here is unchanged, and so the

@@ -210,6 +210,9 @@ async fn authenticate_siop(
             // REST path — no DIDComm `created_time` to thread.
             created_time: None,
             session_pubkey_b58btc: env.payload.session_pubkey_b58btc,
+            // Bound by the id_token's `aud`, checked against this VTC's DID
+            // above before any of this runs.
+            audience: vti_common::auth::AudienceBinding::Transport,
         },
     )
     .await?;
@@ -283,6 +286,7 @@ async fn authenticate_and_mint(
             // `created_time` check entirely.
             created_time: msg.created_time,
             session_pubkey_b58btc: None,
+            audience: vti_common::auth::AudienceBinding::Transport,
         },
     )
     .await
@@ -355,6 +359,12 @@ async fn authenticate_trust_task(
             // path above).
             created_time: None,
             session_pubkey_b58btc: None,
+            // Proof-signed over plain REST: nothing binds the document to this
+            // service except its `recipient` (SPEC §7.2 item 5, #1638).
+            audience: vti_common::auth::AudienceBinding::Recipient {
+                recipient: doc.recipient.clone(),
+                own_did: state.config.read().await.vtc_did.clone(),
+            },
         },
     )
     .await?;

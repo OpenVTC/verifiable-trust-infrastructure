@@ -56,6 +56,20 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     amr: Vec<String>,
     acr: String,
 ) -> Result<AuthenticateResponse, B::Error> {
+    // ---- Audience (SPEC §7.2 item 5, #1638) ----
+    //
+    // First, before the session is loaded: a document addressed to another
+    // service is refused on what it says, and learns nothing about who is
+    // enrolled here.
+    if let Err(e) = input.audience.check() {
+        tracing::warn!(
+            session_id = %input.session_id,
+            reason = %e,
+            "authenticate rejected: not addressed to this service",
+        );
+        return Err(e.into());
+    }
+
     // ---- Load + state-check session ----
 
     let session = backend
