@@ -44,6 +44,30 @@ pub struct AuthConfig {
     /// `Session::last_seen`.
     #[serde(default = "default_admin_idle_timeout")]
     pub admin_idle_timeout: u64,
+    /// How long after a refresh-token rotation the token it replaced may
+    /// still be presented without being treated as reuse, in seconds.
+    ///
+    /// Exists for one failure that is not an attack: a client whose
+    /// rotation response was lost in flight still holds only the old
+    /// token, and retrying with it is the correct thing for it to do.
+    /// Inside this window — and only while the replacement token is
+    /// still unspent — such a retry is answered with the same pair
+    /// instead of revoking the session.
+    ///
+    /// **The trade-off is real.** While the window is open and the
+    /// replacement unused, someone who stole the old token gets that
+    /// same pair too. It buys tolerance of a common network fault at the
+    /// cost of a narrow race, and the alternative is worse in the other
+    /// direction: at `0`, every dropped connection signs a user out and
+    /// reports a compromise, so the alarm fires for the routine fault
+    /// while a patient attacker — who simply waits out the window —
+    /// never trips it.
+    ///
+    /// Set to `0` to disable the concession and treat every replay as a
+    /// compromise signal. Enforced in
+    /// `auth::handlers::handle_refresh`.
+    #[serde(default = "default_refresh_reuse_grace")]
+    pub refresh_reuse_grace: u64,
     #[serde(default = "default_session_cleanup_interval")]
     pub session_cleanup_interval: u64,
     /// Base64url-no-pad encoded 32-byte Ed25519 private key for JWT signing.
@@ -283,6 +307,15 @@ fn default_session_cleanup_interval() -> u64 {
     600
 }
 
+/// 30 seconds — long enough to cover a retry after a dropped response
+/// (a client that lost one retries in seconds, not minutes), short
+/// enough that it is not a meaningful window to an attacker who has to
+/// both hold a stolen token and beat the legitimate client to the
+/// replacement.
+fn default_refresh_reuse_grace() -> u64 {
+    30
+}
+
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
@@ -290,6 +323,7 @@ impl Default for AuthConfig {
             refresh_token_expiry: default_refresh_token_expiry(),
             challenge_ttl: default_challenge_ttl(),
             admin_idle_timeout: default_admin_idle_timeout(),
+            refresh_reuse_grace: default_refresh_reuse_grace(),
             session_cleanup_interval: default_session_cleanup_interval(),
             jwt_signing_key: None,
             step_up: (),
@@ -321,6 +355,7 @@ mod tests {
             refresh_token_expiry: 86400,
             challenge_ttl: 300,
             admin_idle_timeout: 900,
+            refresh_reuse_grace: 30,
             session_cleanup_interval: 600,
             jwt_signing_key: Some("SUPER_SECRET_KEY_MATERIAL_MUST_NOT_LEAK".into()),
             step_up: (),
@@ -361,6 +396,7 @@ mod tests {
             refresh_token_expiry: 86400,
             challenge_ttl: 300,
             admin_idle_timeout: 900,
+            refresh_reuse_grace: 30,
             session_cleanup_interval: 600,
             jwt_signing_key: Some("key-material".into()),
             step_up: (),

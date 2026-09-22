@@ -125,12 +125,28 @@ async fn trust_task_refresh_rotates_tokens() {
         .expect("rotated refresh token");
     assert_ne!(new_token, old_token, "refresh token must rotate: {body}");
 
-    // The presented token works exactly once — a replay is rejected.
-    let (replay_status, _) = send(&router, post("/auth/refresh", refresh_doc(old_token))).await;
+    // The presented token never yields a *second, parallel* chain — which is
+    // the property rotation exists to guarantee. It is not simply refused
+    // here, though:
+    // an immediate replay falls inside `refresh_reuse_grace` with the
+    // replacement still unspent, which is the shape of a client retrying a
+    // rotation response it never received, so it is answered idempotently
+    // with the same pair. Replay once that window has closed, or once the
+    // chain has moved on, is reuse — see
+    // `refresh_token_reuse_is_detected_and_revokes_the_whole_session`.
+    let (replay_status, replay_body) =
+        send(&router, post("/auth/refresh", refresh_doc(old_token))).await;
     assert_eq!(
         replay_status,
-        StatusCode::UNAUTHORIZED,
-        "a consumed refresh token must not refresh again"
+        StatusCode::OK,
+        "an immediate retry is a lost response, not a compromise: {replay_body}"
+    );
+    assert_eq!(
+        replay_body["payload"]["tokens"]["refreshToken"]
+            .as_str()
+            .expect("replayed refresh token"),
+        new_token,
+        "the retry must replay the same token, never mint a second live one",
     );
 }
 
@@ -146,5 +162,125 @@ async fn trust_task_refresh_rejects_unknown_token() {
         status,
         StatusCode::UNAUTHORIZED,
         "an unknown refresh token must be rejected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Refresh-token reuse detection (RFC 9700 §4.14.2)
+// ---------------------------------------------------------------------------
+
+/// Pull the rotated refresh token out of a `#response` doc.
+fn rotated_token(body: &Value) -> String {
+    body["payload"]["tokens"]["refreshToken"]
+        .as_str()
+        .unwrap_or_else(|| panic!("rotated refresh token in {body}"))
+        .to_string()
+}
+
+/// Reuse detection, end to end against the real router and keyspace.
+///
+/// The attacker's token and the victim's are the same chain, so once the
+/// victim rotates past the stolen token, replaying it is unambiguous reuse.
+/// No clock manipulation is needed — the successor has been spent, which
+/// closes the retry window on its own.
+///
+/// Detection must revoke the *session*, not just refuse the replay: the
+/// currently-live token has to die with it, or the attacker (or the victim)
+/// would keep a working chain.
+#[tokio::test]
+async fn refresh_token_reuse_is_detected_and_revokes_the_whole_session() {
+    let (router, ctx) = build_test_app().await;
+    let did = "did:key:z6MkRefresher";
+    let stolen = "refresh-tok-itest-reuse";
+    seed_admin_acl(&ctx, did).await;
+    seed_authenticated_session(&ctx, did, stolen).await;
+
+    // The victim refreshes twice, so the chain moves past the stolen token.
+    let (s1, b1) = send(&router, post("/auth/refresh", refresh_doc(stolen))).await;
+    assert_eq!(s1, StatusCode::OK, "{b1}");
+    let second = rotated_token(&b1);
+
+    let (s2, b2) = send(&router, post("/auth/refresh", refresh_doc(&second))).await;
+    assert_eq!(s2, StatusCode::OK, "{b2}");
+    let live = rotated_token(&b2);
+
+    // The attacker replays the token they stole earlier.
+    let (replay, _) = send(&router, post("/auth/refresh", refresh_doc(stolen))).await;
+    assert_eq!(
+        replay,
+        StatusCode::UNAUTHORIZED,
+        "a replayed refresh token must be refused",
+    );
+
+    // …and that must have taken the session down with it.
+    let (after, _) = send(&router, post("/auth/refresh", refresh_doc(&live))).await;
+    assert_eq!(
+        after,
+        StatusCode::UNAUTHORIZED,
+        "detection must revoke the session, killing the still-live token too",
+    );
+}
+
+/// The non-attack the grace window exists for: the client never received the
+/// rotation response, so it retries with the only token it has. It must get
+/// the same pair back and stay signed in — a dropped connection is not a
+/// compromise, and signing the user out on one would make the common network
+/// fault indistinguishable from theft.
+#[tokio::test]
+async fn an_immediate_refresh_retry_replays_the_same_tokens_and_keeps_the_session() {
+    let (router, ctx) = build_test_app().await;
+    let did = "did:key:z6MkRefresher";
+    let token = "refresh-tok-itest-retry";
+    seed_admin_acl(&ctx, did).await;
+    seed_authenticated_session(&ctx, did, token).await;
+
+    // The response to this one is "lost in flight".
+    let (s1, lost) = send(&router, post("/auth/refresh", refresh_doc(token))).await;
+    assert_eq!(s1, StatusCode::OK, "{lost}");
+
+    // The client retries with the same (only) token it holds.
+    let (s2, retried) = send(&router, post("/auth/refresh", refresh_doc(token))).await;
+    assert_eq!(
+        s2,
+        StatusCode::OK,
+        "a retry inside the grace window must succeed: {retried}",
+    );
+    assert_eq!(
+        rotated_token(&retried),
+        rotated_token(&lost),
+        "the retry must replay the same pair, not rotate again",
+    );
+
+    // The session is intact and the replayed token still works.
+    let (s3, b3) = send(
+        &router,
+        post("/auth/refresh", refresh_doc(&rotated_token(&retried))),
+    )
+    .await;
+    assert_eq!(s3, StatusCode::OK, "the client stays signed in: {b3}");
+}
+
+/// A token this node never issued is refused without collateral damage — it
+/// must not be mistaken for a replay and revoke an unrelated live session.
+#[tokio::test]
+async fn an_unknown_token_does_not_revoke_a_live_session() {
+    let (router, ctx) = build_test_app().await;
+    let did = "did:key:z6MkRefresher";
+    let token = "refresh-tok-itest-bystander";
+    seed_admin_acl(&ctx, did).await;
+    seed_authenticated_session(&ctx, did, token).await;
+
+    let (status, _) = send(
+        &router,
+        post("/auth/refresh", refresh_doc("refresh-tok-never-issued")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (after, body) = send(&router, post("/auth/refresh", refresh_doc(token))).await;
+    assert_eq!(
+        after,
+        StatusCode::OK,
+        "an unrecognised token must not disturb a live session: {body}",
     );
 }

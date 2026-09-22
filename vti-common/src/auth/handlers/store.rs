@@ -68,6 +68,35 @@ impl SessionStore for KeyspaceSessionStore {
         session::take_session_id_by_refresh(&self.inner, refresh_token).await
     }
 
+    /// Overrides the trait's no-op default so VTA and VTC get refresh
+    /// reuse detection. Paired with [`Self::get_refresh_tombstone`] —
+    /// either both are implemented or neither does anything.
+    async fn store_refresh_tombstone(
+        &self,
+        rotated_token: &str,
+        session_id: &str,
+        successor_token: &str,
+        rotated_at: u64,
+        ttl: u64,
+    ) -> Result<(), Self::Error> {
+        session::store_refresh_tombstone(
+            &self.inner,
+            rotated_token,
+            session_id,
+            successor_token,
+            rotated_at,
+            ttl,
+        )
+        .await
+    }
+
+    async fn get_refresh_tombstone(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<session::RefreshTombstone>, Self::Error> {
+        session::get_refresh_tombstone(&self.inner, refresh_token).await
+    }
+
     async fn count_pending_challenges(&self, did: &str) -> Result<usize, Self::Error> {
         session::count_pending_challenges(&self.inner, did).await
     }

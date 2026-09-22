@@ -37,6 +37,7 @@ pub struct VtaAuthBackend {
     challenge_ttl: u64,
     access_token_ttl: u64,
     refresh_token_ttl: u64,
+    refresh_reuse_grace: u64,
 }
 
 impl VtaAuthBackend {
@@ -52,12 +53,13 @@ impl VtaAuthBackend {
             .ok_or_else(|| AppError::Internal("JWT keys not configured".to_string()))?;
         let sessions = KeyspaceSessionStore::new(state.sessions_ks.clone());
 
-        let (challenge_ttl, access_token_ttl, refresh_token_ttl) = {
+        let (challenge_ttl, access_token_ttl, refresh_token_ttl, refresh_reuse_grace) = {
             let cfg = state.config.read().await;
             (
                 cfg.auth.challenge_ttl,
                 cfg.auth.access_token_expiry,
                 cfg.auth.refresh_token_expiry,
+                cfg.auth.refresh_reuse_grace,
             )
         };
 
@@ -68,6 +70,7 @@ impl VtaAuthBackend {
             challenge_ttl,
             access_token_ttl,
             refresh_token_ttl,
+            refresh_reuse_grace,
         })
     }
 }
@@ -210,6 +213,12 @@ impl AuthBackend for VtaAuthBackend {
 
     fn refresh_token_ttl(&self) -> u64 {
         self.refresh_token_ttl
+    }
+
+    /// Operator-settable (`[auth] refresh_reuse_grace`); `0` makes every
+    /// replay of a rotated token a compromise signal.
+    fn refresh_reuse_grace(&self) -> u64 {
+        self.refresh_reuse_grace
     }
 }
 

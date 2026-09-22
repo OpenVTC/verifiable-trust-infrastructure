@@ -215,6 +215,51 @@ pub trait SessionStore: Send + Sync + 'static {
         refresh_token: &str,
     ) -> Result<Option<String>, Self::Error>;
 
+    /// Record that `rotated_token` was valid here and has been replaced
+    /// by `successor_token`, for the benefit of [`Self::get_refresh_tombstone`].
+    ///
+    /// Invoked by `/auth/refresh` after the replacement token's index is
+    /// durable, so a crash between the two costs detection of a future
+    /// replay but never the session itself.
+    ///
+    /// Implementors MUST NOT store either token in recoverable form —
+    /// `rotated_token` belongs in a one-way key and `successor_token`
+    /// as a hash (see [`crate::auth::session::RefreshTombstone`]).
+    ///
+    /// **Default: a no-op.** Reuse detection is an enhancement over the
+    /// rotation that already protects every backend, and a store with
+    /// no room for the extra row should degrade to "rotation only"
+    /// rather than fail closed on a live auth path. A backend that
+    /// leaves both this and [`Self::get_refresh_tombstone`] at their
+    /// defaults behaves exactly as it did before detection existed:
+    /// replay is refused, just not attributed. Override both together —
+    /// implementing one alone achieves nothing.
+    async fn store_refresh_tombstone(
+        &self,
+        _rotated_token: &str,
+        _session_id: &str,
+        _successor_token: &str,
+        _rotated_at: u64,
+        _ttl: u64,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Look up the tombstone for a refresh token that is not in the live
+    /// index, to tell "this node rotated this token out" from "this node
+    /// never issued this token".
+    ///
+    /// `Ok(None)` is the safe answer in every ambiguous case: it yields
+    /// a plain rejection, which is what an unrecognised token gets
+    /// anyway. **Default: always `Ok(None)`** — see
+    /// [`Self::store_refresh_tombstone`].
+    async fn get_refresh_tombstone(
+        &self,
+        _refresh_token: &str,
+    ) -> Result<Option<crate::auth::session::RefreshTombstone>, Self::Error> {
+        Ok(None)
+    }
+
     /// Count `ChallengeSent` sessions for `did`. Backends with an
     /// O(1) per-DID tracker (did-hosting) override the default
     /// O(N) prefix-scan implementation by re-implementing this
@@ -399,6 +444,29 @@ pub trait AuthBackend: Send + Sync + 'static {
                     "token refreshed",
                 );
             }
+            // `error!`, not `info!`: every other variant records a flow
+            // that completed as designed, while this one reports a
+            // refresh token in two pairs of hands. It is meant to reach
+            // an operator, so it is emitted at a level that ordinarily
+            // survives production log filtering, and tagged
+            // `security_alert` so an audit pipeline can route it
+            // without matching on the message text.
+            AuthAuditEvent::RefreshReuseDetected {
+                did,
+                session_id,
+                rotated_at,
+                reason,
+            } => {
+                tracing::error!(
+                    audit = true,
+                    security_alert = true,
+                    %did,
+                    %session_id,
+                    rotated_at,
+                    reason = reason.as_str(),
+                    "refresh token reuse detected — session revoked",
+                );
+            }
         }
     }
 
@@ -427,6 +495,28 @@ pub trait AuthBackend: Send + Sync + 'static {
 
     /// Refresh-token TTL in seconds. Typical: 86400 (24 h).
     fn refresh_token_ttl(&self) -> u64;
+
+    /// How long after a rotation the token it replaced may still be
+    /// presented without being treated as reuse. Default: 30 seconds.
+    ///
+    /// This exists for one failure that is not an attack. A client
+    /// whose rotation response is lost in flight — dropped connection,
+    /// timeout, process death between the write and the read — still
+    /// holds only the old token, and retrying with it is the correct
+    /// thing for it to do. Strict reuse detection would read that retry
+    /// as theft and sign the user out, so the common network fault
+    /// would produce the alarm while a patient attacker (who simply
+    /// waits) would not.
+    ///
+    /// The window is narrow on purpose, and it is not the only
+    /// condition: `handle_refresh` also requires that the successor
+    /// recorded in the tombstone still be the session's live token, so
+    /// a retry only passes while the client demonstrably never received
+    /// the response it is retrying for. Returning `0` disables the
+    /// concession and makes every replay a compromise signal.
+    fn refresh_reuse_grace(&self) -> u64 {
+        30
+    }
 
     /// DIDComm `created_time` freshness window in seconds. The
     /// canonical handler rejects messages older than this against
@@ -514,7 +604,12 @@ impl AttestationOutcome {
 /// sink. The default `AuthBackend::audit` impl forwards each
 /// variant to `tracing::info!(audit=true)` so backends without
 /// a structured audit log get useful output for free.
+///
+/// `#[non_exhaustive]` for the same reason as [`AuthError`]: the set
+/// has grown with every auth feature and each addition was otherwise a
+/// silent breaking change for backends matching it exhaustively.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AuthAuditEvent<'a> {
     /// Fired after a successful `/auth/challenge`. The session
     /// is in `ChallengeSent` state.
@@ -538,6 +633,71 @@ pub enum AuthAuditEvent<'a> {
         amr: &'a [String],
         acr: &'a str,
     },
+    /// **Security alert.** A refresh token this node had already
+    /// rotated out was presented again, outside the conditions that
+    /// make a replay an innocent retry (see
+    /// [`AuthBackend::refresh_reuse_grace`]).
+    ///
+    /// By the time this fires the session named here has been deleted
+    /// along with its live refresh index, so every token descended from
+    /// the replayed one is dead — the legitimate holder and the
+    /// attacker are signed out together, because the node cannot tell
+    /// which of the two is which and leaving the session up would mean
+    /// leaving it up for both.
+    ///
+    /// Backends with a structured audit log should route this at a
+    /// higher severity than the rest of this enum. It is the only
+    /// variant that reports a probable compromise rather than a
+    /// completed flow, and it is the signal that was missing while
+    /// rotation refused replays silently.
+    RefreshReuseDetected {
+        /// Session owner. Empty when the session row was already gone
+        /// (reason [`RefreshReuseReason::SessionGone`]) and the DID
+        /// could not be recovered.
+        did: &'a str,
+        session_id: &'a str,
+        /// When the replayed token had been rotated out — how long the
+        /// attacker sat on it.
+        rotated_at: u64,
+        reason: RefreshReuseReason,
+    },
+}
+
+/// Why a replayed refresh token was judged reuse rather than a retry.
+///
+/// Carried on [`AuthAuditEvent::RefreshReuseDetected`] for triage: the
+/// three cases have very different operational readings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshReuseReason {
+    /// Presented after [`AuthBackend::refresh_reuse_grace`] elapsed.
+    /// The classic stolen-token replay — a retry would have arrived in
+    /// seconds, not minutes.
+    GraceExpired,
+    /// Presented inside the grace window, but the session had already
+    /// moved past the successor token. Someone received the rotation
+    /// response and someone else is still holding the token it
+    /// replaced, which means two parties hold the chain.
+    ChainAdvanced,
+    /// The session was already gone — revoked, swept, or killed by an
+    /// earlier detection. Whoever presented this token kept it across
+    /// the end of the session it belonged to.
+    SessionGone,
+}
+
+impl RefreshReuseReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GraceExpired => "grace_expired",
+            Self::ChainAdvanced => "chain_advanced",
+            Self::SessionGone => "session_gone",
+        }
+    }
+}
+
+impl std::fmt::Display for RefreshReuseReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 // ---------------------------------------------------------------------------
