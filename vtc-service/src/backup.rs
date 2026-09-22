@@ -23,6 +23,15 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use vti_common::error::AppError;
+
+use crate::error::TaskError;
+
+/// `vtc/backup/export:passwordTooShort`.
+pub const EXPORT_ERR_PASSWORD_TOO_SHORT: &str =
+    trust_tasks_rs::specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT.code;
+/// `vtc/backup/import:decryptionFailed`.
+pub const IMPORT_ERR_DECRYPTION_FAILED: &str =
+    trust_tasks_rs::specs::vtc::backup::import::v0_1::error_codes::DECRYPTION_FAILED.code;
 use vti_common::store::KeyspaceHandle;
 
 use crate::config::MessagingConfig;
@@ -153,9 +162,12 @@ pub async fn export_backup(
     secret_store: &dyn SecretStore,
     password: &str,
     include_audit: bool,
-) -> Result<BackupEnvelope, AppError> {
+) -> Result<BackupEnvelope, TaskError> {
+    // `vtc/backup/export:passwordTooShort`. The minimum is the workspace's
+    // `MIN_BACKUP_PASSWORD_LEN` (15), stricter than the 12 the specification
+    // names; a stricter floor is not lowered to match (#1600).
     vta_sdk::protocols::backup_management::validate_backup_password(password)
-        .map_err(AppError::Validation)?;
+        .map_err(|e| TaskError::declared(EXPORT_ERR_PASSWORD_TOO_SHORT, AppError::Validation(e)))?;
 
     // Signing key bundle (hex of the raw stored bytes — backend-agnostic
     // round-trip).
@@ -211,7 +223,7 @@ pub async fn export_backup(
         key_bundle_hex,
         keyspaces: keyspace_dumps,
     };
-    encrypt_payload(&payload, password, include_audit, state).await
+    Ok(encrypt_payload(&payload, password, include_audit, state).await?)
 }
 
 // ── Import ──────────────────────────────────────────────────────────────
@@ -226,8 +238,14 @@ pub async fn import_backup(
     envelope: &BackupEnvelope,
     password: &str,
     confirm: bool,
-) -> Result<ImportResult, AppError> {
-    let payload = decrypt_backup(envelope, password)?;
+) -> Result<ImportResult, TaskError> {
+    // `vtc/backup/import:decryptionFailed` — the GCM tag did not verify, so
+    // the password is wrong or the ciphertext was altered. The envelope's
+    // shape checks (format, KDF bounds, encodings) stay undeclared 400s.
+    let payload = decrypt_backup(envelope, password).map_err(|e| match e {
+        e @ AppError::Authentication(_) => TaskError::declared(IMPORT_ERR_DECRYPTION_FAILED, e),
+        e => TaskError::App(e),
+    })?;
 
     // Identity guard before any mutation.
     {

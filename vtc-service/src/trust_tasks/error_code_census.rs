@@ -409,6 +409,170 @@ fn witnesses() -> Vec<Witness> {
             "website_task_gating.rs",
             "the_generation_tasks_answer_with_the_codes_their_specs_declare"
         ),
+        // #1600, second shrink: the admin, backup, community, config,
+        // directory, endorsement and install tasks.
+        witness!(
+            s::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN,
+            crate::routes::admin::bootstrap::BOOTSTRAP_ERR_INVALID_TOKEN,
+            "admin_bootstrap.rs",
+            "the_bootstrap_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED,
+            crate::routes::admin::bootstrap::BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED,
+            "admin_bootstrap.rs",
+            "the_bootstrap_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG,
+            crate::routes::admin::invites::CREATE_INVITE_ERR_TTL_TOO_LONG,
+            "admin_invites.rs",
+            "the_create_task_answers_with_the_code_its_spec_declares"
+        ),
+        witness!(
+            s::admin::invites::revoke::v0_1::error_codes::NOT_FOUND,
+            crate::routes::admin::invites::REVOKE_INVITE_ERR_NOT_FOUND,
+            "admin_invites.rs",
+            "the_revoke_task_answers_with_the_code_its_spec_declares"
+        ),
+        witness!(
+            s::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT,
+            crate::backup::EXPORT_ERR_PASSWORD_TOO_SHORT,
+            "backup.rs",
+            "the_export_task_answers_with_the_code_its_spec_declares"
+        ),
+        witness!(
+            s::backup::import::v0_1::error_codes::DECRYPTION_FAILED,
+            crate::backup::IMPORT_ERR_DECRYPTION_FAILED,
+            "backup.rs",
+            "the_import_task_answers_with_the_code_its_spec_declares"
+        ),
+        witness!(
+            s::community::profile::update::v0_1::error_codes::VALIDATION_FAILED,
+            crate::routes::community::profile::PROFILE_UPDATE_ERR_VALIDATION_FAILED,
+            "community_profile.rs",
+            "a_profile_field_failing_validation_is_the_declared_validation_failed"
+        ),
+        witness!(
+            s::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH,
+            crate::routes::admin::config::IMPORT_ERR_COMMUNITY_DID_MISMATCH,
+            "admin_config.rs",
+            "import_refuses_mismatched_community_did_with_409"
+        ),
+        witness!(
+            s::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION,
+            crate::routes::admin::config::IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION,
+            "admin_config.rs",
+            "import_wrong_schema_version_returns_400"
+        ),
+        witness!(
+            s::directory::query::v0_1::error_codes::NOT_FOUND,
+            crate::routes::directory::QUERY_ERR_NOT_FOUND,
+            "directory.rs",
+            "nothing_visible_is_indistinguishable_from_no_such_member"
+        ),
+        witness!(
+            s::endorsement_types::delete::v0_1::error_codes::IN_USE,
+            crate::routes::endorsement_types::DELETE_ERR_IN_USE,
+            "endorsements.rs",
+            "delete_type_refused_while_a_criterion_names_it"
+        ),
+        witness!(
+            s::endorsement_types::delete::v0_1::error_codes::NOT_FOUND,
+            crate::routes::endorsement_types::DELETE_ERR_NOT_FOUND,
+            "endorsements.rs",
+            "delete_type_404_when_unknown"
+        ),
+        witness!(
+            s::endorsement_types::register::v0_1::error_codes::EXISTS,
+            crate::routes::endorsement_types::REGISTER_ERR_EXISTS,
+            "endorsements.rs",
+            "register_rejects_duplicate"
+        ),
+        witness!(
+            s::endorsement_types::register::v0_1::error_codes::INVALID_URI,
+            crate::routes::endorsement_types::REGISTER_ERR_INVALID_URI,
+            "endorsements.rs",
+            "an_empty_or_oversized_type_uri_is_the_declared_invalid_uri"
+        ),
+        witness!(
+            s::endorsement_types::register::v0_1::error_codes::RESERVED,
+            crate::routes::endorsement_types::REGISTER_ERR_RESERVED,
+            "endorsements.rs",
+            "register_rejects_reserved_uri"
+        ),
+        witness!(
+            s::endorsements::issue::v0_1::error_codes::CLAIM_SCHEMA_VIOLATION,
+            crate::routes::endorsements::ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
+            "endorsements.rs",
+            "a_claim_failing_the_type_claim_schema_is_the_declared_violation"
+        ),
+        witness!(
+            s::endorsements::issue::v0_1::error_codes::CLAIM_TOO_LARGE,
+            crate::routes::endorsements::ISSUE_ERR_CLAIM_TOO_LARGE,
+            "endorsements.rs",
+            "a_claim_over_the_cap_is_the_declared_claim_too_large"
+        ),
+        witness!(
+            s::endorsements::issue::v0_1::error_codes::STATUS_LIST_EXHAUSTED,
+            crate::routes::endorsements::ISSUE_ERR_STATUS_LIST_EXHAUSTED,
+            "endorsements.rs",
+            "a_full_revocation_list_is_the_declared_status_list_exhausted"
+        ),
+        witness!(
+            s::endorsements::issue::v0_1::error_codes::TYPE_NOT_REGISTERED,
+            crate::routes::endorsements::ISSUE_ERR_TYPE_NOT_REGISTERED,
+            "endorsements.rs",
+            "issue_rejects_unregistered_type"
+        ),
+        witness!(
+            s::endorsements::list::v0_1::error_codes::INVALID_CURSOR,
+            crate::routes::endorsements::LIST_ERR_INVALID_CURSOR,
+            "endorsements.rs",
+            "a_forged_cursor_is_the_declared_invalid_cursor"
+        ),
+        witness!(
+            s::endorsements::revoke::v0_1::error_codes::ALREADY_REVOKED,
+            crate::routes::endorsements::REVOKE_ERR_ALREADY_REVOKED,
+            "endorsements.rs",
+            "re_revoking_is_the_declared_already_revoked"
+        ),
+        witness!(
+            s::endorsements::revoke::v0_1::error_codes::NOT_FOUND,
+            crate::routes::endorsements::REVOKE_ERR_NOT_FOUND,
+            "endorsements.rs",
+            "an_unknown_endorsement_is_the_declared_not_found"
+        ),
+        witness!(
+            s::endorsements::show::v0_1::error_codes::NOT_FOUND,
+            crate::routes::endorsements::SHOW_ERR_NOT_FOUND,
+            "endorsements.rs",
+            "an_unknown_endorsement_is_the_declared_not_found"
+        ),
+        witness!(
+            s::install::claim::finish::v0_2::error_codes::BINDING_INVALID,
+            crate::routes::install::FINISH_ERR_BINDING_INVALID,
+            "install_claim.rs",
+            "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::finish::v0_2::error_codes::INVALID_TOKEN,
+            crate::routes::install::FINISH_ERR_INVALID_TOKEN,
+            "install_claim.rs",
+            "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::finish::v0_2::error_codes::REGISTRATION_MISMATCH,
+            crate::routes::install::FINISH_ERR_REGISTRATION_MISMATCH,
+            "install_claim.rs",
+            "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::start::v0_2::error_codes::INVALID_TOKEN,
+            crate::routes::install::START_ERR_INVALID_TOKEN,
+            "install_claim.rs",
+            "the_claim_start_task_answers_with_the_code_its_spec_declares"
+        ),
     ]
 }
 
@@ -420,39 +584,12 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
     use trust_tasks_rs::specs::vtc as s;
     vec![
         // BASELINE-BEGIN — generated from this test's own failure output.
-        s::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED,
-        s::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN,
-        s::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG,
         s::admin::invites::revoke::v0_1::error_codes::ALREADY_CONSUMED,
-        s::admin::invites::revoke::v0_1::error_codes::NOT_FOUND,
         s::auth::admin_session::v0_1::error_codes::INVALID_TOKEN,
         s::auth::recognise::challenge::v0_1::error_codes::RATE_LIMITED,
         s::auth::recognise::v0_2::error_codes::CREDENTIAL_INVALID,
         s::auth::recognise::v0_2::error_codes::ISSUER_NOT_RECOGNISED,
         s::auth::recognise::v0_2::error_codes::ROLE_NOT_MAPPED,
-        s::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT,
-        s::backup::import::v0_1::error_codes::DECRYPTION_FAILED,
-        s::community::profile::update::v0_1::error_codes::VALIDATION_FAILED,
-        s::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH,
-        s::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION,
-        s::directory::query::v0_1::error_codes::NOT_FOUND,
-        s::endorsement_types::delete::v0_1::error_codes::IN_USE,
-        s::endorsement_types::delete::v0_1::error_codes::NOT_FOUND,
-        s::endorsement_types::register::v0_1::error_codes::EXISTS,
-        s::endorsement_types::register::v0_1::error_codes::INVALID_URI,
-        s::endorsement_types::register::v0_1::error_codes::RESERVED,
-        s::endorsements::issue::v0_1::error_codes::CLAIM_SCHEMA_VIOLATION,
-        s::endorsements::issue::v0_1::error_codes::CLAIM_TOO_LARGE,
-        s::endorsements::issue::v0_1::error_codes::STATUS_LIST_EXHAUSTED,
-        s::endorsements::issue::v0_1::error_codes::TYPE_NOT_REGISTERED,
-        s::endorsements::list::v0_1::error_codes::INVALID_CURSOR,
-        s::endorsements::revoke::v0_1::error_codes::ALREADY_REVOKED,
-        s::endorsements::revoke::v0_1::error_codes::NOT_FOUND,
-        s::endorsements::show::v0_1::error_codes::NOT_FOUND,
-        s::install::claim::finish::v0_2::error_codes::BINDING_INVALID,
-        s::install::claim::finish::v0_2::error_codes::INVALID_TOKEN,
-        s::install::claim::finish::v0_2::error_codes::REGISTRATION_MISMATCH,
-        s::install::claim::start::v0_2::error_codes::INVALID_TOKEN,
         s::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE,
         s::invitations::revoke::v0_1::error_codes::NOT_FOUND,
         s::join_requests::submit::v0_2::error_codes::POLICY_UNSATISFIED,
@@ -466,7 +603,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The length of [`unwitnessed`], asserted. Lower it as witnesses land; raising
 /// it means a newly bound task declares codes nothing tests, which is the
 /// thing this census exists to stop.
-const UNWITNESSED: usize = 39;
+const UNWITNESSED: usize = 12;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

@@ -36,10 +36,11 @@ use vti_common::pagination::{Cursor, Paginated};
 
 use crate::acl::{VtcRole, get_acl_entry};
 use crate::credentials::{CredentialStatusRef, CustomEndorsementParams, build_custom_endorsement};
-use crate::endorsement_types::type_exists;
+use crate::endorsement_types::get_type;
 use crate::endorsements::{
     Endorsement, get_endorsement, list_endorsements, mark_revoked, store_endorsement,
 };
+use crate::error::TaskError;
 use crate::server::AppState;
 use crate::status_list;
 
@@ -48,6 +49,31 @@ const LIST_MAX_LIMIT: usize = 200;
 /// `CLAIM_MAX_BYTES` upper bound on the on-the-wire body
 /// (matches the builder cap). Larger inputs surface as 400.
 const CLAIM_MAX_BYTES: usize = 8 * 1024;
+
+use trust_tasks_rs::specs::vtc::endorsements as end_spec;
+
+/// `vtc/endorsements/issue:typeNotRegistered`.
+pub const ISSUE_ERR_TYPE_NOT_REGISTERED: &str =
+    end_spec::issue::v0_1::error_codes::TYPE_NOT_REGISTERED.code;
+/// `vtc/endorsements/issue:claimTooLarge` — over the 8 KiB cap.
+pub const ISSUE_ERR_CLAIM_TOO_LARGE: &str =
+    end_spec::issue::v0_1::error_codes::CLAIM_TOO_LARGE.code;
+/// `vtc/endorsements/issue:claimSchemaViolation` — `claim` fails the type's
+/// declared `claimSchema`.
+pub const ISSUE_ERR_CLAIM_SCHEMA_VIOLATION: &str =
+    end_spec::issue::v0_1::error_codes::CLAIM_SCHEMA_VIOLATION.code;
+/// `vtc/endorsements/issue:statusListExhausted` — no free revocation slot.
+pub const ISSUE_ERR_STATUS_LIST_EXHAUSTED: &str =
+    end_spec::issue::v0_1::error_codes::STATUS_LIST_EXHAUSTED.code;
+/// `vtc/endorsements/list:invalidCursor`.
+pub const LIST_ERR_INVALID_CURSOR: &str = end_spec::list::v0_1::error_codes::INVALID_CURSOR.code;
+/// `vtc/endorsements/show:notFound`.
+pub const SHOW_ERR_NOT_FOUND: &str = end_spec::show::v0_1::error_codes::NOT_FOUND.code;
+/// `vtc/endorsements/revoke:notFound`.
+pub const REVOKE_ERR_NOT_FOUND: &str = end_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
+/// `vtc/endorsements/revoke:alreadyRevoked`.
+pub const REVOKE_ERR_ALREADY_REVOKED: &str =
+    end_spec::revoke::v0_1::error_codes::ALREADY_REVOKED.code;
 
 // ─── Issue ───────────────────────────────────────────────
 
@@ -163,7 +189,7 @@ pub async fn issue(
     auth: AuthClaims,
     State(state): State<AppState>,
     Json(body): Json<IssueBody>,
-) -> Result<(StatusCode, Json<IssueResponse>), AppError> {
+) -> Result<(StatusCode, Json<IssueResponse>), TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -182,29 +208,54 @@ pub async fn issue(
     if !matches!(acl.role, VtcRole::Admin | VtcRole::Issuer) {
         return Err(AppError::Forbidden(
             "only Admin or Issuer-role members can mint custom endorsements".into(),
-        ));
+        )
+        .into());
     }
 
     // 2. Type registry consultation (D4 review).
-    if !type_exists(&state.endorsement_types_ks, &body.endorsement_type).await? {
-        return Err(AppError::Validation(format!(
-            "endorsement-type-not-registered: '{}' is not in the endorsement type registry",
-            body.endorsement_type
-        )));
-    }
+    let Some(endorsement_type) =
+        get_type(&state.endorsement_types_ks, &body.endorsement_type).await?
+    else {
+        return Err(TaskError::declared(
+            ISSUE_ERR_TYPE_NOT_REGISTERED,
+            AppError::Validation(format!(
+                "endorsement-type-not-registered: '{}' is not in the endorsement type registry",
+                body.endorsement_type
+            )),
+        ));
+    };
 
     // 3. Body-side validation. The builder enforces the same
     //    cap; we check here too so 400 surfaces cleanly
     //    before any state mutation.
     if !body.claim.is_object() {
-        return Err(AppError::Validation("claim must be a JSON object".into()));
+        return Err(AppError::Validation("claim must be a JSON object".into()).into());
     }
     let claim_bytes = serde_json::to_vec(&body.claim)
         .map_err(|e| AppError::Internal(format!("serialise claim: {e}")))?;
     if claim_bytes.len() > CLAIM_MAX_BYTES {
-        return Err(AppError::Validation(format!(
-            "claim exceeds {CLAIM_MAX_BYTES} bytes"
-        )));
+        return Err(TaskError::declared(
+            ISSUE_ERR_CLAIM_TOO_LARGE,
+            AppError::Validation(format!("claim exceeds {CLAIM_MAX_BYTES} bytes")),
+        ));
+    }
+    // A type that declares a `claimSchema` binds every claim of it
+    // (`vtc/endorsements/issue/0.1`, Conformance 3). Registration stored the
+    // schema, but until #1600 nothing read it back, so any claim was accepted.
+    // A schema that is not itself valid JSON Schema stays a 500: the type's
+    // registration is at fault, not this claim.
+    if let Some(schema) = endorsement_type.claim_schema.as_ref() {
+        crate::schemas::validate_instance(schema, &body.claim).map_err(|e| match e {
+            AppError::Validation(msg) => TaskError::declared(
+                ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
+                AppError::Validation(msg.replacen(
+                    "credential does not conform to its registered schema",
+                    "claim does not conform to the endorsement type's claimSchema",
+                    1,
+                )),
+            ),
+            e => TaskError::App(e),
+        })?;
     }
 
     // 4. Subject must be a current ACL member — operators
@@ -217,24 +268,28 @@ pub async fn issue(
         return Err(AppError::Validation(format!(
             "subject DID {} is not a current community member",
             body.subject_did
-        )));
+        ))
+        .into());
     }
 
     // 5. Allocate status-list slot — locked RMW so a concurrent
     //    allocate/flip can't clobber this allocation (P0.1).
-    let (slot, list_credential_id) = status_list::with_locked(
+    let allocated = status_list::with_locked(
         &state.status_lists_ks,
         affinidi_status_list::StatusPurpose::Revocation,
-        |row| {
-            let slot = status_list::allocate(row).ok_or_else(|| {
-                AppError::Internal(
-                    "revocation status list is full — cannot allocate slot for endorsement".into(),
-                )
-            })?;
-            Ok((slot, row.list_credential_id.clone()))
-        },
+        |row| Ok(status_list::allocate(row).map(|slot| (slot, row.list_credential_id.clone()))),
     )
     .await?;
+    // `statusListExhausted` (retryable: an operator provisions a new list).
+    // The status stays the 500 it always was.
+    let Some((slot, list_credential_id)) = allocated else {
+        return Err(TaskError::declared(
+            ISSUE_ERR_STATUS_LIST_EXHAUSTED,
+            AppError::Internal(
+                "revocation status list is full — cannot allocate slot for endorsement".into(),
+            ),
+        ));
+    };
     let status_ref = CredentialStatusRef::revocation(list_credential_id, slot);
 
     // 6. Build + sign the VEC.
@@ -363,14 +418,15 @@ pub async fn list(
     auth: AuthClaims,
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
-) -> Result<Json<Paginated<EndorsementRow>>, AppError> {
+) -> Result<Json<Paginated<EndorsementRow>>, TaskError> {
     let acl = get_acl_entry(&state.acl_ks, &auth.did)
         .await?
         .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
     if !matches!(acl.role, VtcRole::Admin | VtcRole::Issuer) {
         return Err(AppError::Forbidden(
             "only Admin or Issuer-role members can list custom endorsements".into(),
-        ));
+        )
+        .into());
     }
 
     let limit = query.limit.unwrap_or(50).clamp(1, LIST_MAX_LIMIT);
@@ -385,7 +441,12 @@ pub async fn list(
         .as_deref()
         .map(|c| Cursor::decode(c, &audit_key.key))
         .transpose()
-        .map_err(|e| AppError::Validation(format!("invalid cursor: {e}")))?;
+        .map_err(|e| {
+            TaskError::declared(
+                LIST_ERR_INVALID_CURSOR,
+                AppError::Validation(format!("invalid cursor: {e}")),
+            )
+        })?;
     let page =
         list_endorsements(&state.endorsements_ks, &audit_key, cursor.as_ref(), limit).await?;
     Ok(Json(page.map_items(EndorsementRow::from)))
@@ -409,18 +470,24 @@ pub async fn show(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<EndorsementEnvelope>, AppError> {
+) -> Result<Json<EndorsementEnvelope>, TaskError> {
     let acl = get_acl_entry(&state.acl_ks, &auth.did)
         .await?
         .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
     if !matches!(acl.role, VtcRole::Admin | VtcRole::Issuer) {
         return Err(AppError::Forbidden(
             "only Admin or Issuer-role members can read custom endorsements".into(),
-        ));
+        )
+        .into());
     }
     let row = get_endorsement(&state.endorsements_ks, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("endorsement {id} not found")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                SHOW_ERR_NOT_FOUND,
+                AppError::NotFound(format!("endorsement {id} not found")),
+            )
+        })?;
     Ok(Json(EndorsementEnvelope {
         endorsement: row.into(),
     }))
@@ -456,21 +523,18 @@ pub struct RevocationDetail {
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin or issuer"),
         (status = 404, description = "Endorsement not found"),
+        (status = 409, description = "Endorsement already revoked"),
     ),
 )]
 pub async fn revoke(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<(StatusCode, Json<RevokeResponse>), AppError> {
+) -> Result<(StatusCode, Json<RevokeResponse>), TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
-
-    let row = get_endorsement(&state.endorsements_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("endorsement {id} not found")))?;
 
     // Auth: Admin OR original issuer (always == signer DID;
     // any Admin/Issuer of the community).
@@ -488,23 +552,34 @@ pub async fn revoke(
     if !is_admin && !is_issuer_role {
         return Err(AppError::Forbidden(
             "only Admin or Issuer-role members can revoke endorsements".into(),
-        ));
+        )
+        .into());
     }
 
-    // Idempotent no-op — and it answers with the same shape as a first
-    // revoke, reading the timestamp already on the row rather than inventing
-    // a fresh one.
+    // Looked up only after the capability check (Conformance 1 before 2), so
+    // a caller who may not revoke cannot use this route to learn which
+    // endorsement ids exist.
+    let row = get_endorsement(&state.endorsements_ks, id)
+        .await?
+        .ok_or_else(|| {
+            TaskError::declared(
+                REVOKE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("endorsement {id} not found")),
+            )
+        })?;
+
+    // `alreadyRevoked` (Conformance 3): the bit is not re-flipped and nothing
+    // is re-audited. This used to answer 200 with the first revocation's
+    // receipt; the specification requires that the caller can tell "I revoked
+    // it now" from "it was already gone".
     if row.is_revoked() {
-        return Ok((
-            StatusCode::OK,
-            Json(RevokeResponse {
-                endorsement_id: id.to_string(),
-                revocation: RevocationDetail {
-                    credential_id: row.vec_id.clone(),
-                    revoked_at: rfc3339(row.revoked_at.unwrap_or_else(Utc::now)),
-                },
-                status_list_index: row.status_list_index,
-            }),
+        let at = row
+            .revoked_at
+            .map(rfc3339)
+            .unwrap_or_else(|| "an earlier call".into());
+        return Err(TaskError::declared(
+            REVOKE_ERR_ALREADY_REVOKED,
+            AppError::Conflict(format!("endorsement {id} was already revoked at {at}")),
         ));
     }
 

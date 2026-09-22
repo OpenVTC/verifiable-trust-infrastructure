@@ -35,6 +35,7 @@ use vti_common::error::AppError;
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use crate::auth::session::now_epoch;
+use crate::error::TaskError;
 use crate::install::{
     INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenState, claim_secret,
     mint_install_token,
@@ -136,6 +137,14 @@ pub struct RevokeInviteResponse {
 
 const MAX_TTL_SECONDS: u64 = 24 * 60 * 60;
 
+/// `vtc/admin/invites/create:ttlTooLong` — `ttlSeconds` exceeds the 24-hour
+/// maximum.
+pub const CREATE_INVITE_ERR_TTL_TOO_LONG: &str =
+    trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
+/// `vtc/admin/invites/revoke:notFound` — no invite with that `jti`.
+pub const REVOKE_INVITE_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::admin::invites::revoke::v0_1::error_codes::NOT_FOUND.code;
+
 #[utoipa::path(
     post, path = "/admin/invites", tag = "admin",
     security(("bearer_jwt" = [])),
@@ -151,19 +160,31 @@ pub async fn create_invite(
     admin: AdminAuth,
     State(state): State<AppState>,
     Json(req): Json<CreateInviteRequest>,
-) -> Result<(StatusCode, Json<CreateInviteResponse>), AppError> {
+) -> Result<(StatusCode, Json<CreateInviteResponse>), TaskError> {
     if !req.did.starts_with("did:") {
         return Err(AppError::Validation(format!(
             "did must start with 'did:' (got '{}')",
             req.did
-        )));
+        ))
+        .into());
     }
 
     let ttl_seconds = req.ttl_seconds.unwrap_or(INSTALL_TOKEN_DEFAULT_TTL_SECS);
-    if ttl_seconds == 0 || ttl_seconds > MAX_TTL_SECONDS {
-        return Err(AppError::Validation(format!(
+    let out_of_range = || {
+        AppError::Validation(format!(
             "ttl_seconds must be between 1 and {MAX_TTL_SECONDS}",
-        )));
+        ))
+    };
+    // Only the upper bound is declared (`ttlTooLong`); a zero TTL is the same
+    // 400 without a code.
+    if ttl_seconds > MAX_TTL_SECONDS {
+        return Err(TaskError::declared(
+            CREATE_INVITE_ERR_TTL_TOO_LONG,
+            out_of_range(),
+        ));
+    }
+    if ttl_seconds == 0 {
+        return Err(out_of_range().into());
     }
 
     let signer = require_install_signer(&state)?;
@@ -181,7 +202,8 @@ pub async fn create_invite(
                 "did {} already has a non-admin ACL grant; revoke it first \
                  (DELETE /v1/acl/entries/{}) before inviting",
                 req.did, req.did
-            )));
+            ))
+            .into());
         }
         None => {
             let label = req
@@ -320,7 +342,7 @@ pub async fn revoke_invite(
     admin: AdminAuth,
     State(state): State<AppState>,
     Path(jti_str): Path<String>,
-) -> Result<(StatusCode, Json<RevokeInviteResponse>), AppError> {
+) -> Result<(StatusCode, Json<RevokeInviteResponse>), TaskError> {
     let jti = jti_str
         .parse::<Uuid>()
         .map_err(|_| AppError::Validation(format!("invalid jti: '{jti_str}'")))?;
@@ -332,16 +354,26 @@ pub async fn revoke_invite(
     // not in the install_store row — keeping spent rows around just
     // accumulates clutter in the invites list with no security
     // benefit. 404 only when the row is genuinely absent.
+    //
+    // That is a divergence from `vtc/admin/invites/revoke/0.1`, which refuses
+    // a consumed row with `alreadyConsumed`; the admin UI's "Remove" action on
+    // consumed rows depends on it (#1600 leaves the code baselined).
+    let not_found = || {
+        TaskError::declared(
+            REVOKE_INVITE_ERR_NOT_FOUND,
+            AppError::NotFound(format!("no invite for jti {jti}")),
+        )
+    };
     let existed = state.install_store.get_token(&jti).await?;
     if existed.is_none() {
-        return Err(AppError::NotFound(format!("no invite for jti {jti}")));
+        return Err(not_found());
     }
 
     if !state.install_store.delete_token(&jti).await? {
         // Token vanished between the peek and the delete — another
         // admin raced us. Surface as NotFound so the caller sees
         // the same outcome they would on a stale jti.
-        return Err(AppError::NotFound(format!("no invite for jti {jti}")));
+        return Err(not_found());
     }
 
     if let Some(writer) = state.audit_writer.as_ref() {

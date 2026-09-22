@@ -222,8 +222,9 @@ async fn register_rejects_reserved_uri() {
             json!({ "typeUri": "CommunityRole" }).to_string(),
         ))
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(rest_error_code(&body), REGISTER_ERR_RESERVED, "{body}");
 }
 
 #[tokio::test]
@@ -250,8 +251,9 @@ async fn register_rejects_duplicate() {
         .header("content-type", "application/json")
         .body(Body::from(json!({ "typeUri": uri }).to_string()))
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(rest_error_code(&body), REGISTER_ERR_EXISTS, "{body}");
 }
 
 #[tokio::test]
@@ -316,8 +318,9 @@ async fn delete_type_404_when_unknown() {
         .header("trust-task", DELETE_TYPE_TASK)
         .body(Body::empty())
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), DELETE_ERR_NOT_FOUND, "{body}");
 }
 
 // ─── Issue ───────────────────────────────────────────────
@@ -353,8 +356,13 @@ async fn issue_rejects_unregistered_type() {
             .to_string(),
         ))
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        ISSUE_ERR_TYPE_NOT_REGISTERED,
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -488,17 +496,10 @@ async fn delete_type_refused_while_live_endorsement_exists() {
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Try to delete the type — must 409.
-    let encoded = uri.replace(':', "%3A").replace('/', "%2F");
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/endorsement-types/{encoded}"))
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", DELETE_TYPE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    // Try to delete the type — must 409 `inUse`.
+    let (status, body) = delete_type(&fix, uri).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(rest_error_code(&body), DELETE_ERR_IN_USE, "{body}");
 }
 
 /// The symmetric partner of `register_accepts`' check that a criterion's
@@ -514,6 +515,7 @@ async fn delete_type_refused_while_a_criterion_names_it() {
 
     let (status, body) = delete_type(&fix, uri).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(rest_error_code(&body), DELETE_ERR_IN_USE, "{body}");
     // The console renders this text verbatim, so the criterion must be named:
     // "it is in use" the operator cannot act on.
     let message = body.to_string();
@@ -649,8 +651,12 @@ async fn revoke_issuer_can_retract() {
     let _ = fix.endorsements_ks;
 }
 
+/// `vtc/endorsements/revoke/0.1` Conformance 3: re-revoking is
+/// `alreadyRevoked` (409), and the bit is not re-flipped nor the revocation
+/// re-audited. It used to answer 200 with the first receipt, which the
+/// specification calls out as the pre-migration divergence to correct.
 #[tokio::test]
-async fn revoke_idempotent_on_already_revoked() {
+async fn re_revoking_is_the_declared_already_revoked() {
     let fix = build().await;
     let uri = "https://example.com/v1/t";
     register_type(&fix, uri).await;
@@ -670,17 +676,36 @@ async fn revoke_idempotent_on_already_revoked() {
         .unwrap()
         .to_string();
 
-    for _ in 0..2 {
-        let req = Request::builder()
+    let revoke = || {
+        Request::builder()
             .method("DELETE")
             .uri(format!("/v1/credentials/endorsements/{id}"))
             .header("authorization", format!("Bearer {}", fix.admin_token))
             .header("trust-task", REVOKE_TASK)
             .body(Body::empty())
-            .unwrap();
-        let resp = fix.router.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
+            .unwrap()
+    };
+    let (status, body) = body_value(fix.router.clone().oneshot(revoke()).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let audit_rows = fix
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .len();
+
+    let (status, body) = body_value(fix.router.clone().oneshot(revoke()).await.unwrap()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(rest_error_code(&body), REVOKE_ERR_ALREADY_REVOKED, "{body}");
+    assert_eq!(
+        fix.audit_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .len(),
+        audit_rows,
+        "a refused re-revoke must not re-audit"
+    );
 }
 
 #[tokio::test]
@@ -759,4 +784,224 @@ async fn show_wraps_the_row_in_an_endorsement_envelope() {
     assert!(v["id"].is_null(), "row must not be at the top level: {v}");
     assert_eq!(v["endorsement"]["endorsementId"], id);
     assert_eq!(v["endorsement"]["subjectDid"], SUBJECT_DID);
+}
+
+// ---------------------------------------------------------------------------
+// #1600 — the codes the endorsement-type and endorsement tasks declare, read
+// from the generated bindings.
+// ---------------------------------------------------------------------------
+
+use trust_tasks_rs::specs::vtc::endorsement_types as et_spec;
+use trust_tasks_rs::specs::vtc::endorsements as end_spec;
+
+const REGISTER_ERR_INVALID_URI: &str = et_spec::register::v0_1::error_codes::INVALID_URI.code;
+const REGISTER_ERR_RESERVED: &str = et_spec::register::v0_1::error_codes::RESERVED.code;
+const REGISTER_ERR_EXISTS: &str = et_spec::register::v0_1::error_codes::EXISTS.code;
+const DELETE_ERR_NOT_FOUND: &str = et_spec::delete::v0_1::error_codes::NOT_FOUND.code;
+const DELETE_ERR_IN_USE: &str = et_spec::delete::v0_1::error_codes::IN_USE.code;
+const ISSUE_ERR_TYPE_NOT_REGISTERED: &str =
+    end_spec::issue::v0_1::error_codes::TYPE_NOT_REGISTERED.code;
+const ISSUE_ERR_CLAIM_TOO_LARGE: &str = end_spec::issue::v0_1::error_codes::CLAIM_TOO_LARGE.code;
+const ISSUE_ERR_CLAIM_SCHEMA_VIOLATION: &str =
+    end_spec::issue::v0_1::error_codes::CLAIM_SCHEMA_VIOLATION.code;
+const ISSUE_ERR_STATUS_LIST_EXHAUSTED: &str =
+    end_spec::issue::v0_1::error_codes::STATUS_LIST_EXHAUSTED.code;
+const LIST_ERR_INVALID_CURSOR: &str = end_spec::list::v0_1::error_codes::INVALID_CURSOR.code;
+const SHOW_ERR_NOT_FOUND: &str = end_spec::show::v0_1::error_codes::NOT_FOUND.code;
+const REVOKE_ERR_NOT_FOUND: &str = end_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
+const REVOKE_ERR_ALREADY_REVOKED: &str = end_spec::revoke::v0_1::error_codes::ALREADY_REVOKED.code;
+
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/list/0.1";
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+async fn register(fix: &Fixture, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/endorsement-types")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", REGISTER_TASK)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+}
+
+async fn issue(fix: &Fixture, type_uri: &str, claim: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/credentials/endorsements")
+        .header("authorization", format!("Bearer {}", fix.issuer_token))
+        .header("trust-task", ISSUE_TASK)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "subjectDid": SUBJECT_DID, "typeUri": type_uri, "claim": claim }).to_string(),
+        ))
+        .unwrap();
+    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+}
+
+async fn admin_get_or_delete(
+    fix: &Fixture,
+    method: &str,
+    uri: &str,
+    task: &str,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", task)
+        .body(Body::empty())
+        .unwrap();
+    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+}
+
+/// An empty (or all-whitespace) `typeUri`, or one over 512 bytes, is
+/// `invalidUri`; 400 unchanged. The 512-byte boundary itself registers.
+#[tokio::test]
+async fn an_empty_or_oversized_type_uri_is_the_declared_invalid_uri() {
+    let fix = build().await;
+    for uri in [
+        "".to_string(),
+        "   ".to_string(),
+        format!("https://x/{}", "a".repeat(512)),
+    ] {
+        let (status, body) = register(&fix, json!({ "typeUri": uri })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(rest_error_code(&body), REGISTER_ERR_INVALID_URI, "{body}");
+    }
+    let at_cap = format!("https://x/{}", "a".repeat(512 - "https://x/".len()));
+    let (status, body) = register(&fix, json!({ "typeUri": at_cap })).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// A claim over 8 KiB is `claimTooLarge` (400, unchanged).
+#[tokio::test]
+async fn a_claim_over_the_cap_is_the_declared_claim_too_large() {
+    let fix = build().await;
+    let uri = "https://example.com/v1/skills/large";
+    register_type(&fix, uri).await;
+    let (status, body) = issue(&fix, uri, json!({ "blob": "x".repeat(8 * 1024) })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(rest_error_code(&body), ISSUE_ERR_CLAIM_TOO_LARGE, "{body}");
+}
+
+/// A type that declares a `claimSchema` binds its claims: one that fails it is
+/// `claimSchemaViolation` (400) and issues nothing; one that satisfies it
+/// issues. Before #1600 the schema was stored at registration and never read.
+#[tokio::test]
+async fn a_claim_failing_the_type_claim_schema_is_the_declared_violation() {
+    let fix = build().await;
+    let uri = "https://example.com/v1/skills/level";
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": uri,
+            "claimSchema": {
+                "type": "object",
+                "required": ["level"],
+                "properties": { "level": { "enum": ["novice", "expert"] } }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    for bad in [json!({ "level": "wizard" }), json!({ "other": 1 })] {
+        let (status, body) = issue(&fix, uri, bad.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        assert_eq!(
+            rest_error_code(&body),
+            ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
+            "{bad}: {body}"
+        );
+    }
+    assert!(
+        fix.endorsements_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused claim must not persist an endorsement"
+    );
+
+    let (status, body) = issue(&fix, uri, json!({ "level": "expert" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// With every revocation slot handed out, issuing is `statusListExhausted`
+/// (retryable). The status stays the 500 it always was.
+#[tokio::test]
+async fn a_full_revocation_list_is_the_declared_status_list_exhausted() {
+    let fix = build().await;
+    let uri = "https://example.com/v1/skills/full";
+    register_type(&fix, uri).await;
+    status_list::with_locked(
+        &fix._vtc.state.status_lists_ks,
+        StatusPurpose::Revocation,
+        |row| {
+            row.assigned.iter_mut().for_each(|a| *a = true);
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = issue(&fix, uri, json!({ "x": 1 })).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        ISSUE_ERR_STATUS_LIST_EXHAUSTED,
+        "{body}"
+    );
+}
+
+/// A cursor this community did not sign is `invalidCursor` (400, unchanged).
+#[tokio::test]
+async fn a_forged_cursor_is_the_declared_invalid_cursor() {
+    let fix = build().await;
+    let (status, body) = admin_get_or_delete(
+        &fix,
+        "GET",
+        "/v1/credentials/endorsements?cursor=bm90LWEtY3Vyc29y",
+        LIST_TASK,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(rest_error_code(&body), LIST_ERR_INVALID_CURSOR, "{body}");
+}
+
+/// An unknown endorsement id is `notFound` to show and to revoke (404,
+/// unchanged). Revoke now checks the caller's capability first, so a member
+/// who may not revoke gets 403 whether or not the id exists.
+#[tokio::test]
+async fn an_unknown_endorsement_is_the_declared_not_found() {
+    let fix = build().await;
+    let path = format!("/v1/credentials/endorsements/{}", Uuid::new_v4());
+
+    let (status, body) = admin_get_or_delete(&fix, "GET", &path, SHOW_TASK).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), SHOW_ERR_NOT_FOUND, "{body}");
+
+    let (status, body) = admin_get_or_delete(&fix, "DELETE", &path, REVOKE_TASK).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), REVOKE_ERR_NOT_FOUND, "{body}");
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(&path)
+        .header("authorization", format!("Bearer {}", fix.member_token))
+        .header("trust-task", REVOKE_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the capability check precedes the lookup: {body}"
+    );
 }

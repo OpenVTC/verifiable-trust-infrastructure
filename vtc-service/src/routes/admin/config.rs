@@ -600,6 +600,13 @@ pub enum ImportStatus {
     Imported,
 }
 
+/// `vtc/config/import:unsupportedSchemaVersion`.
+pub const IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION: &str =
+    trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION.code;
+/// `vtc/config/import:communityDidMismatch`.
+pub const IMPORT_ERR_COMMUNITY_DID_MISMATCH: &str =
+    trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH.code;
+
 #[utoipa::path(
     post, path = "/admin/config/import", tag = "admin",
     security(("bearer_jwt" = [])),
@@ -616,17 +623,21 @@ pub async fn import_config(
     admin: AdminAuth,
     State(state): State<AppState>,
     Json(body): Json<ImportRequest>,
-) -> Result<(StatusCode, Json<ImportResponse>), AppError> {
+) -> Result<(StatusCode, Json<ImportResponse>), crate::error::TaskError> {
+    use crate::error::TaskError;
     let ImportRequest { document, confirm } = body;
     let req = document;
 
     // Version first: a document whose shape we cannot vouch for must not be
     // diffed, because the diff would be against members we may be misreading.
     if req.schema_version != EXPORT_SCHEMA_VERSION {
-        return Err(AppError::Validation(format!(
-            "unsupported export schemaVersion: got {}, expected {EXPORT_SCHEMA_VERSION}",
-            req.schema_version
-        )));
+        return Err(TaskError::declared(
+            IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION,
+            AppError::Validation(format!(
+                "unsupported export schemaVersion: got {}, expected {EXPORT_SCHEMA_VERSION}",
+                req.schema_version
+            )),
+        ));
     }
 
     // community_did mismatch is a 409 — refuse to clobber a
@@ -637,10 +648,13 @@ pub async fn import_config(
     if let (Some(current), Some(incoming)) = (&current_profile, &req.community_profile)
         && current.community_did != incoming.community_did
     {
-        return Err(AppError::Conflict(format!(
-            "communityDid mismatch: current is {}, import carries {}",
-            current.community_did, incoming.community_did
-        )));
+        return Err(TaskError::declared(
+            IMPORT_ERR_COMMUNITY_DID_MISMATCH,
+            AppError::Conflict(format!(
+                "communityDid mismatch: current is {}, import carries {}",
+                current.community_did, incoming.community_did
+            )),
+        ));
     }
 
     let store = ConfigStore::new(state.config_ks.clone());

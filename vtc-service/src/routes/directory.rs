@@ -36,6 +36,8 @@ use serde_json::{Map, Value as JsonValue, json};
 
 use vti_common::error::AppError;
 
+use crate::error::TaskError;
+
 use crate::acl::get_acl_entry;
 use crate::auth::AuthClaims;
 use crate::ceremony::{
@@ -76,6 +78,22 @@ pub struct DirectoryResponse {
     pub fields: Map<String, JsonValue>,
 }
 
+/// `vtc/directory/query:notFound` — no member with that DID, or none whose
+/// projection is visible to this caller.
+pub const QUERY_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::directory::query::v0_1::error_codes::NOT_FOUND.code;
+
+/// The one answer for every "nothing to show" outcome. `vtc/directory/query`
+/// makes "no such member" and "nothing visible to you" indistinguishable, so
+/// they share a status, a code and a message — anything else is a membership
+/// oracle.
+fn not_visible() -> TaskError {
+    TaskError::declared(
+        QUERY_ERR_NOT_FOUND,
+        AppError::NotFound("no directory entry for that DID is visible to this caller".into()),
+    )
+}
+
 /// `GET /v1/directory/{did}`.
 #[utoipa::path(
     get, path = "/directory/{did}", tag = "directory",
@@ -87,7 +105,7 @@ pub struct DirectoryResponse {
     responses(
         (status = 200, description = "Projected subject record", body = DirectoryResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Directory access denied"),
+        (status = 404, description = "No member with that DID, or nothing about them visible to this caller"),
     ),
 )]
 pub async fn query(
@@ -95,10 +113,14 @@ pub async fn query(
     State(state): State<AppState>,
     Path(subject_did): Path<String>,
     Query(q): Query<DirectoryQuery>,
-) -> Result<Json<DirectoryResponse>, AppError> {
+) -> Result<Json<DirectoryResponse>, TaskError> {
     vti_common::identifier::validate_did("did", &subject_did)?;
     let facts = assemble_directory_facts(&state, &viewer, &subject_did, q.fields).await?;
-    let verified = VerifiedFacts::assemble(facts)?;
+    // Read before the policy runs, answered after it: the policy's verdict
+    // decides for a missing subject exactly as for a present one, so the order
+    // of the checks cannot tell the two apart either.
+    let subject_is_member = facts.state.subject_member.is_some();
+    let verified = VerifiedFacts::assemble(facts).map_err(AppError::from)?;
 
     let policy = load_active_compiled(
         &state.active_policies_ks,
@@ -115,6 +137,11 @@ pub async fn query(
                 .map(|s| s.to_string())
                 .collect();
             match ceremony::plan(&verified, &verdict, &whitelist)? {
+                // `notFound` for a DID that is not a member, and for an empty
+                // projection — "exists, but you may see nothing" is not an
+                // answer this task gives.
+                EffectPlan::Project { .. } if !subject_is_member => Err(not_visible()),
+                EffectPlan::Project { fields } if fields.is_empty() => Err(not_visible()),
                 EffectPlan::Project { fields } => Ok(Json(DirectoryResponse {
                     subject: subject_did,
                     fields,
@@ -123,22 +150,29 @@ pub async fn query(
                 // plan means the active policy isn't a directory policy.
                 other => Err(AppError::Internal(format!(
                     "directory allow produced a non-projection effect: {other:?}"
-                ))),
+                ))
+                .into()),
             }
         }
-        Verdict::Deny(d) => Err(AppError::Forbidden(format!(
-            "directory access denied ({}){}",
-            d.code,
-            d.reason
-                .as_deref()
-                .map(|r| format!(": {r}"))
-                .unwrap_or_default(),
-        ))),
+        // A deny is "nothing visible to this caller", which the task answers
+        // as `notFound` — the same answer a missing subject gets, so a denied
+        // viewer cannot probe membership by telling the two apart. The deny's
+        // own code stays in the server log, not on the wire.
+        Verdict::Deny(d) => {
+            tracing::debug!(
+                viewer = %viewer.did,
+                code = %d.code,
+                reason = d.reason.as_deref().unwrap_or_default(),
+                "directory query denied by policy"
+            );
+            Err(not_visible())
+        }
         // Directory is synchronous and unthreaded — a policy that
         // refers or requests-more is misconfigured for this purpose.
         Verdict::Refer(_) | Verdict::RequestMore(_) => Err(AppError::Internal(
             "directory policy returned a non-terminal verdict; directory is synchronous".into(),
-        )),
+        )
+        .into()),
     }
 }
 

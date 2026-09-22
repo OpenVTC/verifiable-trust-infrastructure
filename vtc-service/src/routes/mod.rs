@@ -1,16 +1,16 @@
 mod acl;
-mod admin;
+pub(crate) mod admin;
 #[cfg(feature = "admin-ui")]
 mod admin_ui;
 mod audit;
 mod auth;
 mod backup;
 mod ceremonies;
-mod community;
+pub(crate) mod community;
 pub(crate) mod credential_exchange;
 pub(crate) mod did_log;
-mod directory;
-mod endorsement_types;
+pub(crate) mod directory;
+pub(crate) mod endorsement_types;
 pub(crate) mod endorsements;
 mod health;
 pub(crate) mod install;

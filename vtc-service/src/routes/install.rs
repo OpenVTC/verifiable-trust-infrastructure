@@ -63,6 +63,7 @@ use vti_common::error::AppError;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential, Webauthn};
 
 use crate::acl::admin::{AdminEntry, RegisteredPasskey, get_admin_entry, store_admin_entry};
+use crate::error::TaskError;
 use crate::install::{
     INSTALL_SESSION_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenState, claim_secret,
     mint_install_session_token, parse_install_token,
@@ -120,6 +121,38 @@ pub struct ClaimFinishResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Declared error codes (#1600)
+// ---------------------------------------------------------------------------
+
+use trust_tasks_rs::specs::vtc::install::claim as claim_spec;
+
+/// `vtc/install/claim/start:invalidToken` — missing, malformed, expired, or
+/// already consumed.
+pub const START_ERR_INVALID_TOKEN: &str = claim_spec::start::v0_2::error_codes::INVALID_TOKEN.code;
+/// `vtc/install/claim/finish:invalidToken` — as for `start`.
+pub const FINISH_ERR_INVALID_TOKEN: &str =
+    claim_spec::finish::v0_2::error_codes::INVALID_TOKEN.code;
+/// `vtc/install/claim/finish:registrationMismatch` — the `registrationId`
+/// names no open enrolment for this token.
+pub const FINISH_ERR_REGISTRATION_MISMATCH: &str =
+    claim_spec::finish::v0_2::error_codes::REGISTRATION_MISMATCH.code;
+/// `vtc/install/claim/finish:bindingInvalid` — the WebAuthn attestation
+/// failed verification.
+pub const FINISH_ERR_BINDING_INVALID: &str =
+    claim_spec::finish::v0_2::error_codes::BINDING_INVALID.code;
+
+/// Declare `code` on the token-state refusals: every `Unauthorized` the token
+/// parser and the install state machine answer is the token being missing,
+/// malformed, expired or consumed. A `Conflict` (a concurrent ceremony's
+/// lock) and anything else stay undeclared.
+fn token_error(code: &'static str) -> impl FnOnce(AppError) -> TaskError {
+    move |e| match e {
+        e @ AppError::Unauthorized(_) => TaskError::declared(code, e),
+        e => TaskError::App(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -136,13 +169,14 @@ pub struct ClaimFinishResponse {
 pub async fn claim_start(
     State(state): State<AppState>,
     Json(req): Json<ClaimStartRequest>,
-) -> Result<(StatusCode, Json<ClaimStartResponse>), AppError> {
+) -> Result<(StatusCode, Json<ClaimStartResponse>), TaskError> {
     let signer = require_install_signer(&state)?;
     let webauthn = require_webauthn(&state)?;
     let store = &state.install_store;
 
-    let claims = parse_install_token(signer, &req.install_token)?;
-    let jti = parse_jti(&claims.jti)?;
+    let claims = parse_install_token(signer, &req.install_token)
+        .map_err(token_error(START_ERR_INVALID_TOKEN))?;
+    let jti = parse_jti(&claims.jti).map_err(token_error(START_ERR_INVALID_TOKEN))?;
 
     // Per-invite claim secret, verified BEFORE the ceremony lock (P0.21).
     // `start_claim` stamps `claimed_at`, a 300 s concurrency lock; if we
@@ -160,7 +194,8 @@ pub async fn claim_start(
             return Err(AppError::ServiceError {
                 status: StatusCode::UNAUTHORIZED,
                 message: "claim_secret_required".into(),
-            });
+            }
+            .into());
         };
         // Argon2id verification is CPU-bound (~50–200 ms); run it on the
         // blocking pool so it doesn't stall the async REST runtime — this is
@@ -177,14 +212,18 @@ pub async fn claim_start(
             return Err(AppError::ServiceError {
                 status: StatusCode::UNAUTHORIZED,
                 message: "claim_secret_invalid".into(),
-            });
+            }
+            .into());
         }
     }
 
     // Take the ceremony lock. `start_claim` validates `Issued`, not
     // expired; on success the `claimed_at` window is set to "now"
     // so a second concurrent start sees the lock.
-    store.start_claim(&jti).await?;
+    store
+        .start_claim(&jti)
+        .await
+        .map_err(token_error(START_ERR_INVALID_TOKEN))?;
 
     let user_uuid = jti;
     // Show the operator their admin DID in the authenticator's UI —
@@ -235,18 +274,25 @@ pub async fn claim_start(
 pub async fn claim_finish(
     State(state): State<AppState>,
     Json(req): Json<ClaimFinishRequest>,
-) -> Result<(StatusCode, Json<ClaimFinishResponse>), AppError> {
+) -> Result<(StatusCode, Json<ClaimFinishResponse>), TaskError> {
     let signer = require_install_signer(&state)?;
     let webauthn = require_webauthn(&state)?;
     let store = &state.install_store;
 
-    let claims = parse_install_token(signer, &req.install_token)?;
-    let jti = parse_jti(&claims.jti)?;
-    let reg_id = parse_jti(&req.registration_id)?;
+    let claims = parse_install_token(signer, &req.install_token)
+        .map_err(token_error(FINISH_ERR_INVALID_TOKEN))?;
+    let jti = parse_jti(&claims.jti).map_err(token_error(FINISH_ERR_INVALID_TOKEN))?;
+    // A `registrationId` that is not a UUID, or names another token's
+    // enrolment, matches no open enrolment for this one.
+    let registration_mismatch = || {
+        TaskError::declared(
+            FINISH_ERR_REGISTRATION_MISMATCH,
+            AppError::Unauthorized("registration_id does not match install token".into()),
+        )
+    };
+    let reg_id = Uuid::parse_str(&req.registration_id).map_err(|_| registration_mismatch())?;
     if reg_id != jti {
-        return Err(AppError::Unauthorized(
-            "registration_id does not match install token".into(),
-        ));
+        return Err(registration_mismatch());
     }
 
     // Idempotent retry. Consume-first (below) is the security-correct
@@ -270,17 +316,24 @@ pub async fn claim_finish(
             .is_some()
         {
             info!(jti = %jti, %admin_did, "install claim finish replayed; re-issuing setup token");
-            return issue_setup_session(&state, signer, admin_did, &jti).await;
+            return Ok(issue_setup_session(&state, signer, admin_did, &jti).await?);
         }
-        return Err(AppError::Unauthorized("install token consumed".into()));
+        return Err(TaskError::declared(
+            FINISH_ERR_INVALID_TOKEN,
+            AppError::Unauthorized("install token consumed".into()),
+        ));
     }
 
     let reg_state = take_registration_state(&state.passkey_ks, &jti.to_string())
         .await?
         .ok_or_else(|| {
-            AppError::Unauthorized(
-                "no registration in progress for this install token (start the ceremony first)"
-                    .into(),
+            TaskError::declared(
+                FINISH_ERR_REGISTRATION_MISMATCH,
+                AppError::Unauthorized(
+                    "no registration in progress for this install token (start the ceremony \
+                     first)"
+                        .into(),
+                ),
             )
         })?;
 
@@ -291,12 +344,20 @@ pub async fn claim_finish(
     // works regardless of whether it produces ES256, EdDSA, or RS256.
     let passkey = webauthn
         .finish_passkey_registration(&req.webauthn_response, &reg_state)
-        .map_err(|e| AppError::Authentication(format!("passkey registration failed: {e}")))?;
+        .map_err(|e| {
+            TaskError::declared(
+                FINISH_ERR_BINDING_INVALID,
+                AppError::Authentication(format!("passkey registration failed: {e}")),
+            )
+        })?;
     let admin_did = claims.admin_did.clone();
 
     // Consume the install token (Issued → Consumed). Carve-out stays
     // open until M0.6's bootstrap closes it.
-    store.finish_claim(&jti).await?;
+    store
+        .finish_claim(&jti)
+        .await
+        .map_err(token_error(FINISH_ERR_INVALID_TOKEN))?;
 
     // Persist the passkey + credential mapping so M0.6's bootstrap
     // and subsequent passkey login can find the credential.
@@ -371,7 +432,7 @@ pub async fn claim_finish(
 
     info!(jti = %jti, %admin_did, "install claim ceremony completed");
 
-    issue_setup_session(&state, signer, admin_did, &jti).await
+    Ok(issue_setup_session(&state, signer, admin_did, &jti).await?)
 }
 
 /// Mint the `setup_session_token` for `admin_did` + build the

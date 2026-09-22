@@ -2032,6 +2032,9 @@
           },
           "404": {
             "description": "Endorsement not found"
+          },
+          "409": {
+            "description": "Endorsement already revoked"
           }
         },
         "security": [
@@ -2081,8 +2084,8 @@
           "401": {
             "description": "Missing or invalid bearer token"
           },
-          "403": {
-            "description": "Directory access denied"
+          "404": {
+            "description": "No member with that DID, or nothing about them visible to this caller"
           }
         },
         "security": [
