@@ -37,7 +37,8 @@ use crate::server::AppState;
 /// the supplied `did` exists in this community. Distinct, per the
 /// specification, from a member who exists and holds no credentials — that is
 /// a successful answer with every document absent.
-pub const MEMBER_CREDENTIALS_ERR_NOT_FOUND: &str = "vtc/members/credentials:notFound";
+pub const MEMBER_CREDENTIALS_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::members::credentials::v0_1::error_codes::NOT_FOUND.code;
 
 /// Why a lookup produced no answer. Kept apart from [`AppError`] so the
 /// not-found case can carry the specification's declared code.

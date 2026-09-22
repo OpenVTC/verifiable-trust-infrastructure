@@ -178,7 +178,7 @@ fn collect_from_dir(dir: &Path, out: &mut BTreeSet<String>) {
 }
 
 /// The sweep's scope: bound ∩ published. Derived, never hand-listed.
-fn resolved_uris() -> BTreeSet<String> {
+pub(super) fn resolved_uris() -> BTreeSet<String> {
     bound_uris()
         .into_iter()
         .filter(|u| trust_tasks_rs::schema_index::schema_for(u).is_some())
