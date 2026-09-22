@@ -562,6 +562,8 @@ pub fn print_redeploy_hint(serverless: bool, did: &str) {
         Some(url) => println!("  then install it where {url} is served from."),
         None => println!("  then install it where the DID's log is served from."),
     }
+    println!("  For a community that self-hosts its DID, that is:");
+    println!("    cnm did-log install --file did.jsonl");
     println!("  Until you do, resolvers will keep returning the prior version.");
 }
 

@@ -25,6 +25,7 @@ pub mod config;
 pub mod config_store;
 pub mod credentials;
 pub mod did_key;
+pub mod did_log_install;
 #[cfg(feature = "setup")]
 pub mod emergency;
 pub mod endorsement_types;

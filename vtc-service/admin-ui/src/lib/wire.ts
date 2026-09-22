@@ -167,6 +167,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/did/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Install a delivered log for this community's own self-hosted DID.
+         * @description `utoipa::ToSchema` cannot be derived on a foreign type, so the body and the
+         *     response are the `vta_sdk::openapi` wrappers around the generated types.
+         */
+        post: operations["didRegister"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/invites": {
         parameters: {
             query?: never;
@@ -2702,6 +2723,62 @@ export interface components {
              *     from the unauth `/health` payload (P3.7).
              */
             vtaDid?: string | null;
+        };
+        DidManagementDidRegisterV0_1DidRecord: {
+            /**
+             * Format: date-time
+             * @description RFC3339 timestamp of initial reservation.
+             */
+            createdAt: string;
+            /** @description Fully-qualified DID identifier resolved from the most recent log entry (e.g. `did:webvh:<scid>:host:path`). Absent when `versionCount === 0`. */
+            didId?: string;
+            /**
+             * Format: uri
+             * @description Resolvable URL of the DID's log document (e.g. `https://did.example.com/alice/did.jsonl`). Stable across the record's lifetime: present from the initial reservation (`versionCount === 0`), it tells the owner where to publish the signed log and where resolvers fetch it. Distinct from `didId`, which only exists once a log entry has been published.
+             */
+            didUrl?: string;
+            /** @description When `true`, the DID is administratively disabled — the host serves a deactivation marker but retains content for recovery within the host's retention policy. */
+            disabled?: boolean;
+            /** @description Hosting domain (hostname) under which the DID resolves. Matches the host segment of the embedded DID identifier. */
+            domain?: string;
+            ext?: components["schemas"]["DidManagementDidRegisterV0_1Ext"];
+            /** @description DID method this record was registered under (e.g. `webvh`, `web`). When omitted, consumers MAY treat the record as legacy; SHOULD default to `webvh` only if their host predates the multi-method era. */
+            method?: string;
+            /** @description Local path under which the DID is hosted (e.g. `alice`, `tenant/staff/alice`, `.well-known`). Compared by exact string equality (SPEC.md §4.8); producers SHOULD emit canonical form. */
+            mnemonic: string;
+            /** @description VID of the party that currently owns the record. Authorization to mutate the record is anchored on this field. */
+            owner: string;
+            /** @description Lifetime resolve counter, when the host exposes per-DID statistics. */
+            totalResolves?: number;
+            /**
+             * Format: date-time
+             * @description RFC3339 timestamp of the most recent record mutation.
+             */
+            updatedAt: string;
+            /** @description Number of log entries the host currently holds for the DID. `0` indicates a reservation with no published log yet. */
+            versionCount: number;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        DidManagementDidRegisterV0_1Ext: {
+            [key: string]: unknown;
+        };
+        DidManagementDidRegisterV0_1Payload: {
+            /** @description Method-specific log content. For `webvh`, a JSONL string containing one or more signed log entries. For `web`, the DID document JSON. */
+            didData: string | Record<string, never>;
+            /** @description Optional explicit hosting domain. When omitted, the host resolves via caller ACL default → system default. */
+            domain?: string;
+            ext?: components["schemas"]["DidManagementDidRegisterV0_1Ext"];
+            /** @description Admin-takeover flag. When `true`, an existing slot owned by another party is replaced; requires administrative authority on the slot's hosting domain. Ignored when the slot is free or the caller is already the owner. */
+            force?: boolean;
+            /** @description DID method identifier (e.g. `webvh`, `web`). The shape of `didData` is method-specific. */
+            method: string;
+            /** @description Local path under which the DID is to be hosted (e.g. `alice`, `tenant/staff/alice`). `.well-known` reserves the root slot — restricted to admin callers. */
+            path: string;
+        };
+        /** @description The success response carries the canonical DidRecord the hosting service now holds for the slot. */
+        DidManagementDidRegisterV0_1Response: {
+            ext?: components["schemas"]["DidManagementDidRegisterV0_1Ext"];
+            record: components["schemas"]["DidManagementDidRegisterV0_1DidRecord"];
         };
         /**
          * @description Why a member rotated their DID, as declared at challenge time.
@@ -6317,6 +6394,65 @@ export interface operations {
             };
             /** @description Caller is not an admin */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    didRegister: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DidManagementDidRegisterV0_1Payload"];
+            };
+        };
+        responses: {
+            /** @description Log verified and now served */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DidManagementDidRegisterV0_1Response"];
+                };
+            };
+            /** @description Log does not verify, is for another DID, or targets another slot */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not a super-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description This community does not self-host its DID */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Log does not keep every served entry unchanged */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
