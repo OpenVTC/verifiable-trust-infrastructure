@@ -2,6 +2,65 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.49.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.48.0...vta-sdk-v0.49.0) — 2026-09-22
+
+
+### Added
+
+- **backup**: A backup is the whole agent, and restores between plain, hardened and TEE VTAs ([#1655](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1655))
+
+A backup now carries every row of every keyspace in vta_keyspaces::BACKED_UP
+  (format vta-backup-v2) and restores into a plain, hardened or Nitro-enclave
+  VTA from any of them. VTI-VTA-001, VTI-VTA-050, VTI-VTA-051, VTI-KEY-033.
+
+- **persona**: Wear a face here without naming a persona DID ([#1654](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1654))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#589 (design note
+  persona-context-first.md §9.7).
+
+  binding/set takes an omitted `personaDid`, and profile/compose takes
+  `wear: true`: the agent uses the persona the holder already uses in the
+  context — the one DID with a binding record there, current or cleared —
+  and names it in the response. None is refused (`noPersonaHere`),
+  several are refused (`personaAmbiguous`, naming them), and compose
+  refuses `wear` beside a `personaDid` (`wearAndPersona`). Neither task
+  mints a persona: a DID has a lifecycle of its own, and a write that could
+  half-create one would leave a published identity nobody holds.
+
+- **vtc**: Deliver an invitation to the DID it admits — pushed as an offer, or as a QR ([#1648](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1648))
+
+Keyring VTI-21 and VTI-32. `vtc/invitations/issue` returned the signed
+  invitation to the inviter once and nothing carried it further, and the
+  credential was too large for a QR code (the console said so).
+
+  `vtc/invitations/deliver/0.1` (`POST /v1/invitations/deliver`, inviter
+  roles) records a single-use OID4VCI offer for the invitation, bound to the
+  invited DID and withdrawing any earlier one, then either sends it to that
+  DID as a `credential-exchange/offer` over DIDComm (`message`; `noRoute`,
+  422, when the DID advertises no DIDComm service) or returns it (`offer`).
+  The offer names the credential rather than containing it, so it fits a QR
+  code as an `openid-credential-offer://` link.
+
+  The invitation is released only through `credential-exchange/request` with
+  a key-binding proof by the invited DID's key, so a photographed code admits
+  no one else. Two things that required:
+
+  - Key-binding proofs now verify for a holder of any DID method: the `kid`
+    resolves through the community's DID resolver (`DidVmResolver`), where
+    the verifier refused anything but a `did:key`. `redeem` and
+    `issue_on_request` take the resolver.
+  - `POST /v1/credential-exchange/request` redeems over HTTPS, for an invitee
+    with no messaging service. Unauthenticated, on the rate-limited unauth
+    chain: the proof is the authority. It answers with the
+    `credential-exchange/issue` payload a messaging binding sends on-thread.
+
+  The signed invitation is kept on its registry row so it can be delivered
+  later (never listed). Invitations issued before this cannot be delivered
+  and say to reissue. The admin console gets Send and QR-offer buttons on
+  each live invitation. AuditEvent::InvitationDelivered.
+
+
+
 ## [0.48.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.47.0...vta-sdk-v0.48.0) — 2026-09-22
 
 

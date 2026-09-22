@@ -2,6 +2,71 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.6.0...vta-persona-v0.7.0) — 2026-09-22
+
+
+### Added
+
+- **backup**: A backup is the whole agent, and restores between plain, hardened and TEE VTAs ([#1655](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1655))
+
+A backup now carries every row of every keyspace in vta_keyspaces::BACKED_UP
+  (format vta-backup-v2) and restores into a plain, hardened or Nitro-enclave
+  VTA from any of them. VTI-VTA-001, VTI-VTA-050, VTI-VTA-051, VTI-KEY-033.
+
+- **persona**: Wear a face here without naming a persona DID ([#1654](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1654))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#589 (design note
+  persona-context-first.md §9.7).
+
+  binding/set takes an omitted `personaDid`, and profile/compose takes
+  `wear: true`: the agent uses the persona the holder already uses in the
+  context — the one DID with a binding record there, current or cleared —
+  and names it in the response. None is refused (`noPersonaHere`),
+  several are refused (`personaAmbiguous`, naming them), and compose
+  refuses `wear` beside a `personaDid` (`wearAndPersona`). Neither task
+  mints a persona: a DID has a lifecycle of its own, and a write that could
+  half-create one would leave a published identity nobody holds.
+
+
+
+### Fixed
+
+- **persona**: A credential-backed value follows its credential, and fails closed ([#1653](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1653))
+
+Credential-backed attributes were never resolved against their
+  credential: not at write (persona/attribute/put rule 3,
+  `credentialNotFound`) and, worse, not on read, where the Provenance
+  contract requires the maintainer to re-derive the value and fail closed
+  once the credential is revoked, expired, archived or deleted. A revoked
+  credential's value went on being presented.
+
+  vta-persona gains `derive`: a `CredentialSource` hook the service
+  implements over the vault, so the persona crate still does not depend
+  on it. The store asks it wherever a credential-backed value is about to
+  be believed:
+  - put: resolves the credential and takes its value (the supplied one is
+    a display cache the spec lets the maintainer overwrite); one it cannot
+    back is refused. `credential_refusal` gives the dispatcher the code.
+  - resolving a face (and so materialising a binding): the credential's
+    current value, or nothing and `stale`.
+  - listing the pool: `stale` with `staleReason`, no value; a withheld
+    value stays withheld.
+  - building a preview: re-derived from the context's copy, which carries
+    the provenance; a withdrawn credential shows stale before approval.
+  - presenting: checked again, so a credential revoked between preview
+    and present is not presented.
+  A pinned kept value is withheld too once its credential is withdrawn.
+
+  vta-vault `receive::stored_claims`: the claims a stored credential
+  carries — SD-JWT-VC re-verified against its issuer and reconstructed,
+  Data-Integrity read as stored, mdoc refused. vta-service's
+  `VaultCredentials` maps held/lifecycle/status/validity window/path to a
+  value or a StaleReason; attribute/put maps a refusal to
+  `persona/attribute/put:credentialNotFound`, and reads the stored value
+  back for its correlation count.
+
+
+
 ## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.5.1...vta-persona-v0.6.0) — 2026-09-22
 
 

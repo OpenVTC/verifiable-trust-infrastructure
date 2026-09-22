@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.21.0...vta-cli-common-v0.22.0) — 2026-09-22
+
+
+### Added
+
+- **persona**: Wear a face here without naming a persona DID ([#1654](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1654))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#589 (design note
+  persona-context-first.md §9.7).
+
+  binding/set takes an omitted `personaDid`, and profile/compose takes
+  `wear: true`: the agent uses the persona the holder already uses in the
+  context — the one DID with a binding record there, current or cleared —
+  and names it in the response. None is refused (`noPersonaHere`),
+  several are refused (`personaAmbiguous`, naming them), and compose
+  refuses `wear` beside a `personaDid` (`wearAndPersona`). Neither task
+  mints a persona: a DID has a lifecycle of its own, and a write that could
+  half-create one would leave a published identity nobody holds.
+
+
+
 ## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.20.1...vta-cli-common-v0.21.0) — 2026-09-22
 
 
