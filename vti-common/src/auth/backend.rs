@@ -118,6 +118,19 @@ pub enum AuthError {
     #[error("signer DID does not match session DID")]
     SignerMismatch,
 
+    /// A proof-signed REST `auth/authenticate` document carried no in-band
+    /// `recipient`. SPEC §4.8 and §7.2 item 5 require one — without it the
+    /// document is valid at every service, which is the relay #1638 closes.
+    /// Returned as 400 (`malformedRequest`).
+    #[error("authenticate document names no recipient")]
+    MissingRecipient,
+
+    /// A proof-signed REST `auth/authenticate` document is addressed to
+    /// another service. Returned as 401 (`wrongRecipient`). Told plainly: it
+    /// is about the document the caller holds, not about who is enrolled here.
+    #[error("authenticate document is addressed to {recipient}, not to {own}")]
+    WrongRecipient { recipient: String, own: String },
+
     /// The DIDComm envelope's `created_time` is outside the freshness
     /// window. Replay defense for the DIDComm transport. Returned as
     /// 401 Unauthorized.
@@ -556,6 +569,54 @@ pub struct ChallengeInput {
     pub session_pubkey_b58btc: Option<String>,
 }
 
+/// How the document being authenticated is bound to the service that receives
+/// it (SPEC §7.2 item 5, #1638). Required on every [`AuthenticateInput`], so
+/// each sign-in path has to say which applies — a new path cannot forget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AudienceBinding {
+    /// The transport or credential binds it, and the route has checked it: an
+    /// authcrypt envelope only this service can open (DIDComm, TSP), a SIOP
+    /// `id_token` whose `aud` names this service, a WebAuthn assertion bound
+    /// to this service's RP ID.
+    Transport,
+    /// A proof-signed document over plain REST, which binds nothing by
+    /// itself: its in-band `recipient` must be this service's own DID, by
+    /// exact string equality (SPEC §4.8).
+    Recipient {
+        /// The document's `recipient`, as sent.
+        recipient: Option<String>,
+        /// This service's own DID, if it has one.
+        own_did: Option<String>,
+    },
+}
+
+impl AudienceBinding {
+    /// Refuse a document not addressed to this service.
+    pub fn check(&self) -> Result<(), AuthError> {
+        match self {
+            Self::Transport => Ok(()),
+            Self::Recipient { recipient, own_did } => {
+                let own = own_did.as_deref().ok_or_else(|| {
+                    AuthError::Internal(
+                        "this service has no DID configured, so a signed sign-in cannot be \
+                         addressed to it"
+                            .into(),
+                    )
+                })?;
+                match recipient.as_deref() {
+                    None => Err(AuthError::MissingRecipient),
+                    Some(r) if r == own => Ok(()),
+                    Some(r) => Err(AuthError::WrongRecipient {
+                        recipient: r.to_string(),
+                        own: own.to_string(),
+                    }),
+                }
+            }
+        }
+    }
+}
+
 /// Inputs to `/auth/authenticate` after the transport layer has
 /// verified the signer.
 ///
@@ -584,6 +645,9 @@ pub struct AuthenticateInput {
     /// shape-validation (e.g. `z6Mk…` Ed25519 multikey prefix)
     /// before passing it in.
     pub session_pubkey_b58btc: Option<String>,
+    /// How this document is bound to this service. Checked before anything
+    /// else, so a document addressed elsewhere learns nothing about sessions.
+    pub audience: AudienceBinding,
 }
 
 /// Inputs to `/auth/refresh` after the transport layer has
@@ -597,4 +661,50 @@ pub struct RefreshInput {
     /// when the transport offers no signer assertion (i.e. plain
     /// REST refresh, where the token itself is the only credential).
     pub signer_did: Option<String>,
+}
+
+#[cfg(test)]
+mod audience_tests {
+    use super::{AudienceBinding, AuthError};
+
+    fn recipient(r: Option<&str>, own: Option<&str>) -> AudienceBinding {
+        AudienceBinding::Recipient {
+            recipient: r.map(String::from),
+            own_did: own.map(String::from),
+        }
+    }
+
+    /// #1638 / SPEC §7.2 item 5: accepted only when addressed to this service.
+    #[test]
+    fn a_signed_document_must_be_addressed_to_this_service() {
+        assert!(
+            recipient(Some("did:key:zMe"), Some("did:key:zMe"))
+                .check()
+                .is_ok()
+        );
+        assert!(matches!(
+            recipient(Some("did:key:zOther"), Some("did:key:zMe")).check(),
+            Err(AuthError::WrongRecipient { .. })
+        ));
+        assert!(matches!(
+            recipient(None, Some("did:key:zMe")).check(),
+            Err(AuthError::MissingRecipient)
+        ));
+        // Exact string equality: no normalisation (SPEC §4.8).
+        assert!(
+            recipient(Some("did:key:zMe "), Some("did:key:zMe"))
+                .check()
+                .is_err()
+        );
+        // A service with no DID cannot be addressed at all.
+        assert!(matches!(
+            recipient(Some("did:key:zMe"), None).check(),
+            Err(AuthError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn a_transport_binding_needs_no_recipient() {
+        assert!(AudienceBinding::Transport.check().is_ok());
+    }
 }

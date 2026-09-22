@@ -166,7 +166,7 @@ async fn di_signed_trust_task_authenticates_over_rest() {
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
-        "did:key:z6MkTestVta",
+        &ctx.vta_did,
         challenge,
         session_id,
     )
@@ -223,7 +223,7 @@ async fn di_signed_trust_task_with_tampered_challenge_is_rejected() {
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
-        "did:key:z6MkTestVta",
+        &ctx.vta_did,
         "the-real-challenge",
         session_id,
     )
@@ -469,4 +469,88 @@ async fn test_app_context_exposes_required_keyspaces() {
     let _sessions = ctx.sessions_ks.clone();
     let _acl = ctx.acl_ks.clone();
     let _jwt = ctx.jwt_keys.clone();
+}
+
+fn post_doc(doc: String) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/auth/")
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", "203.0.113.1")
+        .body(Body::from(doc))
+        .unwrap()
+}
+
+/// #1638, the relay: a signed authenticate document addressed to another
+/// service is refused here (`wrongRecipient`) though its proof and challenge
+/// are good, and the refusal leaves the session for the holder to use.
+#[tokio::test]
+async fn a_document_addressed_to_another_service_is_refused() {
+    let (router, ctx) = build_test_app().await;
+    let (did, key) = did_key_from_seed(0x5c);
+    let entry = vti_common::acl::AclEntry::new(&did, vti_common::acl::Role::Admin, "test")
+        .with_created_at(1);
+    vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
+        .await
+        .unwrap();
+    let (_, ch) = request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
+    let (challenge, session_id) = (
+        ch["challenge"].as_str().unwrap(),
+        ch["sessionId"].as_str().unwrap(),
+    );
+
+    let relayed = vta_sdk::auth_di::sign_authenticate_doc(
+        &did,
+        &key,
+        "did:key:z6MkSomeOtherService",
+        challenge,
+        session_id,
+    )
+    .await
+    .unwrap();
+    let (status, body) = request(&router, post_doc(relayed)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(body.to_string().contains("wrongRecipient"), "{body}");
+    assert!(body["payload"].get("tokens").is_none(), "{body}");
+
+    let addressed =
+        vta_sdk::auth_di::sign_authenticate_doc(&did, &key, &ctx.vta_did, challenge, session_id)
+            .await
+            .unwrap();
+    let (status, body) = request(&router, post_doc(addressed)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the session survives the refusal: {body}"
+    );
+}
+
+/// #1638: a signed authenticate document naming no `recipient` is valid at
+/// every service, so it is refused as `malformedRequest` (SPEC §7.2 item 5).
+#[tokio::test]
+async fn a_document_with_no_recipient_is_malformed() {
+    let (router, ctx) = build_test_app().await;
+    let (did, key) = did_key_from_seed(0x5d);
+    let entry = vti_common::acl::AclEntry::new(&did, vti_common::acl::Role::Admin, "test")
+        .with_created_at(1);
+    vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
+        .await
+        .unwrap();
+    let (_, ch) = request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
+
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        "https://trusttasks.org/spec/auth/authenticate/0.1",
+        json!({ "challenge": ch["challenge"], "sessionId": ch["sessionId"], "scope": [] }),
+        &did,
+        "unused",
+    )
+    .unwrap();
+    doc.recipient = None;
+    vta_sdk::trust_task_sign::sign_in_place(&mut doc, &did, &key)
+        .await
+        .unwrap();
+
+    let (status, body) = request(&router, post_doc(serde_json::to_string(&doc).unwrap())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("malformedRequest"), "{body}");
 }

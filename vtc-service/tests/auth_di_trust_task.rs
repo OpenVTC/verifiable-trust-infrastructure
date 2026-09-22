@@ -18,6 +18,20 @@ use serde_json::{Value, json};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::MockVtc;
 
+/// The mock VTC's own DID. A signed authenticate document must name it as
+/// `recipient` (#1638) — a placeholder here would be refused as addressed
+/// to another service, which is exactly what the check is for.
+async fn vtc_did(mock: &MockVtc) -> String {
+    mock.vtc
+        .state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .expect("the mock VTC has a DID")
+}
+
 const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/auth/challenge/0.1";
 const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
 const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
@@ -86,7 +100,7 @@ async fn di_signed_trust_task_authenticates_over_rest() {
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
-        "did:key:z6MkVtcUnderTest",
+        &vtc_did(&mock).await,
         &challenge,
         &session_id,
     )
@@ -141,7 +155,7 @@ async fn di_login_then_trust_task_refresh_round_trips() {
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
-        "did:key:z6MkVtcUnderTest",
+        &vtc_did(&mock).await,
         &challenge,
         &session_id,
     )
@@ -165,7 +179,7 @@ async fn di_login_then_trust_task_refresh_round_trips() {
         .to_string();
 
     let refresh_doc =
-        vta_sdk::auth_di::build_refresh_doc(&did, "did:key:z6MkVtcUnderTest", &refresh_token)
+        vta_sdk::auth_di::build_refresh_doc(&did, &vtc_did(&mock).await, &refresh_token)
             .expect("build refresh document");
     let resp = client
         .post(format!("{base}/v1/auth/refresh"))
@@ -211,7 +225,7 @@ async fn tampered_challenge_is_rejected() {
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
-        "did:key:z6MkVtcUnderTest",
+        &vtc_did(&mock).await,
         // Sign over a *different* challenge, then swap the real one in.
         "0000000000000000000000000000000000000000",
         &session_id,
@@ -295,6 +309,103 @@ async fn unsigned_authenticate_document_is_not_claimed_by_the_di_path() {
         !err.contains("proof verification failed"),
         "the unsigned body must fall through, not be claimed and proof-rejected: {body}"
     );
+
+    mock.shutdown().await;
+}
+
+async fn post_authenticate(
+    client: &reqwest::Client,
+    base: &str,
+    doc: String,
+) -> (StatusCode, Value) {
+    let resp = client
+        .post(format!("{base}/v1/auth/"))
+        .header("Trust-Task", AUTHENTICATE_TASK)
+        .header("content-type", "application/json")
+        .body(doc)
+        .send()
+        .await
+        .expect("POST /v1/auth/");
+    let status = resp.status();
+    (status, resp.json().await.unwrap_or_else(|_| json!({})))
+}
+
+/// #1638, the relay: a signed authenticate document addressed to another
+/// service is refused here (`wrongRecipient`), however valid its proof and
+/// challenge — and the refusal leaves the session intact, so the holder can
+/// still sign in with a document addressed to this VTC.
+#[tokio::test]
+async fn a_document_addressed_to_another_service_is_refused() {
+    let mock = MockVtc::start().await;
+    let base = mock.base_url().to_string();
+    let client = reqwest::Client::new();
+    let (did, key) = did_key_from_seed(0x7e);
+    store_acl_entry(&mock.vtc.state.acl_ks, &admin_entry(&did))
+        .await
+        .unwrap();
+    let (challenge, session_id) = get_challenge(&client, &base, &did).await;
+
+    // Signed for a different service — what a relaying service would hold.
+    let relayed = vta_sdk::auth_di::sign_authenticate_doc(
+        &did,
+        &key,
+        "did:key:z6MkSomeOtherService",
+        &challenge,
+        &session_id,
+    )
+    .await
+    .unwrap();
+    let (status, body) = post_authenticate(&client, &base, relayed).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(body.to_string().contains("wrongRecipient"), "{body}");
+    assert!(body.get("tokens").is_none(), "{body}");
+
+    // The session was not consumed by the refusal.
+    let addressed = vta_sdk::auth_di::sign_authenticate_doc(
+        &did,
+        &key,
+        &vtc_did(&mock).await,
+        &challenge,
+        &session_id,
+    )
+    .await
+    .unwrap();
+    let (status, body) = post_authenticate(&client, &base, addressed).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    mock.shutdown().await;
+}
+
+/// #1638: a signed authenticate document naming no `recipient` is valid at
+/// every service, so it is refused as `malformedRequest` (SPEC §7.2 item 5).
+#[tokio::test]
+async fn a_document_with_no_recipient_is_malformed() {
+    let mock = MockVtc::start().await;
+    let base = mock.base_url().to_string();
+    let client = reqwest::Client::new();
+    let (did, key) = did_key_from_seed(0x7f);
+    store_acl_entry(&mock.vtc.state.acl_ks, &admin_entry(&did))
+        .await
+        .unwrap();
+    let (challenge, session_id) = get_challenge(&client, &base, &did).await;
+
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        AUTHENTICATE_TASK,
+        json!({ "challenge": challenge, "sessionId": session_id, "scope": [] }),
+        &did,
+        "unused",
+    )
+    .unwrap();
+    doc.recipient = None;
+    vta_sdk::trust_task_sign::sign_in_place(&mut doc, &did, &key)
+        .await
+        .unwrap();
+
+    let (status, body) =
+        post_authenticate(&client, &base, serde_json::to_string(&doc).unwrap()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("malformedRequest"), "{body}");
+    assert!(body.get("tokens").is_none(), "{body}");
 
     mock.shutdown().await;
 }

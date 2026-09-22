@@ -209,6 +209,7 @@ pub async fn authenticate(
             // 2026 security review.
             created_time: msg.created_time,
             session_pubkey_b58btc: None,
+            audience: vti_common::auth::AudienceBinding::Transport,
         },
     )
     .await?;
@@ -267,6 +268,12 @@ async fn try_authenticate_trust_task(
             // treats `None` as a no-op freshness check, same as REST SIOPv2).
             created_time: None,
             session_pubkey_b58btc: None,
+            // Proof-signed over plain REST: nothing binds the document to this
+            // service except its `recipient` (SPEC §7.2 item 5, #1638).
+            audience: vti_common::auth::AudienceBinding::Recipient {
+                recipient: doc.recipient.clone(),
+                own_did: state.config.read().await.vta_did.clone(),
+            },
         },
     )
     .await?;
@@ -778,6 +785,7 @@ pub async fn passkey_login_finish(
             signer_did: session.did.clone(),
             created_time: None,
             session_pubkey_b58btc: None,
+            audience: vti_common::auth::AudienceBinding::Transport,
         },
         vec!["did".to_string(), "passkey".to_string()],
         "aal2".to_string(),

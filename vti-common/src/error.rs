@@ -233,6 +233,16 @@ impl From<crate::auth::backend::AuthError> for AppError {
                     "session signed out after the configured period of inactivity".into(),
                 )
             }
+            // SPEC §8.3 names both, so the message leads with the code.
+            A::MissingRecipient => AppError::Validation(
+                "malformedRequest: a signed auth/authenticate document must name this service \
+                 as its `recipient` (SPEC §7.2 item 5)"
+                    .into(),
+            ),
+            A::WrongRecipient { recipient, own } => AppError::Authentication(format!(
+                "wrongRecipient: this document is addressed to {recipient}, not to this \
+                 service ({own})"
+            )),
             A::AttestationFailed(msg) => AppError::Internal(format!("tee attestation: {msg}")),
             A::Internal(msg) => AppError::Internal(msg),
             // Deliberately no wildcard arm. `AuthError` is

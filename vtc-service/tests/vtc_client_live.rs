@@ -20,6 +20,20 @@ use vtc_client::VtcClient;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::MockVtc;
 
+/// The mock VTC's own DID. A signed authenticate document must name it as
+/// `recipient` (#1638) — a placeholder here would be refused as addressed
+/// to another service, which is exactly what the check is for.
+async fn vtc_did(mock: &MockVtc) -> String {
+    mock.vtc
+        .state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .expect("the mock VTC has a DID")
+}
+
 fn admin_entry(did: &str) -> VtcAclEntry {
     VtcAclEntry {
         did: did.into(),
@@ -99,14 +113,9 @@ async fn vetting_admin_verbs_round_trip() {
     .await
     .expect("seed member acl row");
 
-    let client = VtcClient::connect(
-        &base,
-        "did:key:z6MkVtcUnderTest",
-        &admin,
-        &private_key_multibase,
-    )
-    .await
-    .expect("connect");
+    let client = VtcClient::connect(&base, &vtc_did(&mock).await, &admin, &private_key_multibase)
+        .await
+        .expect("connect");
 
     // Grant converges: the second call returns the first grant.
     let grant = |payload: serde_json::Value| {
@@ -210,14 +219,9 @@ async fn connect_then_list_members_round_trips() {
         .await
         .expect("seed admin acl row");
 
-    let client = VtcClient::connect(
-        &base,
-        "did:key:z6MkVtcUnderTest",
-        &did,
-        &private_key_multibase,
-    )
-    .await
-    .expect("connect must authenticate against a live VTC");
+    let client = VtcClient::connect(&base, &vtc_did(&mock).await, &did, &private_key_multibase)
+        .await
+        .expect("connect must authenticate against a live VTC");
 
     // An authenticated admin read. A fresh community has no members; the point
     // is that the call is *accepted* — a missing Trust-Task header would be a
@@ -252,14 +256,9 @@ async fn join_queue_reads_and_decide_reaches_the_handler() {
         .await
         .expect("seed admin acl row");
 
-    let client = VtcClient::connect(
-        &base,
-        "did:key:z6MkVtcUnderTest",
-        &did,
-        &private_key_multibase,
-    )
-    .await
-    .expect("connect");
+    let client = VtcClient::connect(&base, &vtc_did(&mock).await, &did, &private_key_multibase)
+        .await
+        .expect("connect");
 
     let queue = client
         .list_join_requests(Some("pending"))
@@ -454,14 +453,9 @@ async fn admin_client(mock: &MockVtc, seed: u8) -> VtcClient {
     store_acl_entry(&mock.vtc.state.acl_ks, &admin_entry(&did))
         .await
         .expect("seed admin acl row");
-    VtcClient::connect(
-        &base,
-        "did:key:z6MkVtcUnderTest",
-        &did,
-        &private_key_multibase,
-    )
-    .await
-    .expect("connect")
+    VtcClient::connect(&base, &vtc_did(mock).await, &did, &private_key_multibase)
+        .await
+        .expect("connect")
 }
 
 /// `upload_policy` sends the canonical `policy/upsert/0.2` body the VTC's
