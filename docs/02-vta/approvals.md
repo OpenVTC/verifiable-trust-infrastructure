@@ -10,6 +10,11 @@ Rules live in the VTA's policy keyspace and are edited at runtime with
 Trust Tasks rather than a REST-only endpoint — no requirement that the VTA
 advertise REST at all.
 
+> **Approvals are opt-in, and off by default.** Rules are only enforced when
+> `policy.enforcement = true` is set in `config.toml` — a one-time config edit
+> and restart. Until then a rule is stored, listed and explained, and gates
+> nothing. See [Enforcement](#enforcement).
+
 ## The two kinds of requirement
 
 | | `reauth` | `consent` |
@@ -125,10 +130,32 @@ declared protections do not work.
 
 ## Enforcement
 
-Rules are evaluated by the Policy Decision Point, which is on only when
-`policy.enforcement = true`. With it off, rules are inert — they are stored and
-listed, and nothing consults them. Check it before concluding that a rule is
-protecting you.
+Enforcement is **opt-in** and **off by default**. Rules are evaluated by the
+Policy Decision Point, which is on only when `policy.enforcement = true`. With
+it off, rules are inert — they are stored and listed, and nothing consults
+them. Check it before concluding that a rule is protecting you.
+
+Turn it on in `config.toml` and restart the VTA (it is not a runtime
+`config/patch` key):
+
+```toml
+[policy]
+enforcement = true
+```
+
+The default stays off deliberately: turning it on for every existing
+deployment would make every policy written but not meant to be in force a gate
+at the next upgrade. The boot-installed baseline allows current flows, so
+enabling enforcement changes nothing until a rule or hand-authored policy
+exists.
+
+So that an inert rule is not mistaken for a working one, a VTA that boots with
+enforcement off while approval rules or enabled hand-authored policies are
+stored logs a `WARN` naming them and this setting:
+
+```
+WARN policy.enforcement is off, so 1 approval rule (`pnm approvals list`) is stored but NOT enforced — every task runs on the caller's own authority. Enforcement is opt-in: set `enforcement = true` under `[policy]` in config.toml and restart the VTA to apply it. …
+```
 
 ## Hand-authored policy
 

@@ -158,6 +158,57 @@ pub async fn remove_stale_config_consent_policy(
     storage::delete_policy(policy_ks, CONFIG_CONSENT_POLICY_ID).await
 }
 
+/// Policy the operator has written that would gate tasks if enforcement were on.
+///
+/// Returned by [`unenforced_policies`] so the boot path can say, loudly, that a
+/// control the operator believes is protecting them is being ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UnenforcedPolicies {
+    /// Approval rules on the enabled declarative row (`pnm approvals`).
+    pub approval_rules: usize,
+    /// Ids of enabled hand-authored rows (`pnm policy upsert`) — everything
+    /// except the boot-installed baseline and the declarative row.
+    pub operator_policies: Vec<String>,
+}
+
+impl UnenforcedPolicies {
+    /// Nothing an operator wrote would gate anything.
+    pub fn is_empty(&self) -> bool {
+        self.approval_rules == 0 && self.operator_policies.is_empty()
+    }
+}
+
+/// What operator-written policy is present in the keyspace.
+///
+/// The PDP is consulted only when `policy.enforcement = true`, and that stays
+/// off by default: flipping it would turn every written-but-not-intended policy
+/// into a gate across existing deployments. The cost of that default is that a
+/// rule written with `pnm approvals require` is stored, listed and explained,
+/// and then silently does nothing (Keyring KR-22). The boot path calls this when
+/// enforcement is off and warns if it is non-empty.
+///
+/// The boot-installed baseline does not count (it is permissive and always
+/// present), nor does a disabled row, nor a declarative row carrying approver
+/// sets but no rules — none of them would gate a task with enforcement on.
+pub async fn unenforced_policies(
+    policy_ks: &KeyspaceHandle,
+) -> Result<UnenforcedPolicies, AppError> {
+    let mut out = UnenforcedPolicies::default();
+    for row in storage::list_policies(policy_ks).await? {
+        if !row.enabled || row.id == DEFAULT_POLICY_ID {
+            continue;
+        }
+        if row.id == vta_sdk::approvals::DECLARATIVE_POLICY_ID {
+            out.approval_rules = super::approvals::model_from_ext(&row.ext)?.rules.len();
+        } else {
+            out.operator_policies.push(row.id);
+        }
+    }
+    out.operator_policies.sort();
+    Ok(out)
+}
+
 // `rego_string` lived here — the escaper that kept an operator's config strings
 // from breaking out of the Rego literals `synthesize_consent_rego` built around
 // them. Both are gone with the config trigger. The declarative approvals row
@@ -472,5 +523,77 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    // ── KR-22: policy written while enforcement is off ─────────────────────
+
+    fn operator_row(id: &str, enabled: bool) -> PolicyModule {
+        PolicyModule {
+            id: id.into(),
+            name: id.into(),
+            description: None,
+            module: "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"deny\"}"
+                .into(),
+            applies_to: vec![],
+            priority: 100,
+            enabled,
+            version: 1,
+            created_at: "x".into(),
+            updated_at: "x".into(),
+            ext: serde_json::Value::Null,
+        }
+    }
+
+    /// A fresh VTA carries only the permissive baseline: nothing to warn about.
+    #[tokio::test]
+    async fn kr22_the_baseline_alone_is_not_unenforced_policy() {
+        let (ks, _d) = temp_ks().await;
+        install_default_policy(&ks, "2026-09-22T00:00:00Z")
+            .await
+            .unwrap();
+        assert!(unenforced_policies(&ks).await.unwrap().is_empty());
+    }
+
+    /// Approval rules and hand-authored rows are both reported; disabled rows
+    /// are not, because they would gate nothing with enforcement on either.
+    #[tokio::test]
+    async fn kr22_reports_approval_rules_and_enabled_operator_rows() {
+        let (ks, _d) = temp_ks().await;
+        install_default_policy(&ks, "2026-09-22T00:00:00Z")
+            .await
+            .unwrap();
+        seed_declarative_approvals(
+            &ks,
+            &seed_rules(),
+            &Default::default(),
+            "2026-09-22T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        storage::store_policy(&ks, &operator_row("after-hours", true))
+            .await
+            .unwrap();
+        storage::store_policy(&ks, &operator_row("parked", false))
+            .await
+            .unwrap();
+
+        let found = unenforced_policies(&ks).await.unwrap();
+        assert_eq!(found.approval_rules, 1);
+        assert_eq!(found.operator_policies, vec!["after-hours".to_string()]);
+        assert!(!found.is_empty());
+    }
+
+    /// A declarative row holding approver sets but no rules gates nothing.
+    #[tokio::test]
+    async fn kr22_approver_sets_without_rules_are_not_reported() {
+        let (ks, _d) = temp_ks().await;
+        let sets = std::collections::HashMap::from([(
+            "ops".to_string(),
+            vec!["did:key:z6MkOps".to_string()],
+        )]);
+        seed_declarative_approvals(&ks, &[], &sets, "2026-09-22T00:00:00Z")
+            .await
+            .unwrap();
+        assert!(unenforced_policies(&ks).await.unwrap().is_empty());
     }
 }

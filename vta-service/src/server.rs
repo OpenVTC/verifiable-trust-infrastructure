@@ -1102,6 +1102,18 @@ pub async fn run(
                 )
                 .await?;
             }
+
+            // Enforcement is opt-in and stays off by default (flipping it would
+            // turn every written-but-unintended policy into a gate on upgrade).
+            // The cost is that a rule written with `pnm approvals` is stored,
+            // listed and explained, then silently ignored — so say so at boot
+            // (Keyring KR-22). Advisory only: a failure to read the rows must
+            // not stop the VTA starting. The flag is copied out so the config
+            // lock is not held across the keyspace read.
+            let enforcement = app_state.config.read().await.policy.enforcement;
+            if !enforcement {
+                warn_if_policies_unenforced(&app_state.policy_ks).await;
+            }
         }
 
         // Fail-closed on missing identity (P0.9b). `init_auth` (inside
@@ -1784,6 +1796,65 @@ impl AuthInit {
             ka_vm_id: None,
         }
     }
+}
+
+/// Warn at boot when operator-written policy exists but `policy.enforcement`
+/// is off, so nothing consults it (Keyring KR-22).
+///
+/// Advisory only: a failure to read the policy rows is itself logged and the
+/// VTA carries on starting — this must never be the reason a VTA will not boot.
+#[cfg(any(feature = "rest", feature = "didcomm"))]
+async fn warn_if_policies_unenforced(policy_ks: &KeyspaceHandle) {
+    match vta_policy::unenforced_policies(policy_ks).await {
+        Ok(found) if found.is_empty() => {}
+        Ok(found) => tracing::warn!(
+            approval_rules = found.approval_rules,
+            operator_policies = ?found.operator_policies,
+            "{}",
+            unenforced_policies_message(&found)
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "could not check the policy keyspace for rules that enforcement would apply"
+        ),
+    }
+}
+
+/// The operator-facing text for [`warn_if_policies_unenforced`]: what is being
+/// ignored, and the exact change that turns it on.
+#[cfg(any(feature = "rest", feature = "didcomm"))]
+fn unenforced_policies_message(found: &vta_policy::UnenforcedPolicies) -> String {
+    let mut what = Vec::new();
+    if found.approval_rules > 0 {
+        what.push(format!(
+            "{} approval rule{} (`pnm approvals list`)",
+            found.approval_rules,
+            if found.approval_rules == 1 { "" } else { "s" }
+        ));
+    }
+    if !found.operator_policies.is_empty() {
+        what.push(format!(
+            "hand-authored polic{} {} (`pnm policy list`)",
+            if found.operator_policies.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            found.operator_policies.join(", ")
+        ));
+    }
+    format!(
+        "policy.enforcement is off, so {} {} stored but NOT enforced — every task runs on the \
+         caller's own authority. Enforcement is opt-in: set `enforcement = true` under \
+         `[policy]` in config.toml and restart the VTA to apply it. See \
+         docs/02-vta/approvals.md#enforcement.",
+        what.join(" and "),
+        if found.approval_rules + found.operator_policies.len() == 1 {
+            "is"
+        } else {
+            "are"
+        }
+    )
 }
 
 /// Build the operator-facing boot-refusal message for the missing-identity
@@ -2992,5 +3063,53 @@ mod tsp_build_tests {
         assert!(tsp_configured_but_unbuilt(false, false).is_none());
         assert!(tsp_configured_but_unbuilt(false, true).is_none());
         assert!(tsp_configured_but_unbuilt(true, true).is_none());
+    }
+}
+
+#[cfg(all(test, any(feature = "rest", feature = "didcomm")))]
+mod unenforced_policy_tests {
+    use super::unenforced_policies_message;
+    use crate::store::Store;
+    use vti_common::config::StoreConfig;
+
+    /// Keyring KR-22: a rule written while enforcement is off is stored and then
+    /// silently ignored. The boot warning must name what is being ignored and
+    /// the exact change that turns enforcement on.
+    #[tokio::test]
+    async fn kr22_warning_names_the_rules_and_how_to_enable_enforcement() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(vta_keyspaces::POLICY).unwrap();
+        let now = "2026-09-22T00:00:00Z";
+        vta_policy::install_default_policy(&ks, now).await.unwrap();
+        assert!(
+            vta_policy::unenforced_policies(&ks)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the boot-installed baseline alone must not trigger the warning"
+        );
+
+        vta_policy::seed_declarative_approvals(
+            &ks,
+            &[vta_sdk::approvals::ApprovalRule::reauth(
+                "https://trusttasks.org/spec/acl/grant/0.1",
+            )],
+            &Default::default(),
+            now,
+        )
+        .await
+        .unwrap();
+
+        let found = vta_policy::unenforced_policies(&ks).await.unwrap();
+        let msg = unenforced_policies_message(&found);
+        assert!(msg.contains("1 approval rule "), "{msg}");
+        assert!(msg.contains("NOT enforced"), "{msg}");
+        assert!(msg.contains("`enforcement = true`"), "{msg}");
+        assert!(msg.contains("[policy]"), "{msg}");
+        assert!(msg.contains("restart"), "{msg}");
     }
 }
