@@ -470,3 +470,171 @@ async fn wrong_trust_task_header_returns_415() {
     .await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
+
+// ---------------------------------------------------------------------------
+// #1600 — the codes `vtc/install/claim/{start,finish}/0.2` declare, read from
+// the generated bindings.
+// ---------------------------------------------------------------------------
+
+use trust_tasks_rs::specs::vtc::install::claim as claim_spec;
+
+const START_ERR_INVALID_TOKEN: &str = claim_spec::start::v0_2::error_codes::INVALID_TOKEN.code;
+const FINISH_ERR_INVALID_TOKEN: &str = claim_spec::finish::v0_2::error_codes::INVALID_TOKEN.code;
+const FINISH_ERR_REGISTRATION_MISMATCH: &str =
+    claim_spec::finish::v0_2::error_codes::REGISTRATION_MISMATCH.code;
+const FINISH_ERR_BINDING_INVALID: &str =
+    claim_spec::finish::v0_2::error_codes::BINDING_INVALID.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// A token that is not ours, one we never recorded, and one already consumed
+/// are each `invalidToken` (401, unchanged). A missing claim secret is not a
+/// token fault and keeps its own undeclared `claim_secret_required`, and a
+/// second concurrent start stays the undeclared 409.
+#[tokio::test]
+async fn the_claim_start_task_answers_with_the_code_its_spec_declares() {
+    let fix = build_fixture(Some(RP_ORIGIN), true).await;
+    let start = |token: String| {
+        let router = fix.router.clone();
+        async move {
+            post_json(
+                &router,
+                "/v1/install/claim/start",
+                START_TASK,
+                json!({ "installToken": token }),
+            )
+            .await
+        }
+    };
+
+    let (status, body) = start("not.a.real.jwt".into()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(rest_error_code(&body), START_ERR_INVALID_TOKEN, "{body}");
+
+    let unrecorded = mint_install_token(
+        &fix.install_signer,
+        "did:webvh:vtc.example.com:abc",
+        "did:key:z6MkAdmin",
+        600,
+    )
+    .unwrap();
+    let (status, body) = start(unrecorded.jwt).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(rest_error_code(&body), START_ERR_INVALID_TOKEN, "{body}");
+
+    // Consumed: run the whole ceremony, then start again.
+    let (token, _jti) = mint_token_and_record(&fix, 600).await;
+    let (status, body) = start(token.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let registration_id = body["registrationId"].as_str().unwrap().to_string();
+    let mut authenticator = SoftEd25519Authenticator::new();
+    let (register_cred, _pub) = authenticator.register(&parse_ccr(&body), RP_ORIGIN);
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/install/claim/finish",
+        FINISH_TASK,
+        json!({
+            "installToken": token,
+            "registrationId": registration_id,
+            "webauthnResponse": register_cred,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = start(token).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(rest_error_code(&body), START_ERR_INVALID_TOKEN, "{body}");
+
+    // A concurrent-ceremony lock is not a token fault.
+    let (token, _jti) = mint_token_and_record(&fix, 600).await;
+    let (status, _) = start(token.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = start(token).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(rest_error_code(&body), "", "{body}");
+}
+
+/// Finish distinguishes the token (`invalidToken`), the enrolment it names
+/// (`registrationMismatch`) and the WebAuthn attestation (`bindingInvalid`).
+/// Every status is the 401 it was.
+#[tokio::test]
+async fn the_claim_finish_task_answers_with_the_codes_its_spec_declares() {
+    let fix = build_fixture(Some(RP_ORIGIN), true).await;
+    let dummy_cred = json!({
+        "id": "AAAA",
+        "rawId": "AAAA",
+        "response": { "attestationObject": "AA", "clientDataJSON": "AA" },
+        "type": "public-key"
+    });
+    let finish = |token: String, registration_id: String, cred: Value| {
+        let router = fix.router.clone();
+        async move {
+            post_json(
+                &router,
+                "/v1/install/claim/finish",
+                FINISH_TASK,
+                json!({
+                    "installToken": token,
+                    "registrationId": registration_id,
+                    "webauthnResponse": cred,
+                }),
+            )
+            .await
+        }
+    };
+
+    // invalidToken: not a token this community signed.
+    let (status, body) = finish(
+        "not.a.real.jwt".into(),
+        Uuid::new_v4().to_string(),
+        dummy_cred.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(rest_error_code(&body), FINISH_ERR_INVALID_TOKEN, "{body}");
+
+    // registrationMismatch: no enrolment was ever opened for this token.
+    let (token, jti) = mint_token_and_record(&fix, 600).await;
+    let (status, body) = finish(token.clone(), jti.to_string(), dummy_cred.clone()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        FINISH_ERR_REGISTRATION_MISMATCH,
+        "{body}"
+    );
+
+    // Open the enrolment, then name a different one, and one that is not an id.
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/install/claim/start",
+        START_TASK,
+        json!({ "installToken": token }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ccr = parse_ccr(&body);
+    for other in [Uuid::new_v4().to_string(), "not-a-registration".to_string()] {
+        let (status, body) = finish(token.clone(), other.clone(), dummy_cred.clone()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{other}: {body}");
+        assert_eq!(
+            rest_error_code(&body),
+            FINISH_ERR_REGISTRATION_MISMATCH,
+            "{other}: {body}"
+        );
+    }
+
+    // bindingInvalid: an attestation made for another origin.
+    let mut authenticator = SoftEd25519Authenticator::new();
+    let (wrong_origin, _pub) = authenticator.register(&ccr, "https://evil.example.com");
+    let (status, body) = finish(
+        token,
+        jti.to_string(),
+        serde_json::to_value(&wrong_origin).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(rest_error_code(&body), FINISH_ERR_BINDING_INVALID, "{body}");
+}

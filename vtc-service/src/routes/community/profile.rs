@@ -230,6 +230,12 @@ pub struct UpdateProfileResponse {
     pub fields_changed: Vec<String>,
 }
 
+/// `vtc/community/profile/update:validationFailed` — a supplied field failed
+/// validation.
+pub const PROFILE_UPDATE_ERR_VALIDATION_FAILED: &str =
+    trust_tasks_rs::specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED
+        .code;
+
 /// PUT handler. Admin-only. Refuses changes to `community_did`.
 ///
 /// Emits a `CommunityProfileUpdated` audit event keyed to the
@@ -255,13 +261,18 @@ pub async fn put_profile(
     admin: AdminAuth,
     State(state): State<AppState>,
     Json(update): Json<CommunityProfileUpdate>,
-) -> Result<(StatusCode, Json<UpdateProfileResponse>), AppError> {
+) -> Result<(StatusCode, Json<UpdateProfileResponse>), crate::error::TaskError> {
+    use crate::error::TaskError;
     let mut profile = load_profile(&state.community_ks).await?.ok_or_else(|| {
         AppError::NotFound("community profile not initialised — cannot PUT before bootstrap".into())
     })?;
 
     let prior = profile.clone();
-    let fields_changed = update.apply(&mut profile)?;
+    // Every refusal `apply` makes is a field failing validation.
+    let fields_changed = update.apply(&mut profile).map_err(|e| match e {
+        e @ AppError::Validation(_) => TaskError::declared(PROFILE_UPDATE_ERR_VALIDATION_FAILED, e),
+        e => TaskError::App(e),
+    })?;
 
     if fields_changed.is_empty() {
         // Nothing changed — return 200 with the existing profile.

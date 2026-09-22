@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::SuperAdminAuth;
 use crate::backup::{self, BackupEnvelope, ImportResult};
+use crate::error::TaskError;
 use crate::keys::seed_store::create_secret_store;
 use crate::server::AppState;
 use crate::store::keyspaces;
 use vti_common::audit::{AuditEvent, BackupData};
-use vti_common::error::AppError;
 
 /// `POST /v1/backup/export` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -69,7 +69,7 @@ pub async fn export(
     SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<ExportRequest>,
-) -> Result<Json<ExportResponse>, AppError> {
+) -> Result<Json<ExportResponse>, TaskError> {
     let store = create_secret_store(&*state.config.read().await)?;
     let envelope =
         backup::export_backup(&state, store.as_ref(), &req.password, req.include_audit).await?;
@@ -104,7 +104,7 @@ pub async fn import(
     SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<ImportRequest>,
-) -> Result<Json<ImportResult>, AppError> {
+) -> Result<Json<ImportResult>, TaskError> {
     let store = create_secret_store(&*state.config.read().await)?;
     let result = backup::import_backup(
         &state,

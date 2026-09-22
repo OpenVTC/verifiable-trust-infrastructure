@@ -7955,6 +7955,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Endorsement already revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     query: {
@@ -7987,8 +7994,8 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Directory access denied */
-            403: {
+            /** @description No member with that DID, or nothing about them visible to this caller */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

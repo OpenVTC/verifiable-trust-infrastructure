@@ -230,21 +230,89 @@ async fn unauthenticated_is_rejected() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// An admin viewer querying a non-member subject gets only the echoed
-/// `did` — there is no member row to project the other fields from, so
-/// the projection drops them rather than inventing them.
+// ---------------------------------------------------------------------------
+// #1600 — `vtc/directory/query:notFound`, read from the generated bindings.
+// ---------------------------------------------------------------------------
+
+const QUERY_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::directory::query::v0_1::error_codes::NOT_FOUND.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// Make `source` the active `directory` policy.
+async fn activate_directory_policy(fix: &Fixture, source: &str) {
+    use sha2::{Digest, Sha256};
+    use vtc_service::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
+    let id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    store_policy(
+        &fix._vtc.state.policies_ks,
+        &Policy {
+            id,
+            purpose: PolicyPurpose::Directory,
+            rego_source: source.into(),
+            sha256: Sha256::digest(source.as_bytes()).into(),
+            activated_at: Some(now),
+            author_did: ADMIN_DID.into(),
+            created_at: now,
+            version: 99,
+            name: None,
+            description: None,
+        },
+    )
+    .await
+    .unwrap();
+    set_active_policy_id(
+        &fix._vtc.state.active_policies_ks,
+        PolicyPurpose::Directory,
+        id,
+    )
+    .await
+    .unwrap();
+}
+
+/// A DID that is not a member is `notFound` — even to an admin, whose policy
+/// branch allows the fullest projection. It used to answer 200 with the DID
+/// echoed back and nothing else, an "empty projection" the specification
+/// rules out.
 #[tokio::test]
-async fn non_member_subject_projects_did_only() {
+async fn a_subject_who_is_not_a_member_is_the_declared_not_found() {
     let fix = build_fixture().await;
 
     let (status, body) = get_directory(&fix.router, "did:key:zGhost", Some(&fix.admin_token)).await;
-    assert_eq!(status, StatusCode::OK, "got {body}");
-    let fields = &body["fields"];
-    assert_eq!(fields["did"], "did:key:zGhost");
-    assert!(
-        fields.get("role").is_none(),
-        "no role for a non-member: {body}"
-    );
-    assert!(fields.get("status").is_none());
-    assert!(fields.get("joined_at").is_none());
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), QUERY_ERR_NOT_FOUND, "{body}");
+}
+
+/// "Nothing visible to this caller" — a policy deny, or an allow that
+/// projects no field — is the same `notFound` as a missing member, with the
+/// same message, so a caller cannot tell "no such member" from "you may not
+/// see them". A deny used to be a 403 naming the policy's deny code.
+#[tokio::test]
+async fn nothing_visible_is_indistinguishable_from_no_such_member() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zSubject", VtcRole::Member).await;
+    let (_, missing) = get_directory(&fix.router, "did:key:zGhost", Some(&fix.admin_token)).await;
+
+    for policy in [
+        "package vtc.directory\nimport rego.v1\n\
+         decision := {\"effect\": \"deny\", \"with\": {\"code\": \"not-a-member\"}}\n",
+        "package vtc.directory\nimport rego.v1\n\
+         decision := {\"effect\": \"allow\", \"with\": {\"fields\": []}}\n",
+    ] {
+        activate_directory_policy(&fix, policy).await;
+        for subject in ["did:key:zSubject", "did:key:zGhost"] {
+            let (status, body) = get_directory(&fix.router, subject, Some(&fix.admin_token)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{subject}: {body}");
+            assert_eq!(
+                rest_error_code(&body),
+                QUERY_ERR_NOT_FOUND,
+                "{subject}: {body}"
+            );
+            assert_eq!(body, missing, "{subject}: the refusal must not differ");
+        }
+    }
 }

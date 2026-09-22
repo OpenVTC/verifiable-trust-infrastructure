@@ -673,6 +673,18 @@ async fn restart_wrong_trust_task_returns_415() {
 // ──────────────────────── Export / Import ────────────────────────
 
 const EXPORT_TASK: &str = "https://trusttasks.org/spec/vtc/config/export/0.1";
+
+// #1600 — the codes `vtc/config/import/0.1` declares, from the generated
+// bindings.
+const IMPORT_ERR_COMMUNITY_DID_MISMATCH: &str =
+    trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH.code;
+const IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION: &str =
+    trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
 const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
 
 async fn export_post(fix: &Fixture, token: &str) -> (StatusCode, Value) {
@@ -932,6 +944,11 @@ async fn import_refuses_mismatched_community_did_with_409() {
     let (status, body) = import_post(&fix, &token, true, payload).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(body["error"].as_str().unwrap().contains("communityDid"));
+    assert_eq!(
+        rest_error_code(&body),
+        IMPORT_ERR_COMMUNITY_DID_MISMATCH,
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -1029,8 +1046,13 @@ async fn import_wrong_schema_version_returns_400() {
         "communityProfile": null,
         "configOverrides": {}
     });
-    let (status, _) = import_post(&fix, &token, false, payload).await;
+    let (status, body) = import_post(&fix, &token, false, payload).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        rest_error_code(&body),
+        IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION,
+        "{body}"
+    );
 }
 
 #[tokio::test]

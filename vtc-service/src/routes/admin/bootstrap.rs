@@ -32,6 +32,7 @@ use vti_common::error::AppError;
 
 use crate::acl::admin::{AdminEntry, RegisteredPasskey, store_admin_entry};
 use crate::community::{CommunityProfile, load_profile, store_profile};
+use crate::error::TaskError;
 use crate::install::InstallTokenSigner;
 use crate::server::AppState;
 
@@ -52,6 +53,15 @@ pub struct BootstrapResponse {
     pub event_id: Uuid,
 }
 
+/// `vtc/admin/bootstrap:invalidToken` — the setup-session token is missing,
+/// malformed, expired, or not one this community signed.
+pub const BOOTSTRAP_ERR_INVALID_TOKEN: &str =
+    trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN.code;
+/// `vtc/admin/bootstrap:alreadyBootstrapped` — the community already has an
+/// admin; bootstrap is single-use.
+pub const BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED: &str =
+    trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED.code;
+
 #[utoipa::path(
     post, path = "/admin/bootstrap", tag = "admin",
     request_body = BootstrapRequest,
@@ -63,11 +73,15 @@ pub struct BootstrapResponse {
 pub async fn bootstrap(
     State(state): State<AppState>,
     Json(req): Json<BootstrapRequest>,
-) -> Result<(StatusCode, Json<BootstrapResponse>), AppError> {
+) -> Result<(StatusCode, Json<BootstrapResponse>), TaskError> {
     let signer = require_install_signer(&state)?;
     let audit_writer = require_audit_writer(&state)?;
 
-    let claims = signer.decode_session(&req.setup_session_token)?;
+    // `decode_session` answers `Unauthorized` for every failure — bad
+    // signature, wrong audience, expired — which is `invalidToken`.
+    let claims = signer
+        .decode_session(&req.setup_session_token)
+        .map_err(|e| TaskError::declared(BOOTSTRAP_ERR_INVALID_TOKEN, e))?;
     let admin_did = claims.sub;
     let install_jti = claims.install_jti;
 
@@ -77,8 +91,11 @@ pub async fn bootstrap(
     // restore could still land us here.
     for entry in list_acl_entries(&state.acl_ks).await? {
         if entry.role == VtcRole::Admin {
-            return Err(AppError::Conflict(
-                "an admin already exists; refusing to bootstrap a second one".into(),
+            return Err(TaskError::declared(
+                BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED,
+                AppError::Conflict(
+                    "an admin already exists; refusing to bootstrap a second one".into(),
+                ),
             ));
         }
     }

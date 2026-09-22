@@ -411,3 +411,79 @@ async fn missing_trust_task_returns_400() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+// ---------------------------------------------------------------------------
+// #1600 — the codes `vtc/admin/bootstrap/0.1` declares, read from the
+// generated bindings.
+// ---------------------------------------------------------------------------
+
+const BOOTSTRAP_ERR_INVALID_TOKEN: &str =
+    trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN.code;
+const BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED: &str =
+    trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// A token this community did not sign, or signed for another audience, is
+/// `invalidToken`; a second bootstrap once an admin exists is
+/// `alreadyBootstrapped`. Statuses unchanged (401, 401, 409).
+#[tokio::test]
+async fn the_bootstrap_task_answers_with_the_codes_its_spec_declares() {
+    let fix = build_fixture(true, true).await;
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/admin/bootstrap",
+        BOOTSTRAP_TASK,
+        json!({ "setupSessionToken": "not.a.real.jwt" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        BOOTSTRAP_ERR_INVALID_TOKEN,
+        "{body}"
+    );
+
+    // The install token itself has the wrong audience for this route.
+    let install_jwt = mint_token_and_record(&fix, 600).await;
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/admin/bootstrap",
+        BOOTSTRAP_TASK,
+        json!({ "setupSessionToken": install_jwt }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        BOOTSTRAP_ERR_INVALID_TOKEN,
+        "{body}"
+    );
+
+    let (session_jwt, _) = run_claim_ceremony(&fix).await;
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/admin/bootstrap",
+        BOOTSTRAP_TASK,
+        json!({ "setupSessionToken": session_jwt }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/admin/bootstrap",
+        BOOTSTRAP_TASK,
+        json!({ "setupSessionToken": session_jwt }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED,
+        "{body}"
+    );
+}

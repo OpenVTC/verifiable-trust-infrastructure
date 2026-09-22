@@ -462,3 +462,54 @@ async fn get_with_wrong_trust_task_returns_415() {
     let (status, _body) = body_value(resp).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
+
+// ---------------------------------------------------------------------------
+// #1600 — the code `vtc/community/profile/update/0.1` declares, read from the
+// generated bindings.
+// ---------------------------------------------------------------------------
+
+const PROFILE_UPDATE_ERR_VALIDATION_FAILED: &str =
+    trust_tasks_rs::specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED
+        .code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// A field that fails validation — a `logoUrl` that is not http(s), a name
+/// over its cap — is `validationFailed`, status unchanged (400), and the
+/// stored profile is untouched.
+#[tokio::test]
+async fn a_profile_field_failing_validation_is_the_declared_validation_failed() {
+    let fix = build().await;
+    let before = seed_profile(&fix).await;
+    let token = token_for(&fix, "admin").await;
+
+    for update in [
+        json!({ "logoUrl": "javascript:alert(1)" }),
+        json!({ "name": "n".repeat(10_000) }),
+    ] {
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/v1/community/profile")
+            .header("Trust-Task", PROFILE_UPDATE_TASK)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(update.to_string()))
+            .unwrap();
+        let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{update}: {body}");
+        assert_eq!(
+            rest_error_code(&body),
+            PROFILE_UPDATE_ERR_VALIDATION_FAILED,
+            "{update}: {body}"
+        );
+    }
+
+    let after = vtc_service::community::load_profile(&fix.state.community_ks)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after, before, "a refused update must not write");
+}

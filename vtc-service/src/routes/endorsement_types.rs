@@ -54,10 +54,25 @@ use crate::endorsement_types::{
     store_type,
 };
 use crate::endorsements::count_live_by_type;
+use crate::error::TaskError;
 use crate::schemas::list_accepts;
 use crate::server::AppState;
 
 const LIST_MAX_LIMIT: usize = 200;
+
+use trust_tasks_rs::specs::vtc::endorsement_types as et_spec;
+
+/// `vtc/endorsement-types/register:invalidUri` — empty, or over 512 bytes.
+pub const REGISTER_ERR_INVALID_URI: &str = et_spec::register::v0_1::error_codes::INVALID_URI.code;
+/// `vtc/endorsement-types/register:reserved` — a workspace-reserved URI.
+pub const REGISTER_ERR_RESERVED: &str = et_spec::register::v0_1::error_codes::RESERVED.code;
+/// `vtc/endorsement-types/register:exists` — already registered.
+pub const REGISTER_ERR_EXISTS: &str = et_spec::register::v0_1::error_codes::EXISTS.code;
+/// `vtc/endorsement-types/delete:notFound` — no such type registered.
+pub const DELETE_ERR_NOT_FOUND: &str = et_spec::delete::v0_1::error_codes::NOT_FOUND.code;
+/// `vtc/endorsement-types/delete:inUse` — a live endorsement or a criterion
+/// still references the type.
+pub const DELETE_ERR_IN_USE: &str = et_spec::delete::v0_1::error_codes::IN_USE.code;
 
 // ─── Register ────────────────────────────────────────────
 
@@ -87,7 +102,7 @@ pub async fn register(
     auth: AdminAuth,
     State(state): State<AppState>,
     Json(body): Json<RegisterBody>,
-) -> Result<(StatusCode, Json<RegisterResponse>), AppError> {
+) -> Result<(StatusCode, Json<RegisterResponse>), TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -96,22 +111,32 @@ pub async fn register(
     // Validation.
     let uri = body.type_uri.trim();
     if uri.is_empty() {
-        return Err(AppError::Validation("type_uri cannot be empty".into()));
+        return Err(TaskError::declared(
+            REGISTER_ERR_INVALID_URI,
+            AppError::Validation("type_uri cannot be empty".into()),
+        ));
     }
     if uri.len() > TYPE_URI_MAX_BYTES {
-        return Err(AppError::Validation(format!(
-            "type_uri exceeds {TYPE_URI_MAX_BYTES} bytes"
-        )));
+        return Err(TaskError::declared(
+            REGISTER_ERR_INVALID_URI,
+            AppError::Validation(format!("type_uri exceeds {TYPE_URI_MAX_BYTES} bytes")),
+        ));
     }
     if RESERVED_TYPE_URIS.contains(&uri) {
-        return Err(AppError::Conflict(format!(
-            "endorsement-type-reserved: '{uri}' is reserved by the workspace"
-        )));
+        return Err(TaskError::declared(
+            REGISTER_ERR_RESERVED,
+            AppError::Conflict(format!(
+                "endorsement-type-reserved: '{uri}' is reserved by the workspace"
+            )),
+        ));
     }
     if get_type(&state.endorsement_types_ks, uri).await?.is_some() {
-        return Err(AppError::Conflict(format!(
-            "endorsement-type-exists: '{uri}' already registered"
-        )));
+        return Err(TaskError::declared(
+            REGISTER_ERR_EXISTS,
+            AppError::Conflict(format!(
+                "endorsement-type-exists: '{uri}' already registered"
+            )),
+        ));
     }
 
     let row = EndorsementType {
@@ -240,7 +265,7 @@ pub async fn delete(
     auth: AdminAuth,
     State(state): State<AppState>,
     Path(type_uri): Path<String>,
-) -> Result<(StatusCode, Json<EndorsementTypeDelete01Response>), AppError> {
+) -> Result<(StatusCode, Json<EndorsementTypeDelete01Response>), TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -250,9 +275,10 @@ pub async fn delete(
         .await?
         .is_none()
     {
-        return Err(AppError::NotFound(format!(
-            "endorsement type '{type_uri}' not found"
-        )));
+        return Err(TaskError::declared(
+            DELETE_ERR_NOT_FOUND,
+            AppError::NotFound(format!("endorsement type '{type_uri}' not found")),
+        ));
     }
 
     // Refuse while anything still references the type. Both halves are
@@ -270,9 +296,12 @@ pub async fn delete(
         .map(|c| c.id)
         .collect();
     if in_use > 0 || !criteria.is_empty() {
-        return Err(AppError::Conflict(in_use_message(
-            &type_uri, in_use, &criteria,
-        )));
+        // The spec's `details` (`liveEndorsements`, `criteria`) has no slot
+        // on the REST error body; the message names both halves instead.
+        return Err(TaskError::declared(
+            DELETE_ERR_IN_USE,
+            AppError::Conflict(in_use_message(&type_uri, in_use, &criteria)),
+        ));
     }
 
     delete_type(&state.endorsement_types_ks, &type_uri).await?;
