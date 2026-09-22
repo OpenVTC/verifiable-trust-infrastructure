@@ -2,6 +2,19 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.12...vta-keyspaces-v0.3.0) — 2026-09-22
+
+
+### Added
+
+- **backup**: A backup is the whole agent, and restores between plain, hardened and TEE VTAs ([#1655](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1655))
+
+A backup now carries every row of every keyspace in vta_keyspaces::BACKED_UP
+  (format vta-backup-v2) and restores into a plain, hardened or Nitro-enclave
+  VTA from any of them. VTI-VTA-001, VTI-VTA-050, VTI-VTA-051, VTI-KEY-033.
+
+
+
 ## [0.2.12](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.11...vta-keyspaces-v0.2.12) — 2026-09-22
 
 

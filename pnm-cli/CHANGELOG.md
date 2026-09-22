@@ -2,6 +2,33 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.20.0...pnm-cli-v0.21.0) — 2026-09-22
+
+
+### Added
+
+- **backup**: A backup is the whole agent, and restores between plain, hardened and TEE VTAs ([#1655](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1655))
+
+A backup now carries every row of every keyspace in vta_keyspaces::BACKED_UP
+  (format vta-backup-v2) and restores into a plain, hardened or Nitro-enclave
+  VTA from any of them. VTI-VTA-001, VTI-VTA-050, VTI-VTA-051, VTI-KEY-033.
+
+- **persona**: Wear a face here without naming a persona DID ([#1654](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1654))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#589 (design note
+  persona-context-first.md §9.7).
+
+  binding/set takes an omitted `personaDid`, and profile/compose takes
+  `wear: true`: the agent uses the persona the holder already uses in the
+  context — the one DID with a binding record there, current or cleared —
+  and names it in the response. None is refused (`noPersonaHere`),
+  several are refused (`personaAmbiguous`, naming them), and compose
+  refuses `wear` beside a `personaDid` (`wearAndPersona`). Neither task
+  mints a persona: a DID has a lifecycle of its own, and a write that could
+  half-create one would leave a published identity nobody holds.
+
+
+
 ## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.19.1...pnm-cli-v0.20.0) — 2026-09-22
 
 
