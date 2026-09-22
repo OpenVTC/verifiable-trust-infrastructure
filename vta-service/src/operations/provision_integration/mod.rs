@@ -530,7 +530,7 @@ pub async fn provision_integration(
                     label: Some(client_did.clone()),
                     portable: true,
                     add_mediator_service: false,
-                    add_tsp_service: false,
+                    add_tsp_service: Some(false),
                     additional_services: None,
                     pre_rotation_count: 0,
                     did_document: None,
