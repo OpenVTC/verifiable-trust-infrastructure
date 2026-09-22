@@ -122,7 +122,7 @@ path = "src/main.rs"
 [dependencies]
 vti-rooms = { path = "../vti-rooms", version = "0.2" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.21", features = [
+vti-common = { path = "../vti-common", version = "0.22", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -139,8 +139,8 @@ vti-common = { path = "../vti-common", version = "0.21", features = [
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.3" }
-vta-sdk = { path = "../vta-sdk", version = "0.47", features = [
+vti-secrets = { path = "../vti-secrets", version = "0.4" }
+vta-sdk = { path = "../vta-sdk", version = "0.48", features = [
   "didcomm",
   "session",
   "config-session",

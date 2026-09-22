@@ -2,6 +2,325 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.48.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.47.0...vta-sdk-v0.48.0) — 2026-09-22
+
+
+### Added
+
+- **persona**: Derived provenance, and endorsements as inventory ([#1639](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1639))
+
+* feat(persona)!: derived provenance, and endorsements as inventory
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#582 (design note
+  docs/05-design-notes/persona-context-first.md §5.7).
+
+- **persona**: Where a face may be worn, where it is, and what it has done ([#1635](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1635))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#577 (design note
+  docs/05-design-notes/persona-context-first.md §5.4, §9.6).
+
+  Face reach. A pool face carries `reach` — FaceReach::Anywhere (default)
+  or Only { context_ids } — an enum rather than a context list, so
+  unrestricted and nowhere cannot be confused (#746/#769/#770).
+  binding/set refuses a face outside its reach (`outsideReach`);
+  profile/put refuses to narrow it past a context the face is worn in
+  (`boundOutsideReach`, naming them). An omitted reach on profile/put keeps
+  the face's current one: a client written before reach existed must not
+  lift a restriction by saving an edit.
+
+  persona/profile/usage — where a face is worn now, each binding's
+  `until`, and the reach beside them.
+
+  persona/profile/timeline — one face's history, oldest first: composed,
+  worn, unworn, expired, disclosed, valueChanged, promoted, retired,
+  reinstated. A binding taken off left no trace, so each face now has an
+  append-only event log (`pft:`, agent-scoped, ULID-keyed so recording
+  never takes the write lock), written after the change it describes and
+  never failing it; the timeline joins it with the disclosure records. A
+  face from before the log reports its composition from createdAt. A
+  promoted face keeps its log; a deleted one loses it. FaceEvent has no
+  member a value or label could go in, and a test holds that none reaches
+  the wire.
+
+  profile/compose takes `until` (`untilNotFuture`).
+
+  `pnm persona profile usage|timeline`, `put --reach-only/--reach-anywhere`,
+  `compose --until`. Takes trust-tasks-rs 0.21.14.
+
+- **vtc**: A self-hosted community installs its own DID log over did-management/did/register ([#1632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1632))
+
+Keyring VTI-35. A community whose DID is `did:webvh:<scid>:<host>` serves
+  its own did.jsonl, but the VTA holds the keys that extend it and cannot
+  reach the community's copy, and the VTC keeps no VTA credential after
+  setup. So an entry the VTA appends later — a TSP transport added to the
+  community's services, a key rotated — had no way to the community except
+  an operator copying the file by hand. (A community on a DID host needs
+  none of this: the VTA publishes each entry to the host itself.)
+
+  The VTC now answers `did-management/did/register/0.1` — the task a DID
+  owner sends a DID host, where a second register with a longer log is an
+  update — for its own DID at the root slot `.well-known`, over
+  `POST /v1/admin/did/register` (super-admin). Before serving, it verifies
+  the whole log (every entry's proof under the update keys in force, SCID,
+  hash chain), that it is the community's own DID, and that every served
+  entry survives unchanged as a prefix; then swaps the file atomically,
+  with no restart. So an administrator's authority covers delivery only: a
+  log the key holder did not sign, or one that moves the served log
+  backwards, is refused whoever delivers it. The prefix rule is stricter
+  than `register` alone and carries a consumer-minted code (SPEC §8.5).
+
+  - `cnm did-log install --file did.jsonl`, fed by `pnm did-mgmt dids
+    get-log`. It authenticates to the community directly, with the
+    community's DID as the audience (`VtcClient::connect`), not through the
+    profile's VTA session, whose audience is the VTA's DID — a VTC refuses
+    that. The community DID comes from the log; the URL from its host.
+  - `VtcClient::install_did_log`; `MockVtc::start_with` for a test VTC with
+    a self-hosted DID; a live test authenticates and installs over HTTP.
+  - AuditEvent::CommunityDidLogInstalled.
+  - The redeploy hint for a DID the VTA manages but does not serve names
+    the new command.
+
+- **vtc**: Serve a member's credential bodies and show them in the admin console ([#1631](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1631))
+
+`GET /v1/members/{did}/credentials`, bound to the now-published
+  `vtc/members/credentials/0.1` (trustoverip/dtgwg-trust-tasks-tf#336,
+  already in the locked trust-tasks-rs 0.21.11). AdminAuth. It reads the
+  four fields #1213 keeps on the member row (`current_vmc`,
+  `current_role_vec`, `member_vmc`, `member_vmc_bound`): no new storage and
+  no new verification. `memberVmcBound` is the answer recorded at receipt,
+  never recomputed.
+
+  The response is the generated `specs::vtc::members::credentials::v0_1`
+  type, documented through a new `vta_sdk::openapi::MemberCredentials01Response`
+  wrapper. Bodies are carried as stored. `memberVmcReceivedAt` is only sent
+  alongside `memberVmc`, because the spec says a maintainer MUST NOT send one
+  without the other, and a row from before #1213 has the receipt time but no
+  body.
+
+  An unknown member gets a 404 whose body carries the spec's declared code,
+  `vtc/members/credentials:notFound`, next to the usual `error` member.
+  "Unknown" means what it means for `members/show`: no member row, or no ACL
+  row, so a tombstoned member counts. A member who holds nothing gets a 200
+  with every document absent and `memberVmcBound: false`, as the spec
+  requires.
+
+  The spec says a maintainer SHOULD record that the read happened, so every
+  successful read writes a new `MemberCredentialsRead` audit event. The event
+  names which documents were disclosed and never includes their contents.
+  The audit write happens before the response. `AuditEvent` is
+  `#[non_exhaustive]`, so the new variant does not break any consumer.
+
+  A conformance witness checks the task. It builds its response with the
+  handler's own `credentials_response`, over a row filled by the real
+  `record_issued_credentials` / `record_member_vmc`, so it tests what the
+  service sends rather than a hand-typed fixture.
+
+- **persona**: Retire a face, warn before deleting one, and let a binding end on its own ([#1628](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1628))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#570 (design note
+  docs/05-design-notes/persona-context-first.md §9.4, §9.5).
+
+  persona/profile/retire and persona/profile/reinstate, for pool and
+  context-local faces. Retire marks the face before clearing its bindings,
+  so an interrupted retire leaves a face that cannot be newly worn and a
+  repeat finishes the clearing; the cleared bindings come back in
+  `unbound`. binding/set and local/binding/set refuse a retired face
+  (`profileRetired`), profile/list leaves retired faces out unless
+  `includeRetired`. Reinstate binds nothing. Profile gains `status` and
+  `retiredAt`.
+
+  Binding `until` on binding/set and local/binding/set, returned by
+  binding/get and binding/list; `untilNotFuture` refuses one in the past or
+  on a cleared binding. A lapsed binding reads as cleared at once — every
+  binding read decodes through BindingRecord::into_read, and present
+  refuses a preview whose persona no longer wears a face — whether or not
+  the sweeper has run. The storage-thread sweeper (expire_bindings,
+  audited as persona.binding.expire) makes the clear durable and retires a
+  face the expiry left worn nowhere; never one still worn elsewhere, and
+  never deletes.
+
+  profile/get and profile/delete return `disclosedTo` {partyCount,
+  contextCount}; `pnm persona profile delete` says "deleting does not
+  un-tell them". Disclosure records now carry the face they were made
+  through; an older record is attributed through its binding where that
+  still wears the face.
+
+  `pnm persona profile retire|reinstate`, `list --include-retired`,
+  `binding set --until`, `local binding set --until`. Retire is
+  Destructive for the MCP guard (it withdraws access everywhere at once),
+  reinstate Mutating; both RetrySafe.
+
+  Takes trust-tasks-rs 0.21.12.
+
+- **persona**: Compose a face where it is asked for, and promote a local value ([#1623](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1623))
+
+* feat(persona)!: compose a face where it is asked for, and promote a local value
+
+  Implements persona/profile/compose/1.0 and persona/attribute/promote/1.0
+  (trustoverip/dtgwg-trust-tasks-tf#569; design note
+  docs/05-design-notes/persona-context-first.md §2.1, §5.3).
+
+  compose — a face for one context, from values typed now and attributes
+  already held, optionally worn there in the same act. Local by default: a
+  typed value is carried inline and enters no pool unless the claim says
+  `share: pool`, when a self-asserted pool attribute holding exactly that
+  type and value is referenced, and created only if none exists. Where the
+  face lives follows from its claims — all local makes a context-local
+  face, anything pooled or held a pool face. Everything is validated before
+  anything is written (unresolvedReference, duplicateSlot,
+  labelWithoutPersona), and a later failure removes the attributes the
+  compose created.
+
+  promote — named entries of a context-local face become pool attributes
+  and the face moves into the pool with its id, name, order, slots and
+  wearers unchanged. One-way. The pool face is written and the bindings
+  moved before the local face is removed, so an interrupted promote leaves
+  the local face worn and a retry finishes it, reusing what it made.
+  versionConflict and entryOutOfRange refuse a stale or out-of-range read.
+
+  Both holder-only (Reach::Holder), classified Keyed for retry, Mutating
+  for the MCP guard. `pnm persona profile compose` and `pnm persona
+  attribute promote`. The design note records what the built form changed:
+  the `profile` noun, no inline findings (analyze with `candidate` is the
+  pre-write warning), no facetId, self-asserted-only reuse, and §9.7's
+  DID minting left for its own design.
+
+
+
+### Fixed
+
+- **cnm**: Vetting, audit and backup authenticate to a VTC with its own DID as audience ([#1637](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1637))
+
+`cnm vetting`, `cnm audit verify` and `cnm backup` could not sign in to a
+  VTC. All three took a token from `SessionStore::ensure_authenticated`, whose
+  audience is not a parameter: it is always the session's bound *VTA* DID, and
+  the DIDComm authenticate envelope it builds is encrypted to that DID's
+  key-agreement key. A VTC holds only its own keys, cannot open the envelope,
+  and refuses the login. `cnm vetting` then also built its `VtcClient` with the
+  VTA's DID as the community's DID. main connected to the VTA first, so without
+  `--url` the requests went to the VTA's REST URL too.
+
+  They now authenticate the way `cnm did-log install` does ([#1632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1632)):
+  `VtcClient::connect(base, vtc_did, client_did, key)` with the profile's DID
+  and key, and the VTC's DID as the audience. They are exempt from
+  `requires_auth`, so no VTA connection is made first.
+
+  Where the VTC's DID comes from: `--vtc-did` (env `CNM_VTC_DID`), else a new
+  optional `vtc_did` on the community profile, set with
+  `cnm community set-vtc <did>`. The DID is never read from the server (for
+  example the VTC's `/health`): it is the audience the sign-in is signed for,
+  and a server allowed to name it could name another community's DID and
+  relay the signed document there. Discovery runs from DID to URL, as it does
+  for a VTA: `--url` if given, otherwise the `VTCRest` service in the DID's
+  document, matched on `type` and checked by the same endpoint guard as a
+  VTA's advertised REST URL.
+
+  The root cause is a generic "token for this base URL" helper sitting on a
+  session bound to one audience. `cnm`'s `auth::ensure_authenticated` wrapper
+  is removed, so nothing in `cnm` can reach the VTC through the VTA session
+  again, and `SessionStore::ensure_authenticated` now documents that it
+  authenticates to the session's VTA only. Nothing else in the workspace
+  used `SessionStore` against a VTC.
+
+  When the VTC refuses the sign-in, `cnm` prints the fix with the DID filled
+  in: `vtc --config <config.toml> acl add --did <DID> --role admin --label cnm`,
+  or Access control, Add entry in the console. A VTC answers every
+  authentication failure the same way (VTI-SES-007), so the message names the
+  usual cause rather than claiming it.
+
+  Routing these through a live VTC exposed two more faults on the same paths,
+  fixed here:
+  - `cnm backup export` saved the `{ envelope }` response (the export shape
+    since #1059) instead of the envelope, so the file printed `(none)` for
+    its source DID and could not be imported. `VtcClient::export_backup`
+    returns the envelope, and accepts a pre-#1059 bare one.
+  - `cnm audit verify` read the signed-checkpoint result from the top level,
+    but #1110 moved it under `ext["org.openvtc"]`. Every report therefore
+    looked like it had no checkpoint result, and a truncated log that the
+    community key contradicts passed as long as its hash chain did. It reads
+    both places now, and fails on any checkpoint status it does not know
+    rather than passing it.
+
+  vtc-client gains `audit_verify`, `export_backup`, `import_backup`,
+  `REST_SERVICE_TYPE` and `api_base_from_did_document`, plus the three task
+  URIs. All are additive.
+
+- **vta**: Contexts/secrets requires KeyExport (VTI-VTA-003) ([#1634](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1634))
+
+`vta/contexts/secrets/1.0` (`get_context_secrets`) released a context DID's
+  private keys to any `Application`-role caller in that context. Its only gate
+  was the role floor (`require_write`, which also admits `Initiator`) plus the
+  context scope. VTI-VTA-003 says an export of derived key material "MUST be
+  gated by a capability distinct from the capability to use the key, and MUST
+  be audited". The audit was already there; the separate capability was not.
+  An `Application` can *use* its context's keys through the signing oracle, and
+  under the old gate that also let it *take* them. That is the case the
+  requirement exists for: keys that were taken stay with the caller after its
+  authority is withdrawn.
+
+  ## The gate
+
+  `get_context_secrets` now requires `Capability::KeyExport`, the same
+  capability `keys/export-secret` requires. It reads the caller's **entry**,
+  like `ensure_may_mint` ([#1619](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1619)), so a narrowing that removes `key-export` from
+  an admin stops the next fetch. With no entry, the role decides. A store error
+  refuses the call. The gate replaces the `require_write` role floor. The
+  existing `require_context` scope check and the per-key `key.secret_export`
+  audit are unchanged.
+
+  `KeyExport` stays exactly as #1619 left it: derived by `admin` alone, and not
+  grantable to any other role. So the service that operates a context's DID
+  must be an admin **scoped to that context**. Integrations onboarded through
+  `provision-integration` already have that grant: the mediator, did-hosting
+  and the VTC. They are not affected.
+
+  ## Who is affected
+
+  Any `application` or `initiator` entry that fetches its context's secrets
+  through `VtaClient::fetch_did_secrets_bundle` or
+  `vta_sdk::integration::startup`. The known one is **room-host**, whose
+  enrolment instructions granted `--role application`. After upgrading, such a
+  caller gets `permissionDenied`, which the SDK surfaces as
+  `VtaError::Forbidden` on REST, DIDComm and TSP. The message names the command
+  that fixes it for that caller's entry:
+
+  - an existing non-admin scoped to the context:
+    `pnm acl change-role --did <did> --from application --to admin`
+    (this keeps the entry's contexts);
+  - an entry with no contexts: `pnm acl update <did> --contexts <CONTEXT>`
+    first. The fix never suggests promoting an unscoped entry, because that
+    would mint a super-admin;
+  - an admin narrowed without `key-export`:
+    `pnm acl update <did> --capabilities <existing>,key-export`
+    (the narrowing is restated, never `--capabilities-all`);
+  - no entry: `pnm acl create --did <did> --role admin --contexts <CONTEXT>`.
+
+  ## Also changed
+
+  - room-host's `grant_instructions` and its missing-DID help now grant a
+    context-scoped admin (`vta import-did --role admin --context <C>` /
+    `pnm acl create --role admin --contexts <C>`).
+  - `vti-secrets` gains `OnboardingTicket::admin_import_did_command`. Its module
+    docs now separate integrations that only call the VTA (`application`) from
+    those that load their DID's keys (context-scoped `admin`).
+  - Doc comments on the task constant, the handler, the SDK method and
+    `get_context_secrets`. `docs/02-vta/integration-guide.md` gains a
+    "Who may fetch a context's secrets" section.
+
+  ## Tests (VTI-VTA-003)
+
+  - The `operations/export.rs` tests that asserted the old loosening are
+    rewritten.
+  - New tests cover these cases: an Application is refused, an Initiator is
+    refused, a context admin gets the bundle, an admin narrowed without
+    `key-export` is refused, an admin of another context is refused, an
+    unscoped non-admin is told to scope first, and a reader is refused. The
+    entitlement-before-existence non-leak test now runs against both gates.
+  - A handler-level test checks that the refusal is `permissionDenied` and
+    carries the fix command.
+
+
+
 ## [0.47.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.46.0...vta-sdk-v0.47.0) — 2026-09-21
 
 

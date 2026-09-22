@@ -2,6 +2,87 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.3.17...vti-secrets-v0.4.0) — 2026-09-22
+
+
+### Fixed
+
+- **vta**: Contexts/secrets requires KeyExport (VTI-VTA-003) ([#1634](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1634))
+
+`vta/contexts/secrets/1.0` (`get_context_secrets`) released a context DID's
+  private keys to any `Application`-role caller in that context. Its only gate
+  was the role floor (`require_write`, which also admits `Initiator`) plus the
+  context scope. VTI-VTA-003 says an export of derived key material "MUST be
+  gated by a capability distinct from the capability to use the key, and MUST
+  be audited". The audit was already there; the separate capability was not.
+  An `Application` can *use* its context's keys through the signing oracle, and
+  under the old gate that also let it *take* them. That is the case the
+  requirement exists for: keys that were taken stay with the caller after its
+  authority is withdrawn.
+
+  ## The gate
+
+  `get_context_secrets` now requires `Capability::KeyExport`, the same
+  capability `keys/export-secret` requires. It reads the caller's **entry**,
+  like `ensure_may_mint` ([#1619](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1619)), so a narrowing that removes `key-export` from
+  an admin stops the next fetch. With no entry, the role decides. A store error
+  refuses the call. The gate replaces the `require_write` role floor. The
+  existing `require_context` scope check and the per-key `key.secret_export`
+  audit are unchanged.
+
+  `KeyExport` stays exactly as #1619 left it: derived by `admin` alone, and not
+  grantable to any other role. So the service that operates a context's DID
+  must be an admin **scoped to that context**. Integrations onboarded through
+  `provision-integration` already have that grant: the mediator, did-hosting
+  and the VTC. They are not affected.
+
+  ## Who is affected
+
+  Any `application` or `initiator` entry that fetches its context's secrets
+  through `VtaClient::fetch_did_secrets_bundle` or
+  `vta_sdk::integration::startup`. The known one is **room-host**, whose
+  enrolment instructions granted `--role application`. After upgrading, such a
+  caller gets `permissionDenied`, which the SDK surfaces as
+  `VtaError::Forbidden` on REST, DIDComm and TSP. The message names the command
+  that fixes it for that caller's entry:
+
+  - an existing non-admin scoped to the context:
+    `pnm acl change-role --did <did> --from application --to admin`
+    (this keeps the entry's contexts);
+  - an entry with no contexts: `pnm acl update <did> --contexts <CONTEXT>`
+    first. The fix never suggests promoting an unscoped entry, because that
+    would mint a super-admin;
+  - an admin narrowed without `key-export`:
+    `pnm acl update <did> --capabilities <existing>,key-export`
+    (the narrowing is restated, never `--capabilities-all`);
+  - no entry: `pnm acl create --did <did> --role admin --contexts <CONTEXT>`.
+
+  ## Also changed
+
+  - room-host's `grant_instructions` and its missing-DID help now grant a
+    context-scoped admin (`vta import-did --role admin --context <C>` /
+    `pnm acl create --role admin --contexts <C>`).
+  - `vti-secrets` gains `OnboardingTicket::admin_import_did_command`. Its module
+    docs now separate integrations that only call the VTA (`application`) from
+    those that load their DID's keys (context-scoped `admin`).
+  - Doc comments on the task constant, the handler, the SDK method and
+    `get_context_secrets`. `docs/02-vta/integration-guide.md` gains a
+    "Who may fetch a context's secrets" section.
+
+  ## Tests (VTI-VTA-003)
+
+  - The `operations/export.rs` tests that asserted the old loosening are
+    rewritten.
+  - New tests cover these cases: an Application is refused, an Initiator is
+    refused, a context admin gets the bundle, an admin narrowed without
+    `key-export` is refused, an admin of another context is refused, an
+    unscoped non-admin is told to scope first, and a reader is refused. The
+    entitlement-before-existence non-leak test now runs against both gates.
+  - A handler-level test checks that the refusal is `permissionDenied` and
+    carries the fix command.
+
+
+
 ## [0.3.17](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.3.16...vti-secrets-v0.3.17) — 2026-09-21
 
 

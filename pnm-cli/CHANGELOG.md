@@ -2,6 +2,156 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.19.1...pnm-cli-v0.20.0) — 2026-09-22
+
+
+### Added
+
+- **pnm**: Name the console's accounts from the VTA ([#1640](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1640))
+
+The mediator console shows accounts as sha256(did) hashes. Fill its
+  address book (mediator-console 0.1.2) with every DID this VTA can name,
+  least to most specific: ACL entries by label, hosted webvh DIDs as
+  'context · mnemonic', this session's context DIDs by context name, the
+  VTA and the pnm session. The names are supplied, not saved; names the
+  user adds in the console are saved to the shared address book and win.
+  A source this session may not read is skipped.
+
+  Also turns on bracketed paste so a pasted DID arrives whole, and bumps
+  Cargo.lock to affinidi-messaging-mediator-admin 0.1.3 / -tui 0.1.2.
+
+- **persona**: Derived provenance, and endorsements as inventory ([#1639](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1639))
+
+* feat(persona)!: derived provenance, and endorsements as inventory
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#582 (design note
+  docs/05-design-notes/persona-context-first.md §5.7).
+
+- **persona**: Where a face may be worn, where it is, and what it has done ([#1635](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1635))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#577 (design note
+  docs/05-design-notes/persona-context-first.md §5.4, §9.6).
+
+  Face reach. A pool face carries `reach` — FaceReach::Anywhere (default)
+  or Only { context_ids } — an enum rather than a context list, so
+  unrestricted and nowhere cannot be confused (#746/#769/#770).
+  binding/set refuses a face outside its reach (`outsideReach`);
+  profile/put refuses to narrow it past a context the face is worn in
+  (`boundOutsideReach`, naming them). An omitted reach on profile/put keeps
+  the face's current one: a client written before reach existed must not
+  lift a restriction by saving an edit.
+
+  persona/profile/usage — where a face is worn now, each binding's
+  `until`, and the reach beside them.
+
+  persona/profile/timeline — one face's history, oldest first: composed,
+  worn, unworn, expired, disclosed, valueChanged, promoted, retired,
+  reinstated. A binding taken off left no trace, so each face now has an
+  append-only event log (`pft:`, agent-scoped, ULID-keyed so recording
+  never takes the write lock), written after the change it describes and
+  never failing it; the timeline joins it with the disclosure records. A
+  face from before the log reports its composition from createdAt. A
+  promoted face keeps its log; a deleted one loses it. FaceEvent has no
+  member a value or label could go in, and a test holds that none reaches
+  the wire.
+
+  profile/compose takes `until` (`untilNotFuture`).
+
+  `pnm persona profile usage|timeline`, `put --reach-only/--reach-anywhere`,
+  `compose --until`. Takes trust-tasks-rs 0.21.14.
+
+- **pnm**: Pick which DID to open the mediator console as ([#1629](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1629))
+
+A context can hold several DIDs, but the console only offered the
+  context's own DID. Offer every DID whose keys are in a context (read
+  from the key records alone, by select_secret_kid's rule; nothing is
+  exported to list them), the context's DID first. --did picks one
+  directly; --context with several DIDs asks among that context's.
+
+  Also picks up affinidi-did-common 0.4.3 / mediator-admin 0.1.1, which fix
+  'no mediator for <did>' when the DIDCommMessaging service is in the
+  array form VTA-managed DIDs publish.
+
+- **persona**: Retire a face, warn before deleting one, and let a binding end on its own ([#1628](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1628))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#570 (design note
+  docs/05-design-notes/persona-context-first.md §9.4, §9.5).
+
+  persona/profile/retire and persona/profile/reinstate, for pool and
+  context-local faces. Retire marks the face before clearing its bindings,
+  so an interrupted retire leaves a face that cannot be newly worn and a
+  repeat finishes the clearing; the cleared bindings come back in
+  `unbound`. binding/set and local/binding/set refuse a retired face
+  (`profileRetired`), profile/list leaves retired faces out unless
+  `includeRetired`. Reinstate binds nothing. Profile gains `status` and
+  `retiredAt`.
+
+  Binding `until` on binding/set and local/binding/set, returned by
+  binding/get and binding/list; `untilNotFuture` refuses one in the past or
+  on a cleared binding. A lapsed binding reads as cleared at once — every
+  binding read decodes through BindingRecord::into_read, and present
+  refuses a preview whose persona no longer wears a face — whether or not
+  the sweeper has run. The storage-thread sweeper (expire_bindings,
+  audited as persona.binding.expire) makes the clear durable and retires a
+  face the expiry left worn nowhere; never one still worn elsewhere, and
+  never deletes.
+
+  profile/get and profile/delete return `disclosedTo` {partyCount,
+  contextCount}; `pnm persona profile delete` says "deleting does not
+  un-tell them". Disclosure records now carry the face they were made
+  through; an older record is attributed through its binding where that
+  still wears the face.
+
+  `pnm persona profile retire|reinstate`, `list --include-retired`,
+  `binding set --until`, `local binding set --until`. Retire is
+  Destructive for the MCP guard (it withdraws access everywhere at once),
+  reinstate Mutating; both RetrySafe.
+
+  Takes trust-tasks-rs 0.21.12.
+
+- **pnm**: `pnm messaging console` opens the mediator console as a VTA-managed DID ([#1626](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1626))
+
+A new `pnm messaging console` subcommand opens the Affinidi mediator console (affinidi-messaging-mediator-tui) as the DID of a context this pnm session may act in, or with --as-session as pnm's own did:key. An administrator DID gets the whole mediator; any other account manages itself.
+
+  The console must sign Trust Tasks and decrypt the mediator's replies, and the VTA has no remote key agreement, so the DID's keys are exported for the session. Per VTI-VTA-003 that export is gated by a capability distinct from using the key, and audited: each key goes through keys/export-secret (KeyExport), never vta/contexts/secrets (Application role only; see #1625). Only keys that are verification methods of the DID are exported (vta_sdk::did_secrets::select_secret_kid, decided from the key record before any export); a non-exportable key is refused with a reason; the secrets are held in memory for the session and dropped (zeroised) when it closes. --as-session exports nothing: its key is already this client's (VTI-CLT-002).
+
+  The mediator is taken from --mediator, else the DID document's DIDCommMessaging service, else this pnm's configured mediator. The session-key decode in auth.rs is extracted to session_seed so sign-challenge and the console share it.
+
+- **persona**: Compose a face where it is asked for, and promote a local value ([#1623](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1623))
+
+* feat(persona)!: compose a face where it is asked for, and promote a local value
+
+  Implements persona/profile/compose/1.0 and persona/attribute/promote/1.0
+  (trustoverip/dtgwg-trust-tasks-tf#569; design note
+  docs/05-design-notes/persona-context-first.md §2.1, §5.3).
+
+  compose — a face for one context, from values typed now and attributes
+  already held, optionally worn there in the same act. Local by default: a
+  typed value is carried inline and enters no pool unless the claim says
+  `share: pool`, when a self-asserted pool attribute holding exactly that
+  type and value is referenced, and created only if none exists. Where the
+  face lives follows from its claims — all local makes a context-local
+  face, anything pooled or held a pool face. Everything is validated before
+  anything is written (unresolvedReference, duplicateSlot,
+  labelWithoutPersona), and a later failure removes the attributes the
+  compose created.
+
+  promote — named entries of a context-local face become pool attributes
+  and the face moves into the pool with its id, name, order, slots and
+  wearers unchanged. One-way. The pool face is written and the bindings
+  moved before the local face is removed, so an interrupted promote leaves
+  the local face worn and a retry finishes it, reusing what it made.
+  versionConflict and entryOutOfRange refuse a stale or out-of-range read.
+
+  Both holder-only (Reach::Holder), classified Keyed for retry, Mutating
+  for the MCP guard. `pnm persona profile compose` and `pnm persona
+  attribute promote`. The design note records what the built form changed:
+  the `profile` noun, no inline findings (analyze with `candidate` is the
+  pre-write warning), no facetId, self-asserted-only reuse, and §9.7's
+  DID minting left for its own design.
+
+
+
 ## [0.19.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.19.0...pnm-cli-v0.19.1) — 2026-09-21
 
 

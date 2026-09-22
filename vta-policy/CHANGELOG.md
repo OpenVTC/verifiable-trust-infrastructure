@@ -2,6 +2,34 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.18](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.3.17...vta-policy-v0.3.18) — 2026-09-22
+
+
+### Fixed
+
+- **vta**: Warn at boot when approval rules exist but policy enforcement is off ([#1633](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1633))
+
+Keyring KR-22 (Refs #1608). `policy.enforcement` defaults to false and stays
+  that way: flipping it would turn every written-but-not-intended policy into a
+  gate across existing deployments on upgrade. The defect was the silence — a
+  rule written with `pnm approvals require` is stored, listed and explained, and
+  then gates nothing, with no signal anywhere that enforcement is off.
+
+  - vta-policy: `unenforced_policies()` (+ `#[non_exhaustive]`
+    `UnenforcedPolicies`) reports the approval rules on the enabled declarative
+    row and the ids of enabled hand-authored rows. The boot-installed baseline,
+    disabled rows and a declarative row carrying only approver sets are not
+    counted — none would gate a task with enforcement on.
+  - vta-service: on boot with enforcement off, log a WARN naming what is being
+    ignored and the exact change (`[policy] enforcement = true` + restart).
+    Advisory only: a failure to read the rows is logged and never stops boot.
+    The enforcement flag is copied out so the config lock is not held across
+    the keyspace read.
+  - docs/02-vta/approvals.md: state up front that approvals are opt-in and off
+    by default, show the config snippet, and document the boot warning.
+
+
+
 ## [0.3.17](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.3.16...vta-policy-v0.3.17) — 2026-09-21
 
 
