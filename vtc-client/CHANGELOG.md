@@ -2,6 +2,106 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.7.0...vtc-client-v0.7.1) — 2026-09-22
+
+
+### Added
+
+- **vtc**: A self-hosted community installs its own DID log over did-management/did/register ([#1632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1632))
+
+Keyring VTI-35. A community whose DID is `did:webvh:<scid>:<host>` serves
+  its own did.jsonl, but the VTA holds the keys that extend it and cannot
+  reach the community's copy, and the VTC keeps no VTA credential after
+  setup. So an entry the VTA appends later — a TSP transport added to the
+  community's services, a key rotated — had no way to the community except
+  an operator copying the file by hand. (A community on a DID host needs
+  none of this: the VTA publishes each entry to the host itself.)
+
+  The VTC now answers `did-management/did/register/0.1` — the task a DID
+  owner sends a DID host, where a second register with a longer log is an
+  update — for its own DID at the root slot `.well-known`, over
+  `POST /v1/admin/did/register` (super-admin). Before serving, it verifies
+  the whole log (every entry's proof under the update keys in force, SCID,
+  hash chain), that it is the community's own DID, and that every served
+  entry survives unchanged as a prefix; then swaps the file atomically,
+  with no restart. So an administrator's authority covers delivery only: a
+  log the key holder did not sign, or one that moves the served log
+  backwards, is refused whoever delivers it. The prefix rule is stricter
+  than `register` alone and carries a consumer-minted code (SPEC §8.5).
+
+  - `cnm did-log install --file did.jsonl`, fed by `pnm did-mgmt dids
+    get-log`. It authenticates to the community directly, with the
+    community's DID as the audience (`VtcClient::connect`), not through the
+    profile's VTA session, whose audience is the VTA's DID — a VTC refuses
+    that. The community DID comes from the log; the URL from its host.
+  - `VtcClient::install_did_log`; `MockVtc::start_with` for a test VTC with
+    a self-hosted DID; a live test authenticates and installs over HTTP.
+  - AuditEvent::CommunityDidLogInstalled.
+  - The redeploy hint for a DID the VTA manages but does not serve names
+    the new command.
+
+
+
+### Fixed
+
+- **cnm**: Vetting, audit and backup authenticate to a VTC with its own DID as audience ([#1637](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1637))
+
+`cnm vetting`, `cnm audit verify` and `cnm backup` could not sign in to a
+  VTC. All three took a token from `SessionStore::ensure_authenticated`, whose
+  audience is not a parameter: it is always the session's bound *VTA* DID, and
+  the DIDComm authenticate envelope it builds is encrypted to that DID's
+  key-agreement key. A VTC holds only its own keys, cannot open the envelope,
+  and refuses the login. `cnm vetting` then also built its `VtcClient` with the
+  VTA's DID as the community's DID. main connected to the VTA first, so without
+  `--url` the requests went to the VTA's REST URL too.
+
+  They now authenticate the way `cnm did-log install` does ([#1632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1632)):
+  `VtcClient::connect(base, vtc_did, client_did, key)` with the profile's DID
+  and key, and the VTC's DID as the audience. They are exempt from
+  `requires_auth`, so no VTA connection is made first.
+
+  Where the VTC's DID comes from: `--vtc-did` (env `CNM_VTC_DID`), else a new
+  optional `vtc_did` on the community profile, set with
+  `cnm community set-vtc <did>`. The DID is never read from the server (for
+  example the VTC's `/health`): it is the audience the sign-in is signed for,
+  and a server allowed to name it could name another community's DID and
+  relay the signed document there. Discovery runs from DID to URL, as it does
+  for a VTA: `--url` if given, otherwise the `VTCRest` service in the DID's
+  document, matched on `type` and checked by the same endpoint guard as a
+  VTA's advertised REST URL.
+
+  The root cause is a generic "token for this base URL" helper sitting on a
+  session bound to one audience. `cnm`'s `auth::ensure_authenticated` wrapper
+  is removed, so nothing in `cnm` can reach the VTC through the VTA session
+  again, and `SessionStore::ensure_authenticated` now documents that it
+  authenticates to the session's VTA only. Nothing else in the workspace
+  used `SessionStore` against a VTC.
+
+  When the VTC refuses the sign-in, `cnm` prints the fix with the DID filled
+  in: `vtc --config <config.toml> acl add --did <DID> --role admin --label cnm`,
+  or Access control, Add entry in the console. A VTC answers every
+  authentication failure the same way (VTI-SES-007), so the message names the
+  usual cause rather than claiming it.
+
+  Routing these through a live VTC exposed two more faults on the same paths,
+  fixed here:
+  - `cnm backup export` saved the `{ envelope }` response (the export shape
+    since #1059) instead of the envelope, so the file printed `(none)` for
+    its source DID and could not be imported. `VtcClient::export_backup`
+    returns the envelope, and accepts a pre-#1059 bare one.
+  - `cnm audit verify` read the signed-checkpoint result from the top level,
+    but #1110 moved it under `ext["org.openvtc"]`. Every report therefore
+    looked like it had no checkpoint result, and a truncated log that the
+    community key contradicts passed as long as its hash chain did. It reads
+    both places now, and fails on any checkpoint status it does not know
+    rather than passing it.
+
+  vtc-client gains `audit_verify`, `export_backup`, `import_backup`,
+  `REST_SERVICE_TYPE` and `api_base_from_did_document`, plus the three task
+  URIs. All are additive.
+
+
+
 ## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.6.12...vtc-client-v0.7.0) — 2026-09-21
 
 

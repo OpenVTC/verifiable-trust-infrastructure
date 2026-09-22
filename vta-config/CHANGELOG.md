@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.6.3...vta-config-v0.6.4) — 2026-09-22
+
+
 ## [0.6.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.6.2...vta-config-v0.6.3) — 2026-09-21
 
 

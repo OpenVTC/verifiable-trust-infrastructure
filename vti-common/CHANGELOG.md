@@ -2,6 +2,155 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.21.0...vti-common-v0.22.0) — 2026-09-22
+
+
+### Added
+
+- **vtc**: A self-hosted community installs its own DID log over did-management/did/register ([#1632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1632))
+
+Keyring VTI-35. A community whose DID is `did:webvh:<scid>:<host>` serves
+  its own did.jsonl, but the VTA holds the keys that extend it and cannot
+  reach the community's copy, and the VTC keeps no VTA credential after
+  setup. So an entry the VTA appends later — a TSP transport added to the
+  community's services, a key rotated — had no way to the community except
+  an operator copying the file by hand. (A community on a DID host needs
+  none of this: the VTA publishes each entry to the host itself.)
+
+  The VTC now answers `did-management/did/register/0.1` — the task a DID
+  owner sends a DID host, where a second register with a longer log is an
+  update — for its own DID at the root slot `.well-known`, over
+  `POST /v1/admin/did/register` (super-admin). Before serving, it verifies
+  the whole log (every entry's proof under the update keys in force, SCID,
+  hash chain), that it is the community's own DID, and that every served
+  entry survives unchanged as a prefix; then swaps the file atomically,
+  with no restart. So an administrator's authority covers delivery only: a
+  log the key holder did not sign, or one that moves the served log
+  backwards, is refused whoever delivers it. The prefix rule is stricter
+  than `register` alone and carries a consumer-minted code (SPEC §8.5).
+
+  - `cnm did-log install --file did.jsonl`, fed by `pnm did-mgmt dids
+    get-log`. It authenticates to the community directly, with the
+    community's DID as the audience (`VtcClient::connect`), not through the
+    profile's VTA session, whose audience is the VTA's DID — a VTC refuses
+    that. The community DID comes from the log; the URL from its host.
+  - `VtcClient::install_did_log`; `MockVtc::start_with` for a test VTC with
+    a self-hosted DID; a live test authenticates and installs over HTTP.
+  - AuditEvent::CommunityDidLogInstalled.
+  - The redeploy hint for a DID the VTA manages but does not serve names
+    the new command.
+
+- **vtc**: Serve a member's credential bodies and show them in the admin console ([#1631](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1631))
+
+`GET /v1/members/{did}/credentials`, bound to the now-published
+  `vtc/members/credentials/0.1` (trustoverip/dtgwg-trust-tasks-tf#336,
+  already in the locked trust-tasks-rs 0.21.11). AdminAuth. It reads the
+  four fields #1213 keeps on the member row (`current_vmc`,
+  `current_role_vec`, `member_vmc`, `member_vmc_bound`): no new storage and
+  no new verification. `memberVmcBound` is the answer recorded at receipt,
+  never recomputed.
+
+  The response is the generated `specs::vtc::members::credentials::v0_1`
+  type, documented through a new `vta_sdk::openapi::MemberCredentials01Response`
+  wrapper. Bodies are carried as stored. `memberVmcReceivedAt` is only sent
+  alongside `memberVmc`, because the spec says a maintainer MUST NOT send one
+  without the other, and a row from before #1213 has the receipt time but no
+  body.
+
+  An unknown member gets a 404 whose body carries the spec's declared code,
+  `vtc/members/credentials:notFound`, next to the usual `error` member.
+  "Unknown" means what it means for `members/show`: no member row, or no ACL
+  row, so a tombstoned member counts. A member who holds nothing gets a 200
+  with every document absent and `memberVmcBound: false`, as the spec
+  requires.
+
+  The spec says a maintainer SHOULD record that the read happened, so every
+  successful read writes a new `MemberCredentialsRead` audit event. The event
+  names which documents were disclosed and never includes their contents.
+  The audit write happens before the response. `AuditEvent` is
+  `#[non_exhaustive]`, so the new variant does not break any consumer.
+
+  A conformance witness checks the task. It builds its response with the
+  handler's own `credentials_response`, over a row filled by the real
+  `record_issued_credentials` / `record_member_vmc`, so it tests what the
+  service sends rather than a hand-typed fixture.
+
+- **acl**: `key-export` is its own capability, and minting a DID needs `KeyMint`, not admin ([#1619](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1619))
+
+Keyring finding VTI-23: `webvh/dids/create` and `keys/export-secret` both checked
+  for the admin role, so a least-privilege manager was impossible for the persona
+  lifecycle — an `initiator` holds `KeyMint` and `Sign` and was refused both.
+
+  ## Minting a DID: `KeyMint`
+
+  Minting a DID mints its keys, which `initiator` is already trusted to do. The
+  gate in `create_did_webvh` is now `KeyMint`, so a manager on `initiator` can mint
+  personas. The context check is unchanged and still bounds *where*.
+
+  It reads the caller's **entry**, so a narrowing that removes `KeyMint` stops the
+  next call — the rule every capability gate has followed since #1279. That needs
+  the ACL keyspace in `CreateDidWebvhDeps`, as `acl_ks: Option<&KeyspaceHandle>`:
+  `Some` from both live constructors and from provisioning; `None` only for the
+  offline CLI and first-boot setup, whose claims are synthesized under a DID that is
+  deliberately in no ACL — so reading the store would find no entry and fall back to
+  the role anyway. The gate is extracted as `ensure_may_mint` so it can be tested as
+  the code that runs, rather than by a test that mirrors it.
+
+  ## Exporting a key: a new `KeyExport` capability
+
+  VTI-VTA-003 is normative here:
+
+  > Where a VTA supports exporting derived key material, that export MUST be gated
+  > by a capability distinct from the capability to use the key, and MUST be
+  > audited.
+
+  The admin-role check was not that. It coupled export to being an admin, so export
+  could neither be granted below admin nor narrowed away from one. `KeyExport` is
+  now the gate; scope and auditing inside `get_key_secret` are unchanged.
+
+  **Only `admin` derives it.** That is deliberate, and it is the answer to the half
+  of VTI-23 this does not grant. An `initiator` holds `Sign`, which is the signing
+  oracle — its whole guarantee is that the key never leaves — and VTI-VTA-002 makes
+  performing the operation the norm and exporting it the exception, because an
+  exported key stays with whoever holds it after their authority is withdrawn. A
+  manager that needs to act as a persona signs through the oracle.
+
+  `KeyExport` is role-derived, not additive, so naming it on an `initiator` grants
+  nothing. Making it both admin-derived *and* grantable would need a change to
+  `effective_capabilities`' invariant (a capability is either derived or additive,
+  never both), which was considered and not taken.
+
+  ## One behaviour change to know about
+
+  An admin who was **narrowed** under #1279 could export until now, because the
+  role check ignored narrowing. Their stored set could not name `key-export` — it
+  did not exist — so after this they cannot. That is the narrowing working as
+  intended, closing the one power it could not previously restrict. Un-narrowed
+  admins keep everything.
+
+  `KeyExport` is not in the published `device/_shared/0.2` enum, and
+  `PUBLISHED_CAPABILITIES` lists that enum positively, so it lands in `ext` as an
+  ecosystem-local capability rather than leaking into a closed schema.
+
+  ## Follow-up outside this repository
+
+  The TS console keeps a hand-maintained copy of the role table
+  (`acl-capabilities.json`, synced from this repo's `origin/main`). It must be
+  re-synced after this merges, or it will under-report an admin's authority.
+
+  ## Tests
+
+  - Role table: admin derives `KeyExport`; no other role does; it narrows away
+    from an admin; naming it on an initiator grants nothing.
+  - `keys/export-secret`: an initiator is refused at the gate; an admin passes it;
+    a narrowed admin is refused. The last is the one the old role floor would have
+    let through — verified by restoring it.
+  - `ensure_may_mint`: an initiator may mint; a reader may not; a narrowing
+    without `KeyMint` stops the next mint — verified to fail when the entry is
+    ignored; offline callers fall back to the role.
+
+
+
 ## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.20.2...vti-common-v0.21.0) — 2026-09-21
 
 

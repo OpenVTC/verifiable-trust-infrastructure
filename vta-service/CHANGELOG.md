@@ -2,6 +2,352 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.37.1...vta-service-v0.38.0) — 2026-09-22
+
+
+### Added
+
+- **persona**: Derived provenance, and endorsements as inventory ([#1639](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1639))
+
+* feat(persona)!: derived provenance, and endorsements as inventory
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#582 (design note
+  docs/05-design-notes/persona-context-first.md §5.7).
+
+- **persona**: Where a face may be worn, where it is, and what it has done ([#1635](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1635))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#577 (design note
+  docs/05-design-notes/persona-context-first.md §5.4, §9.6).
+
+  Face reach. A pool face carries `reach` — FaceReach::Anywhere (default)
+  or Only { context_ids } — an enum rather than a context list, so
+  unrestricted and nowhere cannot be confused (#746/#769/#770).
+  binding/set refuses a face outside its reach (`outsideReach`);
+  profile/put refuses to narrow it past a context the face is worn in
+  (`boundOutsideReach`, naming them). An omitted reach on profile/put keeps
+  the face's current one: a client written before reach existed must not
+  lift a restriction by saving an edit.
+
+  persona/profile/usage — where a face is worn now, each binding's
+  `until`, and the reach beside them.
+
+  persona/profile/timeline — one face's history, oldest first: composed,
+  worn, unworn, expired, disclosed, valueChanged, promoted, retired,
+  reinstated. A binding taken off left no trace, so each face now has an
+  append-only event log (`pft:`, agent-scoped, ULID-keyed so recording
+  never takes the write lock), written after the change it describes and
+  never failing it; the timeline joins it with the disclosure records. A
+  face from before the log reports its composition from createdAt. A
+  promoted face keeps its log; a deleted one loses it. FaceEvent has no
+  member a value or label could go in, and a test holds that none reaches
+  the wire.
+
+  profile/compose takes `until` (`untilNotFuture`).
+
+  `pnm persona profile usage|timeline`, `put --reach-only/--reach-anywhere`,
+  `compose --until`. Takes trust-tasks-rs 0.21.14.
+
+- **persona**: Retire a face, warn before deleting one, and let a binding end on its own ([#1628](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1628))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#570 (design note
+  docs/05-design-notes/persona-context-first.md §9.4, §9.5).
+
+  persona/profile/retire and persona/profile/reinstate, for pool and
+  context-local faces. Retire marks the face before clearing its bindings,
+  so an interrupted retire leaves a face that cannot be newly worn and a
+  repeat finishes the clearing; the cleared bindings come back in
+  `unbound`. binding/set and local/binding/set refuse a retired face
+  (`profileRetired`), profile/list leaves retired faces out unless
+  `includeRetired`. Reinstate binds nothing. Profile gains `status` and
+  `retiredAt`.
+
+  Binding `until` on binding/set and local/binding/set, returned by
+  binding/get and binding/list; `untilNotFuture` refuses one in the past or
+  on a cleared binding. A lapsed binding reads as cleared at once — every
+  binding read decodes through BindingRecord::into_read, and present
+  refuses a preview whose persona no longer wears a face — whether or not
+  the sweeper has run. The storage-thread sweeper (expire_bindings,
+  audited as persona.binding.expire) makes the clear durable and retires a
+  face the expiry left worn nowhere; never one still worn elsewhere, and
+  never deletes.
+
+  profile/get and profile/delete return `disclosedTo` {partyCount,
+  contextCount}; `pnm persona profile delete` says "deleting does not
+  un-tell them". Disclosure records now carry the face they were made
+  through; an older record is attributed through its binding where that
+  still wears the face.
+
+  `pnm persona profile retire|reinstate`, `list --include-retired`,
+  `binding set --until`, `local binding set --until`. Retire is
+  Destructive for the MCP guard (it withdraws access everywhere at once),
+  reinstate Mutating; both RetrySafe.
+
+  Takes trust-tasks-rs 0.21.12.
+
+- **persona**: Compose a face where it is asked for, and promote a local value ([#1623](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1623))
+
+* feat(persona)!: compose a face where it is asked for, and promote a local value
+
+  Implements persona/profile/compose/1.0 and persona/attribute/promote/1.0
+  (trustoverip/dtgwg-trust-tasks-tf#569; design note
+  docs/05-design-notes/persona-context-first.md §2.1, §5.3).
+
+  compose — a face for one context, from values typed now and attributes
+  already held, optionally worn there in the same act. Local by default: a
+  typed value is carried inline and enters no pool unless the claim says
+  `share: pool`, when a self-asserted pool attribute holding exactly that
+  type and value is referenced, and created only if none exists. Where the
+  face lives follows from its claims — all local makes a context-local
+  face, anything pooled or held a pool face. Everything is validated before
+  anything is written (unresolvedReference, duplicateSlot,
+  labelWithoutPersona), and a later failure removes the attributes the
+  compose created.
+
+  promote — named entries of a context-local face become pool attributes
+  and the face moves into the pool with its id, name, order, slots and
+  wearers unchanged. One-way. The pool face is written and the bindings
+  moved before the local face is removed, so an interrupted promote leaves
+  the local face worn and a retry finishes it, reusing what it made.
+  versionConflict and entryOutOfRange refuse a stale or out-of-range read.
+
+  Both holder-only (Reach::Holder), classified Keyed for retry, Mutating
+  for the MCP guard. `pnm persona profile compose` and `pnm persona
+  attribute promote`. The design note records what the built form changed:
+  the `profile` noun, no inline findings (analyze with `candidate` is the
+  pre-write warning), no facetId, self-asserted-only reuse, and §9.7's
+  DID minting left for its own design.
+
+- **vta**: TSP is on by default, and setup checks the mediator carries it ([#1622](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1622))
+
+Keyring VTI-33. TSP is the preferred transport across the stack, but a
+  default VTA build could not receive it. `tsp` joins vta-service's and
+  vta-enclave's default features; the setup wizard pre-ticks TSP, and a setup
+  file enables it unless it says `tsp = false` — including a `[services]`
+  block given without a `tsp` key, which gets its own deserializer so the
+  runtime `ServicesConfig` can keep its `false` default (a hand-written config
+  that never mentions TSP must not start claiming it).
+
+  On-by-default is only safe if the mediator `#tsp` names routes TSP, so setup
+  now checks: a mediator it creates is created with `#tsp`; an existing one is
+  resolved and its DID document read for a `TSPTransport` service (by type).
+  Without one the wizard drops TSP and says so, and `--from` refuses, both
+  before anything is minted. An unresolvable mediator gets a warning.
+
+  Existing VTAs are unchanged; `pnm services tsp enable` adds TSP. CI's
+  `tsp transport` step duplicated the default build and now builds without
+  `tsp` instead.
+
+  Behaviour change: a `--from` file whose existing mediator advertises no
+  `TSPTransport` now fails setup unless it sets `services.tsp = false`.
+
+- **acl**: `key-export` is its own capability, and minting a DID needs `KeyMint`, not admin ([#1619](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1619))
+
+Keyring finding VTI-23: `webvh/dids/create` and `keys/export-secret` both checked
+  for the admin role, so a least-privilege manager was impossible for the persona
+  lifecycle — an `initiator` holds `KeyMint` and `Sign` and was refused both.
+
+  ## Minting a DID: `KeyMint`
+
+  Minting a DID mints its keys, which `initiator` is already trusted to do. The
+  gate in `create_did_webvh` is now `KeyMint`, so a manager on `initiator` can mint
+  personas. The context check is unchanged and still bounds *where*.
+
+  It reads the caller's **entry**, so a narrowing that removes `KeyMint` stops the
+  next call — the rule every capability gate has followed since #1279. That needs
+  the ACL keyspace in `CreateDidWebvhDeps`, as `acl_ks: Option<&KeyspaceHandle>`:
+  `Some` from both live constructors and from provisioning; `None` only for the
+  offline CLI and first-boot setup, whose claims are synthesized under a DID that is
+  deliberately in no ACL — so reading the store would find no entry and fall back to
+  the role anyway. The gate is extracted as `ensure_may_mint` so it can be tested as
+  the code that runs, rather than by a test that mirrors it.
+
+  ## Exporting a key: a new `KeyExport` capability
+
+  VTI-VTA-003 is normative here:
+
+  > Where a VTA supports exporting derived key material, that export MUST be gated
+  > by a capability distinct from the capability to use the key, and MUST be
+  > audited.
+
+  The admin-role check was not that. It coupled export to being an admin, so export
+  could neither be granted below admin nor narrowed away from one. `KeyExport` is
+  now the gate; scope and auditing inside `get_key_secret` are unchanged.
+
+  **Only `admin` derives it.** That is deliberate, and it is the answer to the half
+  of VTI-23 this does not grant. An `initiator` holds `Sign`, which is the signing
+  oracle — its whole guarantee is that the key never leaves — and VTI-VTA-002 makes
+  performing the operation the norm and exporting it the exception, because an
+  exported key stays with whoever holds it after their authority is withdrawn. A
+  manager that needs to act as a persona signs through the oracle.
+
+  `KeyExport` is role-derived, not additive, so naming it on an `initiator` grants
+  nothing. Making it both admin-derived *and* grantable would need a change to
+  `effective_capabilities`' invariant (a capability is either derived or additive,
+  never both), which was considered and not taken.
+
+  ## One behaviour change to know about
+
+  An admin who was **narrowed** under #1279 could export until now, because the
+  role check ignored narrowing. Their stored set could not name `key-export` — it
+  did not exist — so after this they cannot. That is the narrowing working as
+  intended, closing the one power it could not previously restrict. Un-narrowed
+  admins keep everything.
+
+  `KeyExport` is not in the published `device/_shared/0.2` enum, and
+  `PUBLISHED_CAPABILITIES` lists that enum positively, so it lands in `ext` as an
+  ecosystem-local capability rather than leaking into a closed schema.
+
+  ## Follow-up outside this repository
+
+  The TS console keeps a hand-maintained copy of the role table
+  (`acl-capabilities.json`, synced from this repo's `origin/main`). It must be
+  re-synced after this merges, or it will under-report an admin's authority.
+
+  ## Tests
+
+  - Role table: admin derives `KeyExport`; no other role does; it narrows away
+    from an admin; naming it on an initiator grants nothing.
+  - `keys/export-secret`: an initiator is refused at the gate; an admin passes it;
+    a narrowed admin is refused. The last is the one the old role floor would have
+    let through — verified by restoring it.
+  - `ensure_may_mint`: an initiator may mint; a reader may not; a narrowing
+    without `KeyMint` stops the next mint — verified to fail when the entry is
+    ignored; offline callers fall back to the role.
+
+
+
+### Fixed
+
+- **vta**: Contexts/secrets requires KeyExport (VTI-VTA-003) ([#1634](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1634))
+
+`vta/contexts/secrets/1.0` (`get_context_secrets`) released a context DID's
+  private keys to any `Application`-role caller in that context. Its only gate
+  was the role floor (`require_write`, which also admits `Initiator`) plus the
+  context scope. VTI-VTA-003 says an export of derived key material "MUST be
+  gated by a capability distinct from the capability to use the key, and MUST
+  be audited". The audit was already there; the separate capability was not.
+  An `Application` can *use* its context's keys through the signing oracle, and
+  under the old gate that also let it *take* them. That is the case the
+  requirement exists for: keys that were taken stay with the caller after its
+  authority is withdrawn.
+
+  ## The gate
+
+  `get_context_secrets` now requires `Capability::KeyExport`, the same
+  capability `keys/export-secret` requires. It reads the caller's **entry**,
+  like `ensure_may_mint` ([#1619](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1619)), so a narrowing that removes `key-export` from
+  an admin stops the next fetch. With no entry, the role decides. A store error
+  refuses the call. The gate replaces the `require_write` role floor. The
+  existing `require_context` scope check and the per-key `key.secret_export`
+  audit are unchanged.
+
+  `KeyExport` stays exactly as #1619 left it: derived by `admin` alone, and not
+  grantable to any other role. So the service that operates a context's DID
+  must be an admin **scoped to that context**. Integrations onboarded through
+  `provision-integration` already have that grant: the mediator, did-hosting
+  and the VTC. They are not affected.
+
+  ## Who is affected
+
+  Any `application` or `initiator` entry that fetches its context's secrets
+  through `VtaClient::fetch_did_secrets_bundle` or
+  `vta_sdk::integration::startup`. The known one is **room-host**, whose
+  enrolment instructions granted `--role application`. After upgrading, such a
+  caller gets `permissionDenied`, which the SDK surfaces as
+  `VtaError::Forbidden` on REST, DIDComm and TSP. The message names the command
+  that fixes it for that caller's entry:
+
+  - an existing non-admin scoped to the context:
+    `pnm acl change-role --did <did> --from application --to admin`
+    (this keeps the entry's contexts);
+  - an entry with no contexts: `pnm acl update <did> --contexts <CONTEXT>`
+    first. The fix never suggests promoting an unscoped entry, because that
+    would mint a super-admin;
+  - an admin narrowed without `key-export`:
+    `pnm acl update <did> --capabilities <existing>,key-export`
+    (the narrowing is restated, never `--capabilities-all`);
+  - no entry: `pnm acl create --did <did> --role admin --contexts <CONTEXT>`.
+
+  ## Also changed
+
+  - room-host's `grant_instructions` and its missing-DID help now grant a
+    context-scoped admin (`vta import-did --role admin --context <C>` /
+    `pnm acl create --role admin --contexts <C>`).
+  - `vti-secrets` gains `OnboardingTicket::admin_import_did_command`. Its module
+    docs now separate integrations that only call the VTA (`application`) from
+    those that load their DID's keys (context-scoped `admin`).
+  - Doc comments on the task constant, the handler, the SDK method and
+    `get_context_secrets`. `docs/02-vta/integration-guide.md` gains a
+    "Who may fetch a context's secrets" section.
+
+  ## Tests (VTI-VTA-003)
+
+  - The `operations/export.rs` tests that asserted the old loosening are
+    rewritten.
+  - New tests cover these cases: an Application is refused, an Initiator is
+    refused, a context admin gets the bundle, an admin narrowed without
+    `key-export` is refused, an admin of another context is refused, an
+    unscoped non-admin is told to scope first, and a reader is refused. The
+    entitlement-before-existence non-leak test now runs against both gates.
+  - A handler-level test checks that the refusal is `permissionDenied` and
+    carries the fix command.
+
+- **vta**: Warn at boot when approval rules exist but policy enforcement is off ([#1633](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1633))
+
+Keyring KR-22 (Refs #1608). `policy.enforcement` defaults to false and stays
+  that way: flipping it would turn every written-but-not-intended policy into a
+  gate across existing deployments on upgrade. The defect was the silence — a
+  rule written with `pnm approvals require` is stored, listed and explained, and
+  then gates nothing, with no signal anywhere that enforcement is off.
+
+  - vta-policy: `unenforced_policies()` (+ `#[non_exhaustive]`
+    `UnenforcedPolicies`) reports the approval rules on the enabled declarative
+    row and the ids of enabled hand-authored rows. The boot-installed baseline,
+    disabled rows and a declarative row carrying only approver sets are not
+    counted — none would gate a task with enforcement on.
+  - vta-service: on boot with enforcement off, log a WARN naming what is being
+    ignored and the exact change (`[policy] enforcement = true` + restart).
+    Advisory only: a failure to read the rows is logged and never stops boot.
+    The enforcement flag is copied out so the config lock is not held across
+    the keyspace read.
+  - docs/02-vta/approvals.md: state up front that approvals are opt-in and off
+    by default, show the config snippet, and document the boot warning.
+
+- **cli**: A self-hosted VTA is not told to redeploy the log it serves ([#1624](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1624))
+
+Keyring VTI-36. After a service mutation on a self-hosted ("serverless")
+  VTA, the CLI said to fetch the log and "redeploy did.jsonl to your host".
+  But the VTA serves its own did.jsonl from its store at the DID's canonical
+  path, read per request, so the new entry is already published — the host
+  the operator was told to redeploy to is the VTA. The hint now says so,
+  names the URL, and notes the resolver cache window; only a copy published
+  elsewhere needs replacing. The offline `vta services` surface says the
+  entry is served once the daemon starts.
+
+  `dids edit` on a self-hosted DID the VTA manages for someone else (a
+  community's) still gets the redeploy advice, which is right there, now
+  without calling it "this VTA's DID".
+
+- **vta**: Refuse `services.tsp = true` on a build without the `tsp` feature ([#1620](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1620))
+
+* fix(vta): refuse `services.tsp = true` on a build without the `tsp` feature
+
+  Keyring VTI-34. `tsp` is not a default feature, and on a build without it
+  `services.tsp = true` was accepted and did nothing: there was no TSP
+  receive path, while anything that had published `#tsp` sent peers into it
+  under the stack's TSP-first preference. Nothing reported it.
+
+  Startup now refuses the combination with an `AppError::Config` naming both
+  fixes, and `enable_tsp` refuses before publishing on such a build. One
+  `server::TSP_BUILT` definition feeds both. REST and DIDComm keep their
+  silent `cfg! && config` AND, which the reduced CI builds rely on; TSP
+  defaults to false, so `tsp = true` is always an explicit choice.
+
+  Behaviour change: a VTA configured with `services.tsp = true` but built
+  without `--features tsp` no longer starts.
+
+
+
 ## [0.37.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.37.0...vta-service-v0.37.1) — 2026-09-21
 
 

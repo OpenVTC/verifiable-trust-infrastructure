@@ -2,6 +2,123 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.5.1...vta-persona-v0.6.0) — 2026-09-22
+
+
+### Added
+
+- **persona**: Derived provenance, and endorsements as inventory ([#1639](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1639))
+
+* feat(persona)!: derived provenance, and endorsements as inventory
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#582 (design note
+  docs/05-design-notes/persona-context-first.md §5.7).
+
+- **persona**: Where a face may be worn, where it is, and what it has done ([#1635](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1635))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#577 (design note
+  docs/05-design-notes/persona-context-first.md §5.4, §9.6).
+
+  Face reach. A pool face carries `reach` — FaceReach::Anywhere (default)
+  or Only { context_ids } — an enum rather than a context list, so
+  unrestricted and nowhere cannot be confused (#746/#769/#770).
+  binding/set refuses a face outside its reach (`outsideReach`);
+  profile/put refuses to narrow it past a context the face is worn in
+  (`boundOutsideReach`, naming them). An omitted reach on profile/put keeps
+  the face's current one: a client written before reach existed must not
+  lift a restriction by saving an edit.
+
+  persona/profile/usage — where a face is worn now, each binding's
+  `until`, and the reach beside them.
+
+  persona/profile/timeline — one face's history, oldest first: composed,
+  worn, unworn, expired, disclosed, valueChanged, promoted, retired,
+  reinstated. A binding taken off left no trace, so each face now has an
+  append-only event log (`pft:`, agent-scoped, ULID-keyed so recording
+  never takes the write lock), written after the change it describes and
+  never failing it; the timeline joins it with the disclosure records. A
+  face from before the log reports its composition from createdAt. A
+  promoted face keeps its log; a deleted one loses it. FaceEvent has no
+  member a value or label could go in, and a test holds that none reaches
+  the wire.
+
+  profile/compose takes `until` (`untilNotFuture`).
+
+  `pnm persona profile usage|timeline`, `put --reach-only/--reach-anywhere`,
+  `compose --until`. Takes trust-tasks-rs 0.21.14.
+
+- **persona**: Retire a face, warn before deleting one, and let a binding end on its own ([#1628](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1628))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#570 (design note
+  docs/05-design-notes/persona-context-first.md §9.4, §9.5).
+
+  persona/profile/retire and persona/profile/reinstate, for pool and
+  context-local faces. Retire marks the face before clearing its bindings,
+  so an interrupted retire leaves a face that cannot be newly worn and a
+  repeat finishes the clearing; the cleared bindings come back in
+  `unbound`. binding/set and local/binding/set refuse a retired face
+  (`profileRetired`), profile/list leaves retired faces out unless
+  `includeRetired`. Reinstate binds nothing. Profile gains `status` and
+  `retiredAt`.
+
+  Binding `until` on binding/set and local/binding/set, returned by
+  binding/get and binding/list; `untilNotFuture` refuses one in the past or
+  on a cleared binding. A lapsed binding reads as cleared at once — every
+  binding read decodes through BindingRecord::into_read, and present
+  refuses a preview whose persona no longer wears a face — whether or not
+  the sweeper has run. The storage-thread sweeper (expire_bindings,
+  audited as persona.binding.expire) makes the clear durable and retires a
+  face the expiry left worn nowhere; never one still worn elsewhere, and
+  never deletes.
+
+  profile/get and profile/delete return `disclosedTo` {partyCount,
+  contextCount}; `pnm persona profile delete` says "deleting does not
+  un-tell them". Disclosure records now carry the face they were made
+  through; an older record is attributed through its binding where that
+  still wears the face.
+
+  `pnm persona profile retire|reinstate`, `list --include-retired`,
+  `binding set --until`, `local binding set --until`. Retire is
+  Destructive for the MCP guard (it withdraws access everywhere at once),
+  reinstate Mutating; both RetrySafe.
+
+  Takes trust-tasks-rs 0.21.12.
+
+- **persona**: Compose a face where it is asked for, and promote a local value ([#1623](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1623))
+
+* feat(persona)!: compose a face where it is asked for, and promote a local value
+
+  Implements persona/profile/compose/1.0 and persona/attribute/promote/1.0
+  (trustoverip/dtgwg-trust-tasks-tf#569; design note
+  docs/05-design-notes/persona-context-first.md §2.1, §5.3).
+
+  compose — a face for one context, from values typed now and attributes
+  already held, optionally worn there in the same act. Local by default: a
+  typed value is carried inline and enters no pool unless the claim says
+  `share: pool`, when a self-asserted pool attribute holding exactly that
+  type and value is referenced, and created only if none exists. Where the
+  face lives follows from its claims — all local makes a context-local
+  face, anything pooled or held a pool face. Everything is validated before
+  anything is written (unresolvedReference, duplicateSlot,
+  labelWithoutPersona), and a later failure removes the attributes the
+  compose created.
+
+  promote — named entries of a context-local face become pool attributes
+  and the face moves into the pool with its id, name, order, slots and
+  wearers unchanged. One-way. The pool face is written and the bindings
+  moved before the local face is removed, so an interrupted promote leaves
+  the local face worn and a retry finishes it, reusing what it made.
+  versionConflict and entryOutOfRange refuse a stale or out-of-range read.
+
+  Both holder-only (Reach::Holder), classified Keyed for retry, Mutating
+  for the MCP guard. `pnm persona profile compose` and `pnm persona
+  attribute promote`. The design note records what the built form changed:
+  the `profile` noun, no inline findings (analyze with `candidate` is the
+  pre-write warning), no facetId, self-asserted-only reuse, and §9.7's
+  DID minting left for its own design.
+
+
+
 ## [0.5.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.5.0...vta-persona-v0.5.1) — 2026-09-21
 
 

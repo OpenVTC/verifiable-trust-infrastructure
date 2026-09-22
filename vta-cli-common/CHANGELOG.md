@@ -2,6 +2,175 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.20.1...vta-cli-common-v0.21.0) — 2026-09-22
+
+
+### Added
+
+- **persona**: Derived provenance, and endorsements as inventory ([#1639](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1639))
+
+* feat(persona)!: derived provenance, and endorsements as inventory
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#582 (design note
+  docs/05-design-notes/persona-context-first.md §5.7).
+
+- **persona**: Where a face may be worn, where it is, and what it has done ([#1635](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1635))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#577 (design note
+  docs/05-design-notes/persona-context-first.md §5.4, §9.6).
+
+  Face reach. A pool face carries `reach` — FaceReach::Anywhere (default)
+  or Only { context_ids } — an enum rather than a context list, so
+  unrestricted and nowhere cannot be confused (#746/#769/#770).
+  binding/set refuses a face outside its reach (`outsideReach`);
+  profile/put refuses to narrow it past a context the face is worn in
+  (`boundOutsideReach`, naming them). An omitted reach on profile/put keeps
+  the face's current one: a client written before reach existed must not
+  lift a restriction by saving an edit.
+
+  persona/profile/usage — where a face is worn now, each binding's
+  `until`, and the reach beside them.
+
+  persona/profile/timeline — one face's history, oldest first: composed,
+  worn, unworn, expired, disclosed, valueChanged, promoted, retired,
+  reinstated. A binding taken off left no trace, so each face now has an
+  append-only event log (`pft:`, agent-scoped, ULID-keyed so recording
+  never takes the write lock), written after the change it describes and
+  never failing it; the timeline joins it with the disclosure records. A
+  face from before the log reports its composition from createdAt. A
+  promoted face keeps its log; a deleted one loses it. FaceEvent has no
+  member a value or label could go in, and a test holds that none reaches
+  the wire.
+
+  profile/compose takes `until` (`untilNotFuture`).
+
+  `pnm persona profile usage|timeline`, `put --reach-only/--reach-anywhere`,
+  `compose --until`. Takes trust-tasks-rs 0.21.14.
+
+- **vtc**: A self-hosted community installs its own DID log over did-management/did/register ([#1632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1632))
+
+Keyring VTI-35. A community whose DID is `did:webvh:<scid>:<host>` serves
+  its own did.jsonl, but the VTA holds the keys that extend it and cannot
+  reach the community's copy, and the VTC keeps no VTA credential after
+  setup. So an entry the VTA appends later — a TSP transport added to the
+  community's services, a key rotated — had no way to the community except
+  an operator copying the file by hand. (A community on a DID host needs
+  none of this: the VTA publishes each entry to the host itself.)
+
+  The VTC now answers `did-management/did/register/0.1` — the task a DID
+  owner sends a DID host, where a second register with a longer log is an
+  update — for its own DID at the root slot `.well-known`, over
+  `POST /v1/admin/did/register` (super-admin). Before serving, it verifies
+  the whole log (every entry's proof under the update keys in force, SCID,
+  hash chain), that it is the community's own DID, and that every served
+  entry survives unchanged as a prefix; then swaps the file atomically,
+  with no restart. So an administrator's authority covers delivery only: a
+  log the key holder did not sign, or one that moves the served log
+  backwards, is refused whoever delivers it. The prefix rule is stricter
+  than `register` alone and carries a consumer-minted code (SPEC §8.5).
+
+  - `cnm did-log install --file did.jsonl`, fed by `pnm did-mgmt dids
+    get-log`. It authenticates to the community directly, with the
+    community's DID as the audience (`VtcClient::connect`), not through the
+    profile's VTA session, whose audience is the VTA's DID — a VTC refuses
+    that. The community DID comes from the log; the URL from its host.
+  - `VtcClient::install_did_log`; `MockVtc::start_with` for a test VTC with
+    a self-hosted DID; a live test authenticates and installs over HTTP.
+  - AuditEvent::CommunityDidLogInstalled.
+  - The redeploy hint for a DID the VTA manages but does not serve names
+    the new command.
+
+- **persona**: Retire a face, warn before deleting one, and let a binding end on its own ([#1628](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1628))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#570 (design note
+  docs/05-design-notes/persona-context-first.md §9.4, §9.5).
+
+  persona/profile/retire and persona/profile/reinstate, for pool and
+  context-local faces. Retire marks the face before clearing its bindings,
+  so an interrupted retire leaves a face that cannot be newly worn and a
+  repeat finishes the clearing; the cleared bindings come back in
+  `unbound`. binding/set and local/binding/set refuse a retired face
+  (`profileRetired`), profile/list leaves retired faces out unless
+  `includeRetired`. Reinstate binds nothing. Profile gains `status` and
+  `retiredAt`.
+
+  Binding `until` on binding/set and local/binding/set, returned by
+  binding/get and binding/list; `untilNotFuture` refuses one in the past or
+  on a cleared binding. A lapsed binding reads as cleared at once — every
+  binding read decodes through BindingRecord::into_read, and present
+  refuses a preview whose persona no longer wears a face — whether or not
+  the sweeper has run. The storage-thread sweeper (expire_bindings,
+  audited as persona.binding.expire) makes the clear durable and retires a
+  face the expiry left worn nowhere; never one still worn elsewhere, and
+  never deletes.
+
+  profile/get and profile/delete return `disclosedTo` {partyCount,
+  contextCount}; `pnm persona profile delete` says "deleting does not
+  un-tell them". Disclosure records now carry the face they were made
+  through; an older record is attributed through its binding where that
+  still wears the face.
+
+  `pnm persona profile retire|reinstate`, `list --include-retired`,
+  `binding set --until`, `local binding set --until`. Retire is
+  Destructive for the MCP guard (it withdraws access everywhere at once),
+  reinstate Mutating; both RetrySafe.
+
+  Takes trust-tasks-rs 0.21.12.
+
+- **persona**: Compose a face where it is asked for, and promote a local value ([#1623](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1623))
+
+* feat(persona)!: compose a face where it is asked for, and promote a local value
+
+  Implements persona/profile/compose/1.0 and persona/attribute/promote/1.0
+  (trustoverip/dtgwg-trust-tasks-tf#569; design note
+  docs/05-design-notes/persona-context-first.md §2.1, §5.3).
+
+  compose — a face for one context, from values typed now and attributes
+  already held, optionally worn there in the same act. Local by default: a
+  typed value is carried inline and enters no pool unless the claim says
+  `share: pool`, when a self-asserted pool attribute holding exactly that
+  type and value is referenced, and created only if none exists. Where the
+  face lives follows from its claims — all local makes a context-local
+  face, anything pooled or held a pool face. Everything is validated before
+  anything is written (unresolvedReference, duplicateSlot,
+  labelWithoutPersona), and a later failure removes the attributes the
+  compose created.
+
+  promote — named entries of a context-local face become pool attributes
+  and the face moves into the pool with its id, name, order, slots and
+  wearers unchanged. One-way. The pool face is written and the bindings
+  moved before the local face is removed, so an interrupted promote leaves
+  the local face worn and a retry finishes it, reusing what it made.
+  versionConflict and entryOutOfRange refuse a stale or out-of-range read.
+
+  Both holder-only (Reach::Holder), classified Keyed for retry, Mutating
+  for the MCP guard. `pnm persona profile compose` and `pnm persona
+  attribute promote`. The design note records what the built form changed:
+  the `profile` noun, no inline findings (analyze with `candidate` is the
+  pre-write warning), no facetId, self-asserted-only reuse, and §9.7's
+  DID minting left for its own design.
+
+
+
+### Fixed
+
+- **cli**: A self-hosted VTA is not told to redeploy the log it serves ([#1624](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1624))
+
+Keyring VTI-36. After a service mutation on a self-hosted ("serverless")
+  VTA, the CLI said to fetch the log and "redeploy did.jsonl to your host".
+  But the VTA serves its own did.jsonl from its store at the DID's canonical
+  path, read per request, so the new entry is already published — the host
+  the operator was told to redeploy to is the VTA. The hint now says so,
+  names the URL, and notes the resolver cache window; only a copy published
+  elsewhere needs replacing. The offline `vta services` surface says the
+  entry is served once the daemon starts.
+
+  `dids edit` on a self-hosted DID the VTA manages for someone else (a
+  community's) still gets the redeploy advice, which is right there, now
+  without calling it "this VTA's DID".
+
+
+
 ## [0.20.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.20.0...vta-cli-common-v0.20.1) — 2026-09-21
 
 
