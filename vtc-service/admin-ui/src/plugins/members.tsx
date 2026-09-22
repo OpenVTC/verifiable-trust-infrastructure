@@ -55,11 +55,7 @@ import {
 import { CopyButton } from "@/components/CopyButton";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
-import {
-  decodePublicKeyOptions,
-  serializeAssertion,
-  type JsonPublicKeyOptions,
-} from "@/lib/webauthn";
+import { stepUpSession } from "@/lib/step-up";
 
 const TRUST_TASK_LIST =
   "https://trusttasks.org/spec/vtc/members/list/0.1";
@@ -73,15 +69,15 @@ const TRUST_TASK_SHOW =
 // the shared mount carries its own descriptor.
 const TRUST_TASK_ADMIN_REMOVE =
   "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
-// Promotion to admin is a PATCH like any other role change — what makes it
-// special is the step-up elevation it demands, not a task of its own. The
-// fused `openvtc/vtc/members/promote-to-admin/1.0` pair is retired.
-const TRUST_TASK_UPDATE =
-  "https://trusttasks.org/spec/vtc/members/update/0.1";
-const TRUST_TASK_PASSKEY_STEP_UP_START =
-  "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
-const TRUST_TASK_PASSKEY_STEP_UP_FINISH =
-  "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
+// Promotion is a **role transition**, so it goes to the task defined for role
+// transitions. `vtc/members/update` declares `adminRoleForbidden` and refuses
+// `role: admin` outright (#1645): it is a metadata update, and the step-up it
+// used to carry bounded that one route while `acl/change-role` reached the
+// same ACL row with none. The gate now sits on the transition — a host
+// invariant in the role-change ceremony — and the passkey gesture below is
+// what satisfies it.
+const TRUST_TASK_CHANGE_ROLE =
+  "https://trusttasks.org/spec/acl/change-role/0.1";
 const TRUST_TASK_REMOVED =
   "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const TRUST_TASK_PURGE =
@@ -211,56 +207,21 @@ async function requestMemberVmc(did: string): Promise<RequestVmcResponse> {
   );
 }
 
-// As on the sign-in path: `login/start/0.2` sends the inner WebAuthn options,
-// not webauthn-rs's `{publicKey: …}` wrapper (#1112).
-interface StepUpStartResponse {
-  authId: string;
-  options: JsonPublicKeyOptions;
-}
-
-/** Elevate this session with a passkey user-verification gesture.
- *
- * Independent of what it authorises: the daemon stamps a bounded window on the
- * session, and any operation gated on a fresh step-up can spend it while it is
- * open. Promotion is simply the first caller. */
-async function stepUpSession(): Promise<void> {
-  const start = await postJson<StepUpStartResponse>(
-    "/v1/auth/passkey-login/start",
-    { purpose: "stepUp" },
-    {
-      trustTask: TRUST_TASK_PASSKEY_STEP_UP_START,
-      requires: ["authId", "options.challenge"],
-    },
-  );
-
-  const publicKey = decodePublicKeyOptions(
-    start.options,
-  ) as PublicKeyCredentialRequestOptions;
-  const credential = (await navigator.credentials.get({
-    publicKey,
-  })) as PublicKeyCredential | null;
-  if (!credential) throw new Error("Passkey ceremony returned no credential");
-
-  await postJson<unknown>(
-    "/v1/auth/passkey-login/finish",
-    {
-      auth_id: start.authId,
-      credential: serializeAssertion(credential),
-    },
-    { trustTask: TRUST_TASK_PASSKEY_STEP_UP_FINISH },
-  );
-}
-
-async function promoteToAdmin(targetDid: string): Promise<void> {
+async function promoteToAdmin(args: {
+  did: string;
+  fromRole: string;
+}): Promise<void> {
   // Step up first, then promote. Doing it unconditionally (rather than
   // promoting, catching `step_up_required`, and retrying) keeps the operator's
   // passkey gesture tied to the click that asked for it — which is the whole
   // point of requiring a *recent* second factor.
   await stepUpSession();
+  // `fromRole` is a compare-and-swap guard, not decoration: the role we render
+  // is a read, and the daemon refuses the change if the row has moved since.
   await patchJson<unknown>(
-    `/v1/members/${encodeURIComponent(targetDid)}`,
-    { role: "admin" },
-    { trustTask: TRUST_TASK_UPDATE },
+    `/v1/acl/${encodeURIComponent(args.did)}`,
+    { fromRole: args.fromRole, toRole: "admin" },
+    { trustTask: TRUST_TASK_CHANGE_ROLE },
   );
 }
 
@@ -1090,7 +1051,11 @@ function MemberDetail() {
                     message: `${query.data.did} will gain admin role. You'll need to verify with your passkey first.`,
                     confirmLabel: "Promote",
                   });
-                  if (ok) promoteMutation.mutate(decoded);
+                  if (ok)
+                    promoteMutation.mutate({
+                      did: decoded,
+                      fromRole: query.data.role,
+                    });
                 }}
               >
                 {promoteMutation.isPending

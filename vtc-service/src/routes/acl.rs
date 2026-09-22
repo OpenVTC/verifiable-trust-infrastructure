@@ -15,7 +15,7 @@ use crate::auth::{AdminAuth, AuthClaims, ManageAuth, session::now_epoch};
 use crate::error::AppError;
 use crate::members::get_member;
 use crate::server::AppState;
-use vti_common::audit::{AclChangeData, AclRevokedData, AuditEvent};
+use vti_common::audit::{AclChangeData, AclRevokedData, AdminPromotedData, AuditEvent};
 use vti_common::pagination::{Cursor, MAX_LIMIT};
 
 // ---------- GET /acl ----------
@@ -277,7 +277,8 @@ pub struct GrantEntry {
     responses(
         (status = 201, description = "ACL entry created", body = AclEntryEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller lacks manage authority"),
+        (status = 403, description = "Caller lacks manage authority / granting `admin` without a live step-up / granting `admin` to yourself"),
+        (status = 409, description = "Entry exists at a different role — use acl/change-role"),
     ),
 )]
 pub async fn create_acl(
@@ -292,6 +293,7 @@ pub async fn create_acl(
     validate_acl_modification(&auth.0, &as_vti_role(&req_entry.role), &req_entry.scopes)?;
 
     let acl = state.acl_ks.clone();
+    let granting_admin = matches!(req_entry.role, VtcRole::Admin);
     let expires_at = req_entry.expires_at.map(|t| t.timestamp() as u64);
 
     // Canonical `acl/grant` is "the entry the maintainer should hold":
@@ -300,6 +302,10 @@ pub async fn create_acl(
     // — that task carries the `fromRole` compare-and-swap this one has
     // no way to express.
     let existing = get_acl_entry(&acl, &req_entry.subject).await?;
+    // Decided before the match consumes `existing`: does this write give away
+    // more than the subject already holds?
+    let confers_admin = granting_admin
+        && crate::acl::elevation::widens_admin_authority(existing.as_ref(), &req_entry.scopes);
     let (created_at, created_by, status) = match existing {
         Some(prev) => {
             if !is_acl_entry_visible(&auth.0, &as_vti_acl_entry(&prev)) {
@@ -317,8 +323,50 @@ pub async fn create_acl(
             }
             (prev.created_at, prev.created_by, StatusCode::OK)
         }
-        None => (now_epoch(), auth.0.did.clone(), StatusCode::CREATED),
+        None => {
+            // Minting yourself an admin entry is self-promotion by another
+            // name, and the role-change path refuses it (VTI-OPS-050). A
+            // *rewrite* of an entry that already says admin is not covered:
+            // that is how a super-admin corrects their own label, and it
+            // confers nothing they do not already hold.
+            if granting_admin && req_entry.subject == auth.0.did {
+                return Err(AppError::Forbidden(
+                    "you cannot grant yourself the admin role; admin elevation requires a \
+                     separate admin caller"
+                        .into(),
+                ));
+            }
+            (now_epoch(), auth.0.did.clone(), StatusCode::CREATED)
+        }
     };
+
+    // Conferring `admin` demands a live step-up here too (VTI-OPS-051).
+    //
+    // `acl/change-role` gets this from the role-change ceremony's host
+    // invariant, which is where a transition belongs. A grant is not a
+    // transition — it writes an entry where there was none, or rewrites one at
+    // the role it already holds — so there is no ceremony to hang an invariant
+    // on and the predicate is checked here, one layer further out. It is the
+    // same predicate: `elevation::verified` is the single definition of "this
+    // caller is elevated right now", so the two gates cannot drift.
+    //
+    // A rewrite is gated too when it *widens* — a context admin becoming
+    // community-wide is an elevation that never changes the role name — but
+    // not when it does not, because that is how the console edits an admin's
+    // label. `elevation::widens_admin_authority` draws that line;
+    // `validate_acl_modification` bounds *which* scopes a caller may confer and
+    // has nothing to say about how recently they authenticated.
+    //
+    // Checked *after* the wrong-role conflict above on purpose: a caller who
+    // meant `acl/change-role` should be told so, not sent off to run a passkey
+    // ceremony that would only earn them the same 409. Nothing is written
+    // either way.
+    if confers_admin && !crate::acl::elevation::verified(&auth.0, &state.sessions_ks).await {
+        return Err(crate::acl::elevation::required(&format!(
+            "granting the admin role to {}",
+            req_entry.subject
+        )));
+    }
 
     let entry = VtcAclEntry {
         did: req_entry.subject,
@@ -434,8 +482,9 @@ pub struct UpdateAclRequest {
     responses(
         (status = 200, description = "Updated ACL entry", body = AclEntryEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not an admin / promoting to `admin` without a live step-up / self-promotion / denied by the role-change policy"),
         (status = 404, description = "ACL entry not found"),
+        (status = 409, description = "`fromRole` does not match the stored role, or the row moved under the promote lock"),
     ),
 )]
 pub async fn update_acl(
@@ -448,7 +497,7 @@ pub async fn update_acl(
     Json(req): Json<UpdateAclRequest>,
 ) -> Result<Json<AclEntryEnvelope>, AppError> {
     let acl = state.acl_ks.clone();
-    let mut entry = get_acl_entry(&acl, &did)
+    let entry = get_acl_entry(&acl, &did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
 
@@ -485,11 +534,65 @@ pub async fn update_acl(
     }
 
     validate_vtc_role_assignment(&auth.0, &req.to_role)?;
-    entry.role = req.to_role.clone();
+    // …and the *resulting* entry must be one this caller could have granted.
+    //
+    // `create_acl` has always run this; this route never did, and the gap is
+    // the `allowed_contexts.is_empty()` trap in its usual form: an entry's
+    // scopes mean "unrestricted" under `admin` and "nowhere" under every other
+    // role. So a context admin could take a scopeless *member* — an entry that
+    // can act nowhere — to `admin`, and land a **community-wide super-admin**
+    // without ever naming a context they do not hold. `ActScope` is what tells
+    // the two apart, and `validate_acl_modification` decodes through it.
+    validate_acl_modification(&auth.0, &as_vti_role(&req.to_role), &entry.allowed_contexts)?;
+
+    // The role change itself is the **role-change ceremony**, not a field
+    // write (#1645). This route used to set `entry.role` and store it, which
+    // skipped everything the ceremony does: the operator's `role_change.rego`,
+    // the no-last-admin guard on demotion, the role-VEC re-mint, the
+    // serialisation of concurrent promotions — and the host invariants that
+    // refuse self-promotion and admin-without-a-step-up. Two doors onto one
+    // ACL row disagreed about what a role change costs, and this was the
+    // cheaper one.
+    let promoting = matches!(req.to_role, VtcRole::Admin);
+    let granted = crate::ceremony::role_change_via_pipeline(
+        &state,
+        &auth.0,
+        &did,
+        &prev_role.to_string(),
+        &req.to_role.to_string(),
+    )
+    .await?;
+
+    // The ceremony's executor owns the role write, so re-read it rather than
+    // storing a copy shaped before the ceremony ran, and stamp the provenance
+    // canonical `AclEntry` carries.
+    let mut entry = get_acl_entry(&acl, &did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
     entry.updated_at = Some(now_epoch());
     entry.updated_by = Some(auth.0.did.clone());
-
     store_acl_entry(&acl, &entry).await?;
+
+    if promoting {
+        // The admin sister record lets the new admin enrol a device through
+        // the existing passkey flow. Empty credential list until
+        // `admin/passkeys/register` runs. Carried over from the members/update
+        // promotion path — without it a promotion produces an admin who cannot
+        // sign in to the console.
+        use crate::acl::admin::{AdminEntry, get_admin_entry, store_admin_entry};
+        if get_admin_entry(&state.passkey_ks, &did).await?.is_none() {
+            store_admin_entry(
+                &state.passkey_ks,
+                &AdminEntry {
+                    did: did.clone(),
+                    passkeys: Vec::new(),
+                    extensions: serde_json::Value::Null,
+                    created_at: Utc::now(),
+                },
+            )
+            .await?;
+        }
+    }
 
     // The `AuthClaims` extractor reads role/contexts straight from the
     // still-valid JWT (only `/auth/refresh` re-checks the ACL), so a demoted
@@ -520,12 +623,31 @@ pub async fn update_acl(
                 }),
             )
             .await?;
+        if promoting {
+            // Its own variant beside the ACL row's: admin elevation is the
+            // highest-privilege grant the community emits and SIEM rules
+            // target it directly. `authorising_session_id` is the join key to
+            // the `AuthSteppedUp` row recording which credential asserted user
+            // verification — the elevation this promotion could not have
+            // happened without.
+            writer
+                .write(
+                    &auth.0.did,
+                    Some(&did),
+                    AuditEvent::AdminPromoted(AdminPromotedData {
+                        previous_role: granted.previous_role.clone(),
+                        authorising_credential_id: String::new(),
+                        authorising_session_id: auth.0.session_id.clone(),
+                    }),
+                )
+                .await?;
+        }
     }
 
     info!(
         did = %did,
-        from = %prev_role,
-        to = %entry.role,
+        from = %granted.previous_role,
+        to = %granted.new_role,
         reason = req.reason.as_deref().unwrap_or(""),
         "ACL role changed",
     );
