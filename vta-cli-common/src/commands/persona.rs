@@ -68,6 +68,7 @@ pub async fn cmd_attribute_put(
     value_type: ValueType,
     provenance: Provenance,
     label: Option<String>,
+    endorsements: Vec<String>,
     attribute_id: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
@@ -78,6 +79,7 @@ pub async fn cmd_attribute_put(
             value_type,
             provenance,
             label.as_deref(),
+            endorsements,
             attribute_id.as_deref(),
             expected_version,
         )

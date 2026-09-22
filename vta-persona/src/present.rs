@@ -439,6 +439,9 @@ fn preview_claim(m: &MaterialisedClaim, seen: &[String]) -> PreviewClaim {
     let (provenance, rung) = match &m.provenance {
         Provenance::SelfAsserted => ("selfAsserted", ProofRung::Whole),
         Provenance::Generated { .. } => ("generated", ProofRung::Whole),
+        // No issuer signature: presented whole, like a typed value, and it
+        // correlates the way a typed value does — when it is reused.
+        Provenance::Derived { .. } => ("derived", ProofRung::Whole),
         Provenance::CredentialBacked { proof, .. } => (
             "credentialBacked",
             // Absent means the credential's format was never assessed, and the

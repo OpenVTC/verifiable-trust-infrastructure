@@ -81,6 +81,18 @@ pub enum Provenance {
         #[serde(default = "default_true")]
         per_verifier: bool,
     },
+
+    /// Taken from a source the holder connected or supplied — a code-hosting
+    /// profile, an uploaded CV — rather than typed by them or attested by an
+    /// issuer. Nobody signed it; it is the holder's claim that the source said
+    /// so, and it is never presented as attested. Design note
+    /// `persona-context-first.md` §5.7.
+    ///
+    /// `source` is the *kind* of source (`github`, `cvUpload`), never a handle
+    /// or URL: provenance reaches the verifier, and a handle here would
+    /// disclose an identifier the holder never chose to share.
+    #[serde(rename_all = "camelCase")]
+    Derived { source: String, derived_at: String },
 }
 
 fn default_true() -> bool {
@@ -224,6 +236,16 @@ pub struct Attribute {
     /// than quietly refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseRequirement>,
+    /// Vault ids of credentials in which a third party endorses this value.
+    ///
+    /// **Inventory, not evidence** — the distinction `Profile.credential_refs`
+    /// draws one level up. A vouched self-assertion is still self-asserted;
+    /// folding the vouch into [`Provenance`] would make it render as attested,
+    /// which is the one thing provenance exists to prevent. Not disclosed with
+    /// the value: a holder who wants a counterparty to see an endorsement
+    /// presents the credential. Design note `persona-context-first.md` §5.7.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endorsements: Vec<String>,
     pub version: Version,
     /// Earlier versions the store still holds, and the faces that are the
     /// reason. Filled on read — never stored with the record — so a holder who

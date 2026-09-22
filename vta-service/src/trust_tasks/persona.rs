@@ -407,6 +407,7 @@ fn provenance_kind(p: &vta_persona::Provenance) -> &'static str {
         vta_persona::Provenance::SelfAsserted => "selfAsserted",
         vta_persona::Provenance::CredentialBacked { .. } => "credentialBacked",
         vta_persona::Provenance::Generated { .. } => "generated",
+        vta_persona::Provenance::Derived { .. } => "derived",
     }
 }
 
@@ -568,6 +569,36 @@ pub(super) async fn handle_attribute_put(
     attribute.label = req.label.as_ref().map(|l| (**l).clone());
     attribute.sensitivity = sensitivity;
     attribute.release = release;
+
+    // An endorsement the holder cannot produce is not one: every id must name
+    // a credential the vault holds (a soft-deleted one does not count). It
+    // never touches provenance — see `Attribute::endorsements`.
+    let endorsements: Vec<String> = req
+        .endorsements
+        .iter()
+        .flatten()
+        .map(|e| e.to_string())
+        .collect();
+    let mut missing = Vec::new();
+    for id in &endorsements {
+        match crate::vault::storage::get(&state.vault_ks, id).await {
+            Ok(Some(c)) if c.lifecycle != vti_common::vault::VaultStatus::Deleted => {}
+            Ok(_) => missing.push(id.clone()),
+            Err(e) => return reject(&doc, e),
+        }
+    }
+    if !missing.is_empty() {
+        return reject_with_code(
+            &doc,
+            ext(&slug_from_doc(&doc), "endorsementNotFound"),
+            format!(
+                "{} endorsement(s) name a credential the vault does not hold",
+                missing.len()
+            ),
+            Some(json!({ "credentialIds": missing })),
+        );
+    }
+    attribute.endorsements = endorsements;
 
     let attribute_id = attribute.attribute_id.clone();
     let value = attribute.value.clone();
