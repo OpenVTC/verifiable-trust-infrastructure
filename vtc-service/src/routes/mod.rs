@@ -7,13 +7,14 @@ mod auth;
 mod backup;
 mod ceremonies;
 mod community;
+pub(crate) mod credential_exchange;
 pub(crate) mod did_log;
 mod directory;
 mod endorsement_types;
 pub(crate) mod endorsements;
 mod health;
 pub(crate) mod install;
-mod invitations;
+pub(crate) mod invitations;
 pub mod join_requests;
 pub(crate) mod members;
 pub(crate) mod policies;
@@ -811,6 +812,12 @@ fn build_api_chain(
             routes!(invitations::revoke),
             "https://trusttasks.org/spec/vtc/invitations/revoke/0.1",
         ))
+        // Get an issued invitation to the DID it admits: push an offer to it,
+        // or return the offer for a QR code (Keyring VTI-21 / VTI-32).
+        .routes(tt(
+            routes!(invitations::deliver),
+            "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
+        ))
         // Recognition (trust-graph) lookup — admin window into TRQP recognise.
         .routes(tt(
             routes!(recognition_admin::check),
@@ -1125,6 +1132,14 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
     });
 
     let unauth_router = OpenApiRouter::<AppState>::new()
+        // Redeem a credential offer over HTTPS — for a holder with no messaging
+        // service, such as an invitee who scanned a delivered offer. The
+        // key-binding proof inside is the authority; the governor and body cap
+        // bound what an unauthenticated caller can make it verify.
+        .routes(tt(
+            routes!(credential_exchange::request),
+            <trust_tasks_rs::specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ))
         .routes(tt(
             routes!(auth::challenge),
             "https://trusttasks.org/spec/auth/challenge/0.1",
@@ -1513,6 +1528,10 @@ mod openapi_tests {
         // ceremony (submit/accept/manifest/status) dispatches internally by
         // document `type`.
         ("POST", "/v1/trust-tasks"),
+        // Redeem a credential offer over HTTPS (`credential-exchange/request`):
+        // the key-binding proof is the authority, and the governor + body cap
+        // bound what an unauthenticated caller can make it verify.
+        ("POST", "/v1/credential-exchange/request"),
     ];
 
     /// Unauthenticated operations intentionally left OFF the governed chain

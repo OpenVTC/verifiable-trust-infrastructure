@@ -1556,6 +1556,7 @@ async fn credential_request_handler(msg: &Message, state: &AppState) -> Option<R
         &state.join_requests_ks,
         &body.credential_request,
         chrono::Utc::now(),
+        &crate::credentials::vm_resolver::DidVmResolver::new(state.did_resolver.clone()),
     )
     .await
     {

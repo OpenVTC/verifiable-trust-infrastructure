@@ -46,6 +46,16 @@ pub struct InvitationRecord {
     /// When it was revoked, if it has been. `None` = live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The signed VIC, kept so `vtc/invitations/deliver` can offer it to the
+    /// invitee later. Never listed: `vtc/invitations/list` builds its rows
+    /// field by field. `None` for an invitation issued before delivery
+    /// existed — those can only be reissued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<serde_json::Value>,
+    /// The pre-authorized code of the live delivery offer, if one is out, so a
+    /// newer delivery can withdraw it: at most one offer per invitation redeems.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer_code: Option<String>,
 }
 
 impl InvitationRecord {
@@ -111,6 +121,8 @@ mod tests {
             issued_at: at.parse().unwrap(),
             valid_until: None,
             revoked_at: None,
+            credential: None,
+            offer_code: None,
         }
     }
 

@@ -28,6 +28,23 @@ const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/invitations/revoke/0.
 const ADMIN_DID: &str = "did:key:zInvAdmin";
 const MEMBER_DID: &str = "did:key:zInvMember";
 const INVITEE_DID: &str = "did:key:zInvitee";
+const VTC_DID: &str = "did:web:vtc.example.com";
+const DELIVER_TASK: &str = "https://trusttasks.org/spec/vtc/invitations/deliver/0.1";
+const REQUEST_TASK: &str = "https://trusttasks.org/spec/credential-exchange/request/0.1";
+
+/// The codes `vtc/invitations/deliver/0.1` declares, read from the generated
+/// bindings rather than spelled out (#1600).
+const INVITATION_DELIVER_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes::NOT_FOUND.code;
+const INVITATION_DELIVER_ERR_REVOKED: &str =
+    trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes::REVOKED.code;
+const INVITATION_DELIVER_ERR_NO_ROUTE: &str =
+    trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes::NO_ROUTE.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
 
 struct Fixture {
     router: axum::Router,
@@ -41,6 +58,9 @@ async fn build() -> Fixture {
         .with_audit(true)
         .with_signers(true)
         .with_public_url(PUBLIC_URL)
+        // An offer names its issuer, and a key-binding proof must be addressed
+        // to it; `deliver` refuses to make an offer without one.
+        .vtc_did(VTC_DID)
         .build()
         .await;
 
@@ -362,4 +382,254 @@ async fn invite_refuses_admin_role() {
         StatusCode::BAD_REQUEST,
         "an invite may not grant admin"
     );
+}
+
+// ── vtc/invitations/deliver (Keyring VTI-21 / VTI-32) ──────────────────────
+
+/// An invitee with a real key: its `did:key` and the key-binding proofs it signs.
+struct Invitee {
+    key: ed25519_dalek::SigningKey,
+    did: String,
+}
+
+impl Invitee {
+    fn new(seed: u8) -> Self {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(key.verifying_key().as_bytes());
+        Self { key, did }
+    }
+
+    /// An `openid4vci-proof+jwt` addressed to the community, carrying the
+    /// offer's pre-authorized code as its nonce.
+    fn request(&self, code: &str) -> Value {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use ed25519_dalek::Signer;
+        let header = json!({ "typ": "openid4vci-proof+jwt", "alg": "EdDSA",
+                             "kid": format!("{}#key-0", self.did) });
+        let payload = json!({ "iss": self.did, "aud": VTC_DID,
+                              "iat": chrono::Utc::now().timestamp(), "nonce": code });
+        let h = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+        let p = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let sig = self.key.sign(format!("{h}.{p}").as_bytes());
+        json!({ "credential_request": {
+            "format": "vc+sd-jwt",
+            "vct": "https://openvtc.org/credentials/InvitationCredential",
+            "proof": { "proof_type": "jwt",
+                       "jwt": format!("{h}.{p}.{}", URL_SAFE_NO_PAD.encode(sig.to_bytes())) },
+        }})
+    }
+}
+
+async fn post(
+    fix: &Fixture,
+    uri: &str,
+    task: &str,
+    token: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("trust-task", task)
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    body_value(resp).await
+}
+
+async fn issue_for(fix: &Fixture, did: &str) -> String {
+    let (status, v) = post(
+        fix,
+        "/v1/invitations",
+        ISSUE_TASK,
+        Some(&fix.admin_token),
+        json!({ "subjectDid": did }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    v["vic"]["id"].as_str().unwrap().to_string()
+}
+
+async fn deliver(fix: &Fixture, id: &str, channel: &str) -> (StatusCode, Value) {
+    post(
+        fix,
+        "/v1/invitations/deliver",
+        DELIVER_TASK,
+        Some(&fix.admin_token),
+        json!({ "id": id, "channel": channel }),
+    )
+    .await
+}
+
+fn code_of(offer: &Value) -> String {
+    offer["grants"]["urn:ietf:params:oauth:grant-type:pre-authorized_code"]["pre-authorized_code"]
+        .as_str()
+        .expect("a pre-authorized code")
+        .to_string()
+}
+
+/// The VTI-32 path end to end: an offer small enough for a QR code, redeemed
+/// over HTTPS by the invited DID's key, releasing the invitation once.
+#[tokio::test]
+async fn an_offered_invitation_is_redeemed_by_the_invitee_once() {
+    let fix = build().await;
+    let invitee = Invitee::new(41);
+    let id = issue_for(&fix, &invitee.did).await;
+
+    let (status, v) = deliver(&fix, &id, "offer").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["channel"], "offer");
+    assert_eq!(v["offer"]["credential_issuer"], VTC_DID);
+    // The offer names the credential; it never carries it.
+    assert!(v["offer"].get("credential").is_none() && v.get("vic").is_none());
+    let code = code_of(&v["offer"]);
+
+    let (status, issued) = post(
+        &fix,
+        "/v1/credential-exchange/request",
+        REQUEST_TASK,
+        None,
+        invitee.request(&code),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let vic = &issued["credential_response"]["credential"];
+    assert_eq!(vic["id"], id);
+    assert_eq!(vic["credentialSubject"]["id"], invitee.did);
+
+    // Single use.
+    let (status, _) = post(
+        &fix,
+        "/v1/credential-exchange/request",
+        REQUEST_TASK,
+        None,
+        invitee.request(&code),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A photographed code admits no one else: a proof by another DID's key is
+/// refused, and the offer stays redeemable by the invitee.
+#[tokio::test]
+async fn another_dids_proof_cannot_redeem_the_offer() {
+    let fix = build().await;
+    let invitee = Invitee::new(42);
+    let id = issue_for(&fix, &invitee.did).await;
+    let (_, v) = deliver(&fix, &id, "offer").await;
+    let code = code_of(&v["offer"]);
+
+    let thief = Invitee::new(43);
+    let (status, body) = post(
+        &fix,
+        "/v1/credential-exchange/request",
+        REQUEST_TASK,
+        None,
+        thief.request(&code),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, _) = post(
+        &fix,
+        "/v1/credential-exchange/request",
+        REQUEST_TASK,
+        None,
+        invitee.request(&code),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// At most one offer per invitation redeems: delivering again withdraws the
+/// earlier code.
+#[tokio::test]
+async fn a_new_delivery_withdraws_the_last_offer() {
+    let fix = build().await;
+    let invitee = Invitee::new(44);
+    let id = issue_for(&fix, &invitee.did).await;
+    let (_, first) = deliver(&fix, &id, "offer").await;
+    let (_, second) = deliver(&fix, &id, "offer").await;
+    let (old, new) = (code_of(&first["offer"]), code_of(&second["offer"]));
+    assert_ne!(old, new);
+
+    let (status, _) = post(
+        &fix,
+        "/v1/credential-exchange/request",
+        REQUEST_TASK,
+        None,
+        invitee.request(&old),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = post(
+        &fix,
+        "/v1/credential-exchange/request",
+        REQUEST_TASK,
+        None,
+        invitee.request(&new),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn deliver_refuses_what_it_cannot_deliver() {
+    let fix = build().await;
+    let invitee = Invitee::new(45);
+    let id = issue_for(&fix, &invitee.did).await;
+
+    // No route: this invitee's DID advertises no DIDComm service.
+    let (status, v) = deliver(&fix, &id, "message").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(rest_error_code(&v), INVITATION_DELIVER_ERR_NO_ROUTE, "{v}");
+
+    // Unknown.
+    let (status, v) = deliver(
+        &fix,
+        "urn:uuid:00000000-0000-4000-8000-000000000000",
+        "offer",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(rest_error_code(&v), INVITATION_DELIVER_ERR_NOT_FOUND, "{v}");
+
+    // Not an inviter.
+    let (status, _) = post(
+        &fix,
+        "/v1/invitations/deliver",
+        DELIVER_TASK,
+        Some(&fix.member_token),
+        json!({ "id": id, "channel": "offer" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Revoked.
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/invitations/{id}"))
+                .header("authorization", format!("Bearer {}", fix.admin_token))
+                .header("trust-task", REVOKE_TASK)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, v) = deliver(&fix, &id, "offer").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(rest_error_code(&v), INVITATION_DELIVER_ERR_REVOKED, "{v}");
 }

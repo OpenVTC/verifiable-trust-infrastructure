@@ -112,6 +112,7 @@ pub async fn redeem(
     ks: &KeyspaceHandle,
     request: &CredentialRequest,
     now: DateTime<Utc>,
+    resolver: &crate::credentials::vm_resolver::DidVmResolver,
 ) -> Result<CredentialResponse, AppError> {
     let code = proof_nonce(request)?.ok_or_else(|| {
         AppError::Validation(
@@ -139,11 +140,19 @@ pub async fn redeem(
         &pending.expected_holder_did,
         &pending.issuer_id,
         now,
-    )?;
+        resolver,
+    )
+    .await?;
 
     // Single-use: consume the offer now that issuance succeeded.
     ks.remove(pending_key(&code)).await?;
     Ok(response)
+}
+
+/// Withdraw an offer that has not been redeemed, so its code stops working.
+/// Idempotent: withdrawing a redeemed, expired or unknown code is a no-op.
+pub async fn withdraw_offer(ks: &KeyspaceHandle, code: &str) -> Result<(), AppError> {
+    ks.remove(pending_key(code)).await
 }
 
 async fn get_pending(ks: &KeyspaceHandle, code: &str) -> Result<Option<PendingIssuance>, AppError> {

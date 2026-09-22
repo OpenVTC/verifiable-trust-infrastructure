@@ -1819,6 +1819,45 @@
         ]
       }
     },
+    "/v1/credential-exchange/request": {
+      "post": {
+        "tags": [
+          "credentials"
+        ],
+        "operationId": "credentialRequest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialExchangeRequestV0_1Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The credential, for the proven holder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialExchangeIssueV0_1Payload"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request, or a proof that does not verify"
+          },
+          "403": {
+            "description": "The proof is by a key of a DID the offer was not made for"
+          },
+          "404": {
+            "description": "No live offer for this code"
+          }
+        }
+      }
+    },
     "/v1/credentials/endorsements": {
       "get": {
         "tags": [
@@ -2355,6 +2394,58 @@
           },
           "409": {
             "description": "Subject is already a member"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/invitations/deliver": {
+      "post": {
+        "tags": [
+          "invitations"
+        ],
+        "summary": "Deliver an issued invitation to the DID it admits\n(`vtc/invitations/deliver/0.1`, Keyring VTI-21 / VTI-32).",
+        "description": "Records a single-use offer bound to the invited DID — withdrawing any\nearlier one — and either pushes it to that DID as a\n`credential-exchange/offer` (`message`) or returns it for a QR code\n(`offer`). The invitation credential is released only by\n`credential-exchange/request` with a key-binding proof by the invited\nDID's key, so the offer itself admits no one else; it is never in this\nresponse.",
+        "operationId": "invitationDeliver",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VtcInvitationsDeliverV0_1Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Offer recorded, and sent or returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VtcInvitationsDeliverV0_1Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not Admin / Moderator / Issuer"
+          },
+          "404": {
+            "description": "No such invitation"
+          },
+          "409": {
+            "description": "Revoked, or issued before delivery existed"
+          },
+          "410": {
+            "description": "The invitation has lapsed"
+          },
+          "422": {
+            "description": "The invited DID advertises no transport this community can send over"
           }
         },
         "security": [
@@ -6240,6 +6331,42 @@
             "description": "`jti` of the minted install token — also the key the GET +\nDELETE surfaces use."
           }
         }
+      },
+      "CredentialExchangeIssueV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "CredentialExchangeIssueV0_1Payload": {
+        "oneOf": [
+          {},
+          {}
+        ],
+        "description": "Issuer to holder: the issued credential. Exactly one of `credential_response` (cleartext, known holder over an authenticated channel) or `sealed` (an armored sealed-transfer bundle, for a secret-bearing credential or an unknown holder)."
+      },
+      "CredentialExchangeRequestV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "CredentialExchangeRequestV0_1Payload": {
+        "type": "object",
+        "description": "Holder to issuer: an OID4VCI Credential Request carrying the holder's key-binding proof. Replies on the offer thread.",
+        "required": [
+          "credential_request"
+        ],
+        "properties": {
+          "credential_request": {
+            "type": "object",
+            "description": "An OID4VCI Credential Request object, carried verbatim, including the embedded key-binding proof (`openid4vci-proof+jwt`). Its members are defined by OpenID for Verifiable Credential Issuance and are not re-specified here. snake_case member names are OID4VCI's own."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/CredentialExchangeRequestV0_1Ext"
+          }
+        },
+        "additionalProperties": false
       },
       "CredentialReference": {
         "type": "object",
@@ -10913,6 +11040,77 @@
           "typeUri": {
             "type": "string",
             "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcInvitationsDeliverV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcInvitationsDeliverV0_1Payload": {
+        "type": "object",
+        "description": "Deliver an issued invitation to the DID it admits: push an offer to that DID, or return the offer for a QR code. The outer document members (id, type, issuer, recipient, issuedAt, expiresAt, proof) are owned by the framework — SPEC §6.3.",
+        "required": [
+          "id",
+          "channel"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "`message`: the community sends a `credential-exchange/offer` to the invited DID over a transport that DID advertises. `offer`: the community returns the offer, for the inviter to hand over out of band — typically as a QR code.",
+            "enum": [
+              "message",
+              "offer"
+            ]
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcInvitationsDeliverV0_1Ext"
+          },
+          "id": {
+            "type": "string",
+            "description": "Identifier of the invitation to deliver, as `vtc/invitations/list` reports it.",
+            "maxLength": 256,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcInvitationsDeliverV0_1Response": {
+        "type": "object",
+        "required": [
+          "id",
+          "channel",
+          "expiresAt"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "The channel used, echoed.",
+            "enum": [
+              "message",
+              "offer"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this delivery's offer lapses. Never later than the invitation's own expiry."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcInvitationsDeliverV0_1Ext"
+          },
+          "id": {
+            "type": "string",
+            "description": "The invitation's identifier, echoed.",
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "offer": {
+            "type": "object",
+            "description": "Present exactly when `channel` is `offer`: an OID4VCI Credential Offer object, carried verbatim, whose pre-authorized code redeems only for the invited DID. Its members are OID4VCI's and are deliberately not re-specified here."
           }
         },
         "additionalProperties": false

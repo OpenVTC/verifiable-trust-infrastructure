@@ -8,15 +8,19 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Ticket, Trash2 } from "lucide-react";
+import { Download, QrCode, Send, Ticket, Trash2 } from "lucide-react";
 
 import {
+  deliverInvitation,
   issueInvitation,
   listInvitations,
   revokeInvitation,
+  type DeliverChannel,
+  type DeliverInvitationResponse,
   type InvitationListItem,
   type IssueInvitationResponse,
 } from "@/lib/api";
+import { offerDeepLink } from "@/lib/invitation-offer";
 import { CopyButton } from "@/components/CopyButton";
 import { useToast } from "@/lib/toast";
 import { useNameBook } from "@/lib/names";
@@ -46,6 +50,31 @@ export function Invitations() {
     onSuccess: () => {
       toast.push("success", "Invitation revoked");
       void queryClient.invalidateQueries({ queryKey: ["invitations"] });
+    },
+    onError: (e) => toast.pushFromError(e),
+  });
+
+  // Delivery: push an offer to the invitee, or show one as a QR code. The offer
+  // redeems only for the invited DID's key, so showing it discloses nothing
+  // that admits anyone else (vtc/invitations/deliver, Keyring VTI-21 / VTI-32).
+  const [offerShown, setOfferShown] = useState<{
+    subjectDid: string;
+    link: string;
+    expiresAt: string;
+  } | null>(null);
+  const deliver = useMutation<
+    DeliverInvitationResponse,
+    Error,
+    { id: string; subjectDid: string; channel: DeliverChannel }
+  >({
+    mutationFn: ({ id, channel }) => deliverInvitation(id, channel),
+    onSuccess: (resp, { subjectDid }) => {
+      if (resp.channel === "offer" && resp.offer) {
+        setOfferShown({ subjectDid, link: offerDeepLink(resp.offer), expiresAt: resp.expiresAt });
+        toast.push("success", "Offer ready — any earlier offer for this invitation no longer works");
+      } else {
+        toast.push("success", "Invitation sent to the invitee");
+      }
     },
     onError: (e) => toast.pushFromError(e),
   });
@@ -156,6 +185,21 @@ export function Invitations() {
         </section>
       )}
 
+      {offerShown && (
+        <section className="card">
+          <h3>Offer for {nameBook.nameOrDid(offerShown.subjectDid)}</h3>
+          <p className="muted">
+            Scan with the invitee&rsquo;s wallet. It redeems only with a key of the
+            invited DID, so a photographed code admits no one else. Expires{" "}
+            <code>{offerShown.expiresAt}</code>.
+          </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+            <CopyButton value={offerShown.link} label="Copy offer link" successMessage="Offer link copied" />
+          </div>
+          <VicQr text={offerShown.link} />
+        </section>
+      )}
+
       <section className="card">
         <h3>Issued invitations</h3>
         {invitations.isPending && <p className="muted">Loading…</p>}
@@ -192,6 +236,32 @@ export function Invitations() {
                     )}
                   </td>
                   <td>
+                    {!inv.revokedAt && (
+                      <>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={deliver.isPending}
+                          onClick={() =>
+                            deliver.mutate({ id: inv.id, subjectDid: inv.subjectDid, channel: "message" })
+                          }
+                          title="Send an offer to the invitee's DID"
+                        >
+                          <Send size={16} strokeWidth={1.75} /> Send
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={deliver.isPending}
+                          onClick={() =>
+                            deliver.mutate({ id: inv.id, subjectDid: inv.subjectDid, channel: "offer" })
+                          }
+                          title="Show an offer as a QR code for the invitee to scan"
+                        >
+                          <QrCode size={16} strokeWidth={1.75} /> QR offer
+                        </button>
+                      </>
+                    )}
                     {!inv.revokedAt && (
                       <button
                         type="button"
@@ -269,8 +339,10 @@ function VicQr({ text }: { text: string }) {
   if (tooBig) {
     return (
       <p className="muted">
-        This invitation is too large for a scannable QR code — use{" "}
-        <strong>Copy</strong> or <strong>Download</strong> to hand it off.
+        This invitation is too large for a scannable QR code. Use{" "}
+        <strong>QR offer</strong> on it in the list below — a small offer the
+        invitee&rsquo;s wallet redeems — or <strong>Copy</strong> /{" "}
+        <strong>Download</strong> to hand it off.
       </p>
     );
   }

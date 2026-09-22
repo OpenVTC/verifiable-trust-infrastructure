@@ -27,12 +27,12 @@ use vti_common::error::AppError;
 /// than borrowing it, so the same resolver can be used both inline (`&resolver`)
 /// and behind an `Arc<dyn VerificationMethodResolver>` (the status-list fetcher
 /// holds one for the credential-signature check).
-pub(crate) struct DidVmResolver {
+pub struct DidVmResolver {
     resolver: Option<DIDCacheClient>,
 }
 
 impl DidVmResolver {
-    pub(crate) fn new(resolver: Option<DIDCacheClient>) -> Self {
+    pub fn new(resolver: Option<DIDCacheClient>) -> Self {
         Self { resolver }
     }
 

@@ -747,6 +747,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/credential-exchange/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["credentialRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/credentials/endorsements": {
         parameters: {
             query?: never;
@@ -915,6 +931,33 @@ export interface paths {
         get: operations["invitationList"];
         put?: never;
         post: operations["invitationIssue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invitations/deliver": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deliver an issued invitation to the DID it admits
+         *     (`vtc/invitations/deliver/0.1`, Keyring VTI-21 / VTI-32).
+         * @description Records a single-use offer bound to the invited DID — withdrawing any
+         *     earlier one — and either pushes it to that DID as a
+         *     `credential-exchange/offer` (`message`) or returns it for a QR code
+         *     (`offer`). The invitation credential is released only by
+         *     `credential-exchange/request` with a key-binding proof by the invited
+         *     DID's key, so the offer itself admits no one else; it is never in this
+         *     response.
+         */
+        post: operations["invitationDeliver"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2554,6 +2597,22 @@ export interface components {
              *     DELETE surfaces use.
              */
             jti: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        CredentialExchangeIssueV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Issuer to holder: the issued credential. Exactly one of `credential_response` (cleartext, known holder over an authenticated channel) or `sealed` (an armored sealed-transfer bundle, for a secret-bearing credential or an unknown holder). */
+        CredentialExchangeIssueV0_1Payload: unknown | unknown;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        CredentialExchangeRequestV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Holder to issuer: an OID4VCI Credential Request carrying the holder's key-binding proof. Replies on the offer thread. */
+        CredentialExchangeRequestV0_1Payload: {
+            /** @description An OID4VCI Credential Request object, carried verbatim, including the embedded key-binding proof (`openid4vci-proof+jwt`). Its members are defined by OpenID for Verifiable Credential Issuance and are not re-specified here. snake_case member names are OID4VCI's own. */
+            credential_request: Record<string, never>;
+            ext?: components["schemas"]["CredentialExchangeRequestV0_1Ext"];
         };
         /**
          * @description A pointer to the issued VEC: its identifier and lifetime, not its bytes.
@@ -5389,6 +5448,38 @@ export interface components {
             ext?: components["schemas"]["VtcEndorsementTypesDeleteV0_1Ext"];
             typeUri: string;
         };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcInvitationsDeliverV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Deliver an issued invitation to the DID it admits: push an offer to that DID, or return the offer for a QR code. The outer document members (id, type, issuer, recipient, issuedAt, expiresAt, proof) are owned by the framework — SPEC §6.3. */
+        VtcInvitationsDeliverV0_1Payload: {
+            /**
+             * @description `message`: the community sends a `credential-exchange/offer` to the invited DID over a transport that DID advertises. `offer`: the community returns the offer, for the inviter to hand over out of band — typically as a QR code.
+             * @enum {string}
+             */
+            channel: "message" | "offer";
+            ext?: components["schemas"]["VtcInvitationsDeliverV0_1Ext"];
+            /** @description Identifier of the invitation to deliver, as `vtc/invitations/list` reports it. */
+            id: string;
+        };
+        VtcInvitationsDeliverV0_1Response: {
+            /**
+             * @description The channel used, echoed.
+             * @enum {string}
+             */
+            channel: "message" | "offer";
+            /**
+             * Format: date-time
+             * @description When this delivery's offer lapses. Never later than the invitation's own expiry.
+             */
+            expiresAt: string;
+            ext?: components["schemas"]["VtcInvitationsDeliverV0_1Ext"];
+            /** @description The invitation's identifier, echoed. */
+            id: string;
+            /** @description Present exactly when `channel` is `offer`: an OID4VCI Credential Offer object, carried verbatim, whose pre-authorized code redeems only for the invited DID. Its members are OID4VCI's and are deliberately not re-specified here. */
+            offer?: Record<string, never>;
+        };
         /**
          * @description The vocabulary token naming what a value IS — `name.legal`, `phone.mobile`, `address.postal`, `person.birthDate`. Dotted, most-general segment first, so that a consumer with no knowledge of the specific token can still group by its prefix.
          *
@@ -7658,6 +7749,51 @@ export interface operations {
             };
         };
     };
+    credentialRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialExchangeRequestV0_1Payload"];
+            };
+        };
+        responses: {
+            /** @description The credential, for the proven holder */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialExchangeIssueV0_1Payload"];
+                };
+            };
+            /** @description Malformed request, or a proof that does not verify */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The proof is by a key of a DID the offer was not made for */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No live offer for this code */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     endorsementList: {
         parameters: {
             query?: {
@@ -8140,6 +8276,65 @@ export interface operations {
             };
             /** @description Subject is already a member */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    invitationDeliver: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VtcInvitationsDeliverV0_1Payload"];
+            };
+        };
+        responses: {
+            /** @description Offer recorded, and sent or returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcInvitationsDeliverV0_1Response"];
+                };
+            };
+            /** @description Caller is not Admin / Moderator / Issuer */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such invitation */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revoked, or issued before delivery existed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The invitation has lapsed */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The invited DID advertises no transport this community can send over */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

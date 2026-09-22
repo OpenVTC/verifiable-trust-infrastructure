@@ -48,8 +48,10 @@ use utoipa::openapi::schema::{
 use utoipa::openapi::{Ref, RefOr};
 
 use crate::protocols::vetting::vetters;
+use trust_tasks_rs::specs::credential_exchange;
 use trust_tasks_rs::specs::did_management::did::register;
 use trust_tasks_rs::specs::vtc::endorsement_types;
+use trust_tasks_rs::specs::vtc::invitations::deliver as invitation_deliver;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
 use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
@@ -120,6 +122,16 @@ macro_rules! spec_types {
 }
 
 spec_types! {
+    /// `vtc/invitations/deliver/0.1` payload.
+    InvitationDeliver01Payload(invitation_deliver::v0_1::Payload);
+    /// `vtc/invitations/deliver/0.1#response`.
+    InvitationDeliver01Response(invitation_deliver::v0_1::Response);
+    /// `credential-exchange/request/0.1` payload — also the body of a VTC's
+    /// `POST /v1/credential-exchange/request`, which redeems an offer over HTTPS.
+    CredentialRequest01Payload(credential_exchange::request::v0_1::Payload);
+    /// `credential-exchange/issue/0.1` payload — the answer to a request, returned
+    /// as the HTTPS response where a messaging binding would send it on-thread.
+    CredentialIssue01Payload(credential_exchange::issue::v0_1::Payload);
     /// `did-management/did/register/0.1` payload — also the body of a VTC's
     /// `POST /v1/admin/did/register`, which installs its own self-hosted log.
     DidRegister01Payload(register::v0_1::Payload);

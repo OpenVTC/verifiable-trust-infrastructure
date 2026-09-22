@@ -627,3 +627,57 @@ async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
 
     mock.shutdown().await;
 }
+
+/// Keyring VTI-21: `vtc/invitations/deliver` on the `message` channel pushes a
+/// `credential-exchange/offer` to the invited DID over the community's
+/// mediator. The offer names the community and carries a pre-authorized code;
+/// the invitation itself travels only on redemption, which is covered over
+/// HTTPS in `tests/invitations.rs`.
+#[tokio::test]
+async fn a_delivered_invitation_arrives_as_an_offer() {
+    let mock = MockVtcDidcomm::start().await;
+    let admin_token = seed_join_ceremony(&mock).await;
+    let vtc_did = mock.vtc_did().to_string();
+    let invitee = mock.client.did().to_string();
+
+    let (status, issued) = rest_post(
+        &mock,
+        "/v1/invitations",
+        "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
+        &admin_token,
+        json!({ "subjectDid": invitee }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{issued}");
+    let id = issued["vic"]["id"].as_str().expect("vic id").to_string();
+
+    let (status, delivered) = rest_post(
+        &mock,
+        "/v1/invitations/deliver",
+        "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
+        &admin_token,
+        json!({ "id": id, "channel": "message" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{delivered}");
+    assert!(
+        delivered.get("offer").is_none(),
+        "the offer went to the invitee: {delivered}"
+    );
+
+    let (typ, body) = mock
+        .client
+        .next_pushed(Duration::from_secs(15))
+        .await
+        .expect("the offer reaches the invited DID");
+    assert_eq!(typ, vta_sdk::protocols::credential_exchange::OFFER);
+    let offer = &body["credential_offer"];
+    assert_eq!(offer["credential_issuer"], vtc_did);
+    assert!(
+        offer["grants"]["urn:ietf:params:oauth:grant-type:pre-authorized_code"]
+            ["pre-authorized_code"]
+            .is_string(),
+        "{offer}"
+    );
+    assert!(body.get("credential").is_none() && offer.get("credential").is_none());
+}

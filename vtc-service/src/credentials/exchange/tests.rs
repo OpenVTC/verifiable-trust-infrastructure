@@ -1,6 +1,10 @@
 //! Tests for the credential-exchange submodules. Driven through the
 //! re-exported public surface (`use super::*`).
 
+/// `did:key` resolves locally, so these tests need no DID resolver.
+static NO_RESOLVER: std::sync::LazyLock<crate::credentials::vm_resolver::DidVmResolver> =
+    std::sync::LazyLock::new(|| crate::credentials::vm_resolver::DidVmResolver::new(None));
+
 use super::*;
 // Names the original single-file test module reached via `use super::*` when
 // the parent (exchange.rs) still held all the imports + private consts.
@@ -82,24 +86,27 @@ fn verifies_a_fresh_holder_proof() {
     assert_eq!(proven.nonce.as_deref(), Some("n-1"));
 }
 
-#[test]
-fn issues_to_the_bound_holder() {
+#[tokio::test]
+async fn issues_to_the_bound_holder() {
     let holder = Holder::new(11);
     let now = Utc::now();
     let req = request_with(holder.proof_jwt(ISSUER, now.timestamp(), None));
-    let resp = issue_on_request(&req, a_credential(), &holder.did, ISSUER, now)
+    let resp = issue_on_request(&req, a_credential(), &holder.did, ISSUER, now, &NO_RESOLVER)
+        .await
         .expect("issue to bound holder");
     assert_eq!(resp.credential, Some(a_credential()));
 }
 
-#[test]
-fn refuses_when_the_proof_binds_a_different_holder() {
+#[tokio::test]
+async fn refuses_when_the_proof_binds_a_different_holder() {
     let bound = Holder::new(1);
     let attacker = Holder::new(2);
     let now = Utc::now();
     // The attacker signs a perfectly valid proof — for *their own* DID.
     let req = request_with(attacker.proof_jwt(ISSUER, now.timestamp(), None));
-    let err = issue_on_request(&req, a_credential(), &bound.did, ISSUER, now).unwrap_err();
+    let err = issue_on_request(&req, a_credential(), &bound.did, ISSUER, now, &NO_RESOLVER)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Forbidden(_)),
         "wrong-holder redemption must be Forbidden, got {err:?}"
@@ -143,8 +150,8 @@ fn refuses_a_tampered_signature() {
     assert!(matches!(err, AppError::Validation(_)), "{err:?}");
 }
 
-#[test]
-fn refuses_a_request_with_no_proof() {
+#[tokio::test]
+async fn refuses_a_request_with_no_proof() {
     let now = Utc::now();
     let req = CredentialRequest {
         format: FORMAT_SD_JWT_VC.to_string(),
@@ -153,7 +160,16 @@ fn refuses_a_request_with_no_proof() {
         proof: None,
         credential_identifier: None,
     };
-    let err = issue_on_request(&req, a_credential(), "did:key:zHolder", ISSUER, now).unwrap_err();
+    let err = issue_on_request(
+        &req,
+        a_credential(),
+        "did:key:zHolder",
+        ISSUER,
+        now,
+        &NO_RESOLVER,
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(&err, AppError::Validation(m) if m.contains("no key-binding proof")),
         "{err:?}"
@@ -236,11 +252,11 @@ async fn make_offer_then_redeem_delivers_and_consumes() {
 
     // Holder redeems: proof nonce == the pre-authorized code.
     let req = request_with(holder.proof_jwt(ISSUER, now.timestamp(), Some(&code)));
-    let resp = redeem(&ks, &req, now).await.expect("redeem");
+    let resp = redeem(&ks, &req, now, &NO_RESOLVER).await.expect("redeem");
     assert_eq!(resp.credential, Some(a_credential()));
 
     // Single-use: the offer is consumed.
-    let again = redeem(&ks, &req, now).await.unwrap_err();
+    let again = redeem(&ks, &req, now, &NO_RESOLVER).await.unwrap_err();
     assert!(matches!(again, AppError::NotFound(_)), "{again:?}");
 }
 
@@ -291,7 +307,7 @@ async fn redeem_rejects_unknown_code() {
     let holder = Holder::new(31);
     let now = Utc::now();
     let req = request_with(holder.proof_jwt(ISSUER, now.timestamp(), Some("pac_missing")));
-    let err = redeem(&ks, &req, now).await.unwrap_err();
+    let err = redeem(&ks, &req, now, &NO_RESOLVER).await.unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
 }
 
@@ -314,7 +330,7 @@ async fn redeem_rejects_an_expired_offer() {
 
     let later = issued + Duration::seconds(30);
     let req = request_with(holder.proof_jwt(ISSUER, later.timestamp(), Some(&code)));
-    let err = redeem(&ks, &req, later).await.unwrap_err();
+    let err = redeem(&ks, &req, later, &NO_RESOLVER).await.unwrap_err();
     assert!(
         matches!(&err, AppError::Validation(m) if m.contains("expired")),
         "{err:?}"
@@ -341,12 +357,12 @@ async fn redeem_refuses_wrong_holder_without_burning_the_offer() {
 
     // Attacker signs a valid proof for *their own* DID, echoing the code.
     let bad = request_with(attacker.proof_jwt(ISSUER, now.timestamp(), Some(&code)));
-    let err = redeem(&ks, &bad, now).await.unwrap_err();
+    let err = redeem(&ks, &bad, now, &NO_RESOLVER).await.unwrap_err();
     assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
 
     // The legitimate offer was NOT consumed — the real holder still redeems.
     let good = request_with(bound.proof_jwt(ISSUER, now.timestamp(), Some(&code)));
-    assert!(redeem(&ks, &good, now).await.is_ok());
+    assert!(redeem(&ks, &good, now, &NO_RESOLVER).await.is_ok());
 }
 
 // ── verify_presentation (task 3.4) ──
@@ -1203,4 +1219,70 @@ async fn verify_vp_token_rejects_a_tampered_bbs_disclosed_claim() {
             .await
             .is_err()
     );
+}
+
+/// Keyring VTI-21/32: an invitation is redeemed by a key of the invited DID,
+/// whatever method that DID uses. A `did:web` holder's `kid` resolves through
+/// the DID resolver — here preloaded with its document — where the old
+/// verifier refused anything but a `did:key`.
+#[tokio::test]
+async fn a_did_web_holder_redeems_through_the_resolver() {
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+
+    let key = SigningKey::from_bytes(&[23; 32]);
+    let did = "did:web:holder.example";
+    let multikey = affinidi_crypto::did_key::ed25519_pub_to_did_key(key.verifying_key().as_bytes())
+        .trim_start_matches("did:key:")
+        .to_string();
+    let doc = json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": did,
+        "verificationMethod": [{
+            "id": format!("{did}#key-0"), "type": "Multikey", "controller": did,
+            "publicKeyMultibase": multikey,
+        }],
+        "authentication": [format!("{did}#key-0")],
+    });
+    let mut client = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+        .await
+        .expect("local DID cache");
+    client
+        .add_did_document(did, serde_json::from_value(doc).expect("fixture document"))
+        .await;
+    let resolver = crate::credentials::vm_resolver::DidVmResolver::new(Some(client));
+
+    let now = Utc::now();
+    let header = json!({ "typ": OID4VCI_PROOF_TYP, "alg": "EdDSA", "kid": format!("{did}#key-0") });
+    let payload = json!({ "iss": did, "aud": ISSUER, "iat": now.timestamp(), "nonce": "n-web" });
+    let h = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+    let p = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+    let sig: Signature = key.sign(format!("{h}.{p}").as_bytes());
+    let jwt = format!("{h}.{p}.{}", URL_SAFE_NO_PAD.encode(sig.to_bytes()));
+
+    let resp = issue_on_request(
+        &request_with(jwt.clone()),
+        a_credential(),
+        did,
+        ISSUER,
+        now,
+        &resolver,
+    )
+    .await
+    .expect("a did:web holder proving its own key redeems");
+    assert!(resp.credential.is_some());
+
+    // The did:key-only verifier still refuses it, rather than guessing.
+    assert!(verify_oid4vci_proof(&jwt, ISSUER, now).is_err());
+    // And the same proof does not redeem a credential bound to someone else.
+    let err = issue_on_request(
+        &request_with(jwt),
+        a_credential(),
+        "did:web:other.example",
+        ISSUER,
+        now,
+        &resolver,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Forbidden(_)), "{err}");
 }

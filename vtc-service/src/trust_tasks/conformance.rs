@@ -983,6 +983,24 @@ fn table() -> Vec<Conformance> {
             json!({ "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
                     "revokedAt": TS, "newlyRevoked": true })
         ),
+        checked!(
+            s::invitations::deliver::v0_1::Payload,
+            s::invitations::deliver::v0_1::Response,
+            // `deliver` takes and returns the generated types themselves
+            // (routes/invitations.rs); the response is the `offer` channel's.
+            json!({ "id": "urn:uuid:22222222-2222-4222-8222-222222222222", "channel": "offer" }),
+            json!({
+                "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
+                "channel": "offer",
+                "offer": {
+                    "credential_issuer": DID,
+                    "credential_configuration_ids": ["VIC"],
+                    "grants": { "urn:ietf:params:oauth:grant-type:pre-authorized_code":
+                                { "pre-authorized_code": "pac_0123" } },
+                },
+                "expiresAt": TS,
+            })
+        ),
         // ─── join-requests ───────────────────────────────────────────
         checked!(
             s::join_requests::list::v0_1::Payload,
