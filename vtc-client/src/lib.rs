@@ -118,6 +118,8 @@ pub mod task {
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
     pub const BACKUP_EXPORT: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
     pub const BACKUP_IMPORT: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
+    pub const MEMBERS_CREDENTIALS: &str =
+        <super::members_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 }
 
 /// DID-document service `type` under which a VTC advertises its REST API base
@@ -183,8 +185,28 @@ pub use trust_tasks_rs::specs::did_management::did::register as did_register;
 /// admin verbs send and return.
 pub use vta_sdk::protocols::vetting;
 
+/// `policy/upsert/0.2` — the body [`VtcClient::upload_policy`] sends.
+pub use trust_tasks_rs::specs::policy::upsert::v0_2 as policy_upsert;
+
+/// `vtc/members/credentials/0.1` — what [`VtcClient::member_credentials`]
+/// returns, and the error code it maps to [`VtcError::NotFound`].
+pub use trust_tasks_rs::specs::vtc::members::credentials::v0_1 as members_credentials;
+
+/// The `ext` key under which a VTC binds an uploaded policy module to the
+/// decision slot (purpose) it serves.
+///
+/// Canonical `policy/upsert` has no `purpose`: a module there is
+/// purpose-agnostic and gains meaning at activation. A VTC fixes the purpose
+/// by the module's Rego package and requires it at upload, in this `ext` key.
+pub const POLICY_PURPOSE_EXT_KEY: &str = "org.openvtc.purpose";
+
 /// Errors surfaced by the VTC client.
+///
+/// `#[non_exhaustive]`: a typed answer the VTC gives is added here as the
+/// client learns to read it, and a caller's `match` must carry a `_ =>` arm
+/// rather than stop compiling on each one.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VtcError {
     /// A request needed a bearer token but the client has none — call
     /// [`VtcClient::connect`] (or construct via [`VtcClient::with_token`]).
@@ -228,6 +250,28 @@ pub enum VtcError {
     /// so: pass `rest_url` to the `connect_*` constructor.
     #[error("this client has no REST base — {0} needs one; pass rest_url when connecting")]
     NoRestTransport(&'static str),
+    /// The VTC answered 404 with an error `code` the called task's
+    /// specification declares for "no such resource" — e.g.
+    /// `vtc/members/credentials:notFound` from
+    /// [`VtcClient::member_credentials`].
+    ///
+    /// Only a 404 carrying a declared code becomes this. A bare 404 — a VTC
+    /// that predates the route, a proxy in front of it — stays
+    /// [`Http`](Self::Http): it does not say the resource is absent, and
+    /// reading it as though it did would send an operator after a member that
+    /// may well exist.
+    #[error("not found ({code}): {message}")]
+    NotFound {
+        /// The declared error code, as the VTC sent it.
+        code: String,
+        /// The VTC's human-readable explanation.
+        message: String,
+    },
+    /// A request payload this client built does not satisfy the task's
+    /// published schema (an empty policy module, a name over the length
+    /// bound, …). Caught before anything is sent.
+    #[error("invalid request payload: {0}")]
+    InvalidPayload(String),
 }
 
 /// A single member of the community, as returned by `GET /members`. Mirrors the
@@ -969,26 +1013,62 @@ impl VtcClient {
         Ok(out)
     }
 
+    /// The membership pair's **bodies** for one member
+    /// (`vtc/members/credentials/0.1`, over `GET /members/{did}/credentials`).
+    /// Admin token.
+    ///
+    /// [`list_members`](Self::list_members) answers "who is a member" with
+    /// identifiers; this answers "what did the community issue this member,
+    /// and what did they acknowledge": the membership credential, the role
+    /// credential, the member-issued acknowledgement, and whether that
+    /// acknowledgement's digest was verified against the grant. A member who
+    /// holds no credentials is a success with every document absent, not an
+    /// error.
+    ///
+    /// # Errors
+    ///
+    /// [`VtcError::NotFound`] carrying `vtc/members/credentials:notFound` when
+    /// the community has no member with this DID. A 404 without that code
+    /// stays [`VtcError::Http`] (see [`VtcError::NotFound`]).
+    pub async fn member_credentials(
+        &self,
+        did: &str,
+    ) -> Result<members_credentials::Response, VtcError> {
+        let url = self.api_url(&["members", did, "credentials"])?;
+        let resp = self
+            .tt(reqwest::Method::GET, url, task::MEMBERS_CREDENTIALS)?
+            .send()
+            .await?;
+        let resp = expect_success_declaring(resp, members_credentials::ERROR_CODES).await?;
+        Ok(resp.json().await?)
+    }
+
     /// Fetch one policy by id (opaque JSON, incl. the Rego source). Admin token.
     pub async fn get_policy(&self, id: &str) -> Result<serde_json::Value, VtcError> {
         self.get_json(&format!("policies/{id}"), task::POLICY_GET)
             .await
     }
 
-    /// Upload a new Rego policy bundle for `purpose` (`"join"`, `"removal"`,
-    /// …). Returns the upload descriptor (id, sha256, version). Admin token.
-    /// Upload alone does not activate it — call [`activate_policy`](Self::activate_policy).
+    /// Upload a new Rego policy module for `purpose` (`"join"`, `"removal"`,
+    /// …) — `policy/upsert/0.2`. Returns the `policy/upsert` response
+    /// (`{ policy, created }`, with the id, version and source hash on
+    /// `policy`). Admin token. Upload alone does not activate it — call
+    /// [`activate_policy`](Self::activate_policy).
+    ///
+    /// The body is the generated [`policy_upsert::Payload`]: `name` (the
+    /// purpose, as the admin console names modules), `module` (the Rego
+    /// source) and the purpose again under `ext`
+    /// ([`POLICY_PURPOSE_EXT_KEY`]), which is where a VTC reads it. A payload
+    /// the schema refuses is [`VtcError::InvalidPayload`], before any request.
     pub async fn upload_policy(
         &self,
         purpose: &str,
         rego_source: &str,
     ) -> Result<serde_json::Value, VtcError> {
-        self.post_json(
-            "policies",
-            task::POLICY_UPSERT,
-            &serde_json::json!({ "purpose": purpose, "regoSource": rego_source }),
-        )
-        .await
+        let payload = policy_upload_payload(purpose, rego_source)?;
+        let body =
+            serde_json::to_value(&payload).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
+        self.post_json("policies", task::POLICY_UPSERT, &body).await
     }
 
     /// Activate a previously-uploaded policy (make it live for decisions of its
@@ -1374,6 +1454,71 @@ async fn expect_success(resp: reqwest::Response) -> Result<reqwest::Response, Vt
     Err(VtcError::Http { status, body })
 }
 
+/// Like [`expect_success`], but a 404 whose JSON body carries one of
+/// `declared` as its `code` becomes [`VtcError::NotFound`].
+///
+/// Only the task's *declared* codes are honoured, so a 404 cannot be mistaken
+/// for "no such resource" merely because it is a 404.
+async fn expect_success_declaring(
+    resp: reqwest::Response,
+    declared: &[trust_tasks_rs::DeclaredErrorCode],
+) -> Result<reqwest::Response, VtcError> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    Err(typed_error(status, body, declared))
+}
+
+/// Classify a non-success answer: [`VtcError::NotFound`] for a 404 naming a
+/// declared code, [`VtcError::Http`] for everything else.
+fn typed_error(
+    status: u16,
+    body: String,
+    declared: &[trust_tasks_rs::DeclaredErrorCode],
+) -> VtcError {
+    if status == 404
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&body)
+        && let Some(code) = v.get("code").and_then(serde_json::Value::as_str)
+        && declared.iter().any(|d| d.code == code)
+    {
+        let message = v
+            .get("error")
+            .or_else(|| v.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        return VtcError::NotFound {
+            code: code.to_string(),
+            message,
+        };
+    }
+    VtcError::Http { status, body }
+}
+
+/// The `policy/upsert/0.2` payload for a module serving `purpose`, built on
+/// the generated type so the schema's bounds are checked before sending.
+fn policy_upload_payload(
+    purpose: &str,
+    rego_source: &str,
+) -> Result<policy_upsert::Payload, VtcError> {
+    let key: policy_upsert::ExtKey = POLICY_PURPOSE_EXT_KEY
+        .parse()
+        .map_err(|e| VtcError::InvalidPayload(format!("ext key: {e}")))?;
+    let ext = policy_upsert::Ext::from(std::collections::HashMap::from([(
+        key,
+        serde_json::Value::String(purpose.to_string()),
+    )]));
+    policy_upsert::Payload::try_from(
+        policy_upsert::Payload::builder()
+            .name(purpose)
+            .module(rego_source)
+            .ext(Some(ext)),
+    )
+    .map_err(|e| VtcError::InvalidPayload(e.to_string()))
+}
+
 /// A success response's JSON body, refusing one larger than `max` bytes. The
 /// oversized body is never fully buffered.
 async fn read_json_capped(
@@ -1720,6 +1865,10 @@ mod tests {
             Err(VtcError::NotAuthenticated)
         ));
         assert!(matches!(
+            client.member_credentials("did:key:z").await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
             client.activate_policy("p1").await,
             Err(VtcError::NotAuthenticated)
         ));
@@ -1729,5 +1878,69 @@ mod tests {
                 .await,
             Err(VtcError::NotAuthenticated)
         ));
+    }
+
+    /// The upload body is the canonical `policy/upsert/0.2` shape, asserted on
+    /// the serialised JSON — what the VTC's `deny_unknown_fields` body sees.
+    #[test]
+    fn policy_upload_sends_the_canonical_upsert_shape() {
+        let body = serde_json::to_value(policy_upload_payload("join", "package vtc.join").unwrap())
+            .unwrap();
+        assert_eq!(body["name"], "join");
+        assert_eq!(body["module"], "package vtc.join");
+        assert_eq!(body["ext"][POLICY_PURPOSE_EXT_KEY], "join");
+        assert!(
+            body.get("purpose").is_none(),
+            "not a canonical member: {body}"
+        );
+        assert!(
+            body.get("regoSource").is_none(),
+            "renamed to module: {body}"
+        );
+    }
+
+    #[test]
+    fn an_empty_policy_module_is_refused_before_sending() {
+        assert!(matches!(
+            policy_upload_payload("join", ""),
+            Err(VtcError::InvalidPayload(_))
+        ));
+    }
+
+    /// Only a 404 naming a *declared* code is a typed not-found; a bare 404 is
+    /// not evidence the member is absent.
+    #[test]
+    fn only_a_declared_not_found_code_is_typed() {
+        let declared = members_credentials::ERROR_CODES;
+        let code = members_credentials::error_codes::NOT_FOUND.code;
+        let typed = typed_error(
+            404,
+            serde_json::json!({ "error": "not found: x", "code": code }).to_string(),
+            declared,
+        );
+        assert!(
+            matches!(&typed, VtcError::NotFound { code: c, message } if c == code && message == "not found: x"),
+            "{typed:?}"
+        );
+        for (status, body) in [
+            (404, serde_json::json!({ "error": "not found" }).to_string()),
+            (404, "no route".to_string()),
+            (
+                404,
+                serde_json::json!({ "error": "x", "code": "vtc/other:notFound" }).to_string(),
+            ),
+            (
+                403,
+                serde_json::json!({ "error": "x", "code": code }).to_string(),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    typed_error(status, body.clone(), declared),
+                    VtcError::Http { .. }
+                ),
+                "{status} {body} must stay Http"
+            );
+        }
     }
 }

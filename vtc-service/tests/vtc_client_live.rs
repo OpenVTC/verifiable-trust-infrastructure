@@ -434,3 +434,123 @@ async fn submit_with_mismatched_issuer_is_refused() {
 
     mock.shutdown().await;
 }
+
+/// A VTC built the way `MockVtc::start` builds one, passed through
+/// `start_with` so a test states what it depends on: the audit writer, which
+/// both a policy upload and a credentials read must record before answering.
+async fn audited_vtc() -> MockVtc {
+    let vtc = vtc_service::test_support::TestVtc::builder()
+        .with_audit(true)
+        .with_signers(true)
+        .with_public_url("http://vtc.test")
+        .build()
+        .await;
+    MockVtc::start_with(vtc).await
+}
+
+async fn admin_client(mock: &MockVtc, seed: u8) -> VtcClient {
+    let base = format!("{}/v1", mock.base_url());
+    let (did, private_key_multibase) = did_key_from_seed(seed);
+    store_acl_entry(&mock.vtc.state.acl_ks, &admin_entry(&did))
+        .await
+        .expect("seed admin acl row");
+    VtcClient::connect(
+        &base,
+        "did:key:z6MkVtcUnderTest",
+        &did,
+        &private_key_multibase,
+    )
+    .await
+    .expect("connect")
+}
+
+/// `upload_policy` sends the canonical `policy/upsert/0.2` body the VTC's
+/// strict (`deny_unknown_fields`) `UploadBody` accepts. It used to send
+/// `{purpose, regoSource}`, which that body refuses outright — so the method
+/// had never worked against a live VTC. Activation proves the stored revision
+/// is the one the upload described.
+#[tokio::test]
+async fn upload_policy_is_accepted_and_activates() {
+    let mock = audited_vtc().await;
+    let client = admin_client(&mock, 0xA1).await;
+
+    let uploaded = client
+        .upload_policy(
+            "join",
+            "package vtc.join\nimport rego.v1\ndefault allow := true\n",
+        )
+        .await
+        .expect("a live VTC must accept the upload");
+    assert_eq!(uploaded["created"], true, "{uploaded}");
+    let policy = &uploaded["policy"];
+    assert_eq!(policy["name"], "join", "{uploaded}");
+    assert_eq!(
+        policy["ext"][vtc_client::POLICY_PURPOSE_EXT_KEY],
+        "join",
+        "{uploaded}"
+    );
+    let id = policy["id"].as_str().expect("policy id").to_string();
+
+    let activated = client
+        .activate_policy(&id)
+        .await
+        .expect("the uploaded revision activates");
+    assert_eq!(activated["activated"], id.as_str(), "{activated}");
+
+    mock.shutdown().await;
+}
+
+/// `member_credentials` reads `vtc/members/credentials/0.1` into the generated
+/// response type, and an unknown member is the typed `NotFound` carrying the
+/// specification's declared code — not an opaque HTTP 404.
+#[tokio::test]
+async fn member_credentials_round_trips_and_types_not_found() {
+    let mock = audited_vtc().await;
+    let client = admin_client(&mock, 0xA2).await;
+    let state = &mock.vtc.state;
+
+    let (member_did, _) = did_key_from_seed(0xA3);
+    let mut member = vtc_service::members::Member::fresh(&member_did);
+    let grant = serde_json::json!({
+        "id": "urn:uuid:grant-1",
+        "type": ["VerifiableCredential", "MembershipCredential"],
+        "proof": { "proofValue": "z1" },
+    });
+    member.current_vmc = Some(grant.clone());
+    vtc_service::members::storage::store_member(&state.members_ks, &member)
+        .await
+        .expect("seed member");
+    store_acl_entry(
+        &state.acl_ks,
+        &VtcAclEntry {
+            role: VtcRole::Member,
+            ..admin_entry(&member_did)
+        },
+    )
+    .await
+    .expect("seed member acl row");
+
+    let creds = client
+        .member_credentials(&member_did)
+        .await
+        .expect("a member's credentials are readable");
+    assert_eq!(creds.did.as_str(), member_did);
+    assert_eq!(
+        serde_json::Value::Object(creds.membership_credential.clone()),
+        grant
+    );
+    assert!(creds.role_credential.is_empty());
+    assert!(creds.member_vmc.is_empty());
+    assert!(!creds.member_vmc_bound);
+
+    let (stranger, _) = did_key_from_seed(0xA4);
+    match client.member_credentials(&stranger).await {
+        Err(vtc_client::VtcError::NotFound { code, .. }) => assert_eq!(
+            code,
+            vtc_client::members_credentials::error_codes::NOT_FOUND.code
+        ),
+        other => panic!("an unknown member must be a typed NotFound, got {other:?}"),
+    }
+
+    mock.shutdown().await;
+}

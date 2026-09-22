@@ -169,6 +169,18 @@ async fn upsert_refuses_selection_hints_it_cannot_honour() {
     }
 }
 
+/// `enabled: true` is the schema default, and the generated `policy/upsert`
+/// payload always serialises it — so refusing it would refuse every client
+/// built on the canonical type. It asks for nothing this maintainer lacks.
+#[tokio::test]
+async fn upsert_accepts_enabled_true_the_schema_default() {
+    let fix = build().await;
+    let mut body = upsert_body("join", JOIN_POLICY);
+    body["enabled"] = json!(true);
+    let (status, resp) = call(&fix, "POST", "/v1/policies", UPSERT, Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{resp}");
+}
+
 /// `expectedVersion` is an optimistic-concurrency token: two operators
 /// racing on the same purpose must not each append over the other's
 /// read.
