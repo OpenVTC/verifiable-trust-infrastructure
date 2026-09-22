@@ -342,6 +342,19 @@ from `--mediator`, else the DID document's `DIDCommMessaging` service, else this
 pnm's configured mediator. Screens and keys are documented with the console
 itself: [`affinidi-messaging-mediator-tui`](https://github.com/affinidi/affinidi-tdk-rs/tree/main/crates/messaging/affinidi-messaging-mediator-tui).
 
+**Names instead of hashes.** The mediator knows accounts only as SHA-256
+hashes of their DIDs. pnm fills the console's address book with every DID
+this VTA can name:
+- the DIDs of your contexts, named after the context;
+- webvh DIDs it hosts, as `context · mnemonic`;
+- anyone with access to the VTA, by their ACL label (listing ACLs needs an
+  admin; otherwise this source is skipped);
+- the VTA itself and this pnm session.
+
+Those names aren't saved. Names you add in the console with `n` are saved to
+the same address book the standalone `mediator-console` uses
+(`~/.config/mediator-console/address-book.json`), and a name you saved wins.
+
 **What it needs from the VTA.** The console signs requests and decrypts the
 mediator's replies, and the VTA cannot do key agreement on its behalf, so the
 DID's keys are exported for the session — one at a time with `keys/export-secret`,

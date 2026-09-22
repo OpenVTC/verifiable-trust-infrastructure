@@ -16,9 +16,9 @@
 //! client's (VTI-CLT-002), so using it exports nothing.
 
 use affinidi_messaging_mediator_admin::{
-    ConsoleError, Identity, IdentityChoice, IdentitySource, MediatorConsole,
+    AddressBook, ConsoleError, Identity, IdentityChoice, IdentitySource, MediatorConsole,
 };
-use affinidi_messaging_mediator_tui::App;
+use affinidi_messaging_mediator_tui::{App, default_address_book_path};
 use affinidi_secrets_resolver::secrets::Secret;
 use async_trait::async_trait;
 use vta_sdk::client::VtaClient;
@@ -48,7 +48,8 @@ pub(crate) async fn run(
                 client,
                 keyring_key: keyring_key.to_string(),
             };
-            let choice = choose(&source, context.as_deref(), did.as_deref(), as_session).await?;
+            let choices = source.list().await?;
+            let choice = choose(&choices, context.as_deref(), did.as_deref(), as_session)?;
             let mut identity = source.load(&choice).await?;
             identity.mediator_did = mediator.clone();
 
@@ -65,8 +66,31 @@ pub(crate) async fn run(
                 other => other?,
             };
 
+            // The console's address book, with every DID this VTA can name
+            // filled in (not saved: the VTA stays the source of those names,
+            // and a name saved by hand wins).
+            let book_path = default_address_book_path();
+            let mut book = match &book_path {
+                Some(path) => AddressBook::load(path)
+                    .map_err(|e| format!("address book {}: {e}", path.display()))?,
+                None => AddressBook::new(),
+            };
+            seed_address_book(client, &choices, &mut book).await;
+
             let mut terminal = ratatui::init();
-            let result = App::new(console).run(&mut terminal).await;
+            // Bracketed paste: a pasted DID arrives whole, not as keystrokes.
+            let _ = ratatui::crossterm::execute!(
+                std::io::stdout(),
+                ratatui::crossterm::event::EnableBracketedPaste
+            );
+            let result = App::new(console)
+                .with_address_book(book, book_path)
+                .run(&mut terminal)
+                .await;
+            let _ = ratatui::crossterm::execute!(
+                std::io::stdout(),
+                ratatui::crossterm::event::DisableBracketedPaste
+            );
             ratatui::restore();
             Ok(result?)
         }
@@ -76,13 +100,13 @@ pub(crate) async fn run(
 /// Pick the identity: `--as-session`; else the DIDs `--context` and `--did`
 /// narrow to; else every context DID. One candidate is taken, several are
 /// asked about.
-async fn choose(
-    source: &VtaIdentitySource<'_>,
+fn choose(
+    choices: &[IdentityChoice],
     context: Option<&str>,
     did: Option<&str>,
     as_session: bool,
 ) -> Result<IdentityChoice, Box<dyn std::error::Error>> {
-    let choices = source.list().await?;
+    let choices = choices.to_vec();
     if as_session {
         return first(
             narrow(&choices, Some(SESSION_CHOICE), None),
@@ -150,6 +174,83 @@ fn ask(choices: &[IdentityChoice]) -> Result<IdentityChoice, Box<dyn std::error:
         .default(0)
         .interact()?;
     Ok(choices[i].clone())
+}
+
+/// Name every DID this VTA can tell us about, for the console's address book.
+/// Later sources override earlier ones for the same DID, so they go from the
+/// least specific to the most:
+///
+/// 1. ACL entries: who may use this VTA, by their label (or role);
+/// 2. webvh DIDs the VTA hosts, as `context · mnemonic`;
+/// 3. the DIDs of this session's contexts (the console's identity choices), by
+///    context name;
+/// 4. the VTA itself and this pnm session.
+///
+/// A source this session may not read (ACLs need an admin) is skipped: naming
+/// is a convenience and must never stop the console opening.
+async fn seed_address_book(client: &VtaClient, choices: &[IdentityChoice], book: &mut AddressBook) {
+    if let Ok(acl) = client.list_acl(None).await {
+        for entry in acl.entries {
+            let name = entry
+                .label
+                .filter(|l| !l.trim().is_empty())
+                .unwrap_or_else(|| format!("{} (VTA access)", entry.role));
+            book.know(&entry.did, &name);
+        }
+    }
+
+    let context_names: std::collections::HashMap<String, String> = client
+        .list_contexts()
+        .await
+        .map(|r| r.contexts.into_iter().map(|c| (c.id, c.name)).collect())
+        .unwrap_or_default();
+    if let Ok(webvh) = client.list_dids_webvh(None, None).await {
+        for record in webvh.dids {
+            let context = context_names
+                .get(&record.context_id)
+                .cloned()
+                .unwrap_or_else(|| record.context_id.clone());
+            let name = if record.mnemonic.trim().is_empty() {
+                context
+            } else {
+                format!("{context} · {}", record.mnemonic)
+            };
+            book.know(&record.did, &name);
+        }
+    }
+
+    for (did, name) in choice_names(choices) {
+        book.know(&did, &name);
+    }
+    if let Some(vta) = client.vta_did() {
+        book.know(vta, "VTA");
+    }
+}
+
+/// A name for each identity choice's DID: its context's name, told apart by
+/// the DID's last segment when a context holds several; `pnm session` for the
+/// session's own `did:key`.
+fn choice_names(choices: &[IdentityChoice]) -> Vec<(String, String)> {
+    let mut per_label: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for c in choices {
+        *per_label.entry(c.label.as_str()).or_default() += 1;
+    }
+    choices
+        .iter()
+        .filter_map(|c| {
+            let did = c.did.clone()?;
+            let name = if c.id == SESSION_CHOICE {
+                "pnm session".to_string()
+            } else if per_label.get(c.label.as_str()).copied().unwrap_or(0) > 1 {
+                let tail = did.rsplit(':').next().unwrap_or(&did);
+                let tail: String = tail.chars().take(16).collect();
+                format!("{} · {tail}", c.label)
+            } else {
+                c.label.clone()
+            };
+            Some((did, name))
+        })
+        .collect()
 }
 
 /// The DIDs this pnm session may act as: every DID whose keys are in a
@@ -382,6 +483,34 @@ mod tests {
         );
         // Unnarrowed, the session is not a context candidate.
         assert_eq!(narrow(&choices, None, None).len(), 1);
+    }
+
+    #[test]
+    fn identity_choices_are_named_by_context_and_told_apart() {
+        let choices = vec![
+            IdentityChoice {
+                label: "billing".into(),
+                ..in_context("ctx-a", "did:webvh:Qm:ex.com:billing")
+            },
+            IdentityChoice {
+                label: "shared".into(),
+                ..in_context("ctx-b", "did:webvh:Qm:ex.com:one")
+            },
+            IdentityChoice {
+                label: "shared".into(),
+                ..in_context("ctx-b", "did:webvh:Qm:ex.com:two")
+            },
+            choice(SESSION_CHOICE),
+        ];
+        let names: std::collections::HashMap<String, String> =
+            choice_names(&choices).into_iter().collect();
+        assert_eq!(names["did:webvh:Qm:ex.com:billing"], "billing");
+        assert_eq!(names["did:webvh:Qm:ex.com:one"], "shared · one");
+        assert_eq!(names["did:webvh:Qm:ex.com:two"], "shared · two");
+        assert_eq!(
+            names[&format!("did:example:{SESSION_CHOICE}")],
+            "pnm session"
+        );
     }
 
     #[test]
