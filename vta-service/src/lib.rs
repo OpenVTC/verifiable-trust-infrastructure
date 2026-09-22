@@ -71,6 +71,7 @@ pub mod operations;
 /// every `crate::policy::…` path is unchanged.
 pub use vta_policy as policy;
 #[cfg(feature = "rest")]
+pub mod restore;
 pub mod routes;
 pub use vta_support::seal;
 pub use vta_support::sealed_nonce_store;

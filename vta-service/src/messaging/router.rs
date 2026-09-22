@@ -144,6 +144,24 @@ pub struct VtaState {
     pub tee_state: Option<crate::tee::TeeState>,
     /// Send `true` to trigger a soft restart.
     pub restart_tx: tokio::sync::watch::Sender<bool>,
+    /// Mirrored from `AppState` for backup and restore, which read every
+    /// keyspace and stage into the unencrypted `bootstrap` one.
+    pub store: vti_common::store::Store,
+    pub storage_encryption_key: Option<[u8; 32]>,
+    pub in_enclave: bool,
+}
+
+impl VtaState {
+    /// What a backup or a restore needs from this VTA.
+    pub fn backup_access(&self) -> crate::restore::BackupAccess<'_> {
+        crate::restore::BackupAccess {
+            store: &self.store,
+            storage_key: self.storage_encryption_key,
+            in_enclave: self.in_enclave,
+            seed_store: self.seed_store.as_ref(),
+            config: &self.config,
+        }
+    }
 }
 
 // Gated on `webvh`: provision-integration mints WebVH DIDs, so the op (and the
@@ -228,6 +246,9 @@ impl From<&AppState> for VtaState {
             #[cfg(feature = "tee")]
             tee_state: state.tee.as_ref().map(|tc| tc.state.clone()),
             restart_tx: state.restart_tx.clone(),
+            store: state.store.clone(),
+            storage_encryption_key: state.storage_encryption_key,
+            in_enclave: state.tee.is_some(),
         }
     }
 }

@@ -1216,7 +1216,7 @@ async fn backup_export_and_import_preview() {
         ))
         .await;
     assert_eq!(status, StatusCode::OK, "export: {envelope}");
-    assert_eq!(envelope["format"], "vta-backup-v1");
+    assert_eq!(envelope["format"], "vta-backup-v2");
 
     // Import preview (confirm=false)
     let (status, preview) = app

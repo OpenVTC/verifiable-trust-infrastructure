@@ -98,9 +98,9 @@ and cannot encrypt rogue data (GenerateDataKey also requires attestation).
 
 | Secret | Created | Stored | Exported |
 |--------|---------|--------|----------|
-| Master seed (32 bytes) | Generated in TEE | TEE memory only | Never |
+| Master seed (32 bytes) | Generated in TEE | TEE memory only | Only in a password-encrypted backup (super-admin), or the first-boot mnemonic window |
 | BIP-32 root key | Derived from seed | TEE memory only | Never |
-| JWT signing key (32 bytes) | Generated in TEE | TEE memory only | Never |
+| JWT signing key (32 bytes) | Generated in TEE | TEE memory only | Only in a password-encrypted backup (super-admin) |
 | VTA identity keys (Ed25519/X25519) | Derived from root | TEE memory only | Public keys only |
 | Ephemeral RSA key pair | Generated in TEE | TEE memory only | Public key in attestation doc |
 | Storage encryption key (AES-256) | Derived from seed | TEE memory only | Never |
@@ -108,6 +108,11 @@ and cannot encrypt rogue data (GenerateDataKey also requires attestation).
 
 The only private key material that leaves the enclave is:
 - **Public keys**: Always safe to export
+- **Backups** (`pnm backup export`, super-admin): the seed, the JWT key and the
+  whole state, encrypted to an operator password (VTI-VTA-001 permits root
+  material to leave only this way). A backup restores into another enclave or a
+  non-TEE VTA — see [backup-restore.md](backup-restore.md). Internal keys are
+  never in one.
 - **Context provisioning bundles**: Encrypted with the recipient's public key
   (DIDComm envelope encryption — the enclave never sends plaintext private keys)
 - **Key secrets endpoint** (`GET /keys/{id}/secret`): Returns private key material
@@ -610,7 +615,7 @@ and both are load-bearing for a fresh enclave to accept traffic:
 | Parent denies egress to the anchor | DoS only — the parent can already DoS by not starting the enclave. Enclave fails closed (refuses boot / security-relevant ops). Documented break-glass `tee.kms.allow_unanchored` for incident recovery, off by default. |
 | Mnemonic exfiltration | Never displayed on console. Export requires: super admin auth + time-limited window + env var at boot. One-time use, entropy zeroed after export. |
 | Signing key theft | Key stored in CI/CD or HSM, never on EC2. If stolen: revoke, generate new key, rebuild + re-sign, update PCR8 in KMS policy. |
-| KMS key deletion | Recover from BIP-39 mnemonic backup with `vta tee recover` — create new KMS key and re-encrypt seed |
+| KMS key deletion | Restore the last `pnm backup export` into a fresh enclave under a new KMS key (`pnm backup import --replace-identity`); the restore seals the seed under the new key. Internal keys are lost. |
 | Enclave restart | Deterministic storage key (derived from seed via HKDF) — new enclave instance can decrypt previous data |
 
 ### PCR Measurements Used in KMS Key Policy

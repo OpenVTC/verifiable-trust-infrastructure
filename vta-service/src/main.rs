@@ -2354,6 +2354,39 @@ async fn main() {
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 
+            // A committed backup restore is applied before anything reads the
+            // store: under the storage key the (restored) seed now yields, and —
+            // on a hardened VTA — before the JWT key is loaded from the store it
+            // replaces. See `restore::apply_pending_restore`.
+            if let Some(seed) = seed_store.get().await.ok().flatten() {
+                let (storage_key, environment) = if config.hardened.enabled {
+                    let key = *hardened_bootstrap::derive_storage_key(
+                        &seed,
+                        &config.hardened.storage_key_salt,
+                    );
+                    (
+                        Some(key),
+                        vta_service::restore::environment_of(Some(key), false),
+                    )
+                } else {
+                    (None, vta_service::restore::environment_of(None, false))
+                };
+                if let Err(e) = vta_service::restore::apply_pending_restore(
+                    &store,
+                    storage_key,
+                    environment,
+                    &seed,
+                    &mut config,
+                )
+                .await
+                {
+                    tracing::error!(
+                        "applying the committed backup restore failed: {e}. The restore is                          still staged and is applied again on the next start."
+                    );
+                    std::process::exit(1);
+                }
+            }
+
             // Hardened configuration: derive the storage-encryption key and the JWT
             // signing key from the master seed so neither secret lives in
             // config.toml or on disk.  Mirrors what `vta-enclave` does inside a
@@ -2470,6 +2503,10 @@ async fn main() {
             {
                 tracing::error!("server error: {e}");
                 std::process::exit(1);
+            }
+            // A backup import committed: boot again so it is applied.
+            if vta_service::restore::reboot_requested() {
+                vta_service::restore::reexec();
             }
         }
     }

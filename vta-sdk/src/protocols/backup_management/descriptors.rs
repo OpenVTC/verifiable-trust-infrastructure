@@ -186,6 +186,49 @@ pub struct FinalizeImportBody {
     /// without mutating state). Defaults to `true`.
     #[serde(default = "default_true")]
     pub confirm: bool,
+
+    /// Extension members (SPEC §4.5.1). This agent reads
+    /// `ext["org.openvtc"].replaceIdentity` — see
+    /// [`FinalizeImportBody::replace_identity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// The extension namespace this agent's own members live under.
+pub const OPENVTC_EXT_NAMESPACE: &str = "org.openvtc";
+
+impl FinalizeImportBody {
+    /// Whether the caller allows the restore to replace a *different* identity
+    /// the VTA already runs as (`ext["org.openvtc"].replaceIdentity: true`).
+    ///
+    /// Carried as an extension because the specification's payload has no such
+    /// member: it describes the replacement of an agent, and whether this agent
+    /// guards against replacing itself with someone else's is its own policy.
+    #[must_use]
+    pub fn replace_identity(&self) -> bool {
+        self.ext
+            .as_ref()
+            .and_then(|ext| ext.get(OPENVTC_EXT_NAMESPACE))
+            .and_then(|ns| ns.get("replaceIdentity"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// The `ext` object that asks for [`Self::replace_identity`], or `None`
+    /// when it is not asked for (so a default request carries no extension).
+    #[must_use]
+    pub fn replace_identity_ext(
+        replace_identity: bool,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        replace_identity.then(|| {
+            let mut ext = serde_json::Map::new();
+            ext.insert(
+                OPENVTC_EXT_NAMESPACE.into(),
+                serde_json::json!({ "replaceIdentity": true }),
+            );
+            ext
+        })
+    }
 }
 
 /// `spec/vta/backup/finalize-import/1.0` response body. The
@@ -271,6 +314,23 @@ mod tests {
         let body: FinalizeImportBody =
             serde_json::from_str(r#"{"bundle_id": "abc", "password": "twelve-chars"}"#).unwrap();
         assert!(body.confirm);
+        assert!(!body.replace_identity());
+    }
+
+    #[test]
+    fn replace_identity_rides_the_openvtc_extension() {
+        let body = FinalizeImportBody {
+            bundle_id: "abc".into(),
+            password: "twelve-chars".into(),
+            confirm: true,
+            ext: FinalizeImportBody::replace_identity_ext(true),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["ext"]["org.openvtc"]["replaceIdentity"], true);
+        let back: FinalizeImportBody = serde_json::from_value(json).unwrap();
+        assert!(back.replace_identity());
+        // Not asked for → no extension on the wire at all.
+        assert!(FinalizeImportBody::replace_identity_ext(false).is_none());
     }
 
     #[test]

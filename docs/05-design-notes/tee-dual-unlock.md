@@ -39,8 +39,8 @@ Related code (current-state map, verified while writing this note):
   variants).
 - Existing `seal`/`unseal`: `vta-service/src/seal.rs` — an **authorization
   gate** on offline CLI commands, not a key split. See §3.
-- Backup re-encrypt path: `kms_bootstrap.rs:217-253`
-  (`re_encrypt_bootstrap_secrets`) — a silent-downgrade trap, see §8.
+- Backup restore re-seal path: `kms_bootstrap.rs`
+  (`seal_restored_secrets`) — a silent-downgrade trap, see §8.
 - One-shot timed secret export precedent: `vta-service/src/tee/mnemonic_guard.rs`
   (`new`/`empty`/`status`/`export`, zeroized on drop), gated on first boot
   only (`vta-enclave/src/main.rs:231-251`).
@@ -467,8 +467,9 @@ optional hardening:
 
 ## 8. Interactions and traps
 
-- **`re_encrypt_bootstrap_secrets` (`kms_bootstrap.rs:217-253`)** — backup
-  import re-wraps the seed under a fresh KMS data key. If it does not preserve
+- **`seal_restored_secrets` / `adopt_restored_secrets` (`kms_bootstrap.rs`)** —
+  a backup restore re-wraps the seed under a fresh KMS data key (one row,
+  committed at import and adopted at boot; see `backup-restore-portability.md`). If it does not preserve
   the split, restoring a backup **silently downgrades a dual-unlock VTA to
   KMS-only**. Must fail closed rather than re-wrap single-share.
 - **Backup export** (`POST /backup/export`, Argon2id + AES-256-GCM) exports the

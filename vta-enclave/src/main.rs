@@ -309,6 +309,35 @@ async fn main() {
         (config, None)
     };
 
+    // ── Apply a committed backup restore ──
+    // Before anything reads the store — in particular before the stored identity
+    // is reconciled below, which must find the restored one. The KMS bootstrap
+    // above already adopted the restored seed and JWT key if a restore committed
+    // them, so the storage key here is the one the restored state is written
+    // under.
+    {
+        let (seed, storage_key) = match tee_bootstrap.as_ref() {
+            Some(bootstrap) => (Some(bootstrap.seed.clone()), Some(bootstrap.storage_key)),
+            None => (seed_store.get().await.ok().flatten(), None),
+        };
+        if let Some(seed) = seed
+            && let Err(e) = vta_service::restore::apply_pending_restore(
+                &store,
+                storage_key,
+                vta_service::restore::environment_of(storage_key, tee_bootstrap.is_some()),
+                &seed,
+                &mut config,
+            )
+            .await
+        {
+            tracing::error!(
+                "applying the committed backup restore failed: {e}. The restore is still \
+                 staged and is applied again on the next boot. Refusing to boot."
+            );
+            std::process::exit(1);
+        }
+    }
+
     // ── Mnemonic export guard ──
     let mnemonic_guard = {
         let export_window: Option<u64> = std::env::var("VTA_MNEMONIC_EXPORT_WINDOW")
@@ -495,6 +524,11 @@ async fn main() {
     {
         tracing::error!("server error: {e}");
         std::process::exit(1);
+    }
+    // A backup import committed: boot again so it is applied. Nothing restarts
+    // an enclave's process from outside, so this is the only way it can.
+    if vta_service::restore::reboot_requested() {
+        vta_service::restore::reexec();
     }
 }
 

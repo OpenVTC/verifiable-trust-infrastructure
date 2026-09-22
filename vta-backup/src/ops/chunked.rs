@@ -305,7 +305,7 @@ pub async fn initiate_export(
     let envelope = {
         let config_guard = deps.config.read().await;
         super::export_backup(
-            &deps.keyspaces,
+            &deps.target,
             deps.seed_store.as_ref(),
             &config_guard,
             auth,

@@ -11328,13 +11328,17 @@ dependencies = [
 name = "vta-support"
 version = "0.4.2"
 dependencies = [
+ "aes-gcm 0.11.1",
+ "base64 0.23.1",
  "chrono",
  "ed25519-dalek 3.0.0",
  "hex",
+ "hkdf 0.13.0",
  "multibase",
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tracing",
@@ -11342,6 +11346,7 @@ dependencies = [
  "vta-keyspaces",
  "vta-sdk",
  "vti-common",
+ "zeroize",
 ]
 
 [[package]]

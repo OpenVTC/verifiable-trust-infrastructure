@@ -553,6 +553,44 @@ impl PersonaStore {
             .unwrap_or_default())
     }
 
+    /// Recompute every blinded index — the correlation index and the face-value
+    /// index — under this store's correlation key.
+    ///
+    /// Both are keyed by an HMAC whose key is derived from the deployment's
+    /// at-rest key, so rows written under another deployment's key are
+    /// unreachable: a lookup computes a different slot and reads as a false
+    /// all-clear. A backup therefore never carries them
+    /// (`vta_keyspaces::ENVIRONMENT_BOUND_ROWS`), and a restore calls this once
+    /// the attributes and profiles they index are back. Idempotent.
+    pub async fn rebuild_blinded_indexes(&self) -> Result<(), AppError> {
+        {
+            let _guard = self.write_lock.lock().await;
+            for prefix in [
+                storage::CORRELATION_PREFIX,
+                storage::FACE_VALUE_PREFIX,
+                storage::FACE_VALUE_INDEX_BUILT_KEY,
+            ] {
+                for key in self.ks.prefix_keys(prefix.as_bytes().to_vec()).await? {
+                    self.ks.remove(key).await?;
+                }
+            }
+            let rows = self
+                .ks
+                .prefix_iter_raw(storage::ATTRIBUTE_PREFIX.as_bytes().to_vec())
+                .await?;
+            for (_key, bytes) in rows {
+                if let Ok(Slot::Live(attribute)) = serde_json::from_slice::<Slot>(&bytes)
+                    && let Some(value) = &attribute.value
+                {
+                    let blind = correlation::blind(&self.correlation_key, value);
+                    self.index_value(&blind, &attribute.attribute_id).await?;
+                }
+            }
+        }
+        // Rebuilt from the profiles, now that its "built" marker is gone.
+        self.ensure_face_value_index().await
+    }
+
     pub(crate) async fn index_value(
         &self,
         blind: &str,
@@ -727,6 +765,43 @@ mod tests {
         assert!(!second.existed);
         let after = s.put(sample("probe2"), None).await.unwrap().version;
         assert_eq!(after, before + 1, "the no-op delete consumed no version");
+    }
+
+    /// A restore lands persona rows under a different correlation key (another
+    /// deployment's at-rest key). Until the indexes are rebuilt, reuse reads as
+    /// an all-clear; after, it is seen again.
+    #[tokio::test]
+    async fn rebuilt_indexes_see_reuse_under_a_new_correlation_key() {
+        let (_d, s) = fresh(false).await;
+        let a = sample("+61 4xx");
+        let b = sample("+61 4xx");
+        s.put(a.clone(), None).await.unwrap();
+        s.put(b.clone(), None).await.unwrap();
+
+        let restored = PersonaStore::new(s.ks.clone(), [0xEE; 32]);
+        let v = serde_json::json!("+61 4xx");
+        assert_eq!(
+            restored
+                .correlation_count(&v, &a.attribute_id)
+                .await
+                .unwrap(),
+            0,
+            "the old index is unreachable under the new key"
+        );
+        restored.rebuild_blinded_indexes().await.unwrap();
+        assert_eq!(
+            restored
+                .correlation_count(&v, &a.attribute_id)
+                .await
+                .unwrap(),
+            1
+        );
+        // No slot written under the old key survives the rebuild.
+        let slots =
+            s.ks.prefix_keys(storage::CORRELATION_PREFIX.as_bytes().to_vec())
+                .await
+                .unwrap();
+        assert_eq!(slots.len(), 1);
     }
 
     #[tokio::test]

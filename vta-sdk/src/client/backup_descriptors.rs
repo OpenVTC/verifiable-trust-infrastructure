@@ -177,10 +177,26 @@ impl VtaClient {
         confirm: bool,
         progress: &mut (dyn FnMut(TransferProgress) + Send),
     ) -> Result<FinalizeImportResultBody, VtaError> {
+        self.backup_import_with_options(bytes, password, confirm, false, progress)
+            .await
+    }
+
+    /// [`Self::backup_import_with_progress`], optionally allowing the restore
+    /// to replace a *different* identity the VTA already runs as — the
+    /// disaster-recovery case, restoring onto a freshly set-up VTA that minted
+    /// a DID of its own. Without it the VTA refuses a backup of another DID.
+    pub async fn backup_import_with_options(
+        &self,
+        bytes: &[u8],
+        password: &str,
+        confirm: bool,
+        replace_identity: bool,
+        progress: &mut (dyn FnMut(TransferProgress) + Send),
+    ) -> Result<FinalizeImportResultBody, VtaError> {
         if self.trust_task_transport() != SurfaceTransport::Rest {
             let bundle_id = self.backup_import_chunked(bytes, progress).await?;
             return self
-                .backup_finalize_import(&bundle_id, password, confirm)
+                .backup_finalize_import_with(&bundle_id, password, confirm, replace_identity)
                 .await;
         }
         descriptor_transport_gate(self.trust_task_transport())?;
@@ -208,6 +224,7 @@ impl VtaClient {
             bundle_id: result.descriptor.bundle_id.clone(),
             password: password.to_string(),
             confirm,
+            ext: FinalizeImportBody::replace_identity_ext(replace_identity),
         };
         self.post_trust_task(
             crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0,
@@ -243,10 +260,24 @@ impl VtaClient {
         password: &str,
         confirm: bool,
     ) -> Result<FinalizeImportResultBody, VtaError> {
+        self.backup_finalize_import_with(bundle_id, password, confirm, false)
+            .await
+    }
+
+    /// [`Self::backup_finalize_import`] with the replace-identity allowance of
+    /// [`Self::backup_import_with_options`].
+    pub async fn backup_finalize_import_with(
+        &self,
+        bundle_id: &str,
+        password: &str,
+        confirm: bool,
+        replace_identity: bool,
+    ) -> Result<FinalizeImportResultBody, VtaError> {
         let req = FinalizeImportBody {
             bundle_id: bundle_id.to_string(),
             password: password.to_string(),
             confirm,
+            ext: FinalizeImportBody::replace_identity_ext(replace_identity),
         };
         // 1.1 on a mediator transport, where the bundle is chunked and 1.1 is
         // what names a missing chunk; 1.0 on REST, so a VTA that predates the

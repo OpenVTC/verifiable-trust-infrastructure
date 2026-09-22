@@ -1293,10 +1293,9 @@ pub async fn handle_backup_export(
     let body: vta_sdk::protocols::backup_management::types::ExportRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let config = state.config.read().await;
-    let ks = operations::keyspaces_from_vta_state(&state);
     let envelope = app_try!(
         operations::backup::export_backup(
-            &ks,
+            &state.backup_access().target(),
             &*state.seed_store,
             &config,
             &auth,
@@ -1336,8 +1335,16 @@ pub async fn handle_backup_import(
         serde_json::from_value(message.body).map_err(handler_err)?;
 
     if !body.confirm {
-        let (_payload, preview) =
-            app_try!(operations::backup::preview_import(&body.backup, &body.password).await);
+        let running_did = state.config.read().await.vta_did.clone();
+        let (_payload, preview) = app_try!(
+            operations::backup::preview_import_for(
+                &body.backup,
+                &body.password,
+                running_did.as_deref(),
+                body.replace_identity,
+            )
+            .await
+        );
         return response(
             vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT,
             &preview,
@@ -1348,17 +1355,20 @@ pub async fn handle_backup_import(
         &body.backup,
         &body.password
     ));
+    let source_did = payload.config.vta_did.clone();
 
-    let ks = operations::keyspaces_from_vta_state(&state);
+    let access = state.backup_access();
+    let committer = access.committer().await;
     let result = app_try!(
-        operations::backup::apply_import(
-            &payload,
-            &ks,
-            &state.seed_store,
-            &state.config,
-            None, // Store for TEE re-encryption (handled on restart)
-            #[cfg(feature = "tee")]
-            None, // store is None above, so the TEE re-encryption path is skipped
+        operations::backup::stage_import(
+            payload,
+            operations::backup::StageRequest {
+                target: &access.target(),
+                config: &state.config,
+                committer: &committer,
+                auth: &auth,
+                replace_identity: body.replace_identity,
+            },
         )
         .await
     );
@@ -1367,14 +1377,15 @@ pub async fn handle_backup_import(
         &state.audit_sink,
         "backup.import",
         &auth.did,
-        payload.config.vta_did.as_deref(),
+        source_did.as_deref(),
         "success",
         Some("didcomm"),
         None,
     )
     .await;
 
-    crate::server::trigger_restart(&state.restart_tx);
+    // The restore applies on the next boot; the reply goes out first.
+    crate::restore::request_reboot(&state.restart_tx);
     response(
         vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT,
         &result,

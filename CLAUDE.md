@@ -88,7 +88,7 @@ Layer 4 (the spine + consumers):
 | `vta-webvh` | WebVH hosting infrastructure for the `did:webvh` lifecycle and its other consumers |
 | `vta-policy` | Policy subsystem: the regorus (Rego) engine + default bundle, the DTTE consent model, decision evaluators, policy storage |
 | `vta-tee` | TEE bootstrap: attestation providers (Nitro / SEV-SNP / simulated), KMS attest/decrypt, storage-key derivation, CMS unwrap, the DynamoDB anti-rollback anchor MAC, Mode-B admin bootstrap + carve-out, the mnemonic-export guard. Behind the `tee` feature — keeps the AWS SDK stack out of the default build graph |
-| `vta-backup` | Encrypted full-state export/import (Argon2id + AES-256-GCM), the `vta_did` compatibility check, the two-phase descriptor flow, the sealed bundle store + its TTL sweeper. TEE re-encryption is injected via the `BootstrapReEncryptor` trait |
+| `vta-backup` | Encrypted full-state export (every `BACKED_UP` keyspace) and staged, boot-applied restore portable between plain / hardened / TEE VTAs (Argon2id + AES-256-GCM), the `vta_did` compatibility check, the two-phase descriptor flow, the sealed bundle store + its TTL sweeper. How a deployment adopts a restored seed is injected via the `RestoreCommitter` trait |
 | `vta-sweepers` | Background TTL sweepers for the core keyspaces (acl / consent / vault) |
 | `vta-service` | The VTA **spine** (library) + local/dev binary — what remains after the subsystem extractions: `routes/` (HTTP surface), `trust_tasks/` (dispatch spine), `messaging/*` (DIDComm + TSP bridge: registry, drain store/sweeper, handshake, live prover, transient handshake), `operations/` (orchestration: provision-integration, did-webvh, contexts, protocol management), `setup/` (wizards, interactive + `--from <toml>`), and the offline CLI surfaces. Re-exports every subsystem crate above |
 | `vta-enclave` | Nitro Enclave front-end. Depends on `vta-service` as a library, adds TEE bootstrap (KMS, vsock-store, attestation). `publish = false` |
@@ -796,18 +796,44 @@ new flow, update both this section and the relevant `docs/*.md`.
   delete,restore,purge}` — the credential store's operator surface).
 
 ### Backup / restore
-- **What**: Encrypted full-state dump + restore.
+- **What**: Encrypted full-state dump + restore, portable between plain,
+  hardened and TEE VTAs in any direction.
 - **Endpoints**: `POST /backup/export`, `POST /backup/import`
-  (super-admin).
+  (super-admin), and the descriptor Trust Tasks (`vta/backup/*`).
+- **Export** walks `vta_keyspaces::BACKED_UP` and dumps every row (format
+  `vta-backup-v2`) — no per-keyspace collector, so listing a keyspace *is*
+  backing it up. Rows in `ENVIRONMENT_BOUND_ROWS` (`keys ▸ tee:*`,
+  `hardened:*`, blinded persona indexes, daemon tokens) stay behind; the
+  target re-creates its own. Internal keys are never carried (their records
+  are, and the restore reports them lost). `every_backed_up_keyspace_
+  survives_a_round_trip` holds all of it across the eight env pairings.
+- **Import never writes the live store.** It *stages* the payload in
+  `bootstrap` sealed under a key derived from the **restored** seed, commits
+  that seed the target's way (`RestoreCommitter`: secret store, or one
+  KMS-sealed row in an enclave), and re-execs. Each binary applies a pending
+  restore (`restore::apply_pending_restore`) as soon as it knows its seed and
+  storage key, before anything else reads the store. Do not apply a restore in
+  place: the storage key is a function of the seed. See
+  `docs/05-design-notes/backup-restore-portability.md`.
+- **TEE**: the restore reserves the restored DID's anti-rollback counter at
+  commit, closes the Mode-B carve-out, and the boot re-baselines the manifest at
+  exactly the reserved version (`integrity::rebaseline_after_restore`) — a
+  replayed stage is refused.
 - **Crypto**: Argon2id KDF (≥15-char password — the minimum is
   `vta_sdk::protocols::backup_management::MIN_BACKUP_PASSWORD_LEN`, the single
-  source of truth every export-side guard reads) + AES-256-GCM.
-- **Compatibility check**: import cross-checks the backup's `vta_did`
-  against the running VTA via `check_vta_did_compatibility`
-  (`vta-backup/src/ops/mod.rs`). A fresh-install VTA
-  accepts any backup; a configured VTA rejects backups whose `vta_did`
-  doesn't match. Tested at `backup.rs:867-911`.
-- **Code**: `vta-backup/src/ops/`, `vta-backup/src/backup_bundle_store.rs`.
+  source of truth every export-side guard reads) + AES-256-GCM, v2 binding the
+  envelope metadata as AAD.
+- **Compatibility check**: a backup of a DID other than the running one is
+  refused unless `replace_identity` (`--replace-identity`,
+  `ext["org.openvtc"].replaceIdentity`) — disaster recovery onto a fresh VTA,
+  which always has a DID of its own. VTI-VTA-051: provenance in
+  `keys ▸ restore:provenance`, a `backup.restore.applied` audit row, and
+  `restored` on `GET /health/details`.
+- **Code**: `vta-backup/src/{ops/mod.rs,restore.rs}`,
+  `vta-support/src/restore_stage.rs`, `vta-service/src/restore.rs`,
+  `vta-tee/src/kms_bootstrap.rs` (`seal_restored_secrets`,
+  `adopt_restored_secrets`).
+- **Docs**: `docs/02-vta/backup-restore.md`.
 - **VTC counterpart** (P3.9): same shape for the VTC — `POST
   /backup/{export,import}` (super-admin, preview/confirm), Argon2id +
   AES-256-GCM, `check_vtc_did_compatibility` (mismatch → 409). Backs up

@@ -304,12 +304,25 @@ pub const ALL: &[&str] = &[
     RELATIONSHIPS,
 ];
 
-/// Keyspaces whose contents a full `export_backup` captures (as typed
-/// collections — see `operations::backup`).
+/// Keyspaces a backup carries, **every row of each**, as a raw dump.
+///
+/// A backup exists to bring an agent back, so the rule is inclusion: a
+/// keyspace is here unless there is a reason on [`EXCLUDED_FROM_BACKUP`] for
+/// leaving it out. Within a carried keyspace the only rows left behind are the
+/// few that belong to one *deployment* rather than to the agent — see
+/// [`is_environment_bound`] — and the restore re-creates those for the target.
+///
+/// Every name here is exported by `vta_backup::ops::export_backup` without a
+/// per-keyspace code path: it walks this list. `every_backed_up_keyspace_
+/// survives_a_round_trip` in `vta-backup` writes a row into each and asserts
+/// it comes back, so a keyspace cannot be listed here and silently skipped —
+/// which is exactly what happened to ten of them while export was a set of
+/// hand-written collectors.
 pub const BACKED_UP: &[&str] = &[
     KEYS,
     ACL,
     CONTEXTS,
+    DID_TEMPLATES,
     AUDIT,
     // Without the keys, a restored audit log still verifies as a chain and
     // still says what happened, but no entry can be checked against a
@@ -317,9 +330,24 @@ pub const BACKED_UP: &[&str] = &[
     // generated rather than derived, so nothing else reproduces it.
     AUDIT_KEY,
     IMPORTED_SECRETS,
+    // The holder's secrets and credentials. The reason a person keeps a VTA.
+    VAULT,
     WEBVH,
+    // Which transports this VTA serves. The DID log restored beside it
+    // advertises them, and a document naming a transport the node does not
+    // serve fails at the peer as a parse error, not as "not served".
+    SERVICE_STATE,
+    SNAPSHOT,
+    DRAINS,
+    // Anti-replay for sealed bootstrap requests. Restoring it only ever makes
+    // the restored agent stricter; leaving it behind reopens every request
+    // still inside its validity window.
+    SEALED_NONCES,
     CONSENT,
     CONSENT_APPROVERS,
+    // Credentials this VTA issued. Losing the records loses the ability to
+    // revoke them, while every copy in the wild stays valid.
+    ISSUED_CREDENTIALS,
     // Durable agent memory is user data and must survive a restore.
     MEMORY,
     ROOM_GROUPS,
@@ -341,33 +369,25 @@ pub const BACKED_UP: &[&str] = &[
     TASK_CONSENT,
 ];
 
-/// Keyspaces deliberately **not** in a backup.
-///
-/// Most are ephemeral / runtime / re-derivable: [`SESSIONS`], [`CACHE`],
-/// [`SEALED_NONCES`], [`SERVICE_STATE`], [`BACKUP_BUNDLES`], [`PASSKEY_VMS`],
-/// [`DRAINS`], [`SNAPSHOT`], [`BOOTSTRAP`]. [`DID_TEMPLATES`] and [`VAULT`]
-/// hold durable operator/holder state and are **known backup gaps** — a
-/// backup-fidelity follow-up should move them into [`BACKED_UP`], not leave
-/// them silently dropped.
+/// Keyspaces deliberately **not** in a backup, each for a stated reason.
 pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // Non-extractable internal signing keys. Excluding them is the feature:
     // a backup that carried them would export keys the VTA guarantees never
     // to export, and restoring one elsewhere would silently clone a signer.
+    // Their *records* live in KEYS and are carried; the restore reports every
+    // one whose material stayed behind.
     INTERNAL_KEYS,
+    // Live sessions are bound to the JWT key and the node that issued them.
     SESSIONS,
-    DID_TEMPLATES,
+    // Re-derivable resolution and auth caches.
     CACHE,
-    VAULT,
-    SERVICE_STATE,
-    SEALED_NONCES,
+    // The control plane of the transfer carrying this very backup.
     BACKUP_BUNDLES,
+    // TTL'd, in-flight passkey enrolment ceremonies.
     PASSKEY_VMS,
-    DRAINS,
-    SNAPSHOT,
+    // The deployment's own boot material: KMS ciphertexts, the integrity
+    // manifest, the staged restore itself. A restore writes the target's.
     BOOTSTRAP,
-    // Durable VTA-issued holder credentials. Like [`VAULT`], a known backup
-    // gap — a backup-fidelity follow-up should move it into [`BACKED_UP`].
-    ISSUED_CREDENTIALS,
     // Reliable-messaging outbox: runtime delivery state, re-driven from live
     // sends, not part of a state backup.
     OUTBOX,
@@ -381,6 +401,43 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // restore re-drives it, like [`SESSIONS`], rather than carrying it.
     RELATIONSHIPS,
 ];
+
+/// Rows inside a [`BACKED_UP`] keyspace that belong to the **deployment**, not
+/// to the agent, as `(keyspace, key prefix)`.
+///
+/// A backup moves between a plain VTA, a hardened one and a Nitro enclave in
+/// any direction. These rows only mean something in the environment that wrote
+/// them, or are derived from that environment's storage key, so copying one
+/// would be wrong on the target: the restore leaves them out and re-creates
+/// what the target needs.
+pub const ENVIRONMENT_BOUND_ROWS: &[(&str, &str)] = &[
+    // TEE identity mirror, did.jsonl copy, Mode-B carve-out sentinel and the
+    // legacy admin credential. The restore writes the target's own.
+    (KEYS, "tee:"),
+    // The hardened deployment's JWT key row. The key itself travels as the
+    // payload's `jwt_signing_key` and lands wherever the target keeps it.
+    (KEYS, "hardened:"),
+    // Restore / import bookkeeping of the source.
+    (KEYS, "backup:"),
+    (KEYS, "restore:"),
+    // Blinded persona indexes are keyed by an HMAC whose key is derived from
+    // the storage key, so they are meaningless under any other one. The
+    // restore rebuilds them from the rows they index.
+    (PERSONA, "pxi:"),
+    (PERSONA, "pxf:"),
+    (PERSONA, "pxfv"),
+    // Cached bearer tokens for DID-hosting daemons. Service-local secrets; a
+    // restored VTA re-authenticates on first use.
+    (WEBVH, "server-auth:"),
+];
+
+/// Whether `key` in `keyspace` is an [`ENVIRONMENT_BOUND_ROWS`] row.
+#[must_use]
+pub fn is_environment_bound(keyspace: &str, key: &[u8]) -> bool {
+    ENVIRONMENT_BOUND_ROWS
+        .iter()
+        .any(|(ks, prefix)| *ks == keyspace && key.starts_with(prefix.as_bytes()))
+}
 
 #[cfg(test)]
 mod tests {
@@ -408,6 +465,37 @@ mod tests {
             "backup partition is not exhaustive — every keyspace in ALL must be in \
              exactly one of BACKED_UP / EXCLUDED_FROM_BACKUP"
         );
+    }
+
+    /// An environment-bound rule for a keyspace a backup never carries would be
+    /// dead, and one naming an unknown keyspace would be a typo that silently
+    /// lets a deployment row travel.
+    #[test]
+    fn environment_bound_rows_name_backed_up_keyspaces() {
+        for (ks, prefix) in ENVIRONMENT_BOUND_ROWS {
+            assert!(
+                BACKED_UP.contains(ks),
+                "environment-bound rule ({ks}, {prefix}) names a keyspace that is not backed up"
+            );
+            assert!(
+                !prefix.is_empty(),
+                "an empty prefix would drop the whole keyspace"
+            );
+        }
+    }
+
+    #[test]
+    fn environment_bound_rows_are_matched_by_prefix_within_their_keyspace() {
+        assert!(is_environment_bound(KEYS, b"tee:vta_did"));
+        assert!(is_environment_bound(KEYS, b"hardened:jwt_key"));
+        assert!(is_environment_bound(PERSONA, b"pxi:abcd"));
+        assert!(is_environment_bound(WEBVH, b"server-auth:srv1"));
+        // Same prefix, different keyspace: carried.
+        assert!(!is_environment_bound(ACL, b"tee:mode-b"));
+        // The agent's own rows are carried.
+        assert!(!is_environment_bound(KEYS, b"key:abc"));
+        assert!(!is_environment_bound(PERSONA, b"pa:01H"));
+        assert!(!is_environment_bound(WEBVH, b"server:srv1"));
     }
 }
 

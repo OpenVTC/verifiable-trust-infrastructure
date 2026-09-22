@@ -955,13 +955,21 @@ pub(crate) enum BackupCommands {
         #[arg(long)]
         use_rest_legacy: bool,
     },
-    /// Import VTA state from an encrypted backup file
+    /// Import VTA state from an encrypted backup file.
+    ///
+    /// The backup may come from any kind of VTA — plain, hardened or a Nitro
+    /// enclave — and restores into any kind. The VTA restarts to apply it.
     Import {
         /// Path to the .vtabak backup file
         file: std::path::PathBuf,
         /// Preview only — show what would be imported without applying
         #[arg(long)]
         preview: bool,
+        /// Allow the backup to replace a *different* identity this VTA already
+        /// runs as — disaster recovery onto a freshly set-up VTA, which minted
+        /// a DID of its own. Without it a backup of another DID is refused.
+        #[arg(long)]
+        replace_identity: bool,
         /// Fall back to the legacy inline `/backup/import` REST route
         /// instead of the descriptor-pattern trust-task flow. See
         /// `Export::use_rest_legacy`; removed at rollout step 6.

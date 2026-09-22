@@ -27,9 +27,8 @@ pub async fn export(
     Json(req): Json<ExportRequest>,
 ) -> Result<Json<BackupEnvelope>, AppError> {
     let config = state.config.read().await;
-    let ks = operations::keyspaces_from_app_state(&state);
     let envelope = operations::backup::export_backup(
-        &ks,
+        &state.backup_access().target(),
         &*state.seed_store,
         &config,
         &auth,
@@ -72,23 +71,32 @@ pub async fn import(
 
     // Preview mode: decrypt and return summary without modifying state
     if !req.confirm {
-        let (_payload, preview) =
-            operations::backup::preview_import(&req.backup, &req.password).await?;
+        let running_did = state.config.read().await.vta_did.clone();
+        let (_payload, preview) = operations::backup::preview_import_for(
+            &req.backup,
+            &req.password,
+            running_did.as_deref(),
+            req.replace_identity,
+        )
+        .await?;
         return Ok(Json(preview));
     }
 
     // Full import — decrypt once (skip building a throwaway preview)
     let payload = operations::backup::decrypt_backup(&req.backup, &req.password)?;
+    let source_did = payload.config.vta_did.clone();
 
-    let ks = operations::keyspaces_from_app_state(&state);
-    let result = operations::backup::apply_import(
-        &payload,
-        &ks,
-        &state.seed_store,
-        &state.config,
-        None, // Store passed for TEE re-encryption (REST has no store access; handled on restart)
-        #[cfg(feature = "tee")]
-        None, // store is None above, so the TEE re-encryption path is skipped
+    let access = state.backup_access();
+    let committer = access.committer().await;
+    let result = operations::backup::stage_import(
+        payload,
+        operations::backup::StageRequest {
+            target: &access.target(),
+            config: &state.config,
+            committer: &committer,
+            auth: &auth,
+            replace_identity: req.replace_identity,
+        },
     )
     .await?;
 
@@ -96,14 +104,15 @@ pub async fn import(
         &state.audit_sink,
         "backup.import",
         &auth.did,
-        payload.config.vta_did.as_deref(),
+        source_did.as_deref(),
         "success",
         Some("rest"),
         None,
     )
     .await;
 
-    crate::server::trigger_restart(&state.restart_tx);
+    // The restore applies on the next boot; the reply goes out first.
+    crate::restore::request_reboot(&state.restart_tx);
 
     Ok(Json(result))
 }

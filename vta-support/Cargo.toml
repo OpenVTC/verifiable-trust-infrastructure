@@ -40,6 +40,12 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
+# The staged restore (`restore_stage`): sealed under a seed-derived key.
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+zeroize = "1"
 
 [dev-dependencies]
 tempfile = "3"
