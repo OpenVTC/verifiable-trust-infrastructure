@@ -351,13 +351,23 @@ pub async fn write(
     ))
 }
 
+/// `vtc/website/files/delete:notFound` — no file exists at the supplied path.
+pub const FILES_DELETE_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::website::files::delete::v0_1::error_codes::NOT_FOUND.code;
+
 /// `DELETE /v1/website/files/{*path}`
 pub async fn delete(
     _admin: AdminAuth,
     State(state): State<AppState>,
     AxumPath(path): AxumPath<String>,
-) -> Result<Json<DeleteResponse>, AppError> {
-    let resolved = resolve_or_400(&state, &path).await?;
+) -> Result<Json<DeleteResponse>, crate::error::TaskError> {
+    use crate::error::TaskError;
+    // `vtc/website/files/delete:notFound` — nothing at that path. A hidden
+    // path answers the same, as it does on every other website read.
+    let resolved = resolve_or_400(&state, &path).await.map_err(|e| match e {
+        e @ AppError::NotFound(_) => TaskError::declared(FILES_DELETE_ERR_NOT_FOUND, e),
+        e => TaskError::App(e),
+    })?;
     tokio::fs::remove_file(&resolved)
         .await
         .map_err(|e| AppError::Internal(format!("delete {resolved:?}: {e}")))?;

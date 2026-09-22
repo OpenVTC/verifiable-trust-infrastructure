@@ -10,8 +10,13 @@ use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
 
 use crate::auth::AdminAuth;
+use crate::error::TaskError;
 use crate::join::{JoinRequest, JoinStatus, get_join_request, list_join_requests_paginated};
 use crate::server::AppState;
+
+/// `vtc/join-requests/show:notFound` — no join request with the supplied id.
+pub const SHOW_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::join_requests::show::v0_1::error_codes::NOT_FOUND.code;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,10 +88,15 @@ pub async fn show_join_request(
     _admin: AdminAuth,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<JoinRequestEnvelope>, AppError> {
+) -> Result<Json<JoinRequestEnvelope>, TaskError> {
     let req = get_join_request(&state.join_requests_ks, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                SHOW_ERR_NOT_FOUND,
+                AppError::NotFound(format!("join request not found: {id}")),
+            )
+        })?;
     Ok(Json(JoinRequestEnvelope { request: req }))
 }
 

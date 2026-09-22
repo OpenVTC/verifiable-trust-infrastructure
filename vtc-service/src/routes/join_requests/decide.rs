@@ -31,10 +31,18 @@ use crate::acl::VtcRole;
 use crate::auth::AdminAuth;
 use crate::ceremony::execute;
 use crate::ceremony::{EffectOutcome, EffectPlan};
+use crate::error::TaskError;
 use crate::join::{JoinDecision, JoinRequest, JoinStatus, get_join_request, store_join_request};
 use crate::server::AppState;
 
 const REJECT_REASON_MAX: usize = 1024;
+
+use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1::error_codes as decide_codes;
+
+/// `vtc/join-requests/decide:notFound` — no join request with that id.
+pub const DECIDE_ERR_NOT_FOUND: &str = decide_codes::NOT_FOUND.code;
+/// `vtc/join-requests/decide:notPending` — the request is not pending.
+pub const DECIDE_ERR_NOT_PENDING: &str = decide_codes::NOT_PENDING.code;
 
 /// The two ways a pending request can be decided
 /// (`vtc/join-requests/decide/0.1`'s `decision` enum).
@@ -98,24 +106,36 @@ pub async fn decide(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(body): Json<DecideBody>,
-) -> Result<(StatusCode, Json<DecideResponse>), AppError> {
+) -> Result<(StatusCode, Json<DecideResponse>), TaskError> {
     let reason = body.reason.unwrap_or_default();
     if reason.len() > REJECT_REASON_MAX {
         return Err(AppError::Validation(format!(
             "decision reason exceeds {REJECT_REASON_MAX} chars (got {})",
             reason.len(),
-        )));
+        ))
+        .into());
     }
 
     // Shared pending-state gate — the one lifecycle check both outcomes had.
+    // Both refusals are the codes `vtc/join-requests/decide/0.1` declares, so
+    // an operator's client can tell "no such request" from "already decided"
+    // without reading the prose (#1600). Status and message are unchanged.
     let req = get_join_request(&state.join_requests_ks, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                DECIDE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("join request not found: {id}")),
+            )
+        })?;
     if req.status != JoinStatus::Pending {
-        return Err(AppError::Conflict(format!(
-            "join request {id} is {:?}, not Pending",
-            req.status
-        )));
+        return Err(TaskError::declared(
+            DECIDE_ERR_NOT_PENDING,
+            AppError::Conflict(format!(
+                "join request {id} is {:?}, not Pending",
+                req.status
+            )),
+        ));
     }
 
     let response = match body.decision {

@@ -373,3 +373,33 @@ async fn renew_default_downgrades_when_policy_drops_flag() {
         "downgrade path must emit PersonhoodRevoked with reason=renewal-policy"
     );
 }
+
+/// `vtc/members/renew:notMember`, read from the generated bindings (#1600).
+const RENEW_ERR_NOT_MEMBER: &str =
+    trust_tasks_rs::specs::vtc::members::renew::v0_1::error_codes::NOT_MEMBER.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// A caller whose session outlived their membership — the ACL entry is gone —
+/// has nothing to renew. Same 404 as before, now with the declared code.
+#[tokio::test]
+async fn renew_by_a_caller_who_is_not_a_member_is_the_declared_not_member() {
+    let fix = build_fixture().await;
+    vtc_service::acl::delete_acl_entry(&fix._vtc.state.acl_ks, MEMBER_DID)
+        .await
+        .unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/members/me/renew")
+        .header("authorization", format!("Bearer {}", fix.member_token))
+        .header("trust-task", RENEW_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp.into_body()).await;
+    assert_eq!(rest_error_code(&body), RENEW_ERR_NOT_MEMBER, "{body}");
+}

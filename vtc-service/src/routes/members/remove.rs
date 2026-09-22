@@ -31,6 +31,7 @@ use vti_common::error::AppError;
 
 use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
 use crate::ceremony::{LeaveOutcome, purge_member, remove_inner};
+use crate::error::TaskError;
 use crate::members::Disposition;
 use crate::server::AppState;
 
@@ -87,7 +88,7 @@ pub async fn self_remove(
     auth: AuthClaims,
     State(state): State<AppState>,
     body: Option<Json<RemoveBody>>,
-) -> Result<(StatusCode, Json<RemoveResponse>), AppError> {
+) -> Result<(StatusCode, Json<RemoveResponse>), TaskError> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let target_did = auth.did.clone();
     // Self-leave: actor == subject. The decision policy allows this
@@ -129,14 +130,15 @@ pub async fn admin_remove(
     State(state): State<AppState>,
     Path(target_did): Path<String>,
     body: Option<Json<RemoveBody>>,
-) -> Result<(StatusCode, Json<RemoveResponse>), AppError> {
+) -> Result<(StatusCode, Json<RemoveResponse>), TaskError> {
     vti_common::identifier::validate_did("did", &target_did)?;
     if admin.0.did == target_did {
         return Err(AppError::Validation(
             "use DELETE /v1/members/me to remove yourself — \
              DELETE /v1/members/{did} is for admins removing other members"
                 .to_string(),
-        ));
+        )
+        .into());
     }
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let reason = body.reason.unwrap_or_default();
@@ -144,7 +146,8 @@ pub async fn admin_remove(
         return Err(AppError::Validation(format!(
             "reason exceeds {REASON_MAX} chars (got {})",
             reason.len(),
-        )));
+        ))
+        .into());
     }
     let outcome = remove_inner(&state, &admin.0.did, &target_did, body.disposition, reason).await?;
     Ok((StatusCode::OK, Json(RemoveResponse::from(outcome))))
@@ -173,7 +176,7 @@ pub async fn purge(
     super_admin: SuperAdminAuth,
     State(state): State<AppState>,
     Path(target_did): Path<String>,
-) -> Result<(StatusCode, Json<RemoveResponse>), AppError> {
+) -> Result<(StatusCode, Json<RemoveResponse>), TaskError> {
     vti_common::identifier::validate_did("did", &target_did)?;
     let outcome = purge_member(&state, &super_admin.0.did, &target_did).await?;
     Ok((StatusCode::OK, Json(RemoveResponse::from(outcome))))

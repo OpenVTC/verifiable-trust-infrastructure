@@ -17,6 +17,7 @@ use vta_sdk::protocols::members::{MEMBER_REQUEST_VMC_TYPE, RequestMemberVmcBody}
 use vti_common::error::AppError;
 
 use crate::auth::AdminAuth;
+use crate::error::TaskError;
 use crate::members::get_member;
 use crate::server::AppState;
 
@@ -41,6 +42,10 @@ pub struct RequestVmcResponse {
     pub thread_id: String,
 }
 
+/// `vtc/members/solicit-vmc:notFound` — no active member with that DID.
+pub const SOLICIT_VMC_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::members::solicit_vmc::v0_1::error_codes::NOT_FOUND.code;
+
 /// POST /members/{did}/request-vmc — dispatch a reciprocal-VMC request.
 #[utoipa::path(
     post, path = "/members/{did}/request-vmc", tag = "members",
@@ -58,14 +63,19 @@ pub async fn request_vmc(
     State(state): State<AppState>,
     Path(member_did): Path<String>,
     Json(body): Json<RequestVmcBody>,
-) -> Result<(StatusCode, Json<RequestVmcResponse>), AppError> {
+) -> Result<(StatusCode, Json<RequestVmcResponse>), TaskError> {
     vti_common::identifier::validate_did("did", &member_did)?;
 
     // Only an active member has a membership edge to reciprocate.
     get_member(&state.members_ks, &member_did)
         .await?
         .filter(|m| !m.is_removed())
-        .ok_or_else(|| AppError::NotFound(format!("no active member: {member_did}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                SOLICIT_VMC_ERR_NOT_FOUND,
+                AppError::NotFound(format!("no active member: {member_did}")),
+            )
+        })?;
 
     let community_did = state
         .config

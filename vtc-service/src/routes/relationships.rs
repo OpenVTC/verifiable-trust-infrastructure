@@ -64,6 +64,7 @@ use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
 use crate::auth::AuthClaims;
+use crate::error::TaskError;
 use crate::members::get_member;
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
@@ -100,6 +101,19 @@ impl IdentifierForm {
         }
     }
 }
+
+use trust_tasks_rs::specs::vtc::relationships as relationships_spec;
+
+/// `vtc/relationships/publish:vrcInvalid` — the VRC failed verification, or
+/// its issuer did not match the proof signer.
+pub const PUBLISH_ERR_VRC_INVALID: &str =
+    relationships_spec::publish::v0_2::error_codes::VRC_INVALID.code;
+/// `vtc/relationships/publish:subjectNotMember` — the subject is not a member.
+pub const PUBLISH_ERR_SUBJECT_NOT_MEMBER: &str =
+    relationships_spec::publish::v0_2::error_codes::SUBJECT_NOT_MEMBER.code;
+/// `vtc/relationships/revoke:notFound` — no relationship with that id.
+pub const REVOKE_ERR_NOT_FOUND: &str =
+    relationships_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PublishBody {
@@ -216,12 +230,20 @@ pub async fn publish(
     //    authorization. Rejecting here keeps a caller error a
     //    caller error — the daemon-config prerequisites below
     //    would otherwise mask it with a 500.
+    //
+    //    An issuer the signer is not, and has not proven control of, is
+    //    `publish:vrcInvalid` ("its issuer did not match the proof signer"),
+    //    as is a VRC proof or publish authorization that does not verify
+    //    (steps 4 and 6). Status and message are unchanged.
     if body.pop.is_none() && issuer_did != signer_did {
-        return Err(AppError::Forbidden(format!(
-            "VRC issuer ({issuer_did}) is not the document signer and no publish \
-             authorization (`pop`) was supplied — a VRC issued under a \
-             relationship DID must carry proof the caller controls it"
-        ))
+        return Err(TaskError::declared(
+            PUBLISH_ERR_VRC_INVALID,
+            AppError::Forbidden(format!(
+                "VRC issuer ({issuer_did}) is not the document signer and no publish \
+                 authorization (`pop`) was supplied — a VRC issued under a \
+                 relationship DID must carry proof the caller controls it"
+            )),
+        )
         .into());
     }
 
@@ -235,7 +257,12 @@ pub async fn publish(
     })?;
     verify_di_proof(vrc, &issuer_did, &resolver)
         .await
-        .map_err(|e| AppError::Validation(format!("VrcProofInvalid: {e}")))?;
+        .map_err(|e| {
+            TaskError::declared(
+                PUBLISH_ERR_VRC_INVALID,
+                AppError::Validation(format!("VrcProofInvalid: {e}")),
+            )
+        })?;
 
     // 5. Hash the VRC. This moves ahead of policy evaluation
     //    because the publish authorization binds to it.
@@ -276,7 +303,12 @@ pub async fn publish(
             let vrc_digest = crate::credentials::ingress::digest_multibase(vrc)?;
             verify_publish_authorization(pop, &issuer_did, &doc.id, &vrc_digest, &resolver)
                 .await
-                .map_err(|e| AppError::Forbidden(format!("VrcPublishAuthorizationInvalid: {e}")))?;
+                .map_err(|e| {
+                    TaskError::declared(
+                        PUBLISH_ERR_VRC_INVALID,
+                        AppError::Forbidden(format!("VrcPublishAuthorizationInvalid: {e}")),
+                    )
+                })?;
             IdentifierForm::Pairwise
         }
         (None, true) => IdentifierForm::Attributed,
@@ -355,9 +387,12 @@ pub async fn publish(
         && !subject_current
         && get_acl_entry(&state.acl_ks, &subject_did).await?.is_none()
     {
-        return Err(AppError::Validation(format!(
-            "subject DID {subject_did} is not a current community member"
-        ))
+        return Err(TaskError::declared(
+            PUBLISH_ERR_SUBJECT_NOT_MEMBER,
+            AppError::Validation(format!(
+                "subject DID {subject_did} is not a current community member"
+            )),
+        )
         .into());
     }
 
@@ -617,10 +652,15 @@ pub async fn revoke(
     // and must keep working. `Option<Json<_>>` yields `None` when there is no
     // JSON content-type, and still rejects a malformed body when there is.
     body: Option<Json<RevokeBody>>,
-) -> Result<(StatusCode, Json<RevokeResponse>), AppError> {
+) -> Result<(StatusCode, Json<RevokeResponse>), TaskError> {
     let rel = get_relationship(&state.relationships_ks, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                REVOKE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("VRC {id} not found")),
+            )
+        })?;
 
     let pop = body.and_then(|Json(b)| b.pop);
     let revoked_by = authorize_edge_control(
@@ -1430,12 +1470,18 @@ async fn enforce_publish_rate_limit(state: &AppState, did: &str) -> Result<(), R
 /// refusal, which needs response headers `AppError` cannot carry.
 #[derive(Debug)]
 pub enum PublishError {
-    App(AppError),
+    App(TaskError),
     RateLimited(RateLimited),
 }
 
 impl From<AppError> for PublishError {
     fn from(e: AppError) -> Self {
+        Self::App(e.into())
+    }
+}
+
+impl From<TaskError> for PublishError {
+    fn from(e: TaskError) -> Self {
         Self::App(e)
     }
 }

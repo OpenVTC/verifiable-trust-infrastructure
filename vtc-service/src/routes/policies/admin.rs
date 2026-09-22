@@ -41,6 +41,7 @@ use vti_common::audit::{AuditEvent, PolicyActivatedData, PolicyUploadedData};
 use vti_common::error::AppError;
 
 use crate::auth::AdminAuth;
+use crate::error::TaskError;
 use crate::policy::POLICY_SOURCE_MAX_BYTES;
 use crate::policy::{
     PolicyPurpose, compile, evaluate, get_active_policy_id, get_policy, max_version_for,
@@ -412,6 +413,14 @@ pub async fn activate(
 // POST /v1/policies/{id}/test
 // ---------------------------------------------------------------------------
 
+use trust_tasks_rs::specs::vtc::policies::test::v0_1::error_codes as test_codes;
+
+/// `vtc/policies/test:notFound` — no policy module with that id.
+pub const TEST_ERR_NOT_FOUND: &str = test_codes::NOT_FOUND.code;
+/// `vtc/policies/test:evaluationFailed` — the module failed to compile or
+/// evaluate.
+pub const TEST_ERR_EVALUATION_FAILED: &str = test_codes::EVALUATION_FAILED.code;
+
 /// Evaluate a stored policy against a caller-supplied input.
 /// **Does not activate** the policy and does not mutate any state
 /// beyond log lines. Used by operators to dry-run a candidate
@@ -433,17 +442,32 @@ pub async fn test(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(body): Json<TestBody>,
-) -> Result<Json<TestResponse>, AppError> {
-    let policy = get_policy(&state.policies_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("policy not found: {id}")))?;
+) -> Result<Json<TestResponse>, TaskError> {
+    let policy = get_policy(&state.policies_ks, id).await?.ok_or_else(|| {
+        TaskError::declared(
+            TEST_ERR_NOT_FOUND,
+            AppError::NotFound(format!("policy not found: {id}")),
+        )
+    })?;
 
     // Recompile every call. The harness is cheap and a per-call
     // recompile means the test endpoint never depends on a
     // long-running compiled-cache (M2.5 introduces that for the
     // active policies; archived rows aren't cached).
-    let compiled = compile(&policy.rego_source, policy.id)?;
-    let result = evaluate(&compiled, &body.query, body.input)?;
+    //
+    // A compile error and an evaluation error are both
+    // `policies/test:evaluationFailed` — "the module failed to evaluate". A
+    // resource-budget abort is not: the module did not fail, the harness
+    // stopped it, and that keeps its own `ResourceExhausted` rendering. The
+    // status of each is unchanged.
+    let evaluation_failed = |e: AppError| match e {
+        e @ (AppError::Validation(_) | AppError::Internal(_)) => {
+            TaskError::declared(TEST_ERR_EVALUATION_FAILED, e)
+        }
+        e => TaskError::App(e),
+    };
+    let compiled = compile(&policy.rego_source, policy.id).map_err(evaluation_failed)?;
+    let result = evaluate(&compiled, &body.query, body.input).map_err(evaluation_failed)?;
 
     info!(
         actor = admin.0.did.as_str(),

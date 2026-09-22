@@ -23,6 +23,7 @@ use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
 use crate::acl::get_acl_entry;
+use crate::error::TaskError;
 use crate::members::get_member;
 use crate::relationships::{Relationship, list_for_did};
 use crate::server::AppState;
@@ -36,6 +37,10 @@ pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
+
+/// `vtc/relationships/list:notFound` — no member with the supplied DID.
+pub const LIST_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::relationships::list::v0_2::error_codes::NOT_FOUND.code;
 
 /// GET /members/{did}/relationships — paginated VRC list for a member.
 /// Auth: any authenticated session.
@@ -55,8 +60,22 @@ pub async fn list(
     State(state): State<AppState>,
     Path(did): Path<String>,
     Query(query): Query<ListQuery>,
-) -> Result<Json<Paginated<Relationship>>, AppError> {
+) -> Result<Json<Paginated<Relationship>>, TaskError> {
     vti_common::identifier::validate_did("did", &did)?;
+    // `relationships/list:notFound` — no member with this DID. The same
+    // predicate the strip below applies to the other party: a DID with neither
+    // an ACL entry nor a member row (never admitted, or purged) is nobody
+    // here. A departed member's tombstone still counts, and so does their
+    // history. This used to answer an empty page, indistinguishable from a
+    // member with no relationships.
+    if get_acl_entry(&state.acl_ks, &did).await?.is_none()
+        && get_member(&state.members_ks, &did).await?.is_none()
+    {
+        return Err(TaskError::declared(
+            LIST_ERR_NOT_FOUND,
+            AppError::NotFound(format!("member not found: {did}")),
+        ));
+    }
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
     let audit_key = state
         .audit_writer

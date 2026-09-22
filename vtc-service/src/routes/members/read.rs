@@ -17,7 +17,7 @@ use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, list_acl_entries};
 use crate::auth::AdminAuth;
-use crate::error::AppError;
+use crate::error::{AppError, TaskError};
 use crate::members::{Disposition, Member, get_member, list_members_paginated};
 use crate::server::AppState;
 
@@ -279,6 +279,10 @@ pub struct RemovedMembersResponse {
 // GET /v1/members/{did}
 // ---------------------------------------------------------------------------
 
+/// `vtc/members/show:notFound` — no member with that DID in this community.
+pub const SHOW_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::members::show::v0_1::error_codes::NOT_FOUND.code;
+
 /// GET /members/{did} — single member. Auth: Admin.
 #[utoipa::path(
     get, path = "/members/{did}", tag = "members",
@@ -295,15 +299,21 @@ pub async fn show_member(
     _auth: AdminAuth,
     State(state): State<AppState>,
     Path(did): Path<String>,
-) -> Result<Json<MemberEnvelope>, AppError> {
+) -> Result<Json<MemberEnvelope>, TaskError> {
     vti_common::identifier::validate_did("did", &did)?;
-    let member = get_member(&state.members_ks, &did)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;
+    let member = get_member(&state.members_ks, &did).await?.ok_or_else(|| {
+        TaskError::declared(
+            SHOW_ERR_NOT_FOUND,
+            AppError::NotFound(format!("member not found: {did}")),
+        )
+    })?;
     let acl = get_acl_entry(&state.acl_ks, &did).await?.ok_or_else(|| {
         // Same out-of-band corruption case as the list path —
         // surface as 404 because the *member* isn't presentable.
-        AppError::NotFound(format!("member not found (no ACL row): {did}"))
+        TaskError::declared(
+            SHOW_ERR_NOT_FOUND,
+            AppError::NotFound(format!("member not found (no ACL row): {did}")),
+        )
     })?;
     Ok(Json(MemberEnvelope {
         member: MemberResponse::from_pair(acl, member),

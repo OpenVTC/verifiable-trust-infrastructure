@@ -88,6 +88,9 @@ pub enum SubmitRefusal {
     /// types. Refused rather than trimmed — see
     /// [`crate::community::requested_attributes`].
     AttributesUnrequested(Vec<String>),
+    /// The presentation cannot be the applicant's own: its `holder` names a
+    /// party other than the proven submitter (`submit:presentationInvalid`).
+    PresentationInvalid(String),
     /// Everything else, unchanged.
     Other(AppError),
 }
@@ -117,6 +120,7 @@ impl From<SubmitRefusal> for AppError {
                 "this community does not ask for {}; remove it and resubmit — nothing was stored",
                 types.join(", ")
             )),
+            SubmitRefusal::PresentationInvalid(reason) => AppError::Validation(reason),
             SubmitRefusal::Other(e) => e,
         }
     }
@@ -187,6 +191,17 @@ pub async fn submit_inner(
             b.created,
             b.signature_hex,
         )?;
+    }
+
+    // 1a. The presentation must be the applicant's own. `submit/0.2` makes
+    //     this the whole authorization: the VP's holder MUST equal the proof
+    //     signer, "admitting one party on another's evidence" otherwise. Only
+    //     the holder *binding* is checked here — the raw-VP path verifies no
+    //     embedded credential, which is why `presentation_from_vp` surfaces
+    //     none of their claims — but a holder naming somebody else is refused
+    //     with the declared `presentationInvalid` rather than decided on.
+    if let Err(reason) = check_presentation_holder(&applicant_did, &vp) {
+        return Err(SubmitRefusal::PresentationInvalid(reason));
     }
 
     // 1b. Requested attributes: answered as the manifest asks, and nothing
@@ -680,6 +695,34 @@ async fn assemble_join_facts(
     .await
 }
 
+/// The VP's `holder` — a DID string, or an object carrying one as `id`.
+fn vp_holder(vp: &JsonValue) -> Option<&str> {
+    match vp.get("holder")? {
+        JsonValue::String(s) => Some(s.as_str()),
+        JsonValue::Object(o) => o.get("id").and_then(|i| i.as_str()),
+        _ => None,
+    }
+}
+
+/// Refuse a presentation whose `holder` names someone other than the proven
+/// applicant. An absent holder is read as the applicant — the VP is carried in
+/// a document the applicant signed, so it cannot be anybody else's — but a
+/// holder that is *stated* must be the applicant, compared on the base DID.
+fn check_presentation_holder(applicant_did: &str, vp: &JsonValue) -> Result<(), String> {
+    let Some(holder) = vp_holder(vp) else {
+        return Ok(());
+    };
+    let holder_base = holder.split('#').next().unwrap_or(holder);
+    if holder_base == applicant_did {
+        Ok(())
+    } else {
+        Err(format!(
+            "the presentation's holder ({holder_base}) is not the submitting applicant \
+             ({applicant_did}); a join presentation must be the applicant's own"
+        ))
+    }
+}
+
 /// Project the VP into the [`Presentation`] the policy reads.
 ///
 /// `verified: true` reflects the **presentation-level** holder-binding the
@@ -1090,6 +1133,11 @@ pub async fn supplement_inner(
     let consume_invitation_id = invitation_fact.as_ref().map(|(id, _)| id.clone());
     let invitation = invitation_fact.map(|(_, fact)| fact);
 
+    // The same holder binding submit enforces: a supplement that carried
+    // somebody else's presentation would decide this applicant on their
+    // evidence. `supplement/0.1` declares no code for it, so it is the
+    // framework's `malformedRequest`.
+    check_presentation_holder(applicant_did, &vp).map_err(AppError::Validation)?;
     let presentation = presentation_from_vp(applicant_did, &vp);
     let vetting =
         crate::vetting::vetting_facts(state, applicant_did, &vp, &extensions, chrono::Utc::now())

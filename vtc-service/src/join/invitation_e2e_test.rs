@@ -165,9 +165,31 @@ async fn vic_bound_to_another_did_cannot_be_redeemed() {
         JoinTransport::DIDComm,
     )
     .await;
-    // Through the `AppError` conversion, so this still reads the refusal the
-    // REST route and the problem-report path see — the typed `SubmitRefusal`
-    // variant is only about the duplicate-submit case, which this is not.
+    // The VP names the applicant as its holder, so it is refused as
+    // `submit:presentationInvalid` before the invitation is even examined —
+    // a presentation that is not the submitter's own is decided on by nothing
+    // (#1600). A VP that names no holder still reaches the invitation's own
+    // holder binding, which refuses it `Forbidden`.
+    match result {
+        Err(crate::join::SubmitRefusal::PresentationInvalid(_)) => {}
+        Err(other) => panic!("expected PresentationInvalid, got {other:?}"),
+        Ok(_) => panic!("a VIC bound to someone else must be refused"),
+    }
+
+    // Without the tell-tale holder, the invitation's own binding refuses it.
+    let (mut vp, _) = issue_vic_vp(&issuer, &applicant).await;
+    vp.as_object_mut().expect("VP object").remove("holder");
+    let result = submit_inner(
+        &tv.state,
+        outsider.clone(),
+        vp,
+        false,
+        json!({}),
+        Vec::new(),
+        None,
+        JoinTransport::DIDComm,
+    )
+    .await;
     match result.map_err(vti_common::error::AppError::from) {
         Err(vti_common::error::AppError::Forbidden(_)) => {}
         Err(other) => panic!("expected Forbidden, got {other:?}"),

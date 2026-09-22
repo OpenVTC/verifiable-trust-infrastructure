@@ -84,8 +84,9 @@ pub(crate) use helpers::TrustTaskOutcome;
 // value the reject path emits, rather than a second literal.
 pub(crate) use helpers::framework_error_type_uri;
 use helpers::{
-    app_error_to_reject, body_parse_error_response, parse_payload, reject_with, reject_with_code,
-    reject_with_code_because, success_response, verdict_response, verify_trust_task_proof,
+    app_error_to_reject, body_parse_error_response, extended_code, parse_payload, reject_with,
+    reject_with_code, reject_with_code_because, success_response, task_error_to_reject,
+    verdict_response, verify_trust_task_proof,
 };
 
 /// The transport-resolved caller identity threaded into the dispatcher.
@@ -704,6 +705,11 @@ pub(crate) const PERSONHOOD_CHALLENGE_TYPE: &str =
 /// `vtc/members/personhood/assert/0.1` — present the evidence.
 pub(crate) const PERSONHOOD_ASSERT_TYPE: &str = <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
+/// the applicant's own.
+pub(crate) const SUBMIT_ERR_PRESENTATION_INVALID: &str =
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_2::error_codes::PRESENTATION_INVALID.code;
+
 /// Resolve the proven holder DID for a holder-bound verb. DIDComm → the
 /// authcrypt sender; REST → the document proof signer. When the document
 /// carries an `issuer`, it must match the proven identity (anti-spoof).
@@ -820,6 +826,14 @@ async fn handle_submit(
                 Some(details),
             );
         }
+        Err(crate::join::SubmitRefusal::PresentationInvalid(reason)) => {
+            return reject_with_code(
+                &doc,
+                extended_code(SUBMIT_ERR_PRESENTATION_INVALID),
+                reason,
+                None,
+            );
+        }
         Err(crate::join::SubmitRefusal::Other(e)) => return app_error_to_reject(&doc, &e),
     };
 
@@ -919,11 +933,11 @@ async fn handle_revoke_statement(
             revoke_statement::Response::try_from(
                 revoke_statement::Response::builder().recorded_at(notice.recorded_at),
             )
-            .map_err(|e| AppError::Internal(format!("revoke-statement response: {e}")))
+            .map_err(|e| AppError::Internal(format!("revoke-statement response: {e}")).into())
         });
     match answer {
         Ok(response) => success_response(&doc, response),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 
@@ -948,7 +962,7 @@ async fn handle_vetter_grant(
     };
     match crate::vetting::vetters::grant(state, &admin_did, &body).await {
         Ok(grant) => success_response(&doc, grant.response),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 
@@ -969,17 +983,6 @@ where
             },
         )
     })
-}
-
-/// A specification-extended error code, `<slug>:<local>`, as a framework code.
-fn extended_code(code: &str) -> trust_tasks_rs::TrustTaskCode {
-    let (slug, local) = code
-        .rsplit_once(':')
-        .expect("an extended code is <slug>:<local>");
-    trust_tasks_rs::TrustTaskCode::Extended {
-        slug: slug.to_string(),
-        local: local.to_string(),
-    }
 }
 
 /// `vtc/vetting/vetters/profile/0.1` — a vetter publishes their profile.
@@ -1189,7 +1192,7 @@ async fn handle_status(
 
     match result {
         Ok(resp) => success_response(&doc, resp),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 
@@ -1434,7 +1437,7 @@ async fn handle_self_remove(
                 removed: outcome.removed,
             },
         ),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 
@@ -1484,7 +1487,7 @@ async fn handle_personhood_challenge(
 
     match crate::routes::members::personhood::challenge_inner(state, &body.did).await {
         Ok(res) => success_response(&doc, res),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 
@@ -1542,7 +1545,7 @@ async fn handle_personhood_assert(
 
     match crate::routes::members::personhood::assert_inner(state, &body.did, &presentation).await {
         Ok(res) => success_response(&doc, res),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 
@@ -1603,7 +1606,7 @@ async fn handle_member_vmc(
                 request_id: outcome.request_id.map(|u| u.to_string()),
             },
         ),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 

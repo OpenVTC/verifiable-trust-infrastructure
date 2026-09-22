@@ -269,3 +269,100 @@ async fn de_listing_removes_a_header_gate_not_the_auth_gate() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #1600 — the codes the website tasks declare, read from the generated
+// bindings.
+// ---------------------------------------------------------------------------
+
+use trust_tasks_rs::specs::vtc::website as website_spec;
+
+const FILES_DELETE_ERR_NOT_FOUND: &str =
+    website_spec::files::delete::v0_1::error_codes::NOT_FOUND.code;
+const GENERATIONS_LIST_ERR_NOT_MANAGED: &str =
+    website_spec::generations::list::v0_1::error_codes::NOT_MANAGED.code;
+const ROLLBACK_ERR_NOT_MANAGED: &str = website_spec::rollback::v0_1::error_codes::NOT_MANAGED.code;
+const ROLLBACK_ERR_GENERATION_NOT_FOUND: &str =
+    website_spec::rollback::v0_1::error_codes::GENERATION_NOT_FOUND.code;
+
+const GENERATIONS_TASK: &str = "https://trusttasks.org/spec/vtc/website/generations/list/0.1";
+const ROLLBACK_TASK: &str = "https://trusttasks.org/spec/vtc/website/rollback/0.1";
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// Point the website at a fresh directory in `mode`. The directory is returned
+/// so it outlives the test's requests.
+async fn configure_website(fix: &Fixture, mode: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut cfg = fix._vtc.state.config.write().await;
+    cfg.website.root_dir = Some(dir.path().to_path_buf());
+    cfg.website.deploy_mode = mode.to_string();
+    dir
+}
+
+/// An authenticated admin call returning the whole JSON body.
+async fn admin_call(fix: &Fixture, method: &str, uri: &str, task: &str) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Trust-Task", task)
+        .header("Authorization", format!("Bearer {}", fix.token))
+        .body(Body::empty())
+        .unwrap();
+    let res = fix.router.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn deleting_a_missing_file_is_the_declared_not_found() {
+    let fix = build_fixture().await;
+    let _root = configure_website(&fix, "live").await;
+    let (status, body) = admin_call(
+        &fix,
+        "DELETE",
+        "/v1/website/files/never-written.txt",
+        DELETE_TASK,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), FILES_DELETE_ERR_NOT_FOUND, "{body}");
+}
+
+/// Live mode has no generations, so both managed-only tasks answer
+/// `notManaged` there; in managed mode a label naming nothing is
+/// `generationNotFound`. Statuses unchanged (400, 400, 404).
+#[tokio::test]
+async fn the_generation_tasks_answer_with_the_codes_their_specs_declare() {
+    let fix = build_fixture().await;
+    let live = configure_website(&fix, "live").await;
+
+    let (status, body) = admin_call(&fix, "GET", "/v1/website/generations", GENERATIONS_TASK).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        GENERATIONS_LIST_ERR_NOT_MANAGED,
+        "{body}"
+    );
+
+    let (status, body) = admin_call(&fix, "POST", "/v1/website/rollback/1", ROLLBACK_TASK).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(rest_error_code(&body), ROLLBACK_ERR_NOT_MANAGED, "{body}");
+    drop(live);
+
+    let _managed = configure_website(&fix, "managed").await;
+    let (status, body) = admin_call(&fix, "POST", "/v1/website/rollback/99", ROLLBACK_TASK).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        ROLLBACK_ERR_GENERATION_NOT_FOUND,
+        "{body}"
+    );
+}

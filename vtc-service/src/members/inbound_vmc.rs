@@ -28,9 +28,28 @@ use vti_common::error::AppError;
 use vta_sdk::protocols::members::MEMBERSHIP_CREDENTIAL_TYPE;
 
 use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
+use crate::error::TaskError;
 use crate::join::{JoinStatus, get_join_request};
 use crate::members::{get_member, store_member};
 use crate::server::AppState;
+
+use trust_tasks_rs::specs::vtc::members::vmc::v0_1::error_codes as vmc_codes;
+
+/// `vtc/members/vmc:subjectMismatch` — `credentialSubject.id` is not this
+/// community.
+pub const VMC_ERR_SUBJECT_MISMATCH: &str = vmc_codes::SUBJECT_MISMATCH.code;
+/// `vtc/members/vmc:notAMember` — the sender is not an active member.
+pub const VMC_ERR_NOT_A_MEMBER: &str = vmc_codes::NOT_A_MEMBER.code;
+/// `vtc/members/vmc:invalidCredential` — the credential does not verify, or is
+/// not a MembershipCredential.
+pub const VMC_ERR_INVALID_CREDENTIAL: &str = vmc_codes::INVALID_CREDENTIAL.code;
+/// `vtc/members/vmc:requestNotFound` — no join request with that `requestId`.
+pub const VMC_ERR_REQUEST_NOT_FOUND: &str = vmc_codes::REQUEST_NOT_FOUND.code;
+/// `vtc/members/vmc:requestNotApproved` — the named request is not approved.
+pub const VMC_ERR_REQUEST_NOT_APPROVED: &str = vmc_codes::REQUEST_NOT_APPROVED.code;
+/// `vtc/members/vmc:requestApplicantMismatch` — the named request's applicant
+/// is not the delivering member.
+pub const VMC_ERR_REQUEST_APPLICANT_MISMATCH: &str = vmc_codes::REQUEST_APPLICANT_MISMATCH.code;
 
 /// What [`receive_member_vmc_inner`] recorded.
 pub struct MemberVmcOutcome {
@@ -62,7 +81,7 @@ pub async fn receive_member_vmc_inner(
     member_did: String,
     vc: JsonValue,
     request_id: Option<Uuid>,
-) -> Result<MemberVmcOutcome, AppError> {
+) -> Result<MemberVmcOutcome, TaskError> {
     // The community DID the member's VMC must name as its subject.
     let community_did = state
         .config
@@ -84,19 +103,31 @@ pub async fn receive_member_vmc_inner(
     // Resolve + validate the join request BEFORE any write, so a bad
     // `requestId` can't half-apply the delivery.
     if let Some(req_id) = request_id {
+        // Each refusal is the code `vtc/members/vmc/0.1` declares for it.
         let req = get_join_request(&state.join_requests_ks, req_id)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("join request not found: {req_id}")))?;
+            .ok_or_else(|| {
+                TaskError::declared(
+                    VMC_ERR_REQUEST_NOT_FOUND,
+                    AppError::NotFound(format!("join request not found: {req_id}")),
+                )
+            })?;
         if req.applicant_did != member_did {
-            return Err(AppError::Validation(format!(
-                "join request {req_id} does not belong to the delivering member"
-            )));
+            return Err(TaskError::declared(
+                VMC_ERR_REQUEST_APPLICANT_MISMATCH,
+                AppError::Validation(format!(
+                    "join request {req_id} does not belong to the delivering member"
+                )),
+            ));
         }
         if req.status != JoinStatus::Approved {
-            return Err(AppError::Conflict(format!(
-                "join request {req_id} is {:?}; only an Approved request has a membership to reciprocate",
-                req.status
-            )));
+            return Err(TaskError::declared(
+                VMC_ERR_REQUEST_NOT_APPROVED,
+                AppError::Conflict(format!(
+                    "join request {req_id} is {:?}; only an Approved request has a membership to reciprocate",
+                    req.status
+                )),
+            ));
         }
     }
 
@@ -104,7 +135,12 @@ pub async fn receive_member_vmc_inner(
     let mut member = get_member(&state.members_ks, &member_did)
         .await?
         .filter(|m| !m.is_removed())
-        .ok_or_else(|| AppError::NotFound(format!("no active member: {member_did}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                VMC_ERR_NOT_A_MEMBER,
+                AppError::NotFound(format!("no active member: {member_did}")),
+            )
+        })?;
 
     // Does this acknowledgement bind to the grant we issued? DTG Core
     // Credentials: "A member-issued VMC whose `digest` does not match a valid
@@ -291,10 +327,15 @@ async fn verify_member_vmc(
     vc: &JsonValue,
     member_did: &str,
     community_did: &str,
-) -> Result<String, AppError> {
+) -> Result<String, TaskError> {
+    // Every refusal below is `invalidCredential` — the credential does not
+    // verify, or is not a MembershipCredential — except a subject naming some
+    // other community, which the specification gives its own code.
+    let invalid =
+        |m: String| TaskError::declared(VMC_ERR_INVALID_CREDENTIAL, AppError::Validation(m));
     let obj = vc
         .as_object()
-        .ok_or_else(|| AppError::Validation("member vmc is not a JSON object".into()))?;
+        .ok_or_else(|| invalid("member vmc is not a JSON object".into()))?;
 
     // Issuer must be the member (the authcrypt sender / proof signer).
     let issuer = match obj.get("issuer") {
@@ -307,7 +348,7 @@ async fn verify_member_vmc(
         _ => String::new(),
     };
     if issuer != member_did {
-        return Err(AppError::Validation(format!(
+        return Err(invalid(format!(
             "member vmc issuer `{issuer}` is not the member `{member_did}`"
         )));
     }
@@ -322,7 +363,7 @@ async fn verify_member_vmc(
                 .any(|t| t == MEMBERSHIP_CREDENTIAL_TYPE)
         });
     if !has_type {
-        return Err(AppError::Validation(format!(
+        return Err(invalid(format!(
             "member vmc `type` must include `{MEMBERSHIP_CREDENTIAL_TYPE}`"
         )));
     }
@@ -335,25 +376,28 @@ async fn verify_member_vmc(
         .and_then(JsonValue::as_str)
         .unwrap_or_default();
     if subject_id != community_did {
-        return Err(AppError::Validation(format!(
-            "member vmc subject `{subject_id}` is not this community `{community_did}`"
-        )));
+        return Err(TaskError::declared(
+            VMC_ERR_SUBJECT_MISMATCH,
+            AppError::Validation(format!(
+                "member vmc subject `{subject_id}` is not this community `{community_did}`"
+            )),
+        ));
     }
 
     // Cryptographic issuer proof: key under the member, resolved (did:key +
     // did:webvh) and verified.
     let proof_value = obj
         .get("proof")
-        .ok_or_else(|| AppError::Validation("member vmc has no issuer `proof`".into()))?;
+        .ok_or_else(|| invalid("member vmc has no issuer `proof`".into()))?;
     // A proof SET: a hybrid VMC carries one per suite.
-    let proofs = crate::credentials::proof_set::proof_set(proof_value).map_err(|e| {
-        AppError::Validation(format!("member vmc proof is not Data-Integrity: {e}"))
-    })?;
+    let proofs = crate::credentials::proof_set::proof_set(proof_value)
+        .map_err(|e| invalid(format!("member vmc proof is not Data-Integrity: {e}")))?;
     // Bound to the member on EVERY proof, before any signature is checked — a
     // proof naming another DID is a credential claiming the wrong author, not a
     // signature that failed.
     for proof in &proofs {
-        check_issuer_binding(&proof.verification_method, member_did)?;
+        check_issuer_binding(&proof.verification_method, member_did)
+            .map_err(|e| TaskError::declared(VMC_ERR_INVALID_CREDENTIAL, e))?;
     }
 
     let resolver = DidVmResolver::new(state.did_resolver.clone());
@@ -372,14 +416,13 @@ async fn verify_member_vmc(
         outcomes.push((did, r));
     }
 
-    crate::credentials::proof_set::accept_any(&outcomes).map_err(|e| {
-        AppError::Validation(format!("member vmc issuer proof did not verify: {e}"))
-    })?;
+    crate::credentials::proof_set::accept_any(&outcomes)
+        .map_err(|e| invalid(format!("member vmc issuer proof did not verify: {e}")))?;
 
     obj.get("id")
         .and_then(JsonValue::as_str)
         .map(str::to_string)
-        .ok_or_else(|| AppError::Validation("member vmc has no top-level `id`".into()))
+        .ok_or_else(|| invalid("member vmc has no top-level `id`".into()))
 }
 
 #[cfg(test)]

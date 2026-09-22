@@ -26,8 +26,14 @@ use vta_sdk::protocols::join_requests::JoinRequestStatusResponseBody;
 use vti_common::error::AppError;
 
 use crate::ceremony::Verdict;
+use crate::error::TaskError;
 use crate::join::{JoinStatus, get_join_request};
 use crate::server::AppState;
+
+/// `vtc/join-requests/status:notFound` — no join request with that id, or one
+/// that does not belong to the caller.
+pub const STATUS_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::join_requests::status::v0_1::error_codes::NOT_FOUND.code;
 
 /// Domain tag prefixing the REST holder-binding signature payload.
 /// Distinct from `submit`/`accept` so a status signature can't be
@@ -60,7 +66,7 @@ pub async fn status(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(body): Json<StatusRequestBody>,
-) -> Result<Json<JoinRequestStatusResponseBody>, AppError> {
+) -> Result<Json<JoinRequestStatusResponseBody>, TaskError> {
     let resp = status_inner(&state, id, body.applicant_did, Some(&body.signature)).await?;
     Ok(Json(resp))
 }
@@ -75,20 +81,29 @@ pub async fn status_inner(
     id: Uuid,
     applicant_did: String,
     signature_hex: Option<&str>,
-) -> Result<JoinRequestStatusResponseBody, AppError> {
+) -> Result<JoinRequestStatusResponseBody, TaskError> {
     if let Some(hex_sig) = signature_hex {
         verify_holder_signature(&applicant_did, id, hex_sig)?;
     }
 
+    // `vtc/join-requests/status:notFound` covers both "no such request" and
+    // "not yours", and the two are answered with one message: telling them
+    // apart would let any identified caller probe which request ids exist on
+    // this community. A request belonging to somebody else used to be a
+    // `malformedRequest` naming the mismatch — the oracle the spec closes.
+    let not_found = || {
+        TaskError::declared(
+            STATUS_ERR_NOT_FOUND,
+            AppError::NotFound(format!("join request not found: {id}")),
+        )
+    };
     let req = get_join_request(&state.join_requests_ks, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
+        .ok_or_else(not_found)?;
     if req.applicant_did != applicant_did {
-        return Err(AppError::Validation(
-            "applicantDid does not match the join request applicant".into(),
-        ));
+        return Err(not_found());
     }
-    project_status(id, req)
+    Ok(project_status(id, req)?)
 }
 
 /// Resolve the applicant's **open** request without being told its id.
@@ -112,18 +127,26 @@ pub async fn status_inner(
 pub async fn status_by_applicant(
     state: &AppState,
     applicant_did: String,
-) -> Result<JoinRequestStatusResponseBody, AppError> {
+) -> Result<JoinRequestStatusResponseBody, TaskError> {
     let id = crate::join::orchestrate::find_open_request(&state.join_requests_ks, &applicant_did)
         .await?
         .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "no open join request for applicant {applicant_did}"
-            ))
+            TaskError::declared(
+                STATUS_ERR_NOT_FOUND,
+                AppError::NotFound(format!(
+                    "no open join request for applicant {applicant_did}"
+                )),
+            )
         })?;
     let req = get_join_request(&state.join_requests_ks, id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
-    project_status(id, req)
+        .ok_or_else(|| {
+            TaskError::declared(
+                STATUS_ERR_NOT_FOUND,
+                AppError::NotFound(format!("join request not found: {id}")),
+            )
+        })?;
+    Ok(project_status(id, req)?)
 }
 
 /// Shared projection of a stored request into the applicant-facing response.

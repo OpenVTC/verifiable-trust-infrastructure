@@ -572,3 +572,110 @@ async fn rotation_without_a_reason_records_none() {
     };
     assert_eq!(data.rotation_reason, None);
 }
+
+// ---------------------------------------------------------------------------
+// #1600 — the codes `rotate-challenge/0.1` and `rotate/0.1` declare, read from
+// the generated bindings.
+// ---------------------------------------------------------------------------
+
+use trust_tasks_rs::specs::vtc::members::{rotate, rotate_challenge};
+
+const ROTATE_CHALLENGE_ERR_NOT_MEMBER: &str = rotate_challenge::v0_1::error_codes::NOT_MEMBER.code;
+const ROTATE_ERR_ROTATION_EXPIRED: &str = rotate::v0_1::error_codes::ROTATION_EXPIRED.code;
+const ROTATE_ERR_SIGNATURE_INVALID: &str = rotate::v0_1::error_codes::SIGNATURE_INVALID.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// POST a rotate-finish body and return `(status, body)`.
+async fn post_rotate(fix: &Fixture, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/members/me/rotate")
+        .header("authorization", format!("Bearer {}", fix.member_token))
+        .header("trust-task", ROTATE_TASK)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    (status, body_json(resp.into_body()).await)
+}
+
+#[tokio::test]
+async fn a_rotation_challenge_for_a_non_member_is_the_declared_not_member() {
+    let fix = build_fixture().await;
+    vtc_service::acl::delete_acl_entry(&fix.acl_ks, &fix.member_did)
+        .await
+        .unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/members/me/rotate/challenge")
+        .header("authorization", format!("Bearer {}", fix.member_token))
+        .header("trust-task", CHALLENGE_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp.into_body()).await;
+    assert_eq!(
+        rest_error_code(&body),
+        ROTATE_CHALLENGE_ERR_NOT_MEMBER,
+        "{body}"
+    );
+}
+
+/// `rotationExpired` covers a rotation id the community never issued (or has
+/// already spent); `signatureInvalid` covers either key failing to sign. Both
+/// keep their 400.
+#[tokio::test]
+async fn the_rotate_task_answers_with_the_codes_its_spec_declares() {
+    let fix = build_fixture().await;
+    let new_signing = SigningKey::from_bytes(&[0xBB; 32]);
+    let new_did =
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(&new_signing.verifying_key().to_bytes());
+
+    let (status, body) = post_rotate(
+        &fix,
+        json!({
+            "rotationId": uuid::Uuid::new_v4().to_string(),
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": "00",
+            "newSignature": "00",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        ROTATE_ERR_ROTATION_EXPIRED,
+        "{body}"
+    );
+
+    let (rotation_id, expires_at) = mint_challenge(&fix).await;
+    let payload = signing_bytes(&rotation_id, &fix.member_did, &new_did, expires_at);
+    let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
+    // The *old* key's signature is the one that fails this time.
+    let wrong = SigningKey::from_bytes(&[0xDE; 32]);
+    let bad_old_sig = hex::encode(wrong.sign(&payload).to_bytes());
+    let (status, body) = post_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": bad_old_sig,
+            "newSignature": new_sig,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        ROTATE_ERR_SIGNATURE_INVALID,
+        "{body}"
+    );
+}

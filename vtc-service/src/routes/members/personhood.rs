@@ -83,6 +83,7 @@ use crate::auth::AuthClaims;
 use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
+use crate::error::TaskError;
 use crate::members::{get_member, match_code, store_member};
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy,
@@ -90,6 +91,24 @@ use crate::policy::{
 };
 use crate::server::AppState;
 use crate::status_list;
+
+use trust_tasks_rs::specs::vtc::members::personhood as personhood_spec;
+
+/// `vtc/members/personhood/challenge:notFound` — no member with that DID.
+pub const CHALLENGE_ERR_NOT_FOUND: &str =
+    personhood_spec::challenge::v0_1::error_codes::NOT_FOUND.code;
+/// `vtc/members/personhood/assert:notFound` — no member with that DID.
+pub const ASSERT_ERR_NOT_FOUND: &str = personhood_spec::assert::v0_1::error_codes::NOT_FOUND.code;
+/// `vtc/members/personhood/assert:challengeExpired` — the challenge is
+/// unknown or expired.
+pub const ASSERT_ERR_CHALLENGE_EXPIRED: &str =
+    personhood_spec::assert::v0_1::error_codes::CHALLENGE_EXPIRED.code;
+/// `vtc/members/personhood/assert:presentationInvalid` — the VP failed
+/// verification, its holder is not `did`, or the personhood policy refused it.
+pub const ASSERT_ERR_PRESENTATION_INVALID: &str =
+    personhood_spec::assert::v0_1::error_codes::PRESENTATION_INVALID.code;
+/// `vtc/members/personhood/revoke:notFound` — no member with that DID.
+pub const REVOKE_ERR_NOT_FOUND: &str = personhood_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
 
 /// Challenge TTL — 10 minutes. Matches the rotation flow.
 const CHALLENGE_TTL_SECS: i64 = 10 * 60;
@@ -177,7 +196,7 @@ pub async fn challenge(
     _auth: AuthClaims,
     State(state): State<AppState>,
     Path(member_did): Path<String>,
-) -> Result<(StatusCode, Json<ChallengeResponse>), AppError> {
+) -> Result<(StatusCode, Json<ChallengeResponse>), TaskError> {
     Ok((
         StatusCode::OK,
         Json(challenge_inner(&state, &member_did).await?),
@@ -194,13 +213,18 @@ pub async fn challenge(
 pub(crate) async fn challenge_inner(
     state: &AppState,
     member_did: &str,
-) -> Result<ChallengeResponse, AppError> {
+) -> Result<ChallengeResponse, TaskError> {
     vti_common::identifier::validate_did("did", member_did)?;
     // Member must exist — minting a challenge for a non-member
     // is operator-confusing and serves no purpose.
     let _ = get_acl_entry(&state.acl_ks, member_did)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("no ACL row for {member_did}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                CHALLENGE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("no ACL row for {member_did}")),
+            )
+        })?;
 
     let id = Uuid::new_v4();
     let expires_at = Utc::now() + chrono::Duration::seconds(CHALLENGE_TTL_SECS);
@@ -274,7 +298,7 @@ pub async fn assert(
     State(state): State<AppState>,
     Path(member_did): Path<String>,
     Json(body): Json<AssertBody>,
-) -> Result<(StatusCode, Json<AssertResponse>), AppError> {
+) -> Result<(StatusCode, Json<AssertResponse>), TaskError> {
     Ok((
         StatusCode::OK,
         Json(assert_inner(&state, &member_did, &body.presentation).await?),
@@ -298,13 +322,18 @@ pub(crate) async fn assert_inner(
     state: &AppState,
     member_did: &str,
     presentation: &JsonValue,
-) -> Result<AssertResponse, AppError> {
+) -> Result<AssertResponse, TaskError> {
     vti_common::identifier::validate_did("did", member_did)?;
     // Load Member row first — `404` for an unknown subject
     // is the most actionable failure mode.
     let mut member = get_member(&state.members_ks, member_did)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("no Member row for {member_did}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                ASSERT_ERR_NOT_FOUND,
+                AppError::NotFound(format!("no Member row for {member_did}")),
+            )
+        })?;
 
     // 1. Extract + consume the challenge before any daemon-
     //    config checks so malformed callers can't observe a
@@ -353,19 +382,29 @@ pub(crate) async fn assert_inner(
         return Err(AppError::Validation(format!(
             "presentation nonce ({nonce}) != proof.challenge ({challenge_str}) — the signed \
              and unsigned copies of the challenge disagree"
-        )));
+        ))
+        .into());
     }
-    let chal = take_challenge(state, challenge_id)
-        .await?
-        .ok_or_else(|| AppError::Validation("challenge not found or already consumed".into()))?;
+    // Unknown (or already spent) and expired are both `challengeExpired`: the
+    // remedy is the same — open a new personhood/challenge.
+    let chal = take_challenge(state, challenge_id).await?.ok_or_else(|| {
+        TaskError::declared(
+            ASSERT_ERR_CHALLENGE_EXPIRED,
+            AppError::Validation("challenge not found or already consumed".into()),
+        )
+    })?;
     if chal.member_did != member_did {
         return Err(AppError::Validation(format!(
             "challenge was minted for {}, not {}",
             chal.member_did, member_did
-        )));
+        ))
+        .into());
     }
     if Utc::now() > chal.expires_at {
-        return Err(AppError::Validation("challenge expired".into()));
+        return Err(TaskError::declared(
+            ASSERT_ERR_CHALLENGE_EXPIRED,
+            AppError::Validation("challenge expired".into()),
+        ));
     }
 
     // 2. Verify the VP's holder field matches. `assert/0.1`
@@ -374,14 +413,21 @@ pub(crate) async fn assert_inner(
     //    substitute for the challenge binding above — a consumer
     //    checking only one of the two accepts either replays or
     //    assertions made on someone else's behalf.
+    //
+    //    `presentationInvalid` covers a holder that is absent or not `did`,
+    //    a proof that does not verify, and a policy refusal (steps 3 and 6).
+    let presentation_invalid =
+        |e: AppError| TaskError::declared(ASSERT_ERR_PRESENTATION_INVALID, e);
     let holder = presentation
         .get("holder")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::Validation("presentation missing holder".into()))?;
+        .ok_or_else(|| {
+            presentation_invalid(AppError::Validation("presentation missing holder".into()))
+        })?;
     if holder != member_did {
-        return Err(AppError::Validation(format!(
+        return Err(presentation_invalid(AppError::Validation(format!(
             "presentation holder ({holder}) != subject DID ({member_did})"
-        )));
+        ))));
     }
 
     // Daemon-side prerequisites now that caller input is
@@ -404,7 +450,11 @@ pub(crate) async fn assert_inner(
     //    member's resolved #key-0.
     verify_vp_proof(presentation, member_did, &resolver)
         .await
-        .map_err(|e| AppError::Forbidden(format!("personhood-proof-invalid: {e}")))?;
+        .map_err(|e| {
+            presentation_invalid(AppError::Forbidden(format!(
+                "personhood-proof-invalid: {e}"
+            )))
+        })?;
 
     // 5. Extract vp_claims for policy input, with the host's witness
     //    binding verdict attached. (Per D2 review, embedded-VC proofs are
@@ -416,9 +466,9 @@ pub(crate) async fn assert_inner(
     let allow =
         evaluate_personhood_assert(state, member_did, signer.issuer_did(), &vp_claims).await?;
     if !allow {
-        return Err(AppError::Forbidden(
+        return Err(presentation_invalid(AppError::Forbidden(
             "personhood-policy-denied: active personhood.rego rejected the assertion".into(),
-        ));
+        )));
     }
 
     // 6a. One membership per person, when this community's governance says so.
@@ -558,7 +608,7 @@ pub async fn revoke(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(member_did): Path<String>,
-) -> Result<(StatusCode, Json<RevokeResponse>), AppError> {
+) -> Result<(StatusCode, Json<RevokeResponse>), TaskError> {
     vti_common::identifier::validate_did("did", &member_did)?;
     // Auth: AdminAuth-equivalent (role == admin) OR self.
     let is_self = auth.did == member_did;
@@ -566,7 +616,8 @@ pub async fn revoke(
     if !is_self && !is_admin {
         return Err(AppError::Forbidden(
             "only an admin or the subject member can revoke personhood".into(),
-        ));
+        )
+        .into());
     }
     let reason = if is_self { "self" } else { "admin" };
 
@@ -581,7 +632,12 @@ pub async fn revoke(
 
     let mut member = get_member(&state.members_ks, &member_did)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("no Member row for {member_did}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                REVOKE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("no Member row for {member_did}")),
+            )
+        })?;
 
     // Idempotent no-op if already false.
     if !member.personhood {

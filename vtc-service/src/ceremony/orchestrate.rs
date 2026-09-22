@@ -22,6 +22,7 @@ use super::{
     effects::EffectPlan, load_actor_role, member_state,
 };
 use crate::acl::{VtcRole, get_acl_entry};
+use crate::error::TaskError;
 use crate::members::{Disposition, get_member};
 use crate::policy::{PolicyPurpose, load_active_compiled};
 use crate::server::AppState;
@@ -180,6 +181,20 @@ pub struct LeaveOutcome {
     pub removed: bool,
 }
 
+use trust_tasks_rs::specs::vtc::members as members_specs;
+
+/// `vtc/members/purge:notFound` — no member or tombstone for that DID.
+pub const PURGE_ERR_NOT_FOUND: &str = members_specs::purge::v0_1::error_codes::NOT_FOUND.code;
+/// `vtc/members/purge:lastAdministrator` — purging would leave no admin.
+pub const PURGE_ERR_LAST_ADMINISTRATOR: &str =
+    members_specs::purge::v0_1::error_codes::LAST_ADMINISTRATOR.code;
+/// `vtc/members/admin-remove:notFound` — no member with that DID.
+pub const ADMIN_REMOVE_ERR_NOT_FOUND: &str =
+    members_specs::admin_remove::v0_1::error_codes::NOT_FOUND.code;
+/// `vtc/members/self-remove:notMember` — the caller is not a member.
+pub const SELF_REMOVE_ERR_NOT_MEMBER: &str =
+    members_specs::self_remove::v0_1::error_codes::NOT_MEMBER.code;
+
 /// Forcefully **purge** a member row — operator cleanup for a lingering
 /// tombstone (a Tombstone/Historical departure left the Member row after its
 /// ACL was deleted), or a hard delete of a live member. Hard-deletes the ACL
@@ -194,7 +209,7 @@ pub async fn purge_member(
     state: &AppState,
     actor_did: &str,
     target_did: &str,
-) -> Result<LeaveOutcome, AppError> {
+) -> Result<LeaveOutcome, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -205,12 +220,17 @@ pub async fn purge_member(
     let prior_acl = get_acl_entry(&state.acl_ks, target_did).await?;
     let has_acl = prior_acl.is_some();
     if !has_member && !has_acl {
-        return Err(AppError::NotFound(format!(
-            "no member or tombstone to purge: {target_did}"
-        )));
+        return Err(TaskError::declared(
+            PURGE_ERR_NOT_FOUND,
+            AppError::NotFound(format!("no member or tombstone to purge: {target_did}")),
+        ));
     }
 
     // Reuse the single state-mutating seam with a forced Purge disposition.
+    //
+    // `depart`'s one `Conflict` is the no-last-admin invariant — everything
+    // else it can fail with is a store fault — so it is the declared
+    // `lastAdministrator`. The status and message are the executor's own.
     let EffectOutcome::Departed(outcome) = execute::apply(
         state,
         EffectPlan::Depart {
@@ -219,11 +239,15 @@ pub async fn purge_member(
         },
         actor_did,
     )
-    .await?
+    .await
+    .map_err(|e| match e {
+        e @ AppError::Conflict(_) => TaskError::declared(PURGE_ERR_LAST_ADMINISTRATOR, e),
+        e => TaskError::App(e),
+    })?
     else {
-        return Err(AppError::Internal(
-            "purge effect did not produce a departure outcome".into(),
-        ));
+        return Err(
+            AppError::Internal("purge effect did not produce a departure outcome".into()).into(),
+        );
     };
 
     audit_writer
@@ -294,7 +318,7 @@ pub async fn remove_inner(
     target_did: &str,
     disposition: Option<Disposition>,
     reason: String,
-) -> Result<LeaveOutcome, AppError> {
+) -> Result<LeaveOutcome, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -314,10 +338,21 @@ pub async fn remove_inner(
     // row — two surfaces disagreeing about whether somebody is here.
     //
     // Only genuinely-absent is still `not found`: neither row.
+    //
+    // Which task's code that is follows from who is asking, the same way the
+    // removal policy tells the two apart (`actor.did == subject.did`): a
+    // member leaving is `self-remove:notMember` ("nothing to remove"), an
+    // admin removing somebody is `admin-remove:notFound`.
     if target_acl.is_none() && target_member.is_none() {
-        return Err(AppError::NotFound(format!(
-            "member not found: {target_did}"
-        )));
+        let code = if actor_did == target_did {
+            SELF_REMOVE_ERR_NOT_MEMBER
+        } else {
+            ADMIN_REMOVE_ERR_NOT_FOUND
+        };
+        return Err(TaskError::declared(
+            code,
+            AppError::NotFound(format!("member not found: {target_did}")),
+        ));
     }
 
     // The subject's role, for the removal policy and the audit row. With no
@@ -343,7 +378,7 @@ pub async fn remove_inner(
         &reason,
     )
     .await?;
-    let verified = VerifiedFacts::assemble(facts)?;
+    let verified = VerifiedFacts::assemble(facts).map_err(AppError::from)?;
     let policy = load_active_compiled(
         &state.active_policies_ks,
         &state.policies_ks,
@@ -353,17 +388,17 @@ pub async fn remove_inner(
     let allow = match decide(&verified, &policy)? {
         Verdict::Allow(a) => a,
         Verdict::Deny(d) => {
-            return Err(AppError::Forbidden(format!(
-                "removal denied by policy ({})",
-                d.code
-            )));
+            return Err(
+                AppError::Forbidden(format!("removal denied by policy ({})", d.code)).into(),
+            );
         }
         // Leave is synchronous — a refer / request_more verdict is a
         // misconfigured policy for this purpose.
         Verdict::Refer(_) | Verdict::RequestMore(_) => {
             return Err(AppError::Internal(
                 "removal policy returned a non-terminal verdict; leave is synchronous".into(),
-            ));
+            )
+            .into());
         }
     };
 
@@ -391,9 +426,9 @@ pub async fn remove_inner(
         disposition: Some(disposition_wire(resolved).to_string()),
     };
     let EffectOutcome::Departed(outcome) = execute::apply(state, plan, actor_did).await? else {
-        return Err(AppError::Internal(
-            "depart effect did not produce a departure outcome".into(),
-        ));
+        return Err(
+            AppError::Internal("depart effect did not produce a departure outcome".into()).into(),
+        );
     };
     let disposition_str = disposition_wire(outcome.disposition);
 

@@ -64,7 +64,7 @@ pub async fn grant_vetter(
     // Read as JSON, then checked against the published schema before parsing:
     // the body is `vtc/vetting/vetters/grant/0.1`'s payload, as documented above.
     Json(body): Json<serde_json::Value>,
-) -> Result<(StatusCode, Json<VetterGrant01Response>), AppError> {
+) -> Result<(StatusCode, Json<VetterGrant01Response>), crate::error::TaskError> {
     let body: VetterGrant01Payload = read_checked(&body)
         .map(VetterGrant01Payload)
         .map_err(|e| AppError::Validation(e.to_string()))?;

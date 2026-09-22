@@ -16,7 +16,7 @@ use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::session::{Session, SessionState, store_session};
 use vti_common::store::KeyspaceHandle;
 
-use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::members::{Member, store_member};
 use vtc_service::test_support::TestVtc;
 
@@ -24,6 +24,19 @@ use vtc_service::test_support::TestVtc;
 /// from the generated bindings rather than spelled out (#1600).
 const MEMBER_CREDENTIALS_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::members::credentials::v0_1::error_codes::NOT_FOUND.code;
+
+use trust_tasks_rs::specs::vtc::members as members_spec;
+
+/// The codes the other `vtc/members/*` tasks declare, likewise generated.
+const SHOW_ERR_NOT_FOUND: &str = members_spec::show::v0_1::error_codes::NOT_FOUND.code;
+const UPDATE_ERR_NOT_FOUND: &str = members_spec::update::v0_1::error_codes::NOT_FOUND.code;
+const ADMIN_REMOVE_ERR_NOT_FOUND: &str =
+    members_spec::admin_remove::v0_1::error_codes::NOT_FOUND.code;
+const PURGE_ERR_NOT_FOUND: &str = members_spec::purge::v0_1::error_codes::NOT_FOUND.code;
+const PURGE_ERR_LAST_ADMINISTRATOR: &str =
+    members_spec::purge::v0_1::error_codes::LAST_ADMINISTRATOR.code;
+const SOLICIT_VMC_ERR_NOT_FOUND: &str =
+    members_spec::solicit_vmc::v0_1::error_codes::NOT_FOUND.code;
 
 /// The extended error code carried by a REST error body (`{"error", "code"}`).
 fn rest_error_code(body: &Value) -> &str {
@@ -444,7 +457,7 @@ async fn show_member_rejects_malformed_did_path_param() {
 #[tokio::test]
 async fn show_member_returns_404_for_unknown_did() {
     let fix = build_fixture().await;
-    let (status, _) = send(
+    let (status, body) = send(
         &fix.router,
         "GET",
         "/v1/members/did:key:zNobody",
@@ -454,6 +467,7 @@ async fn show_member_returns_404_for_unknown_did() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(rest_error_code(&body), SHOW_ERR_NOT_FOUND, "{body}");
 }
 
 // ---------------------------------------------------------------------------
@@ -823,7 +837,7 @@ async fn patch_member_profile_only_emits_member_updated() {
 #[tokio::test]
 async fn patch_member_404_for_unknown_did() {
     let fix = build_fixture().await;
-    let (status, _) = send(
+    let (status, body) = send(
         &fix.router,
         "PATCH",
         "/v1/members/did:key:zNobody",
@@ -833,6 +847,7 @@ async fn patch_member_404_for_unknown_did() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(rest_error_code(&body), UPDATE_ERR_NOT_FOUND, "{body}");
 }
 
 // ---------------------------------------------------------------------------
@@ -953,7 +968,7 @@ async fn removing_a_member_whose_acl_is_already_gone_succeeds() {
 #[tokio::test]
 async fn removing_a_did_with_no_rows_at_all_is_still_not_found() {
     let fix = build_fixture().await;
-    let (status, _) = send(
+    let (status, body) = send(
         &fix.router,
         "DELETE",
         "/v1/members/did:key:zNeverExisted",
@@ -963,4 +978,70 @@ async fn removing_a_did_with_no_rows_at_all_is_still_not_found() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(rest_error_code(&body), ADMIN_REMOVE_ERR_NOT_FOUND, "{body}");
+}
+
+/// `purge/0.1` declares both refusals: nothing to purge, and a purge that
+/// would leave the community with no administrator. Statuses unchanged (404,
+/// 409).
+#[tokio::test]
+async fn the_purge_task_answers_with_the_codes_its_spec_declares() {
+    let fix = build_fixture().await;
+    let (status, body) = send(
+        &fix.router,
+        "DELETE",
+        "/v1/members/did:key:zNeverHere/purge",
+        PURGE_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), PURGE_ERR_NOT_FOUND, "{body}");
+
+    // The fixture's admin is the community's only one.
+    let (status, body) = send(
+        &fix.router,
+        "DELETE",
+        &format!("/v1/members/{ADMIN_DID}/purge"),
+        PURGE_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        PURGE_ERR_LAST_ADMINISTRATOR,
+        "{body}"
+    );
+    assert!(
+        get_acl_entry(&fix.acl_ks, ADMIN_DID)
+            .await
+            .unwrap()
+            .is_some(),
+        "the refusal wrote nothing"
+    );
+}
+
+/// `solicit-vmc:notFound` — no active member, including one who has left.
+#[tokio::test]
+async fn soliciting_a_vmc_from_a_non_member_is_the_declared_not_found() {
+    let fix = build_fixture().await;
+    let mut gone = Member::fresh("did:key:zDeparted");
+    gone.tombstone();
+    store_member(&fix.members_ks, &gone).await.unwrap();
+    for did in ["did:key:zNobody", "did:key:zDeparted"] {
+        let (status, body) = send(
+            &fix.router,
+            "POST",
+            &format!("/v1/members/{did}/request-vmc"),
+            "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",
+            Some(&fix.admin_token),
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{did}: {body}");
+        assert_eq!(rest_error_code(&body), SOLICIT_VMC_ERR_NOT_FOUND, "{body}");
+    }
 }
