@@ -1398,7 +1398,9 @@ async fn member_self_remove_handler(
     let outcome =
         match remove_inner(state, &caller_did, &caller_did, disposition, String::new()).await {
             Ok(o) => o,
-            Err(e) => return Some(app_error_report(thid, &e)),
+            // The problem-report surface carries no extended code; it answers
+            // exactly as it did before the Trust Task path gained one.
+            Err(e) => return Some(app_error_report(thid, &AppError::from(e))),
         };
 
     let receipt = SelfRemoveReceiptBody {
@@ -1496,7 +1498,8 @@ async fn member_vmc_handler(
     .await
     {
         Ok(o) => o,
-        Err(e) => return Some(app_error_report(thid, &e)),
+        // No extended codes on the problem-report surface; unchanged.
+        Err(e) => return Some(app_error_report(thid, &AppError::from(e))),
     };
 
     let receipt = MemberVmcReceiptBody {

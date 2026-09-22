@@ -42,6 +42,22 @@ const SUBJECT_DID: &str = "did:key:zVrcSubject";
 const STRANGER_DID: &str = "did:key:zStranger";
 const ADMIN_DID: &str = "did:key:zVrcAdmin";
 
+// The codes the relationship tasks declare (#1600), read from the generated
+// bindings rather than spelled here.
+const LIST_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::relationships::list::v0_2::error_codes::NOT_FOUND.code;
+const REVOKE_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::relationships::revoke::v0_1::error_codes::NOT_FOUND.code;
+const PUBLISH_ERR_VRC_INVALID: &str =
+    trust_tasks_rs::specs::vtc::relationships::publish::v0_2::error_codes::VRC_INVALID.code;
+const PUBLISH_ERR_SUBJECT_NOT_MEMBER: &str =
+    trust_tasks_rs::specs::vtc::relationships::publish::v0_2::error_codes::SUBJECT_NOT_MEMBER.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
 struct Fixture {
     router: axum::Router,
     issuer_token: String,
@@ -358,7 +374,9 @@ async fn revoke_404_on_unknown() {
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let (status, body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(rest_error_code(&body), REVOKE_ERR_NOT_FOUND, "{body}");
 }
 
 // ─── Suspend / restore (#1079) ───────────────────────────
@@ -565,6 +583,24 @@ async fn list_returns_issued_and_received_edges() {
         .collect();
     assert!(ids.contains(&r1.to_string()));
     assert!(ids.contains(&r2.to_string()));
+}
+
+/// `relationships/list:notFound` — a DID the community has no row for at all
+/// used to answer an empty page, indistinguishable from a member with no
+/// relationships.
+#[tokio::test]
+async fn list_for_a_did_that_is_not_a_member_is_the_declared_not_found() {
+    let fix = build_fixture().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/members/did:key:zNeverAdmitted/relationships")
+        .header("authorization", format!("Bearer {}", fix.issuer_token))
+        .header("trust-task", LIST_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), LIST_ERR_NOT_FOUND, "{body}");
 }
 
 #[tokio::test]
@@ -2250,5 +2286,55 @@ mod pairwise {
             }
             assert!(saw_revoke, "expected a VrcRevoked audit entry");
         }
+    }
+
+    // ─── #1600: the codes `publish/0.2` declares ───
+    //
+    // Last in this module so the census's view of the test (its signature to
+    // the next top-level `}`) is this test alone.
+
+    /// `vrcInvalid` covers a VRC whose proof does not verify, and an issuer the
+    /// signer neither is nor has proven control of. `subjectNotMember` is the
+    /// attributed form naming a subject who is not a member. Statuses are
+    /// unchanged (400 / 403 / 400).
+    #[tokio::test]
+    async fn the_publish_task_answers_with_the_codes_its_spec_declares() {
+        let fix = fixture().await;
+
+        // An issuer that is not the signer, with no authorization.
+        let v = vrc(RDID, PEER_RDID).await;
+        let (status, body) = body_value(post(&fix, &v, false).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(rest_error_code(&body), PUBLISH_ERR_VRC_INVALID, "{body}");
+
+        // A VRC whose proof no longer covers it.
+        let mut tampered = vrc(RDID, PEER_RDID).await;
+        tampered["validFrom"] = json!("2021-01-01T00:00:00Z");
+        let (status, body) = body_value(post(&fix, &tampered, true).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(rest_error_code(&body), PUBLISH_ERR_VRC_INVALID, "{body}");
+
+        // Attributed — issued under the member's own DID — to a non-member.
+        let attributed = sign(
+            MEMBER,
+            json!({
+                "@context": [
+                    "https://www.w3.org/ns/credentials/v2",
+                    "https://firstperson.network/credentials/dtg/v1"
+                ],
+                "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+                "issuer": did_for(MEMBER),
+                "validFrom": "2020-01-01T00:00:00Z",
+                "credentialSubject": { "id": did_for(OTHER) },
+            }),
+        )
+        .await;
+        let (status, body) = body_value(post(&fix, &attributed, false).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            rest_error_code(&body),
+            PUBLISH_ERR_SUBJECT_NOT_MEMBER,
+            "{body}"
+        );
     }
 }

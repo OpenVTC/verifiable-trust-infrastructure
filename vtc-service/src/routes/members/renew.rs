@@ -42,6 +42,7 @@ use crate::auth::AuthClaims;
 use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
+use crate::error::TaskError;
 use crate::members::{get_member, store_member};
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
@@ -49,6 +50,10 @@ use crate::policy::{
 };
 use crate::server::AppState;
 use crate::status_list;
+
+/// `vtc/members/renew:notMember` — the caller is not a member.
+pub const RENEW_ERR_NOT_MEMBER: &str =
+    trust_tasks_rs::specs::vtc::members::renew::v0_1::error_codes::NOT_MEMBER.code;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +87,7 @@ pub struct RenewResponse {
 pub async fn renew(
     auth: AuthClaims,
     State(state): State<AppState>,
-) -> Result<(StatusCode, Json<RenewResponse>), AppError> {
+) -> Result<(StatusCode, Json<RenewResponse>), TaskError> {
     let caller_did = auth.did.clone();
     let audit_writer = state
         .audit_writer
@@ -91,15 +96,28 @@ pub async fn renew(
 
     // 1. Verify the caller has an active ACL row (spec §6.3 —
     // no expiry / grace window).
+    //
+    // Either row missing is `renew:notMember`: an ACL entry without a member
+    // row (an operator grant) holds no membership to renew either.
     let _acl = get_acl_entry(&state.acl_ks, &caller_did)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("no ACL row for {caller_did} — not a member")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                RENEW_ERR_NOT_MEMBER,
+                AppError::NotFound(format!("no ACL row for {caller_did} — not a member")),
+            )
+        })?;
 
     // 2. Recover the prior Member row for the status-list slot
     // + the prior VMC's personhood flag (audit context).
     let mut member = get_member(&state.members_ks, &caller_did)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("no Member row for {caller_did}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                RENEW_ERR_NOT_MEMBER,
+                AppError::NotFound(format!("no Member row for {caller_did}")),
+            )
+        })?;
 
     let signer = state.credential_signer.as_ref().ok_or_else(|| {
         AppError::Internal(
@@ -162,7 +180,8 @@ pub async fn renew(
                          POST /v1/members/{did}/personhood/assert before \
                          retrying renewal"
                         .into(),
-                ));
+                )
+                .into());
             }
             crate::config::PersonhoodFailMode::Downgrade => (false, true),
         }

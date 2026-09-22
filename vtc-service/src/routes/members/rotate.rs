@@ -97,9 +97,22 @@ use crate::auth::AuthClaims;
 use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
+use crate::error::TaskError;
 use crate::members::{get_member, store_member};
 use crate::server::AppState;
 use crate::status_list;
+
+use trust_tasks_rs::specs::vtc::members::{rotate::v0_1 as rotate_spec, rotate_challenge};
+
+/// `vtc/members/rotate-challenge:notMember` — the caller is not a member.
+pub const ROTATE_CHALLENGE_ERR_NOT_MEMBER: &str =
+    rotate_challenge::v0_1::error_codes::NOT_MEMBER.code;
+/// `vtc/members/rotate:rotationExpired` — unknown, consumed or expired
+/// rotation challenge.
+pub const ROTATE_ERR_ROTATION_EXPIRED: &str = rotate_spec::error_codes::ROTATION_EXPIRED.code;
+/// `vtc/members/rotate:signatureInvalid` — the old or new signature did not
+/// verify, so control of both keys was not proven.
+pub const ROTATE_ERR_SIGNATURE_INVALID: &str = rotate_spec::error_codes::SIGNATURE_INVALID.code;
 
 /// Domain tag prefixed onto the canonical payload that both
 /// the old and new DID's keys sign over. Distinct from every
@@ -215,13 +228,18 @@ pub async fn challenge(
     auth: AuthClaims,
     State(state): State<AppState>,
     body: Option<Json<ChallengeBody>>,
-) -> Result<(StatusCode, Json<ChallengeResponse>), AppError> {
+) -> Result<(StatusCode, Json<ChallengeResponse>), TaskError> {
     let reason = body.and_then(|Json(b)| b.reason);
     // Caller must be a current member — anyone with a session
     // could mint a challenge otherwise.
     let _acl = get_acl_entry(&state.acl_ks, &auth.did)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("no ACL row for {} — not a member", auth.did)))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                ROTATE_CHALLENGE_ERR_NOT_MEMBER,
+                AppError::NotFound(format!("no ACL row for {} — not a member", auth.did)),
+            )
+        })?;
 
     let id = Uuid::new_v4();
     let now = Utc::now();
@@ -303,7 +321,7 @@ pub async fn rotate(
     auth: AuthClaims,
     State(state): State<AppState>,
     Json(body): Json<FinishBody>,
-) -> Result<(StatusCode, Json<FinishResponse>), AppError> {
+) -> Result<(StatusCode, Json<FinishResponse>), TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -314,7 +332,8 @@ pub async fn rotate(
         return Err(AppError::Forbidden(format!(
             "session DID ({}) does not match oldDid ({})",
             auth.did, body.old_did
-        )));
+        ))
+        .into());
     }
 
     // 2. Method detection. M2.15.1 ships did:key; M2.15.2
@@ -326,29 +345,37 @@ pub async fn rotate(
     let challenge = take_challenge(&state, body.rotation_id)
         .await?
         .ok_or_else(|| {
-            AppError::Validation(format!(
-                "rotation challenge {} not found or already consumed",
-                body.rotation_id
-            ))
+            TaskError::declared(
+                ROTATE_ERR_ROTATION_EXPIRED,
+                AppError::Validation(format!(
+                    "rotation challenge {} not found or already consumed",
+                    body.rotation_id
+                )),
+            )
         })?;
     if challenge.did != body.old_did {
         return Err(AppError::Forbidden(format!(
             "rotation challenge was issued for {}, not {}",
             challenge.did, body.old_did
-        )));
+        ))
+        .into());
     }
     if Utc::now() > challenge.expires_at {
-        return Err(AppError::Validation(format!(
-            "rotation challenge {} expired at {}",
-            body.rotation_id, challenge.expires_at
-        )));
+        return Err(TaskError::declared(
+            ROTATE_ERR_ROTATION_EXPIRED,
+            AppError::Validation(format!(
+                "rotation challenge {} expired at {}",
+                body.rotation_id, challenge.expires_at
+            )),
+        ));
     }
 
     // 4. Reject same-DID rotations (no-op churn).
     if body.old_did == body.new_did {
         return Err(AppError::Validation(
             "oldDid and newDid must differ — same-DID rotation is a no-op".into(),
-        ));
+        )
+        .into());
     }
 
     // 5. Verify both signatures over the canonical payload.
@@ -361,14 +388,19 @@ pub async fn rotate(
     // Old signature is always did:key (old DID is the
     // session's authenticated principal, which is did:key by
     // construction in the workspace's ACL surface).
+    //
+    // Either signature failing is `rotate:signatureInvalid`: control of both
+    // keys was not proven. Status and message are unchanged.
+    let signature_invalid =
+        |e: String| TaskError::declared(ROTATE_ERR_SIGNATURE_INVALID, AppError::Validation(e));
     verify_did_key_signature(&body.old_did, &payload, &body.old_signature)
-        .map_err(|e| AppError::Validation(format!("oldSignature failed: {e}")))?;
+        .map_err(|e| signature_invalid(format!("oldSignature failed: {e}")))?;
     // New signature method depends on the new DID. Dispatch
     // on `method` rather than re-parsing the prefix — keeps
     // the branch table next to the method-detection step.
     match method {
         "did:key" => verify_did_key_signature(&body.new_did, &payload, &body.new_signature)
-            .map_err(|e| AppError::Validation(format!("newSignature failed: {e}")))?,
+            .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?,
         "did:webvh" => {
             let resolver = state.did_resolver.as_ref().ok_or_else(|| {
                 AppError::Internal(
@@ -377,12 +409,13 @@ pub async fn rotate(
             })?;
             verify_did_webvh_signature(&body.new_did, &payload, &body.new_signature, resolver)
                 .await
-                .map_err(|e| AppError::Validation(format!("newSignature failed: {e}")))?;
+                .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?;
         }
         other => {
             return Err(AppError::Validation(format!(
                 "DID method '{other}' is not supported for rotation"
-            )));
+            ))
+            .into());
         }
     }
 
@@ -392,7 +425,8 @@ pub async fn rotate(
         return Err(AppError::Conflict(format!(
             "newDid {} already has an ACL row — refusing to clobber",
             body.new_did
-        )));
+        ))
+        .into());
     }
 
     // 7. Move the ACL row. `KeyspaceHandle::swap` runs the
@@ -433,7 +467,8 @@ pub async fn rotate(
         return Err(AppError::Conflict(format!(
             "ACL row for newDid {} was created mid-rotation",
             body.new_did
-        )));
+        ))
+        .into());
     }
 
     // 8. Move the Member row. Same swap discipline. Skipped when no
@@ -452,7 +487,8 @@ pub async fn rotate(
             return Err(AppError::Conflict(format!(
                 "member row for newDid {} was created mid-rotation",
                 body.new_did
-            )));
+            ))
+            .into());
         }
     }
 

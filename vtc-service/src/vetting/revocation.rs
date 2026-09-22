@@ -35,7 +35,13 @@ use vti_common::audit::{AuditEvent, VettingStatementRevokedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use crate::error::TaskError;
 use crate::members::storage::get_member;
+
+/// `vtc/vetting/revoke-statement:notMember` — the sender is not, and has never
+/// been, a member of this community.
+pub const REVOKE_STATEMENT_ERR_NOT_MEMBER: &str =
+    trust_tasks_rs::specs::vtc::vetting::revoke_statement::v0_1::error_codes::NOT_MEMBER.code;
 use crate::server::AppState;
 
 /// Domain separation for notice keys.
@@ -147,10 +153,16 @@ pub async fn withdraw(
     state: &AppState,
     vetter_did: &str,
     body: &RevokeStatement,
-) -> Result<RevocationNotice, AppError> {
+) -> Result<RevocationNotice, TaskError> {
+    // `revoke-statement:notMember` — not, and never, a member: a departed
+    // member's row survives as a tombstone, and a statement they made while
+    // here still counts, so they may still withdraw it.
     if get_member(&state.members_ks, vetter_did).await?.is_none() {
-        return Err(AppError::Forbidden(
-            "only a member of this community can withdraw a vetting statement".into(),
+        return Err(TaskError::declared(
+            REVOKE_STATEMENT_ERR_NOT_MEMBER,
+            AppError::Forbidden(
+                "only a member of this community can withdraw a vetting statement".into(),
+            ),
         ));
     }
     let (notice, created) =

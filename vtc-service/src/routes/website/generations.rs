@@ -14,14 +14,26 @@ use serde::Serialize;
 use vti_common::audit::{AuditEvent, WebsiteGenerationRolledBackData};
 use vti_common::auth::AdminAuth;
 
-use crate::error::AppError;
+use crate::error::{AppError, TaskError};
 use crate::server::AppState;
 use crate::website::storage::{GenerationEntry, list_managed_generations, swap_current_symlink};
+
+use trust_tasks_rs::specs::vtc::website as website_spec;
+
+/// `vtc/website/generations/list:notManaged` — live mode has no generations.
+pub const GENERATIONS_LIST_ERR_NOT_MANAGED: &str =
+    website_spec::generations::list::v0_1::error_codes::NOT_MANAGED.code;
+/// `vtc/website/rollback:notManaged` — live mode has nothing to roll back to.
+pub const ROLLBACK_ERR_NOT_MANAGED: &str =
+    website_spec::rollback::v0_1::error_codes::NOT_MANAGED.code;
+/// `vtc/website/rollback:generationNotFound` — no generation with that label.
+pub const ROLLBACK_ERR_GENERATION_NOT_FOUND: &str =
+    website_spec::rollback::v0_1::error_codes::GENERATION_NOT_FOUND.code;
 
 pub async fn list(
     _admin: AdminAuth,
     State(state): State<AppState>,
-) -> Result<Json<GenerationsResponse>, AppError> {
+) -> Result<Json<GenerationsResponse>, TaskError> {
     let cfg = state.config.read().await;
     let root_dir = cfg
         .website
@@ -32,8 +44,11 @@ pub async fn list(
     drop(cfg);
 
     if deploy_mode != "managed" {
-        return Err(AppError::Validation(
-            "GET /v1/website/generations is only available in managed deploy mode".into(),
+        return Err(TaskError::declared(
+            GENERATIONS_LIST_ERR_NOT_MANAGED,
+            AppError::Validation(
+                "GET /v1/website/generations is only available in managed deploy mode".into(),
+            ),
         ));
     }
 
@@ -92,7 +107,7 @@ pub async fn rollback(
     _admin: AdminAuth,
     State(state): State<AppState>,
     Path(gen_num): Path<u32>,
-) -> Result<Json<RollbackResponse>, AppError> {
+) -> Result<Json<RollbackResponse>, TaskError> {
     let cfg = state.config.read().await;
     let root_dir = cfg
         .website
@@ -103,12 +118,20 @@ pub async fn rollback(
     drop(cfg);
 
     if deploy_mode != "managed" {
-        return Err(AppError::Validation(
-            "POST /v1/website/rollback/{gen} is only available in managed deploy mode".into(),
+        return Err(TaskError::declared(
+            ROLLBACK_ERR_NOT_MANAGED,
+            AppError::Validation(
+                "POST /v1/website/rollback/{gen} is only available in managed deploy mode".into(),
+            ),
         ));
     }
 
-    let from = swap_current_symlink(&root_dir, gen_num)?;
+    // The swap's one `NotFound` is its missing-generation check; the rest are
+    // filesystem faults.
+    let from = swap_current_symlink(&root_dir, gen_num).map_err(|e| match e {
+        e @ AppError::NotFound(_) => TaskError::declared(ROLLBACK_ERR_GENERATION_NOT_FOUND, e),
+        e => TaskError::App(e),
+    })?;
     if from != gen_num
         && let Some(writer) = state.audit_writer.as_ref()
     {

@@ -558,3 +558,151 @@ async fn revoke_returns_404_for_unknown_member() {
     // test (used in revoke_unauthorized_*).
     let _ = &fix.other_member_token;
 }
+
+// ─── #1600: the codes the personhood tasks declare ─────────
+//
+// Read from the generated bindings, never spelled here.
+
+use trust_tasks_rs::specs::vtc::members::personhood as personhood_spec;
+
+const CHALLENGE_ERR_NOT_FOUND: &str = personhood_spec::challenge::v0_1::error_codes::NOT_FOUND.code;
+const ASSERT_ERR_NOT_FOUND: &str = personhood_spec::assert::v0_1::error_codes::NOT_FOUND.code;
+const ASSERT_ERR_CHALLENGE_EXPIRED: &str =
+    personhood_spec::assert::v0_1::error_codes::CHALLENGE_EXPIRED.code;
+const ASSERT_ERR_PRESENTATION_INVALID: &str =
+    personhood_spec::assert::v0_1::error_codes::PRESENTATION_INVALID.code;
+const REVOKE_ERR_NOT_FOUND: &str = personhood_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// Send `method uri` as `token` under `task`, returning `(status, body)`.
+async fn call(
+    fix: &Fixture,
+    method: &str,
+    uri: &str,
+    task: &str,
+    token: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("trust-task", task);
+    let body = match body {
+        Some(b) => {
+            req = req.header("content-type", "application/json");
+            Body::from(b.to_string())
+        }
+        None => Body::empty(),
+    };
+    body_value(
+        fix.router
+            .clone()
+            .oneshot(req.body(body).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn personhood_challenge_and_revoke_for_a_non_member_are_the_declared_not_found() {
+    let fix = build_fixture().await;
+    let (status, body) = call(
+        &fix,
+        "POST",
+        "/v1/members/did:key:zStranger/personhood/challenge",
+        CHALLENGE_TASK,
+        &fix.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), CHALLENGE_ERR_NOT_FOUND, "{body}");
+
+    let (status, body) = call(
+        &fix,
+        "DELETE",
+        "/v1/members/did:key:zStranger/personhood",
+        REVOKE_TASK,
+        &fix.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), REVOKE_ERR_NOT_FOUND, "{body}");
+}
+
+/// Every code `assert/0.1` declares. None of these reach the resolver, which
+/// this fixture does not have: each refusal comes before it, as it should —
+/// caller errors are not masked by daemon prerequisites.
+#[tokio::test]
+async fn the_personhood_assert_task_answers_with_the_codes_its_spec_declares() {
+    let fix = build_fixture().await;
+
+    // notFound: nobody by that DID.
+    let unknown = uuid::Uuid::new_v4().to_string();
+    let (status, body) = call(
+        &fix,
+        "POST",
+        "/v1/members/did:key:zStranger/personhood",
+        ASSERT_TASK,
+        &fix.member_token,
+        Some(json!({ "presentation": presentation_with(&unknown, &unknown) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), ASSERT_ERR_NOT_FOUND, "{body}");
+
+    // challengeExpired: a challenge the community never minted.
+    let (status, body) = call(
+        &fix,
+        "POST",
+        &format!("/v1/members/{MEMBER_DID}/personhood"),
+        ASSERT_TASK,
+        &fix.member_token,
+        Some(json!({ "presentation": presentation_with(&unknown, &unknown) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        ASSERT_ERR_CHALLENGE_EXPIRED,
+        "{body}"
+    );
+
+    // presentationInvalid: a real challenge, answered by a presentation whose
+    // holder is somebody else.
+    let (status, minted) = call(
+        &fix,
+        "POST",
+        &format!("/v1/members/{MEMBER_DID}/personhood/challenge"),
+        CHALLENGE_TASK,
+        &fix.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    let challenge = minted["challengeId"].as_str().unwrap();
+    let mut presentation = presentation_with(challenge, challenge);
+    presentation["holder"] = json!(OTHER_MEMBER_DID);
+    let (status, body) = call(
+        &fix,
+        "POST",
+        &format!("/v1/members/{MEMBER_DID}/personhood"),
+        ASSERT_TASK,
+        &fix.member_token,
+        Some(json!({ "presentation": presentation })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        ASSERT_ERR_PRESENTATION_INVALID,
+        "{body}"
+    );
+}

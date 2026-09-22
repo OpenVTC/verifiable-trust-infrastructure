@@ -736,3 +736,52 @@ async fn upload_without_token_returns_401() {
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ---------------------------------------------------------------------------
+// #1600 — the codes `vtc/policies/test/0.1` declares, read from the generated
+// bindings.
+// ---------------------------------------------------------------------------
+
+const TEST_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::policies::test::v0_1::error_codes::NOT_FOUND.code;
+const TEST_ERR_EVALUATION_FAILED: &str =
+    trust_tasks_rs::specs::vtc::policies::test::v0_1::error_codes::EVALUATION_FAILED.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// `notFound` for an id nothing was stored under; `evaluationFailed` for a
+/// module that cannot be evaluated as asked — here a query that does not parse.
+/// Both keep their status (404, and the evaluator's 500).
+#[tokio::test]
+async fn the_policy_test_task_answers_with_the_codes_its_spec_declares() {
+    let fix = build_fixture().await;
+
+    let req = auth_request(
+        "POST",
+        &format!("/v1/policies/{}/test", Uuid::new_v4()),
+        TEST_TASK,
+        &fix.admin_token,
+        json!({ "query": "data.vtc.join.allow", "input": {} }),
+    );
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp.into_body()).await;
+    assert_eq!(rest_error_code(&body), TEST_ERR_NOT_FOUND, "{body}");
+
+    let uploaded = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
+    let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+    let req = auth_request(
+        "POST",
+        &format!("/v1/policies/{id}/test"),
+        TEST_TASK,
+        &fix.admin_token,
+        json!({ "query": "data.vtc.join[", "input": {} }),
+    );
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_json(resp.into_body()).await;
+    assert_eq!(rest_error_code(&body), TEST_ERR_EVALUATION_FAILED, "{body}");
+}

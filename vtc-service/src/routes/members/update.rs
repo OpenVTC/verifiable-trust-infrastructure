@@ -46,7 +46,11 @@ use vti_common::audit::{
 use crate::acl::admin::{AdminEntry, get_admin_entry, store_admin_entry};
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
 use crate::auth::{AdminAuth, session::now_epoch};
-use crate::error::AppError;
+use crate::error::{AppError, TaskError};
+
+/// `vtc/members/update:notFound` — no member with that DID.
+pub const UPDATE_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::members::update::v0_1::error_codes::NOT_FOUND.code;
 use crate::members::{Disposition, Member, get_member, store_member};
 use crate::routes::members::read::{MemberEnvelope, MemberResponse};
 use crate::server::AppState;
@@ -94,7 +98,7 @@ pub async fn update_member(
     State(state): State<AppState>,
     Path(did): Path<String>,
     Json(req): Json<UpdateMemberRequest>,
-) -> Result<Json<MemberEnvelope>, AppError> {
+) -> Result<Json<MemberEnvelope>, TaskError> {
     vti_common::identifier::validate_did("did", &did)?;
 
     let promoting = matches!(req.role, Some(VtcRole::Admin));
@@ -105,7 +109,8 @@ pub async fn update_member(
             return Err(AppError::Validation(
                 "you cannot promote yourself; admin elevation requires a separate admin caller"
                     .into(),
-            ));
+            )
+            .into());
         }
         // The gate that makes this safe. Checked before any work so a caller
         // without a live elevation gets the `step_up_required` signal — which
@@ -119,12 +124,18 @@ pub async fn update_member(
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
+    let not_found = || {
+        TaskError::declared(
+            UPDATE_ERR_NOT_FOUND,
+            AppError::NotFound(format!("member not found: {did}")),
+        )
+    };
     let acl = get_acl_entry(&state.acl_ks, &did)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;
+        .ok_or_else(not_found)?;
     let mut member = get_member(&state.members_ks, &did)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;
+        .ok_or_else(not_found)?;
 
     // Non-role field updates — written directly (not a ceremony).
     // Persisted *before* any role change so the Remint executor (which
@@ -220,7 +231,7 @@ pub async fn update_member(
                 .await?
                 .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;
             if current.role == VtcRole::Admin {
-                return Err(AppError::Conflict(format!("{did} is already an admin")));
+                return Err(AppError::Conflict(format!("{did} is already an admin")).into());
             }
         }
 

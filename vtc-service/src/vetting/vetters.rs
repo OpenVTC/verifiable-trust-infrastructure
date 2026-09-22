@@ -61,6 +61,7 @@ use crate::credentials::dtg::{into_typed, issue_endorsement};
 use crate::endorsements::{
     Endorsement, endorsements_by_type, endorsements_for_subject, mark_revoked, store_endorsement,
 };
+use crate::error::TaskError;
 use crate::members::Member;
 use crate::members::storage::get_member;
 use crate::server::AppState;
@@ -256,14 +257,15 @@ async fn require_admin(state: &AppState, actor_did: &str) -> Result<(), AppError
 ///
 /// # Errors
 ///
-/// [`AppError::Validation`] for a malformed body or a subject who is not a
-/// current member, [`AppError::Forbidden`] for a non-admin actor, and
+/// [`AppError::Validation`] for a malformed body, the same carrying the
+/// declared [`GRANT_ERR_NOT_MEMBER`] for a subject who is not a current
+/// member, [`AppError::Forbidden`] for a non-admin actor, and
 /// [`AppError::Internal`] when signing or the status list is unavailable.
 pub async fn grant(
     state: &AppState,
     actor_did: &str,
     body: &grant_wire::Payload,
-) -> Result<VetterGrant, AppError> {
+) -> Result<VetterGrant, TaskError> {
     body.check_shape()
         .map_err(|e| AppError::Validation(e.to_string()))?;
     // The schema's `minimum` has already refused a negative validity.
@@ -310,6 +312,10 @@ pub(crate) async fn deliver_grant(state: &AppState, member_did: &str, credential
     }
 }
 
+/// `vtc/vetting/vetters/grant:notMember` — `memberDid` is not an active member.
+pub const GRANT_ERR_NOT_MEMBER: &str =
+    trust_tasks_rs::specs::vtc::vetting::vetters::grant::v0_1::error_codes::NOT_MEMBER.code;
+
 /// Issue (or return) `member_did`'s vetter grant. The caller holds
 /// [`GRANT_LOCK`] and has decided the actor may grant, and delivers a newly
 /// issued credential ([`deliver_grant`]) once it has released the lock.
@@ -319,7 +325,7 @@ pub(crate) async fn grant_locked(
     member_did: &str,
     validity_seconds: Option<u64>,
     origin: GrantOrigin,
-) -> Result<VetterGrant, AppError> {
+) -> Result<VetterGrant, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -333,9 +339,13 @@ pub(crate) async fn grant_locked(
         .await?
         .filter(|m| m.removed_at.is_none())
     else {
-        return Err(AppError::Validation(format!(
-            "{member_did} is not a current member of this community"
-        )));
+        // `vtc/vetting/vetters/grant:notMember`. Status and message as before.
+        return Err(TaskError::declared(
+            GRANT_ERR_NOT_MEMBER,
+            AppError::Validation(format!(
+                "{member_did} is not a current member of this community"
+            )),
+        ));
     };
 
     let now = Utc::now();

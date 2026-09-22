@@ -148,6 +148,50 @@ pub(crate) fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> Trus
     reject_with(doc, reason)
 }
 
+/// Map a [`TaskError`](crate::error::TaskError) into a routed rejection.
+///
+/// An undeclared error goes through [`app_error_to_reject`] unchanged. A
+/// declared one goes out under its task's extended code (SPEC §8.5) — the
+/// thing the generic mapping cannot do, and the reason `withdraw` (#1591) and
+/// `supplement` (#1593) each grew a hand-written arm. A `NotFound` /
+/// `Conflict` / `Gone` keeps its `details.reason` marker beside the code, so a
+/// client that does not know the code still recovers the typed variant.
+pub(crate) fn task_error_to_reject<P>(
+    doc: &TrustTask<P>,
+    err: &crate::error::TaskError,
+) -> TrustTaskOutcome {
+    use crate::error::TaskError;
+    match err {
+        TaskError::App(e) => app_error_to_reject(doc, e),
+        TaskError::Declared { code, error } => {
+            let message = error.to_string();
+            let marker = match error {
+                AppError::NotFound(_) => Some(reasons::NOT_FOUND),
+                AppError::Conflict(_) | AppError::IdempotencyKeyConflict => Some(reasons::CONFLICT),
+                AppError::Gone(_) => Some(reasons::GONE),
+                _ => None,
+            };
+            match marker {
+                Some(reason) => {
+                    reject_with_code_because(doc, extended_code(code), message, None, reason)
+                }
+                None => reject_with_code(doc, extended_code(code), message, None),
+            }
+        }
+    }
+}
+
+/// A specification-extended error code, `<slug>:<local>`, as a framework code.
+pub(crate) fn extended_code(code: &str) -> TrustTaskCode {
+    let (slug, local) = code
+        .rsplit_once(':')
+        .expect("an extended code is <slug>:<local>");
+    TrustTaskCode::Extended {
+        slug: slug.to_string(),
+        local: local.to_string(),
+    }
+}
+
 /// A `taskFailed` carrying the `details.reason` discriminator a client reads
 /// back into a typed [`vta_sdk::error::VtaError`]. Twin of `vta-service`'s
 /// function of the same name — the two services must not disagree about how a

@@ -1734,12 +1734,11 @@ async fn vmc_rejects_a_wrong_holder_signature() {
     let vc = build_member_vmc(&member_did, VTC_DID, "urn:uuid:recip-1").await;
 
     // Signed by a different holder than the admitted member → the proven
-    // holder is not the credential's issuer, so the delivery is refused.
-    let (status, _) = post_vmc_signed_by(&fix, &[0xEE; 32], id, &vc).await;
-    assert!(
-        status == StatusCode::BAD_REQUEST || status == StatusCode::FORBIDDEN,
-        "wrong-holder delivery rejected, got {status}"
-    );
+    // holder is not the credential's issuer, so the delivery is refused as a
+    // credential that does not verify for its sender (#1600).
+    let (status, body) = post_vmc_signed_by(&fix, &[0xEE; 32], id, &vc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), VMC_ERR_INVALID_CREDENTIAL, "{body}");
 }
 
 #[tokio::test]
@@ -1774,8 +1773,9 @@ async fn vmc_rejects_a_credential_for_another_community() {
     // Subject names a different community than this VTC.
     let vc = build_member_vmc(&member_did, "did:web:evil.example", "urn:uuid:recip-1").await;
 
-    let (status, _) = post_vmc(&fix, id, &vc).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = post_vmc(&fix, id, &vc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), VMC_ERR_SUBJECT_MISMATCH, "{body}");
 }
 
 #[tokio::test]
@@ -1786,8 +1786,9 @@ async fn vmc_rejects_a_tampered_credential() {
     // Mutate the signed `id` after signing — the issuer proof no longer covers it.
     vc["id"] = json!("urn:uuid:swapped");
 
-    let (status, _) = post_vmc(&fix, id, &vc).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = post_vmc(&fix, id, &vc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), VMC_ERR_INVALID_CREDENTIAL, "{body}");
 }
 
 #[tokio::test]
@@ -3288,12 +3289,11 @@ async fn status_rejects_a_wrong_signer() {
     let id = submit_pending(&fix).await;
 
     // Signed by a different holder than the applicant → the proven holder does
-    // not match the request's applicant, so the poll is refused.
-    let (status, _) = post_status_signed_by(&fix, &[0xEE; 32], id).await;
-    assert!(
-        status == StatusCode::BAD_REQUEST || status == StatusCode::FORBIDDEN,
-        "wrong-holder status rejected, got {status}"
-    );
+    // not match the request's applicant, so the poll is refused — as the
+    // spec's `notFound`, the answer a missing request gets (#1600).
+    let (status, body) = post_status_signed_by(&fix, &[0xEE; 32], id).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), STATUS_ERR_NOT_FOUND, "{body}");
 }
 
 #[tokio::test]
@@ -4278,5 +4278,281 @@ async fn requested_attributes_are_published_enforced_and_kept_with_the_request()
         body["request"]["attributes"],
         json!([{ "type": "name.display", "value": "Ada" }]),
         "a reviewer must see what the applicant said"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1600 — the error codes each task's specification declares, emitted.
+//
+// Every constant is read from the generated `error_codes` of the task's own
+// specification, never spelled here, and named as the service names it so the
+// census in `src/trust_tasks/error_code_census.rs` can check that each witness
+// test looks at the constant it claims to.
+// ---------------------------------------------------------------------------
+
+use trust_tasks_rs::specs::vtc as spec;
+
+const DECIDE_ERR_NOT_FOUND: &str = spec::join_requests::decide::v0_1::error_codes::NOT_FOUND.code;
+const DECIDE_ERR_NOT_PENDING: &str =
+    spec::join_requests::decide::v0_1::error_codes::NOT_PENDING.code;
+const SHOW_ERR_NOT_FOUND: &str = spec::join_requests::show::v0_1::error_codes::NOT_FOUND.code;
+const STATUS_ERR_NOT_FOUND: &str = spec::join_requests::status::v0_1::error_codes::NOT_FOUND.code;
+const SUBMIT_ERR_PRESENTATION_INVALID: &str =
+    spec::join_requests::submit::v0_2::error_codes::PRESENTATION_INVALID.code;
+const SELF_REMOVE_ERR_NOT_MEMBER: &str =
+    spec::members::self_remove::v0_1::error_codes::NOT_MEMBER.code;
+const VMC_ERR_SUBJECT_MISMATCH: &str = spec::members::vmc::v0_1::error_codes::SUBJECT_MISMATCH.code;
+const VMC_ERR_NOT_A_MEMBER: &str = spec::members::vmc::v0_1::error_codes::NOT_A_MEMBER.code;
+const VMC_ERR_INVALID_CREDENTIAL: &str =
+    spec::members::vmc::v0_1::error_codes::INVALID_CREDENTIAL.code;
+const VMC_ERR_REQUEST_NOT_FOUND: &str =
+    spec::members::vmc::v0_1::error_codes::REQUEST_NOT_FOUND.code;
+const VMC_ERR_REQUEST_NOT_APPROVED: &str =
+    spec::members::vmc::v0_1::error_codes::REQUEST_NOT_APPROVED.code;
+const VMC_ERR_REQUEST_APPLICANT_MISMATCH: &str =
+    spec::members::vmc::v0_1::error_codes::REQUEST_APPLICANT_MISMATCH.code;
+const GRANT_ERR_NOT_MEMBER: &str =
+    spec::vetting::vetters::grant::v0_1::error_codes::NOT_MEMBER.code;
+const REVOKE_STATEMENT_ERR_NOT_MEMBER: &str =
+    spec::vetting::revoke_statement::v0_1::error_codes::NOT_MEMBER.code;
+
+/// The extended error code carried by a REST error body (`{"error", "code"}`).
+fn rest_error_code(body: &Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// POST a `decide` for `id` as the admin.
+async fn decide(fix: &Fixture, id: Uuid, decision: &str) -> (StatusCode, Value) {
+    send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/decide"),
+        DECIDE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "decision": decision })),
+    )
+    .await
+}
+
+/// `decide/0.1` declares two refusals, and they are two different next steps
+/// for an operator: nothing to decide, and already decided. The status and the
+/// `error` message are what they always were; `code` is added.
+#[tokio::test]
+async fn the_decide_task_answers_with_the_codes_its_spec_declares() {
+    let fix = build_fixture().await;
+
+    let (status, body) = decide(&fix, Uuid::new_v4(), "approved").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), DECIDE_ERR_NOT_FOUND, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("join request not found"),
+        "the message is unchanged: {body}"
+    );
+
+    let id = submit_pending(&fix).await;
+    let (status, body) = decide(&fix, id, "rejected").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = decide(&fix, id, "approved").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(rest_error_code(&body), DECIDE_ERR_NOT_PENDING, "{body}");
+}
+
+#[tokio::test]
+async fn show_for_an_unknown_request_is_the_declared_not_found() {
+    let fix = build_fixture().await;
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        &format!("/v1/join-requests/{}", Uuid::new_v4()),
+        SHOW_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(rest_error_code(&body), SHOW_ERR_NOT_FOUND, "{body}");
+}
+
+/// The `message` of a Trust Task error document, with `id` masked.
+fn masked_message(doc: &Value, id: Uuid) -> String {
+    doc.pointer("/payload/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .replace(&id.to_string(), "<id>")
+}
+
+/// `status/0.1`'s `notFound` covers both "no such request" and "not yours".
+/// They must be one answer, message included — otherwise the poll tells any
+/// identified caller which request ids exist on this community. A foreign
+/// request used to be a `malformedRequest` naming the mismatch.
+#[tokio::test]
+async fn status_is_not_found_alike_for_an_unknown_and_a_foreign_request() {
+    let fix = build_fixture().await;
+
+    let unknown_id = Uuid::new_v4();
+    let (status, unknown) = post_status(&fix, unknown_id).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{unknown}");
+    assert_eq!(tt_error_code(&unknown), STATUS_ERR_NOT_FOUND, "{unknown}");
+
+    // The id-less form with nothing open is the same code.
+    let (_did, doc) = signed_trust_task_seed(&[0x7C; 32], STATUS_TASK, json!({})).await;
+    let (status, nothing_open) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{nothing_open}");
+    assert_eq!(tt_error_code(&nothing_open), STATUS_ERR_NOT_FOUND);
+
+    // Somebody else's request: indistinguishable from one that does not exist.
+    let id = submit_pending(&fix).await;
+    let (status, foreign) = post_status_signed_by(&fix, &[0xEE; 32], id).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{foreign}");
+    assert_eq!(tt_error_code(&foreign), STATUS_ERR_NOT_FOUND, "{foreign}");
+    assert_eq!(
+        masked_message(&foreign, id),
+        masked_message(&unknown, unknown_id),
+        "a foreign request must read exactly like a missing one"
+    );
+}
+
+/// `submit/0.2`: the presentation's holder MUST be the proof signer. One naming
+/// somebody else is refused as `presentationInvalid` and nothing is stored —
+/// before this it was decided on, admitting one party on another's evidence.
+#[tokio::test]
+async fn a_submitted_presentation_held_by_someone_else_is_presentation_invalid() {
+    let fix = build_fixture().await;
+    let (_applicant, doc) = submit_doc(&json!({
+        "type": "VerifiablePresentation",
+        "holder": "did:key:zSomebodyElse",
+    }))
+    .await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        SUBMIT_ERR_PRESENTATION_INVALID,
+        "{body}"
+    );
+
+    let (status, list) = send(
+        &fix.router,
+        "GET",
+        "/v1/join-requests",
+        LIST_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        list["items"].as_array().unwrap().is_empty(),
+        "a refused presentation leaves no request behind: {list}"
+    );
+
+    // The applicant's own holder — as an object carrying `id` — is accepted.
+    let (_sk, applicant) = applicant_pair();
+    let (_d, doc) = submit_doc(&json!({
+        "type": "VerifiablePresentation",
+        "holder": { "id": applicant },
+    }))
+    .await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn self_remove_by_a_non_member_is_the_declared_not_member() {
+    let fix = build_fixture().await;
+    let (_did, doc) = signed_trust_task_seed(
+        &[0x7D; 32],
+        vta_sdk::protocols::join_requests::MEMBER_SELF_REMOVE_TYPE,
+        json!({}),
+    )
+    .await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), SELF_REMOVE_ERR_NOT_MEMBER, "{body}");
+}
+
+/// Every code `members/vmc/0.1` declares, each driven by the situation its
+/// meaning names.
+#[tokio::test]
+async fn the_vmc_task_answers_with_the_codes_its_spec_declares() {
+    let fix = build_fixture().await;
+    let (_sk, member_did) = applicant_pair();
+
+    // requestNotApproved: the member's own request, still pending.
+    let request = submit_pending(&fix).await;
+    let vc = build_member_vmc(&member_did, VTC_DID, "urn:uuid:recip-1").await;
+    let (_, body) = post_vmc(&fix, request, &vc).await;
+    assert_eq!(tt_error_code(&body), VMC_ERR_REQUEST_NOT_APPROVED, "{body}");
+
+    // Admit them for the rest.
+    let (status, body) = decide(&fix, request, "approved").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // requestNotFound: a `requestId` naming nothing.
+    let (_, body) = post_vmc(&fix, Uuid::new_v4(), &vc).await;
+    assert_eq!(tt_error_code(&body), VMC_ERR_REQUEST_NOT_FOUND, "{body}");
+
+    // requestApplicantMismatch: an approved request belonging to someone else.
+    let other = seed_request(&fix, "did:key:zSomeoneElse", JoinStatus::Approved).await;
+    let (_, body) = post_vmc(&fix, other, &vc).await;
+    assert_eq!(
+        tt_error_code(&body),
+        VMC_ERR_REQUEST_APPLICANT_MISMATCH,
+        "{body}"
+    );
+
+    // subjectMismatch: the credential acknowledges another community.
+    let elsewhere = build_member_vmc(&member_did, "did:web:elsewhere.example", "urn:uuid:x").await;
+    let (_, body) = post_vmc(&fix, request, &elsewhere).await;
+    assert_eq!(tt_error_code(&body), VMC_ERR_SUBJECT_MISMATCH, "{body}");
+
+    // invalidCredential: the signed `id` changed after signing.
+    let mut tampered = build_member_vmc(&member_did, VTC_DID, "urn:uuid:recip-2").await;
+    tampered["id"] = json!("urn:uuid:swapped");
+    let (_, body) = post_vmc(&fix, request, &tampered).await;
+    assert_eq!(tt_error_code(&body), VMC_ERR_INVALID_CREDENTIAL, "{body}");
+
+    // notAMember: a valid credential from somebody the community never
+    // admitted, with no `requestId` at all.
+    let seed = [0x7E; 32];
+    let (stranger, _) = did_key_secret(seed);
+    let signer = vtc_service::credentials::LocalSigner::from_ed25519_seed(stranger.clone(), &seed);
+    let mut stranger_vc = json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiableCredential", "MembershipCredential"],
+        "id": "urn:uuid:stranger",
+        "issuer": stranger,
+        "credentialSubject": { "id": VTC_DID },
+    });
+    signer.sign_doc(&mut stranger_vc).await.expect("sign");
+    let (_did, doc) = signed_trust_task_seed(&seed, VMC_TASK, json!({ "vc": stranger_vc })).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), VMC_ERR_NOT_A_MEMBER, "{body}");
+}
+
+#[tokio::test]
+async fn granting_a_non_member_is_the_declared_not_member() {
+    let fix = build_fixture().await;
+    let (status, body) = grant_vetter(&fix, "did:key:zNotHere").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "status unchanged: {body}");
+    assert_eq!(rest_error_code(&body), GRANT_ERR_NOT_MEMBER, "{body}");
+    assert!(grants_of(&fix, "did:key:zNotHere").await.is_empty());
+}
+
+#[tokio::test]
+async fn withdrawing_a_statement_as_a_non_member_is_the_declared_not_member() {
+    let fix = build_fixture().await;
+    let statement = json!({ "id": "urn:uuid:statement-1", "type": ["VerifiableCredential"] });
+    let doc = withdrawal_doc([0x7F; 32], &statement).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        REVOKE_STATEMENT_ERR_NOT_MEMBER,
+        "{body}"
     );
 }
