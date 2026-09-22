@@ -36,13 +36,14 @@ pub(crate) async fn run(
         BackupCommands::Import {
             file,
             preview,
+            replace_identity,
             use_rest_legacy,
         } => {
             if use_rest_legacy {
                 warn_legacy_over_mediator(client);
-                cmd_backup_import(client, file, preview).await
+                cmd_backup_import(client, file, preview, replace_identity).await
             } else {
-                cmd_backup_import_descriptor(client, file, preview).await
+                cmd_backup_import_descriptor(client, file, preview, replace_identity).await
             }
         }
     }
@@ -125,6 +126,7 @@ async fn cmd_backup_import(
     client: &VtaClient,
     file: std::path::PathBuf,
     preview_only: bool,
+    replace_identity: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(&file)?;
     let envelope: vta_sdk::protocols::backup_management::types::BackupEnvelope =
@@ -149,7 +151,9 @@ async fn cmd_backup_import(
     validate_backup_password(&password)?;
 
     // Preview first
-    let preview = client.backup_import(&envelope, &password, false).await?;
+    let preview = client
+        .backup_import_with(&envelope, &password, false, replace_identity)
+        .await?;
     println!();
     println!("  Keys:        {}", preview.key_count);
     println!("  ACL entries: {}", preview.acl_count);
@@ -174,15 +178,16 @@ async fn cmd_backup_import(
     }
 
     println!("Importing...");
-    let result = client.backup_import(&envelope, &password, true).await?;
+    let result = client
+        .backup_import_with(&envelope, &password, true, replace_identity)
+        .await?;
     println!(
         "{GREEN}✓{RESET} {}",
         result.message.as_deref().unwrap_or("Import complete")
     );
 
     if result.status == "imported" {
-        println!("  VTA is restarting with the new identity.");
-        println!("  You may need to re-authenticate if the VTA DID changed.");
+        print_restart_notice();
     }
     Ok(())
 }
@@ -300,6 +305,7 @@ async fn cmd_backup_import_descriptor(
     client: &VtaClient,
     file: std::path::PathBuf,
     preview_only: bool,
+    replace_identity: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(&file)?;
 
@@ -332,7 +338,13 @@ async fn cmd_backup_import_descriptor(
     let surface = client.trust_task_transport();
     println!("Validating backup ({})...", flow_label(surface));
     let preview = client
-        .backup_import_with_progress(&bytes, &password, false, &mut progress_line("sent"))
+        .backup_import_with_options(
+            &bytes,
+            &password,
+            false,
+            replace_identity,
+            &mut progress_line("sent"),
+        )
         .await;
     finish_progress_line(surface);
     let preview = preview?;
@@ -377,14 +389,20 @@ async fn cmd_backup_import_descriptor(
     // operator is told to re-run instead.
     println!("Importing...");
     let result = match client
-        .backup_finalize_import(&preview.bundle_id, &password, true)
+        .backup_finalize_import_with(&preview.bundle_id, &password, true, replace_identity)
         .await
     {
         Ok(result) => result,
         Err(vta_sdk::error::VtaError::NotFound(_)) => {
             println!("{DIM}  Upload slot expired during confirmation; uploading again...{RESET}");
             let result = client
-                .backup_import_with_progress(&bytes, &password, true, &mut progress_line("sent"))
+                .backup_import_with_options(
+                    &bytes,
+                    &password,
+                    true,
+                    replace_identity,
+                    &mut progress_line("sent"),
+                )
                 .await;
             finish_progress_line(surface);
             result?
@@ -407,10 +425,15 @@ async fn cmd_backup_import_descriptor(
     );
 
     if result.status == "committed" {
-        println!("  VTA is restarting with the new identity.");
-        println!("  You may need to re-authenticate if the VTA DID changed.");
+        print_restart_notice();
     }
     Ok(())
+}
+
+fn print_restart_notice() {
+    println!("  The VTA is restarting to apply the restore.");
+    println!("  Once it is back, `GET /health/details` reports the restore it came from.");
+    println!("  You may need to re-authenticate if the VTA DID changed.");
 }
 
 #[cfg(test)]

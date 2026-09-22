@@ -8,6 +8,14 @@ use crate::webvh::{WebvhDidRecord, WebvhServerRecord};
 
 // ── Backup envelope (outer, unencrypted metadata) ──────────────────
 
+/// `format` of a backup whose payload carries typed collections for a fixed set
+/// of keyspaces. Still accepted on import.
+pub const BACKUP_FORMAT_V1: &str = "vta-backup-v1";
+/// `format` of a backup whose payload carries every backed-up keyspace as a raw
+/// dump ([`BackupPayload::keyspaces`]), and whose envelope metadata is bound
+/// into the ciphertext's associated data. What every export now writes.
+pub const BACKUP_FORMAT_V2: &str = "vta-backup-v2";
+
 /// The on-disk `.vtabak` file format.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -110,6 +118,66 @@ pub struct BackupPayload {
     /// Hex-encoded KEK salt for imported secret encryption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_kek_salt: Option<String>,
+    /// Every backed-up keyspace, row for row (format v2). When non-empty this
+    /// is the whole state and the typed collections above are left empty; they
+    /// remain only so a v1 backup still restores.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyspaces: Vec<KeyspaceDump>,
+    /// The kind of deployment that wrote the backup. Informational: a backup
+    /// restores into any kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_environment: Option<BackupEnvironment>,
+    /// Ids of internal (non-extractable) keys whose records are in the backup
+    /// but whose material is not, and never will be. A restore reports them so
+    /// nobody discovers the loss by a failed signature.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub internal_keys_not_carried: Vec<String>,
+}
+
+/// One backed-up keyspace's full contents. Key and value are base64url
+/// (no padding), so binary keys and values round-trip losslessly. Values are
+/// plaintext: the at-rest encryption of the source is removed on export and
+/// the target's is applied on restore.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct KeyspaceDump {
+    pub name: String,
+    pub rows: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for KeyspaceDump {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Rows hold key material and holder secrets; only the shape is safe to
+        // print.
+        f.debug_struct("KeyspaceDump")
+            .field("name", &self.name)
+            .field("rows", &self.rows.len())
+            .finish()
+    }
+}
+
+/// The kind of deployment a backup came from or a restore lands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum BackupEnvironment {
+    /// An unencrypted store; the JWT key in `config.toml`.
+    Plain,
+    /// `[hardened] enabled`: the store encrypted under a seed-derived key, the
+    /// JWT key in the encrypted keys keyspace.
+    Hardened,
+    /// A Nitro enclave: seed and JWT key sealed under attested KMS.
+    Tee,
+}
+
+impl std::fmt::Display for BackupEnvironment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Plain => "plain",
+            Self::Hardened => "hardened",
+            Self::Tee => "tee",
+        })
+    }
 }
 
 // Manual Debug for `BackupPayload` and the secret-bearing leaf types
@@ -146,6 +214,9 @@ impl std::fmt::Debug for BackupPayload {
             .field("audit_logs_len", &self.audit_logs.len())
             .field("imported_secrets", &self.imported_secrets)
             .field("imported_kek_salt", &self.imported_kek_salt)
+            .field("keyspaces", &self.keyspaces)
+            .field("source_environment", &self.source_environment)
+            .field("internal_keys_not_carried", &self.internal_keys_not_carried)
             .finish()
     }
 }
@@ -299,6 +370,13 @@ pub struct ImportRequest {
     /// If false, returns a preview without modifying state.
     #[serde(default = "default_true")]
     pub confirm: bool,
+    /// Allow the restore to replace a *different* identity this VTA already
+    /// runs as. Without it a backup whose DID differs from the running one is
+    /// refused — the guard against restoring the wrong file over a live agent.
+    /// Disaster recovery onto a freshly set-up VTA (which has minted a DID of
+    /// its own) is the case that needs it.
+    #[serde(default)]
+    pub replace_identity: bool,
 }
 
 impl std::fmt::Debug for ImportRequest {
@@ -307,6 +385,7 @@ impl std::fmt::Debug for ImportRequest {
             .field("backup", &self.backup)
             .field("password", &"<redacted>")
             .field("confirm", &self.confirm)
+            .field("replace_identity", &self.replace_identity)
             .finish()
     }
 }

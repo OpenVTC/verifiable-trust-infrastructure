@@ -1388,6 +1388,8 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
         config: config.clone(),
         seed_store,
+        store: store.clone(),
+        storage_encryption_key: None,
         did_resolver,
         status_list_resolver: None,
         secrets_resolver: transport.secrets_resolver,

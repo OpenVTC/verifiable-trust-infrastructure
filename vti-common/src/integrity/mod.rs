@@ -33,6 +33,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use hkdf::Hkdf;
@@ -454,7 +455,123 @@ pub async fn reseal_if_active() -> Result<(), AppError> {
         return Ok(());
     };
     let _guard = RESEAL_LOCK.lock().await;
+    if FROZEN_FOR_RESTORE.load(Ordering::SeqCst) {
+        return Err(AppError::Conflict(
+            "a backup restore has been committed and this VTA is restarting to apply it;              retry against the restored VTA"
+                .into(),
+        ));
+    }
     sealer.reseal().await
+}
+
+/// Set once a restore has been committed on this process. The process is about
+/// to be replaced by one booting the restored state; a covered mutation
+/// committed in between would move the counter off the version the restore
+/// reserved, and the restored boot would then (correctly) refuse it as a replay.
+static FROZEN_FOR_RESTORE: AtomicBool = AtomicBool::new(false);
+
+/// Seal the live store one last time and freeze it, for a restore being
+/// committed. Returns the sealed version and whether it is anchored to an
+/// external counter, or `None` outside a TEE (no sealer installed).
+///
+/// A restore of the identity this enclave already runs as reserves its
+/// anti-rollback version here: the restored boot must find the counter at
+/// exactly this version (see [`rebaseline_after_restore`]).
+pub async fn seal_and_freeze_for_restore() -> Result<Option<(u64, bool)>, AppError> {
+    let Some(sealer) = SEALER.get() else {
+        return Ok(None);
+    };
+    let _guard = RESEAL_LOCK.lock().await;
+    if !FROZEN_FOR_RESTORE.load(Ordering::SeqCst) {
+        sealer.reseal().await?;
+        FROZEN_FOR_RESTORE.store(true, Ordering::SeqCst);
+    }
+    let version = sealer
+        .load_manifest()
+        .await?
+        .map(|m| m.version)
+        .unwrap_or(0);
+    Ok(Some((version, sealer.anchor.is_some())))
+}
+
+/// Undo [`seal_and_freeze_for_restore`] when the restore was never committed.
+/// The seal it made was an ordinary one — manifest and counter agree — so the
+/// running VTA simply carries on.
+pub fn thaw_after_aborted_restore() {
+    FROZEN_FOR_RESTORE.store(false, Ordering::SeqCst);
+}
+
+/// Seal a manifest over a freshly restored store, in place of the boot check.
+///
+/// Called at boot when a restore left a re-baseline instruction (which lives in
+/// the encrypted `keys` keyspace, so the parent cannot forge one). The restored
+/// state is the new legitimate baseline — it was committed by a super-admin —
+/// but "the restored state" must mean *this* restore, applied *once*:
+///
+/// - **`reserved = Some(v)`** — when the restore was committed, the external
+///   counter for the restored identity was moved to `v`. The counter must still
+///   be at `v`. Anything else means the restore is being replayed (the parent
+///   kept a copy of the staged restore and put it back after the restored VTA
+///   had moved on), and re-baselining would be exactly the rollback the anchor
+///   exists to stop. Fail closed.
+/// - **`reserved = None`, anchor configured** — the restore was committed where
+///   no counter ran. A counter that does not exist yet is initialised; one that
+///   does cannot be proven fresh, so the boot fails closed.
+/// - **No anchor** — manifest-only (P0.2a): a consistent replay is the accepted
+///   residual risk of that level, as it is for any other snapshot.
+#[allow(clippy::too_many_arguments)]
+pub async fn rebaseline_after_restore(
+    mac_key: [u8; 32],
+    keys_ks: KeyspaceHandle,
+    bootstrap_ks: KeyspaceHandle,
+    acl_ks: KeyspaceHandle,
+    contexts_ks: KeyspaceHandle,
+    anchor: Option<Arc<dyn AnchorCounter>>,
+    reserved: Option<u64>,
+) -> Result<u64, AppError> {
+    let sealer = ManifestSealer {
+        mac_key,
+        keys_ks,
+        bootstrap_ks,
+        acl_ks,
+        contexts_ks,
+        anchor: None,
+    };
+    let state = sealer.compute_state().await?;
+    let Some(anchor) = anchor else {
+        let manifest = Manifest::sealed(&mac_key, 0, state);
+        sealer.write_manifest(&manifest).await?;
+        warn!("integrity manifest re-baselined over a restored store (manifest-only)");
+        return Ok(0);
+    };
+    let current = anchor.read().await?;
+    let version = match (reserved, current) {
+        (Some(v), Some(c)) if c == v => v,
+        (Some(v), other) => {
+            return Err(AppError::Internal(format!(
+                "a restore reserved anti-rollback version v{v} for this identity, but the                  external counter is {} — refusing to re-baseline (P0.2b). Either this staged                  restore was already applied and is being replayed, or the counter moved                  since it was committed. Commit the restore again from the backup.",
+                other.map_or_else(|| "absent".to_string(), |c| format!("v{c}"))
+            )));
+        }
+        (None, None) => 0,
+        (None, Some(c)) => {
+            return Err(AppError::Internal(format!(
+                "a restore was committed without an anti-rollback reservation, but the                  external counter for this identity already exists (v{c}); its freshness                  cannot be proven, so the restored store will not be baselined (P0.2b).                  Commit the restore again on a VTA with the anchor configured, or set                  tee.kms.allow_unanchored = true to re-anchor deliberately."
+            )));
+        }
+    };
+    let manifest = Manifest::sealed(&mac_key, version, state);
+    match current {
+        None => anchor.init(version, manifest.mac).await?,
+        // Same version: records the manifest's digest against the reservation.
+        Some(_) => anchor.set(version, version, manifest.mac).await?,
+    }
+    sealer.write_manifest(&manifest).await?;
+    warn!(
+        version,
+        "integrity manifest re-baselined over a restored store"
+    );
+    Ok(version)
 }
 
 /// Outcome of the boot check, for logging.
@@ -676,6 +793,83 @@ mod tests {
             };
             Box::pin(async move { r })
         }
+    }
+
+    /// A restore's re-baseline lands at exactly the reserved version, after
+    /// which the normal boot check verifies.
+    #[tokio::test]
+    async fn rebaseline_at_the_reserved_version_then_verifies() {
+        let ks = open();
+        let key = [5u8; 32];
+        let counter = MockCounter::at(8);
+        let v = rebaseline_after_restore(
+            key,
+            ks.keys.clone(),
+            ks.bootstrap.clone(),
+            ks.acl.clone(),
+            ks.contexts.clone(),
+            Some(counter.clone()),
+            Some(8),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v, 8);
+        let s = sealer_with(&ks, key, Some(counter));
+        assert_eq!(vob(&s, false, false).await.unwrap(), BootOutcome::Verified);
+    }
+
+    /// The parent kept the staged restore and replays it after the restored VTA
+    /// moved the counter on: refused, never re-baselined.
+    #[tokio::test]
+    async fn a_replayed_restore_is_refused() {
+        let ks = open();
+        let err = rebaseline_after_restore(
+            [5u8; 32],
+            ks.keys.clone(),
+            ks.bootstrap.clone(),
+            ks.acl.clone(),
+            ks.contexts.clone(),
+            Some(MockCounter::at(11)),
+            Some(8),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err}").contains("replayed"), "{err}");
+        assert!(ks.bootstrap.get_raw(MANIFEST_KEY).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_unreserved_restore_initialises_only_an_absent_counter() {
+        let ks = open();
+        let counter = MockCounter::empty();
+        rebaseline_after_restore(
+            [5u8; 32],
+            ks.keys.clone(),
+            ks.bootstrap.clone(),
+            ks.acl.clone(),
+            ks.contexts.clone(),
+            Some(counter.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(counter.current(), Some(0));
+
+        let ks = open();
+        assert!(
+            rebaseline_after_restore(
+                [5u8; 32],
+                ks.keys.clone(),
+                ks.bootstrap.clone(),
+                ks.acl.clone(),
+                ks.contexts.clone(),
+                Some(MockCounter::at(3)),
+                None,
+            )
+            .await
+            .is_err(),
+            "an existing counter cannot be proven fresh without a reservation"
+        );
     }
 
     /// Run the boot check and return just the outcome (dropping the

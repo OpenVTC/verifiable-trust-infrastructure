@@ -12,9 +12,9 @@ pub mod attestation;
 pub mod audit;
 /// Backup/restore export/import operations, extracted to the `vta-backup`
 /// crate and re-exported so every `crate::operations::backup::…` path is
-/// unchanged. The `AppState`-borrowing constructor and the TEE re-encryption
-/// glue stay here (see `descriptor_deps_from_app_state` /
-/// `VtaBootstrapReEncryptor` below) because they know `vta-service` types.
+/// unchanged. The `AppState`-borrowing constructor stays here (see
+/// `descriptor_deps_from_app_state` below), and the deployment glue — how a
+/// restored seed is committed — in `crate::restore`.
 pub use vta_backup::ops as backup;
 pub mod cache;
 pub mod config;
@@ -115,38 +115,18 @@ pub fn keyspaces_from_vta_state(s: &crate::messaging::router::VtaState) -> Keysp
 
 /// Borrow a backup `DescriptorDeps` (the two-phase export/import flow) from an
 /// `AppState`. The struct lives in `vta-backup`; this constructor stays here
-/// because it knows `AppState` and wires the TEE re-encryption hook.
-pub fn descriptor_deps_from_app_state(
-    s: &crate::server::AppState,
-) -> backup::descriptors::DescriptorDeps<'_> {
+/// because it knows `AppState`. `committer` is how this deployment adopts a
+/// restored seed — `state.backup_access().committer()`.
+pub fn descriptor_deps_from_app_state<'a>(
+    s: &'a crate::server::AppState,
+    committer: &'a dyn vta_backup::RestoreCommitter,
+) -> backup::descriptors::DescriptorDeps<'a> {
     backup::descriptors::DescriptorDeps {
         bundles_ks: &s.backup_bundles_ks,
         blob_dir: &s.backup_blob_dir,
-        keyspaces: keyspaces_from_app_state(s),
+        target: s.backup_access().target(),
         seed_store: &s.seed_store,
         config: &s.config,
-        store: None, // TEE-only path; not threaded here yet.
-        #[cfg(feature = "tee")]
-        re_encryptor: Some(&VtaBootstrapReEncryptor),
-    }
-}
-
-/// The sole [`vta_backup::BootstrapReEncryptor`] implementation: wraps
-/// `vta-service`'s TEE KMS bootstrap re-encryption so `vta-backup`'s import op
-/// can invoke it without depending on the `tee` module.
-#[cfg(feature = "tee")]
-struct VtaBootstrapReEncryptor;
-
-#[cfg(feature = "tee")]
-#[async_trait::async_trait]
-impl vta_backup::BootstrapReEncryptor for VtaBootstrapReEncryptor {
-    async fn re_encrypt(
-        &self,
-        kms: &crate::config::TeeKmsConfig,
-        store: &crate::store::Store,
-        seed: &[u8],
-        jwt: &[u8; 32],
-    ) -> Result<(), crate::error::AppError> {
-        crate::tee::kms_bootstrap::re_encrypt_bootstrap_secrets(kms, store, seed, jwt).await
+        committer,
     }
 }

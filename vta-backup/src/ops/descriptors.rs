@@ -9,8 +9,8 @@
 //! 3. Reads / mutates the [`BundleRecord`] in `backup_bundles_ks`.
 //! 4. For export: writes the staged `.vtabak` bytes to disk under
 //!    `backup_blob_dir`. For import: reads them back at finalize.
-//! 5. Delegates the actual encrypt/decrypt to the existing
-//!    `export_backup` / `preview_import` / `apply_import` helpers
+//! 5. Delegates the actual encrypt/decrypt to the
+//!    `export_backup` / `preview_import` / `stage_import` helpers
 //!    in the parent module.
 //!
 //! See `docs/05-design-notes/backup-descriptor-pattern.md` for the
@@ -37,7 +37,9 @@ use vta_config::AppConfig;
 use vta_keys::seed_store::SeedStore;
 use vti_common::auth::AuthClaims;
 use vti_common::error::AppError;
-use vti_common::store::{KeyspaceHandle, Store};
+use vti_common::store::KeyspaceHandle;
+
+use crate::{BackupTarget, RestoreCommitter};
 
 /// Default bundle TTL — 5 minutes per the design doc. Operators
 /// can override via the (future) `VTA_BACKUP_BUNDLE_TTL_SECS` env
@@ -64,15 +66,12 @@ pub const MAX_OPEN_BUNDLES_PER_DID: usize = 3;
 pub struct DescriptorDeps<'a> {
     pub bundles_ks: &'a KeyspaceHandle,
     pub blob_dir: &'a Path,
-    pub keyspaces: vta_keyspaces::Keyspaces<'a>,
+    /// The store the export reads and the restore is staged into.
+    pub target: BackupTarget<'a>,
     pub seed_store: &'a Arc<dyn SeedStore>,
     pub config: &'a tokio::sync::RwLock<AppConfig>,
-    pub store: Option<&'a Store>,
-    /// TEE-only injected KMS re-encryption hook for the import commit path
-    /// (see [`crate::BootstrapReEncryptor`]). `None` outside Mode-B; supplied
-    /// by `vta-service`'s `operations::descriptor_deps_from_app_state`.
-    #[cfg(feature = "tee")]
-    pub re_encryptor: Option<&'a dyn crate::BootstrapReEncryptor>,
+    /// How this deployment adopts a restored seed (see [`RestoreCommitter`]).
+    pub committer: &'a dyn RestoreCommitter,
 }
 
 // ─── initiate-export ──────────────────────────────────────────────────
@@ -114,7 +113,7 @@ pub async fn initiate_export(
     let envelope = {
         let config_guard = deps.config.read().await;
         super::export_backup(
-            &deps.keyspaces,
+            &deps.target,
             deps.seed_store.as_ref(),
             &config_guard,
             auth,
@@ -376,15 +375,18 @@ pub async fn finalize_import(
     })?;
 
     if body.confirm {
-        // Commit path — call existing apply_import.
-        let result = super::apply_import(
-            &super::preview_import(&envelope, &body.password).await?.0,
-            &deps.keyspaces,
-            deps.seed_store,
-            deps.config,
-            deps.store,
-            #[cfg(feature = "tee")]
-            deps.re_encryptor,
+        // Commit path: stage the restore and commit the restored seed. The
+        // caller reboots the VTA, and the next boot applies it.
+        let (payload, _preview) = super::preview_import(&envelope, &body.password).await?;
+        let result = super::stage_import(
+            payload,
+            super::StageRequest {
+                target: &deps.target,
+                config: deps.config,
+                committer: deps.committer,
+                auth,
+                replace_identity: body.replace_identity(),
+            },
         )
         .await?;
 
@@ -415,7 +417,14 @@ pub async fn finalize_import(
         })
     } else {
         // Preview path — decrypt + validate but don't mutate state.
-        let (_payload, result) = super::preview_import(&envelope, &body.password).await?;
+        let running_did = deps.config.read().await.vta_did.clone();
+        let (_payload, result) = super::preview_import_for(
+            &envelope,
+            &body.password,
+            running_did.as_deref(),
+            body.replace_identity(),
+        )
+        .await?;
         record.state = BundleState::ImportPreviewed;
         backup_bundle_store::store_bundle(deps.bundles_ks, &record).await?;
 
@@ -672,6 +681,7 @@ mod tests {
     use tokio::sync::RwLock;
     use vti_common::acl::Role;
     use vti_common::config::StoreConfig as VtiStoreConfig;
+    use vti_common::store::Store;
 
     fn super_admin(did: &str) -> AuthClaims {
         AuthClaims {

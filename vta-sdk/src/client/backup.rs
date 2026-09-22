@@ -55,15 +55,38 @@ impl VtaClient {
         password: &str,
         confirm: bool,
     ) -> Result<crate::protocols::backup_management::types::ImportResult, VtaError> {
+        #[allow(deprecated)]
+        self.backup_import_with(backup, password, confirm, false)
+            .await
+    }
+
+    /// [`Self::backup_import`], optionally allowing the restore to replace a
+    /// different identity the VTA already runs as (see
+    /// [`ImportRequest::replace_identity`](crate::protocols::backup_management::types::ImportRequest::replace_identity)).
+    #[deprecated(
+        since = "0.49.0",
+        note = "inline import rides a legacy protocol message with no TSP path — \
+                use the descriptor flow (`backup_import_with_options`)"
+    )]
+    pub async fn backup_import_with(
+        &self,
+        backup: &crate::protocols::backup_management::types::BackupEnvelope,
+        password: &str,
+        confirm: bool,
+        replace_identity: bool,
+    ) -> Result<crate::protocols::backup_management::types::ImportResult, VtaError> {
+        let body = serde_json::json!({
+            "backup": backup,
+            "password": password,
+            "confirm": confirm,
+            "replace_identity": replace_identity,
+        });
         self.rpc(
             crate::protocols::backup_management::IMPORT_BACKUP,
-            serde_json::json!({ "backup": backup, "password": password, "confirm": confirm }),
+            body.clone(),
             crate::protocols::backup_management::IMPORT_BACKUP_RESULT,
             120,
-            |c, url| {
-                c.post(format!("{url}/backup/import"))
-                    .json(&serde_json::json!({ "backup": backup, "password": password, "confirm": confirm }))
-            },
+            |c, url| c.post(format!("{url}/backup/import")).json(&body),
         )
         .await
     }

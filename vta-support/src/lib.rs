@@ -5,6 +5,7 @@
 //! - [`contexts`] — trust-context storage (the BIP-32 key-hierarchy roots).
 //! - [`seal`] — the sealed-transfer producer-side seal helper.
 //! - [`sealed_nonce_store`] — the sealed-bootstrap anti-replay nonce store.
+//! - [`restore_stage`] — how a backup import crosses the reboot that applies it.
 //!
 //! Each is a self-contained near-leaf: they depend only on `vti-common`,
 //! `vta-config`, `vta-keyspaces`, and `vta-sdk`, never on `vta-service`.
@@ -14,6 +15,7 @@
 
 pub mod contexts;
 pub mod did_templates;
+pub mod restore_stage;
 pub mod seal;
 pub mod sealed_nonce_store;
 pub mod version_time;

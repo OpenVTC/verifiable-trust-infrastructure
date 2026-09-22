@@ -22,9 +22,9 @@ repository.workspace = true
 [features]
 # Gates the webvh-keyspace field access on the shared `Keyspaces` bundle.
 webvh = ["vta-keyspaces/webvh"]
-# Gates the TEE KMS bootstrap re-encryption hook during import. The actual KMS
-# call is injected by `vta-service` via the `BootstrapReEncryptor` trait.
-tee = ["vta-config/tee", "dep:async-trait"]
+# TEE config types. The enclave's restore commit (KMS sealing, the anchor
+# reservation) is injected by `vta-service` through `RestoreCommitter`.
+tee = ["vta-config/tee"]
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.22" }
@@ -50,7 +50,7 @@ subtle = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
 aes-gcm = { workspace = true }
 argon2 = "0.6"
-async-trait = { version = "0.1", optional = true }
+async-trait = "0.1"
 
 [dev-dependencies]
 vta-webvh = { path = "../vta-webvh", version = "0.2" }

@@ -95,10 +95,10 @@ because they were the trust-task planner's only shared type with the consent
 model. Both were a few dozen lines that unblocked thousands.
 
 **3. Dependency inversion.** When the glue is genuinely service-specific, invert
-through a trait rather than dragging `AppState` down a layer. The TEE KMS
-re-encryption step of a backup import is injected via
-`vta_backup::BootstrapReEncryptor`, whose sole implementation lives in
-`vta-service`. Use this when a pure move would require the lower crate to know
+through a trait rather than dragging `AppState` down a layer. How a deployment
+adopts a restored seed (KMS sealing and the anti-rollback reservation, in an
+enclave) is injected via `vta_backup::RestoreCommitter`, whose enclave
+implementation lives in `vta-service`. Use this when a pure move would require the lower crate to know
 about the higher one.
 
 **4. Tests move with the code.** Each crate runs its own suite. This is what

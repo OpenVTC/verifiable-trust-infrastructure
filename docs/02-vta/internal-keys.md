@@ -28,7 +28,10 @@ There is no derivation path, no backup copy, and no mnemonic that reproduces it.
   could reconstruct it offline and the guarantee would be decorative.
 - **It is excluded from `pnm backup export`.** A backup that carried it would be
   an export of a key the VTA promises never to export, and restoring that backup
-  elsewhere would silently clone a signer.
+  elsewhere would silently clone a signer. The key's *record* is in the backup;
+  its material is not. The backup lists the internal keys it left behind, the
+  import names them, and a restore onto any VTA but this one brings the record
+  back unable to sign. See [backup-restore.md](backup-restore.md).
 - **No surface returns it.** The key-export API refuses it, and so does the
   internal-authority path used by the VTA's own subsystems.
 
@@ -126,7 +129,7 @@ unusable *and* unrecoverable.
 | `keys/sign` (REST, DIDComm, Trust Task) | **Allowed** — the only use |
 | Key export (`get_key_secret`) | **Refused**, including for super-admin |
 | Internal-authority export | **Refused** |
-| `pnm backup export` | **Excluded** — the keyspace is not backed up |
+| `pnm backup export` | **Excluded** — the keyspace is not backed up; the record is, and the restore reports the key as lost |
 | `did:webvh` log entry signing | **Refused** |
 | DID document `verificationMethod` | **Allowed** |
 

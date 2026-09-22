@@ -1,18 +1,28 @@
 //! VTA backup export and import operations.
 //!
-//! Export: reads all keyspaces + seed, assembles a `BackupPayload`, encrypts
-//! with Argon2id + AES-256-GCM, and wraps in a `BackupEnvelope`.
+//! **Export** ([`export_backup`]) writes every keyspace in
+//! [`vta_keyspaces::BACKED_UP`], row for row, plus the master seed and the JWT
+//! signing key, into a `vta-backup-v2` payload, encrypted with Argon2id +
+//! AES-256-GCM. Nothing is collected per keyspace: the export walks the list,
+//! so a keyspace added to it is backed up with no further code.
 //!
-//! Import: decrypts the envelope, validates the payload, optionally previews,
-//! then replaces all keyspace data and updates the seed store.
+//! **Import** decrypts and validates a backup, optionally previews it, and on
+//! commit *stages* the restore ([`stage_import`]): the payload is sealed into
+//! the `bootstrap` keyspace under a key derived from the restored seed, the
+//! target adopts that seed, and the VTA reboots. The restore is applied at boot
+//! by [`crate::restore`], under the storage key the restored seed yields. That
+//! is what lets a backup move between a plain VTA, a hardened one and an
+//! enclave in any direction — see `vta_support::restore_stage`.
+//!
+//! A `vta-backup-v1` backup (typed collections for six keyspaces) still
+//! restores; [`write_legacy_payload`] writes it at boot.
 //!
 //! ## Sub-modules
 //!
 //! - [`descriptors`] — the 3-phase descriptor-pattern op layer for
-//!   the trust-task slice. Wraps the inline `export_backup` /
-//!   `preview_import` / `apply_import` functions below, decoupling
-//!   bulk byte transport from the JSON envelope. See
-//!   `docs/05-design-notes/backup-descriptor-pattern.md`.
+//!   the trust-task slice. Wraps [`export_backup`] / [`preview_import`] /
+//!   [`stage_import`], decoupling bulk byte transport from the JSON envelope.
+//!   See `docs/05-design-notes/backup-descriptor-pattern.md`.
 
 pub mod blob;
 pub mod chunked;
@@ -23,26 +33,27 @@ pub(crate) fn chunked_algorithm() -> &'static str {
     vta_sdk::protocols::backup_management::chunked::ALGORITHM_CHUNKED
 }
 
-use std::sync::Arc;
-
-use aes_gcm::aead::Aead;
+use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use argon2::Argon2;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use chrono::Utc;
-use tracing::info;
+use tracing::{info, warn};
 
 use vta_keys::KeyOrigin;
 use vta_keys::imported;
 use vta_keys::seed_store::SeedStore;
 use vta_keys::seeds::{SeedRecord, get_active_seed_id, save_seed_record, set_active_seed_id};
-use vta_support::seal::{SealRecord, get_seal};
+use vta_support::restore_stage::{self, StageMeta};
+use vta_support::seal::SealRecord;
 use vti_common::auth::AuthClaims;
 use vti_common::error::AppError;
-use vti_common::store::{KeyspaceHandle, RawKvPair};
+use vti_common::store::KeyspaceHandle;
 
 use vta_sdk::protocols::backup_management::types::*;
+
+use crate::{BackupTarget, RestoreCommitter, RestoredSecrets};
 
 // ── Argon2id parameters (OWASP recommended) ────────────────────────
 
@@ -76,281 +87,257 @@ const MAX_P_COST: u32 = 16;
 /// Minimum parallelism factor.
 const MIN_P_COST: u32 = 1;
 
+/// Key under which the pre-staging import recorded that a destructive import
+/// was in flight. Imports no longer write it — a staged restore is its own
+/// crash marker — but boot still refuses a store an older build left
+/// half-imported (see `vta-service`'s `server::run`).
+pub const IMPORT_IN_PROGRESS_KEY: &str = "backup:import_in_progress";
+
 // ── Export ──────────────────────────────────────────────────────────
+
+/// Every row of `ks`, decrypted.
+///
+/// Keys first, then one read per row, rather than a single scan: in an enclave
+/// the store is a vsock proxy whose frames are capped at 16 MiB, and a whole
+/// keyspace in one response is exactly what a long audit trail outgrows.
+async fn dump_rows(ks: &KeyspaceHandle) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+    let mut rows = Vec::new();
+    for key in ks.prefix_keys(Vec::<u8>::new()).await? {
+        // A row deleted between the two reads is simply not in the backup; a
+        // row that exists but cannot be read (a failed decrypt) aborts it.
+        if let Some(value) = ks.get_raw(key.clone()).await? {
+            rows.push((key, value));
+        }
+    }
+    Ok(rows)
+}
 
 /// Assemble and encrypt a backup of the entire VTA state.
 pub async fn export_backup(
-    ks: &vta_keyspaces::Keyspaces<'_>,
+    target: &BackupTarget<'_>,
     seed_store: &dyn SeedStore,
     config: &vta_config::AppConfig,
     auth: &AuthClaims,
     password: &str,
     include_audit: bool,
 ) -> Result<BackupEnvelope, AppError> {
-    // The keyspaces captured here are exactly `vta_keyspaces::BACKED_UP`
-    // ({keys, acl, contexts, audit, imported_secrets, webvh}). That registry
-    // partitions every keyspace into BACKED_UP vs EXCLUDED_FROM_BACKUP and a
-    // guard test (`keyspaces::tests::backup_partition_is_total`) keeps the
-    // partition total, so a newly-added keyspace can't be silently dropped from
-    // the backup decision. If you add a keyspace to BACKED_UP, wire it in here.
-    let keys_ks = ks.keys;
-    let acl_ks = ks.acl;
-    let contexts_ks = ks.contexts;
-    let audit_ks = ks.audit;
-    let imported_ks = ks.imported;
-    #[cfg(feature = "webvh")]
-    let webvh_ks = ks.webvh;
     auth.require_super_admin()?;
-
     vta_sdk::protocols::backup_management::validate_backup_password(password)
         .map_err(AppError::Validation)?;
 
-    // 1. Collect the active seed
     let seed_bytes = seed_store
         .get()
         .await
         .map_err(|e| AppError::Internal(format!("seed store: {e}")))?
         .ok_or_else(|| AppError::Internal("no active seed available".into()))?;
     let active_seed_hex = hex::encode(&seed_bytes);
-    let active_seed_id = get_active_seed_id(keys_ks)
+    let active_seed_id = get_active_seed_id(&target.keyspace(vta_keyspaces::KEYS)?)
         .await
         .map_err(|e| AppError::Internal(format!("get active seed id: {e}")))?;
 
-    // A backup must be COMPLETE: unlike the steady-state list paths (which
-    // skip a corrupt row so one bad entry can't break management), export
-    // FAILS LOUDLY on any row it cannot deserialize. Silently omitting a
-    // key or ACL row from a backup loses key material or an admin grant —
-    // far worse than refusing to take the backup.
-    fn corrupt_row(kind: &str, key: &[u8], e: impl std::fmt::Display) -> AppError {
-        AppError::Internal(format!(
-            "backup aborted: {kind} row '{}' is corrupt and would be silently \
-             omitted from the backup: {e}",
-            String::from_utf8_lossy(key)
-        ))
+    let mut keyspaces = Vec::with_capacity(vta_keyspaces::BACKED_UP.len());
+    let mut internal_keys_not_carried = Vec::new();
+    for name in vta_keyspaces::BACKED_UP {
+        // A backup without its trail is a legitimate thing to ask for; the
+        // audit *keys* still travel, so a trail restored later from another
+        // backup of the same agent remains checkable.
+        if *name == vta_keyspaces::AUDIT && !include_audit {
+            continue;
+        }
+        let mut rows = Vec::new();
+        for (key, value) in dump_rows(&target.keyspace(name)?).await? {
+            if vta_keyspaces::is_environment_bound(name, &key) {
+                continue;
+            }
+            if *name == vta_keyspaces::KEYS && key.starts_with(b"key:") {
+                // A backup must be COMPLETE: unlike the steady-state list
+                // paths, which skip a corrupt row so one bad entry cannot break
+                // management, export refuses to write a backup that would
+                // restore a key record nothing can read.
+                let record: vta_sdk::keys::KeyRecord =
+                    serde_json::from_slice(&value).map_err(|e| {
+                        AppError::Internal(format!(
+                            "backup aborted: key row '{}' is corrupt and would be restored \
+                             unreadable: {e}",
+                            String::from_utf8_lossy(&key)
+                        ))
+                    })?;
+                if record.origin == KeyOrigin::Internal {
+                    internal_keys_not_carried.push(record.key_id);
+                }
+            }
+            rows.push((BASE64.encode(&key), BASE64.encode(&value)));
+        }
+        keyspaces.push(KeyspaceDump {
+            name: (*name).to_string(),
+            rows,
+        });
     }
 
-    // 2. Collect seed records (retired seeds)
-    let seed_records: Vec<SeedRecordBackup> = {
-        let raw = keys_ks.prefix_iter_raw("seed:").await?;
-        let mut records = Vec::with_capacity(raw.len());
-        for (key, value) in raw {
-            let sr: SeedRecord =
-                serde_json::from_slice(&value).map_err(|e| corrupt_row("seed", &key, e))?;
-            records.push(SeedRecordBackup {
-                id: sr.id,
-                seed_hex: sr.seed_hex,
-                seed_enc: sr.seed_enc,
-                created_at: sr.created_at,
-                retired_at: sr.retired_at,
-            });
-        }
-        records
-    };
-
-    // 3. Collect key records
-    let key_records: Vec<vta_sdk::keys::KeyRecord> = {
-        let raw = keys_ks.prefix_iter_raw("key:").await?;
-        let mut out = Vec::with_capacity(raw.len());
-        for (key, value) in raw {
-            out.push(serde_json::from_slice(&value).map_err(|e| corrupt_row("key", &key, e))?);
-        }
-        out
-    };
-
-    // 4. Collect context records + counter
-    let context_records: Vec<vta_sdk::contexts::ContextRecord> = {
-        let raw = contexts_ks.prefix_iter_raw("ctx:").await?;
-        let mut out = Vec::with_capacity(raw.len());
-        for (key, value) in raw {
-            out.push(serde_json::from_slice(&value).map_err(|e| corrupt_row("context", &key, e))?);
-        }
-        out
-    };
-    let context_counter: u32 = contexts_ks
-        .get_raw("ctx_counter")
-        .await?
-        .and_then(|b| b.try_into().ok().map(u32::from_le_bytes))
-        .unwrap_or(0);
-
-    // 4b. Collect the BIP-32 allocation counters so a restore onto a fresh
-    // store cannot re-derive private keys / context subtrees that restored
-    // records already occupy (P0.5). `path_counter:{base}` lives in the keys
-    // keyspace; `ctx_counter:{parent}` (per-parent sub-context counters) live
-    // in the contexts keyspace alongside the top-level `ctx_counter`.
-    let read_u32_counters = |pairs: Vec<RawKvPair>| -> Vec<(String, u32)> {
-        pairs
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let key = String::from_utf8(k).ok()?;
-                let arr: [u8; 4] = v.try_into().ok()?;
-                Some((key, u32::from_le_bytes(arr)))
-            })
-            .collect()
-    };
-    let path_counters = read_u32_counters(keys_ks.prefix_iter_raw("path_counter:").await?);
-    let subcontext_counters = read_u32_counters(contexts_ks.prefix_iter_raw("ctx_counter:").await?);
-
-    // 5. Collect ACL entries. Two forms, both from the same scan:
-    //   - `acl_entries_full`: the stored `AclEntry` JSON verbatim (lossless).
-    //   - `acl_entries`: the legacy 6-field projection (kept for
-    //     forward/backward compatibility; the importer prefers the full form).
-    // A row that can't be parsed aborts the backup rather than being silently
-    // dropped (an incomplete backup loses an admin grant) — see P0.14.
-    let (acl_entries, acl_entries_full): (Vec<AclEntryBackup>, Vec<serde_json::Value>) = {
-        let raw = acl_ks.prefix_iter_raw("acl:").await?;
-        let mut lossy = Vec::with_capacity(raw.len());
-        let mut full = Vec::with_capacity(raw.len());
-        for (key, v) in raw {
-            let val: serde_json::Value =
-                serde_json::from_slice(&v).map_err(|e| corrupt_row("ACL", &key, e))?;
-            lossy.push(AclEntryBackup {
-                did: val["did"].as_str().unwrap_or_default().to_string(),
-                role: val["role"].as_str().unwrap_or("Reader").to_string(),
-                label: val["label"].as_str().map(String::from),
-                allowed_contexts: val["allowed_contexts"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                created_at: val["created_at"].as_u64().unwrap_or(0),
-                created_by: val["created_by"].as_str().unwrap_or_default().to_string(),
-            });
-            full.push(val);
-        }
-        (lossy, full)
-    };
-
-    // 6. Collect seal record
-    let seal = get_seal(acl_ks)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| SealRecordBackup {
-            sealed_by: s.sealed_by,
-            sealed_at: s.sealed_at,
-            reason: s.reason,
-        });
-
-    // 7. Collect WebVH records
-    #[cfg(feature = "webvh")]
-    let (webvh_servers, webvh_dids, webvh_logs) = {
-        let servers: Vec<vta_sdk::webvh::WebvhServerRecord> = webvh_ks
-            .prefix_iter_raw("server:")
-            .await?
-            .into_iter()
-            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
-            .collect();
-        let dids: Vec<vta_sdk::webvh::WebvhDidRecord> = webvh_ks
-            .prefix_iter_raw("did:")
-            .await?
-            .into_iter()
-            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
-            .collect();
-        let logs: Vec<WebvhLogBackup> = webvh_ks
-            .prefix_iter_raw("log:")
-            .await?
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let did = String::from_utf8(k).ok()?.strip_prefix("log:")?.to_string();
-                let log_json = String::from_utf8(v).ok()?;
-                Some(WebvhLogBackup { did, log_json })
-            })
-            .collect();
-        (servers, dids, logs)
-    };
-    #[cfg(not(feature = "webvh"))]
-    let (webvh_servers, webvh_dids, webvh_logs) = (Vec::new(), Vec::new(), Vec::new());
-
-    // 8. Collect audit logs (optional)
-    let audit_logs = if include_audit {
-        let raw = audit_ks.prefix_iter_raw("log:").await?;
-        raw.into_iter()
-            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // 9. Config snapshot
-    let backup_config = BackupConfig {
-        vta_did: config.vta_did.clone(),
-        vta_name: config.vta_name.clone(),
-        public_url: config.public_url.clone(),
-        mediator_url: config.messaging.as_ref().map(|m| m.mediator_url.clone()),
-        mediator_did: config.messaging.as_ref().map(|m| m.mediator_did.clone()),
-    };
-
-    // 10. JWT signing key
-    let jwt_signing_key = config.auth.jwt_signing_key.clone();
-
-    // 11. Collect imported secrets
-    let imported_kek_salt = imported::get_salt(keys_ks).await?.map(hex::encode);
-    let imported_secrets = {
-        let mut secrets = Vec::new();
-        for kr in &key_records {
-            if kr.origin == KeyOrigin::Imported
-                && kr.status == vta_sdk::keys::KeyStatus::Active
-                && let Ok(mut plaintext) = imported::load_secret(
-                    imported_ks,
-                    keys_ks,
-                    &seed_bytes,
-                    &kr.key_id,
-                    &kr.key_type.to_string(),
-                )
-                .await
-            {
-                secrets.push(ImportedSecretBackup {
-                    key_id: kr.key_id.clone(),
-                    private_key_hex: hex::encode(&plaintext),
-                });
-                use zeroize::Zeroize;
-                plaintext.zeroize();
-            }
-        }
-        secrets
-    };
-
-    // Assemble payload
     let payload = BackupPayload {
         active_seed_hex,
         active_seed_id,
-        seed_records,
-        jwt_signing_key,
-        key_records,
-        context_records,
-        context_counter,
-        path_counters,
-        subcontext_counters,
-        acl_entries,
-        acl_entries_full,
-        seal,
-        webvh_servers,
-        webvh_dids,
-        webvh_logs,
-        config: backup_config,
-        audit_logs,
-        imported_secrets,
-        imported_kek_salt,
+        jwt_signing_key: config.auth.jwt_signing_key.clone(),
+        config: BackupConfig {
+            vta_did: config.vta_did.clone(),
+            vta_name: config.vta_name.clone(),
+            public_url: config.public_url.clone(),
+            mediator_url: config.messaging.as_ref().map(|m| m.mediator_url.clone()),
+            mediator_did: config.messaging.as_ref().map(|m| m.mediator_did.clone()),
+        },
+        keyspaces,
+        source_environment: Some(target.environment),
+        internal_keys_not_carried,
+        // v1's typed collections; the raw dump above supersedes them.
+        seed_records: Vec::new(),
+        key_records: Vec::new(),
+        context_records: Vec::new(),
+        context_counter: 0,
+        path_counters: Vec::new(),
+        subcontext_counters: Vec::new(),
+        acl_entries: Vec::new(),
+        acl_entries_full: Vec::new(),
+        seal: None,
+        webvh_servers: Vec::new(),
+        webvh_dids: Vec::new(),
+        webvh_logs: Vec::new(),
+        audit_logs: Vec::new(),
+        imported_secrets: Vec::new(),
+        imported_kek_salt: None,
     };
-
-    // Encrypt
+    let counts = payload_counts(&payload);
     let envelope = encrypt_payload(&payload, password, include_audit, config)?;
 
     info!(
-        keys = payload.key_records.len(),
-        acls = payload.acl_entries.len(),
-        contexts = payload.context_records.len(),
-        audit = payload.audit_logs.len(),
+        keyspaces = payload.keyspaces.len(),
+        keys = counts.keys,
+        acls = counts.acls,
+        contexts = counts.contexts,
+        audit = counts.audit,
+        internal_keys_not_carried = payload.internal_keys_not_carried.len(),
+        environment = %target.environment,
         "backup exported"
     );
-
     Ok(envelope)
 }
 
 // ── Import ─────────────────────────────────────────────────────────
+
+/// Row counts a preview or an import reports. Counts, not an inventory.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadCounts {
+    pub keys: usize,
+    pub acls: usize,
+    pub contexts: usize,
+    pub audit: usize,
+    pub imported_secrets: usize,
+}
+
+/// Count what a payload restores, whichever format it is.
+pub fn payload_counts(payload: &BackupPayload) -> PayloadCounts {
+    if payload.keyspaces.is_empty() {
+        return PayloadCounts {
+            keys: payload.key_records.len(),
+            acls: payload
+                .acl_entries_full
+                .len()
+                .max(payload.acl_entries.len()),
+            contexts: payload.context_records.len(),
+            audit: payload.audit_logs.len(),
+            imported_secrets: payload.imported_secrets.len(),
+        };
+    }
+    let count = |keyspace: &str, prefix: &str| {
+        payload
+            .keyspaces
+            .iter()
+            .filter(|d| d.name == keyspace)
+            .flat_map(|d| d.rows.iter())
+            .filter(|(k, _)| {
+                BASE64
+                    .decode(k)
+                    .is_ok_and(|k| k.starts_with(prefix.as_bytes()))
+            })
+            .count()
+    };
+    PayloadCounts {
+        keys: count(vta_keyspaces::KEYS, "key:"),
+        acls: count(vta_keyspaces::ACL, "acl:"),
+        contexts: count(vta_keyspaces::CONTEXTS, "ctx:"),
+        audit: count(vta_keyspaces::AUDIT, "log:"),
+        imported_secrets: count(vta_keyspaces::IMPORTED_SECRETS, "secret:"),
+    }
+}
+
+fn import_result(payload: &BackupPayload, status: &str, message: String) -> ImportResult {
+    let counts = payload_counts(payload);
+    ImportResult {
+        status: status.into(),
+        source_did: payload.config.vta_did.clone(),
+        key_count: counts.keys,
+        acl_count: counts.acls,
+        context_count: counts.contexts,
+        audit_count: counts.audit,
+        imported_secret_count: counts.imported_secrets,
+        message: Some(message),
+    }
+}
+
+/// Refuse a payload this build cannot restore faithfully, before anything is
+/// staged. Everything here is checked again at boot; checking it first means
+/// a bad backup is refused to the operator rather than discovered by a boot.
+pub fn validate_payload(payload: &BackupPayload) -> Result<(), AppError> {
+    let seed = hex::decode(&payload.active_seed_hex)
+        .map_err(|e| AppError::Validation(format!("backup seed is not hex: {e}")))?;
+    if seed.is_empty() {
+        return Err(AppError::Validation("backup carries an empty seed".into()));
+    }
+    if let Some(jwt) = &payload.jwt_signing_key {
+        decode_jwt_key(jwt)?;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for dump in &payload.keyspaces {
+        // The dump names the keyspace it writes. A backup is attacker-supplied
+        // input to a super-admin, and a name outside `BACKED_UP` would let it
+        // write into `bootstrap` (the enclave's boot material) or plant an
+        // internal key — neither of which any export produces.
+        if !vta_keyspaces::BACKED_UP.contains(&dump.name.as_str()) {
+            return Err(AppError::Validation(format!(
+                "backup carries keyspace '{}', which is not one a backup may restore",
+                dump.name
+            )));
+        }
+        if !seen.insert(dump.name.as_str()) {
+            return Err(AppError::Validation(format!(
+                "backup carries keyspace '{}' twice",
+                dump.name
+            )));
+        }
+        for (k, v) in &dump.rows {
+            let key = BASE64.decode(k).map_err(|e| {
+                AppError::Validation(format!(
+                    "backup row key in '{}' is not base64: {e}",
+                    dump.name
+                ))
+            })?;
+            BASE64.decode(v).map_err(|e| {
+                AppError::Validation(format!(
+                    "backup row value in '{}' is not base64: {e}",
+                    dump.name
+                ))
+            })?;
+            if vta_keyspaces::is_environment_bound(&dump.name, &key) {
+                return Err(AppError::Validation(format!(
+                    "backup carries deployment-bound row '{}' in '{}'; a backup of this \
+                     agent never does",
+                    String::from_utf8_lossy(&key),
+                    dump.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Decrypt and validate a backup, returning a preview without modifying state.
 pub async fn preview_import(
@@ -358,53 +345,188 @@ pub async fn preview_import(
     password: &str,
 ) -> Result<(BackupPayload, ImportResult), AppError> {
     let payload = decrypt_backup(envelope, password)?;
+    validate_payload(&payload)?;
+    let mut message =
+        String::from("Preview only — no changes applied. Set confirm=true to import.");
+    if !payload.internal_keys_not_carried.is_empty() {
+        message.push_str(&format!(
+            " {} internal key(s) are not in the backup and cannot be restored: {}.",
+            payload.internal_keys_not_carried.len(),
+            payload.internal_keys_not_carried.join(", ")
+        ));
+    }
+    let result = import_result(&payload, "preview", message);
+    Ok((payload, result))
+}
 
-    let result = ImportResult {
-        status: "preview".into(),
-        source_did: payload.config.vta_did.clone(),
-        key_count: payload.key_records.len(),
-        acl_count: payload.acl_entries.len(),
-        context_count: payload.context_records.len(),
-        audit_count: payload.audit_logs.len(),
-        imported_secret_count: payload.imported_secrets.len(),
-        message: Some("Preview only — no changes applied. Set confirm=true to import.".into()),
-    };
-
+/// [`preview_import`], plus the identity check a commit would make — so an
+/// operator who previews a backup of another agent is told then, with the
+/// flag that allows it, rather than after confirming.
+pub async fn preview_import_for(
+    envelope: &BackupEnvelope,
+    password: &str,
+    running_did: Option<&str>,
+    replace_identity: bool,
+) -> Result<(BackupPayload, ImportResult), AppError> {
+    let (payload, result) = preview_import(envelope, password).await?;
+    check_vta_did_compatibility(
+        running_did,
+        payload.config.vta_did.as_deref(),
+        replace_identity,
+    )?;
     Ok((payload, result))
 }
 
 /// Reject an import if the backup's `vta_did` would overwrite a
-/// different running VTA's identity. A fresh install (no running
-/// `vta_did`) accepts any backup — this covers disaster recovery from
-/// a completely lost VTA. An identity migration (deliberately
-/// replacing one VTA DID with another) requires the operator to clear
-/// `vta_did` from the running config first.
+/// different running VTA's identity, unless the operator said to.
+///
+/// A fresh install (no running `vta_did`) accepts any backup. A VTA that
+/// already runs as some DID accepts a backup of *that* DID; a backup of a
+/// different one needs `replace_identity` — the disaster-recovery case, where
+/// the target was set up fresh and minted a DID of its own (every `vta setup`
+/// does, and an enclave with a DID template does on first boot).
 fn check_vta_did_compatibility(
     running_did: Option<&str>,
     backup_did: Option<&str>,
+    replace_identity: bool,
 ) -> Result<(), AppError> {
     let running = match running_did {
         Some(d) if !d.is_empty() => d,
         _ => return Ok(()),
     };
     let backup = backup_did.unwrap_or("");
-    if backup == running {
+    if backup == running || replace_identity {
         return Ok(());
     }
     Err(AppError::Validation(format!(
         "backup vta_did mismatch: backup claims '{backup}' but this VTA is running \
-         as '{running}'. Refusing to overwrite identity. If this is intentional \
-         (identity migration), clear vta_did from the running config first."
+         as '{running}'. Refusing to overwrite identity. If this is intentional — \
+         restoring onto a freshly set-up VTA, or migrating an identity — re-run the \
+         import with --replace-identity."
     )))
 }
 
-/// Key under which `apply_import` records that a destructive import is in
-/// flight. Written (and persisted) before the keyspaces are cleared and
-/// removed only after every record is back; if a crash interrupts the
-/// import, this survives and boot refuses to start on the resulting hybrid
-/// state (see `vta-service`'s `server::run`). Lives in the keys keyspace under a
-/// prefix no clear/scan touches.
-pub const IMPORT_IN_PROGRESS_KEY: &str = "backup:import_in_progress";
+fn decode_jwt_key(b64: &str) -> Result<[u8; 32], AppError> {
+    BASE64
+        .decode(b64)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+        .ok_or_else(|| {
+            AppError::Validation("backup JWT signing key is not 32 bytes of base64url".into())
+        })
+}
+
+/// What a caller needs to stage a restore.
+pub struct StageRequest<'a> {
+    pub target: &'a BackupTarget<'a>,
+    pub config: &'a tokio::sync::RwLock<vta_config::AppConfig>,
+    pub committer: &'a dyn RestoreCommitter,
+    pub auth: &'a AuthClaims,
+    /// See [`ImportRequest::replace_identity`].
+    pub replace_identity: bool,
+}
+
+/// Commit an import: stage the restore, have the target adopt the restored
+/// seed, and return. **The caller must then reboot the VTA** — the restore is
+/// applied by the next boot, not by this call (see `vta_support::restore_stage`
+/// for why it cannot be applied in place).
+///
+/// Nothing in the running store is changed. If this returns an error before the
+/// commit, the VTA carries on exactly as it was; the stage it may have written
+/// cannot be opened and the next boot discards it.
+pub async fn stage_import(
+    payload: BackupPayload,
+    req: StageRequest<'_>,
+) -> Result<ImportResult, AppError> {
+    req.auth.require_super_admin()?;
+    validate_payload(&payload)?;
+
+    let running_did = req.config.read().await.vta_did.clone();
+    check_vta_did_compatibility(
+        running_did.as_deref(),
+        payload.config.vta_did.as_deref(),
+        req.replace_identity,
+    )?;
+    let cross_identity = matches!(
+        (running_did.as_deref(), payload.config.vta_did.as_deref()),
+        (Some(running), backup) if !running.is_empty() && Some(running) != backup
+    );
+
+    let seed = zeroize::Zeroizing::new(
+        hex::decode(&payload.active_seed_hex)
+            .map_err(|e| AppError::Validation(format!("backup seed is not hex: {e}")))?,
+    );
+    let jwt_key = payload
+        .jwt_signing_key
+        .as_deref()
+        .map(decode_jwt_key)
+        .transpose()?;
+    let restored_did = payload.config.vta_did.clone();
+    let secrets = RestoredSecrets {
+        seed: &seed,
+        jwt_key,
+        vta_did: restored_did.as_deref(),
+    };
+
+    let prepared = req.committer.prepare(&secrets).await?;
+    let restore_id = uuid::Uuid::new_v4().to_string();
+    let meta = StageMeta {
+        restore_id: restore_id.clone(),
+        staged_at: Utc::now(),
+        staged_by: req.auth.did.clone(),
+        target_environment: req.target.environment,
+        cross_identity,
+        tee_secrets_sha256: prepared
+            .tee_secrets_row
+            .as_deref()
+            .map(restore_stage::sha256_hex),
+        anchor: prepared.anchor.clone(),
+    };
+    let result = import_result(
+        &payload,
+        "imported",
+        restore_message(&payload, req.target.environment),
+    );
+
+    let staged = async {
+        restore_stage::write_stage(&req.target.bootstrap()?, &seed, meta, payload).await?;
+        // The point of no return: from here the next boot opens the stage.
+        req.committer.commit(&secrets, prepared).await
+    }
+    .await;
+    if let Err(e) = staged {
+        req.committer.abort().await;
+        return Err(e);
+    }
+
+    info!(
+        restore_id,
+        staged_by = %req.auth.did,
+        source_did = result.source_did.as_deref().unwrap_or("unknown"),
+        target_environment = %req.target.environment,
+        cross_identity,
+        "backup import committed — the VTA reboots to apply it"
+    );
+    Ok(result)
+}
+
+fn restore_message(payload: &BackupPayload, target: BackupEnvironment) -> String {
+    let mut message = format!(
+        "Restore committed. The VTA is rebooting to apply it{}.",
+        match payload.source_environment {
+            Some(source) if source != target => format!(" ({source} → {target})"),
+            _ => String::new(),
+        }
+    );
+    if !payload.internal_keys_not_carried.is_empty() {
+        message.push_str(&format!(
+            " {} internal key(s) were not in the backup and are lost: {}.",
+            payload.internal_keys_not_carried.len(),
+            payload.internal_keys_not_carried.join(", ")
+        ));
+    }
+    message
+}
 
 /// Recompute `path_counter:{base}` values from restored key records, so an
 /// old (pre-P0.5) backup with no exported counters still can't re-derive an
@@ -447,98 +569,24 @@ fn recompute_subcontext_counters(
     counters
 }
 
-/// Apply an import: clears all keyspaces and writes the backup data.
-///
-/// When `store` and TEE KMS config are provided, re-encrypts the imported
-/// seed and JWT key with KMS for the bootstrap keyspace. The `store`
-/// parameter is therefore only consumed under `feature = "tee"`; non-TEE
-/// builds receive `None` and silently skip step 12.
-///
-/// **vta_did guard**: if the running VTA already has a vta_did in config
-/// and it differs from the backup's, the import is rejected — a foreign
-/// backup replacing a live VTA's state is almost certainly an operator
-/// mistake. A fresh install (no vta_did yet) accepts any backup; this
-/// covers the legitimate disaster-recovery path. To deliberately migrate
-/// an identity, clear the running config first.
-///
-/// The caller is responsible for triggering a soft restart after this returns.
-#[cfg_attr(not(feature = "tee"), allow(unused_variables))]
-pub async fn apply_import(
+/// Write a `vta-backup-v1` payload's typed collections into an empty store.
+/// Called by the boot-time restore for a v1 backup, after the wipe; a v2
+/// backup is written row for row instead.
+pub(crate) async fn write_legacy_payload(
     payload: &BackupPayload,
     ks: &vta_keyspaces::Keyspaces<'_>,
-    seed_store: &Arc<dyn SeedStore>,
-    config: &tokio::sync::RwLock<vta_config::AppConfig>,
-    store: Option<&vti_common::store::Store>,
-    #[cfg(feature = "tee")] re_encryptor: Option<&dyn crate::BootstrapReEncryptor>,
-) -> Result<ImportResult, AppError> {
-    // vta_did cross-check: refuse to overwrite a different VTA's
-    // identity with this backup. A fresh install (running_did is None)
-    // accepts any backup.
-    {
-        let running_did = config.read().await.vta_did.clone();
-        check_vta_did_compatibility(running_did.as_deref(), payload.config.vta_did.as_deref())?;
-    }
-
+    seed_bytes: &[u8],
+) -> Result<(), AppError> {
     let keys_ks = ks.keys;
     let acl_ks = ks.acl;
     let contexts_ks = ks.contexts;
     let audit_ks = ks.audit;
     let imported_ks = ks.imported;
-    #[cfg(feature = "webvh")]
-    let webvh_ks = ks.webvh;
 
-    // Crash-safety sentinel (P0.5): record that a destructive import has
-    // begun, and fsync it, BEFORE clearing anything. If a crash interrupts
-    // the rewrite below, the store is left in a hybrid half-imported state;
-    // this marker survives and boot refuses to start on it (server::run)
-    // rather than running on corrupt state. Removed + fsynced only after the
-    // import fully completes.
-    keys_ks
-        .insert_raw(IMPORT_IN_PROGRESS_KEY, b"1".to_vec())
-        .await?;
-    keys_ks.persist().await?;
-
-    // 1. Clear all keyspaces. `path_counter:` (keys) and `ctx_counter:`
-    // (per-parent sub-context counters, contexts) are cleared too so a
-    // re-import over a dirty store can't leave a stale counter that would
-    // re-allocate an in-use BIP-32 index (P0.5).
-    clear_keyspace(keys_ks, &["key:", "seed:", "path_counter:"]).await?;
-    clear_keyspace(acl_ks, &["acl:", "vta:"]).await?;
-    clear_keyspace(contexts_ks, &["ctx:", "ctx_counter:"]).await?;
-    clear_keyspace(audit_ks, &["log:"]).await?;
-    clear_keyspace(imported_ks, &["secret:"]).await?;
-    #[cfg(feature = "webvh")]
-    clear_keyspace(
-        webvh_ks,
-        // `server-auth:` is explicitly included so that a restore
-        // wipes any cached daemon-REST tokens before installing the
-        // backed-up server registry. Tokens never travel in the
-        // backup payload itself (the export path scans `server:`
-        // only — `server-auth:` is service-local secret material),
-        // so a fresh import correctly leaves us un-authenticated to
-        // every daemon and forces a re-authenticate on first use.
-        &["server:", "server-auth:", "did:", "log:"],
-    )
-    .await?;
-
-    // Also remove counters
-    let _ = keys_ks.remove("active_seed_id").await;
-    let _ = contexts_ks.remove("ctx_counter").await;
-
-    // 2. Write seed to external store
-    let seed_bytes = hex::decode(&payload.active_seed_hex)
-        .map_err(|e| AppError::Internal(format!("invalid seed hex in backup: {e}")))?;
-    seed_store
-        .set(&seed_bytes)
-        .await
-        .map_err(|e| AppError::Internal(format!("seed store: {e}")))?;
-
-    // 3. Write active_seed_id
     set_active_seed_id(keys_ks, payload.active_seed_id)
         .await
         .map_err(|e| AppError::Internal(format!("set active seed id: {e}")))?;
 
-    // 4. Write seed records
     for sr in &payload.seed_records {
         let record = SeedRecord {
             id: sr.id,
@@ -552,12 +600,10 @@ pub async fn apply_import(
             .map_err(|e| AppError::Internal(format!("save seed record: {e}")))?;
     }
 
-    // 5. Write key records
     for kr in &payload.key_records {
         keys_ks.insert(vta_keys::store_key(&kr.key_id), kr).await?;
     }
 
-    // 6. Write context records + counters
     for cr in &payload.context_records {
         contexts_ks.insert(format!("ctx:{}", cr.id), cr).await?;
     }
@@ -565,7 +611,7 @@ pub async fn apply_import(
         .insert_raw("ctx_counter", &payload.context_counter.to_le_bytes())
         .await?;
 
-    // 6b. Restore the BIP-32 allocation counters (P0.5). Take the MAX of the
+    // Restore the BIP-32 allocation counters (P0.5). Take the MAX of the
     // exported value (exact — preserves gaps left by deleted keys) and the
     // value recomputed from the restored records (the only source for a
     // pre-P0.5 backup that has no exported counters). Either alone could
@@ -598,10 +644,9 @@ pub async fn apply_import(
         }
     }
 
-    // 7. Write ACL entries. Prefer the lossless full-JSON form
-    // (`acl_entries_full`) so expiry / step-up floors / capabilities / kind /
-    // device / version survive; fall back to the lossy 6-field `acl_entries`
-    // only for a pre-P0.5 backup that carries no full form.
+    // Prefer the lossless full-JSON ACL form (`acl_entries_full`) so expiry /
+    // step-up floors / capabilities / kind / device / version survive; fall
+    // back to the lossy 6-field `acl_entries` only for a pre-P0.5 backup.
     if !payload.acl_entries_full.is_empty() {
         for entry in &payload.acl_entries_full {
             let did = entry
@@ -611,21 +656,18 @@ pub async fn apply_import(
             let bytes = serde_json::to_vec(entry)?;
             acl_ks.insert_raw(format!("acl:{did}"), bytes).await?;
         }
-    } else {
-        if !payload.acl_entries.is_empty() {
-            tracing::warn!(
-                count = payload.acl_entries.len(),
-                "restoring ACL from a pre-P0.5 backup's lossy form — expiry, step-up \
-                 floors, and capability restrictions are not present and default to \
-                 permanent/none. Re-export with this build for a lossless backup."
-            );
-            for entry in &payload.acl_entries {
-                acl_ks.insert(format!("acl:{}", entry.did), entry).await?;
-            }
+    } else if !payload.acl_entries.is_empty() {
+        warn!(
+            count = payload.acl_entries.len(),
+            "restoring ACL from a pre-P0.5 backup's lossy form — expiry, step-up \
+             floors, and capability restrictions are not present and default to \
+             permanent/none. Re-export with this build for a lossless backup."
+        );
+        for entry in &payload.acl_entries {
+            acl_ks.insert(format!("acl:{}", entry.did), entry).await?;
         }
     }
 
-    // 8. Write seal record
     if let Some(ref seal) = payload.seal {
         let record = SealRecord {
             sealed_by: seal.sealed_by.clone(),
@@ -635,46 +677,17 @@ pub async fn apply_import(
         acl_ks.insert("vta:sealed", &record).await?;
     }
 
-    // 9. Write WebVH records.
-    //
-    // Cross-VTA disaster recovery (audit H3): if we're importing
-    // someone else's backup (running_did present and != backup_did,
-    // *or* backup carries no vta_did), strip `server_id`/`mnemonic`
-    // off every imported `WebvhDidRecord` before persisting. The
-    // imported daemon registrations still belong to the source VTA;
-    // re-publishing from this VTA would clobber the source's slot.
-    // Operator must explicitly re-`register_did_with_server` per
-    // imported DID. See `docs/05-design-notes/webvh-rest-auth-audit.md`
-    // §H3.
     #[cfg(feature = "webvh")]
     {
-        let backup_vta_did = payload.config.vta_did.as_deref();
-        let running_vta_did = config.read().await.vta_did.clone();
-        let cross_vta_restore = match (running_vta_did.as_deref(), backup_vta_did) {
-            (None, _) => false,      // fresh install — backup is authoritative
-            (Some(_), None) => true, // running but backup missing identity
-            (Some(running), Some(backup)) => running != backup, // operator-confirmed swap
-        };
-
+        let webvh_ks = ks.webvh;
         for server in &payload.webvh_servers {
             webvh_ks
                 .insert(format!("server:{}", server.id), server)
                 .await?;
         }
         for did_rec in &payload.webvh_dids {
-            let mut record = did_rec.clone();
-            if cross_vta_restore && record.server_id != "serverless" {
-                tracing::warn!(
-                    did = %record.did,
-                    original_server = %record.server_id,
-                    "cross-VTA restore: stripping server_id/mnemonic from imported WebvhDidRecord; \
-                     operator must `register_did_with_server` to re-attach to this VTA",
-                );
-                record.server_id = "serverless".to_string();
-                record.mnemonic = String::new();
-            }
             webvh_ks
-                .insert(format!("did:{}", record.did), &record)
+                .insert(format!("did:{}", did_rec.did), did_rec)
                 .await?;
         }
         for log in &payload.webvh_logs {
@@ -684,146 +697,84 @@ pub async fn apply_import(
         }
     }
 
-    // 10. Write audit logs
     for entry in &payload.audit_logs {
         audit_ks
             .insert(format!("log:{:020}:{}", entry.timestamp, entry.id), entry)
             .await?;
     }
 
-    // 11. Restore imported secrets
     if !payload.imported_secrets.is_empty() {
-        // Restore the KEK salt (or create a new one)
         if let Some(ref salt_hex) = payload.imported_kek_salt {
             let salt = hex::decode(salt_hex)
                 .map_err(|e| AppError::Internal(format!("invalid imported KEK salt hex: {e}")))?;
             imported::set_salt(keys_ks, &salt).await?;
         }
-
         for secret_backup in &payload.imported_secrets {
-            let private_bytes = hex::decode(&secret_backup.private_key_hex)
+            let mut private_bytes = hex::decode(&secret_backup.private_key_hex)
                 .map_err(|e| AppError::Internal(format!("invalid imported secret hex: {e}")))?;
-
-            // Find the matching key record for AAD
             let key_type_str = payload
                 .key_records
                 .iter()
                 .find(|kr| kr.key_id == secret_backup.key_id)
                 .map(|kr| kr.key_type.to_string())
                 .unwrap_or_else(|| "ed25519".to_string());
-
-            imported::store_secret(
+            let stored = imported::store_secret(
                 imported_ks,
                 keys_ks,
-                &seed_bytes,
+                seed_bytes,
                 &secret_backup.key_id,
                 &key_type_str,
                 &private_bytes,
             )
-            .await?;
+            .await;
+            use zeroize::Zeroize;
+            private_bytes.zeroize();
+            stored?;
         }
     }
-
-    // 12. Update config
-    {
-        let mut cfg = config.write().await;
-        if let Some(ref did) = payload.config.vta_did {
-            cfg.vta_did = Some(did.clone());
-        }
-        if let Some(ref name) = payload.config.vta_name {
-            cfg.vta_name = Some(name.clone());
-        }
-        if let Some(ref url) = payload.config.public_url {
-            cfg.public_url = Some(url.clone());
-        }
-        if let Some(ref jwt) = payload.jwt_signing_key {
-            cfg.auth.jwt_signing_key = Some(jwt.clone());
-        }
-        if payload.config.mediator_url.is_some() || payload.config.mediator_did.is_some() {
-            let messaging =
-                cfg.messaging
-                    .get_or_insert_with(|| vti_common::config::MessagingConfig {
-                        mediator_url: String::new(),
-                        mediator_did: String::new(),
-                        mediator_host: None,
-                        setup_acl: false,
-                        drain_inbox_on_start: false,
-                    });
-            if let Some(ref url) = payload.config.mediator_url {
-                messaging.mediator_url = url.clone();
-            }
-            if let Some(ref did) = payload.config.mediator_did {
-                messaging.mediator_did = did.clone();
-            }
-        }
-    }
-
-    // 12. TEE: re-encrypt seed + JWT key with KMS for bootstrap keyspace
-    #[cfg(feature = "tee")]
-    if let Some(store) = store {
-        let cfg = config.read().await;
-        if let vta_config::TeeMode::Required = cfg.tee.mode
-            && let Some(ref kms_config) = cfg.tee.kms
-        {
-            let jwt_key_bytes: Option<[u8; 32]> =
-                payload.jwt_signing_key.as_ref().and_then(|b64| {
-                    base64::Engine::decode(&BASE64, b64)
-                        .ok()
-                        .and_then(|b| b.try_into().ok())
-                });
-            if let Some(jwt_key) = jwt_key_bytes {
-                // The KMS call lives in `vta-service`'s `tee` module; it is
-                // injected here as `re_encryptor` (see
-                // [`crate::BootstrapReEncryptor`]). Absent it (should not
-                // happen in a Mode-B `vta-service`), fail closed rather than
-                // silently skip re-encryption.
-                let re = re_encryptor.ok_or_else(|| {
-                    AppError::Internal(
-                        "TEE import requires a BootstrapReEncryptor but none was supplied".into(),
-                    )
-                })?;
-                re.re_encrypt(kms_config, store, &seed_bytes, &jwt_key)
-                    .await?;
-            } else {
-                info!("no JWT key in backup — skipping KMS re-encryption");
-            }
-        }
-    }
-
-    // Import complete and consistent: clear the crash-safety sentinel and
-    // fsync, so boot no longer sees a half-imported store (P0.5). Done last,
-    // after every record (incl. the TEE KMS re-encryption above) is in place.
-    keys_ks.remove(IMPORT_IN_PROGRESS_KEY).await?;
-    keys_ks.persist().await?;
-
-    // Restore rewrote the covered singletons (ACL, counters, …) via raw inserts
-    // that bypass the integrity chokepoints, so re-seal the TEE manifest to the
-    // freshly-restored state — otherwise the next boot would fail closed against
-    // the pre-restore manifest. The restore is super-admin-authorized, so the
-    // restored state is the new legitimate baseline (P0.2a). No-op outside a TEE.
-    vti_common::integrity::reseal_if_active().await?;
-
-    info!(
-        keys = payload.key_records.len(),
-        acls = payload.acl_entries.len(),
-        contexts = payload.context_records.len(),
-        audit = payload.audit_logs.len(),
-        "backup imported — soft restart required"
-    );
-
-    Ok(ImportResult {
-        status: "imported".into(),
-        source_did: payload.config.vta_did.clone(),
-        key_count: payload.key_records.len(),
-        acl_count: payload.acl_entries.len(),
-        context_count: payload.context_records.len(),
-        audit_count: payload.audit_logs.len(),
-        imported_secret_count: payload.imported_secrets.len(),
-        message: Some("Import complete. VTA will restart with new identity.".into()),
-    })
+    Ok(())
 }
 
 // ── Crypto helpers ─────────────────────────────────────────────────
+
+/// Associated data binding a v2 envelope's metadata to its ciphertext, so the
+/// unencrypted fields an operator reads before typing a password (source DID,
+/// whether the trail is included) cannot be swapped onto another backup.
+fn envelope_aad(envelope: &BackupEnvelope) -> Vec<u8> {
+    let mut aad = Vec::new();
+    for field in [
+        envelope.format.as_bytes(),
+        &envelope.version.to_be_bytes(),
+        envelope.source_did.as_deref().unwrap_or("").as_bytes(),
+        &[u8::from(envelope.includes_audit)],
+        envelope.kdf.salt.as_bytes(),
+        envelope.encryption.nonce.as_bytes(),
+    ] {
+        aad.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        aad.extend_from_slice(field);
+    }
+    aad
+}
+
+fn derive_backup_key(
+    password: &str,
+    salt: &[u8],
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+) -> Result<zeroize::Zeroizing<[u8; 32]>, AppError> {
+    let argon2 = Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon2::Params::new(m_cost, t_cost, p_cost, Some(32))
+            .map_err(|e| AppError::Validation(format!("argon2 params: {e}")))?,
+    );
+    let mut key = zeroize::Zeroizing::new([0u8; 32]);
+    argon2
+        .hash_password_into(password.as_bytes(), salt, key.as_mut())
+        .map_err(|e| AppError::Internal(format!("argon2 hash: {e}")))?;
+    Ok(key)
+}
 
 fn encrypt_payload(
     payload: &BackupPayload,
@@ -831,39 +782,20 @@ fn encrypt_payload(
     include_audit: bool,
     config: &vta_config::AppConfig,
 ) -> Result<BackupEnvelope, AppError> {
-    let plaintext =
-        serde_json::to_vec(payload).map_err(|e| AppError::Internal(format!("serialize: {e}")))?;
-
-    use rand::Rng;
-    let mut rng = rand::rng();
-    let mut salt = [0u8; SALT_LEN];
-    rng.fill_bytes(&mut salt);
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rng.fill_bytes(&mut nonce_bytes);
-
-    // Derive key via Argon2id
-    let argon2 = Argon2::new(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        argon2::Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(32))
-            .map_err(|e| AppError::Internal(format!("argon2 params: {e}")))?,
+    let plaintext = zeroize::Zeroizing::new(
+        serde_json::to_vec(payload).map_err(|e| AppError::Internal(format!("serialize: {e}")))?,
     );
-    let mut key = [0u8; 32];
-    argon2
-        .hash_password_into(password.as_bytes(), &salt, &mut key)
-        .map_err(|e| AppError::Internal(format!("argon2 hash: {e}")))?;
 
-    // Encrypt with AES-256-GCM
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
-    let nonce = (&nonce_bytes).into();
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
-        .map_err(|e| AppError::Internal(format!("aes encrypt: {e}")))?;
+    let mut salt = [0u8; SALT_LEN];
+    rand::fill(&mut salt);
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::fill(&mut nonce_bytes);
 
-    Ok(BackupEnvelope {
-        version: 1,
-        format: "vta-backup-v1".into(),
+    let key = derive_backup_key(password, &salt, ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST)?;
+
+    let mut envelope = BackupEnvelope {
+        version: 2,
+        format: BACKUP_FORMAT_V2.into(),
         created_at: Utc::now(),
         source_did: config.vta_did.clone(),
         source_version: env!("CARGO_PKG_VERSION").into(),
@@ -879,24 +811,45 @@ fn encrypt_payload(
             nonce: BASE64.encode(nonce_bytes),
         },
         includes_audit: include_audit,
-        ciphertext: BASE64.encode(&ciphertext),
-    })
+        ciphertext: String::new(),
+    };
+
+    let cipher = Aes256Gcm::new_from_slice(key.as_ref())
+        .map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
+    let nonce = (&nonce_bytes).into();
+    let ciphertext = cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext.as_ref(),
+                aad: &envelope_aad(&envelope),
+            },
+        )
+        .map_err(|e| AppError::Internal(format!("aes encrypt: {e}")))?;
+    envelope.ciphertext = BASE64.encode(&ciphertext);
+    Ok(envelope)
 }
 
 /// Decrypt a backup envelope and return the payload.
 ///
-/// Use this for confirmed imports to avoid the overhead of building an
-/// `ImportResult` preview. For preview mode, use `preview_import()`.
+/// Accepts `vta-backup-v2` (every export this build writes) and `vta-backup-v1`
+/// (typed collections, no associated data). Use this for confirmed imports to
+/// avoid the overhead of building an `ImportResult` preview. For preview mode,
+/// use `preview_import()`.
 pub fn decrypt_backup(
     envelope: &BackupEnvelope,
     password: &str,
 ) -> Result<BackupPayload, AppError> {
-    if envelope.version != 1 || envelope.format != "vta-backup-v1" {
-        return Err(AppError::Validation(format!(
-            "unsupported backup format: {} v{}",
-            envelope.format, envelope.version
-        )));
-    }
+    let v2 = match (envelope.version, envelope.format.as_str()) {
+        (2, BACKUP_FORMAT_V2) => true,
+        (1, BACKUP_FORMAT_V1) => false,
+        _ => {
+            return Err(AppError::Validation(format!(
+                "unsupported backup format: {} v{}",
+                envelope.format, envelope.version
+            )));
+        }
+    };
 
     // Reject KDF parameters outside sane bounds. An untrusted envelope
     // can otherwise force a memory bomb or a near-trivial KDF.
@@ -960,53 +913,44 @@ pub fn decrypt_backup(
         .decode(&envelope.ciphertext)
         .map_err(|e| AppError::Validation(format!("invalid ciphertext: {e}")))?;
 
-    // Derive key via Argon2id (using params from envelope)
-    let argon2 = Argon2::new(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        argon2::Params::new(
-            envelope.kdf.m_cost,
-            envelope.kdf.t_cost,
-            envelope.kdf.p_cost,
-            Some(32),
-        )
-        .map_err(|e| AppError::Validation(format!("argon2 params: {e}")))?,
-    );
-    let mut key = [0u8; 32];
-    argon2
-        .hash_password_into(password.as_bytes(), &salt, &mut key)
-        .map_err(|e| AppError::Internal(format!("argon2 hash: {e}")))?;
-
-    // Decrypt with AES-256-GCM
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
+    let key = derive_backup_key(
+        password,
+        &salt,
+        envelope.kdf.m_cost,
+        envelope.kdf.t_cost,
+        envelope.kdf.p_cost,
+    )?;
+    let cipher = Aes256Gcm::new_from_slice(key.as_ref())
+        .map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
     let nonce = Nonce::try_from(nonce_bytes.as_slice())
         .map_err(|_| AppError::Validation(format!("nonce must be {NONCE_LEN} bytes")))?;
-    let plaintext = cipher
-        .decrypt(&nonce, ciphertext.as_ref())
-        .map_err(|_| AppError::Authentication("incorrect backup password".into()))?;
+    let aad = if v2 {
+        envelope_aad(envelope)
+    } else {
+        Vec::new()
+    };
+    let plaintext = zeroize::Zeroizing::new(
+        cipher
+            .decrypt(
+                &nonce,
+                Payload {
+                    msg: ciphertext.as_ref(),
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| AppError::Authentication("incorrect backup password".into()))?,
+    );
 
     serde_json::from_slice(&plaintext)
         .map_err(|e| AppError::Internal(format!("backup payload corrupt: {e}")))
 }
 
-/// Remove all entries under the given prefixes from a keyspace.
-async fn clear_keyspace(ks: &KeyspaceHandle, prefixes: &[&str]) -> Result<(), AppError> {
-    for prefix in prefixes {
-        let keys = ks.prefix_keys(prefix.to_string()).await?;
-        for key in keys {
-            ks.remove(key).await?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use vta_webvh::webvh_store::{WebvhServerAuthRecord, store_server_auth};
-    use vti_common::config::StoreConfig as VtiStoreConfig;
-    use vti_common::store::Store;
+    use crate::test_support::{
+        TestSeedStore, open_test_store, super_admin_claims, test_app_config,
+    };
 
     /// The Argon2id key derivation, pinned to a frozen vector.
     ///
@@ -1025,15 +969,14 @@ mod tests {
     /// envelope plus a path that reads the old one.
     #[test]
     fn argon2id_derivation_matches_the_frozen_vector() {
-        let argon2 = Argon2::new(
-            argon2::Algorithm::Argon2id,
-            argon2::Version::V0x13,
-            argon2::Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(32)).unwrap(),
-        );
-        let mut key = [0u8; 32];
-        argon2
-            .hash_password_into(b"backup-password", b"0123456789abcdef", &mut key)
-            .unwrap();
+        let key = derive_backup_key(
+            "backup-password",
+            b"0123456789abcdef",
+            ARGON2_M_COST,
+            ARGON2_T_COST,
+            ARGON2_P_COST,
+        )
+        .unwrap();
         assert_eq!(
             key.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             "3558837960e818d4ae946a900d505053894bf02a6ac9e046f0781fe09a616bf9",
@@ -1042,81 +985,37 @@ mod tests {
         );
     }
 
-    /// Pre-existing daemon REST auth-cache records must be wiped by
-    /// the restore path. Otherwise a backup imported on a different
-    /// VTA (or a fresh install before re-onboarding the daemons)
-    /// would inherit tokens that, if still un-expired, could be used
-    /// against daemons the operator no longer controls. The import
-    /// path does not carry tokens *forward* (the export filter only
-    /// touches `server:` keys, not `server-auth:`), so what matters
-    /// is that the wipe step explicitly includes our prefix.
-    #[tokio::test]
-    async fn restore_clears_pre_existing_webvh_auth_cache() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&VtiStoreConfig {
-            data_dir: dir.path().into(),
-        })
-        .unwrap();
-        let webvh_ks = store.keyspace(vta_keyspaces::WEBVH).unwrap();
-
-        // Plant a stale auth record (as if a previous VTA installation
-        // had cached daemon REST tokens here).
-        let stale = WebvhServerAuthRecord {
-            server_id: "prod".into(),
-            access_token: "stale-access".into(),
-            access_expires_at: 9_999_999_999,
-            refresh_token: "stale-refresh".into(),
-            refresh_expires_at: 9_999_999_999,
-        };
-        store_server_auth(&webvh_ks, &stale).await.unwrap();
-
-        // Run the same wipe-prefixes call `apply_import` uses on the
-        // webvh keyspace.
-        clear_keyspace(&webvh_ks, &["server:", "server-auth:", "did:", "log:"])
-            .await
-            .unwrap();
-
-        // The stale auth record must be gone.
-        let remaining = vta_webvh::webvh_store::get_server_auth(&webvh_ks, "prod")
-            .await
-            .unwrap();
-        assert!(
-            remaining.is_none(),
-            "server-auth: prefix must be cleared on import; otherwise stale tokens leak across installations"
-        );
+    fn plain_target(ts: &crate::test_support::TestStore) -> BackupTarget<'_> {
+        BackupTarget {
+            store: &ts.store,
+            storage_key: None,
+            environment: BackupEnvironment::Plain,
+        }
     }
 
     /// A backup must be complete: a corrupt `key:` row must ABORT the
-    /// export rather than be silently omitted (which would drop key
-    /// material from the backup). This is the deliberate opposite of the
+    /// export rather than be silently carried (which would restore a key
+    /// record nothing can read). This is the deliberate opposite of the
     /// steady-state list paths, which skip corrupt rows.
     #[tokio::test]
     async fn export_aborts_on_corrupt_key_row() {
-        let ts = crate::test_support::open_test_store().await;
-        let seed_store = crate::test_support::TestSeedStore(vec![42u8; 32]);
-        let config = crate::test_support::test_app_config(ts.data_dir.clone());
-        let auth = crate::test_support::super_admin_claims();
-
-        // Plant a garbage row under the `key:` prefix that export scans.
+        let ts = open_test_store().await;
+        let config = test_app_config(ts.data_dir.clone());
         ts.keys_ks
             .insert_raw("key:corrupt", b"{not a key record".to_vec())
             .await
             .unwrap();
 
-        let ks = vta_keyspaces::Keyspaces {
-            keys: &ts.keys_ks,
-            acl: &ts.acl_ks,
-            contexts: &ts.contexts_ks,
-            did_templates: &ts.did_templates_ks,
-            audit: &ts.audit_ks,
-            imported: &ts.imported_ks,
-            #[cfg(feature = "webvh")]
-            webvh: &ts.webvh_ks,
-        };
-
-        let err = export_backup(&ks, &seed_store, &config, &auth, "a-strong-password", false)
-            .await
-            .expect_err("export must abort on a corrupt key row");
+        let err = export_backup(
+            &plain_target(&ts),
+            &TestSeedStore(vec![42u8; 32]),
+            &config,
+            &super_admin_claims(),
+            "a-strong-password",
+            false,
+        )
+        .await
+        .expect_err("export must abort on a corrupt key row");
         let msg = format!("{err:?}");
         assert!(
             msg.contains("corrupt") && msg.contains("key"),
@@ -1129,65 +1028,101 @@ mod tests {
     /// A password of exactly 15 characters must be accepted (boundary).
     #[tokio::test]
     async fn export_rejects_short_password() {
-        let ts = crate::test_support::open_test_store().await;
-        let seed_store = crate::test_support::TestSeedStore(vec![42u8; 32]);
-        let config = crate::test_support::test_app_config(ts.data_dir.clone());
-        let auth = crate::test_support::super_admin_claims();
+        let ts = open_test_store().await;
+        let config = test_app_config(ts.data_dir.clone());
+        let seed_store = TestSeedStore(vec![42u8; 32]);
+        let target = plain_target(&ts);
+        let auth = super_admin_claims();
 
-        let ks = vta_keyspaces::Keyspaces {
-            keys: &ts.keys_ks,
-            acl: &ts.acl_ks,
-            contexts: &ts.contexts_ks,
-            did_templates: &ts.did_templates_ks,
-            audit: &ts.audit_ks,
-            imported: &ts.imported_ks,
-            #[cfg(feature = "webvh")]
-            webvh: &ts.webvh_ks,
-        };
-
-        // 14 chars — one short of the minimum
-        let err = export_backup(&ks, &seed_store, &config, &auth, "14-char-passwo", false)
-            .await
-            .expect_err("export must reject a 14-character password");
+        let err = export_backup(
+            &target,
+            &seed_store,
+            &config,
+            &auth,
+            "14-char-passwo",
+            false,
+        )
+        .await
+        .expect_err("export must reject a 14-character password");
         assert!(
             format!("{err}").contains("15 characters"),
             "error must mention the 15-character minimum, got: {err}"
         );
-
-        // Exactly 15 chars — must be accepted (boundary)
-        export_backup(&ks, &seed_store, &config, &auth, "15-char-passwor", false)
-            .await
-            .expect("export must accept a 15-character password");
+        export_backup(
+            &target,
+            &seed_store,
+            &config,
+            &auth,
+            "15-char-passwor",
+            false,
+        )
+        .await
+        .expect("export must accept a 15-character password");
     }
 
-    fn test_payload() -> BackupPayload {
+    /// Environment-bound rows are the deployment's, not the agent's. An export
+    /// that carried the source enclave's identity mirror or a hardened VTA's
+    /// JWT row would plant it on a target that means something else by it.
+    #[tokio::test]
+    async fn export_leaves_deployment_bound_rows_behind() {
+        let ts = open_test_store().await;
+        let config = test_app_config(ts.data_dir.clone());
+        ts.keys_ks
+            .insert_raw("tee:vta_did", b"did:example:enclave".to_vec())
+            .await
+            .unwrap();
+        ts.keys_ks
+            .insert_raw("hardened:jwt_key", vec![1u8; 32])
+            .await
+            .unwrap();
+        ts.webvh_ks
+            .insert_raw("server-auth:srv", b"token".to_vec())
+            .await
+            .unwrap();
+        ts.keys_ks
+            .insert_raw("path_counter:m/1'", 3u32.to_le_bytes().to_vec())
+            .await
+            .unwrap();
+
+        let env = export_backup(
+            &plain_target(&ts),
+            &TestSeedStore(vec![42u8; 32]),
+            &config,
+            &super_admin_claims(),
+            "a-strong-password",
+            false,
+        )
+        .await
+        .unwrap();
+        let payload = decrypt_backup(&env, "a-strong-password").unwrap();
+        let keys: Vec<Vec<u8>> = payload
+            .keyspaces
+            .iter()
+            .flat_map(|d| d.rows.iter().map(|(k, _)| BASE64.decode(k).unwrap()))
+            .collect();
+        assert!(keys.iter().any(|k| k == b"path_counter:m/1'"));
+        for bound in [&b"tee:vta_did"[..], b"hardened:jwt_key", b"server-auth:srv"] {
+            assert!(
+                !keys.iter().any(|k| k == bound),
+                "{} must not be exported",
+                String::from_utf8_lossy(bound)
+            );
+        }
+        assert_eq!(payload.source_environment, Some(BackupEnvironment::Plain));
+    }
+
+    fn v2_payload() -> BackupPayload {
         BackupPayload {
             active_seed_hex: hex::encode([42u8; 32]),
             active_seed_id: 1,
-            seed_records: vec![SeedRecordBackup {
-                id: 0,
-                seed_hex: None,
-                // An encrypted retired-seed archive (P0.7b) must round-trip
-                // through backup verbatim so it stays decryptable on restore
-                // (the active seed + KEK salt are restored alongside it).
-                seed_enc: Some(vec![0xDEu8, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03]),
-                created_at: Utc::now(),
-                retired_at: Some(Utc::now()),
-            }],
+            seed_records: vec![],
             jwt_signing_key: Some(BASE64.encode([99u8; 32])),
             key_records: vec![],
             context_records: vec![],
-            context_counter: 2,
+            context_counter: 0,
             path_counters: vec![],
             subcontext_counters: vec![],
-            acl_entries: vec![AclEntryBackup {
-                did: "did:key:z6MkTest".into(),
-                role: "Admin".into(),
-                label: Some("test admin".into()),
-                allowed_contexts: vec!["ctx1".into()],
-                created_at: 1000,
-                created_by: "did:key:z6MkSetup".into(),
-            }],
+            acl_entries: vec![],
             acl_entries_full: vec![],
             seal: None,
             webvh_servers: vec![],
@@ -1203,6 +1138,12 @@ mod tests {
             audit_logs: vec![],
             imported_secrets: vec![],
             imported_kek_salt: None,
+            keyspaces: vec![KeyspaceDump {
+                name: vta_keyspaces::ACL.into(),
+                rows: vec![(BASE64.encode("acl:did:key:zA"), BASE64.encode("{}"))],
+            }],
+            source_environment: Some(BackupEnvironment::Tee),
+            internal_keys_not_carried: vec![],
         }
     }
 
@@ -1210,9 +1151,293 @@ mod tests {
         toml::from_str("").unwrap()
     }
 
-    // ── P0.5 import-fidelity tests ──────────────────────────────────
+    /// The pre-v2 envelope, exactly as the previous build wrote it (no
+    /// associated data), so the v1 read path stays tested against real bytes
+    /// rather than against its own writer.
+    fn encrypt_v1(payload: &BackupPayload, password: &str) -> BackupEnvelope {
+        let plaintext = serde_json::to_vec(payload).unwrap();
+        let salt = [5u8; SALT_LEN];
+        let nonce_bytes = [6u8; NONCE_LEN];
+        let key = derive_backup_key(password, &salt, ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST)
+            .unwrap();
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).unwrap();
+        let ciphertext = cipher
+            .encrypt((&nonce_bytes).into(), plaintext.as_ref())
+            .unwrap();
+        BackupEnvelope {
+            version: 1,
+            format: BACKUP_FORMAT_V1.into(),
+            created_at: Utc::now(),
+            source_did: payload.config.vta_did.clone(),
+            source_version: "0.0.0".into(),
+            kdf: KdfParams {
+                algorithm: "argon2id".into(),
+                salt: BASE64.encode(salt),
+                m_cost: ARGON2_M_COST,
+                t_cost: ARGON2_T_COST,
+                p_cost: ARGON2_P_COST,
+            },
+            encryption: EncryptionParams {
+                algorithm: "aes-256-gcm".into(),
+                nonce: BASE64.encode(nonce_bytes),
+            },
+            includes_audit: false,
+            ciphertext: BASE64.encode(ciphertext),
+        }
+    }
 
-    fn mk_key_record(key_id: &str, derivation_path: &str) -> vta_sdk::keys::KeyRecord {
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let payload = v2_payload();
+        let password = "test-password-12chars!";
+        let envelope = encrypt_payload(&payload, password, false, &test_config()).unwrap();
+
+        assert_eq!(envelope.version, 2);
+        assert_eq!(envelope.format, BACKUP_FORMAT_V2);
+        assert_eq!(envelope.kdf.algorithm, "argon2id");
+        assert_eq!(envelope.encryption.algorithm, "aes-256-gcm");
+
+        let decrypted = decrypt_backup(&envelope, password).unwrap();
+        assert_eq!(decrypted.active_seed_hex, payload.active_seed_hex);
+        assert_eq!(decrypted.jwt_signing_key, payload.jwt_signing_key);
+        assert_eq!(decrypted.keyspaces.len(), 1);
+        assert_eq!(decrypted.keyspaces[0].rows, payload.keyspaces[0].rows);
+        assert_eq!(decrypted.source_environment, Some(BackupEnvironment::Tee));
+        assert_eq!(decrypted.config.vta_did, Some("did:key:z6MkVTA".into()));
+    }
+
+    /// Every backup written before v2 must keep restoring.
+    #[test]
+    fn a_v1_envelope_still_decrypts() {
+        let mut payload = v2_payload();
+        payload.keyspaces.clear();
+        payload.acl_entries = vec![AclEntryBackup {
+            did: "did:key:z6MkTest".into(),
+            role: "Admin".into(),
+            label: None,
+            allowed_contexts: vec![],
+            created_at: 1000,
+            created_by: "did:key:z6MkSetup".into(),
+        }];
+        let env = encrypt_v1(&payload, "v1-password-12chars");
+        let back = decrypt_backup(&env, "v1-password-12chars").unwrap();
+        assert!(back.keyspaces.is_empty());
+        assert_eq!(back.acl_entries.len(), 1);
+    }
+
+    /// The fields an operator reads before typing a password are bound to the
+    /// ciphertext in v2: relabelling a backup as another agent's fails.
+    #[test]
+    fn v2_envelope_metadata_is_authenticated() {
+        let password = "test-password-12chars!";
+        let mut env = encrypt_payload(&v2_payload(), password, false, &test_config()).unwrap();
+        env.source_did = Some("did:key:z6MkSomeoneElse".into());
+        assert!(decrypt_backup(&env, password).is_err());
+
+        let mut env = encrypt_payload(&v2_payload(), password, false, &test_config()).unwrap();
+        env.includes_audit = true;
+        assert!(decrypt_backup(&env, password).is_err());
+    }
+
+    #[test]
+    fn wrong_password_fails() {
+        let envelope =
+            encrypt_payload(&v2_payload(), "correct-password!!", false, &test_config()).unwrap();
+        let err = decrypt_backup(&envelope, "wrong-password!!!").unwrap_err();
+        assert!(
+            format!("{err}").contains("incorrect backup password"),
+            "expected auth error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tampered_ciphertext_detected() {
+        let password = "test-password-12chars!";
+        let mut envelope = encrypt_payload(&v2_payload(), password, false, &test_config()).unwrap();
+        let mut ct_bytes = BASE64.decode(&envelope.ciphertext).unwrap();
+        if let Some(byte) = ct_bytes.last_mut() {
+            *byte ^= 0xFF;
+        }
+        envelope.ciphertext = BASE64.encode(&ct_bytes);
+        assert!(
+            format!("{}", decrypt_backup(&envelope, password).unwrap_err())
+                .contains("incorrect backup password"),
+            "tampered ciphertext should fail AES-GCM auth"
+        );
+    }
+
+    #[test]
+    fn unsupported_version_and_format_rejected() {
+        let password = "test-password-12chars!";
+        for (version, format) in [
+            (99, BACKUP_FORMAT_V2),
+            (2, "unknown-format"),
+            // A version that does not match its format is not guessed at.
+            (1, BACKUP_FORMAT_V2),
+            (2, BACKUP_FORMAT_V1),
+        ] {
+            let mut envelope =
+                encrypt_payload(&v2_payload(), password, false, &test_config()).unwrap();
+            envelope.version = version;
+            envelope.format = format.into();
+            assert!(
+                format!("{}", decrypt_backup(&envelope, password).unwrap_err())
+                    .contains("unsupported backup format"),
+                "v{version} {format} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_serialization_roundtrip() {
+        let password = "test-password-12chars!";
+        let envelope = encrypt_payload(&v2_payload(), password, true, &test_config()).unwrap();
+        let json = serde_json::to_string_pretty(&envelope).unwrap();
+        let deserialized: BackupEnvelope = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.includes_audit);
+        assert_eq!(deserialized.ciphertext, envelope.ciphertext);
+        let decrypted = decrypt_backup(&deserialized, password).unwrap();
+        assert_eq!(decrypted.active_seed_hex, v2_payload().active_seed_hex);
+    }
+
+    #[test]
+    fn different_passwords_produce_different_ciphertexts() {
+        let env1 =
+            encrypt_payload(&v2_payload(), "password-one-12!!", false, &test_config()).unwrap();
+        let env2 =
+            encrypt_payload(&v2_payload(), "password-two-12!!", false, &test_config()).unwrap();
+        assert_ne!(env1.kdf.salt, env2.kdf.salt);
+        assert_ne!(env1.ciphertext, env2.ciphertext);
+    }
+
+    // ── payload validation ──────────────────────────────────────────
+
+    /// A backup is attacker-supplied input to a super-admin. A dump naming a
+    /// keyspace outside `BACKED_UP` would write straight into an enclave's
+    /// boot material, or plant an "internal" key nobody generated.
+    #[test]
+    fn a_payload_cannot_write_outside_the_backed_up_keyspaces() {
+        for name in [
+            vta_keyspaces::BOOTSTRAP,
+            vta_keyspaces::INTERNAL_KEYS,
+            "no_such",
+        ] {
+            let mut payload = v2_payload();
+            payload.keyspaces.push(KeyspaceDump {
+                name: name.into(),
+                rows: vec![],
+            });
+            let err = validate_payload(&payload).unwrap_err();
+            assert!(format!("{err}").contains(name), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_payload_cannot_carry_a_deployment_bound_row() {
+        let mut payload = v2_payload();
+        payload.keyspaces.push(KeyspaceDump {
+            name: vta_keyspaces::KEYS.into(),
+            rows: vec![(BASE64.encode("tee:vta_did"), BASE64.encode("did:x"))],
+        });
+        assert!(
+            format!("{}", validate_payload(&payload).unwrap_err()).contains("deployment-bound")
+        );
+    }
+
+    #[test]
+    fn a_payload_cannot_name_a_keyspace_twice() {
+        let mut payload = v2_payload();
+        payload.keyspaces.push(payload.keyspaces[0].clone());
+        assert!(format!("{}", validate_payload(&payload).unwrap_err()).contains("twice"));
+    }
+
+    #[test]
+    fn payload_counts_read_raw_rows() {
+        let mut payload = v2_payload();
+        payload.keyspaces.push(KeyspaceDump {
+            name: vta_keyspaces::KEYS.into(),
+            rows: vec![
+                (BASE64.encode("key:a"), BASE64.encode("{}")),
+                (BASE64.encode("key:b"), BASE64.encode("{}")),
+                (BASE64.encode("path_counter:x"), BASE64.encode("1")),
+            ],
+        });
+        let counts = payload_counts(&payload);
+        assert_eq!(counts.keys, 2);
+        assert_eq!(counts.acls, 1);
+    }
+
+    // ── vta_did cross-check guard ───────────────────────────────────
+
+    #[test]
+    fn vta_did_guard_fresh_install_accepts_any_backup() {
+        check_vta_did_compatibility(None, Some("did:key:z6MkAnything"), false)
+            .expect("fresh install must accept any backup");
+        check_vta_did_compatibility(None, None, false)
+            .expect("fresh install accepts no-did backup");
+        check_vta_did_compatibility(Some(""), Some("did:key:z6MkAnything"), false)
+            .expect("empty-string vta_did counts as fresh install");
+    }
+
+    #[test]
+    fn vta_did_guard_matching_dids_accepted() {
+        check_vta_did_compatibility(Some("did:key:z6MkSame"), Some("did:key:z6MkSame"), false)
+            .expect("matching vta_did must pass");
+    }
+
+    #[test]
+    fn vta_did_guard_mismatch_rejected_with_the_fix() {
+        let err = check_vta_did_compatibility(
+            Some("did:key:z6MkRunning"),
+            Some("did:key:z6MkForeignBackup"),
+            false,
+        )
+        .expect_err("mismatched vta_did must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("vta_did mismatch"), "got: {msg}");
+        assert!(
+            msg.contains("z6MkForeignBackup"),
+            "must name backup did: {msg}"
+        );
+        assert!(msg.contains("z6MkRunning"), "must name running did: {msg}");
+        assert!(
+            msg.contains("--replace-identity"),
+            "must name the fix: {msg}"
+        );
+    }
+
+    /// Disaster recovery onto a freshly set-up VTA: it minted a DID of its
+    /// own, and the operator says to replace it.
+    #[test]
+    fn vta_did_guard_yields_to_replace_identity() {
+        check_vta_did_compatibility(
+            Some("did:key:z6MkFreshlySetUp"),
+            Some("did:key:z6MkTheOneWeLost"),
+            true,
+        )
+        .expect("replace_identity must allow the swap");
+    }
+
+    #[test]
+    fn vta_did_guard_backup_missing_did_rejected_when_running_has_did() {
+        let err = check_vta_did_compatibility(Some("did:key:z6MkRunning"), None, false)
+            .expect_err("missing backup vta_did must be rejected when running has one");
+        assert!(format!("{err}").contains("vta_did mismatch"), "got {err:?}");
+    }
+
+    #[test]
+    fn recompute_path_counters_skips_imported_keys_and_takes_max() {
+        let recs = vec![
+            mk_key_record("a", "m/26'/2'/0'/0'"),
+            mk_key_record("b", "m/26'/2'/0'/3'"),
+            mk_key_record("imported", ""),
+        ];
+        let counters = recompute_path_counters(&recs);
+        assert_eq!(counters.get("m/26'/2'/0'"), Some(&4));
+        assert_eq!(counters.len(), 1);
+    }
+
+    pub(crate) fn mk_key_record(key_id: &str, derivation_path: &str) -> vta_sdk::keys::KeyRecord {
         use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
         let now = Utc::now();
         KeyRecord {
@@ -1231,429 +1456,14 @@ mod tests {
         }
     }
 
-    fn import_keyspaces<'a>(
-        ts: &'a crate::test_support::TestStore,
-    ) -> vta_keyspaces::Keyspaces<'a> {
-        vta_keyspaces::Keyspaces {
-            keys: &ts.keys_ks,
-            acl: &ts.acl_ks,
-            contexts: &ts.contexts_ks,
-            did_templates: &ts.did_templates_ks,
-            audit: &ts.audit_ks,
-            imported: &ts.imported_ks,
-            #[cfg(feature = "webvh")]
-            webvh: &ts.webvh_ks,
-        }
-    }
-
-    /// The headline P0.5 fix: a restore must carry the BIP-32 path counter
-    /// forward, or the next key minted after restore re-derives a private
-    /// key a restored record already occupies.
-    #[tokio::test]
-    async fn import_restores_path_counter_preventing_key_reuse() {
-        let ts = crate::test_support::open_test_store().await;
-        let seed_store: std::sync::Arc<dyn SeedStore> =
-            std::sync::Arc::new(crate::test_support::TestSeedStore(vec![42u8; 32]));
-        let config =
-            tokio::sync::RwLock::new(crate::test_support::test_app_config(ts.data_dir.clone()));
-
-        let base = "m/26'/2'/0'";
-        let mut payload = test_payload();
-        payload.key_records = vec![mk_key_record("k0", &format!("{base}/0'"))];
-        payload.path_counters = vec![(format!("path_counter:{base}"), 1)];
-        payload.acl_entries = vec![]; // exercise only the counter path here
-
-        apply_import(
-            &payload,
-            &import_keyspaces(&ts),
-            &seed_store,
-            &config,
-            None,
-            #[cfg(feature = "tee")]
-            None,
-        )
-        .await
-        .expect("import");
-
-        // Allocating under the same base must NOT hand back the in-use index 0.
-        let next = vta_keys::paths::allocate_path(&ts.keys_ks, base)
-            .await
-            .expect("alloc");
-        assert_eq!(
-            next,
-            format!("{base}/1'"),
-            "restore must carry the path counter forward (no key reuse)"
-        );
-    }
-
-    /// Without exported counters (a pre-P0.5 backup), the importer recomputes
-    /// from the restored key records — so the reuse bug is closed for old
-    /// backups too.
-    #[tokio::test]
-    async fn import_recomputes_path_counter_for_legacy_backup() {
-        let ts = crate::test_support::open_test_store().await;
-        let seed_store: std::sync::Arc<dyn SeedStore> =
-            std::sync::Arc::new(crate::test_support::TestSeedStore(vec![42u8; 32]));
-        let config =
-            tokio::sync::RwLock::new(crate::test_support::test_app_config(ts.data_dir.clone()));
-
-        let base = "m/26'/2'/0'";
-        let mut payload = test_payload();
-        // Two restored keys at indices 0 and 1, NO exported counters (legacy).
-        payload.key_records = vec![
-            mk_key_record("k0", &format!("{base}/0'")),
-            mk_key_record("k1", &format!("{base}/1'")),
-        ];
-        payload.path_counters = vec![];
-        payload.acl_entries = vec![];
-
-        apply_import(
-            &payload,
-            &import_keyspaces(&ts),
-            &seed_store,
-            &config,
-            None,
-            #[cfg(feature = "tee")]
-            None,
-        )
-        .await
-        .expect("import");
-
-        let next = vta_keys::paths::allocate_path(&ts.keys_ks, base)
-            .await
-            .expect("alloc");
-        assert_eq!(
-            next,
-            format!("{base}/2'"),
-            "recomputed counter must skip both in-use indices"
-        );
-    }
-
-    /// ACL entries must round-trip ALL fields — expiry, step-up floors,
-    /// capabilities, etc. — not collapse to the lossy 6-field projection
-    /// (which restored expired grants as permanent and stripped step-up).
-    #[tokio::test]
-    async fn import_restores_full_acl_entry_fields() {
-        use vti_common::acl::{AclEntry, Role};
-        use vti_common::auth::step_up::StepUpMode;
-
-        let ts = crate::test_support::open_test_store().await;
-        let seed_store: std::sync::Arc<dyn SeedStore> =
-            std::sync::Arc::new(crate::test_support::TestSeedStore(vec![42u8; 32]));
-        let config =
-            tokio::sync::RwLock::new(crate::test_support::test_app_config(ts.data_dir.clone()));
-
-        let mut entry = AclEntry::new("did:key:zAcl", Role::Admin, "did:key:zSetup");
-        entry.expires_at = Some(1_900_000_000);
-        entry.step_up_require = Some(StepUpMode::SelfApprove);
-        let full = serde_json::to_value(&entry).unwrap();
-
-        let mut payload = test_payload();
-        payload.acl_entries = vec![]; // ensure the full form is what's used
-        payload.acl_entries_full = vec![full];
-
-        apply_import(
-            &payload,
-            &import_keyspaces(&ts),
-            &seed_store,
-            &config,
-            None,
-            #[cfg(feature = "tee")]
-            None,
-        )
-        .await
-        .expect("import");
-
-        let restored: AclEntry = ts
-            .acl_ks
-            .get("acl:did:key:zAcl")
-            .await
-            .unwrap()
-            .expect("acl entry restored");
-        assert_eq!(restored.role, Role::Admin);
-        assert_eq!(
-            restored.expires_at,
-            Some(1_900_000_000),
-            "expiry must survive (a lossy restore would make it permanent)"
-        );
-        assert_eq!(
-            restored.step_up_require,
-            Some(StepUpMode::SelfApprove),
-            "step-up floor must survive (a lossy restore would strip it)"
-        );
-    }
-
-    /// The crash-safety sentinel must be gone after a successful import, and
-    /// must live under a key the clear step doesn't wipe (so an interrupted
-    /// import leaves it for boot to detect).
-    #[tokio::test]
-    async fn successful_import_leaves_no_in_progress_sentinel() {
-        let ts = crate::test_support::open_test_store().await;
-        let seed_store: std::sync::Arc<dyn SeedStore> =
-            std::sync::Arc::new(crate::test_support::TestSeedStore(vec![42u8; 32]));
-        let config =
-            tokio::sync::RwLock::new(crate::test_support::test_app_config(ts.data_dir.clone()));
-
-        let mut payload = test_payload();
-        payload.acl_entries = vec![];
-
-        apply_import(
-            &payload,
-            &import_keyspaces(&ts),
-            &seed_store,
-            &config,
-            None,
-            #[cfg(feature = "tee")]
-            None,
-        )
-        .await
-        .expect("import");
-
-        assert!(
-            ts.keys_ks
-                .get_raw(IMPORT_IN_PROGRESS_KEY)
-                .await
-                .unwrap()
-                .is_none(),
-            "a completed import must clear its in-progress sentinel"
-        );
-    }
-
-    #[tokio::test]
-    async fn import_sentinel_survives_keyspace_clear() {
-        // The sentinel is written before the clear; verify the clear
-        // prefixes used by apply_import don't wipe it.
-        let ts = crate::test_support::open_test_store().await;
-        ts.keys_ks
-            .insert_raw(IMPORT_IN_PROGRESS_KEY, b"1".to_vec())
-            .await
-            .unwrap();
-        clear_keyspace(&ts.keys_ks, &["key:", "seed:", "path_counter:"])
-            .await
-            .unwrap();
-        assert!(
-            ts.keys_ks
-                .get_raw(IMPORT_IN_PROGRESS_KEY)
-                .await
-                .unwrap()
-                .is_some(),
-            "the sentinel must survive the import clear so an interrupted import is detectable at boot"
-        );
-    }
-
-    #[test]
-    fn recompute_path_counters_skips_imported_keys_and_takes_max() {
-        let recs = vec![
-            mk_key_record("a", "m/26'/2'/0'/0'"),
-            mk_key_record("b", "m/26'/2'/0'/3'"),
-            mk_key_record("imported", ""), // no derivation path → ignored
-        ];
-        let counters = recompute_path_counters(&recs);
-        assert_eq!(counters.get("m/26'/2'/0'"), Some(&4)); // max index 3 + 1
-        assert_eq!(counters.len(), 1);
-    }
-
-    #[test]
-    fn encrypt_decrypt_roundtrip() {
-        let payload = test_payload();
-        let password = "test-password-12chars!";
-        let config = test_config();
-
-        let envelope = encrypt_payload(&payload, password, false, &config).unwrap();
-
-        assert_eq!(envelope.version, 1);
-        assert_eq!(envelope.format, "vta-backup-v1");
-        assert_eq!(envelope.kdf.algorithm, "argon2id");
-        assert_eq!(envelope.encryption.algorithm, "aes-256-gcm");
-        assert!(!envelope.ciphertext.is_empty());
-
-        let decrypted = decrypt_backup(&envelope, password).unwrap();
-
-        assert_eq!(decrypted.active_seed_hex, payload.active_seed_hex);
-        assert_eq!(decrypted.active_seed_id, payload.active_seed_id);
-        assert_eq!(decrypted.seed_records.len(), 1);
-        assert_eq!(decrypted.seed_records[0].id, 0);
-        // The encrypted retired-seed archive survives the backup round-trip
-        // byte-for-byte (P0.7b); no plaintext seed_hex is introduced.
-        assert_eq!(decrypted.seed_records[0].seed_hex, None);
-        assert_eq!(
-            decrypted.seed_records[0].seed_enc,
-            payload.seed_records[0].seed_enc
-        );
-        assert_eq!(decrypted.jwt_signing_key, payload.jwt_signing_key);
-        assert_eq!(decrypted.context_counter, 2);
-        assert_eq!(decrypted.acl_entries.len(), 1);
-        assert_eq!(decrypted.acl_entries[0].did, "did:key:z6MkTest");
-        assert_eq!(decrypted.acl_entries[0].role, "Admin");
-        assert_eq!(decrypted.config.vta_did, Some("did:key:z6MkVTA".into()));
-        assert_eq!(decrypted.config.vta_name, Some("Test VTA".into()));
-    }
-
-    #[test]
-    fn wrong_password_fails() {
-        let payload = test_payload();
-        let config = test_config();
-
-        let envelope = encrypt_payload(&payload, "correct-password!!", false, &config).unwrap();
-        let result = decrypt_backup(&envelope, "wrong-password!!!");
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        // AES-GCM auth tag mismatch → authentication error
-        assert!(
-            format!("{err}").contains("incorrect backup password"),
-            "expected auth error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn tampered_ciphertext_detected() {
-        let payload = test_payload();
-        let config = test_config();
-        let password = "test-password-12chars!";
-
-        let mut envelope = encrypt_payload(&payload, password, false, &config).unwrap();
-
-        // Tamper with the ciphertext (flip a byte)
-        let mut ct_bytes = BASE64.decode(&envelope.ciphertext).unwrap();
-        if let Some(byte) = ct_bytes.last_mut() {
-            *byte ^= 0xFF;
-        }
-        envelope.ciphertext = BASE64.encode(&ct_bytes);
-
-        let result = decrypt_backup(&envelope, password);
-        assert!(result.is_err());
-        assert!(
-            format!("{}", result.unwrap_err()).contains("incorrect backup password"),
-            "tampered ciphertext should fail AES-GCM auth"
-        );
-    }
-
-    #[test]
-    fn unsupported_version_rejected() {
-        let payload = test_payload();
-        let config = test_config();
-        let password = "test-password-12chars!";
-
-        let mut envelope = encrypt_payload(&payload, password, false, &config).unwrap();
-        envelope.version = 99;
-
-        let result = decrypt_backup(&envelope, password);
-        assert!(result.is_err());
-        assert!(
-            format!("{}", result.unwrap_err()).contains("unsupported backup format"),
-            "should reject unknown version"
-        );
-    }
-
-    #[test]
-    fn unsupported_format_rejected() {
-        let payload = test_payload();
-        let config = test_config();
-        let password = "test-password-12chars!";
-
-        let mut envelope = encrypt_payload(&payload, password, false, &config).unwrap();
-        envelope.format = "unknown-format".into();
-
-        let result = decrypt_backup(&envelope, password);
-        assert!(result.is_err());
-        assert!(
-            format!("{}", result.unwrap_err()).contains("unsupported backup format"),
-            "should reject unknown format"
-        );
-    }
-
-    #[test]
-    fn envelope_serialization_roundtrip() {
-        let payload = test_payload();
-        let config = test_config();
-        let password = "test-password-12chars!";
-
-        let envelope = encrypt_payload(&payload, password, true, &config).unwrap();
-
-        // Serialize to JSON and back
-        let json = serde_json::to_string_pretty(&envelope).unwrap();
-        let deserialized: BackupEnvelope = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.version, envelope.version);
-        assert_eq!(deserialized.format, envelope.format);
-        assert!(deserialized.includes_audit);
-        assert_eq!(deserialized.ciphertext, envelope.ciphertext);
-
-        // Should still decrypt correctly
-        let decrypted = decrypt_backup(&deserialized, password).unwrap();
-        assert_eq!(decrypted.active_seed_hex, payload.active_seed_hex);
-    }
-
-    #[test]
-    fn different_passwords_produce_different_ciphertexts() {
-        let payload = test_payload();
-        let config = test_config();
-
-        let env1 = encrypt_payload(&payload, "password-one-12!!", false, &config).unwrap();
-        let env2 = encrypt_payload(&payload, "password-two-12!!", false, &config).unwrap();
-
-        // Different salts → different ciphertexts
-        assert_ne!(env1.kdf.salt, env2.kdf.salt);
-        assert_ne!(env1.ciphertext, env2.ciphertext);
-    }
-
-    // ── vta_did cross-check guard ───────────────────────────────────
-
-    #[test]
-    fn vta_did_guard_fresh_install_accepts_any_backup() {
-        // A VTA that has not yet configured a vta_did accepts any
-        // backup — this is the disaster-recovery case.
-        check_vta_did_compatibility(None, Some("did:key:z6MkAnything"))
-            .expect("fresh install must accept any backup");
-        check_vta_did_compatibility(None, None).expect("fresh install accepts no-did backup");
-        check_vta_did_compatibility(Some(""), Some("did:key:z6MkAnything"))
-            .expect("empty-string vta_did counts as fresh install");
-    }
-
-    #[test]
-    fn vta_did_guard_matching_dids_accepted() {
-        // Legitimate disaster recovery: restore the same VTA's backup
-        // onto a fresh host that has the expected vta_did configured.
-        check_vta_did_compatibility(Some("did:key:z6MkSame"), Some("did:key:z6MkSame"))
-            .expect("matching vta_did must pass");
-    }
-
-    #[test]
-    fn vta_did_guard_mismatch_rejected() {
-        let err = check_vta_did_compatibility(
-            Some("did:key:z6MkRunning"),
-            Some("did:key:z6MkForeignBackup"),
-        )
-        .expect_err("mismatched vta_did must be rejected");
-        let msg = format!("{err}");
-        assert!(msg.contains("vta_did mismatch"), "got: {msg}");
-        assert!(
-            msg.contains("z6MkForeignBackup"),
-            "must name backup did: {msg}"
-        );
-        assert!(msg.contains("z6MkRunning"), "must name running did: {msg}");
-    }
-
-    #[test]
-    fn vta_did_guard_backup_missing_did_rejected_when_running_has_did() {
-        // A backup with no vta_did can't legitimately replace a
-        // running VTA's identity — treat empty as mismatch.
-        let err = check_vta_did_compatibility(Some("did:key:z6MkRunning"), None)
-            .expect_err("missing backup vta_did must be rejected when running has one");
-        assert!(format!("{err}").contains("vta_did mismatch"), "got {err:?}");
-    }
-
     // ── KDF parameter clamps on import ──────────────────────────────
 
     fn make_envelope_with_kdf(m_cost: u32, t_cost: u32, p_cost: u32, alg: &str) -> BackupEnvelope {
-        // Build a real encrypted envelope, then mutate the KDF params.
-        // The ciphertext won't decrypt with the wrong params, but the
+        // Build a real encrypted envelope, then mutate the KDF params. The
         // bounds check fires before decrypt is attempted — that's the
-        // behaviour we're testing.
-        let payload = test_payload();
-        let config = test_config();
-        let mut env = encrypt_payload(&payload, "password-12!ok!a", false, &config).unwrap();
+        // behaviour under test.
+        let mut env =
+            encrypt_payload(&v2_payload(), "password-12!ok!a", false, &test_config()).unwrap();
         env.kdf.algorithm = alg.into();
         env.kdf.m_cost = m_cost;
         env.kdf.t_cost = t_cost;
@@ -1700,24 +1510,20 @@ mod tests {
     // ── Salt / nonce length validation on import ───────────────────
     //
     // Regression tests for the DoS where a crafted envelope's wrong-length
-    // nonce would panic `Nonce::from_slice`, taking the import handler
-    // (super-admin only, but reachable over REST) down with it.
-    //
-    // The panic is now impossible by construction — the conversion is
-    // `TryFrom` — but these stay: they assert the *rejection*, not the
-    // absence of a panic, and that is still the behaviour callers depend on.
+    // nonce would panic `Nonce::from_slice`. The panic is now impossible by
+    // construction — the conversion is `TryFrom` — but these stay: they
+    // assert the *rejection*, which is still what callers depend on.
 
     #[test]
     fn nonce_wrong_length_rejected_without_panic() {
-        let payload = test_payload();
-        let config = test_config();
-        let mut env = encrypt_payload(&payload, "password-12!ok!a", false, &config).unwrap();
-        // Replace the 12-byte nonce with a 16-byte one (the smallest
-        // wrong size large enough that decode succeeds easily).
+        let mut env =
+            encrypt_payload(&v2_payload(), "password-12!ok!a", false, &test_config()).unwrap();
         env.encryption.nonce = BASE64.encode([0u8; 16]);
-        let err = decrypt_backup(&env, "password-12!ok!a")
-            .expect_err("wrong-length nonce must be rejected pre-decrypt");
-        let msg = format!("{err}");
+        let msg = format!(
+            "{}",
+            decrypt_backup(&env, "password-12!ok!a")
+                .expect_err("wrong-length nonce must be rejected pre-decrypt")
+        );
         assert!(
             msg.contains("nonce length"),
             "expected nonce-length error, got: {msg}"
@@ -1726,14 +1532,14 @@ mod tests {
 
     #[test]
     fn salt_wrong_length_rejected_without_panic() {
-        let payload = test_payload();
-        let config = test_config();
-        let mut env = encrypt_payload(&payload, "password-12!ok!a", false, &config).unwrap();
-        // 16 bytes instead of the expected 32.
+        let mut env =
+            encrypt_payload(&v2_payload(), "password-12!ok!a", false, &test_config()).unwrap();
         env.kdf.salt = BASE64.encode([0u8; 16]);
-        let err = decrypt_backup(&env, "password-12!ok!a")
-            .expect_err("wrong-length salt must be rejected pre-decrypt");
-        let msg = format!("{err}");
+        let msg = format!(
+            "{}",
+            decrypt_backup(&env, "password-12!ok!a")
+                .expect_err("wrong-length salt must be rejected pre-decrypt")
+        );
         assert!(
             msg.contains("salt length"),
             "expected salt-length error, got: {msg}"

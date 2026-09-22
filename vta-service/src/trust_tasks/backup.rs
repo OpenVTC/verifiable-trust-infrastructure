@@ -135,7 +135,8 @@ pub(super) async fn handle_initiate_export(
     if let Err(resp) = initiate_precheck(state, auth, &doc, INITIATE_EXPORT_SLUG).await {
         return resp;
     }
-    let deps = crate::operations::descriptor_deps_from_app_state(state);
+    let committer = state.backup_access().committer().await;
+    let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     // `include_audit` is read BEFORE the request moves into the op: it is the
     // one member that changes what leaves the agent — the trail records the
     // agent's dealings with counterparties who were never party to this export
@@ -171,7 +172,8 @@ pub(super) async fn handle_complete_export(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let deps = crate::operations::descriptor_deps_from_app_state(state);
+    let committer = state.backup_access().committer().await;
+    let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     match descriptors::complete_export(&deps, auth, req).await {
         Ok(body) => {
             // `downloaded` is the whole evidentiary content of this row. It is
@@ -207,7 +209,8 @@ pub(super) async fn handle_initiate_import(
     if let Err(resp) = initiate_precheck(state, auth, &doc, INITIATE_IMPORT_SLUG).await {
         return resp;
     }
-    let deps = crate::operations::descriptor_deps_from_app_state(state);
+    let committer = state.backup_access().committer().await;
+    let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     match descriptors::initiate_import(&deps, auth, req).await {
         Ok(body) => {
             // The digest identifies the exact bytes the operator committed to
@@ -258,7 +261,8 @@ pub(super) async fn handle_finalize_import(
             other => app_error_to_reject(&doc, AppError::Conflict(other.to_string())),
         };
     }
-    let deps = crate::operations::descriptor_deps_from_app_state(state);
+    let committer = state.backup_access().committer().await;
+    let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     match descriptors::finalize_import(&deps, auth, req).await {
         Ok(body) => {
             // The most consequential row this service writes. On commit the
@@ -289,6 +293,11 @@ pub(super) async fn handle_finalize_import(
                 ),
             )
             .await;
+            // A commit staged the restore and committed its seed; it takes
+            // effect only when the VTA boots again. The reply goes out first.
+            if body.status == "committed" {
+                crate::restore::request_reboot(&state.restart_tx);
+            }
             success_response(&doc, body)
         }
         Err(e) => app_error_to_reject(&doc, e),
@@ -306,7 +315,8 @@ pub(super) async fn handle_abort(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let deps = crate::operations::descriptor_deps_from_app_state(state);
+    let committer = state.backup_access().committer().await;
+    let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     match descriptors::abort_bundle(&deps, auth, req).await {
         Ok(body) => {
             // A bundle that simply stops existing is indistinguishable from one
@@ -450,7 +460,8 @@ pub(super) async fn handle_initiate_export_1_1(
         return app_error_to_reject(&doc, e);
     }
     let include_audit = req.include_audit.unwrap_or(false);
-    let deps = crate::operations::descriptor_deps_from_app_state(state);
+    let committer = state.backup_access().committer().await;
+    let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     let bundle = match chunked::initiate_export(
         &deps,
         auth,

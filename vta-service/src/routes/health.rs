@@ -33,6 +33,30 @@ pub struct HealthDetailsResponse {
     /// transport (`services.tsp`). TSP shares the same mediator as DIDComm
     /// (`mediator_did` above), so no separate endpoint is reported.
     tsp_enabled: bool,
+    /// Present when this VTA's state derives from a backup restore: when, from
+    /// which agent and kind of deployment, and what did not come back.
+    /// VTI-VTA-051 — a node MUST be able to report that its current state
+    /// derives from a restore, and from when.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restored: Option<RestoredFrom>,
+}
+
+/// The restore this VTA's state derives from.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoredFrom {
+    applied_at: chrono::DateTime<chrono::Utc>,
+    staged_at: chrono::DateTime<chrono::Utc>,
+    staged_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_did: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_environment: Option<String>,
+    target_environment: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    internal_keys_lost: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hosted_dids_detached: Vec<String>,
 }
 
 /// Minimal health check — no authentication required.
@@ -66,6 +90,21 @@ pub async fn health_details(
 
     let tsp_enabled = config.services.tsp;
 
+    let restored = vta_backup::restore::read_provenance(&state.backup_access().target())
+        .await
+        .ok()
+        .flatten()
+        .map(|p| RestoredFrom {
+            applied_at: p.applied_at,
+            staged_at: p.staged_at,
+            staged_by: p.staged_by,
+            source_did: p.source_did,
+            source_environment: p.source_environment.map(|e| e.to_string()),
+            target_environment: p.target_environment.to_string(),
+            internal_keys_lost: p.internal_keys_lost,
+            hosted_dids_detached: p.hosted_dids_detached,
+        });
+
     Ok(Json(HealthDetailsResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -76,5 +115,6 @@ pub async fn health_details(
         sealed,
         storage_encrypted,
         tsp_enabled,
+        restored,
     }))
 }

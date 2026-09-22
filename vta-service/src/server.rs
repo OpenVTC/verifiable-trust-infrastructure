@@ -251,6 +251,12 @@ pub struct AppState {
     pub wrapping_cache: crate::keys::wrapping::WrappingKeyCache,
     pub config: Arc<RwLock<AppConfig>>,
     pub seed_store: Arc<dyn SeedStore>,
+    /// The store every keyspace handle above is opened from, and the at-rest
+    /// key they are sealed under. A backup reads *every* keyspace — including
+    /// ones no request path holds a handle to — and a restore is staged into
+    /// the unencrypted `bootstrap` keyspace; see [`Self::backup_target`].
+    pub store: Store,
+    pub storage_encryption_key: Option<[u8; 32]>,
     pub did_resolver: Option<DIDCacheClient>,
     /// Live status-list resolver for the present path: when set, the holder
     /// **re-resolves** a credential's revocation status at present time rather
@@ -311,6 +317,17 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// What a backup or a restore needs from this VTA.
+    pub fn backup_access(&self) -> crate::restore::BackupAccess<'_> {
+        crate::restore::BackupAccess {
+            store: &self.store,
+            storage_key: self.storage_encryption_key,
+            in_enclave: self.tee.is_some(),
+            seed_store: self.seed_store.as_ref(),
+            config: &self.config,
+        }
+    }
+
     /// The resolver Trust Task Data-Integrity proofs are verified with.
     ///
     /// Carries the configured DID cache, so a proof by any DID that names a key
@@ -483,13 +500,7 @@ pub async fn build_app_state(
     let persona_ks = apply_encryption(store.keyspace(crate::keyspaces::PERSONA)?);
     // Domain-separated from the at-rest key so that compromise of one does not
     // hand over the other.
-    let persona_correlation_key: [u8; 32] = {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(b"vta-persona/correlation-index/v1");
-        h.update(storage_encryption_key.unwrap_or([0u8; 32]));
-        h.finalize().into()
-    };
+    let persona_correlation_key = crate::restore::persona_correlation_key(storage_encryption_key);
     let policy_ks = apply_encryption(store.keyspace(crate::keyspaces::POLICY)?);
     let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
     #[cfg(feature = "webvh")]
@@ -591,6 +602,8 @@ pub async fn build_app_state(
         mdoc_trust,
         config: Arc::new(RwLock::new(config)),
         seed_store,
+        store: store.clone(),
+        storage_encryption_key,
         did_resolver: auth.did_resolver.clone(),
         status_list_resolver: crate::vault::status::default_status_resolver(auth.did_resolver),
         secrets_resolver: auth.secrets_resolver,
@@ -660,10 +673,11 @@ pub async fn run(
     // service that passes a port-liveness check but can't function (P0.9).
     config.validate()?;
 
-    // Refuse to boot on a store left half-imported by an interrupted backup
-    // restore (P0.5). The sentinel is written + fsynced before apply_import
-    // clears the store and removed only after the import completes; if it is
-    // still present, the rewrite didn't finish and the state is hybrid.
+    // Refuse to boot on a store an older build left half-imported (P0.5). That
+    // import rewrote the live store in place behind this sentinel. Imports now
+    // stage the restore and apply it at boot — the stage is its own crash marker
+    // (`vta_support::restore_stage`) — but a store written by the old path must
+    // still not be served.
     {
         let keys_ks_boot = {
             let ks = store.keyspace(crate::keyspaces::KEYS)?;
@@ -766,58 +780,48 @@ pub async fn run(
         // Build the external counter when configured. It is keyed by the VTA
         // DID; without an identity there is nothing to key on, so fall back to
         // manifest-only (P0.2a) with a warning.
-        let anchor: Option<Arc<dyn vti_common::integrity::AnchorCounter>> =
-            match (kms.anchor.as_ref(), config.vta_did.as_ref()) {
-                (Some(anchor_cfg), Some(vta_did)) => {
-                    // P0.2c: if a sealed writer credential is configured, unseal
-                    // it through the attestation-gated KMS Decrypt so the counter
-                    // is written with the `vta-anchor-writer` principal (which the
-                    // instance role is IAM-denied) rather than the instance role
-                    // a root-on-parent attacker shares. A configured-but-
-                    // unsealable credential is fatal — falling back to the
-                    // instance role would silently downgrade to P0.2b.
-                    let writer = match anchor_cfg.writer_credential_ciphertext.as_ref() {
-                        Some(b64) => {
-                            let ct = base64::engine::general_purpose::STANDARD
-                                .decode(b64)
-                                .map_err(|e| {
-                                    AppError::Config(format!(
-                                        "tee.kms.anchor.writer_credential_ciphertext is not \
-                                         valid base64: {e}"
-                                    ))
-                                })?;
-                            let pt = crate::tee::kms_bootstrap::attested_decrypt(kms, &ct).await?;
-                            let creds: crate::tee::anchor::WriterCredentials =
-                                serde_json::from_slice(&pt).map_err(|e| {
-                                    AppError::Config(format!(
-                                        "anchor writer credential did not decrypt to \
-                                         {{access_key_id, secret_access_key}}: {e}"
-                                    ))
-                                })?;
-                            info!("anchor writer credential unsealed (attestation-gated, P0.2c)");
-                            Some(creds)
-                        }
-                        None => None,
-                    };
-                    Some(Arc::new(
-                        crate::tee::anchor::DynamoAnchorCounter::new(
-                            &kms.region,
-                            anchor_cfg.table_name.clone(),
-                            vta_did.clone(),
-                            writer,
-                        )
-                        .await,
-                    ))
+        let anchor = crate::restore::build_anchor_counter(kms, config.vta_did.as_deref()).await?;
+        // A restore applied at this boot replaced the store the manifest
+        // describes, and left an instruction (in the encrypted `keys` keyspace,
+        // so the parent cannot forge one) to re-baseline it — bound to the
+        // anti-rollback version the restore reserved when it was committed.
+        let restore_target = vta_backup::BackupTarget {
+            store: &store,
+            storage_key: Some(storage_key),
+            environment: vta_sdk::protocols::backup_management::types::BackupEnvironment::Tee,
+        };
+        if let Some(marker) = vta_backup::restore::read_rebaseline_marker(&restore_target).await? {
+            let reserved = match &marker.anchor {
+                Some(binding) if Some(binding.did.as_str()) == config.vta_did.as_deref() => {
+                    Some(binding.version)
                 }
-                (Some(_), None) => {
-                    warn!(
-                        "tee.kms.anchor is configured but vta_did is unset — booting \
-                         manifest-only (P0.2a); the external rollback counter is disabled"
-                    );
-                    None
+                Some(binding) => {
+                    return Err(AppError::Internal(format!(
+                        "restore {} reserved the anti-rollback counter of {}, but this enclave                          runs as {} — refusing to re-baseline",
+                        marker.restore_id,
+                        binding.did,
+                        config.vta_did.as_deref().unwrap_or("no DID")
+                    )));
                 }
-                (None, _) => None,
+                None => None,
             };
+            let version = vti_common::integrity::rebaseline_after_restore(
+                vti_common::integrity::derive_mac_key(&storage_key),
+                enc("keys")?,
+                store.keyspace(crate::keyspaces::BOOTSTRAP)?,
+                enc("acl")?,
+                enc("contexts")?,
+                anchor.clone(),
+                reserved,
+            )
+            .await?;
+            vta_backup::restore::clear_rebaseline_marker(&restore_target).await?;
+            info!(
+                restore_id = %marker.restore_id,
+                version,
+                "integrity manifest re-baselined over the restored store"
+            );
+        }
         let outcome = vti_common::integrity::boot_verify_and_install(
             vti_common::integrity::derive_mac_key(&storage_key),
             enc("keys")?,
@@ -1044,6 +1048,14 @@ pub async fn run(
             )
             .await?
         };
+
+        // VTI-VTA-051: a restore is recorded in the audit trail — by the first
+        // boot with a sink, since the trail is part of what the restore replaced.
+        // Retried on every boot until it lands.
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        if let Err(e) = crate::restore::audit_restore_once(&app_state).await {
+            warn!(error = %e, "could not record the applied restore in the audit trail yet");
+        }
 
         // The tombstone sweeper takes a namespace's lock to reap it, so it must
         // hold the *same* map the request path writes through. Cloned from the
@@ -1461,6 +1473,13 @@ pub async fn run(
 
         if !is_restart {
             info!("server shut down");
+            return Ok(());
+        }
+        if crate::restore::reboot_requested() {
+            // A committed restore: a soft restart would keep this process's
+            // storage key, which the restore may have changed. Return, and let
+            // the binary boot again from the top (`restore::reexec`).
+            info!("server stopped for a reboot to apply a committed restore");
             return Ok(());
         }
 

@@ -16,21 +16,16 @@ use vti_common::store::{KeyspaceHandle, Store};
 
 /// A fresh tempdir-backed store with the keyspaces the backup path uses.
 pub struct TestStore {
-    // `_dir` owns the on-disk backing and must outlive `_store`; `_store` must
+    // `_dir` owns the on-disk backing and must outlive `store`; `store` must
     // outlive the keyspace handles.
     _dir: tempfile::TempDir,
-    _store: Store,
+    pub store: Store,
     pub keys_ks: KeyspaceHandle,
-    pub acl_ks: KeyspaceHandle,
-    pub contexts_ks: KeyspaceHandle,
-    pub did_templates_ks: KeyspaceHandle,
-    pub audit_ks: KeyspaceHandle,
-    pub imported_ks: KeyspaceHandle,
     pub webvh_ks: KeyspaceHandle,
     pub data_dir: PathBuf,
 }
 
-/// Open a fresh tempdir-backed [`TestStore`] with the backup keyspaces wired.
+/// Open a fresh tempdir-backed [`TestStore`].
 pub async fn open_test_store() -> TestStore {
     let dir = tempfile::tempdir().expect("temp dir");
     let data_dir = dir.path().to_path_buf();
@@ -40,20 +35,9 @@ pub async fn open_test_store() -> TestStore {
     .expect("open store");
     TestStore {
         keys_ks: store.keyspace(vta_keyspaces::KEYS).expect("keys ks"),
-        acl_ks: store.keyspace(vta_keyspaces::ACL).expect("acl ks"),
-        contexts_ks: store
-            .keyspace(vta_keyspaces::CONTEXTS)
-            .expect("contexts ks"),
-        did_templates_ks: store
-            .keyspace(vta_keyspaces::DID_TEMPLATES)
-            .expect("did_templates ks"),
-        audit_ks: store.keyspace(vta_keyspaces::AUDIT).expect("audit ks"),
-        imported_ks: store
-            .keyspace(vta_keyspaces::IMPORTED_SECRETS)
-            .expect("imported ks"),
         webvh_ks: store.keyspace(vta_keyspaces::WEBVH).expect("webvh ks"),
         _dir: dir,
-        _store: store,
+        store,
         data_dir,
     }
 }
@@ -129,6 +113,44 @@ impl vta_keys::seed_store::SeedStore for TestSeedStore {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), vti_common::error::AppError>> + Send + '_>,
     > {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A [`SeedStore`](vta_keys::seed_store::SeedStore) that keeps what is `set`,
+/// as a real secret store would — what a restore commits to.
+pub struct MemSeedStore(pub std::sync::Mutex<Vec<u8>>);
+
+impl MemSeedStore {
+    pub fn new(seed: &[u8]) -> Self {
+        Self(std::sync::Mutex::new(seed.to_vec()))
+    }
+    pub fn current(&self) -> Vec<u8> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl vta_keys::seed_store::SeedStore for MemSeedStore {
+    fn get(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<Vec<u8>>, vti_common::error::AppError>>
+                + Send
+                + '_,
+        >,
+    > {
+        let v = self.current();
+        Box::pin(async move { Ok(Some(v)) })
+    }
+
+    fn set(
+        &self,
+        seed: &[u8],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), vti_common::error::AppError>> + Send + '_>,
+    > {
+        *self.0.lock().unwrap() = seed.to_vec();
         Box::pin(async { Ok(()) })
     }
 }

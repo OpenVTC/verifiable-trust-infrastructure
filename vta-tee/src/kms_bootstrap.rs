@@ -110,6 +110,9 @@ pub async fn bootstrap_secrets(
     // Bootstrap keyspace — no encryption (data is KMS-protected)
     let bs_ks = store.keyspace(vta_keyspaces::BOOTSTRAP)?;
 
+    // A committed restore replaces the secrets before anything reads them.
+    adopt_restored_secrets(kms_config, store, &bs_ks).await?;
+
     let dk_ct = bs_ks.get_raw(BOOTSTRAP_DK_CT_KEY).await?;
     let seed_ct = bs_ks.get_raw(BOOTSTRAP_SEED_CT_KEY).await?;
     let jwt_ct = bs_ks.get_raw(BOOTSTRAP_JWT_CT_KEY).await?;
@@ -243,37 +246,119 @@ pub async fn bootstrap_secrets(
 }
 
 // ---------------------------------------------------------------------------
-// Re-encrypt secrets for backup import
+// Restore: sealing a restored seed under KMS, and adopting it at boot
 // ---------------------------------------------------------------------------
 
-/// Re-encrypt an imported seed and JWT key with KMS.
-///
-/// Called during backup import in TEE mode. Generates a new KMS data key,
-/// AES-GCM encrypts both secrets, and stores the ciphertexts in the bootstrap
-/// keyspace. On next restart, `bootstrap_secrets()` finds existing ciphertexts
-/// and takes the normal "subsequent boot" decrypt path.
-pub async fn re_encrypt_bootstrap_secrets(
+/// The KMS-sealed secrets a restore into an enclave commits: the same three
+/// ciphertexts a regular boot reads, as **one** row
+/// (`vta_support::restore_stage::TEE_RESTORED_SECRETS_KEY`), so the commit is a
+/// single write. Rewriting the three regular rows in place, as the previous
+/// import did, left an enclave that crashed part-way with a data key from one
+/// seed and a seed ciphertext from another — unbootable.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RestoredSecretsRow {
+    data_key_ciphertext: String,
+    seed_ciphertext: String,
+    jwt_ciphertext: String,
+}
+
+/// Seal a restored seed and JWT key under a fresh KMS data key (attested on
+/// real Nitro), returning the row a restore commits. **Writes nothing**: the
+/// import records the row's digest in the staged restore first, and only then
+/// writes it.
+pub async fn seal_restored_secrets(
     kms_config: &TeeKmsConfig,
-    store: &vti_common::store::Store,
     seed: &[u8],
     jwt_key: &[u8; 32],
+) -> Result<Vec<u8>, AppError> {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+
+    let (dk_ciphertext, mut data_key) = kms_generate_data_key(kms_config).await?;
+    let sealed = (|| {
+        Ok::<_, AppError>(RestoredSecretsRow {
+            data_key_ciphertext: STANDARD.encode(&dk_ciphertext),
+            seed_ciphertext: STANDARD.encode(aes_gcm_encrypt(&data_key, seed)?),
+            jwt_ciphertext: STANDARD.encode(aes_gcm_encrypt(&data_key, jwt_key)?),
+        })
+    })();
+    data_key.zeroize();
+    serde_json::to_vec(&sealed?)
+        .map_err(|e| AppError::Internal(format!("serialize restored secrets: {e}")))
+}
+
+/// If a restore committed a secrets row, make it this enclave's secrets.
+///
+/// Runs before the regular decrypt. The row is honoured only when the staged
+/// restore it was committed with opens under the seed inside it *and* names
+/// its digest in that stage's authenticated metadata — the parent owns this
+/// keyspace, and a secrets row nothing vouches for is either a leftover or a
+/// substitution. Honouring it rewrites the three regular ciphertext rows and
+/// the JWT fingerprint from it, then drops it; a crash in between leaves the
+/// row in place and the next boot does the same again.
+///
+/// The integrity manifest still describes the pre-restore store; the restore
+/// applied after this leaves an instruction for the boot to re-baseline it.
+async fn adopt_restored_secrets(
+    kms_config: &TeeKmsConfig,
+    store: &vti_common::store::Store,
+    bs_ks: &vti_common::store::KeyspaceHandle,
 ) -> Result<(), AppError> {
-    let bs_ks = store.keyspace(vta_keyspaces::BOOTSTRAP)?;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use vta_support::restore_stage::{self, StageState, TEE_RESTORED_SECRETS_KEY};
 
-    // Clear any existing ciphertexts first
-    let _ = bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await;
-    let _ = bs_ks.remove(BOOTSTRAP_SEED_CT_KEY).await;
-    let _ = bs_ks.remove(BOOTSTRAP_JWT_CT_KEY).await;
-    let _ = bs_ks.remove(BOOTSTRAP_JWT_FINGERPRINT_KEY).await;
+    let Some(row_bytes) = bs_ks.get_raw(TEE_RESTORED_SECRETS_KEY).await? else {
+        return Ok(());
+    };
+    let discard = |why: &str| {
+        warn!("dropping a restored-secrets row: {why}");
+    };
+    let Ok(row) = serde_json::from_slice::<RestoredSecretsRow>(&row_bytes) else {
+        discard("it does not parse");
+        bs_ks.remove(TEE_RESTORED_SECRETS_KEY).await?;
+        return store.persist().await;
+    };
+    let decode = |field: &str| {
+        STANDARD
+            .decode(field)
+            .map_err(|e| tee_attestation_error(format!("restored secrets row: {e}")))
+    };
+    let dk_ciphertext = decode(&row.data_key_ciphertext)?;
+    let seed_ciphertext = decode(&row.seed_ciphertext)?;
+    let jwt_ciphertext = decode(&row.jwt_ciphertext)?;
 
-    // Generate a new data key via KMS (with attestation if on real Nitro)
-    let (dk_ciphertext, data_key) = kms_generate_data_key(kms_config).await?;
+    // A KMS failure here is not evidence the row is bad (KMS may simply be
+    // unreachable), so it fails the boot rather than dropping a committed
+    // restore. Removing the row is the operator's call.
+    let mut data_key = kms_decrypt_data_key(kms_config, &dk_ciphertext)
+        .await
+        .map_err(|(_, e)| {
+            tee_attestation_error(format!(
+                "a restore committed new secrets, but KMS could not open them ({e}).                  Nothing has been changed. Restore KMS reachability and boot again; to                  abandon the restore instead, delete the `{TEE_RESTORED_SECRETS_KEY}` row                  from the bootstrap keyspace."
+            ))
+        })?;
+    let seed = zeroize::Zeroizing::new(aes_gcm_decrypt(&data_key, &seed_ciphertext)?);
+    let jwt_key: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new(
+        aes_gcm_decrypt(&data_key, &jwt_ciphertext)?
+            .try_into()
+            .map_err(|_| tee_attestation_error("restored JWT key must be exactly 32 bytes"))?,
+    );
+    data_key.zeroize();
 
-    // AES-GCM encrypt both secrets with the data key
-    let seed_ciphertext = aes_gcm_encrypt(&data_key, seed)?;
-    let jwt_ciphertext = aes_gcm_encrypt(&data_key, jwt_key)?;
+    let vouched = match restore_stage::open_stage(bs_ks, &seed).await? {
+        StageState::Committed(stage) => {
+            stage.meta.tee_secrets_sha256.as_deref()
+                == Some(restore_stage::sha256_hex(&row_bytes).as_str())
+        }
+        StageState::None | StageState::Uncommitted { .. } => false,
+    };
+    if !vouched {
+        discard("no staged restore vouches for it");
+        bs_ks.remove(TEE_RESTORED_SECRETS_KEY).await?;
+        return store.persist().await;
+    }
 
-    // Store everything in the bootstrap keyspace
     bs_ks.insert_raw(BOOTSTRAP_DK_CT_KEY, dk_ciphertext).await?;
     bs_ks
         .insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext)
@@ -281,12 +366,11 @@ pub async fn re_encrypt_bootstrap_secrets(
     bs_ks
         .insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext)
         .await?;
-    store_jwt_fingerprint(&bs_ks, jwt_key).await?;
-
-    // Flush immediately so ciphertexts survive if enclave restarts
+    store_jwt_fingerprint(bs_ks, &jwt_key).await?;
     store.persist().await?;
-
-    info!("imported secrets re-encrypted to KMS — stored in bootstrap keyspace");
+    bs_ks.remove(TEE_RESTORED_SECRETS_KEY).await?;
+    store.persist().await?;
+    info!("restored secrets adopted — this boot runs as the restored VTA");
     Ok(())
 }
 

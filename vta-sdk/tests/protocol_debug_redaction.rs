@@ -17,7 +17,7 @@ use chrono::Utc;
 use vta_sdk::protocols::auth::TokenBundle;
 use vta_sdk::protocols::backup_management::types::{
     BackupConfig, BackupEnvelope, BackupPayload, EncryptionParams, ExportRequest, ImportRequest,
-    ImportedSecretBackup, KdfParams, SeedRecordBackup,
+    ImportedSecretBackup, KdfParams, KeyspaceDump, SeedRecordBackup,
 };
 use vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody;
 use vta_sdk::protocols::key_management::create::CreateKeyBody;
@@ -152,6 +152,7 @@ fn import_request_debug_redacts_password() {
         },
         password: MARKER.into(),
         confirm: false,
+        replace_identity: false,
     };
     assert_redacted(&req, "ImportRequest");
     assert_serializes_marker(&req, "ImportRequest");
@@ -208,6 +209,14 @@ fn backup_payload_debug_redacts_active_seed_and_jwt_signing_key() {
         audit_logs: Vec::new(),
         imported_secrets: Vec::new(),
         imported_kek_salt: None,
+        // A raw keyspace row carries key material exactly as the seed does, so
+        // it must stay out of Debug too.
+        keyspaces: vec![KeyspaceDump {
+            name: "keys".into(),
+            rows: vec![(MARKER.into(), MARKER.into())],
+        }],
+        source_environment: None,
+        internal_keys_not_carried: Vec::new(),
     };
     let dbg = format!("{payload:?}");
     assert!(
