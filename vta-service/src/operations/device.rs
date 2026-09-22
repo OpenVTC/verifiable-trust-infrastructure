@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use crate::acl::{
     AclEntry, Capability, CompanionFormFactor, ConsumerKind, DeviceBinding, ServiceKind,
-    WakeChannel, derived_capabilities_for_role, get_acl_entry, is_acl_entry_visible,
-    list_acl_entries, store_acl_entry,
+    WakeChannel, effective_capabilities, get_acl_entry, is_acl_entry_visible, list_acl_entries,
+    store_acl_entry,
 };
 use crate::audit;
 use crate::auth::AuthClaims;
@@ -626,41 +626,45 @@ fn kind_to_wire(kind: &ConsumerKind) -> Value {
     }
 }
 
-/// Capabilities the published `device/_shared/0.2` `Capability` enum defines.
+/// Whether `cap` is a member of the published `device/_shared` `Capability`
+/// enum, and so belongs in a binding's `capabilities` rather than under `ext`.
 ///
-/// Listed **positively** so a capability added to this workspace later is
-/// treated as ecosystem-local by default and lands in `ext` rather than
-/// leaking into a closed enum. The previous code filtered out the one local
-/// capability by name; `CredentialWrite` was added afterwards, the filter was
-/// not extended, and it went onto the wire and failed the schema.
-const PUBLISHED_CAPABILITIES: &[Capability] = &[
-    Capability::VaultRead,
-    Capability::VaultWrite,
-    Capability::ProxyLogin,
-    Capability::FillRelease,
-    Capability::PolicyAdmin,
-    Capability::DeviceAdmin,
-    Capability::Sign,
-    Capability::KeyMint,
-];
+/// Answered by the **generated** type, not a hand-kept list. The hand-kept list
+/// this replaces drifted twice: first a local capability (`CredentialWrite`)
+/// leaked into the closed enum because a by-name filter was not extended, then —
+/// once it was listed positively — the specification registered `signTrustTask`,
+/// `credentialWrite`, `memoryRead`/`memoryWrite` and `roomPresent`/`roomOpen`
+/// and the list did not follow, so every one of them was reported as
+/// ecosystem-local and a `capabilityFilter` naming one could never match. Asking
+/// the generated enum whether it can read the name makes the partition move with
+/// the specification through a `trust-tasks-rs` bump, and keeps a capability the
+/// specification has not registered (`keyExport`, `personaHolder`) in `ext`.
+fn is_published_capability(cap: &Capability) -> bool {
+    serde_json::to_value(cap)
+        .ok()
+        .and_then(|v| serde_json::from_value::<list_spec::Capability>(v).ok())
+        .is_some()
+}
 
 /// The capabilities an ACL entry confers, split into what the published
 /// `capabilities` member may carry and what belongs under `ext`.
 ///
+/// What is listed is the entry's **effective** set
+/// ([`effective_capabilities`]), never its stored list. The stored list is a
+/// narrowing of the role plus any additive grant by name, not a statement of
+/// what the entry holds: an entry whose list is just `[PersonaHolder]` holds its
+/// whole role *and* holder authority, and reading the stored list verbatim
+/// reported it as holding holder authority alone. A listing that under-reports
+/// an authority is a safety claim, and it is not a true one.
+///
 /// Ecosystem-local capabilities are **carried, not dropped**. SPEC §4.5.1 has
 /// an extension slot for exactly this, and `DeviceBinding` declares one; the
 /// earlier approach silently omitted `sign-trust-task`, which told a reader the
-/// device lacked an authority it actually held. Dropping a capability from a
-/// listing is a safety claim, and it was not a true one.
+/// device lacked an authority it actually held.
 fn split_capabilities(entry: &AclEntry) -> (Vec<Value>, Vec<Value>) {
-    let caps = if entry.capabilities.is_empty() {
-        derived_capabilities_for_role(&entry.role)
-    } else {
-        entry.capabilities.clone()
-    };
-    let (published, local): (Vec<_>, Vec<_>) = caps
-        .iter()
-        .partition(|c| PUBLISHED_CAPABILITIES.contains(c));
+    let caps = effective_capabilities(&entry.role, &entry.capabilities);
+    let (published, local): (Vec<_>, Vec<_>) =
+        caps.iter().partition(|c| is_published_capability(c));
     let to_value = |c: &Capability| serde_json::to_value(c).expect("Capability serialises");
     // The published list is re-cased kebab -> camel on the way out by the 0.2
     // dual-accept layer (`wire_v0_2`), which only knows the members the
@@ -728,28 +732,93 @@ mod tests {
         assert!(v.get("hpkePublicKey").is_none());
     }
 
+    fn split_strs(e: &AclEntry) -> (Vec<String>, Vec<String>) {
+        let (published, local) = split_capabilities(e);
+        let strs = |v: Vec<Value>| -> Vec<String> {
+            v.into_iter()
+                .map(|c| c.as_str().unwrap().to_string())
+                .collect()
+        };
+        (strs(published), strs(local))
+    }
+
     #[test]
     fn local_capabilities_are_split_out_not_dropped() {
         let mut e = entry_with_binding();
+        e.role = Role::Admin;
         e.capabilities = vec![
             Capability::VaultRead,
-            Capability::SignTrustTask,
+            Capability::KeyExport,
             Capability::Sign,
         ];
-        let (published, local) = split_capabilities(&e);
-        let p: Vec<&str> = published.iter().map(|c| c.as_str().unwrap()).collect();
-        let l: Vec<&str> = local.iter().map(|c| c.as_str().unwrap()).collect();
-        assert!(p.contains(&"vault-read"), "{p:?}");
-        assert!(p.contains(&"sign"), "{p:?}");
+        let (p, l) = split_strs(&e);
+        assert!(p.contains(&"vault-read".to_string()), "{p:?}");
+        assert!(p.contains(&"sign".to_string()), "{p:?}");
         assert!(
-            !p.contains(&"sign-trust-task"),
+            !p.contains(&"key-export".to_string()),
             "an ecosystem-local capability must not enter the closed enum: {p:?}"
         );
         assert!(
-            l.contains(&"signTrustTask"),
+            l.contains(&"keyExport".to_string()),
             "…but it must still be reported, under `ext` — and in lowerCamelCase, \
              so the document does not answer in two dialects at once: {l:?}"
         );
+    }
+
+    /// The published `device/_shared` enum registers `signTrustTask`,
+    /// `credentialWrite`, the memory and the room capabilities. They go in
+    /// `capabilities`, where a `capabilityFilter` can find them — not in `ext`.
+    #[test]
+    fn capabilities_the_specification_registers_are_published() {
+        let mut e = entry_with_binding();
+        e.role = Role::Admin;
+        let (p, l) = split_strs(&e);
+        for cap in [
+            "sign-trust-task",
+            "credential-write",
+            "memory-read",
+            "memory-write",
+            "room-present",
+            "room-open",
+        ] {
+            assert!(
+                p.contains(&cap.to_string()),
+                "{cap} must be published: {p:?}"
+            );
+        }
+        assert_eq!(
+            l,
+            vec!["keyExport".to_string()],
+            "only unregistered ones go in ext"
+        );
+    }
+
+    /// An entry whose stored list is only an additive grant holds its whole role
+    /// *plus* that grant (`effective_capabilities`, #1279). Listing the stored
+    /// list verbatim reported it as holding holder authority alone.
+    #[test]
+    fn an_additive_grant_alone_does_not_hide_the_role() {
+        let mut e = entry_with_binding(); // Role::Application
+        e.capabilities = vec![Capability::PersonaHolder];
+        let (p, l) = split_strs(&e);
+        for cap in ["vault-read", "sign", "sign-trust-task", "memory-read"] {
+            assert!(
+                p.contains(&cap.to_string()),
+                "role-derived {cap} missing: {p:?}"
+            );
+        }
+        assert_eq!(l, vec!["personaHolder".to_string()], "{l:?}");
+    }
+
+    /// A stored list naming a capability the role does not carry lists only what
+    /// the entry can actually exercise — the listing is bounded by the role.
+    #[test]
+    fn a_narrowing_is_bounded_by_the_role() {
+        let mut e = entry_with_binding(); // Role::Application
+        e.capabilities = vec![Capability::VaultRead, Capability::KeyMint];
+        let (p, l) = split_strs(&e);
+        assert_eq!(p, vec!["vault-read".to_string()], "{p:?}");
+        assert!(l.is_empty(), "{l:?}");
     }
 
     #[test]
