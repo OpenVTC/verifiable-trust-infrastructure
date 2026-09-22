@@ -411,6 +411,7 @@ mod tests {
             name: "Secret filing name".into(),
             claims,
             persona_did: persona.map(str::to_string),
+            wear: false,
             label: persona.map(|_| "a private label".to_string()),
             until: None,
         })
@@ -624,6 +625,7 @@ mod tests {
             name: "Weekend".into(),
             claims: vec![typed("name.display", "Ada", Share::Local)],
             persona_did: Some("did:key:z6MkA".into()),
+            wear: false,
             label: None,
             until: Some((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339()),
         };

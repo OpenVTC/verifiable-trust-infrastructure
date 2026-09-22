@@ -683,6 +683,11 @@ nobody holds, which is the R2.1 failure this family has avoided everywhere
 else. The "no DID noun" goal is met by the client: it mints once, through the
 path that already exists, and every later face is worn by saying "here".
 
+**As built:** `PersonaStore::persona_here` answers one, none or several from
+the context's binding records. A DID merely registered in a context does not
+count: the agent's own DIDs and integrations live in contexts too, and wearing
+a face as one of those would be the agent deciding who the holder is.
+
 ### 9.8 Face templates are the manifest, from the other side
 
 §5.2 gives a VTC manifest an attribute criterion: `[{type, required}]`. That is

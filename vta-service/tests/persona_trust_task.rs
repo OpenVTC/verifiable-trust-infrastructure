@@ -3884,3 +3884,114 @@ async fn a_credential_backed_value_follows_its_credential_and_fails_closed() {
         "{body}"
     );
 }
+
+/// A face is worn "here" without naming a DID: the persona the holder already
+/// uses in the context wears it; none, or several, is refused and never
+/// guessed or minted. Design note `persona-context-first.md` §9.7.
+#[tokio::test]
+async fn a_face_is_worn_here_as_the_persona_the_holder_already_uses() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "wearhere", "admin", &[]).await;
+    let typed = json!([{ "type": "name.display", "valueType": "string", "value": "Ada" }]);
+
+    // No persona here yet: refused, and nothing is minted.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({ "contextId": CTX, "name": "Co-op", "claims": typed, "wear": true }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/profile/compose:noPersonaHere"
+    );
+
+    // Both ways to say who wears it is one too many.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({ "contextId": CTX, "name": "Co-op", "claims": typed, "wear": true,
+                "personaDid": "did:key:z6MkOne" }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/profile/compose:wearAndPersona"
+    );
+
+    // Once the holder has a persona here, "wear" finds it.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({ "contextId": CTX, "name": "First", "claims": typed,
+                "personaDid": "did:key:z6MkOne" }),
+    )
+    .await;
+    assert!(!refused(status, &body), "compose: {status} {body}");
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_COMPOSE,
+        json!({ "contextId": CTX, "name": "Second", "claims": typed, "wear": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "compose: {status} {body}");
+    assert_eq!(
+        payload_of(&body)["binding"]["personaDid"],
+        "did:key:z6MkOne"
+    );
+
+    // binding/set without a persona: the same one.
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "name": "Pool face", "entries": [] }),
+    )
+    .await;
+    assert!(!refused(status, &body), "{status} {body}");
+    let pool_face = payload_of(&body)["profileId"].as_str().unwrap().to_string();
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "profileId": pool_face }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+    assert_eq!(payload_of(&body)["personaDid"], "did:key:z6MkOne");
+
+    // A second persona here makes "which one" the holder's question.
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": "did:key:z6MkTwo", "profileId": pool_face }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "profileId": pool_face }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/binding/set:personaAmbiguous"
+    );
+    let named: Vec<&str> = payload_of(&body)["details"]["personaDids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(named, vec!["did:key:z6MkOne", "did:key:z6MkTwo"]);
+}

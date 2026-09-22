@@ -1229,6 +1229,7 @@ pub(super) async fn handle_profile_compose(
         name: req.name.to_string(),
         claims,
         persona_did: req.persona_did.as_ref().map(|d| d.to_string()),
+        wear: req.wear,
         label: req.label.as_ref().map(|l| l.to_string()),
         until: req.until.map(|u| u.to_rfc3339()),
     };
@@ -1265,6 +1266,30 @@ pub(super) async fn handle_profile_compose(
                 "a label names the face to the context it is worn in; give a personaDid or \
                  leave the label off",
                 None,
+            );
+        }
+        Ok(Some(vta_persona::ComposeRefusal::WearAndPersona)) => {
+            return reject_with_code(
+                &doc,
+                ext(&slug, "wearAndPersona"),
+                "wear and personaDid are two ways to say who wears the face; give one",
+                None,
+            );
+        }
+        Ok(Some(vta_persona::ComposeRefusal::NoPersonaHere)) => {
+            return reject_with_code(
+                &doc,
+                ext(&slug, "noPersonaHere"),
+                "you have no persona in this context yet; make one first, then wear it here",
+                None,
+            );
+        }
+        Ok(Some(vta_persona::ComposeRefusal::PersonaAmbiguous(dids))) => {
+            return reject_with_code(
+                &doc,
+                ext(&slug, "personaAmbiguous"),
+                format!("you use {} personas in this context; say which", dids.len()),
+                Some(json!({ "personaDids": dids })),
             );
         }
         Ok(Some(vta_persona::ComposeRefusal::UntilNotFuture)) => {
@@ -1836,11 +1861,36 @@ pub(super) async fn handle_binding_set(
     }
 
     let ctx = req.context_id.to_string();
-    let persona = req.persona_did.to_string();
     let profile_id = req.profile_id.as_ref().map(|p| p.to_string());
     let public = req.public_entries.iter().map(|e| e.to_string()).collect();
     let until = req.until.map(|u| u.to_rfc3339());
     let s = store(state);
+    // Named, or the persona the holder already uses here (§9.7). Never minted:
+    // a DID has a lifecycle of its own, and a write that could half-create one
+    // would leave a published identity nobody holds.
+    let persona = match req.persona_did.as_ref() {
+        Some(d) => d.to_string(),
+        None => match s.persona_here(&ctx).await {
+            Ok(vta_persona::PersonaHere::One(did)) => did,
+            Ok(vta_persona::PersonaHere::None) => {
+                return reject_with_code(
+                    &doc,
+                    ext(&slug_from_doc(&doc), "noPersonaHere"),
+                    "you have no persona in this context yet; make one first, then wear it here",
+                    None,
+                );
+            }
+            Ok(vta_persona::PersonaHere::Several(dids)) => {
+                return reject_with_code(
+                    &doc,
+                    ext(&slug_from_doc(&doc), "personaAmbiguous"),
+                    format!("you use {} personas in this context; say which", dids.len()),
+                    Some(json!({ "personaDids": dids })),
+                );
+            }
+            Err(e) => return reject(&doc, e),
+        },
+    };
     if let Some(refused) = refuse_binding(
         &doc,
         &s,

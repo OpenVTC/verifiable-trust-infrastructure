@@ -122,6 +122,12 @@ pub enum ComposeRefusal {
     ValueDisagreesWithType(String),
     /// `until` is in the past, or given with no persona to wear the face.
     UntilNotFuture,
+    /// `wear` and a persona DID were both given.
+    WearAndPersona,
+    /// `wear` found no persona in the context.
+    NoPersonaHere,
+    /// `wear` found several personas in the context; they are named.
+    PersonaAmbiguous(Vec<String>),
 }
 
 impl ComposeRefusal {
@@ -145,9 +151,19 @@ impl ComposeRefusal {
             }
             Self::UntilNotFuture => {
                 "`until` must be in the future, and ends the face being worn — give a \
-                 personaDid"
+                 personaDid or wear it here"
                     .into()
             }
+            Self::WearAndPersona => {
+                "wear and personaDid are two ways to say who wears the face; give one".into()
+            }
+            Self::NoPersonaHere => {
+                "you have no persona in this context yet; make one first, then wear it here".into()
+            }
+            Self::PersonaAmbiguous(dids) => format!(
+                "you use {} personas in this context; say which wears this face",
+                dids.len()
+            ),
         })
     }
 }
@@ -159,6 +175,8 @@ pub struct ComposeRequest {
     pub name: String,
     pub claims: Vec<ComposeClaim>,
     pub persona_did: Option<String>,
+    /// Wear it as the persona the holder already uses in the context (§9.7).
+    pub wear: bool,
     pub label: Option<String>,
     /// When wearing the face ends on its own, as `binding/set` `until`.
     pub until: Option<String>,
@@ -191,13 +209,24 @@ impl PersonaStore {
         &self,
         request: &ComposeRequest,
     ) -> Result<Option<ComposeRefusal>, AppError> {
-        if request.label.is_some() && request.persona_did.is_none() {
+        if request.wear && request.persona_did.is_some() {
+            return Ok(Some(ComposeRefusal::WearAndPersona));
+        }
+        let worn = request.persona_did.is_some() || request.wear;
+        if request.label.is_some() && !worn {
             return Ok(Some(ComposeRefusal::LabelWithoutPersona));
         }
-        if crate::binding::until_refusal(request.until.as_deref(), request.persona_did.is_some())
-            .is_some()
-        {
+        if crate::binding::until_refusal(request.until.as_deref(), worn).is_some() {
             return Ok(Some(ComposeRefusal::UntilNotFuture));
+        }
+        if request.wear {
+            match self.persona_here(&request.context_id).await? {
+                crate::PersonaHere::One(_) => {}
+                crate::PersonaHere::None => return Ok(Some(ComposeRefusal::NoPersonaHere)),
+                crate::PersonaHere::Several(dids) => {
+                    return Ok(Some(ComposeRefusal::PersonaAmbiguous(dids)));
+                }
+            }
         }
         let mut seen = std::collections::BTreeSet::new();
         for claim in &request.claims {
@@ -238,9 +267,15 @@ impl PersonaStore {
 
     /// Compose a face for `request.context_id`, and wear it there when a
     /// persona is named.
-    pub async fn compose(&self, request: ComposeRequest) -> Result<Composed, AppError> {
+    pub async fn compose(&self, mut request: ComposeRequest) -> Result<Composed, AppError> {
         if let Some(refusal) = self.compose_refusal(&request).await? {
             return Err(refusal.into_app_error());
+        }
+        // Found before anything is written, as the refusal above checked it.
+        if request.wear
+            && let crate::PersonaHere::One(did) = self.persona_here(&request.context_id).await?
+        {
+            request.persona_did = Some(did);
         }
 
         let mut pooled = Vec::new();
@@ -650,6 +685,7 @@ mod tests {
             name: "Co-op".into(),
             claims,
             persona_did: None,
+            wear: false,
             label: None,
             until: None,
         }
