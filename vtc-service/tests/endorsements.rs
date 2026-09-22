@@ -554,6 +554,88 @@ async fn delete_type(fix: &Fixture, uri: &str) -> (StatusCode, Value) {
     body_value(fix.router.clone().oneshot(req).await.unwrap()).await
 }
 
+/// An endorsement type's `claimSchema` must not make the service read a local
+/// file (or fetch a URL) while it is compiled either.
+///
+/// #1660 turned the `jsonschema` resolvers off and held that manifest honest
+/// for `/v1/schemas` and for `validate_instance`. #1657 then added a third
+/// caller-supplied schema to the same compiler: `check_schema`, run when an
+/// endorsement type is registered. It makes the same `validator_for` call, so
+/// it has the same exposure and needs the same guard — otherwise restoring the
+/// features would be caught on two paths out of three.
+///
+/// The referenced file really exists and really is a valid schema, so this
+/// registration would succeed if the resolver were on.
+#[tokio::test]
+async fn a_claim_schema_with_an_external_ref_is_refused_rather_than_fetched() {
+    let fix = build().await;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let target = dir.path().join("ref-target.json");
+    std::fs::write(&target, br#"{"type": "string"}"#).expect("write target");
+    assert!(target.exists());
+
+    let uri = "https://example.com/v1/skills/external-ref";
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": uri,
+            "claimSchema": { "$ref": format!("file://{}", target.display()) },
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a claimSchema with a file:// $ref must be refused, not resolved: {body}"
+    );
+    assert_eq!(
+        rest_error_code(&body),
+        trust_tasks_rs::StandardCode::MalformedRequest.as_str(),
+        "{body}"
+    );
+    assert!(
+        get_type(&fix._vtc.state.endorsement_types_ks, uri)
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused registration must not store the type"
+    );
+
+    // The network case: refused at compile rather than attempted. The address
+    // is unroutable, so a regression shows up as a refusal that takes a
+    // connect timeout rather than as a pass.
+    let (status, _) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/external-ref-http",
+            "claimSchema": { "$ref": "http://127.0.0.1:1/schema.json" },
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an http:// $ref must not be fetched"
+    );
+
+    // An ordinary internal $ref still registers — this removes remote
+    // resolution, not `$ref` itself.
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/internal-ref",
+            "claimSchema": {
+                "type": "object",
+                "$defs": { "level": { "type": "integer" } },
+                "properties": { "level": { "$ref": "#/$defs/level" } },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
 /// A `credentialSchema` supplied by an admin must not make the service read a
 /// local file (or fetch a URL) while compiling it.
 ///
