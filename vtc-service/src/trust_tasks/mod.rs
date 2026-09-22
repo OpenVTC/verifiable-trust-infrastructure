@@ -148,9 +148,19 @@ impl JoinAuthCtx {
     }
 }
 
-/// The transport-neutral dispatch spine. Parses the document, runs the
-/// framework's basic validation (expiry + recipient), then routes by
-/// `type` to the matching verb handler.
+/// The transport-neutral dispatch spine. Parses the document, holds it to the
+/// specification it names, then routes by `type` to the matching verb handler.
+///
+/// In order: the acceptance window over `issuedAt` (VTI-OPS-024), expiry and
+/// the recipient binding (VTI-OPS-023), the flag-driven rules the
+/// specification itself declares — `proof`, `recipient` and `issuedAt`
+/// REQUIRED, and audience binding (VTI-OPS-020, VTI-OPS-021), verification of
+/// any `proof` present against the document's own `issuer`, and the
+/// duplicate-execution record (VTI-OPS-025…027). Every one of them is reached
+/// identically from REST, DIDComm and TSP, which is VTI-OPS-021's point.
+///
+/// `docs/05-design-notes/vtc-trust-task-proof-enforcement.md` has the whole
+/// argument, including the one transitional allowance and what ends it.
 pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -162,46 +172,132 @@ pub(crate) async fn dispatch_trust_task_core(
         Err(e) => return body_parse_error_response(&e.to_string()),
     };
 
-    // 2. Framework §7.2 — expiry + recipient enforcement. The recipient
-    //    binding (document `recipient` must equal this VTC's DID) is the
-    //    replay defence that the bespoke `audience` field used to provide.
+    // One instant for every temporal decision in this dispatch. The acceptance
+    // window and the replay record's retention are the *same* bound (SPEC
+    // §7.2, *Bounding the record*), so reading the clock twice could place
+    // them on opposite sides of it.
+    let now = chrono::Utc::now();
+
+    // 2. Framework §7.2 item 13 — the timestamp bounds, and VTI-OPS-024's
+    //    acceptance window. Checked first because it is decided from the
+    //    document alone, before any resolution, verification or execution
+    //    work, and because one of its rules changes how the other reads.
+    if let Err(reason) = doc.validate_freshness(now, &freshness_policy()) {
+        return reject_with(&doc, reason);
+    }
+
+    // 2b. Framework §7.2 items 4 + 5 — expiry + recipient enforcement. The
+    //    recipient binding (document `recipient` must equal this VTC's DID) is
+    //    the replay defence that the bespoke `audience` field used to provide.
     //    Skipped while the VTC has no DID configured (setup).
-    if let Some(vtc_did) = state.config.read().await.vtc_did.clone()
-        && let Err(reason) = doc.validate_basic(chrono::Utc::now(), &vtc_did)
+    let (vtc_did, require_declared_proof) = {
+        let config = state.config.read().await;
+        (
+            config.vtc_did.clone(),
+            config.trust_tasks.require_declared_proof,
+        )
+    };
+    if let Some(vtc_did) = vtc_did
+        && let Err(reason) = doc.validate_basic(now, &vtc_did)
     {
         return reject_with(&doc, reason);
     }
 
-    // 3. Framework §7.2 item 8 — the proof, verified here against the document
-    //    **as received**, because this is the last point at which those bytes
-    //    exist: past dispatch a handler holds a payload that may have dropped a
-    //    member it does not know, and canonicalising that yields different bytes
-    //    and refuses a valid proof.
-    //
-    //    ## Verify what is here; do not demand what the transport already proved
-    //
-    //    The obvious rule — verify wherever the published specification says
-    //    `proof` is REQUIRED — is wrong for this service, and the join tests say
-    //    so immediately. `join-requests/submit/0.2` declares a proof REQUIRED,
-    //    and over DIDComm the applicant carries none: authcrypt proved the
-    //    sender, and the document rides inside that envelope. Enforcing the
-    //    specification's flag here refuses every join over DIDComm and TSP with
-    //    "document has no proof".
-    //
-    //    That gap between the published requirement and what this service
-    //    accepts is real and predates this change; it is not something to close
-    //    by silently breaking the transport. So the rule is the one the
-    //    framework's own HTTPS binding uses for exactly this situation
-    //    (`require_attribution`): attribution must come from *somewhere* — a
-    //    verified proof, or a transport-authenticated peer. A present proof is
-    //    always checked; an absent one is the transport's business, and each
-    //    handler already knows which it needs. The `rooms/*` arms demand a
-    //    verified signer and refuse without one, which is exactly what those
-    //    handlers did for themselves before.
     let type_uri = doc.type_uri.to_string();
+
+    // 2c. SPEC §7.2's *flag-driven* checks — the ones the published
+    //    specification declares rather than this consumer chooses:
+    //
+    //    * item 5b — `recipient` REQUIRED
+    //    * item 7a — `proof` REQUIRED  → `proofRequired`
+    //    * item 8  — audience binding (proof present, no in-band recipient, on
+    //                a non-bearer specification)
+    //    * §7.3 17 — `issuedAt` REQUIRED
+    //
+    // ## Why this is here now, and what it replaces
+    //
+    // Until #1641 this spine verified a proof whenever one was present and
+    // otherwise took attribution from the transport — including for the nine
+    // dispatched tasks whose own definitions declare `proof` REQUIRED. The
+    // comment that stood here argued the transport had already proved the
+    // sender, so demanding a proof would refuse every join over DIDComm and
+    // TSP.
+    //
+    // That argument is refused by three documents at once, and none of them is
+    // ambiguous:
+    //
+    // - **VTI-OPS-021 / VTI-OPS-093.** "A node MUST apply the same document
+    //   requirements on every transport. A transport that authenticates its
+    //   sender MUST NOT be treated as relieving a producer of addressing or
+    //   signing the document it sends." A binding may not weaken the
+    //   requirement on the strength of a transport property.
+    // - **The DIDComm binding's own §5.** "A *Trust Task specification* that
+    //   declares `proof` as REQUIRED overrides this binding-level allowance:
+    //   the in-band `proof` is mandatory regardless of transport, because such
+    //   specifications produce documents intended to be replayable past the
+    //   original transport hop." The allowance the old rule leaned on is
+    //   disclaimed by the very binding that grants it.
+    // - **That binding's §6**, on where the guarantee stops: "At the message.
+    //   The envelope is discarded on unwrap, and the guarantee does not travel
+    //   with the document." Authcrypt tells this service who handed it the
+    //   bytes. It leaves nothing behind that a third party — an auditor, a
+    //   registry, the member themselves — could check afterwards.
+    //
+    // Read off `spec_policy_for`, never a list kept here: a list of URIs whose
+    // requirement is published elsewhere is a list that drifts, and the
+    // requirement moves when the specification does.
+    //
+    // `None` means this build knows no specification for the URI. The
+    // dispatcher refuses an unrouted URI a few lines below
+    // (`unsupported_type_or_version`), so there is no silently-unchecked task
+    // here — only tasks whose definitions this build cannot read, which is the
+    // `rooms/*`-shaped case the arms guard for themselves.
+    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri) {
+        let policy =
+            narrow_for_transitional_allowance(policy, &doc, ctx, require_declared_proof, &type_uri);
+        if let Err(reason) = policy.enforce(&doc) {
+            tracing::info!(
+                type_uri,
+                ?reason,
+                "document refused by its specification's own policy"
+            );
+            return reject_with(&doc, reason);
+        }
+    }
+
+    // 3. Framework §7.2 item 7, *first* clause — the proof, verified here
+    //    against the document **as received**, because this is the last point
+    //    at which those bytes exist: past dispatch a handler holds a payload
+    //    that may have dropped a member it does not know, and canonicalising
+    //    that yields different bytes and refuses a valid proof.
+    //
+    //    §4.7 binds the proof to the in-band `issuer`: the `verificationMethod`
+    //    "MUST resolve to verification material controlled by the *party*
+    //    identified by the document's `issuer` member". A valid proof by some
+    //    *other* DID is not a proof by the issuer, and without this check the
+    //    signature would establish only that somebody signed something —
+    //    which is not what `verified_signer` is read as downstream.
     let ctx = if doc.proof.is_some() {
         match verify_trust_task_proof(state, &doc).await {
-            Ok(signer) => &ctx.with_verified_signer(Some(signer)),
+            Ok(signer) => {
+                if doc.issuer.as_deref() != Some(signer.as_str()) {
+                    tracing::warn!(
+                        type_uri,
+                        issuer = ?doc.issuer,
+                        %signer,
+                        "proof verifies under a key the document's issuer does not control"
+                    );
+                    return reject_with(
+                        &doc,
+                        RejectReason::ProofInvalid {
+                            reason: "the proof's verificationMethod does not belong to the \
+                                     document's issuer (SPEC §4.7)"
+                                .to_string(),
+                        },
+                    );
+                }
+                &ctx.with_verified_signer(Some(signer))
+            }
             // A proof that is present and does not verify is always fatal,
             // whatever the transport proved separately.
             Err(e) => return app_error_to_reject(&doc, &e),
@@ -246,8 +342,7 @@ pub(crate) async fn dispatch_trust_task_core(
             );
         }
     };
-    let now = chrono::Utc::now();
-    let retain_until = retention_policy().record_expiry(&doc, now);
+    let retain_until = retain_until(&doc, now);
     match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc_id, &digest, retain_until, now)
         .await
     {
@@ -352,21 +447,138 @@ pub(crate) async fn dispatch_trust_task_core(
 static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
     std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
 
-/// How long a duplicate-execution record is kept.
+/// The specification's policy with the **one** transitional allowance applied,
+/// or unchanged — see [`crate::config::TrustTasksConfig::require_declared_proof`]
+/// for why the allowance exists and what ends it.
 ///
-/// **Retention only** — this is not an acceptance policy and must not become
-/// one. The VTC does not enforce a freshness window today (many of its
-/// producers stamp no `issuedAt`), and turning one on here would refuse
-/// documents this service accepts now. What the policy supplies is the
-/// fallback horizon for a document carrying no `expiresAt`: without it such a
-/// record would be held until capacity evicted it.
+/// Returns a *policy*, not a decision about a refusal, so every other rule
+/// `SpecPolicy::enforce` applies still runs. That distinction is load-bearing:
+/// `enforce` returns on its first failure, so skipping the whole call on a
+/// waived `proofRequired` would also skip the `issuedAt` and audience-binding
+/// rules that come after it, and a flag-driven rule the library adds later
+/// would arrive inside a branch somebody had to remember to narrow. Narrowing
+/// the input instead means the allowance can only ever relax the one flag it
+/// names.
 ///
-/// The bound may only ever be *longer* than the window in which a document is
-/// still executable. Shorter is the direction §7.2 forbids — a replay arriving
-/// while the document is still acceptable, with its record already dropped,
-/// runs twice.
-fn retention_policy() -> trust_tasks_rs::FreshnessPolicy {
-    trust_tasks_rs::FreshnessPolicy::consequential()
+/// Three conditions, all required:
+///
+/// 1. the specification declares `proof` REQUIRED and the document carries
+///    none — a *missing* proof, never an invalid one;
+/// 2. the operator has not turned enforcement on; and
+/// 3. the transport authenticated the sender. Over REST nothing does, so a
+///    REST document with no proof is refused whatever this is set to — which
+///    is the whole point of the allowance: it substitutes one form of
+///    attribution for another, and cannot substitute for none.
+///
+/// Every waiver logs, at `warn!`, naming the requirement it is standing down
+/// and the task it stood down for. A carve-out nobody can count is how the
+/// divergence this closes came to be.
+fn narrow_for_transitional_allowance(
+    policy: trust_tasks_rs::SpecPolicy,
+    doc: &TrustTask<Value>,
+    ctx: &JoinAuthCtx,
+    require_declared_proof: bool,
+    type_uri: &str,
+) -> trust_tasks_rs::SpecPolicy {
+    if require_declared_proof || !policy.is_proof_required || doc.proof.is_some() {
+        return policy;
+    }
+    let Some(sender) = ctx.sender_did.as_deref() else {
+        return policy;
+    };
+    tracing::warn!(
+        type_uri,
+        sender,
+        requirement = "VTI-OPS-021",
+        "accepting a document with no proof for a task whose specification declares one \
+         REQUIRED, on the strength of the transport-authenticated sender alone. Set \
+         `[trust_tasks] require_declared_proof = true` to refuse it.",
+    );
+    trust_tasks_rs::SpecPolicy {
+        is_proof_required: false,
+        ..policy
+    }
+}
+
+/// The acceptance window this VTC is willing to act inside — **VTI-OPS-024**,
+/// SPEC §7.2 item 13, and the bound [`REPLAY_GUARD`]'s retention is derived
+/// from.
+///
+/// # Acceptance and retention are one bound
+///
+/// This used to be a `retention_policy()` whose documentation said, in terms,
+/// "**retention only** — this is not an acceptance policy and must not become
+/// one", because many of this service's producers stamped no `issuedAt`. §7.2
+/// (*Bounding the record*) makes that separation unavailable: a consumer
+/// "**MUST NOT** accept for execution a document older than the window over
+/// which it retains records", and one that "can establish neither an
+/// `expiresAt` nor an age for a document has no window in which to place it,
+/// and **MUST NOT** execute a *consequential Trust Task* on it". A record kept
+/// for a window nothing is measured against is a record whose horizon is
+/// capacity eviction, which makes the defence weakest exactly when the service
+/// is busiest.
+///
+/// # Why ten minutes, and 60 seconds of skew
+///
+/// The library's `DEFAULT_MAX_AGE` is five minutes, "long enough to survive a
+/// mediator queue, a retry with backoff, and a modest clock disagreement".
+/// This service reaches members through a mediator that holds messages while a
+/// recipient reconnects, so it takes double that — the same window
+/// `vta-service` settled on, for the same reason, so a document that one
+/// accepts is not stale at the other. The skew tolerance is the library's
+/// `DEFAULT_SKEW`, 60 seconds, which is SPEC §4.2's own "typically ≤ 60s".
+///
+/// # Why `issuedAt` is required, and what that costs
+///
+/// Without it two shapes escape the window. A document carrying neither
+/// timestamp is refused anyway — as `Stale { Unboundable }`, which renders as
+/// the wire code `expired`, telling a producer to wait when what it must do is
+/// reissue with the member it omitted. And a document carrying only
+/// `expiresAt` is accepted for however long its *producer* chose, which would
+/// let the producer decide how long this consumer must remember its `id`.
+/// Requiring `issuedAt` makes the last instant an accepted document can return
+/// provable — `issuedAt + max_age + skew` — which is what [`retain_until`]
+/// caps on.
+///
+/// The cost is exact: the one shape that moves from accepted to refused is
+/// **`expiresAt` present, `issuedAt` absent**. Every VTI producer stamps
+/// `issuedAt` (`vta_sdk::trust_task_sign::build_unsigned`, and
+/// `VtaClient::dispatch_trust_task` for every transport), and 52 of the 95
+/// specifications this service binds declare the member REQUIRED in any case.
+fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
+    trust_tasks_rs::FreshnessPolicy::default()
+        .with_max_age(chrono::TimeDelta::minutes(10))
+        .requiring_issued_at()
+}
+
+/// How long the duplicate-execution record for `doc` must be kept — the end of
+/// this consumer's willingness to execute it, which SPEC §7.2 makes the same
+/// instant as the end of the record's required retention.
+///
+/// `FreshnessPolicy::record_expiry` takes a producer-supplied `expiresAt`
+/// **verbatim**, so a document stamped `expiresAt = now + 10 years` would pin
+/// its `id` in [`REPLAY_GUARD`] for ten years — an entry held long past the
+/// last moment it could be needed, crowding out the records that are.
+/// `requiring_issued_at` above makes the cap provable: a document with no
+/// `issuedAt` never reaches here, and one that did reach here is refused once
+/// `issuedAt + max_age + skew` has passed.
+///
+/// The cap only ever moves the instant **earlier than a producer asked for**,
+/// never earlier than the acceptance window. Shortening retention below the
+/// window is the direction §7.2 forbids: a replay arriving while the document
+/// is still acceptable, with its record already dropped, executes twice.
+fn retain_until(
+    doc: &TrustTask<Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let policy = freshness_policy();
+    let expiry = policy.record_expiry(doc, now)?;
+    match (doc.issued_at, policy.max_age) {
+        (Some(issued_at), Some(max_age)) => Some(expiry.min(issued_at + max_age + policy.skew)),
+        // Unreachable while `require_issued_at` holds; if that ever changes,
+        // over-retaining is the safe direction to fail in.
+        _ => Some(expiry),
+    }
 }
 
 /// Attach this community's Data-Integrity proof to a success response.
@@ -452,10 +664,11 @@ async fn dispatch_typed(
     // That refusal is not new: each of these handlers used to call
     // `verify_trust_task_proof` itself and return this same rejection. The
     // verification moved to the spine; the requirement did not move anywhere.
-    // Stated as a guard here rather than assumed, because `verified_signer` is
-    // `None` for every transport-authenticated task that carries no proof — the
-    // normal case for join over DIDComm — and defaulting to an empty presenter
-    // would authorize a room operation against nobody.
+    // Since #1641 the spine refuses a proof-less `rooms/*` document before this
+    // arm is reached, because every one of them declares `proof` REQUIRED and
+    // `spec_policy_for` is now enforced — so this guard is belt to that brace.
+    // It stays: `verified_signer` is `Option`, and defaulting to an empty
+    // presenter would authorize a room operation against nobody.
     let rooms_presenter = ctx.verified_signer.as_deref();
 
     match type_uri {
@@ -512,47 +725,419 @@ async fn dispatch_typed(
     }
 }
 
+/// The spine's document-level gate: VTI-OPS-020 (a proof by the issuer),
+/// VTI-OPS-021 / -093 (the same requirements on every transport), VTI-OPS-024
+/// (the acceptance window) and VTI-OPS-025…027 (the replay record).
+///
+/// # What this module used to say, and why it no longer does
+///
+/// It held one test, `a_transport_authenticated_task_declares_a_proof_it_does_
+/// not_carry`, whose assertion was deliberately inverted: it recorded that
+/// `join-requests/submit` declares a proof REQUIRED *while this service accepts
+/// it without one*, so that "the next person to reach for `spec_policy_for` as
+/// an enforcement gate meets it as a failing test rather than as a total
+/// outage."
+///
+/// The warning was right about the consequence and wrong about the conclusion.
+/// Three documents refuse the leniency outright — VTI-OPS-021, VTI-OPS-093, and
+/// the DIDComm binding's own §5 ("a *Trust Task specification* that declares
+/// `proof` as REQUIRED overrides this binding-level allowance"). So the gate is
+/// now the specification's, the outage it predicted is real for exactly one
+/// client, and that client is named in
+/// [`crate::config::TrustTasksConfig::require_declared_proof`] rather than
+/// papered over here.
+///
+/// See `docs/05-design-notes/vtc-trust-task-proof-enforcement.md`.
 #[cfg(test)]
 mod spine_proof_tests {
     use super::*;
+    use crate::test_support::{TEST_VTC_DID, build_test_vtc};
+    use serde_json::json;
 
-    /// The rule the spine actually follows, and the one it must not.
-    ///
-    /// The tempting rule is "verify wherever the published specification says
-    /// `proof` is REQUIRED". This test exists because that rule is wrong here,
-    /// and wrong in a way that takes the service down rather than tightening it:
-    /// `join-requests/submit` declares a proof REQUIRED, and over DIDComm the
-    /// applicant sends none — authcrypt proved the sender and the document rides
-    /// inside that envelope. Enforcing the flag refuses every join over DIDComm
-    /// and TSP.
-    ///
-    /// So the assertion is inverted from what it looks like it should be: these
-    /// URIs demand a proof *per the specification* while this service accepts
-    /// them without one. That divergence is real and predates the spine change.
-    /// It is recorded here so the next person to reach for `spec_policy_for` as
-    /// an enforcement gate meets it as a failing test rather than as a total
-    /// outage.
+    // One holder: a `did:key` and the private key behind it, minted the same
+    // way the rooms fixtures mint theirs.
+    use vti_rooms_dtg::test_support::Party as Holder;
+
+    fn holder() -> Holder {
+        Holder::new()
+    }
+
+    /// The unsigned document, exactly as it goes on the wire minus the proof.
+    /// `build_unsigned` is the SDK's own builder, so `issuer`, `recipient` and
+    /// `issuedAt` are set the way every real producer sets them and the tests
+    /// vary only what they mean to.
+    fn unsigned(h: &Holder, uri: &str, payload: Value) -> TrustTask<Value> {
+        vta_sdk::trust_task_sign::build_unsigned(uri, payload, &h.did, TEST_VTC_DID)
+            .expect("build the document")
+    }
+
+    async fn signed(h: &Holder, doc: TrustTask<Value>) -> TrustTask<Value> {
+        let mut doc = doc;
+        let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&h.did, &h.secret_multibase)
+            .expect("a did:key names its own verification method");
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .expect("sign the document");
+        doc
+    }
+
+    /// The `code` of the `trust-task-error` an outcome carries, or `None` when
+    /// the outcome is not an error document.
+    fn error_code(out: &TrustTaskOutcome) -> Option<String> {
+        let doc: Value = serde_json::from_slice(&out.body).ok()?;
+        doc.pointer("/payload/code")?.as_str().map(str::to_string)
+    }
+
+    async fn dispatch(state: &AppState, doc: &TrustTask<Value>) -> TrustTaskOutcome {
+        let body = serde_json::to_vec(doc).expect("a document serialises");
+        dispatch_trust_task_core(state, &JoinAuthCtx::rest(), &body).await
+    }
+
+    /// The URI these tests drive. `vtc/join-requests/status/0.1` declares
+    /// `proof` REQUIRED and needs no seeded community state to reach its
+    /// handler, so what the spine does is the only thing that varies.
+    const UNDER_TEST: &str = jr::JOIN_REQUEST_STATUS_TYPE;
+
+    /// The premise the rest of this module rests on. If the registry ever
+    /// relaxes the declaration, these tests are asserting nothing and this one
+    /// says so first.
     #[test]
-    fn a_transport_authenticated_task_declares_a_proof_it_does_not_carry() {
-        let declares_required = |uri: &str| {
-            trust_tasks_rs::schema_index::spec_policy_for(uri)
-                .is_some_and(|policy| policy.is_proof_required)
-        };
-
+    fn the_task_under_test_declares_a_proof_required() {
+        let policy = trust_tasks_rs::schema_index::spec_policy_for(UNDER_TEST)
+            .expect("the task under test has a published spec policy");
         assert!(
-            declares_required(jr::JOIN_REQUEST_SUBMIT_TYPE),
-            "if this is now false the specification changed, and the comment \
-             above — plus the rule in the spine — should be re-read"
+            policy.is_proof_required,
+            "{UNDER_TEST} no longer declares proof REQUIRED — these tests now \
+             assert nothing, and the design note should be re-read"
         );
     }
 
-    /// And the rooms family, where the requirement *is* enforced — by the arms
-    /// in `dispatch_typed`, which refuse without a verified signer exactly as
-    /// each handler used to refuse for itself.
+    /// **VTI-OPS-020 / VTI-OPS-021.** A task whose specification declares
+    /// `proof` REQUIRED is refused when it carries none, with the framework's
+    /// own code for exactly that.
+    #[tokio::test]
+    async fn vti_ops_020_a_proof_required_task_is_refused_without_a_proof() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let out = dispatch(&tv.state, &unsigned(&h, UNDER_TEST, json!({}))).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("proofRequired"),
+            "SPEC §7.2 item 7 names the code: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// …and accepted with one. "Accepted" here means the spine let it through
+    /// to the handler, which is the whole of what the spine decides — the
+    /// handler then answers for a status poll on a request that does not
+    /// exist, and that answer is not this module's business.
+    #[tokio::test]
+    async fn vti_ops_020_the_same_document_is_accepted_once_it_is_signed() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let doc = signed(&h, unsigned(&h, UNDER_TEST, json!({}))).await;
+        let out = dispatch(&tv.state, &doc).await;
+
+        assert_ne!(
+            error_code(&out).as_deref(),
+            Some("proofRequired"),
+            "a signed document must reach its handler: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_ne!(
+            error_code(&out).as_deref(),
+            Some("proofInvalid"),
+            "the spine must accept a proof it can verify: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// **VTI-OPS-020.** SPEC §4.7: the proof's `verificationMethod` "MUST
+    /// resolve to verification material controlled by the *party* identified by
+    /// the document's `issuer`". A valid signature by some *other* holder is
+    /// not a proof by the issuer, and before #1641 it satisfied the
+    /// requirement — establishing only that somebody signed something, which is
+    /// not what `verified_signer` is read as downstream.
+    #[tokio::test]
+    async fn vti_ops_020_a_proof_by_a_key_the_issuer_does_not_control_is_refused() {
+        let tv = build_test_vtc().await;
+        let issuer = holder();
+        let impostor = holder();
+
+        // Addressed from `issuer`, signed by `impostor`.
+        let doc = signed(&impostor, unsigned(&issuer, UNDER_TEST, json!({}))).await;
+        let out = dispatch(&tv.state, &doc).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("proofInvalid"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// **VTI-OPS-024.** A document issued longer ago than the acceptance
+    /// window is outside it, and `expired` is the code for a document that was
+    /// once acceptable and no longer is.
+    #[tokio::test]
+    async fn vti_ops_024_an_issued_at_older_than_the_window_is_refused() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(chrono::Utc::now() - chrono::TimeDelta::hours(2));
+        let doc = signed(&h, doc).await;
+
+        assert_eq!(
+            error_code(&dispatch(&tv.state, &doc).await).as_deref(),
+            Some("expired"),
+        );
+    }
+
+    /// **VTI-OPS-024**, the other end of the window, and the skew tolerance
+    /// that bounds it. SPEC §7.2 item 13 makes a future-dated document
+    /// `malformedRequest` rather than `expired`: it was never acceptable, so
+    /// telling the producer to wait would be wrong — it must reissue.
+    #[tokio::test]
+    async fn vti_ops_024_a_future_dated_issued_at_is_malformed_not_expired() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(chrono::Utc::now() + chrono::TimeDelta::minutes(30));
+        let doc = signed(&h, doc).await;
+
+        assert_eq!(
+            error_code(&dispatch(&tv.state, &doc).await).as_deref(),
+            Some("malformedRequest"),
+        );
+    }
+
+    /// …and a document inside the skew tolerance is not. 30 seconds ahead of
+    /// this consumer's clock is an ordinary clock disagreement, and refusing it
+    /// would make the window depend on whose NTP is better.
+    #[tokio::test]
+    async fn vti_ops_024_a_document_inside_the_skew_tolerance_is_accepted() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(chrono::Utc::now() + chrono::TimeDelta::seconds(30));
+        let doc = signed(&h, doc).await;
+        let out = dispatch(&tv.state, &doc).await;
+
+        assert_ne!(
+            error_code(&out).as_deref(),
+            Some("malformedRequest"),
+            "60s of skew is SPEC §4.2's own tolerance: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// Give `h` an open join request, so a status poll from them **succeeds**.
     ///
-    /// The two together are the whole rule: a present proof is always verified,
-    /// an absent one is the transport's business, and a handler that needs a
-    /// signed identity says so.
+    /// The replay tests below need that: the spine releases a claim whose
+    /// dispatch failed — deliberately, so a corrected resend under the same
+    /// `id` is not refused as a conflict for the rest of the retention window
+    /// — and a test driving a failing task would therefore assert against a
+    /// record that was never kept.
+    async fn seed_open_request(state: &AppState, h: &Holder) {
+        let request =
+            crate::join::JoinRequest::new(h.did.clone(), serde_json::json!({ "vp": "x" }));
+        crate::join::storage::store_join_request(&state.join_requests_ks, &request)
+            .await
+            .expect("seed an open join request");
+    }
+
+    /// **VTI-OPS-020's replay half (VTI-OPS-025…027), SPEC §7.2 item 11.** The
+    /// same document delivered twice executes once. A duplicate is answered
+    /// with the original result rather than an error — "in no case is a
+    /// duplicate reported as `taskFailed`; the task did not fail, it already
+    /// happened" — so the assertion is that the second answer is the first.
+    ///
+    /// Compared as parsed JSON rather than as bytes: the duplicate path
+    /// re-serialises the recorded `Value`, and `serde_json` without
+    /// `preserve_order` alphabetises a `Map`'s keys, so the two are the same
+    /// document and not the same bytes.
+    #[tokio::test]
+    async fn vti_ops_025_a_replayed_document_is_answered_not_executed_again() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        seed_open_request(&tv.state, &h).await;
+        let doc = signed(&h, unsigned(&h, UNDER_TEST, json!({}))).await;
+
+        let first = dispatch(&tv.state, &doc).await;
+        assert!(
+            first.status.is_success(),
+            "the fixture must reach a succeeding handler, or the claim is \
+             released and the second dispatch runs fresh: {}",
+            String::from_utf8_lossy(&first.body)
+        );
+
+        let second = dispatch(&tv.state, &doc).await;
+        assert_eq!(first.status, second.status);
+
+        let as_json = |out: &TrustTaskOutcome| -> Value {
+            serde_json::from_slice(&out.body).expect("the answer is a document")
+        };
+        assert_eq!(
+            as_json(&first),
+            as_json(&second),
+            "a redelivery is the same document, so it gets the same answer"
+        );
+    }
+
+    /// **SPEC §7.2 item 11's conflict half.** A *different* document under an
+    /// already-spent `id` is `idConflict`, never absorbed as a retry — which is
+    /// why the record is keyed by digest rather than by `id` alone.
+    #[tokio::test]
+    async fn vti_ops_025_a_different_document_reusing_an_id_is_a_conflict() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        seed_open_request(&tv.state, &h).await;
+
+        let first = signed(&h, unsigned(&h, UNDER_TEST, json!({}))).await;
+        let out = dispatch(&tv.state, &first).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        // Same `id`, different content: a different document, not a retry.
+        let mut second = unsigned(&h, UNDER_TEST, json!({}));
+        second.id = first.id.clone();
+        second.issued_at = Some(chrono::Utc::now() - chrono::TimeDelta::seconds(1));
+        let second = signed(&h, second).await;
+
+        assert_eq!(
+            error_code(&dispatch(&tv.state, &second).await).as_deref(),
+            Some("idConflict"),
+        );
+    }
+
+    /// **VTI-OPS-024 + VTI-OPS-026.** Acceptance and retention are one bound.
+    /// `record_expiry` takes a producer-supplied `expiresAt` verbatim, so
+    /// without the cap a document stamped ten years out would pin its `id`
+    /// for ten years — retention long past the last instant the document could
+    /// still be accepted, crowding out the records that can be drawn on.
+    #[test]
+    fn vti_ops_026_retention_is_capped_at_the_end_of_the_acceptance_window() {
+        let h = holder();
+        let now = chrono::Utc::now();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(now);
+        doc.expires_at = Some(now + chrono::TimeDelta::days(3650));
+
+        let policy = freshness_policy();
+        let until = retain_until(&doc, now).expect("a document with an issuedAt is boundable");
+
+        assert_eq!(
+            until,
+            now + policy.max_age.expect("the window is set") + policy.skew,
+            "retention may not outlast the window in which the document is \
+             still executable"
+        );
+    }
+
+    /// …and it never moves the instant *earlier* than that window. Shortening
+    /// retention below acceptance is the direction §7.2 forbids: a replay
+    /// arriving while the document is still acceptable, with its record
+    /// already dropped, executes twice.
+    #[test]
+    fn vti_ops_026_a_short_expiry_does_not_shorten_retention_below_the_window() {
+        let h = holder();
+        let now = chrono::Utc::now();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(now);
+        doc.expires_at = Some(now + chrono::TimeDelta::seconds(30));
+
+        let until = retain_until(&doc, now).expect("boundable");
+        assert_eq!(
+            until,
+            now + chrono::TimeDelta::seconds(30),
+            "a producer that says its document lapses in 30s has said the \
+             record may be dropped then — it is unacceptable after that too"
+        );
+    }
+
+    /// **VTI-OPS-021 / VTI-OPS-093.** The transitional allowance in
+    /// [`crate::config::TrustTasksConfig::require_declared_proof`] does **not**
+    /// reach a REST document. Over REST nothing authenticates the sender, so
+    /// there is no attribution for a missing proof to be substituted by — and
+    /// the allowance is a substitution, not a suspension.
+    #[tokio::test]
+    async fn vti_ops_093_the_transitional_allowance_never_reaches_rest() {
+        let tv = build_test_vtc().await;
+        assert!(
+            !tv.state
+                .config
+                .read()
+                .await
+                .trust_tasks
+                .require_declared_proof,
+            "the fixture runs with the shipped default, which is the lenient one"
+        );
+        let h = holder();
+
+        assert_eq!(
+            error_code(&dispatch(&tv.state, &unsigned(&h, UNDER_TEST, json!({}))).await).as_deref(),
+            Some("proofRequired"),
+            "a REST document has no transport-authenticated sender to stand in"
+        );
+    }
+
+    /// The allowance, where it does apply: a transport-authenticated sender
+    /// over DIDComm, under the shipped default. This is the one path #1641
+    /// leaves open, and it is pinned so that flipping the default is a visible
+    /// change to a test rather than a silent change in behaviour.
+    #[tokio::test]
+    async fn vti_ops_021_a_transport_authenticated_sender_is_accepted_while_the_allowance_stands() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let body =
+            serde_json::to_vec(&unsigned(&h, UNDER_TEST, json!({}))).expect("serialise document");
+
+        let out =
+            dispatch_trust_task_core(&tv.state, &JoinAuthCtx::didcomm(h.did.clone()), &body).await;
+
+        assert_ne!(
+            error_code(&out).as_deref(),
+            Some("proofRequired"),
+            "while `require_declared_proof` is false, an authcrypt sender stands in: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// …and does not once the operator turns enforcement on. Same document,
+    /// same transport, one config line apart.
+    #[tokio::test]
+    async fn vti_ops_021_the_same_didcomm_document_is_refused_once_enforcement_is_on() {
+        let tv = build_test_vtc().await;
+        tv.state
+            .config
+            .write()
+            .await
+            .trust_tasks
+            .require_declared_proof = true;
+        let h = holder();
+        let body =
+            serde_json::to_vec(&unsigned(&h, UNDER_TEST, json!({}))).expect("serialise document");
+
+        let out =
+            dispatch_trust_task_core(&tv.state, &JoinAuthCtx::didcomm(h.did.clone()), &body).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("proofRequired"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// The rooms family, where the requirement was already enforced by the
+    /// arms in `dispatch_typed` before the spine took it on. Kept because the
+    /// arms' guard is now belt to the spine's brace, and a specification that
+    /// relaxed the declaration would leave that guard standing alone.
     #[test]
     fn every_rooms_task_declares_the_proof_its_arm_requires() {
         for uri in vti_rooms::wire::ROOMS_DISPATCHED_URIS {
@@ -564,6 +1149,29 @@ mod spine_proof_tests {
                  specification had better agree that one is required"
             );
         }
+    }
+
+    /// The nine `vtc/*` tasks #1641 is about, named by the registry rather than
+    /// by a literal list here. A task that stops declaring a proof — or one
+    /// that starts — moves this number, and moving it should be a decision
+    /// somebody took rather than a diff nobody read.
+    #[test]
+    fn the_dispatched_set_declares_the_proofs_the_design_note_records() {
+        let required: Vec<&str> = DISPATCHED_URIS
+            .iter()
+            .copied()
+            .chain(crate::rooms::handlers::served_uris())
+            .filter(|uri| {
+                trust_tasks_rs::schema_index::spec_policy_for(uri)
+                    .is_some_and(|p| p.is_proof_required)
+            })
+            .collect();
+
+        assert_eq!(
+            required.len(),
+            20,
+            "the design note records 9 `vtc/*` + 11 `rooms/*`; got {required:?}"
+        );
     }
 }
 
@@ -1865,12 +2473,23 @@ mod tests {
         /// recipient binding is skipped — these tests are about the
         /// per-verb auth the handlers add, not the framework envelope
         /// checks that run ahead of every verb alike.
+        ///
+        /// The envelope is still the one a real producer sends. `issuedAt` and
+        /// `recipient` are both required of these specifications, and the spine
+        /// enforces them ahead of any handler since #1641; a bare
+        /// `TrustTask::new` was refused as `malformedRequest` before the verb
+        /// under test was ever reached. No `proof`: these five run over
+        /// DIDComm, where the transitional allowance stands (see
+        /// [`crate::config::TrustTasksConfig::require_declared_proof`]) — which
+        /// is itself worth having under test from a second direction.
         fn document(type_uri: &str, payload: serde_json::Value) -> Vec<u8> {
-            let doc = TrustTask::new(
+            let mut doc = TrustTask::new(
                 uuid::Uuid::new_v4().to_string(),
                 type_uri.parse().expect("dispatched URI parses as TypeUri"),
                 payload,
             );
+            doc.recipient = Some(crate::test_support::TEST_VTC_DID.to_string());
+            doc.issued_at = Some(chrono::Utc::now());
             serde_json::to_vec(&doc).expect("serialize document")
         }
 
