@@ -319,7 +319,7 @@ Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password
 
 | Command | Description |
 | ------- | ----------- |
-| `messaging console [--context ID] [--mediator DID]` | Open the mediator console as the DID of a context |
+| `messaging console [--context ID] [--did DID] [--mediator DID]` | Open the mediator console as a DID of a context |
 | `messaging console --as-session` | Open it as this pnm session's own `did:key` |
 
 `pnm messaging console` opens a full-screen console for an Affinidi messaging
@@ -331,7 +331,13 @@ mediator, acting as a DID this VTA manages — no profile file or secrets to kee
 - **any other** DID manages its own queues and messages and watches its own
   traffic.
 
-The mediator decides which, from its own record of the DID. The mediator comes
+**Which DID.** Any DID whose keys are in a context you can see is offered,
+with each context's own DID listed first. When there's more than one, pnm
+asks you to pick. `--context` narrows the list to one context and `--did`
+picks the DID directly; with a context that holds several DIDs and no `--did`,
+you pick from that context's DIDs.
+
+The mediator decides which view you get, from its own record of the DID. The mediator comes
 from `--mediator`, else the DID document's `DIDCommMessaging` service, else this
 pnm's configured mediator. Screens and keys are documented with the console
 itself: [`affinidi-messaging-mediator-tui`](https://github.com/affinidi/affinidi-tdk-rs/tree/main/crates/messaging/affinidi-messaging-mediator-tui).
