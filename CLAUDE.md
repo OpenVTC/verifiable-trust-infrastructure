@@ -542,6 +542,20 @@ new flow, update both this section and the relevant `docs/*.md`.
     bearer credential (OAuth2 §10.4 rotation), so the Trust Task path passes
     `signer_did: None`. Together with the authenticate path above, the mobile
     engine runs its whole login→refresh loop over plain REST, no mediator.
+  - **Refresh-token rotation + reuse detection**: every successful refresh
+    mints a new refresh token and atomically spends the presented one, so a
+    token works exactly once. Each rotation leaves a hashed tombstone
+    (`rotated:{sha256}`), so a *replayed* token is distinguishable from one
+    this node never issued. A replay is forgiven only as a lost-response retry
+    (session alive, inside `refresh_reuse_grace()` — default 30s — **and** the
+    tombstoned successor still unspent), in which case the same pair is
+    re-served without rotating. Otherwise it is reuse: the session is revoked
+    (killing every descendant token) and `AuthAuditEvent::RefreshReuseDetected`
+    fires at `error!` with `security_alert = true`. The caller sees the same
+    401 either way, so detection isn't an oracle. Tombstones are reaped on time
+    only (`rotated_at + refresh_token_ttl`), never alongside their session —
+    post-revocation replay is the case most worth catching. Implements
+    RFC 9700 §4.14.2.
   - **Trust-Task-wrapped responses (engine interop):** `/auth/challenge`,
     `/auth/`, and `/auth/refresh` all content-negotiate on *both* ends — when
     the request body is a Trust Task document, the response is a TT `#response`

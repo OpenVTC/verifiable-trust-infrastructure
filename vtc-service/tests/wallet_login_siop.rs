@@ -524,9 +524,18 @@ async fn rest_only_login_then_refresh_needs_no_didcomm() {
 #[tokio::test]
 async fn rest_refresh_rotates_and_the_old_token_is_dead() {
     // RFC 6749 §10.4: every successful refresh mints a new refresh token and
-    // retires the presented one. A replayed token must read as "not found" —
-    // the same shape a revoked token gives, so a leak is not distinguishable
-    // from a revocation by probing.
+    // retires the presented one, so a token is worth exactly one rotation.
+    //
+    // "Retired" is not the same as "instantly refused". An immediate replay
+    // still falls inside `refresh_reuse_grace` with the replacement unspent,
+    // which is indistinguishable from a client retrying a rotation response
+    // that was lost in flight, so it is answered idempotently with the *same*
+    // pair. What it must never do is open a second, parallel chain.
+    //
+    // Once the chain moves on, the concession lapses and the spent token is
+    // reuse: refused, and the whole session revoked with it (RFC 9700
+    // §4.14.2). A replayed token then reads as "not found" — the same shape a
+    // revoked token gives, so a leak is not distinguishable by probing.
     let (sk, holder, kid) = holder_identity(21);
     let fix = build_fixture(&holder).await;
 
@@ -541,16 +550,51 @@ async fn rest_refresh_rotates_and_the_old_token_is_dead() {
     assert_eq!(status, StatusCode::OK, "first refresh failed: {body}");
     let second = body["tokens"]["refreshToken"]
         .as_str()
-        .expect("rotation must return a new refresh token");
+        .expect("rotation must return a new refresh token")
+        .to_string();
     assert_ne!(second, first, "refresh token must rotate");
 
-    // Replay the spent token.
+    // Replay the spent token while the successor is still unspent: a retry.
+    // It must re-serve the existing chain, never fork a new one.
+    let (status, body) =
+        post_json(&fix.router, "/v1/wallet/auth/refresh", refresh_doc(&first)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an immediate retry is a lost response, not a compromise: {body}"
+    );
+    assert_eq!(
+        body["tokens"]["refreshToken"].as_str(),
+        Some(second.as_str()),
+        "the retry must replay the same token, never mint a second live one",
+    );
+
+    // Advance the chain. Now the spent token cannot be a retry by anyone.
+    let (status, body) =
+        post_json(&fix.router, "/v1/wallet/auth/refresh", refresh_doc(&second)).await;
+    assert_eq!(status, StatusCode::OK, "second refresh failed: {body}");
+    let third = body["tokens"]["refreshToken"]
+        .as_str()
+        .expect("rotation must return a new refresh token")
+        .to_string();
+
+    // Replaying the retired token is now unambiguous reuse.
     let (status, body) =
         post_json(&fix.router, "/v1/wallet/auth/refresh", refresh_doc(&first)).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
-        "a spent refresh token must not work twice: {body}"
+        "a spent refresh token must not work once the chain has moved on: {body}"
+    );
+
+    // Detection revokes the session, so the descendant token dies with it —
+    // the attacker's stolen chain and the victim's are the same chain.
+    let (status, body) =
+        post_json(&fix.router, "/v1/wallet/auth/refresh", refresh_doc(&third)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "reuse detection must revoke every token descended from the replayed one: {body}"
     );
 }
 

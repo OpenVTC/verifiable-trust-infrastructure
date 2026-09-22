@@ -39,6 +39,7 @@ pub struct VtcAuthBackend {
     challenge_ttl: u64,
     access_token_ttl: u64,
     refresh_token_ttl: u64,
+    refresh_reuse_grace: u64,
     admin_idle_timeout: u64,
 }
 
@@ -50,12 +51,19 @@ impl VtcAuthBackend {
             .ok_or_else(|| AppError::Internal("JWT keys not configured".to_string()))?;
         let sessions = KeyspaceSessionStore::new(state.sessions_ks.clone());
 
-        let (challenge_ttl, access_token_ttl, refresh_token_ttl, admin_idle_timeout) = {
+        let (
+            challenge_ttl,
+            access_token_ttl,
+            refresh_token_ttl,
+            refresh_reuse_grace,
+            admin_idle_timeout,
+        ) = {
             let cfg = state.config.read().await;
             (
                 cfg.auth.challenge_ttl,
                 cfg.auth.access_token_expiry,
                 cfg.auth.refresh_token_expiry,
+                cfg.auth.refresh_reuse_grace,
                 cfg.auth.admin_idle_timeout,
             )
         };
@@ -67,6 +75,7 @@ impl VtcAuthBackend {
             challenge_ttl,
             access_token_ttl,
             refresh_token_ttl,
+            refresh_reuse_grace,
             admin_idle_timeout,
         })
     }
@@ -136,6 +145,12 @@ impl AuthBackend for VtcAuthBackend {
 
     fn refresh_token_ttl(&self) -> u64 {
         self.refresh_token_ttl
+    }
+
+    /// Operator-settable (`[auth] refresh_reuse_grace`); `0` makes every
+    /// replay of a rotated token a compromise signal.
+    fn refresh_reuse_grace(&self) -> u64 {
+        self.refresh_reuse_grace
     }
 
     /// The snapshot is taken per request — `from_state` runs in every

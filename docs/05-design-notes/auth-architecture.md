@@ -183,7 +183,8 @@ created_time?, session_pubkey_b58btc? }`. The canonical handler:
 
 1. **Atomic claim** of the `refresh_token → session_id` index via
    `take_session_id_by_refresh`. Exactly one caller proceeds per
-   token, cross-replica safe.
+   token, cross-replica safe. A token that is *not* in the index
+   diverts to the reuse-detection path below.
 2. Load session.
 3. (DIDComm transports) `signer_did == session.did` binding.
 4. State check (`Authenticated`).
@@ -195,8 +196,127 @@ created_time?, session_pubkey_b58btc? }`. The canonical handler:
 8. Re-look-up ACL role.
 9. Mint new session (new `session_id`, access token, refresh
    token; AAL preserved; TTL acr-dependent).
-10. Emit `Refreshed` audit event.
-11. Return canonical `AuthenticateResponse`.
+10. **Tombstone the spent token** (`store_refresh_tombstone`),
+    ordered after the replacement index is durable. A write
+    failure is logged, not returned: the rotation is already
+    committed, and failing the request would withhold the only
+    live token from its owner.
+11. Emit `Refreshed` audit event.
+12. Return canonical `AuthenticateResponse`.
+
+### Refresh-token reuse detection
+
+Rotation alone makes a stolen refresh token worth exactly one
+access token, but it says nothing about the theft. Deleting the
+live index leaves a replayed token and a token this node never
+issued looking identical — both simply absent — so the clearest
+sign of compromise, a token presented after it was spent, arrives
+as an ordinary 401.
+
+Every rotation therefore writes a `RefreshTombstone` at
+`rotated:{sha256(token)}`:
+
+```rust
+struct RefreshTombstone {
+    session_id: String,
+    rotated_at: u64,
+    expires_at: u64,      // rotated_at + refresh_token_ttl
+    successor_hash: String, // sha256 of the token that replaced it
+}
+```
+
+No bearer secret is stored: the tombstoned token is the *key*
+(hashed), and its successor is recorded as a hash.
+
+A token that misses the live index is looked up here. No
+tombstone ⇒ plain rejection, no alert — nothing to attribute.
+A tombstone ⇒ this node issued the token and already spent it,
+which is either theft or one specific non-attack.
+
+**The lenient concession.** A client whose rotation response is
+lost in flight still holds only the old token, and retrying with
+it is correct behaviour. Strict detection would read that retry
+as theft and sign the user out — so the common network fault
+would raise the alarm while a patient attacker would not. A
+replay is treated as an innocent retry only when *all* of:
+
+- the session is alive and `Authenticated`;
+- `now - rotated_at < refresh_reuse_grace()` (default 30s,
+  strictly inside, so `0` disables the concession entirely);
+- the tombstone's `successor_hash` is **still** the session's
+  live refresh token.
+
+The last condition is what keeps this narrow: it holds only while
+the successor has never been used, which is exactly the situation
+of a client that never received it. Once anyone spends the
+successor the window shuts early, so a stolen token replayed
+seconds after a legitimate refresh is still caught.
+
+An innocent retry re-serves the *same* pair, with the access
+token re-minted against the session's existing `token_id` — so
+the lost copy and this one are the same token as far as the `jti`
+pin is concerned, nothing rotates, and the reported
+`refresh_expires_in` is the time actually left rather than a
+fresh TTL. It still issues an access token, so it emits
+`Refreshed` like any refresh (VTI-SES-041).
+
+This conforms with VTI-SES-030 (exactly one concurrent claimant
+succeeds). The claim is still the atomic take of the live index; a
+caller racing it misses the index before the tombstone exists and
+is refused. Only a caller arriving *after* the claim completed is
+answered, and it gets that claim's own result — no second session
+and no second refresh token, which is what the requirement's
+rationale rules out.
+
+**The residual race, stated plainly.** While the window is open
+*and* the successor is unspent, a party replaying a stolen token
+receives that same successor. Leniency buys tolerance of a
+routine network fault at the cost of a ≤30s race that also
+requires the attacker to beat the legitimate client to the
+replacement. It is a deliberate trade, not an oversight, and it
+is the reason the window is both short and conditional on the
+successor being untouched. Deployments that would rather sign a
+user out than concede the race set:
+
+```toml
+[auth]
+refresh_reuse_grace = 0
+```
+
+which makes every replay of a rotated token a compromise signal.
+Note the cost of that setting: each dropped connection then logs
+its user out and reports a compromise, so the alarm fires for the
+routine fault while an attacker who waits out any window never
+trips it either way.
+
+**Anything else is reuse**: the session is deleted (which takes
+its live refresh index down with it, killing every descendant of
+the replayed token), and `AuthAuditEvent::RefreshReuseDetected`
+fires with a `RefreshReuseReason` of `GraceExpired`,
+`ChainAdvanced`, or `SessionGone`. The default `audit` impl emits
+it at `error!` with `security_alert = true`.
+
+Both outcomes return the same `RefreshTokenInvalid` a stranger's
+token gets. Reporting detection to the caller would tell an
+attacker precisely when to stop; the party that needs to know is
+the operator, who learns it from the audit event.
+
+**Retention.** Tombstones are reaped purely on time by
+`cleanup_expired_sessions`, at `rotated_at + refresh_token_ttl` —
+the window in which the token could still be replayed; past it
+the token is refused on expiry grounds anyway. They are
+deliberately *not* removed when their session dies: replay after
+a revocation is the case most worth catching, and sweeping them
+alongside the session would blind exactly that. Cost is ~120 B
+per rotation, so ~12 KB/session/day at a 15-minute refresh
+cadence.
+
+**Degradation.** `store_refresh_tombstone` / `get_refresh_tombstone`
+are `SessionStore` methods with no-op defaults, so an out-of-tree
+store (did-hosting) adopts this release unchanged and keeps
+exactly the pre-detection behaviour: replay refused, just not
+attributed. `KeyspaceSessionStore` overrides both, so VTA and VTC
+get detection.
 
 ## What stays out of the trait
 
