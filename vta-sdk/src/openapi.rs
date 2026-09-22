@@ -48,6 +48,7 @@ use utoipa::openapi::schema::{
 use utoipa::openapi::{Ref, RefOr};
 
 use crate::protocols::vetting::vetters;
+use trust_tasks_rs::specs::did_management::did::register;
 use trust_tasks_rs::specs::vtc::endorsement_types;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
@@ -119,6 +120,11 @@ macro_rules! spec_types {
 }
 
 spec_types! {
+    /// `did-management/did/register/0.1` payload — also the body of a VTC's
+    /// `POST /v1/admin/did/register`, which installs its own self-hosted log.
+    DidRegister01Payload(register::v0_1::Payload);
+    /// `did-management/did/register/0.1#response`.
+    DidRegister01Response(register::v0_1::Response);
     /// `vtc/vetting/vetters/grant/0.1` payload.
     VetterGrant01Payload(vetters::grant::v0_1::Payload);
     /// `vtc/vetting/vetters/grant/0.1#response`.

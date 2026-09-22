@@ -2,6 +2,7 @@ mod audit;
 mod auth;
 mod backup;
 mod config;
+mod did_log;
 mod setup;
 mod vetting;
 
@@ -185,6 +186,14 @@ enum Commands {
     Vetting {
         #[command(subcommand)]
         command: vetting::VettingCommands,
+    },
+
+    /// The community's own DID log, when the community self-hosts it: install a
+    /// log the VTA extended (a transport added, a key rotated).
+    #[command(name = "did-log")]
+    DidLog {
+        #[command(subcommand)]
+        command: did_log::DidLogCommands,
     },
 
     /// Sealed-transfer bootstrap (consumer side).
@@ -851,6 +860,8 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Setup
             | Commands::Community { .. }
             | Commands::Bootstrap { .. }
+            // Authenticates to the community itself, not to the VTA.
+            | Commands::DidLog { .. }
     )
 }
 
@@ -1358,6 +1369,19 @@ async fn main() {
             AuditCommands::Verify => audit::cmd_verify(&client, &keyring_key).await,
         },
         Commands::Vetting { command } => vetting::run(command, &client, &keyring_key).await,
+        Commands::DidLog { command } => {
+            match resolve_community(cli.community.as_deref(), &cnm_config) {
+                Ok((slug, _)) => {
+                    did_log::run(
+                        command,
+                        &community_keyring_key(&slug),
+                        url_override.as_deref(),
+                    )
+                    .await
+                }
+                Err(e) => Err(format!("{e}").into()),
+            }
+        }
         Commands::Bootstrap { command } => match command {
             BootstrapCommands::Request { out, label } => bootstrap_request(out, label),
             BootstrapCommands::Open {

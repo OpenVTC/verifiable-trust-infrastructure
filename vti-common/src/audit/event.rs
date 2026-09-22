@@ -561,6 +561,11 @@ pub enum AuditEvent {
     /// An admin onboarding invite was revoked (`DELETE /v1/admin/invites/{jti}`).
     AdminInviteRevoked(AdminInviteData),
 
+    /// A self-hosted community installed a delivered log for its own DID
+    /// (`did-management/did/register/0.1`, `POST /v1/admin/did/register`) —
+    /// the DID document every resolver of the community receives changed.
+    CommunityDidLogInstalled(CommunityDidLogInstalledData),
+
     /// A credential schema or accepts-criterion was registered
     /// (`POST /v1/schemas` or `/v1/schemas/accepts`) — what the community
     /// accepts/recognises changed.
@@ -657,6 +662,7 @@ impl AuditEvent {
             Self::BackupImported(..) => "BackupImported",
             Self::AdminInviteCreated(..) => "AdminInviteCreated",
             Self::AdminInviteRevoked(..) => "AdminInviteRevoked",
+            Self::CommunityDidLogInstalled(..) => "CommunityDidLogInstalled",
             Self::SchemaRegistered(..) => "SchemaRegistered",
             Self::SchemaDeleted(..) => "SchemaDeleted",
             // The variant name, not the action inside it. A consumer
@@ -773,6 +779,20 @@ pub struct AdminInviteData {
     /// The admin DID the invite is bound to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_did: Option<String>,
+}
+
+/// Payload for [`AuditEvent::CommunityDidLogInstalled`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityDidLogInstalledData {
+    /// The community's DID.
+    pub did: String,
+    /// The `versionId` of the last entry now served.
+    pub version_id: String,
+    /// The `versionId` of the last entry served before.
+    pub previous_version_id: String,
+    /// How many entries the install added.
+    pub entries_added: u64,
 }
 
 /// Payload for [`AuditEvent::SchemaRegistered`] / [`AuditEvent::SchemaDeleted`].

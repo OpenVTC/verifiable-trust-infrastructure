@@ -119,6 +119,9 @@ pub mod task {
 /// driving the join ceremony depends on one crate.
 pub use vta_sdk::protocols::join_requests;
 
+/// `did-management/did/register` — how a self-hosted community is handed a
+/// new log for its own DID ([`VtcClient::install_did_log`]).
+pub use trust_tasks_rs::specs::did_management::did::register as did_register;
 /// Re-export of the peer identity vetting wire types — the vetter grant, the
 /// grant listing and the automatic-grant configuration this client's vetting
 /// admin verbs send and return.
@@ -955,6 +958,35 @@ impl VtcClient {
     pub async fn list_vetter_grants(&self) -> Result<vetting::VetterGrantListResponse, VtcError> {
         let url = self.api_url(&["vetting", "vetters"])?;
         let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// Install a delivered log for the community's own self-hosted DID
+    /// (`did-management/did/register/0.1`, over `POST /admin/did/register`).
+    /// Super-admin token.
+    ///
+    /// `register` carries the DID's complete `did:webvh` log as `didData`, at
+    /// `path: ".well-known"` — the one slot a self-hosted community serves.
+    /// The log is typically fetched from the VTA that holds the DID's keys
+    /// with `pnm did-mgmt dids get-log`. The community verifies every entry,
+    /// refuses a log that drops or rewrites one it serves, and serves the
+    /// result at once; re-sending the log already served changes nothing. A
+    /// community whose DID has a path is on a DID host, which gets new entries
+    /// from the VTA directly, and is refused here.
+    pub async fn install_did_log(
+        &self,
+        register: &did_register::v0_1::Payload,
+    ) -> Result<did_register::v0_1::Response, VtcError> {
+        let url = self.api_url(&["admin", "did", "register"])?;
+        let resp = self
+            .tt(
+                reqwest::Method::POST,
+                url,
+                <did_register::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            )?
+            .json(register)
+            .send()
+            .await?;
         Ok(expect_success(resp).await?.json().await?)
     }
 

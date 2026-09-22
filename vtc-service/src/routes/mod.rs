@@ -599,6 +599,13 @@ fn build_api_chain(
             routes!(admin::invites::revoke_invite),
             "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1",
         ))
+        // A self-hosted community's own DID log (Keyring VTI-35). The task a
+        // DID owner sends a DID host, answered for the one DID this community
+        // hosts — see `admin::did_register`.
+        .routes(tt(
+            routes!(admin::did_register::register),
+            <trust_tasks_rs::specs::did_management::did::register::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ))
         // Directory ceremony (read-only field projection via the
         // ceremony decision pipeline).
         .routes(tt(

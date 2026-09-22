@@ -7,5 +7,6 @@
 
 pub mod bootstrap;
 pub mod config;
+pub mod did_register;
 pub mod invites;
 pub mod passkeys;

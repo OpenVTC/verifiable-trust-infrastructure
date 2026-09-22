@@ -561,6 +561,13 @@ impl MockVtc {
         Self::serve(vtc).await
     }
 
+    /// Serve a `TestVtc` the caller built — for a test that needs a VTC the
+    /// fixed presets above do not make, such as one whose own DID is a
+    /// self-hosted `did:webvh` with a log on disk.
+    pub async fn start_with(vtc: TestVtc) -> MockVtc {
+        Self::serve(vtc).await
+    }
+
     /// Bind an ephemeral loopback port, serve the built `TestVtc`, and return
     /// once it is bound and serving.
     async fn serve(vtc: TestVtc) -> MockVtc {

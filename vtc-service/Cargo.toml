@@ -69,7 +69,7 @@ didcomm-harness = [
   "dep:affinidi-messaging-test-mediator",
   "vta-sdk/vp",
 ]
-setup = ["dep:dialoguer", "dep:didwebvh-rs", "dep:url"]
+setup = ["dep:dialoguer", "dep:url"]
 # BBS+ (`bbs-2023`) verifier support — lets the join verifier accept
 # selectively-disclosed bbs-2023 presentations. Pulls in the BLS12-381 curve
 # (`affinidi-bbs`) + the `bbs-2023` Data-Integrity cryptosuite. Off by default.
@@ -263,7 +263,9 @@ keyring-core = { workspace = true, optional = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-didwebvh-rs = { workspace = true, optional = true }
+# Not only setup's: `did_log_install` verifies a delivered log in every build
+# (vtc/admin/did-log/install, Keyring VTI-35).
+didwebvh-rs = { workspace = true }
 rand = { workspace = true }
 dialoguer = { workspace = true, optional = true }
 serde_json_canonicalizer = { workspace = true }
