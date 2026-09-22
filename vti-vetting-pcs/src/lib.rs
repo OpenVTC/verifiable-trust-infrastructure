@@ -11,6 +11,7 @@
 //!
 //! Development branch. The library it builds on is vendored (`vendor/PROVENANCE.md`).
 
+pub mod community;
 pub mod error;
 pub mod meta;
 pub mod scheme;

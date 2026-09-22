@@ -5,7 +5,7 @@
 //! are published in the manifest. The VTC service runs it beside its own state; so does the
 //! applicant's client when it wants to know what the VTC will make of what it holds.
 //!
-//! **THIS IS THE ONE THAT DECIDES.** `openvtc-vetting-pcs/src/verifier.rs` mirrors it so the client
+//! **THIS IS THE ONE THAT DECIDES.** `openvtc-vetting-pcs/src/verifier.rs` mirrors it so a client
 //! can predict the verdict; when they disagree, this file is right and the fixture test says so.
 
 use std::collections::{BTreeMap, HashMap, HashSet};

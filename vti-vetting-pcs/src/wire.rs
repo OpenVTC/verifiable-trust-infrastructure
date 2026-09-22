@@ -1,8 +1,8 @@
 //! The wire form of a hidden-vetting submission: what the applicant puts in
 //! `JoinRequestSubmitBody.extensions` and what the VTC reads back (design §8).
 //!
-//! **MIRRORED FILE.** Byte-for-byte the same in `openvtc-vetting-pcs/src/wire.rs` on the openvtc
-//! `zkp-pcs` branch, apart from the import of `Submission`. The two sides must agree on this JSON exactly, so change both, and keep
+//! **MIRRORED FILE.** The same as `openvtc-vetting-pcs/src/wire.rs` on the openvtc `zkp-pcs`
+//! branch, apart from where `Submission` is imported from. The two sides must agree on this JSON exactly, so change both, and keep
 //! `tests/fixtures/submission.json` — which the VTI branch reads back — regenerated.
 //!
 //! Binary values travel as multibase base58btc (`z…`) over the crate's validated canonical

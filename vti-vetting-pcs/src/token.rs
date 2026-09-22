@@ -31,10 +31,11 @@ use predicate_credential_system::{
     sigma::{FSProof, GroupRelation, LinearEquation, fiat_shamir},
 };
 use rand::{CryptoRng, RngCore};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ProtoError,
-    scheme::{Base, E, Fr, G1, Open, scalar_text, token_deployment_label},
+    scheme::{Base, E, Fr, G1, Open, dec, enc, scalar_text, token_deployment_label},
 };
 
 /// One committed serial with its proof of opening.
@@ -374,6 +375,40 @@ struct Pending {
     rho: Fr,
 }
 
+/// One token the vetter holds, unspent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HeldToken {
+    pub label: String,
+    /// SECRET until spent: the serial is what the community records.
+    pub serial: String,
+    pub minted_tick: u32,
+    pub credential: String,
+}
+
+impl HeldToken {
+    pub fn of(
+        label: &str,
+        serial: &Fr,
+        minted_tick: u32,
+        cred: &PSCredential<E>,
+    ) -> Result<Self, ProtoError> {
+        Ok(Self {
+            label: label.to_string(),
+            serial: enc(serial)?,
+            minted_tick,
+            credential: enc(cred)?,
+        })
+    }
+
+    pub fn parts(&self) -> Result<(Fr, PSCredential<E>), ProtoError> {
+        Ok((
+            dec::<Fr>(&self.serial)?,
+            dec::<PSCredential<E>>(&self.credential)?,
+        ))
+    }
+}
+
 /// The vetter's bucket.
 pub struct TokenWallet {
     params: TokenParams,
@@ -464,6 +499,31 @@ impl TokenWallet {
     /// Tokens whose label is no longer live are gone (the FIFO of §5.1).
     pub fn expire(&mut self, live: &BTreeSet<String>) {
         self.held.retain(|h| live.contains(&h.label));
+    }
+
+    /// The unspent tokens, for storage. A reserved token stores as unreserved: a reservation
+    /// belongs to a session that did not survive the restart either.
+    pub fn snapshot(&self) -> Result<Vec<HeldToken>, ProtoError> {
+        self.held
+            .iter()
+            .map(|h| HeldToken::of(&h.label, &h.serial, h.minted_tick, &h.cred))
+            .collect()
+    }
+
+    /// Restore a bucket from storage.
+    pub fn restore(community: &str, tokens: &[HeldToken]) -> Result<Self, ProtoError> {
+        let mut wallet = Self::new(community)?;
+        for t in tokens {
+            let (serial, cred) = t.parts()?;
+            wallet.held.push(Held {
+                label: t.label.clone(),
+                serial,
+                minted_tick: t.minted_tick,
+                cred,
+                reserved: false,
+            });
+        }
+        Ok(wallet)
     }
 
     pub fn free(&self) -> usize {
