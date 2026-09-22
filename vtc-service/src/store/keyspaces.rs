@@ -83,6 +83,12 @@ pub const TSP_RELATIONSHIPS: &str = "tsp_relationships";
 /// one row per (issuer, statement id, statement digest), written when a vetter
 /// withdraws a statement and read whenever presented statements are counted.
 pub const VETTING_REVOCATIONS: &str = "vetting_revocations";
+/// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the spent
+/// attestation tokens, one row per `(token label, serial)`, written when a
+/// hidden submission is counted and read on every later one. A serial that
+/// un-spends is a double spend, so this is backed up for the same reason
+/// `VETTING_REVOCATIONS` is.
+pub const VETTING_PCS_SPENT: &str = "vetting_pcs_spent";
 /// Vetter profiles (`vtc/vetting/vetters/profile/0.1`): one row per vetter DID,
 /// written by the vetter, deleted when they no longer hold a live grant, and
 /// read by the vetter listing.
@@ -122,6 +128,7 @@ pub const ALL: &[&str] = &[
     INVITATIONS,
     OUTBOX,
     VETTING_REVOCATIONS,
+    VETTING_PCS_SPENT,
     VETTER_PROFILES,
 ];
 
@@ -165,6 +172,7 @@ pub const BACKED_UP: &[&str] = &[
     INVITATIONS,
     // A withdrawn vetting statement must stay withdrawn across a restore, or a
     // restored community would count a statement its vetter took back.
+    VETTING_PCS_SPENT,
     VETTING_REVOCATIONS,
     // A vetter's published profile is theirs to replace, not the community's to
     // reconstruct: a restore without it would silently unlist every vetter.
@@ -202,7 +210,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 31, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 32, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

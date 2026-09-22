@@ -64,6 +64,18 @@ pub struct AcceptsCriterion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<vta_sdk::openapi::JoinManifest02VettingRequirements>)]
     pub vetting: Option<VettingRequirements>,
+    /// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
+    /// parameters an applicant proves against, and this VTC checks — `hvk`, `tvk`
+    /// and the live labels (`crate::vetting::pcs::HiddenVettingConfig`).
+    ///
+    /// Held as raw JSON so the field costs nothing when the feature is off, and
+    /// so a criterion registered by a build that has it stays readable by one
+    /// that does not. It does NOT reach the 0.2 manifest: `Criterion` is a
+    /// generated `deny_unknown_fields` type, so a client gets these out of band
+    /// until the spec carries them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub hidden_vetting: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     /// Admin DID that registered the criterion (audit correlation).
     pub created_by_did: String,
@@ -214,6 +226,7 @@ mod tests {
             }),
             description: Some("join evidence".into()),
             vetting: None,
+            hidden_vetting: None,
             created_at: Utc::now(),
             created_by_did: "did:key:zAdmin".into(),
         }
@@ -268,6 +281,7 @@ mod tests {
             query: json!({ "credentials": [] }),
             description: None,
             vetting: None,
+            hidden_vetting: None,
             created_at: Utc::now(),
             created_by_did: "did:key:zAdmin".into(),
         };

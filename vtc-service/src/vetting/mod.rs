@@ -28,6 +28,9 @@
 //! separately signed (VTI-CMP-070): distinct vetters are distinct *members*.
 
 pub mod auto_grant;
+/// Hidden-vetter admission (ZKP), development branch `zkp-pcs`.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs;
 pub mod profiles;
 pub mod revocation;
 pub mod vetters;
@@ -151,6 +154,25 @@ pub async fn vetting_facts(
         .vtc_did
         .clone()
         .unwrap_or_default();
+
+    // Hidden-vetter admission (development branch `zkp-pcs`): when the criterion publishes
+    // anonymity parameters AND this submission carries a proof, the facts come from the proof
+    // instead of from named statements. Everything downstream — `evaluate`, the needs
+    // expansion, `join.rego` — is the same, because the facts are the same shape with each
+    // vetter's tag where their DID would be.
+    #[cfg(feature = "vetting-pcs")]
+    if let Some(facts) = hidden_facts(
+        state,
+        &community_did,
+        &selected,
+        requirements,
+        extensions,
+        now,
+    )
+    .await?
+    {
+        return Ok(Some(facts));
+    }
     let resolver = state.trust_task_vm_resolver();
 
     let mut to_count = Vec::new();
@@ -267,6 +289,83 @@ pub async fn vetting_facts(
         requirements_digest: selected.digest,
         applicant_digest_matches: selected.applicant_digest_matches,
         statements,
+        distinct_counted_vetters: u32::try_from(evaluation.distinct_vetters()).unwrap_or(u32::MAX),
+        by_method: evaluation
+            .by_method
+            .iter()
+            .map(|(m, n)| (m.to_string(), *n))
+            .collect(),
+        commitments_consistent: evaluation.commitments_consistent,
+        independence_ok: evaluation.independence_ok,
+        invitation_required: matches!(
+            requirements.invitation,
+            Some(VettingRequirementsInvitation::Required)
+        ),
+        satisfied: evaluation.satisfied(),
+        needs: evaluation.needs.iter().map(|n| n.to_wire()).collect(),
+    }))
+}
+
+/// The hidden-vetter path (development branch `zkp-pcs`).
+///
+/// `Ok(None)` when this criterion publishes no anonymity parameters, or when the submission
+/// carries no proof — which is every named-path submission, including one to a community that
+/// runs both.
+#[cfg(feature = "vetting-pcs")]
+async fn hidden_facts(
+    state: &AppState,
+    community_did: &str,
+    selected: &Selected,
+    requirements: &VettingRequirements,
+    extensions: &JsonValue,
+    now: DateTime<Utc>,
+) -> Result<Option<VettingFacts>, AppError> {
+    let Some(stored) =
+        crate::schemas::accepts::get_accepts(&state.schemas_ks, &selected.criterion_id).await?
+    else {
+        return Ok(None);
+    };
+    let Some(raw) = stored.hidden_vetting else {
+        return Ok(None);
+    };
+    let config: crate::vetting::pcs::HiddenVettingConfig = serde_json::from_value(raw)
+        .map_err(|e| AppError::Validation(format!("hidden-vetting parameters: {e}")))?;
+    let decision = crate::vetting::pcs::decide(
+        state,
+        community_did,
+        requirements,
+        &selected.digest,
+        &config,
+        extensions,
+        now,
+    )
+    .await
+    .map_err(|e| AppError::Validation(format!("hidden vetting: {e}")))?;
+    let Some(decision) = decision else {
+        return Ok(None);
+    };
+    let evaluation = &decision.evaluation;
+    Ok(Some(VettingFacts {
+        criterion_id: selected.criterion_id.clone(),
+        requirements_digest: selected.digest.clone(),
+        applicant_digest_matches: selected.applicant_digest_matches,
+        statements: decision
+            .statements
+            .iter()
+            .map(|s| VettingStatementFact {
+                id: Some(s.id.clone()),
+                // The tag, not a DID: distinct tags are distinct vetters (design §2), and
+                // that is all the community learns.
+                issuer: Some(s.issuer.clone()),
+                verified: s.verified,
+                eligible: s.eligible,
+                revoked: s.revoked,
+                method: Some(s.method.to_string()),
+                declared_relationship: Some(s.declared_relationship.to_string()),
+                counted: s.counted,
+                failures: s.failures.clone(),
+            })
+            .collect(),
         distinct_counted_vetters: u32::try_from(evaluation.distinct_vetters()).unwrap_or(u32::MAX),
         by_method: evaluation
             .by_method

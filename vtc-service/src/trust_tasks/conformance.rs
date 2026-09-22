@@ -1041,6 +1041,7 @@ fn table() -> Vec<Conformance> {
                         query: json!({ "credentials": [] }),
                         description: Some("A verified email credential".into()),
                         vetting: None,
+                        hidden_vetting: None,
                         created_at: chrono::Utc::now(),
                         created_by_did: "did:key:zAdmin".into(),
                     }],
@@ -1565,6 +1566,7 @@ fn table() -> Vec<Conformance> {
                         id: "kernel-developer".into(),
                         query: json!({ "credentials": [] }),
                         description: Some("Two vetters, one in person".into()),
+                        hidden_vetting: None,
                         vetting: Some(
                             serde_json::from_value(json!({
                                 "version": "0.1",

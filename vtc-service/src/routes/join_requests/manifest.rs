@@ -305,6 +305,7 @@ mod tests {
             query: json!({ "credentials": [{ "id": "vetting", "format": "ldp_vc" }] }),
             description: Some("Two vetters".into()),
             vetting,
+            hidden_vetting: None,
             created_at: Utc::now(),
             created_by_did: "did:key:zAdmin".into(),
         }
