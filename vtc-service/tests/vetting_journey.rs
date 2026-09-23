@@ -1072,3 +1072,209 @@ async fn next_issued_credential(peer: &TestJoinClient) -> Value {
         .credential
         .expect("credential")
 }
+
+const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1";
+
+/// #1651 (Keyring VTI-Q3): the four answers the listing cannot give.
+///
+/// A vetter who never published a profile and one whose grant was revoked are
+/// both simply absent from `vetters/list`, so an applicant whose vetter went
+/// quiet could not tell which had happened. This asks by DID instead, and each
+/// status carries the members its specification attaches to it.
+#[tokio::test]
+async fn a_by_did_lookup_tells_revoked_from_unlisted_from_never_a_vetter() {
+    let c = &kernel_community().await;
+    let carol = Person::new([0xC0; 32]);
+    let stranger = Person::new([0x5A; 32]);
+    c.seed_member(&carol.did, 40).await;
+
+    let show = async |did: &str| -> Value {
+        let (status, body) = c
+            .admin(
+                "POST",
+                "/v1/vetting/vetters/show",
+                Some(SHOW_TASK),
+                Some(json!({ "vetterDid": did })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "show {did}: {body}");
+        body
+    };
+
+    // Nobody this community has ever granted: `none`, and nothing to identify.
+    // It says nothing about whether the DID is a member — that is not what was
+    // asked, and `stranger` is not one.
+    let body = show(&stranger.did).await;
+    assert_eq!(body["status"], "none");
+    assert_eq!(body["vetterDid"], stranger.did);
+    assert!(body.get("grantId").is_none(), "nothing to identify: {body}");
+
+    // A member who is not a vetter answers `none` too, and is indistinguishable
+    // from the stranger above. That is deliberate: the caller asked about
+    // vetting, so membership is not theirs to learn here.
+    assert_eq!(show(&carol.did).await["status"], "none");
+
+    // Granted: `live`, with the grant's expiry — and `listed: false`, because
+    // she has published no profile. That member is the one that separates
+    // "chose not to be listed" from "not a vetter", which is the whole point.
+    let (status, grant) = c
+        .admin(
+            "POST",
+            "/v1/vetting/vetters",
+            Some(GRANT_TASK),
+            Some(json!({ "memberDid": carol.did })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "grant Carol: {grant}");
+
+    let body = show(&carol.did).await;
+    assert_eq!(body["status"], "live");
+    assert_eq!(body["listed"], false, "no profile yet: {body}");
+    assert!(body["grantId"].is_string(), "{body}");
+    assert!(body["validUntil"].is_string(), "{body}");
+    assert!(body.get("revokedAt").is_none(), "not revoked: {body}");
+
+    // She publishes a listed profile: still `live`, now `listed: true`.
+    let (status, body) = c
+        .post_document(
+            [0xC0; 32],
+            VETTING_VETTER_PROFILE_TYPE,
+            json!({
+                "listed": true,
+                "languages": ["de"],
+                "methods": ["inPerson"],
+                "acceptsDocumentation": ["passport"],
+                "events": [],
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "Carol's profile: {body}");
+    assert_eq!(show(&carol.did).await["listed"], true);
+
+    // The admin withdraws the grant. `revoked`, with `revokedAt` — and no
+    // `listed`, which belongs to a live grant only. A client branching on the
+    // members rather than the status must not read this as an expiry.
+    let grant_id = show(&carol.did).await["grantId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, body) = c
+        .admin(
+            "DELETE",
+            &format!("/v1/credentials/endorsements/{grant_id}"),
+            Some(ENDORSEMENT_REVOKE_TASK),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "revoke Carol's grant: {body}");
+
+    let body = show(&carol.did).await;
+    assert_eq!(body["status"], "revoked");
+    assert_eq!(body["grantId"], grant_id, "the grant that was withdrawn");
+    assert!(body["revokedAt"].is_string(), "{body}");
+    assert!(body.get("listed").is_none(), "live-only member: {body}");
+    // The reason is the community's own record and is never disclosed here.
+    assert!(body.get("reason").is_none(), "{body}");
+
+    // And the listing agrees she is gone from it, which is exactly the
+    // ambiguity this task resolves: absent there, `revoked` here.
+    let (status, listing) = c
+        .admin(
+            "POST",
+            "/v1/vetting/vetters/list",
+            Some("https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "listing: {listing}");
+    let listed: Vec<&str> = listing["vetters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["vetterDid"].as_str())
+        .collect();
+    assert!(!listed.contains(&carol.did.as_str()), "{listing}");
+}
+
+/// The two statuses a grant reaches without anyone calling a route, and the
+/// order between them when a grant is both.
+///
+/// `revoked` outranks `expired` because the two say different things: one is
+/// the community withdrawing trust, the other is a grant nobody renewed. A
+/// vetter told `expired` would reasonably ask for a renewal; one told `revoked`
+/// would not.
+#[tokio::test]
+async fn a_lapsed_grant_reads_expired_and_a_withdrawn_one_still_reads_revoked() {
+    use vtc_service::endorsements::{Endorsement, store_endorsement};
+
+    let c = &kernel_community().await;
+    let frank = Person::new([0xF7; 32]);
+    c.seed_member(&frank.did, 40).await;
+
+    // A grant that simply ran out: written straight to the store, because
+    // nothing in the API can issue one already lapsed.
+    let lapsed = Endorsement {
+        id: uuid::Uuid::new_v4(),
+        endorsement_type: "CommunityRole".into(),
+        issuer_did: c.did.clone(),
+        subject_did: frank.did.clone(),
+        claim: json!({ "role": "vetter" }),
+        status_list_index: 4001,
+        vec_id: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        created_at: Utc::now() - chrono::Duration::days(400),
+        revoked_at: None,
+        valid_until: Some(Utc::now() - chrono::Duration::days(35)),
+        auto_granted: false,
+        credential: None,
+    };
+    store_endorsement(&c.state.endorsements_ks, &lapsed)
+        .await
+        .expect("seed a lapsed grant");
+
+    let show = async |did: &str| -> Value {
+        let (status, body) = c
+            .admin(
+                "POST",
+                "/v1/vetting/vetters/show",
+                Some(SHOW_TASK),
+                Some(json!({ "vetterDid": did })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "show {did}: {body}");
+        body
+    };
+
+    let body = show(&frank.did).await;
+    assert_eq!(body["status"], "expired");
+    assert_eq!(body["grantId"], lapsed.id.to_string());
+    assert!(body["validUntil"].is_string(), "when it ran out: {body}");
+    assert!(body.get("revokedAt").is_none(), "it lapsed, not withdrawn");
+    assert!(body.get("listed").is_none(), "live-only member: {body}");
+
+    // Now a second grant, newer, withdrawn. Both are in the record and both
+    // have ended, and the answer is the stronger statement.
+    let withdrawn = Endorsement {
+        id: uuid::Uuid::new_v4(),
+        created_at: Utc::now() - chrono::Duration::days(10),
+        valid_until: Some(Utc::now() - chrono::Duration::days(1)),
+        revoked_at: Some(Utc::now() - chrono::Duration::days(2)),
+        status_list_index: 4002,
+        vec_id: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        ..lapsed.clone()
+    };
+    store_endorsement(&c.state.endorsements_ks, &withdrawn)
+        .await
+        .expect("seed a withdrawn grant");
+
+    let body = show(&frank.did).await;
+    assert_eq!(
+        body["status"], "revoked",
+        "withdrawal outranks expiry: {body}"
+    );
+    assert_eq!(body["grantId"], withdrawn.id.to_string());
+    assert!(body["revokedAt"].is_string(), "{body}");
+    assert!(
+        body.get("validUntil").is_none(),
+        "the revocation ended it, not the expiry: {body}"
+    );
+}

@@ -852,6 +852,12 @@ fn build_api_chain(
             routes!(vetting::list_listed_vetters),
             "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
         ))
+        // The by-DID lookup the listing cannot answer: an unlisted vetter and a
+        // revoked one are both absent from a listing (#1651).
+        .routes(tt(
+            routes!(vetting::show_vetter),
+            "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1",
+        ))
         .routes(routes!(vetting::list_vetters))
         .routes(routes!(vetting::get_auto_grant, vetting::put_auto_grant))
         .routes(routes!(vetting::list_revocations))

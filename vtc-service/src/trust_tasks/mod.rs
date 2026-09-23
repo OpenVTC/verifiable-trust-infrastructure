@@ -690,6 +690,7 @@ async fn dispatch_typed(
         vetting_wire::VETTING_VETTER_GRANT_TYPE => handle_vetter_grant(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_PROFILE_TYPE => handle_vetter_profile(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
+        vetting_wire::VETTING_VETTER_SHOW_TYPE => handle_vetter_show(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
         // The rooms family. Note what these still do not take: no `ctx`, and no auth
         // claims. A room operation is authorized by the authority chain the room itself
@@ -1296,6 +1297,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // (resend is also mounted for admins as `POST /v1/vetting/vetters/{memberDid}/resend`).
     vetting_wire::VETTING_VETTER_PROFILE_TYPE,
     vetting_wire::VETTING_VETTER_LIST_TYPE,
+    vetting_wire::VETTING_VETTER_SHOW_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
@@ -1641,6 +1643,28 @@ async fn handle_vetter_list(
         Err(reject) => return reject,
     };
     match crate::vetting::profiles::list(state, &body).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/show/0.1` — one vetter's grant status, by DID.
+///
+/// Identified callers only, like the listing: the answer is about a named
+/// third party's standing in this community.
+async fn handle_vetter_show(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = resolve_holder(state, ctx, &doc).await {
+        return reject;
+    }
+    let body: vetting_wire::vetters::show::v0_1::Payload = match parse_checked_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::profiles::show(state, &body).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -2346,6 +2370,7 @@ mod tests {
             vetting_wire::VETTING_VETTER_GRANT_TYPE,
             vetting_wire::VETTING_VETTER_PROFILE_TYPE,
             vetting_wire::VETTING_VETTER_LIST_TYPE,
+            vetting_wire::VETTING_VETTER_SHOW_TYPE,
             vetting_wire::VETTING_VETTER_RESEND_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,

@@ -36,7 +36,7 @@ use vta_sdk::protocols::members::{
 };
 use vta_sdk::protocols::vetting::{
     VETTING_REVOKE_STATEMENT_TYPE, VETTING_VETTER_GRANT_TYPE, VETTING_VETTER_LIST_TYPE,
-    VETTING_VETTER_PROFILE_TYPE, VETTING_VETTER_RESEND_TYPE,
+    VETTING_VETTER_PROFILE_TYPE, VETTING_VETTER_RESEND_TYPE, VETTING_VETTER_SHOW_TYPE,
 };
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 
@@ -983,6 +983,7 @@ async fn route(msg: &Message, auth_sender: Option<String>, state: &AppState) -> 
         | VETTING_VETTER_GRANT_TYPE
         | VETTING_VETTER_PROFILE_TYPE
         | VETTING_VETTER_LIST_TYPE
+        | VETTING_VETTER_SHOW_TYPE
         | VETTING_VETTER_RESEND_TYPE => vetting_task_handler(msg, auth_sender, state).await,
         CREDENTIAL_REQUEST_TYPE => credential_request_handler(msg, state).await,
         CREDENTIAL_PRESENT_TYPE => credential_present_handler(msg, state).await,

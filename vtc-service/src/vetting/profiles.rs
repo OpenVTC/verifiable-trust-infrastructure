@@ -61,12 +61,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{info, warn};
 
+use crate::credentials::vec::COMMUNITY_ROLE_ENDORSEMENT_TYPE;
+use crate::endorsements::{Endorsement, endorsements_by_type};
 use vta_sdk::protocols::vetting::vetters::{
-    list::v0_1 as list_wire, profile::v0_1 as profile_wire,
+    list::v0_1 as list_wire, profile::v0_1 as profile_wire, show::v0_1 as show_wire,
 };
 use vta_sdk::protocols::vetting::{
     CheckShape, DEFAULT_VETTER_LIST_LIMIT, VetterProfileSummary, has_event_filter,
 };
+use vta_sdk::protocols::vetting::{VETTER_ROLE, role_matches};
 use vti_common::audit::{AuditEvent, VetterProfileDeletedData, VetterProfileUpdatedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -345,6 +348,100 @@ pub async fn list(
             .next_cursor(next_cursor),
     )
     .map_err(|e| AppError::Internal(format!("vetter listing: {e}")))
+}
+
+/// Answer a `vtc/vetting/vetters/show/0.1` request: one vetter's grant status.
+///
+/// The listing cannot express this. A vetter with no published profile and one
+/// whose grant was revoked are both simply absent from it, so an applicant
+/// whose vetter went quiet cannot tell which happened, and a vetter cannot
+/// check their own standing at all (Keyring VTI-Q3, #1651).
+///
+/// The order is the specification's, and it is not the order the rows happen to
+/// arrive in: `live`, then `revoked`, then `expired`, then `none`. Revocation
+/// outranks expiry where a grant is both, because the community withdrawing
+/// trust and a grant lapsing are different statements.
+///
+/// `none` deliberately does not distinguish a DID this community has never
+/// heard of from a member who is simply not a vetter: the caller asked about
+/// vetting, and membership is not theirs to learn here.
+pub async fn show(
+    state: &AppState,
+    body: &show_wire::Payload,
+) -> Result<show_wire::Response, AppError> {
+    let vetter_did = body.vetter_did.as_str();
+    let now = Utc::now();
+
+    let mut builder = show_wire::Response::builder()
+        .vetter_did(
+            show_wire::ResponseVetterDid::try_from(vetter_did.to_owned())
+                .map_err(|e| AppError::Internal(format!("vetter show: {e}")))?,
+        )
+        .status(show_wire::GrantStatus::None);
+
+    // `live_grant` is the same lookup the listing and every grant check use, so
+    // "live here" cannot drift from "live there".
+    if let Some(grant) = vetters::live_grant(state, vetter_did, now).await? {
+        let listed = get_profile(&state.vetter_profiles_ks, vetter_did)
+            .await?
+            .is_some_and(|stored| stored.profile.listed);
+        return build_show(
+            builder
+                .status(show_wire::GrantStatus::Live)
+                .grant_id(Some(grant_id(&grant)?))
+                .valid_until(grant.valid_until)
+                .listed(Some(listed)),
+        );
+    }
+
+    // Not live: the strongest thing the record says. Newest first, so a vetter
+    // whose grant was revoked and re-granted and revoked again is reported by
+    // the most recent one.
+    let mut rows: Vec<_> =
+        endorsements_by_type(&state.endorsements_ks, COMMUNITY_ROLE_ENDORSEMENT_TYPE)
+            .await?
+            .into_iter()
+            .filter(|row| row.subject_did == vetter_did)
+            .filter(|row| {
+                row.claim
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .is_some_and(|held| role_matches(held, VETTER_ROLE))
+            })
+            .collect();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.created_at));
+
+    if let Some(revoked) = rows.iter().find(|row| row.revoked_at.is_some()) {
+        return build_show(
+            builder
+                .status(show_wire::GrantStatus::Revoked)
+                .grant_id(Some(grant_id(revoked)?))
+                .revoked_at(revoked.revoked_at),
+        );
+    }
+    if let Some(expired) = rows.first() {
+        return build_show(
+            builder
+                .status(show_wire::GrantStatus::Expired)
+                .grant_id(Some(grant_id(expired)?))
+                .valid_until(expired.valid_until),
+        );
+    }
+
+    builder = builder.status(show_wire::GrantStatus::None);
+    build_show(builder)
+}
+
+/// The grant's identifier, as `vtc/vetting/vetters/grant` issued it and as
+/// `GET /v1/vetting/vetters` reports it.
+fn grant_id(row: &Endorsement) -> Result<show_wire::ResponseGrantId, AppError> {
+    show_wire::ResponseGrantId::try_from(row.id.to_string())
+        .map_err(|e| AppError::Internal(format!("vetter show grant id: {e}")))
+}
+
+fn build_show(builder: show_wire::builder::Response) -> Result<show_wire::Response, AppError> {
+    show_wire::Response::try_from(builder)
+        .map_err(|e| AppError::Internal(format!("vetter show: {e}")))
 }
 
 /// The listing order: earliest matching event first when the request filters
