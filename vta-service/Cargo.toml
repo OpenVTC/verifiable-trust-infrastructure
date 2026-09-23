@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.39.0"
+version = "0.40.0"
 edition.workspace = true
 # Published for one reason: `openvtc-core` dev-depends on it for
 # `test_support::MockVta`, the in-process VTA its end-to-end tests run against.
@@ -177,7 +177,7 @@ dtg-credentials = { workspace = true }
 vti-rooms = { path = "../vti-rooms", version = "0.2", default-features = false, features = [
   "mls",
 ] }
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.2" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.3" }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
 vta-sweepers = { path = "../vta-sweepers", version = "0.3" }
@@ -196,7 +196,7 @@ vta-policy = { path = "../vta-policy", version = "0.3" }
 # extracted to its own crate and re-exported as crate::{webvh_store,
 # webvh_client, webvh_auth} behind this crate's `webvh` feature.
 vta-webvh = { path = "../vta-webvh", version = "0.2", optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.49", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.50", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -373,7 +373,7 @@ aws-lc-rs = { version = "1", optional = true }
 # The signed room fixtures, for the oracle round-trip test. A dev-dependency so
 # the feature never reaches a release build — a permissive fixture is exactly
 # what should not ship, which is why the crate gates it.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.2", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.3", features = ["test-support"] }
 tempfile = "3"
 # The exact parser the DID-hosting server uses to read `alsoKnownAs` off a
 # published log. Dev-only: it lets the agent-name contract test assert that
@@ -406,7 +406,7 @@ vta-service = { path = ".", features = ["test-support", "config-seed"] }
 # here rather than from `vta-sdk`'s own tests — the workspace patches `vta-sdk`
 # onto itself, so `-p vta-sdk --features test-loopback` leaves the built unit
 # Fresh and the feature never reaches the compiler.
-vta-sdk = { path = "../vta-sdk", version = "0.49", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.50", features = [
   "provision-client",
   "test-loopback",
 ] }

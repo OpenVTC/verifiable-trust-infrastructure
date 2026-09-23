@@ -2,6 +2,43 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.7.2...vtc-client-v0.7.3) — 2026-09-23
+
+
+### Added
+
+- **vtc**: A by-DID vetter status lookup ([#1671](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1671))
+
+The vetter listing omits a vetter with no published profile and one whose
+  grant was revoked in exactly the same way: both are simply absent. An
+  applicant whose vetter went quiet could not tell which had happened, and a
+  vetter could not check their own standing at all (Keyring VTI-Q3, #1651).
+
+  `vtc/vetting/vetters/show/0.1` answers by DID with `live`, `revoked`,
+  `expired` or `none`, the grant's id, the timestamp that ended or will end it,
+  and — for a live grant — whether the vetter is listed. That last member is
+  what separates "unlisted by choice" from "not a vetter".
+
+  Served over `/v1/trust-tasks`, DIDComm and TSP for applicants and members,
+  and as `POST /v1/vetting/vetters/show` for the console. `vtc-client` gains
+  `show_vetter`.
+
+  The live case goes through the same `live_grant` lookup the listing and every
+  grant check use, so "live here" cannot drift from "live there". Where a grant
+  is both revoked and expired the answer is `revoked`: the community
+  withdrawing trust and a grant lapsing are different statements, and a vetter
+  told `expired` would reasonably ask for a renewal.
+
+  `CheckShape` on the response enforces what one object's schema cannot — which
+  members belong to which status. A response saying `revoked` while carrying
+  `validUntil` and no `revokedAt` reads as an expiry to a client branching on
+  members rather than status.
+
+  Requires trust-tasks-rs 0.21.21, which publishes the spec merged as
+  trustoverip/dtgwg-trust-tasks-tf#603.
+
+
+
 ## [0.7.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.7.1...vtc-client-v0.7.2) — 2026-09-22
 
 

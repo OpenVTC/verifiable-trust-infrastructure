@@ -2,6 +2,64 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.21.0...pnm-cli-v0.22.0) — 2026-09-23
+
+
+### Added
+
+- **cli**: Pnm reaches worlds and the claim-type registry ([#1663](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1663))
+
+`persona/facet/{put,list,delete}` and `persona/claim-types/list` had no
+  method on `VtaClient` at all, so `pnm` could not reach them even though
+  both graphical clients do. The SDK gains the four, built from the
+  generated specification types rather than hand-written bodies, and
+  decoding their responses into the generated `Response` — a shape the
+  specification does not describe is then an error at the call rather than
+  a `None` three screens later.
+
+  `pnm persona world {list,put,delete}` and `pnm persona claim-types`
+  follow. Both id lists on a put replace: the specification is explicit
+  that a member whose absence meant "keep" would make emptying a world
+  impossible, so the CLI passes them through as given and says so.
+
+  The colour is a ValueEnum whose mapping to the specification's tokens is
+  written out rather than derived, pinned from both sides — `pnm-cli` does
+  not depend on the generated types and `vta-cli-common` does not know the
+  CLI's enum, so the pair of tests is what holds the wire value end to end.
+
+
+
+### Security
+
+- **persona**: Holder authority is granted, never inherited from a role ([#1673](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1673))
+
+`persona-holder` exists because no role carries authority over the
+  holder's pool — and super-admin carried it anyway. That left the premise
+  true only of the roles nobody automates with: the unrestricted admin
+  credential is the one most likely to be sitting in a script, and it read
+  the attribute pool, the faces over it and the disclosure history without
+  an ACL entry saying so.
+
+  Now the grant is the only way in. A super-admin can still grant itself
+  the capability, so this is not a boundary it cannot cross; it is the
+  difference between crossing it and crossing it deliberately. The grant is
+  an ACL write — audited, reviewable, revocable on its own — where the
+  inherited form left no trace that the pool had been read by something
+  that never asked for it.
+
+  The refusal names the command that fixes it, because an operator refused
+  against their own agent's own pool cannot guess at a capability they have
+  never heard of.
+
+  Operators upgrading: `pnm acl update --did <did> --capabilities
+  persona-holder`, or `pnm contexts create --admin-holder` when
+  provisioning a client that is the holder's own.
+
+  §7 of the persona design note records this and the three other questions
+  it left open, with the reasoning rather than only the outcome.
+
+
+
 ## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.20.0...pnm-cli-v0.21.0) — 2026-09-22
 
 

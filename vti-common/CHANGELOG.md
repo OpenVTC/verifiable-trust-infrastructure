@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.23.0...vti-common-v0.23.1) — 2026-09-23
+
+
+### Fixed
+
+- **auth**: Consume the challenge before minting, atomically ([#1664](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1664))
+
+`handle_authenticate` read the challenge row, checked it was in
+  `ChallengeSent`, then looked up the ACL and minted tokens, and only after
+  all that deleted the row. Those are awaits, and the row stayed alive across
+  them, so two interleaved presentations of the same signed envelope both
+  passed the state check and both minted. Sequentially it was correct; under
+  concurrency the single-use challenge was not single-use ([#1656](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1656)).
+
+  Sessions coalesce per DID (last write wins, access token pinned by
+  `token_id`), so an attacker who captured a correctly-addressed envelope and
+  replayed it inside the freshness window while the holder signed in could win
+  the race, hold the session as the holder, and supersede the holder's own
+  access token.
+
+
+
 ## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.22.0...vti-common-v0.23.0) — 2026-09-22
 
 
