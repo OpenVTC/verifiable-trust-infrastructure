@@ -131,7 +131,10 @@ pub async fn receive_member_vmc_inner(
         }
     }
 
-    // The member must exist and be active.
+    // The member must exist and be active. The row is read and written back
+    // whole, so the edit lock is held across both (`members::storage::
+    // edit_lock`).
+    let edit_guard = crate::members::storage::edit_lock().await;
     let mut member = get_member(&state.members_ks, &member_did)
         .await?
         .filter(|m| !m.is_removed())
@@ -173,6 +176,7 @@ pub async fn receive_member_vmc_inner(
         member.record_reciprocation(vmc_id.clone());
     }
     store_member(&state.members_ks, &member).await?;
+    drop(edit_guard);
 
     if let Some(req_id) = request_id {
         let audit_writer = state

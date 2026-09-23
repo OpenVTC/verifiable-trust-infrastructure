@@ -37,6 +37,9 @@ fn uri(task: &str) -> String {
 #[derive(Default)]
 struct FakeBridge {
     jobs: Mutex<Vec<(String, Value)>>,
+    /// When set, the bridge reports each job's result *while* its send is
+    /// still in flight — the race the dispatcher's write-back must survive.
+    race: Mutex<Option<vti_common::store::KeyspaceHandle>>,
 }
 
 #[async_trait]
@@ -51,6 +54,15 @@ impl BridgeClient for FakeBridge {
             .lock()
             .unwrap()
             .push((bridge_did.to_string(), payload.clone()));
+        let racing = self.race.lock().unwrap().clone();
+        if let Some(ks) = racing
+            && let Some(id) = payload["jobId"].as_str()
+            && let Some(mut job) = super::bridge::get_job(&ks, id).await.unwrap()
+        {
+            job.state = super::bridge::JobState::Succeeded;
+            job.result = Some(json!({ "jobId": id, "outcome": "succeeded" }));
+            super::bridge::put_job(&ks, &job).await.unwrap();
+        }
         let mut ack = json!({ "jobId": payload["jobId"], "accepted": true });
         if matches!(
             payload["kind"].as_str(),
@@ -1308,7 +1320,8 @@ async fn a_bound_bridge_namespace_grants_its_bridge_commit_sign_and_nothing_else
         .get(&key)
         .cloned()
         .expect("published");
-    assert_eq!(record["context"]["grantedBy"], TEST_VTC_DID);
+    // Who granted it stays inside the VTC, even when it is the VTC.
+    assert!(record["context"].get("grantedBy").is_none());
 
     // The default policy's exception is exact: a grant to any other
     // non-member — even one naming the bridge's right — is still refused.
@@ -1482,11 +1495,13 @@ async fn the_bridges_ext_report_reaches_the_admin_rows() {
 async fn get(f: &Fixture, did: &str, contexts: Vec<String>, path: &str) -> (u16, Value) {
     use tower::ServiceExt;
     let token = f.vtc.token(did, "admin", contexts).await;
-    let req = axum::http::Request::builder()
+    let mut req = axum::http::Request::builder()
         .uri(format!("/v1{path}"))
-        .header("authorization", format!("Bearer {token}"))
-        .body(axum::body::Body::empty())
-        .unwrap();
+        .header("authorization", format!("Bearer {token}"));
+    if path.starts_with("/git-ns/view") {
+        req = req.header("trust-task", uri("view"));
+    }
+    let req = req.body(axum::body::Body::empty()).unwrap();
     let resp = f.vtc.router.clone().oneshot(req).await.unwrap();
     let status = resp.status().as_u16();
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
@@ -1520,4 +1535,754 @@ async fn a_namespace_admin_reads_their_activity_and_nobody_elses() {
     let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/accounts").await;
     assert_eq!(status, 200, "{body}");
     assert!(body["accounts"].as_array().unwrap().is_empty());
+}
+
+// ── review of #1694: regression tests, one or more per finding ──────────────
+
+/// Bind `github.com/acme` through the bridge; returns its id.
+async fn bind_bridge(f: &Fixture) -> String {
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/bind",
+        json!({ "forge": "github.com", "owner": "acme", "mode": "bridge" }),
+    )
+    .await);
+    let ns = body["namespace"]["id"].as_str().unwrap().to_string();
+    let job = f.bridge.jobs.lock().unwrap()[0].1["jobId"].clone();
+    ok(&send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/event",
+        json!({ "namespace": ns, "event": { "type": "bindCompleted", "jobId": job, "ownerId": "1", "kind": "organization" } }),
+    )
+    .await);
+    ns
+}
+
+/// Adopt `resource` for Bob in a bridge namespace, and give it `forge_id`
+/// through the inspection result, as a bridge does.
+async fn adopt_with_forge_id(f: &Fixture, resource: &str, forge_id: &str) {
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/adopt",
+        json!({ "resource": resource, "owners": [f.bob.did] }),
+    )
+    .await);
+    let inspect = super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.kind == super::bridge::JobKind::Inspect && j.payload["repo"] == resource)
+        .unwrap();
+    ok(&send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/result",
+        json!({
+            "jobId": inspect.job_id, "outcome": "succeeded",
+            "repo": { "resource": resource, "forgeId": forge_id },
+            "steps": [{ "step": "requiredCheck", "outcome": "unchanged" }],
+        }),
+    )
+    .await);
+}
+
+async fn event(f: &Fixture, ns: &str, event: Value) -> TrustTaskOutcome {
+    send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/event",
+        json!({ "namespace": ns, "event": event }),
+    )
+    .await
+}
+
+async fn reconcile(f: &Fixture, registry: &MockRegistryClient) -> projection::PassReport {
+    projection::reconcile(
+        &f.vtc.state,
+        registry,
+        TEST_VTC_DID,
+        &mut Backoff::default(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn desired_now(f: &Fixture) -> std::collections::BTreeMap<String, projection::Tuple> {
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    projection::desired_all(&f.vtc.state, &snap, super::ops::now())
+        .await
+        .unwrap()
+}
+
+// Finding 1 — bridge event scope.
+
+/// The reviewer's reproduction: A is renamed away (webhook lost), B is created
+/// at A's old name (webhook lost), then B is renamed. B's rename names A's old
+/// resource as `from`; matched by name it would carry A's grants onto B.
+#[tokio::test]
+async fn finding_1_a_rename_of_a_repository_reusing_a_lost_name_does_not_move_its_grants() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+    ok(&grant(
+        &f,
+        &f.bob,
+        &f.carol.did,
+        "git.commit.sign",
+        "github.com/acme/widgets",
+    )
+    .await);
+    // Lost: A renamed widgets → widgets-old; lost: B created at widgets as 200.
+    ok(&event(
+        &f,
+        &ns,
+        json!({ "type": "repoRenamed", "forgeId": "200", "from": "github.com/acme/widgets", "to": "github.com/acme/gadgets" }),
+    )
+    .await);
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let a = snap.repo_at("github.com/acme/widgets").unwrap();
+    assert_eq!(a.forge_id.as_deref(), Some("100"), "A was not taken for B");
+    assert!(snap.repo_at("github.com/acme/gadgets").is_none());
+    let want = desired_now(&f).await;
+    assert!(
+        want.values()
+            .all(|t| t.resource != "github.com/acme/gadgets"),
+        "no right of A's is published on B's new name"
+    );
+}
+
+/// The same sequence when B's `repoCreatedUnmanaged` does arrive: the name's
+/// new holder displaces A, whose rights are withdrawn, and B's later rename
+/// carries nothing.
+#[tokio::test]
+async fn finding_1_a_repository_created_at_a_governed_name_detaches_the_old_one() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+    ok(&event(
+        &f,
+        &ns,
+        json!({ "type": "repoCreatedUnmanaged", "forgeId": "200", "resource": "github.com/acme/widgets" }),
+    )
+    .await);
+    ok(&event(
+        &f,
+        &ns,
+        json!({ "type": "repoRenamed", "forgeId": "200", "from": "github.com/acme/widgets", "to": "github.com/acme/gadgets" }),
+    )
+    .await);
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let a = snap
+        .repos
+        .iter()
+        .find(|r| r.forge_id.as_deref() == Some("100"))
+        .unwrap();
+    assert_eq!(a.state, RepoState::Detached);
+    assert!(snap.rows(&Scope::Repo(a.id.clone())).is_empty());
+    let b = snap.repo_at("github.com/acme/gadgets").unwrap();
+    assert_eq!(b.state, RepoState::Unmanaged);
+    assert!(snap.rows(&Scope::Repo(b.id.clone())).is_empty());
+    let want = desired_now(&f).await;
+    assert!(want.values().all(|t| !t.resource.starts_with("github.com/acme/")
+        || t.resource == "github.com/acme"));
+}
+
+/// Every resource an event names must be a repository of the event's own
+/// namespace; a repository leaving it is detached, never moved.
+#[tokio::test]
+async fn finding_1_events_are_confined_to_their_namespace_and_a_transfer_out_detaches() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+    // A second namespace of this VTC, governed separately.
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/bind",
+        json!({ "forge": "github.com", "owner": "beta", "mode": "manual" }),
+    )
+    .await);
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/adopt",
+        json!({ "resource": "github.com/beta/tools", "owners": [f.carol.did] }),
+    )
+    .await);
+
+    for bad in [
+        json!({ "type": "repoDeleted", "forgeId": "9", "resource": "github.com/beta/tools" }),
+        json!({ "type": "repoCreatedUnmanaged", "forgeId": "9", "resource": "codeberg.org/acme/x" }),
+        json!({ "type": "repoRenamed", "forgeId": "100", "from": "github.com/acme/widgets", "to": "github.com/beta/widgets" }),
+        json!({ "type": "repoTransferred", "forgeId": "9", "from": "github.com/beta/tools", "to": "github.com/acme/tools" }),
+    ] {
+        let out = event(&f, &ns, bad.clone()).await;
+        assert_eq!(code(&out), "permissionDenied", "{bad}");
+    }
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert_eq!(
+        snap.repo_at("github.com/beta/tools").unwrap().state,
+        RepoState::Active
+    );
+    assert_eq!(
+        snap.repo_at("github.com/acme/widgets").unwrap().state,
+        RepoState::Active
+    );
+
+    // Transferred into another bound namespace: detached, rights withdrawn,
+    // nothing carried into `beta`.
+    ok(&event(
+        &f,
+        &ns,
+        json!({ "type": "repoTransferred", "forgeId": "100", "from": "github.com/acme/widgets", "to": "github.com/beta/widgets" }),
+    )
+    .await);
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let a = snap
+        .repos
+        .iter()
+        .find(|r| r.forge_id.as_deref() == Some("100"))
+        .unwrap();
+    assert_eq!(a.state, RepoState::Detached);
+    assert_eq!(a.resource, "github.com/acme/widgets");
+    assert!(snap.rows(&Scope::Repo(a.id.clone())).is_empty());
+    assert!(snap.repo_at("github.com/beta/widgets").is_none());
+}
+
+// Finding 2 — nothing of who granted or why is published.
+
+#[tokio::test]
+async fn finding_2_no_published_record_names_its_granter_or_a_reason() {
+    let f = fixture().await;
+    bind_bridge(&f).await;
+    adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+    ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "right/grant",
+        json!({ "subject": f.carol.did, "right": "git.repo.maintain", "resource": "github.com/acme/widgets", "reason": "secret" }),
+    )
+    .await);
+    let registry = MockRegistryClient::new();
+    reconcile(&f, &registry).await;
+    let records = registry.trust_records().await;
+    assert!(records.len() >= 6, "admin, bridge, bob, carol");
+    for record in records.values() {
+        let context = record["context"].as_object().unwrap();
+        assert!(!context.contains_key("grantedBy"), "{record}");
+        assert!(!context.contains_key("reason"), "{record}");
+        assert!(!record.to_string().contains("secret"));
+        for key in context.keys() {
+            assert!(
+                ["framework", "activeFrom", "activeTo", "impliedBy", "origin"]
+                    .contains(&key.as_str()),
+                "unexpected context member {key}"
+            );
+        }
+    }
+}
+
+// Finding 3 — one writer per registry key.
+
+async fn map_members_to(f: &Fixture, resource: &str) {
+    f.vtc.state.config.write().await.hooks.git_trust = Some(crate::hooks::GitTrustHooksConfig {
+        grant_on_role: std::collections::BTreeMap::from([(
+            "member".to_string(),
+            resource.to_string(),
+        )]),
+        revoke_with_membership: true,
+    });
+}
+
+/// A v0.1 role-derived grant inside a bound namespace is a second source of
+/// the projection's own; revoking an explicit grant of the same key does not
+/// withdraw what the role still wants.
+#[tokio::test]
+async fn finding_3_a_role_derived_grant_is_a_source_and_survives_a_revoke_of_the_same_key() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    map_members_to(&f, &res).await;
+    let registry = MockRegistryClient::new();
+    reconcile(&f, &registry).await;
+    let key = projection::tuple_key(&f.carol.did, "git.commit.sign", &res);
+    let record = registry.trust_records().await.get(&key).cloned().unwrap();
+    assert_eq!(record["context"]["origin"], "roleDerived");
+
+    // An explicit grant of the same key, then its revoke.
+    ok(&grant(&f, &f.bob, &f.carol.did, "git.commit.sign", &res).await);
+    reconcile(&f, &registry).await;
+    ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "right/revoke",
+        json!({ "subject": f.carol.did, "right": "git.commit.sign", "resource": res }),
+    )
+    .await);
+    reconcile(&f, &registry).await;
+    let record = registry
+        .trust_records()
+        .await
+        .get(&key)
+        .cloned()
+        .expect("the role still wants it: not withdrawn");
+    assert_eq!(record["context"]["origin"], "roleDerived");
+
+    // The member leaves: now no source wants it.
+    crate::acl::delete_acl_entry(&f.vtc.state.acl_ks, &f.carol.did)
+        .await
+        .unwrap();
+    reconcile(&f, &registry).await;
+    assert!(!registry.trust_records().await.contains_key(&key));
+}
+
+/// The verify pass: a record the registry lost is put again, one it holds that
+/// nothing wants is deleted — also after the mirror was lost (a restore).
+#[tokio::test]
+async fn finding_3_verify_repairs_the_registry_and_rebuilds_a_lost_mirror() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    let registry = MockRegistryClient::new();
+    reconcile(&f, &registry).await;
+    let wanted = projection::tuple_key(&f.bob.did, "git.commit.sign", &res);
+    let stray = |did: &str| {
+        json!({
+            "entity_id": did, "authority_id": TEST_VTC_DID,
+            "action": "git.commit.sign", "resource": res,
+            "record_type": "authorization", "authorized": true, "context": {},
+        })
+    };
+
+    registry.forget_trust_record(&wanted).await;
+    registry.plant_trust_record(stray(&f.stranger.did)).await;
+    let report = projection::verify(
+        &f.vtc.state,
+        &registry,
+        TEST_VTC_DID,
+        &mut Backoff::default(),
+    )
+    .await
+    .unwrap()
+    .expect("the mock registry enumerates");
+    assert_eq!((report.put, report.deleted), (1, 1));
+    let records = registry.trust_records().await;
+    assert!(records.contains_key(&wanted));
+    assert!(!records.contains_key(&projection::tuple_key(
+        &f.stranger.did,
+        "git.commit.sign",
+        &res
+    )));
+
+    // A restore: the mirror is gone, and the registry holds a stray. A plain
+    // reconcile cannot see it; verify rebuilds the mirror first and does.
+    for key in projection::published(&f.vtc.state).await.unwrap().keys() {
+        f.vtc
+            .state
+            .git_ns
+            .projection_ks
+            .remove(format!("t:{key}"))
+            .await
+            .unwrap();
+    }
+    registry.plant_trust_record(stray(&f.carol.did)).await;
+    let report = projection::verify(
+        &f.vtc.state,
+        &registry,
+        TEST_VTC_DID,
+        &mut Backoff::default(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!((report.put, report.deleted), (0, 1));
+    assert!(
+        !registry
+            .trust_records()
+            .await
+            .contains_key(&projection::tuple_key(
+                &f.carol.did,
+                "git.commit.sign",
+                &res
+            ))
+    );
+    assert_eq!(
+        projection::published(&f.vtc.state).await.unwrap().len(),
+        registry.trust_records().await.len()
+    );
+}
+
+// Finding 4 — the console reads are for community administrators.
+
+#[tokio::test]
+async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
+    let f = fixture().await;
+    bind_manual(&f).await;
+    for path in [
+        "/git-ns/view",
+        "/git-ns/rights",
+        "/git-ns/accounts",
+        "/git-ns/rights/issued-by-departed",
+        "/git-ns/projection",
+    ] {
+        let (status, body) = get(&f, &f.admin.did, vec!["ops".into()], path).await;
+        assert_eq!(status, 403, "{path}: {body}");
+    }
+    for path in [
+        "/git-ns/view",
+        "/git-ns/rights",
+        "/git-ns/accounts",
+        "/git-ns/rights/issued-by-departed",
+        "/git-ns/projection",
+    ] {
+        let (status, body) = get(&f, &f.admin.did, vec![], path).await;
+        assert_eq!(status, 200, "{path}: {body}");
+    }
+}
+
+// Finding 5 — finishing one's own reservation needs no administrator.
+
+#[tokio::test]
+async fn finding_5_under_the_default_config_an_owner_adopts_their_own_reservation() {
+    let f = fixture().await;
+    assert!(GitNsConfig::default().elevated_requires_admin);
+    let ns = bind_manual(&f).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.bob.did,
+        "git.repo.create",
+        "github.com/acme",
+    )
+    .await);
+    ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "repo/create",
+        json!({ "namespace": ns, "name": "gadgets", "visibility": "public" }),
+    )
+    .await);
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "repo/adopt",
+        json!({ "resource": "github.com/acme/gadgets", "owners": [f.bob.did] }),
+    )
+    .await);
+    assert_eq!(body["repo"]["state"], "active");
+
+    // Everything else elevated still needs an administrator by default.
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "repo/transfer",
+        json!({ "resource": "github.com/acme/gadgets", "to": f.carol.did }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+}
+
+// Finding 6 — an account link is for the right forge, and in time.
+
+async fn link(f: &Fixture, who: &Party) -> String {
+    ok(&send(
+        &f.vtc.state,
+        who,
+        "account/link",
+        json!({ "forge": "github.com" }),
+    )
+    .await)["linkId"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn link_state(f: &Fixture, who: &Party, id: String) -> Value {
+    ok(&send(
+        &f.vtc.state,
+        who,
+        "account/link-status",
+        json!({ "linkId": id }),
+    )
+    .await)["state"]
+        .clone()
+}
+
+#[tokio::test]
+async fn finding_6_account_linked_is_refused_on_another_forge_or_after_expiry() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    let last_job = |f: &Fixture| f.bridge.jobs.lock().unwrap().last().unwrap().1["jobId"].clone();
+    // Another forge's identity.
+    let id = link(&f, &f.bob).await;
+    let out = event(
+        &f,
+        &ns,
+        json!({ "type": "accountLinked", "jobId": last_job(&f), "account": { "forge": "codeberg.org", "id": "1", "login": "bob" } }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+    assert_eq!(link_state(&f, &f.bob, id).await, "failed");
+
+    // After the attempt lapsed.
+    let id = link(&f, &f.carol).await;
+    let mut attempt = store::get_link(&f.vtc.state.git_ns.ks, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    attempt.expires_at = "2020-01-01T00:00:00Z".parse().unwrap();
+    store::put_link(&f.vtc.state.git_ns.ks, &attempt)
+        .await
+        .unwrap();
+    let out = event(
+        &f,
+        &ns,
+        json!({ "type": "accountLinked", "jobId": last_job(&f), "account": { "forge": "github.com", "id": "2", "login": "carol" } }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+    assert_eq!(link_state(&f, &f.carol, id).await, "expired");
+    let accounts = super::bridge::linked_accounts(&f.vtc.state).await.unwrap();
+    assert!(accounts.is_empty());
+
+    // A good link goes through the members write path: the member's other
+    // extensions survive it.
+    crate::members::storage::edit_member(&f.vtc.state.members_ks, &f.bob.did, |m| {
+        m.extensions = json!({ "note": "kept" });
+        true
+    })
+    .await
+    .unwrap();
+    let id = link(&f, &f.bob).await;
+    ok(&event(
+        &f,
+        &ns,
+        json!({ "type": "accountLinked", "jobId": last_job(&f), "account": { "forge": "github.com", "id": "3", "login": "bob" } }),
+    )
+    .await);
+    assert_eq!(link_state(&f, &f.bob, id).await, "linked");
+    let bob = crate::members::get_member(&f.vtc.state.members_ks, &f.bob.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bob.extensions["note"], "kept");
+    assert_eq!(bob.extensions["forges"]["github.com"]["login"], "bob");
+}
+
+// Finding 7 — an expiring right never keeps the last-admin or last-owner rule.
+
+#[tokio::test]
+async fn finding_7_an_expiring_co_admin_or_co_owner_does_not_count_toward_the_last() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    let later = "2099-01-01T00:00:00Z";
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "right/grant",
+        json!({ "subject": f.carol.did, "right": "git.ns.admin", "resource": "github.com/acme", "expiresAt": later }),
+    )
+    .await);
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "right/revoke",
+        json!({ "subject": f.admin.did, "right": "git.ns.admin", "resource": "github.com/acme" }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:lastAdmin");
+
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "right/grant",
+        json!({ "subject": f.carol.did, "right": "git.repo.own", "resource": res, "expiresAt": later }),
+    )
+    .await);
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "right/revoke",
+        json!({ "subject": f.bob.did, "right": "git.repo.own", "resource": res }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:lastOwner");
+}
+
+// Finding 8 — the departure sweep keeps the departed member's DID out of the log.
+
+#[tokio::test]
+async fn finding_8_departure_audit_rows_carry_no_plaintext_departed_did() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    ok(&grant(&f, &f.bob, &f.carol.did, "git.commit.sign", &res).await);
+    let before: std::collections::BTreeSet<Vec<u8>> = f
+        .vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    crate::acl::delete_acl_entry(&f.vtc.state.acl_ks, &f.bob.did)
+        .await
+        .unwrap();
+    assert!(super::lifecycle::sweep(&f.vtc.state).await.unwrap());
+    let new: Vec<Value> = f
+        .vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|(k, _)| !before.contains(k))
+        .map(|(_, v)| serde_json::from_slice(&v).unwrap())
+        .collect();
+    assert!(new.len() >= 2, "the revocation and the orphaning");
+    for row in &new {
+        assert!(
+            !row.to_string().contains(&f.bob.did),
+            "the departed member's DID in plaintext: {row}"
+        );
+        assert_eq!(row["actor_did_plain"], TEST_VTC_DID, "{row}");
+    }
+}
+
+// Finding 9.
+
+/// 9a — a name whose previous records are still being withdrawn cannot be
+/// created or adopted again until they are gone.
+#[tokio::test]
+async fn finding_9a_create_and_adopt_wait_for_an_old_names_withdrawal() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+    let registry = MockRegistryClient::new();
+    reconcile(&f, &registry).await;
+    // Renamed on the forge: the old name is free there, but its records are
+    // still in the registry until the projector withdraws them.
+    ok(&event(
+        &f,
+        &ns,
+        json!({ "type": "repoRenamed", "forgeId": "100", "from": "github.com/acme/widgets", "to": "github.com/acme/widgets-core" }),
+    )
+    .await);
+    let create = json!({ "namespace": ns, "name": "widgets", "visibility": "public" });
+    let out = send(&f.vtc.state, &f.admin, "repo/create", create.clone()).await;
+    assert_eq!(code(&out), "unavailable");
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/adopt",
+        json!({ "resource": "github.com/acme/widgets", "owners": [f.carol.did] }),
+    )
+    .await;
+    assert_eq!(code(&out), "unavailable");
+
+    reconcile(&f, &registry).await;
+    ok(&send(&f.vtc.state, &f.admin, "repo/create", create).await);
+}
+
+/// 9b — a later report naming the installation clears `installationRemoved`.
+#[tokio::test]
+async fn finding_9b_a_later_installation_report_clears_installation_removed() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    ok(&event(&f, &ns, json!({ "type": "installationRemoved" })).await);
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert!(snap.namespace(&ns).unwrap().installation_removed);
+    ok(&send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/event",
+        json!({
+            "namespace": ns,
+            "event": { "type": "repoDeleted", "forgeId": "999", "resource": "github.com/acme/nothing" },
+            "ext": { "org.openvtc.git-ns": { "namespace": { "installationId": "55120034" } } },
+        }),
+    )
+    .await);
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert!(!snap.namespace(&ns).unwrap().installation_removed);
+}
+
+/// 9c — a result that lands while its job's send is in flight is not
+/// overwritten by the dispatcher's write-back.
+#[tokio::test]
+async fn finding_9c_a_result_racing_the_send_survives_the_write_back() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/create",
+        json!({ "namespace": ns, "name": "gadgets", "visibility": "public" }),
+    )
+    .await);
+    *f.bridge.race.lock().unwrap() = Some(f.vtc.state.git_ns.jobs_ks.clone());
+    super::bridge::dispatch_due(&f.vtc.state).await.unwrap();
+    let create = super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.kind == super::bridge::JobKind::CreateRepo)
+        .unwrap();
+    assert_eq!(create.state, super::bridge::JobState::Succeeded);
+    assert!(create.result.is_some());
+}
+
+/// 9e — a repository an unbind left behind is shown to administrators only.
+#[tokio::test]
+async fn finding_9e_detached_repositories_of_an_unbound_namespace_are_hidden_from_members() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let ns = snap.repo_at(&res).unwrap().namespace_id.clone();
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/unbind",
+        json!({ "namespace": ns }),
+    )
+    .await);
+    let bob = ok(&send(&f.vtc.state, &f.bob, "view", json!({})).await);
+    assert_eq!(bob["repos"], json!([]));
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let admin = super::view::build(&snap, super::view::Viewer::Administrator, None);
+    assert_eq!(admin["repos"].as_array().unwrap().len(), 1);
+}
+
+/// 9g — under the default policy an external signer may give up their own
+/// right (the policy admits resignation for anyone).
+#[tokio::test]
+async fn finding_9g_an_external_signer_resigns_under_the_default_policy() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    // An external signer's row, as a community with a permissive policy
+    // would have granted it.
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let scope = Scope::Repo(snap.repo_at(&res).unwrap().id.clone());
+    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+        .await
+        .unwrap();
+    let mut row = set.rows[0].clone();
+    row.subject = f.stranger.did.clone();
+    row.right = super::model::Right::CommitSign;
+    row.subject_was_member = false;
+    set.rows.push(row);
+    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+        .await
+        .unwrap();
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.stranger,
+        "right/revoke",
+        json!({ "subject": f.stranger.did, "right": "git.commit.sign", "resource": res }),
+    )
+    .await);
+    assert_eq!(body["revoked"]["subject"], json!(f.stranger.did));
 }

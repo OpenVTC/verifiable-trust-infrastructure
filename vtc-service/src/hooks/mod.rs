@@ -336,6 +336,11 @@ pub struct HookRelay {
     config: GitTrustHooksConfig,
     writer: Arc<dyn CapabilityWriter>,
     tick_interval: Duration,
+    /// The git-namespace records. A resource inside a bound namespace belongs
+    /// to the git-ns projection, which publishes the same role-derived grant
+    /// under the same registry key; two writers of one key would each delete
+    /// what the other wanted, so this relay leaves those resources alone.
+    git_ns_ks: Option<KeyspaceHandle>,
 }
 
 impl HookRelay {
@@ -353,12 +358,33 @@ impl HookRelay {
             config,
             writer,
             tick_interval: Duration::from_secs(DEFAULT_TICK_INTERVAL_SECONDS),
+            git_ns_ks: None,
         }
     }
 
     pub fn with_tick_interval(mut self, interval: Duration) -> Self {
         self.tick_interval = interval;
         self
+    }
+
+    /// Yield resources inside a bound git namespace to the git-ns projection.
+    pub fn with_git_ns(mut self, ks: KeyspaceHandle) -> Self {
+        self.git_ns_ks = Some(ks);
+        self
+    }
+
+    /// Whether `resource` is the git-ns projection's to publish.
+    async fn owned_by_git_ns(&self, resource: &str) -> bool {
+        let Some(ks) = &self.git_ns_ks else {
+            return false;
+        };
+        match crate::git_ns::store::Snapshot::load(ks).await {
+            Ok(snap) => crate::git_ns::projection::in_bound_namespace(&snap, resource),
+            Err(e) => {
+                warn!(error = %e, "hook relay could not read the git-ns records; writing anyway");
+                false
+            }
+        }
     }
 
     /// Run until `shutdown` flips true. Boot recovery flips `InFlight` rows
@@ -445,6 +471,18 @@ impl HookRelay {
         let now = Utc::now();
         for mut job in list_jobs(&self.queue_ks).await? {
             if job.state != HookJobState::Pending || job.next_attempt_at > now {
+                continue;
+            }
+            if self.owned_by_git_ns(&job.resource).await {
+                // The git-ns projection publishes this role-derived grant (and
+                // withdraws it) as one of its sources. Writing it here too
+                // would put two writers on one registry key.
+                info!(
+                    resource = %job.resource,
+                    "hook job dropped: the resource lies in a bound git namespace, whose \
+                     projection owns it"
+                );
+                delete_job(&self.queue_ks, &job).await?;
                 continue;
             }
             job.state = HookJobState::InFlight;

@@ -57,6 +57,37 @@ pub async fn store_member(ks: &KeyspaceHandle, member: &Member) -> Result<(), Ap
     .await
 }
 
+static EDIT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The lock every read-modify-write of an existing member row holds.
+///
+/// [`store_member`] replaces the whole row, so two writers that each read the
+/// row, change a different field and write it back lose one change — a
+/// member's forge-account link written by `git-ns` and an administrator's
+/// `PATCH /v1/members/{did}` are the case that prompted this. One VTC is one
+/// process, so a process-wide async mutex is enough.
+pub async fn edit_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    EDIT_LOCK.lock().await
+}
+
+/// Read, change and write one member row under [`edit_lock`]. Returns the
+/// row as written, or `Ok(None)` when there is no such member (nothing is
+/// written). `f` returning `false` means "no change" and writes nothing.
+pub async fn edit_member(
+    ks: &KeyspaceHandle,
+    did: &str,
+    f: impl FnOnce(&mut super::Member) -> bool,
+) -> Result<Option<super::Member>, AppError> {
+    let _guard = edit_lock().await;
+    let Some(mut member) = get_member(ks, did).await? else {
+        return Ok(None);
+    };
+    if f(&mut member) {
+        store_member(ks, &member).await?;
+    }
+    Ok(Some(member))
+}
+
 /// Delete a member by DID. Idempotent.
 pub async fn delete_member(ks: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
     ks.remove(member_key(did)).await

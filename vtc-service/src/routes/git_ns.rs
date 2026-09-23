@@ -8,7 +8,11 @@
 //! no proof, and these tasks declare one REQUIRED, so there is no bearer door
 //! to them here; the console acts by having the administrator sign.
 //!
-//! Each route is gated on an admin session. `view` also carries the
+//! Each route is gated on an admin session; the ones that disclose every
+//! grant's reason, every member's linked forge account or the published
+//! record set — `view`, `rights`, `rights/issued-by-departed`, `accounts`,
+//! `projection` — on the community-administrator capability (a super-admin
+//! session, as `/audit` is), not on any context-scoped admin. `view` also carries the
 //! `git-ns/view/0.1` Trust-Task header, because its body is that task's
 //! response; the others are console projections no specification defines,
 //! and carry no Trust-Task URL rather than one whose response they do not
@@ -44,7 +48,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use vta_sdk::openapi::GitNsView01Response;
-use vti_common::auth::AdminAuth;
+use vti_common::auth::{AdminAuth, SuperAdminAuth};
 use vti_common::error::AppError;
 
 use crate::git_ns::bridge::{self, BridgeJob};
@@ -344,7 +348,7 @@ pub struct GitNsPublishedRow {
     pub entity: String,
     pub action: String,
     pub resource: String,
-    /// The record's `context` as published (framework, grantedBy,
+    /// The record's `context` as published (framework, origin,
     /// activeFrom, activeTo, impliedBy).
     #[schema(value_type = Object)]
     pub context: Value,
@@ -374,11 +378,11 @@ pub struct GitNsProjection {
         (status = 200, description = "Every namespace, repository and recorded right, reasons included", body = GitNsView01Response),
         (status = 400, description = "The resource is not a forge-qualified resource"),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a community administrator"),
     ),
 )]
 pub async fn admin_view(
-    _auth: AdminAuth,
+    _auth: SuperAdminAuth,
     State(state): State<AppState>,
     Query(q): Query<ResourceFilter>,
 ) -> Result<Json<GitNsView01Response>, AppError> {
@@ -579,7 +583,7 @@ async fn right_row(
     ),
 )]
 pub async fn rights_list(
-    _auth: AdminAuth,
+    _auth: SuperAdminAuth,
     State(state): State<AppState>,
     Query(q): Query<RightFilter>,
 ) -> Result<Json<GitNsRightList>, AppError> {
@@ -648,7 +652,7 @@ pub async fn rights_list(
     ),
 )]
 pub async fn issued_by_departed(
-    _auth: AdminAuth,
+    _auth: SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<GitNsDepartedGrants>, AppError> {
     let settings = crate::git_ns::policy::active_settings(&state).await;
@@ -755,13 +759,13 @@ pub async fn jobs_list(
     ),
 )]
 pub async fn projection_show(
-    _auth: AdminAuth,
+    _auth: SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<GitNsProjection>, AppError> {
     let registry_configured =
         state.registry_client.is_some() && state.config.read().await.vtc_did.is_some();
     let snap = Snapshot::load(&state.git_ns.ks).await?;
-    let want = projection::desired(&snap, now());
+    let want = projection::desired_all(&state, &snap, now()).await?;
     let have = projection::published(&state).await?;
     let pending_changes = want
         .iter()
@@ -817,7 +821,7 @@ pub struct GitNsAccountList {
     ),
 )]
 pub async fn accounts_list(
-    _auth: AdminAuth,
+    _auth: SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<GitNsAccountList>, AppError> {
     let mut accounts = Vec::new();

@@ -17,8 +17,29 @@
 //! Nothing else implied is published: an implied right is evaluated by the
 //! VTC and is never a record. The record's `context` carries what the TRQP
 //! record has no member for — the framework it is made under (VTI-REG-002),
-//! who granted it, when it took effect, and its expiry as `activeTo` (the
-//! registry has no validity fields). A grant's `reason` is never published.
+//! when it took effect, and its expiry as `activeTo` (the registry has no
+//! validity fields). Who granted a right and why stay inside the VTC
+//! (`git-ns/right/grant/0.1`, *Correlation*: "`grantedBy` and `reason` stay
+//! inside the VTC"), so neither is ever published.
+//!
+//! # One writer per registry key
+//!
+//! The v0.1 `[hooks.git-trust] grant_on_role` relay also writes
+//! `git.commit.sign` tuples under this community's authority. Where a
+//! role-derived resource lies inside a bound namespace, the two would write
+//! the same key and each would delete what the other wanted. So such tuples
+//! are a second *source* of this projection ([`desired_all`], origin
+//! `roleDerived`), the hook relay skips resources inside a bound namespace, and
+//! a key is withdrawn only when no source wants it.
+//!
+//! # Verify
+//!
+//! The mirror records what this VTC believes it published, and is not backed
+//! up. So periodically — and first thing after a start, which is what a
+//! restore is — the projector reads back what the registry holds under this
+//! authority for the five git actions ([`verify`]), rebuilds the mirror from
+//! that for every resource inside a bound namespace, and reconciles: a missing
+//! tuple is put again, an unexpected one withdrawn.
 //!
 //! A right is published only once its namespace is bound and its repository
 //! is active (or orphaned, or archived — archiving withdraws the commit rights
@@ -62,7 +83,7 @@ use vti_common::error::AppError;
 use crate::registry::{RegistryError, TrustRegistryClient};
 use crate::server::AppState;
 
-use super::model::{NamespaceState, RepoState, Right, RightRow, Scope};
+use super::model::{NamespaceState, RepoState, Resource, Right, RightRow, Scope};
 use super::ops::now;
 use super::store::Snapshot;
 use super::{bridge, lifecycle, wire};
@@ -73,6 +94,8 @@ pub const FRAMEWORK: &str = "https://trusttasks.org/spec/git-ns/right/grant/0.1"
 
 /// How often a pass runs with nothing new in the audit log.
 const FULL_PASS_SECONDS: i64 = 60;
+/// How often the projection is verified against the registry itself.
+const VERIFY_SECONDS: i64 = 900;
 const BACKOFF_CAP_SECONDS: i64 = 3600;
 
 /// One record the registry should hold.
@@ -115,7 +138,6 @@ pub fn tuple_key(entity: &str, action: &str, resource: &str) -> String {
 fn context(row: &RightRow, implied_by: Option<Right>) -> Value {
     let mut c = json!({
         "framework": FRAMEWORK,
-        "grantedBy": row.granted_by,
         "activeFrom": wire::timestamp(row.granted_at),
     });
     if let Some(e) = row.expires_at {
@@ -127,10 +149,24 @@ fn context(row: &RightRow, implied_by: Option<Right>) -> Value {
     c
 }
 
-/// Merge a second source of the same tuple. An explicit record wins over an
-/// implied one; the later of two expiries wins, and no expiry beats any.
+/// The framework a role-derived (v0.1 hook) tuple is made under.
+pub const ROLE_DERIVED_FRAMEWORK: &str = "https://trusttasks.org/spec/git-trust/grant/0.1";
+
+/// Which source a tuple comes from, highest first: an explicit git-ns record,
+/// a right it implies, a v0.1 role-derived grant.
+fn rank(t: &Tuple) -> u8 {
+    if t.context.get("origin").and_then(Value::as_str) == Some("roleDerived") {
+        0
+    } else if t.context.get("impliedBy").is_some() {
+        1
+    } else {
+        2
+    }
+}
+
+/// Merge a second source of the same tuple. The higher-ranked source's
+/// context wins; the later of two expiries wins, and no expiry beats any.
 fn merge(into: &mut Tuple, other: Tuple) {
-    let explicit = |t: &Tuple| t.context.get("impliedBy").is_none();
     let active_to = |t: &Tuple| {
         t.context
             .get("activeTo")
@@ -141,7 +177,7 @@ fn merge(into: &mut Tuple, other: Tuple) {
         (None, _) | (_, None) => None,
         (Some(a), Some(b)) => Some(a.max(b)),
     };
-    if !explicit(into) && explicit(&other) {
+    if rank(&other) > rank(into) {
         *into = other;
     }
     match merged_to {
@@ -214,6 +250,104 @@ pub fn desired(snap: &Snapshot, t: DateTime<Utc>) -> BTreeMap<String, Tuple> {
         }
     }
     out
+}
+
+/// Everything the registry should hold: the git-ns records ([`desired`])
+/// plus the v0.1 role-derived grants whose resource lies inside a bound
+/// namespace — which this projection, not the hook relay, then owns.
+pub async fn desired_all(
+    state: &AppState,
+    snap: &Snapshot,
+    t: DateTime<Utc>,
+) -> Result<BTreeMap<String, Tuple>, AppError> {
+    let mut out = desired(snap, t);
+    for tuple in role_derived(state, snap).await? {
+        let key = tuple.key();
+        match out.get_mut(&key) {
+            Some(existing) => merge(existing, tuple),
+            None => {
+                out.insert(key, tuple);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a resource belongs to this projection: inside a bound namespace.
+pub fn in_bound_namespace(snap: &Snapshot, resource: &str) -> bool {
+    Resource::parse(resource).is_ok_and(|r| {
+        snap.namespaces
+            .iter()
+            .any(|n| n.state == NamespaceState::Bound && n.resource().contains(&r))
+    })
+}
+
+/// The `grant_on_role` resources a bound namespace contains — the overlap the
+/// boot check warns about, and the resources the hook relay leaves alone.
+pub fn hook_overlaps(snap: &Snapshot, cfg: &crate::hooks::GitTrustHooksConfig) -> Vec<String> {
+    let mut out: Vec<String> = cfg
+        .grant_on_role
+        .values()
+        .filter(|r| in_bound_namespace(snap, r))
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The v0.1 role-derived `git.commit.sign` tuples this projection owns: one
+/// per current member whose role `grant_on_role` maps to a resource inside a
+/// bound namespace.
+async fn role_derived(state: &AppState, snap: &Snapshot) -> Result<Vec<Tuple>, AppError> {
+    let Some(cfg) = state.config.read().await.hooks.git_trust.clone() else {
+        return Ok(Vec::new());
+    };
+    if hook_overlaps(snap, &cfg).is_empty() {
+        return Ok(Vec::new());
+    }
+    let now_epoch = crate::auth::session::now_epoch();
+    let mut out = Vec::new();
+    for entry in crate::acl::list_acl_entries(&state.acl_ks).await? {
+        if entry.is_expired(now_epoch) {
+            continue;
+        }
+        let Some(resource) = cfg.grant_on_role.get(&entry.role.to_string()) else {
+            continue;
+        };
+        if !in_bound_namespace(snap, resource) {
+            continue;
+        }
+        let member = crate::members::get_member(&state.members_ks, &entry.did).await?;
+        if !member.is_some_and(|m| m.removed_at.is_none()) {
+            continue;
+        }
+        out.push(Tuple {
+            entity: entry.did.clone(),
+            action: Right::CommitSign.as_str().to_string(),
+            resource: resource.clone(),
+            context: json!({ "framework": ROLE_DERIVED_FRAMEWORK, "origin": "roleDerived" }),
+            repo_id: snap.repo_at(resource).map(|r| r.id.clone()),
+        });
+    }
+    Ok(out)
+}
+
+/// Whether a tuple published at `resource` for some other repository (or
+/// none) is still waiting to be withdrawn — published, and wanted by no
+/// source. `except` is a repository whose own tuples do not count.
+pub async fn withdrawal_pending(
+    state: &AppState,
+    snap: &Snapshot,
+    resource: &str,
+    except: Option<&str>,
+) -> Result<bool, AppError> {
+    let want = desired_all(state, snap, now()).await?;
+    Ok(published(state).await?.iter().any(|(key, p)| {
+        p.tuple.resource == resource
+            && !want.contains_key(key)
+            && (except.is_none() || p.tuple.repo_id.as_deref() != except)
+    }))
 }
 
 // ── the mirror ──────────────────────────────────────────────────────────────
@@ -303,7 +437,7 @@ pub async fn reconcile(
 ) -> Result<PassReport, AppError> {
     let t = now();
     let snap = Snapshot::load(&state.git_ns.ks).await?;
-    let want = desired(&snap, t);
+    let want = desired_all(state, &snap, t).await?;
     let have = published(state).await?;
     let mut report = PassReport::default();
 
@@ -388,6 +522,92 @@ fn log_failure(what: &str, key: &str, e: &RegistryError) {
     }
 }
 
+// ── verify ──────────────────────────────────────────────────────────────────
+
+/// Rebuild the mirror from what the registry actually holds, then reconcile.
+///
+/// For every resource inside a bound namespace, the registry's answer
+/// replaces the mirror's belief: a tuple the registry lacks is dropped from
+/// the mirror (so the reconcile puts it again), and one the registry holds
+/// that the mirror did not know is added (so the reconcile withdraws it if no
+/// source wants it). Resources outside every bound namespace are left alone —
+/// they are the hook relay's, or nobody's this VTC still governs.
+///
+/// Returns `Ok(None)` when the registry transport cannot enumerate records;
+/// the projection then keeps running on the mirror alone.
+pub async fn verify(
+    state: &AppState,
+    client: &dyn TrustRegistryClient,
+    authority: &str,
+    backoff: &mut Backoff,
+) -> Result<Option<PassReport>, AppError> {
+    let mut listed = Vec::new();
+    for right in Right::ALL {
+        match client.list_trust_records(right.as_str()).await {
+            Ok(records) => listed.extend(records),
+            Err(e) if e.is_retriable() => {
+                debug!(error = %e, "git-ns verify could not read the registry; will retry");
+                return Ok(None);
+            }
+            Err(e) => {
+                debug!(error = %e, "git-ns verify: the registry cannot enumerate records");
+                return Ok(None);
+            }
+        }
+    }
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let have = published(state).await?;
+    let t = now();
+    let mut seen = std::collections::BTreeSet::new();
+    for r in &listed {
+        let field = |k: &str| {
+            r.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        if r.get("authority_id").and_then(Value::as_str) != Some(authority) {
+            continue;
+        }
+        // A record the registry keeps but marks unauthorized (a v0.1
+        // git-trust revoke retains its record) is not a published right.
+        if r.get("authorized").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let (entity, action, resource) = (field("entity_id"), field("action"), field("resource"));
+        if !in_bound_namespace(&snap, &resource) {
+            continue;
+        }
+        let key = tuple_key(&entity, &action, &resource);
+        seen.insert(key.clone());
+        let repo_id = have
+            .get(&key)
+            .and_then(|p| p.tuple.repo_id.clone())
+            .or_else(|| snap.repo_at(&resource).map(|r| r.id.clone()));
+        mirror_put(
+            state,
+            &Published {
+                tuple: Tuple {
+                    entity,
+                    action,
+                    resource,
+                    context: r.get("context").cloned().unwrap_or(Value::Null),
+                    repo_id,
+                },
+                published_at: have.get(&key).map_or(t, |p| p.published_at),
+            },
+        )
+        .await?;
+    }
+    for (key, p) in &have {
+        if in_bound_namespace(&snap, &p.tuple.resource) && !seen.contains(key) {
+            // The registry does not hold it: forget it, so it is put again.
+            mirror_remove(state, key).await?;
+        }
+    }
+    reconcile(state, client, authority, backoff).await.map(Some)
+}
+
 // ── the audit tail ──────────────────────────────────────────────────────────
 
 /// Whether the audit log has anything new that changes what is projected,
@@ -450,6 +670,7 @@ pub struct Projector {
     tick: Duration,
     backoff: Backoff,
     last_full: Option<DateTime<Utc>>,
+    last_verify: Option<DateTime<Utc>>,
 }
 
 impl Projector {
@@ -466,6 +687,7 @@ impl Projector {
             tick,
             backoff: Backoff::default(),
             last_full: None,
+            last_verify: None,
         }
     }
 
@@ -496,6 +718,32 @@ impl Projector {
         let due = self
             .last_full
             .is_none_or(|l| l + chrono::Duration::seconds(FULL_PASS_SECONDS) <= t);
+        let verify_due = self
+            .last_verify
+            .is_none_or(|l| l + chrono::Duration::seconds(VERIFY_SECONDS) <= t);
+        if let Some((client, authority)) = &self.registry
+            && verify_due
+        {
+            self.last_verify = Some(t);
+            match verify(&self.state, client.as_ref(), authority, &mut self.backoff).await {
+                Ok(Some(r)) => {
+                    if r != PassReport::default() {
+                        info!(
+                            put = r.put,
+                            deleted = r.deleted,
+                            failed = r.failed,
+                            "git-ns registry verify pass corrected the projection"
+                        );
+                    }
+                    // A verify ends in a full reconcile.
+                    self.last_full = Some(t);
+                    return;
+                }
+                // The registry cannot enumerate: reconcile on the mirror alone.
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, "git-ns registry verify failed"),
+            }
+        }
         if let Some((client, authority)) = &self.registry
             && (woke || changed || due)
         {

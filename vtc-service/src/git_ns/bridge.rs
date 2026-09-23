@@ -552,6 +552,7 @@ fn backoff(attempts: u32) -> chrono::Duration {
 pub async fn dispatch_due(state: &AppState) -> Result<(), AppError> {
     let t = now();
     for mut job in list_jobs(&state.git_ns.jobs_ks).await? {
+        let read_state = job.state;
         // An accepted job whose result never came is asked for again.
         if job.state == JobState::Accepted
             && !job.kind.is_begin()
@@ -589,19 +590,33 @@ pub async fn dispatch_due(state: &AppState) -> Result<(), AppError> {
                 );
                 job.state = JobState::Failed;
                 job.last_error = Some(format!("{code}: {message}"));
-                note_job_failure(state, &job).await?;
             }
             Err(BridgeSendError::Transient(m)) => {
                 job.last_error = Some(m);
                 if !job.retry_forever && job.attempts >= MAX_ATTEMPTS {
                     job.state = JobState::Failed;
-                    note_job_failure(state, &job).await?;
                 } else {
                     job.next_attempt_at = t + backoff(job.attempts);
                 }
             }
         }
-        put_job(&state.git_ns.jobs_ks, &job).await?;
+        // Write back under the store lock, and only over the row this pass
+        // read: while the send was in flight the bridge may already have
+        // reported the result, or an unbind cancelled the job, and a stale
+        // "accepted" written over either would lose it.
+        let written = {
+            let _guard = store::write_lock().await;
+            match get_job(&state.git_ns.jobs_ks, &job.job_id).await? {
+                Some(current) if current.result.is_none() && current.state == read_state => {
+                    put_job(&state.git_ns.jobs_ks, &job).await?;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if written && job.state == JobState::Failed {
+            note_job_failure(state, &job).await?;
+        }
     }
     Ok(())
 }
@@ -1122,6 +1137,11 @@ fn ext_report(raw: &Value) -> (Option<NamespaceForgeStatus>, Option<RepoForgeRep
 
 /// Overwrite what the bridge reported; keep what it did not mention.
 fn merge_ns_status(ns: &mut Namespace, s: NamespaceForgeStatus) {
+    // A report naming an installation says the bridge has access again, so a
+    // past `installationRemoved` no longer describes the namespace.
+    if s.installation_id.is_some() {
+        ns.installation_removed = false;
+    }
     let cur = ns.forge_status.get_or_insert_with(Default::default);
     macro_rules! take {
         ($($f:ident),*) => { $( if s.$f.is_some() { cur.$f = s.$f.clone(); } )* };
@@ -1236,10 +1256,40 @@ pub async fn handle_event(
     let t = now();
     let mut concerned: Vec<String> = Vec::new();
 
+    // Every lookup is scoped to the event's own namespace: a bridge speaks for
+    // the namespace it serves and for nothing else, so neither a repository
+    // in another namespace nor one whose resource lies outside this one can
+    // be moved, detached or annotated by it.
+    let ns_res = ns.resource();
+    let inside = |raw: &str| -> OpResult<Resource> {
+        let r = Resource::parse(raw).map_err(OpError::Malformed)?;
+        if r.is_namespace() || !ns_res.contains(&r) {
+            return Err(OpError::PermissionDenied(format!(
+                "{raw} is not a repository of {ns_res}, which is all this bridge reports for"
+            )));
+        }
+        Ok(r)
+    };
+    // By forge id first — the identity that survives a rename. By name only
+    // where the recorded repository's forge id is unknown or is the same one:
+    // a repository recorded at a name, but with *another* forge id, is a
+    // different repository, and taking it for this one is how a renamed-away
+    // repository's rights would land on whatever was later created in its
+    // place (design §9, *Rename attacks*).
     let find = |forge_id: Option<&str>, resource: Option<&str>| -> Option<Repo> {
         forge_id
             .and_then(|f| snap.repo_by_forge_id(&ns.id, f))
-            .or_else(|| resource.and_then(|r| snap.repo_at(r)))
+            .or_else(|| {
+                resource.and_then(|r| {
+                    snap.repos.iter().find(|repo| {
+                        repo.namespace_id == ns.id
+                            && repo.resource == r
+                            && (repo.forge_id.is_none()
+                                || forge_id.is_none()
+                                || repo.forge_id.as_deref() == forge_id)
+                    })
+                })
+            })
             .cloned()
     };
 
@@ -1248,66 +1298,70 @@ pub async fn handle_event(
             let forge_id = s(&event, "forgeId");
             let from = s(&event, "from").unwrap_or_default();
             let to = s(&event, "to").unwrap_or_default();
+            inside(&from)?;
+            let to_res = Resource::parse(&to).map_err(OpError::Malformed)?;
+            // A rename stays under the owner; a rename that lands elsewhere is
+            // not a rename, and is refused rather than guessed at.
+            if kind == "repoRenamed" {
+                inside(&to)?;
+            }
             if let Some(mut repo) = find(forge_id.as_deref(), Some(&from)) {
-                let to_res = Resource::parse(&to).map_err(OpError::Malformed)?;
-                // Inside a bound namespace of this VTC, the repository moves
-                // with its rights; outside every one, it is detached.
-                let home = snap
-                    .namespaces
-                    .iter()
-                    .find(|n| n.state == NamespaceState::Bound && n.resource().contains(&to_res))
-                    .cloned();
-                match home {
-                    Some(home) => {
-                        // A stale record at the new name — an unmanaged or
-                        // detached row for what is now this repository — is
-                        // folded away rather than left to shadow it.
-                        if let Some(stale) = snap.repo_at(&to)
-                            && stale.id != repo.id
-                        {
-                            if matches!(stale.state, RepoState::Unmanaged | RepoState::Detached) {
-                                store::delete_repo(&state.git_ns.ks, &stale.id).await?;
-                                store::put_rights(
-                                    &state.git_ns.ks,
-                                    &Scope::Repo(stale.id.clone()),
-                                    &Default::default(),
-                                )
-                                .await?;
-                            } else {
-                                warn!(
-                                    %to,
-                                    "a repository was renamed onto a name another governed \
-                                     repository holds; left for an admin to resolve"
-                                );
-                                return Ok(ack);
-                            }
+                // A repository keeps its rights only while it stays inside
+                // this namespace. Out of it — to another owner, another
+                // forge, or another namespace of this VTC, which another
+                // bridge may serve and whose admins granted none of these
+                // rights — it is detached, and its rights withdrawn.
+                if ns_res.contains(&to_res) && !to_res.is_namespace() {
+                    // A stale record at the new name in this namespace — an
+                    // unmanaged or detached row for what is now this
+                    // repository — is folded away rather than left to shadow it.
+                    if let Some(stale) = snap
+                        .repos
+                        .iter()
+                        .find(|r| r.namespace_id == ns.id && r.resource == to && r.id != repo.id)
+                    {
+                        if matches!(stale.state, RepoState::Unmanaged | RepoState::Detached) {
+                            store::delete_repo(&state.git_ns.ks, &stale.id).await?;
+                            store::put_rights(
+                                &state.git_ns.ks,
+                                &Scope::Repo(stale.id.clone()),
+                                &Default::default(),
+                            )
+                            .await?;
+                        } else {
+                            warn!(
+                                %to,
+                                "a repository was renamed onto a name another governed \
+                                 repository holds; left for an admin to resolve"
+                            );
+                            return Ok(ack);
                         }
-                        repo.resource = to.clone();
-                        repo.namespace_id = home.id.clone();
-                        if repo.forge_id.is_none() {
-                            repo.forge_id = forge_id.clone();
-                        }
-                        repo.roles_digest = None;
-                        audit(
-                            state,
-                            issuer,
-                            None,
-                            Audit {
-                                action: if kind == "repoRenamed" {
-                                    "gitNs.repo.renamed"
-                                } else {
-                                    "gitNs.repo.transferred"
-                                },
-                                namespace: Some(&home.id),
-                                resource: Some(to.clone()),
-                                right: None,
-                                policy_version: None,
-                                detail: Some(from.clone()),
-                            },
-                        )
-                        .await;
                     }
-                    None => detach(state, issuer, &mut repo, "transferredOut").await?,
+                    repo.resource = to.clone();
+                    if repo.forge_id.is_none() {
+                        repo.forge_id = forge_id.clone();
+                    }
+                    repo.roles_digest = None;
+                    audit(
+                        state,
+                        issuer,
+                        None,
+                        Audit {
+                            action: if kind == "repoRenamed" {
+                                "gitNs.repo.renamed"
+                            } else {
+                                "gitNs.repo.transferred"
+                            },
+                            namespace: Some(&ns.id),
+                            resource: Some(to.clone()),
+                            right: None,
+                            policy_version: None,
+                            detail: Some(from.clone()),
+                        },
+                    )
+                    .await;
+                } else {
+                    detach(state, issuer, &mut repo, "transferredOut").await?;
                 }
                 store::put_repo(&state.git_ns.ks, &repo).await?;
                 concerned.push(repo.resource.clone());
@@ -1316,6 +1370,29 @@ pub async fn handle_event(
         "repoCreatedUnmanaged" => {
             let forge_id = s(&event, "forgeId");
             let resource = s(&event, "resource").unwrap_or_default();
+            inside(&resource)?;
+            // A governed repository recorded at this name under a *different*
+            // forge id has left the name (renamed or deleted, and the event
+            // saying so was lost). The name now belongs to someone else, so the
+            // old repository's rights must not stay published there: it is
+            // detached, and the new repository starts unmanaged with nothing.
+            if let Some(fid) = forge_id.as_deref() {
+                let displaced: Vec<Repo> = snap
+                    .repos
+                    .iter()
+                    .filter(|r| {
+                        r.namespace_id == ns.id
+                            && r.resource == resource
+                            && r.forge_id.as_deref().is_some_and(|f| f != fid)
+                            && r.state != RepoState::Detached
+                    })
+                    .cloned()
+                    .collect();
+                for mut old in displaced {
+                    detach(state, issuer, &mut old, "nameReused").await?;
+                    store::put_repo(&state.git_ns.ks, &old).await?;
+                }
+            }
             match find(forge_id.as_deref(), Some(&resource)) {
                 Some(mut repo) => {
                     if repo.forge_id.is_none() {
@@ -1353,6 +1430,9 @@ pub async fn handle_event(
         "repoDeleted" => {
             let forge_id = s(&event, "forgeId");
             let resource = s(&event, "resource");
+            if let Some(r) = &resource {
+                inside(r)?;
+            }
             if let Some(mut repo) = find(forge_id.as_deref(), resource.as_deref()) {
                 detach(state, issuer, &mut repo, "deleted").await?;
                 store::put_repo(&state.git_ns.ks, &repo).await?;
@@ -1361,6 +1441,9 @@ pub async fn handle_event(
         }
         "roleChanged" => {
             let resource = s(&event, "resource");
+            if let Some(r) = &resource {
+                inside(r)?;
+            }
             if let Some(mut repo) = find(s(&event, "forgeId").as_deref(), resource.as_deref()) {
                 if super::policy::active_settings(state)
                     .await
@@ -1375,6 +1458,9 @@ pub async fn handle_event(
         }
         "protectionChanged" => {
             let resource = s(&event, "resource");
+            if let Some(r) = &resource {
+                inside(r)?;
+            }
             let required = event
                 .get("requiredCheck")
                 .and_then(Value::as_bool)
@@ -1469,6 +1555,7 @@ pub async fn handle_event(
     // The drift for each repository the event concerns replaces what was held.
     for item in &drift {
         if let Some(r) = item.get("resource").and_then(Value::as_str)
+            && inside(r).is_ok()
             && !concerned.iter().any(|c| c == r)
         {
             concerned.push(r.to_string());
@@ -1477,7 +1564,16 @@ pub async fn handle_event(
     if !concerned.is_empty() {
         let snap = Snapshot::load(&state.git_ns.ks).await?;
         for resource in concerned {
-            let Some(mut repo) = snap.repo_at(&resource).cloned() else {
+            let Some(mut repo) = snap
+                .repos
+                .iter()
+                .find(|r| {
+                    r.namespace_id == ns.id
+                        && r.resource == resource
+                        && r.state != RepoState::Detached
+                })
+                .cloned()
+            else {
                 continue;
             };
             let items: Vec<Value> = drift
@@ -1556,6 +1652,7 @@ async fn complete_binding(
     bound.state = NamespaceState::Bound;
     bound.bound_at = Some(now());
     bound.bind_job_id = None;
+    bound.installation_removed = false;
     store::put_namespace(&state.git_ns.ks, &bound).await?;
     audit(
         state,
@@ -1654,6 +1751,9 @@ pub async fn service_grant(state: &AppState, ns: &Namespace) -> OpResult<()> {
     let resource = ns.resource();
     let vtc = ops::standing(state, &vtc_did).await?;
     let bridge = ops::standing(state, &bridge_did).await?;
+    let passed =
+        rules::service_grant_admitted(&bridge_did, &bridge_did, Right::CommitSign, &resource)
+            .map_err(OpError::from)?;
     let version = match ops::check_policy(
         state,
         ops::PolicyInput {
@@ -1670,6 +1770,7 @@ pub async fn service_grant(state: &AppState, ns: &Namespace) -> OpResult<()> {
             visibility: None,
             expires_at: None,
             namespace: Some(ns),
+            passed,
         },
     )
     .await
@@ -1746,8 +1847,33 @@ async fn complete_account_link(
             "accountLinked carries no account".into(),
         ));
     };
-    let forge = s(account, "forge").unwrap_or_else(|| attempt.forge.clone());
     let t = now();
+    // The account must be on the forge the member asked to link, which is the
+    // namespace's forge — a bridge serving `github.com` cannot hand a member a
+    // `codeberg.org` identity — and must arrive while the attempt is open.
+    let Some(forge) = s(account, "forge") else {
+        return Err(OpError::Malformed(
+            "accountLinked carries an account with no forge".into(),
+        ));
+    };
+    if forge != attempt.forge || forge != ns.forge {
+        attempt.state = LinkState::Failed;
+        attempt.finished_at = Some(t);
+        store::put_link(&state.git_ns.ks, &attempt).await?;
+        return Err(OpError::PermissionDenied(format!(
+            "the linked account is on {forge}, but the member asked to link {} through a \
+             namespace on {}",
+            attempt.forge, ns.forge
+        )));
+    }
+    if attempt.expires_at <= t {
+        attempt.state = LinkState::Expired;
+        attempt.finished_at = Some(t);
+        store::put_link(&state.git_ns.ks, &attempt).await?;
+        return Err(OpError::PermissionDenied(
+            "the link attempt had already lapsed when the account arrived".into(),
+        ));
+    }
 
     // Item 4 — a forge account links to one member at most.
     let taken_by_other = linked_accounts(state)
@@ -1756,24 +1882,31 @@ async fn complete_account_link(
         .any(|(did, forges)| {
             did != attempt.member && forges.get(&forge).is_some_and(|a| a.id == id)
         });
-    let member = crate::members::get_member(&state.members_ks, &attempt.member).await?;
-    match member {
-        Some(mut m) if !taken_by_other && m.removed_at.is_none() => {
+    let linked = if taken_by_other {
+        None
+    } else {
+        let entry = json!({ "id": id, "login": login, "linkedAt": wire::timestamp(t) });
+        crate::members::storage::edit_member(&state.members_ks, &attempt.member, |m| {
+            if m.removed_at.is_some() {
+                return false;
+            }
             if !m.extensions.is_object() {
                 m.extensions = json!({});
             }
-            let forges = m
-                .extensions
-                .as_object_mut()
-                .map(|o| o.entry("forges").or_insert_with(|| json!({})));
-            if let Some(forges) = forges {
+            if let Some(o) = m.extensions.as_object_mut() {
+                let forges = o.entry("forges").or_insert_with(|| json!({}));
                 if !forges.is_object() {
                     *forges = json!({});
                 }
-                forges[&forge] =
-                    json!({ "id": id, "login": login, "linkedAt": wire::timestamp(t) });
+                forges[&forge] = entry.clone();
             }
-            crate::members::store_member(&state.members_ks, &m).await?;
+            true
+        })
+        .await?
+        .filter(|m| m.removed_at.is_none())
+    };
+    match linked {
+        Some(_) => {
             attempt.state = LinkState::Linked;
             attempt.account = Some(ForgeAccount {
                 forge: forge.clone(),

@@ -45,7 +45,7 @@ use crate::policy::model::PolicyPurpose;
 use crate::server::AppState;
 use vti_common::error::AppError;
 
-use super::rules::RuleSettings;
+use super::rules::{RuleSettings, RulesPassed};
 
 const DECISION_QUERY: &str = "data.vtc.git_namespace.decision";
 const SETTINGS_QUERY: &str = "data.vtc.git_namespace.settings";
@@ -105,14 +105,16 @@ pub struct GitNsFacts {
 
 /// Facts that passed the fixed rules.
 ///
-/// No public constructor beyond [`Self::after_fixed_rules`], whose name is the
-/// contract: a policy is evaluated over a request the fixed rules have already
-/// admitted, and never instead of them.
+/// The only constructor, [`Self::after_fixed_rules`], consumes the
+/// [`RulesPassed`] token that only the rule functions in [`super::rules`]
+/// produce: a policy is evaluated over a request the fixed rules have already
+/// admitted, and never instead of them — enforced by the type, not by
+/// convention.
 #[derive(Debug, Clone)]
 pub struct VerifiedGitNsFacts(GitNsFacts);
 
 impl VerifiedGitNsFacts {
-    pub fn after_fixed_rules(facts: GitNsFacts) -> Result<Self, AppError> {
+    pub fn after_fixed_rules(facts: GitNsFacts, _passed: RulesPassed) -> Result<Self, AppError> {
         if facts.actor.did.trim().is_empty() {
             return Err(AppError::Forbidden(
                 "a git-namespace request must name the party that signed it".into(),
@@ -331,18 +333,21 @@ mod tests {
     }
 
     fn facts(action: &str, actor_member: bool, subject: Option<Party>) -> VerifiedGitNsFacts {
-        VerifiedGitNsFacts::after_fixed_rules(GitNsFacts {
-            now: "2026-09-23T12:00:00Z".parse().unwrap(),
-            action: action.into(),
-            actor: party("did:key:actor", actor_member),
-            resource: "github.com/acme/widgets".into(),
-            forge: "github.com".into(),
-            right: Some("git.commit.sign".into()),
-            subject,
-            visibility: None,
-            expires_at: None,
-            capabilities: Capabilities::default(),
-        })
+        VerifiedGitNsFacts::after_fixed_rules(
+            GitNsFacts {
+                now: "2026-09-23T12:00:00Z".parse().unwrap(),
+                action: action.into(),
+                actor: party("did:key:actor", actor_member),
+                resource: "github.com/acme/widgets".into(),
+                forge: "github.com".into(),
+                right: Some("git.commit.sign".into()),
+                subject,
+                visibility: None,
+                expires_at: None,
+                capabilities: Capabilities::default(),
+            },
+            RulesPassed::for_test(),
+        )
         .unwrap()
     }
 
@@ -379,22 +384,25 @@ mod tests {
         resource: &str,
         right: &str,
     ) -> VerifiedGitNsFacts {
-        VerifiedGitNsFacts::after_fixed_rules(GitNsFacts {
-            now: "2026-09-23T12:00:00Z".parse().unwrap(),
-            action: "bridge.serviceGrant".into(),
-            actor: party("did:webvh:vtc", true),
-            resource: resource.into(),
-            forge: "github.com".into(),
-            right: Some(right.into()),
-            subject: Some(party(subject, false)),
-            visibility: None,
-            expires_at: None,
-            capabilities: Capabilities {
-                bridge: true,
-                bridge_did: Some(bridge.into()),
-                ..Capabilities::default()
+        VerifiedGitNsFacts::after_fixed_rules(
+            GitNsFacts {
+                now: "2026-09-23T12:00:00Z".parse().unwrap(),
+                action: "bridge.serviceGrant".into(),
+                actor: party("did:webvh:vtc", true),
+                resource: resource.into(),
+                forge: "github.com".into(),
+                right: Some(right.into()),
+                subject: Some(party(subject, false)),
+                visibility: None,
+                expires_at: None,
+                capabilities: Capabilities {
+                    bridge: true,
+                    bridge_did: Some(bridge.into()),
+                    ..Capabilities::default()
+                },
             },
-        })
+            RulesPassed::for_test(),
+        )
         .unwrap()
     }
 

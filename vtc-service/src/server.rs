@@ -1179,6 +1179,20 @@ pub async fn run(
         let audit_ks = state.audit_ks.clone();
         let queue_ks = state.hooks_queue_ks.clone();
         let cursor_ks = state.hooks_cursor_ks.clone();
+        let git_ns_ks = state.git_ns.ks.clone();
+        // Say so at boot when a role-derived grant lands inside a bound git
+        // namespace: from now on the git-ns projection publishes it, not this
+        // relay, and an operator reading the config should know why.
+        if let Ok(snap) = crate::git_ns::store::Snapshot::load(&git_ns_ks).await {
+            for resource in crate::git_ns::projection::hook_overlaps(&snap, &git_trust_cfg) {
+                warn!(
+                    %resource,
+                    "[hooks.git-trust] grant_on_role names a resource inside a bound git \
+                     namespace; the git-ns projection publishes it as a role-derived right \
+                     and the hook relay leaves it alone"
+                );
+            }
+        }
         let mut supervisor_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             loop {
@@ -1191,7 +1205,8 @@ pub async fn run(
                     cursor_ks.clone(),
                     git_trust_cfg.clone(),
                     writer.clone(),
-                );
+                )
+                .with_git_ns(git_ns_ks.clone());
                 let run_shutdown = supervisor_shutdown.clone();
                 let child = tokio::spawn(async move { relay.run(run_shutdown).await });
                 match child.await {

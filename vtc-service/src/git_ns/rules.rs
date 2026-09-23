@@ -300,23 +300,184 @@ fn live_holders<'a>(
         .collect()
 }
 
+/// The holders of `right` whose record does not expire — the ones fixed rules
+/// 3 and 4 count.
+///
+/// A record with an `expiresAt` lapses on its own, with nobody asked. If it
+/// counted, a namespace could reach "one admin, expiring Friday" by an
+/// ordinary revoke of its last permanent admin, and be headless on Saturday
+/// without any refusal ever having had the chance to fire. Counting only
+/// permanent records keeps the invariant true at every later instant, not just
+/// the one the revoke is checked at.
+fn permanent_holders<'a>(
+    snap: &'a Snapshot,
+    scope: &Scope,
+    right: Right,
+    now: DateTime<Utc>,
+) -> Vec<&'a str> {
+    snap.rows(scope)
+        .iter()
+        .filter(|r| r.right == right && r.is_live(now) && r.expires_at.is_none())
+        .map(|r| r.subject.as_str())
+        .collect()
+}
+
 /// Fixed rule 3: would removing `subject`'s `own` leave the repository with
-/// no owner by explicit record?
+/// no owner by explicit, permanent record? An expiring owner does not count
+/// toward the invariant, so removing one is never refused by it.
 pub fn is_last_owner(snap: &Snapshot, repo_id: &str, subject: &str, now: DateTime<Utc>) -> bool {
-    let owners = live_holders(snap, &Scope::Repo(repo_id.to_string()), Right::RepoOwn, now);
+    let owners = permanent_holders(snap, &Scope::Repo(repo_id.to_string()), Right::RepoOwn, now);
     owners.contains(&subject) && owners.iter().all(|o| *o == subject)
 }
 
 /// Fixed rule 4: would removing `subject`'s `ns.admin` leave the namespace
-/// with no admin by explicit record?
+/// with no admin by explicit, permanent record?
 pub fn is_last_admin(snap: &Snapshot, ns_id: &str, subject: &str, now: DateTime<Utc>) -> bool {
-    let admins = live_holders(
+    let admins = permanent_holders(
         snap,
         &Scope::Namespace(ns_id.to_string()),
         Right::NsAdmin,
         now,
     );
     admins.contains(&subject) && admins.iter().all(|a| *a == subject)
+}
+
+// ── the token policy evaluation requires ────────────────────────────────────
+
+/// Proof that a request passed the fixed rules for its task.
+///
+/// Its only constructors are the rule functions in this module, and
+/// [`super::policy::VerifiedGitNsFacts`] can be built only from one — so a
+/// policy sees a request only after the code, not the policy, has
+/// admitted it (fixed rule 6: "Policy can refuse … it can never admit a
+/// request the rules above refuse"). A caller that skips the rules does not
+/// compile:
+///
+/// ```compile_fail
+/// let forged = vtc_service::git_ns::rules::RulesPassed(());
+/// ```
+///
+/// ```compile_fail
+/// let forged = vtc_service::git_ns::rules::RulesPassed::new();
+/// ```
+#[derive(Debug)]
+pub struct RulesPassed(());
+
+impl RulesPassed {
+    fn new() -> Self {
+        RulesPassed(())
+    }
+
+    /// For policy unit tests, which exercise the policy alone.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        RulesPassed(())
+    }
+}
+
+/// Grant: fixed rules 1, 2 and 5 together.
+pub fn grant_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    right: Right,
+    target: &Resource,
+    subject_is_member: bool,
+    settings: RuleSettings,
+    now: DateTime<Utc>,
+) -> Result<RulesPassed, Refusal> {
+    authority_to_grant(snap, actor, right, target, settings, now)?;
+    members_only(right, subject_is_member)?;
+    Ok(RulesPassed::new())
+}
+
+/// Revoke: the revocation authority of `git-ns/right/revoke`.
+pub fn revoke_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    row: &RightRow,
+    target: &Resource,
+    settings: RuleSettings,
+    now: DateTime<Utc>,
+) -> Result<RulesPassed, Refusal> {
+    authority_to_revoke(snap, actor, row, target, settings, now)?;
+    Ok(RulesPassed::new())
+}
+
+/// Bind: the community-administrator capability (`git-ns/namespace/bind`,
+/// *Authorization*).
+pub fn bind_admitted(community_admin: bool) -> Result<RulesPassed, Refusal> {
+    if !community_admin {
+        return Err(Refusal::PermissionDenied(
+            "binding a namespace needs the community-administrator capability".into(),
+        ));
+    }
+    Ok(RulesPassed::new())
+}
+
+/// Unbind: `git.ns.admin` on the namespace, or the community-administrator
+/// capability.
+pub fn unbind_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    ns_resource: &Resource,
+    community_admin: bool,
+    now: DateTime<Utc>,
+) -> Result<RulesPassed, Refusal> {
+    if community_admin || effective_on(snap, actor, ns_resource, now).contains(&Right::NsAdmin) {
+        return Ok(RulesPassed::new());
+    }
+    Err(Refusal::PermissionDenied(format!(
+        "unbinding {ns_resource} needs git.ns.admin on it, or the community-administrator \
+         capability"
+    )))
+}
+
+/// A right the task requires the actor to hold on `on`, explicitly or by
+/// implication — `repo.create` to create, `own` to archive.
+pub fn holds_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    right: Right,
+    on: &Resource,
+    now: DateTime<Utc>,
+) -> Result<RulesPassed, Refusal> {
+    if effective_on(snap, actor, on, now).contains(&right) {
+        return Ok(RulesPassed::new());
+    }
+    Err(Refusal::PermissionDenied(format!(
+        "this needs {right} on {on}"
+    )))
+}
+
+/// An explicit, live record — transfer hands over the caller's own `own`
+/// record, and adopt of a reservation needs the reservation's.
+pub fn explicit_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    right: Right,
+    scope: &Scope,
+    now: DateTime<Utc>,
+) -> Option<RulesPassed> {
+    snap.rows(scope)
+        .iter()
+        .any(|r| r.subject == actor && r.right == right && r.is_live(now))
+        .then(RulesPassed::new)
+}
+
+/// The bridge's service grant: `git.commit.sign`, on the namespace, to the
+/// namespace's own bridge DID — nothing else.
+pub fn service_grant_admitted(
+    bridge_did: &str,
+    subject: &str,
+    right: Right,
+    target: &Resource,
+) -> Result<RulesPassed, Refusal> {
+    if subject == bridge_did && right == Right::CommitSign && target.is_namespace() {
+        return Ok(RulesPassed::new());
+    }
+    Err(Refusal::Escalation(
+        "a service grant is git.commit.sign on the namespace, to its own bridge".into(),
+    ))
 }
 
 /// The explicit owners of a repository, in grant order.

@@ -196,6 +196,19 @@ pub trait TrustRegistryClient: Send + Sync {
         ))
     }
 
+    /// Every record the registry holds under this community's authority for
+    /// one `action` (`registry/record/query/0.1`, paged to the end) — what the
+    /// git-namespace projection verifies itself against. Defaults to a
+    /// `Permanent` refusal: a transport that cannot enumerate says so.
+    async fn list_trust_records(
+        &self,
+        _action: &str,
+    ) -> Result<Vec<serde_json::Value>, RegistryError> {
+        Err(RegistryError::Permanent(
+            "this registry transport cannot enumerate authorization records".into(),
+        ))
+    }
+
     /// Delete one record by its TRQP key (`registry/record/delete/0.1`),
     /// under this community's authority. A record that is already absent is
     /// success: the effect wanted is its absence.
@@ -354,6 +367,24 @@ impl MockRegistryClient {
         self.inner.lock().await.trust_records.clone()
     }
 
+    /// Change the registry behind the projection's back: remove a record, as
+    /// a registry reset or an operator would.
+    pub async fn forget_trust_record(&self, key: &str) {
+        self.inner.lock().await.trust_records.remove(key);
+    }
+
+    /// Plant a record the projection did not write.
+    pub async fn plant_trust_record(&self, record: serde_json::Value) {
+        let field = |k: &str| record.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+        let key = format!(
+            "{}|{}|{}",
+            field("entity_id"),
+            field("action"),
+            field("resource")
+        );
+        self.inner.lock().await.trust_records.insert(key, record);
+    }
+
     /// Queue an error for the next authorization-record write or delete.
     pub async fn fail_next_trust_record(&self, err: RegistryError) {
         self.inner.lock().await.next_trust_record_error = Some(err);
@@ -433,6 +464,18 @@ impl TrustRegistryClient for MockRegistryClient {
         );
         s.trust_records.insert(key, record.clone());
         Ok(())
+    }
+
+    async fn list_trust_records(
+        &self,
+        action: &str,
+    ) -> Result<Vec<serde_json::Value>, RegistryError> {
+        let s = self.inner.lock().await;
+        Ok(s.trust_records
+            .values()
+            .filter(|r| r.get("action").and_then(|a| a.as_str()) == Some(action))
+            .cloned()
+            .collect())
     }
 
     async fn delete_trust_record(

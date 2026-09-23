@@ -3629,7 +3629,7 @@ export interface components {
         GitNsPublishedRow: {
             action: string;
             /**
-             * @description The record's `context` as published (framework, grantedBy,
+             * @description The record's `context` as published (framework, origin,
              *     activeFrom, activeTo, impliedBy).
              */
             context: Record<string, never>;
@@ -9406,7 +9406,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not a community administrator */
             403: {
                 headers: {
                     [name: string]: unknown;

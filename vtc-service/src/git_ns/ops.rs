@@ -240,6 +240,9 @@ pub struct PolicyInput<'a> {
     pub visibility: Option<Visibility>,
     pub expires_at: Option<DateTime<Utc>>,
     pub namespace: Option<&'a Namespace>,
+    /// The fixed rules' admission of this request. Without one there is no
+    /// policy evaluation, so there is no way to reach the policy first.
+    pub passed: rules::RulesPassed,
 }
 
 /// Fixed rule 6: evaluated after the fixed rules, and able only to refuse.
@@ -275,7 +278,7 @@ pub(crate) async fn check_policy(
         expires_at: input.expires_at,
         capabilities: caps,
     };
-    let verified = VerifiedGitNsFacts::after_fixed_rules(facts)?;
+    let verified = VerifiedGitNsFacts::after_fixed_rules(facts, input.passed)?;
     policy::decide(&verified, &active.compiled).map_err(|d| declared(POLICY_DENIED, d.message))?;
     Ok(active.version)
 }
@@ -352,6 +355,26 @@ fn bound_namespace_for<'a>(snap: &'a Snapshot, resource: &Resource) -> OpResult<
     Ok(ns)
 }
 
+/// Refuse to put a repository at `resource` while rights published for a
+/// previous repository there are still being withdrawn (design §9, *Rename
+/// attacks*: "the old resource's tuples are deleted before any new repo can
+/// be adopted at that name"). `except` is the repository the call is about,
+/// whose own tuples do not count against it.
+async fn refuse_while_withdrawing(
+    state: &AppState,
+    snap: &Snapshot,
+    resource: &Resource,
+    except: Option<&str>,
+) -> OpResult<()> {
+    if super::projection::withdrawal_pending(state, snap, &resource.to_string(), except).await? {
+        return Err(OpError::Unavailable(format!(
+            "rights published for an earlier repository at {resource} are still being withdrawn \
+             from the Trust Registry; retry once they are gone"
+        )));
+    }
+    Ok(())
+}
+
 fn namespace_by_id<'a>(snap: &'a Snapshot, id: &str) -> OpResult<&'a Namespace> {
     snap.namespace(id).ok_or_else(|| {
         declared(
@@ -425,11 +448,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
     let actor = standing(state, actor_did).await?;
     // Item 1 — the community-administrator capability. No git right suffices:
     // before binding there are none.
-    if !actor.community_admin {
-        return Err(OpError::PermissionDenied(
-            "binding a namespace needs the community-administrator capability".into(),
-        ));
-    }
+    let passed = rules::bind_admitted(actor.community_admin)?;
     let forge = p.forge.to_string();
     let owner = p.owner.to_string();
     let mode = match to_string_json(&p.mode).as_str() {
@@ -467,6 +486,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
                 visibility: None,
                 expires_at: None,
                 namespace: None,
+                passed,
             },
         )
         .await?;
@@ -640,13 +660,7 @@ pub async fn unbind(
     let resource = ns.resource();
     // Item 2 — `git.ns.admin` on the namespace, or the community-administrator
     // capability, which could bind it again anyway.
-    let holds = rules::effective_on(&snap, &actor.did, &resource, t).contains(&Right::NsAdmin);
-    if !holds && !actor.community_admin {
-        return Err(OpError::PermissionDenied(format!(
-            "unbinding {resource} needs git.ns.admin on it, or the community-administrator \
-             capability"
-        )));
-    }
+    let passed = rules::unbind_admitted(&snap, &actor.did, &resource, actor.community_admin, t)?;
     consent_gate(state, &actor, "namespace.unbind", None).await?;
     let version = check_policy(
         state,
@@ -662,6 +676,7 @@ pub async fn unbind(
             visibility: None,
             expires_at: None,
             namespace: Some(&ns),
+            passed,
         },
     )
     .await?;
@@ -757,12 +772,8 @@ pub async fn repo_create(
     }
     let ns_res = ns.resource();
     // Item 2 — `git.repo.create` on the namespace, explicit or implied.
+    let passed = rules::holds_admitted(&snap, &actor.did, Right::RepoCreate, &ns_res, t)?;
     let actor_rights = rules::effective_on(&snap, &actor.did, &ns_res, t);
-    if !actor_rights.contains(&Right::RepoCreate) {
-        return Err(OpError::PermissionDenied(format!(
-            "creating a repository in {ns_res} needs git.repo.create on it"
-        )));
-    }
     let visibility = visibility_from_wire(&to_string_json(&p.visibility))?;
     let name = p.name.to_string();
     let resource = ns_res.child(&name);
@@ -779,6 +790,7 @@ pub async fn repo_create(
             visibility: Some(visibility),
             expires_at: None,
             namespace: Some(&ns),
+            passed,
         },
     )
     .await?;
@@ -789,6 +801,7 @@ pub async fn repo_create(
             format!("this VTC already records a repository at {resource}"),
         ));
     }
+    refuse_while_withdrawing(state, &snap, &resource, None).await?;
     // Item 4 — reserved, and the requester owns the reservation. Published
     // only once active.
     let bot = can_bot_create(&ns);
@@ -940,32 +953,39 @@ pub async fn repo_adopt(
     }
     // Item 3 — `git.ns.admin`, or an explicit `own` on a `pendingCreate`
     // reservation (the person who ran the manual steps finishing the job).
+    let reservation = existing
+        .as_ref()
+        .filter(|r| r.state == RepoState::PendingCreate)
+        .map(|r| Scope::Repo(r.id.clone()));
+    let owns_reservation = reservation.as_ref().is_some_and(|scope| {
+        rules::explicit_admitted(&snap, &actor.did, Right::RepoOwn, scope, t).is_some()
+    });
+    if p.owners.is_empty() {
+        return Err(OpError::Malformed(
+            "a repository always has an owner: name at least one".into(),
+        ));
+    }
+    let st = settings(state).await;
     let is_admin =
         rules::effective_on(&snap, &actor.did, &ns.resource(), t).contains(&Right::NsAdmin);
-    let owns_reservation = existing.as_ref().is_some_and(|r| {
-        r.state == RepoState::PendingCreate
-            && snap.rows(&Scope::Repo(r.id.clone())).iter().any(|row| {
-                row.subject == actor.did && row.right == Right::RepoOwn && row.is_live(t)
-            })
-    });
     if !is_admin && !owns_reservation {
         return Err(OpError::PermissionDenied(format!(
             "adopting {resource} needs git.ns.admin on {}, or ownership of its reservation",
             ns.resource()
         )));
     }
-    if p.owners.is_empty() {
-        return Err(OpError::Malformed(
-            "a repository always has an owner: name at least one".into(),
-        ));
-    }
-    // Naming owners is a grant of `own` to each, under the same fixed rules
-    // and policy as `git-ns/right/grant`.
-    let st = settings(state).await;
+    // Finishing one's own reservation is the second half of `repo/create`, a
+    // normal-class action; adopting anything else is elevated (design §6).
     if !owns_reservation {
-        rules::authority_to_grant(&snap, &actor.did, Right::RepoOwn, &resource, st.rules, t)?;
+        consent_gate(state, &actor, "repo.adopt", None).await?;
     }
-    consent_gate(state, &actor, "repo.adopt", None).await?;
+    refuse_while_withdrawing(
+        state,
+        &snap,
+        &resource,
+        existing.as_ref().map(|r| r.id.as_str()),
+    )
+    .await?;
     let actor_rights: Vec<Right> = rules::effective_on(&snap, &actor.did, &resource, t)
         .into_iter()
         .collect();
@@ -973,6 +993,25 @@ pub async fn repo_adopt(
     let mut owner_standing = Vec::new();
     for o in &p.owners {
         let s = standing(state, o).await?;
+        // Naming an owner is a grant of `own`, under the same fixed rules as
+        // `git-ns/right/grant` — except on one's own reservation, whose
+        // entitlement is the reservation itself.
+        let passed = match &reservation {
+            Some(scope) if owns_reservation => {
+                rules::explicit_admitted(&snap, &actor.did, Right::RepoOwn, scope, t).ok_or_else(
+                    || OpError::PermissionDenied("the reservation is not yours".into()),
+                )?
+            }
+            _ => rules::grant_admitted(
+                &snap,
+                &actor.did,
+                Right::RepoOwn,
+                &resource,
+                s.member,
+                st.rules,
+                t,
+            )?,
+        };
         version = check_policy(
             state,
             PolicyInput {
@@ -985,6 +1024,7 @@ pub async fn repo_adopt(
                 visibility: None,
                 expires_at: None,
                 namespace: Some(&ns),
+                passed,
             },
         )
         .await?;
@@ -1135,11 +1175,8 @@ pub async fn repo_transfer(
     })?;
     let scope = Scope::Repo(repo.id.clone());
     // Item 2 — an explicit record to hand over. Implied ownership has none.
-    if !snap
-        .rows(&scope)
-        .iter()
-        .any(|r| r.subject == actor.did && r.right == Right::RepoOwn && r.is_live(t))
-    {
+    let Some(passed) = rules::explicit_admitted(&snap, &actor.did, Right::RepoOwn, &scope, t)
+    else {
         return Err(declared(
             NOT_OWNER,
             format!(
@@ -1147,7 +1184,7 @@ pub async fn repo_transfer(
                  admin names an owner with git-ns/right/grant instead"
             ),
         ));
-    }
+    };
     let to = p.to.to_string();
     if to == actor.did {
         return Err(declared(SELF_TRANSFER, "`to` is you"));
@@ -1173,6 +1210,7 @@ pub async fn repo_transfer(
             visibility: None,
             expires_at: None,
             namespace: Some(&ns),
+            passed,
         },
     )
     .await?;
@@ -1266,12 +1304,8 @@ pub async fn repo_archive(
     }
     let scope = Scope::Repo(repo.id.clone());
     // Item 2 — `own`, explicit or implied by `ns.admin`.
+    let passed = rules::holds_admitted(&snap, &actor.did, Right::RepoOwn, &resource, t)?;
     let actor_rights = rules::effective_on(&snap, &actor.did, &resource, t);
-    if !actor_rights.contains(&Right::RepoOwn) {
-        return Err(OpError::PermissionDenied(format!(
-            "archiving {resource} needs git.repo.own on it"
-        )));
-    }
     let owners_now = rules::owners(&snap, &repo.id, t);
     // Item 3 — repeating an archive is safe.
     if repo.state == RepoState::Archived {
@@ -1294,6 +1328,7 @@ pub async fn repo_archive(
             visibility: None,
             expires_at: None,
             namespace: ns.as_ref(),
+            passed,
         },
     )
     .await?;
@@ -1404,9 +1439,16 @@ pub async fn right_grant(
     };
     // Item 4 — the fixed rules, in order, then policy.
     let st = settings(state).await;
-    rules::authority_to_grant(&snap, &actor.did, right, &resource, st.rules, t)?;
     let subject_standing = standing(state, &subject).await?;
-    rules::members_only(right, subject_standing.member)?;
+    let passed = rules::grant_admitted(
+        &snap,
+        &actor.did,
+        right,
+        &resource,
+        subject_standing.member,
+        st.rules,
+        t,
+    )?;
     consent_gate(state, &actor, "right.grant", Some(right)).await?;
     let expires_at = p.expires_at;
     let version = check_policy(
@@ -1428,6 +1470,7 @@ pub async fn right_grant(
             visibility: None,
             expires_at,
             namespace: Some(&ns),
+            passed,
         },
     )
     .await?;
@@ -1518,7 +1561,7 @@ pub async fn right_revoke(
         .ok_or_else(not_granted)?;
     // Item 2.
     let st = settings(state).await;
-    rules::authority_to_revoke(&snap, &actor.did, &row, &resource, st.rules, t)?;
+    let passed = rules::revoke_admitted(&snap, &actor.did, &row, &resource, st.rules, t)?;
     // Item 3 — resignations too.
     match &scope {
         Scope::Repo(id) => {
@@ -1567,6 +1610,7 @@ pub async fn right_revoke(
             visibility: None,
             expires_at: None,
             namespace: snap.scope_namespace(&scope),
+            passed,
         },
     )
     .await?;

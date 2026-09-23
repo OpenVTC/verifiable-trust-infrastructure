@@ -73,8 +73,17 @@ service_grant if {
 	count(split(input.resource, "/")) == 2
 }
 
+# Anyone may give up a right they hold — an external signer included, even
+# though this policy never lets one be granted. Resigning only narrows.
+resignation if {
+	input.action == "right.revoke"
+	input.subject.did == input.actor.did
+}
+
 decision := {"effect": "allow"} if {
 	service_grant
+} else := {"effect": "allow"} if {
+	resignation
 } else := {"effect": "deny", "with": {
 	"code": "external-signers-not-enabled",
 	"reason": "this community gives git rights only to its members; upload a gitNamespace policy that admits external signers to change that",

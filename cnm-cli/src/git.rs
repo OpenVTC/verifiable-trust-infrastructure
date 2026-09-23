@@ -204,6 +204,13 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nA namespace always keeps an admin. Grant another first:\n  {bin} git grant \
              --subject <did> --right git.ns.admin --resource <namespace>"
         ),
+        "permissionDenied" if message.contains("elevated_requires_admin") => format!(
+            "\nUnder the default `[git_ns] elevated_requires_admin`, an owner cannot transfer, \
+             resign ownership, archive or name a co-owner without a community administrator: \
+             this VTC has no step-up it can ask a member for yet. Ask a community \
+             administrator to run it, e.g.:\n  {bin} git grant --subject <did> --right \
+             git.repo.own --resource <repository>"
+        ),
         "git-ns:escalation" | "permissionDenied" => format!(
             "\nThese commands are authorized by {did}'s own git rights, not by an admin \
              session. See what it holds:\n  {bin} git view"
@@ -254,6 +261,27 @@ fn show<T: serde::Serialize>(value: &T) -> CliResult {
     Ok(())
 }
 
+/// What binding a namespace makes public.
+fn bind_notice(forge: &str, owner: &str) -> String {
+    format!(
+        "Rights granted in {forge}/{owner} will be published to the community's Trust \
+         Registry: anyone can read who owns and who may commit to each repository."
+    )
+}
+
+/// Write `notice`, and only then send. The specification requires the public
+/// consequence of a bind be stated before the namespace is bound
+/// (`git-ns/namespace/bind`, *Request*), and a manual-mode bind is bound by the
+/// very request — so the notice cannot follow the response.
+async fn announce_then<T>(
+    out: &mut impl std::io::Write,
+    notice: &str,
+    send: impl std::future::Future<Output = T>,
+) -> T {
+    let _ = writeln!(out, "{DIM}{notice}{RESET}");
+    send.await
+}
+
 pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
     // Signed commands need no session; listings do.
     let anon = || VtcClient::anonymous(&target.base, &target.did);
@@ -265,10 +293,15 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                     ModeArg::Bridge => "bridge",
                     ModeArg::Manual => "manual",
                 };
-                let resp = anon()
-                    .git_ns_bind(&forge.to_lowercase(), &owner.to_lowercase(), mode, &key)
-                    .await
-                    .map_err(|e| explain(e, &did))?;
+                let (forge, owner) = (forge.to_lowercase(), owner.to_lowercase());
+                let client = anon();
+                let resp = announce_then(
+                    &mut std::io::stderr(),
+                    &bind_notice(&forge, &owner),
+                    client.git_ns_bind(&forge, &owner, mode, &key),
+                )
+                .await
+                .map_err(|e| explain(e, &did))?;
                 let v = serde_json::to_value(&resp)?;
                 if is_json_output() {
                     return Ok(print_json(&v)?);
@@ -283,10 +316,6 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 if let Some(url) = v.pointer("/next/url").and_then(Value::as_str) {
                     println!("Prove control of the owner on the forge to finish binding:\n  {url}");
                 }
-                println!(
-                    "{DIM}Rights granted in this namespace are published to the Trust Registry: \
-                     anyone can read who owns and who may commit to each repository.{RESET}"
-                );
                 Ok(())
             }
             NamespaceCommands::Unbind { namespace } => {
@@ -472,6 +501,50 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_elevated_refusal_says_a_community_administrator_is_needed() {
+        let g = guidance(
+            "permissionDenied",
+            "repo.transfer is a elevated action … (`[git_ns] elevated_requires_admin`)",
+            "did:key:z",
+        );
+        assert!(g.contains("without a community administrator"), "{g}");
+    }
+
+    #[tokio::test]
+    async fn the_bind_notice_is_written_before_the_request_is_sent() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Probe<'a> {
+            sent: &'a AtomicBool,
+            text: Vec<u8>,
+        }
+        impl std::io::Write for Probe<'_> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                assert!(
+                    !self.sent.load(Ordering::SeqCst),
+                    "the notice came after the request"
+                );
+                self.text.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sent = AtomicBool::new(false);
+        let mut out = Probe {
+            sent: &sent,
+            text: Vec::new(),
+        };
+        announce_then(&mut out, &bind_notice("github.com", "acme"), async {
+            sent.store(true, Ordering::SeqCst)
+        })
+        .await;
+        assert!(sent.load(Ordering::SeqCst));
+        let text = String::from_utf8(out.text).unwrap();
+        assert!(text.contains("github.com/acme will be published"), "{text}");
+    }
 
     #[test]
     fn a_last_owner_refusal_names_the_grant_that_resolves_it() {

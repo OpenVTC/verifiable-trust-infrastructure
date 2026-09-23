@@ -803,6 +803,60 @@ impl TrustRegistryClient for MessagingRegistryClient {
         }
     }
 
+    async fn list_trust_records(&self, action: &str) -> Result<Vec<Value>, RegistryError> {
+        let authority = self.authority()?.to_string();
+        match self.select().await? {
+            Protocol::Rest => Err(crate::registry::drift::unsupported()),
+            protocol => {
+                let mut out = Vec::new();
+                let mut cursor: Option<String> = None;
+                // Bounded as `list_records` is, and for the same reason: a
+                // partial enumeration compared against the mirror would
+                // invent missing tuples, so running out of pages is an error.
+                const MAX_PAGES: usize = 50;
+                const PAGE: u32 = 200;
+                for page in 0..MAX_PAGES {
+                    let mut payload = json!({
+                        "authority_id": authority,
+                        "action": action,
+                        "limit": PAGE,
+                    });
+                    if let Some(c) = &cursor {
+                        payload["cursor"] = json!(c);
+                    }
+                    let reply = self
+                        .round_trip(RECORD_QUERY, payload, false, protocol)
+                        .await?;
+                    classify(&reply, "registry/record/query")?;
+                    out.extend(
+                        reply
+                            .payload
+                            .get("records")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .cloned(),
+                    );
+                    cursor = reply
+                        .payload
+                        .get("nextCursor")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if cursor.is_none() {
+                        return Ok(out);
+                    }
+                    if page + 1 == MAX_PAGES {
+                        return Err(RegistryError::Transient(format!(
+                            "the trust registry is still paginating `{action}` after \
+                             {MAX_PAGES} pages; refusing to verify against a partial list"
+                        )));
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
     async fn delete_trust_record(
         &self,
         entity_id: &str,

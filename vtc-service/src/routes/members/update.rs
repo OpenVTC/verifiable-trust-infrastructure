@@ -147,6 +147,11 @@ pub(crate) async fn update_member_inner(
     let acl = get_acl_entry(&state.acl_ks, did)
         .await?
         .ok_or_else(not_found)?;
+    // Held across the read and the write of the member row, so a concurrent
+    // edit of another field (a forge-account link, say) is not lost to this
+    // whole-row write. Released before the role ceremony below, which does its
+    // own writes.
+    let edit_guard = crate::members::storage::edit_lock().await;
     let mut member = get_member(&state.members_ks, did)
         .await?
         .ok_or_else(not_found)?;
@@ -193,6 +198,7 @@ pub(crate) async fn update_member_inner(
     if !fields_changed.is_empty() {
         store_member(&state.members_ks, &member).await?;
     }
+    drop(edit_guard);
 
     // The label lives on the ACL row, not the member row. Written before any
     // role change so the ceremony (which re-reads the ACL entry) picks it up

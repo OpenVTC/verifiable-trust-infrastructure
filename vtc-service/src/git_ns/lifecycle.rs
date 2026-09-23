@@ -89,6 +89,7 @@ pub async fn sweep_departures(state: &AppState) -> Result<bool, AppError> {
     }
 
     let mut changed = false;
+    let vtc = vtc_actor(state).await;
     for (scope, set) in &snap.rights {
         let resource = snap
             .scope_resource(scope)
@@ -111,11 +112,17 @@ pub async fn sweep_departures(state: &AppState) -> Result<bool, AppError> {
             } else {
                 "granterDeparted"
             };
-            info!(subject = %row.subject, right = %row.right, %resource, why, "git right revoked");
+            info!(right = %row.right, %resource, why, "git right revoked");
+            // The community acted, not the member; and a departed member's
+            // DID does not go into a new audit row in plaintext, because the
+            // departure may be an erasure and this row would outlive it. The
+            // revocation of a *cascaded* grant names its (still present)
+            // subject as usual.
+            let target = (!departed.contains(&row.subject)).then_some(row.subject.as_str());
             audit(
                 state,
-                &row.subject,
-                Some(&row.subject),
+                &vtc,
+                target,
                 Audit {
                     action: "gitNs.right.revoked",
                     namespace: ns_id.as_deref(),
@@ -145,7 +152,7 @@ pub async fn sweep_departures(state: &AppState) -> Result<bool, AppError> {
             store::put_repo(&state.git_ns.ks, &repo).await?;
             audit(
                 state,
-                "did:key:vtc-git-ns",
+                &vtc,
                 None,
                 Audit {
                     action: "gitNs.repo.orphaned",
@@ -177,15 +184,28 @@ pub async fn sweep_departures(state: &AppState) -> Result<bool, AppError> {
     // *Consent/purpose*: "MUST delete it when the member leaves").
     for m in crate::members::list_members(&state.members_ks).await? {
         if m.removed_at.is_some() && m.extensions.get("forges").is_some_and(|f| !f.is_null()) {
-            let mut m = m;
-            if let Some(o) = m.extensions.as_object_mut() {
-                o.remove("forges");
-            }
-            crate::members::store_member(&state.members_ks, &m).await?;
+            crate::members::storage::edit_member(&state.members_ks, &m.did, |m| {
+                m.removed_at.is_some()
+                    && m.extensions
+                        .as_object_mut()
+                        .is_some_and(|o| o.remove("forges").is_some())
+            })
+            .await?;
             changed = true;
         }
     }
     Ok(changed)
+}
+
+/// The DID a sweep's audit rows name as actor: the community itself.
+async fn vtc_actor(state: &AppState) -> String {
+    state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .unwrap_or_else(|| "vtc-unknown".into())
 }
 
 /// Remove lapsed rows and record each lapse.
@@ -206,10 +226,12 @@ pub async fn sweep_expiry(state: &AppState) -> Result<bool, AppError> {
             .map(|r| r.to_string())
             .unwrap_or_default();
         let ns_id = snap.scope_namespace(scope).map(|n| n.id.clone());
+        let vtc = vtc_actor(state).await;
         for row in &lapsed {
+            // The community lapses the right; the granter may have left.
             audit(
                 state,
-                &row.granted_by,
+                &vtc,
                 Some(&row.subject),
                 Audit {
                     action: "gitNs.right.lapsed",

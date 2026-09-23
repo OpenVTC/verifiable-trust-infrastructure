@@ -63,6 +63,13 @@ destructive git-namespace action only from a community administrator, *in
 addition to* the rights model's own entitlement. It narrows; it never lets an
 administrator do something their git rights do not allow.
 
+What that means in practice, under the default: an owner **cannot** transfer
+ownership, give up their own ownership, archive, or name a co-owner without a
+community administrator doing it; nor can a namespace admin who is not one
+grant `repo.create`, `own` or `ns.admin`. Creating a repository, finishing
+one's own manual reservation with `adopt`, and granting or revoking
+`maintain` and `commit.sign` are normal-class and need no administrator.
+
 ## Policy
 
 `PolicyPurpose::GitNamespace`, wire name `gitNamespace`, package
@@ -95,21 +102,30 @@ repository, one TRQP authorization record, written with
   "record_type": "authorization", "authorized": true,
   "context": {
     "framework": "https://trusttasks.org/spec/git-ns/right/grant/0.1",
-    "grantedBy": "did:…:alice", "activeFrom": "…", "activeTo": "…",
+    "activeFrom": "…", "activeTo": "…",
     "impliedBy": "git.repo.own"
   }
 }
 ```
 
-A grant's `reason` is never published. The projector deletes what should no
+Who granted a right and why stay inside the VTC: neither `grantedBy` nor a
+grant's `reason` is ever published. The projector deletes what should no
 longer be published before it publishes anything new, and after a rename it
-publishes nothing for the new name until the old name's records are gone. The
-mirror of what is published is `git_ns_projection`; clearing it makes the
-next pass republish everything from the records.
+publishes nothing for the new name until the old name's records are gone; a
+repository cannot be created or adopted at a name whose previous records are
+still being withdrawn. The mirror of what is published is `git_ns_projection`
+(not backed up). At start and every 15 minutes the projector reads back what
+the registry holds under this authority for the five git actions, rebuilds
+the mirror from it for every resource inside a bound namespace, and
+reconciles — so a restore, a registry reset or a lost write converges.
 
 The v0.1 `[hooks.git-trust] grant_on_role` grants keep working through the
-hook relay. The admin surface lists them as `roleDerived`; they are managed
-only through configuration.
+hook relay, except where the configured resource lies inside a bound
+namespace: those are published by this projection as a second source (origin
+`roleDerived`), the relay leaves them alone, and the boot log warns of each
+such overlap. A key is withdrawn only when no source wants it. The admin
+surface lists them as `roleDerived`; they are managed only through
+configuration.
 
 ## Membership
 
@@ -135,7 +151,11 @@ forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
 
 ## Administrator surface
 
-Read-only, admin session. `view` also takes
+Read-only, admin session. `view`, `rights`, `rights/issued-by-departed`,
+`projection` and `accounts` show every member's rights, grant reasons and
+forge identities, so they need a community-wide administrator (an admin
+session not narrowed to a context); `activity` is for any session and shows
+only the namespaces the caller administers. `view` also takes
 `Trust-Task: https://trusttasks.org/spec/git-ns/view/0.1`, because its body is
 that task's response; the rest are console projections no specification
 defines, and carry no Trust-Task URL.
@@ -167,9 +187,13 @@ DIDComm/TSP). `cnm git …` signs them with the community profile's key.
 ## Limits
 
 - **No member step-up** — see *Consent classes* above.
-- **A namespace with no admin.** If the last `git.ns.admin` leaves or lapses,
-  the namespace is *headless*: nobody can grant in it. Recovery is to unbind
-  and bind again, which starts from no rights.
+- **A namespace with no admin.** The last-admin and last-owner invariants count
+  only records with no expiry, so an expiring `ns.admin` or `own` cannot be the
+  one that keeps them — lapse alone never leaves a namespace headless or a
+  repository ownerless. A departure still can: if the last permanent
+  `git.ns.admin` leaves the community, the namespace is *headless* and nobody
+  can grant in it. The only recovery today is to unbind and bind again, which
+  starts from no rights; a task to re-seat an admin is a specification gap.
 - **No binding credential.** `git-ns/account/link` says the VTC SHOULD issue a
   credential attesting a member's forge account; this VTC records the link on
   the member and issues none yet.

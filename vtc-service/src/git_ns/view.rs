@@ -66,6 +66,12 @@ pub fn build(snap: &Snapshot, viewer: Viewer<'_>, filter: Option<&Resource>) -> 
         {
             continue;
         }
+        // A repository left behind by an unbound namespace is governed by
+        // nobody; a member has no namespace to see it through. The console
+        // still lists it, for an administrator deciding whether to bind again.
+        if matches!(viewer, Viewer::Member(_)) && snap.namespace(&repo.namespace_id).is_none() {
+            continue;
+        }
         if repo.state == RepoState::Unmanaged {
             let admin = match &viewer {
                 Viewer::Administrator => true,
