@@ -537,9 +537,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.26.19"
+version = "0.26.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5406cb8a30e968afe08f03fa32d4677d6e26e830b85c8be83545932b94cc1620"
+checksum = "0c7d98b2852ffae0fff60be37212bdb3e0fcff86853b716c7a99e98ed7cf5f0a"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -558,6 +558,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "futures-util",
+ "hyper",
  "rand 0.10.2",
  "regex",
  "reqwest",
