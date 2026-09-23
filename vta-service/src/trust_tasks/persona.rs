@@ -98,6 +98,7 @@ pub enum Reach {
 pub const REACH: &[(&str, Reach)] = &[
     // ── Agent-scoped: the holder's own, above every context ───────────────
     (uris::TASK_PERSONA_ATTRIBUTE_PUT_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_ATTRIBUTE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, Reach::Holder),
     (uris::TASK_PERSONA_ATTRIBUTE_DELETE_1_0, Reach::Holder),
     (
@@ -123,11 +124,16 @@ pub const REACH: &[(&str, Reach)] = &[
     (uris::TASK_PERSONA_PROFILE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_LIST_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_DELETE_1_0, Reach::Holder),
-    // A facet states which of the holder's identities are, to them, parts of
+    // A world states which of the holder's identities are, to them, parts of
     // one life — the linkage map the whole family exists to keep from being
     // assembled by anyone else, written down by the only person entitled to
     // write it. A context-scoped caller reading one would learn how the holder
     // arranges every *other* context.
+    (uris::TASK_PERSONA_WORLD_PUT_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_WORLD_LIST_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_WORLD_DELETE_1_0, Reach::Holder),
+    // The retired `persona/facet/*` spellings, same reach as the tasks that
+    // supersede them. They go when the alias window closes.
     (uris::TASK_PERSONA_FACET_PUT_1_0, Reach::Holder),
     (uris::TASK_PERSONA_FACET_LIST_1_0, Reach::Holder),
     (uris::TASK_PERSONA_FACET_DELETE_1_0, Reach::Holder),
@@ -141,6 +147,7 @@ pub const REACH: &[(&str, Reach)] = &[
     // Returns the linkage map between the holder's identities — the artifact
     // the whole family exists to keep from being assembled by anyone else.
     (uris::TASK_PERSONA_CORRELATION_ANALYZE_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_CORRELATION_ANALYZE_1_1, Reach::Holder),
     // ── Context-scoped: confined to the caller's own context ──────────────
     // Thin by construction: whether a profile is bound, its label, a claim
     // count. Never contents.
@@ -806,6 +813,102 @@ pub(super) async fn handle_attribute_put(
             .take(256)
             .map(|h| json!({ "profileId": h.profile_id, "pinVersion": h.pin_version }))
             .collect();
+    }
+    success_response(&doc, body)
+}
+
+/// `persona/attribute/get/1.0` — one attribute, by identifier.
+///
+/// The narrow read. Its absence is why a client wanting one value called
+/// `attribute/list` with a type prefix and filtered the answer: revealing one
+/// email address decrypted every email address the holder has, and the audit
+/// trail recorded a listing of the pool rather than a decision about one fact.
+pub(super) async fn handle_attribute_get(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::attribute::get::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_GET_1_0, None).await {
+        return reject(&doc, e);
+    }
+
+    let attribute_id = req.attribute_id.to_string();
+    let visibility = ValueVisibility::from_flags(req.include_value, req.include_sensitive);
+    let read = match store(state)
+        .get_attribute(&attribute_id, req.version.map(|v| v.0.get()), visibility)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return reject(&doc, e),
+    };
+
+    let (attribute, withheld) = match read {
+        vta_persona::AttributeRead::Found {
+            attribute,
+            withheld,
+        } => (attribute, withheld),
+        vta_persona::AttributeRead::NotFound => {
+            return reject_with_code(
+                &doc,
+                ext(&slug_from_doc(&doc), "notFound"),
+                "no attribute at that identifier",
+                None,
+            );
+        }
+        // Distinct from `notFound` on purpose: the attribute is there and its
+        // current value is readable. Answering a question about the past with
+        // the present would be the one thing `version` exists to prevent.
+        vta_persona::AttributeRead::RetainedGone => {
+            return reject_with_code(
+                &doc,
+                ext(&slug_from_doc(&doc), "versionPurged"),
+                "that version is no longer held — the holder purged it",
+                Some(json!({ "attributeId": attribute_id })),
+            );
+        }
+    };
+
+    // Audited like a listing, and for the same reason: this reads the holder's
+    // identity. The row says whether plaintext left, which is the question a
+    // holder reviewing the trail actually has — and never the value.
+    let detail = format!(
+        "read {} at version {}; value {}",
+        attribute.r#type,
+        attribute.version,
+        match (attribute.value.is_some(), withheld) {
+            (true, _) => "returned",
+            (false, true) => "withheld as sensitive",
+            (false, false) => "not requested",
+        }
+    );
+    audit_persona(
+        state,
+        "persona.attribute.get",
+        auth,
+        Some(&attribute_id),
+        None,
+        Some(&detail),
+    )
+    .await;
+
+    let mut body = json!({ "attribute": attribute });
+    if withheld {
+        body["valueWithheld"] = json!(true);
+    }
+    // Names versions, never their values — what a holder needs to see before
+    // deciding to purge, which otherwise asks them to act blind.
+    let retained: Vec<u64> = attribute
+        .retained_versions
+        .iter()
+        .map(|r| r.version)
+        .chain(std::iter::once(attribute.version))
+        .collect();
+    if !retained.is_empty() {
+        body["retainedVersions"] = json!(retained);
     }
     success_response(&doc, body)
 }
@@ -2487,7 +2590,49 @@ pub(super) async fn handle_correlation_analyze(
     findings.truncate(256);
 
     audit_persona(state, "persona.correlation.analyze", auth, None, None, None).await;
+    // 1.0 and 1.1 differ in three member names and nothing else, so one
+    // computation answers both and the response takes the words of whichever
+    // was asked for. 1.0 is retired; when its window closes, this branch and
+    // `facet_spelling` go with it.
+    let findings = if doc.type_uri.to_string().ends_with("/1.0") {
+        findings
+            .iter()
+            .map(|f| facet_spelling(serde_json::to_value(f).unwrap_or_else(|_| json!({}))))
+            .collect::<Vec<Value>>()
+    } else {
+        findings
+            .iter()
+            .map(|f| serde_json::to_value(f).unwrap_or_else(|_| json!({})))
+            .collect()
+    };
     success_response(&doc, json!({ "findings": findings }))
+}
+
+/// One finding in the retired `analyze/1.0` words.
+///
+/// `worldId`, `worldIds` and `crossesWorlds` were `facetId`, `facetIds` and
+/// `crossesFacets` — the whole of the difference between the two versions.
+/// Applied to the rendered value rather than kept as a second record type: a
+/// parallel struct would be a second definition of one shape, free to drift
+/// from the generated one without anything noticing.
+fn facet_spelling(mut finding: Value) -> Value {
+    fn rename(obj: &mut serde_json::Map<String, Value>, from: &str, to: &str) {
+        if let Some(v) = obj.remove(from) {
+            obj.insert(to.to_string(), v);
+        }
+    }
+    if let Some(obj) = finding.as_object_mut() {
+        rename(obj, "worldIds", "facetIds");
+        rename(obj, "crossesWorlds", "crossesFacets");
+        if let Some(shared) = obj.get_mut("sharedWith").and_then(Value::as_array_mut) {
+            for s in shared {
+                if let Some(o) = s.as_object_mut() {
+                    rename(o, "worldId", "facetId");
+                }
+            }
+        }
+    }
+    finding
 }
 
 pub(super) async fn handle_renderers_list(
@@ -3248,18 +3393,18 @@ pub(super) async fn handle_disclosure_present(
 // Tests
 // ─────────────────────────────────────────────────────────────────────────
 
-// ── Facets: the holder's own arrangement of their own identity ──────────────
+// ── Worlds: the holder's own arrangement of their own identity ──────────────
 
-pub(super) async fn handle_facet_put(
+pub(super) async fn handle_world_put(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: spec::facet::put::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::world::put::v1_0::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_FACET_PUT_1_0, None).await {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_WORLD_PUT_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -3277,7 +3422,7 @@ pub(super) async fn handle_facet_put(
             Some(json!({ "colour": req.colour.to_string() })),
         );
     };
-    let mut facet = vta_persona::new_facet(
+    let mut world = vta_persona::new_world(
         req.name.to_string(),
         colour,
         req.icon.as_ref().map(|i| i.to_string()),
@@ -3287,17 +3432,160 @@ pub(super) async fn handle_facet_put(
     // A supplied id addresses an existing record; an absent one keeps the
     // minted ULID, which is what makes a create idempotent under retry only
     // when the producer chose the id itself.
-    if let Some(id) = req.facet_id.as_ref() {
-        facet.facet_id = id.to_string();
+    if let Some(id) = req.world_id.as_ref() {
+        world.world_id = id.to_string();
     }
-    let facet_id = facet.facet_id.clone();
+    let world_id = world.world_id.clone();
 
     // The exclusivity refusal is its own extended code rather than a validation
     // string, because the details are what make it actionable: told only that
     // the write failed, a consumer can do nothing but send the holder off to
     // find where the face already is.
     let clash = match s
-        .placement_conflicts(&facet.face_ids, Some(&facet_id))
+        .placement_conflicts(&world.face_ids, Some(&world_id))
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => return reject(&doc, e),
+    };
+    if !clash.placed.is_empty() {
+        return reject_with_code(
+            &doc,
+            ext(&slug_from_doc(&doc), "faceAlreadyPlaced"),
+            "one or more faces already belong to another world",
+            Some(json!({ "placed": clash.placed })),
+        );
+    }
+
+    let written = match s
+        .put_world(world, req.expected_version.map(u64::from))
+        .await
+    {
+        Ok(w) => w,
+        Err(e) => return reject(&doc, e),
+    };
+    // The name is the most revealing member in the record and never reaches an
+    // audit line: "Work" discloses nothing and "the divorce" discloses a great
+    // deal, and a holder naming a part of their life is not thinking about logs.
+    audit_persona(state, "persona.world.put", auth, None, None, None).await;
+    success_response(
+        &doc,
+        json!({
+            "worldId": world_id,
+            "version": written.version,
+            "created": written.created,
+            "updatedAt": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+}
+
+pub(super) async fn handle_world_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let _req: spec::world::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_WORLD_LIST_1_0, None).await {
+        return reject(&doc, e);
+    }
+    let worlds = match store(state).list_worlds().await {
+        Ok(f) => f,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.world.list", auth, None, None, None).await;
+    // No `nextCursor`: this maintainer returns every world in one page. The
+    // member is absent rather than null, which is what says the listing is
+    // complete — a consumer following the cursor sees exactly one page.
+    success_response(&doc, json!({ "worlds": worlds }))
+}
+
+pub(super) async fn handle_world_delete(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::world::delete::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_WORLD_DELETE_1_0, None).await {
+        return reject(&doc, e);
+    }
+    // Touches no profile and no attribute. There is no cascading form of this
+    // call because there is no cascading form of the idea: a world is an
+    // arrangement, not a container.
+    let (existed, released) = match store(state)
+        .delete_world(
+            &req.world_id.to_string(),
+            req.expected_version.map(u64::from),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.world.delete", auth, None, None, None).await;
+    success_response(
+        &doc,
+        json!({ "existed": existed, "releasedFaces": released }),
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// The retired `persona/facet/*` spellings
+// ─────────────────────────────────────────────────────────────────────────
+//
+// One release of grace for clients that have not moved. The specifications are
+// retired with `supersededBy`, not deleted, so a document already issued
+// against one still validates and refusing it here would break a caller for a
+// rename that costs it nothing.
+//
+// Written out rather than threaded through the handlers above as a `spelling`
+// parameter, and that is deliberate: these are temporary, and a parameter
+// would leave the old word in the live path after the window closes. This
+// whole section is one `git rm` when it does — together with the three URIs in
+// `REACH`, the three dispatch arms, and the three constants in `vta-sdk`.
+//
+// The store is the same; only the member names differ (`facetId` for
+// `worldId`, `facets` for `worlds`), which is the entire content of the rename.
+
+/// `persona/facet/put/1.0` — retired; see [`handle_world_put`].
+pub(super) async fn handle_facet_put(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::facet::put::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_FACET_PUT_1_0, None).await {
+        return reject(&doc, e);
+    }
+    let Some(colour) = facet_colour_of(&req.colour) else {
+        return reject_with_code(
+            &doc,
+            ext(&slug_from_doc(&doc), "unsupportedColour"),
+            "this agent does not know that colour",
+            Some(json!({ "colour": req.colour.to_string() })),
+        );
+    };
+    let mut world = vta_persona::new_world(
+        req.name.to_string(),
+        colour,
+        req.icon.as_ref().map(|i| i.to_string()),
+        req.face_ids.iter().map(|u| u.to_string()).collect(),
+        req.attribute_ids.iter().map(|u| u.to_string()).collect(),
+    );
+    if let Some(id) = req.facet_id.as_ref() {
+        world.world_id = id.to_string();
+    }
+    let world_id = world.world_id.clone();
+    let clash = match store(state)
+        .placement_conflicts(&world.face_ids, Some(&world_id))
         .await
     {
         Ok(c) => c,
@@ -3311,22 +3599,18 @@ pub(super) async fn handle_facet_put(
             Some(json!({ "placed": clash.placed })),
         );
     }
-
-    let written = match s
-        .put_facet(facet, req.expected_version.map(u64::from))
+    let written = match store(state)
+        .put_world(world, req.expected_version.map(u64::from))
         .await
     {
         Ok(w) => w,
         Err(e) => return reject(&doc, e),
     };
-    // The name is the most revealing member in the record and never reaches an
-    // audit line: "Work" discloses nothing and "the divorce" discloses a great
-    // deal, and a holder naming a part of their life is not thinking about logs.
-    audit_persona(state, "persona.facet.put", auth, None, None, None).await;
+    audit_persona(state, "persona.world.put", auth, None, None, None).await;
     success_response(
         &doc,
         json!({
-            "facetId": facet_id,
+            "facetId": world_id,
             "version": written.version,
             "created": written.created,
             "updatedAt": chrono::Utc::now().to_rfc3339(),
@@ -3334,6 +3618,25 @@ pub(super) async fn handle_facet_put(
     )
 }
 
+/// The retired spelling's colour enum to the store's. Same eight values; a
+/// separate function because it is a different generated type.
+fn facet_colour_of(c: &spec::facet::put::v1_0::FacetColour) -> Option<vta_persona::WorldColour> {
+    use spec::facet::put::v1_0::FacetColour as F;
+    use vta_persona::WorldColour as S;
+    Some(match c {
+        F::Slate => S::Slate,
+        F::Indigo => S::Indigo,
+        F::Teal => S::Teal,
+        F::Moss => S::Moss,
+        F::Sand => S::Sand,
+        F::Clay => S::Clay,
+        F::Rose => S::Rose,
+        F::Plum => S::Plum,
+        _ => return None,
+    })
+}
+
+/// `persona/facet/list/1.0` — retired; see [`handle_world_list`].
 pub(super) async fn handle_facet_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -3346,17 +3649,27 @@ pub(super) async fn handle_facet_list(
     if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_FACET_LIST_1_0, None).await {
         return reject(&doc, e);
     }
-    let facets = match store(state).list_facets().await {
+    let worlds = match store(state).list_worlds().await {
         Ok(f) => f,
         Err(e) => return reject(&doc, e),
     };
-    audit_persona(state, "persona.facet.list", auth, None, None, None).await;
-    // No `nextCursor`: this maintainer returns every facet in one page. The
-    // member is absent rather than null, which is what says the listing is
-    // complete — a consumer following the cursor sees exactly one page.
+    audit_persona(state, "persona.world.list", auth, None, None, None).await;
+    let facets: Vec<Value> = worlds
+        .iter()
+        .map(|w| {
+            let mut v = serde_json::to_value(w).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = v.as_object_mut()
+                && let Some(id) = obj.remove("worldId")
+            {
+                obj.insert("facetId".to_string(), id);
+            }
+            v
+        })
+        .collect();
     success_response(&doc, json!({ "facets": facets }))
 }
 
+/// `persona/facet/delete/1.0` — retired; see [`handle_world_delete`].
 pub(super) async fn handle_facet_delete(
     state: &AppState,
     auth: &AuthClaims,
@@ -3369,11 +3682,8 @@ pub(super) async fn handle_facet_delete(
     if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_FACET_DELETE_1_0, None).await {
         return reject(&doc, e);
     }
-    // Touches no profile and no attribute. There is no cascading form of this
-    // call because there is no cascading form of the idea: a facet is an
-    // arrangement, not a container.
     let (existed, released) = match store(state)
-        .delete_facet(
+        .delete_world(
             &req.facet_id.to_string(),
             req.expected_version.map(u64::from),
         )
@@ -3382,7 +3692,7 @@ pub(super) async fn handle_facet_delete(
         Ok(r) => r,
         Err(e) => return reject(&doc, e),
     };
-    audit_persona(state, "persona.facet.delete", auth, None, None, None).await;
+    audit_persona(state, "persona.world.delete", auth, None, None, None).await;
     success_response(
         &doc,
         json!({ "existed": existed, "releasedFaces": released }),
@@ -3395,7 +3705,7 @@ pub(super) async fn handle_facet_delete(
 /// refuses the document.** The generated enum is `#[non_exhaustive]`, so the
 /// compiler cannot make this match exhaustive across the crate boundary and a
 /// wildcard arm is mandatory — which means the choice is what the wildcard
-/// *does*. Mapping an unknown colour to a default would be a facet silently
+/// *does*. Mapping an unknown colour to a default would be a world silently
 /// changing colour: a small thing the holder cannot explain and cannot fix,
 /// arriving with no error anywhere. Refusing says which member this build did
 /// not understand.
@@ -3403,9 +3713,9 @@ pub(super) async fn handle_facet_delete(
 /// Unreachable from the wire today — serde rejects an unknown string before the
 /// payload parses — but reachable the moment `trust-tasks-rs` is bumped to a
 /// version declaring a ninth colour, which is exactly when it should be loud.
-fn colour_of(c: &spec::facet::put::v1_0::FacetColour) -> Option<vta_persona::FacetColour> {
-    use spec::facet::put::v1_0::FacetColour as W;
-    use vta_persona::FacetColour as S;
+fn colour_of(c: &spec::world::put::v1_0::WorldColour) -> Option<vta_persona::WorldColour> {
+    use spec::world::put::v1_0::WorldColour as W;
+    use vta_persona::WorldColour as S;
     Some(match c {
         W::Slate => S::Slate,
         W::Indigo => S::Indigo,

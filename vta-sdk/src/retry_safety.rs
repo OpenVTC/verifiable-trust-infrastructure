@@ -587,6 +587,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::Keyed,
     ),
     (
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_GET_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
         trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0,
         RetrySafety::ReadOnly,
     ),
@@ -648,6 +652,17 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0,
         RetrySafety::RetrySafe,
     ),
+    // The world tasks and the `facet` spellings they supersede classify alike:
+    // they are the same operation under two names for one release.
+    (trust_tasks::TASK_PERSONA_WORLD_PUT_1_0, RetrySafety::Keyed),
+    (
+        trust_tasks::TASK_PERSONA_WORLD_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_WORLD_DELETE_1_0,
+        RetrySafety::RetrySafe,
+    ),
     (trust_tasks::TASK_PERSONA_FACET_PUT_1_0, RetrySafety::Keyed),
     (
         trust_tasks::TASK_PERSONA_FACET_LIST_1_0,
@@ -699,6 +714,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     ),
     (
         trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_1,
         RetrySafety::ReadOnly,
     ),
     (

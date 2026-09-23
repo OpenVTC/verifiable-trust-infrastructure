@@ -26,20 +26,24 @@ pub fn profile_key(profile_id: &str) -> String {
 
 pub const PROFILE_PREFIX: &str = "pp:";
 
-/// One facet — the holder's name for a part of their life, and what belongs
+/// One world — the holder's name for a part of their life, and what belongs
 /// to it.
 ///
-/// **Agent-scoped, and that is the whole of its security story.** A facet says
+/// **Agent-scoped, and that is the whole of its security story.** A world says
 /// which of the holder's identities they consider parts of one life, which is
 /// precisely the join multiple personas exist to deny a verifier. A context
 /// that could address one would learn how the holder arranges every *other*
 /// context.
 #[must_use]
-pub fn facet_key(facet_id: &str) -> String {
-    format!("pf:{facet_id}")
+/// The stored prefix stays `pf:` although the word is now "world".
+///
+/// It is an opaque two-letter key prefix, not the noun — renaming it would
+/// orphan every world already stored, for a string no operator ever reads.
+pub fn world_key(world_id: &str) -> String {
+    format!("pf:{world_id}")
 }
 
-pub const FACET_PREFIX: &str = "pf:";
+pub const WORLD_PREFIX: &str = "pf:";
 
 /// Correlation index, keyed by a keyed hash of the value so that exact-match
 /// lookup works with no plaintext index over the holder's personal data.

@@ -2095,10 +2095,25 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_LIST_1_0 => persona::handle_profile_list
         [ None Metadata false ],
-    // A facet arranges records; it never touches one. `put` is Mutating because
+    // A world arranges records; it never touches one. `put` is Mutating because
     // it writes a record of its own, and `delete` Destructive for the same
     // reason — neither reaches a profile or an attribute, which is the property
-    // `deleting_a_facet_deletes_nothing_it_named` pins in vta-persona.
+    // `deleting_a_world_deletes_nothing_it_named` pins in vta-persona.
+    vta_sdk::trust_tasks::TASK_PERSONA_WORLD_PUT_1_0 => persona::handle_world_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_WORLD_LIST_1_0 => persona::handle_world_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_WORLD_DELETE_1_0 => persona::handle_world_delete
+        [ Destructive None false ],
+    // The retired `persona/facet/*` spellings, routed to the same handlers for
+    // one release. The specifications are retired rather than deleted
+    // (`supersededBy`), so a document already issued against one still
+    // validates; refusing it here would break a client that has not moved yet
+    // for a rename that costs it nothing. The payloads are identical but for
+    // `facetId`, which the handlers read through the generated type of
+    // whichever URI arrived.
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_GET_1_0 => persona::handle_attribute_get
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_FACET_PUT_1_0 => persona::handle_facet_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_FACET_LIST_1_0 => persona::handle_facet_list
@@ -2139,6 +2154,10 @@ dispatch_table! {
     // The only task in the family that releases personal data to a third party.
     vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_PRESENT_1_0 => persona::handle_disclosure_present
         [ Mutating Secret true ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_1 => persona::handle_correlation_analyze
+        [ None Metadata false ],
+    // 1.0, retired: the same handler, answering in the words that version
+    // names its members by.
     vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0 => persona::handle_correlation_analyze
         [ None Metadata false ],
     // Describes the agent's capabilities, not the holder. Discloses nothing.

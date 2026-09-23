@@ -3364,6 +3364,87 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 parses::<specs::persona::profile::list::v1_0::Response>,
             ),
         ),
+        // The `world` spellings that supersede `facet`. Witnessed separately
+        // rather than assumed identical: the rename is exactly the kind of
+        // change that looks like nothing and reaches the wire.
+        (
+            u::TASK_PERSONA_WORLD_PUT_1_0,
+            (
+                json!({
+                    "name": "Work",
+                    "colour": "teal",
+                    "icon": "\u{1F4BC}",
+                    "faceIds": [PROFILE],
+                    "attributeIds": [ATTR],
+                    "expectedVersion": 0
+                }),
+                parses::<specs::persona::world::put::v1_0::Payload>,
+                validates::<specs::persona::world::put::v1_0::Payload>,
+            ),
+            (
+                json!({ "worldId": FACET, "version": 2, "created": true, "updatedAt": NOW }),
+                parses::<specs::persona::world::put::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_WORLD_LIST_1_0,
+            (
+                json!({}),
+                parses::<specs::persona::world::list::v1_0::Payload>,
+                validates::<specs::persona::world::list::v1_0::Payload>,
+            ),
+            (
+                // Empty membership lists, because that is the shape a world
+                // takes before it is filled — and the shape that used to be
+                // serialised without the members its own schema requires.
+                json!({ "worlds": [{
+                    "worldId": FACET, "name": "Work", "colour": "teal",
+                    "faceIds": [], "attributeIds": [],
+                    "version": 2, "updatedAt": NOW
+                }]}),
+                parses::<specs::persona::world::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_WORLD_DELETE_1_0,
+            (
+                json!({ "worldId": FACET }),
+                parses::<specs::persona::world::delete::v1_0::Payload>,
+                validates::<specs::persona::world::delete::v1_0::Payload>,
+            ),
+            (
+                json!({ "existed": true, "releasedFaces": 1 }),
+                parses::<specs::persona::world::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_ATTRIBUTE_GET_1_0,
+            (
+                // Every optional member present: the two visibility flags and
+                // a retained version, which is the request this task exists
+                // for rather than the bare read.
+                json!({
+                    "attributeId": ATTR,
+                    "includeValue": true,
+                    "includeSensitive": true,
+                    "version": 2
+                }),
+                parses::<specs::persona::attribute::get::v1_0::Payload>,
+                validates::<specs::persona::attribute::get::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "attribute": {
+                        "attributeId": ATTR, "type": "email.personal",
+                        "valueType": "string", "value": "ada@example.org",
+                        "provenance": { "kind": "selfAsserted" },
+                        "version": 2, "updatedAt": NOW
+                    },
+                    "retainedVersions": [1, 2]
+                }),
+                parses::<specs::persona::attribute::get::v1_0::Response>,
+            ),
+        ),
         (
             u::TASK_PERSONA_FACET_PUT_1_0,
             (
@@ -3634,6 +3715,32 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                                  "correlateDeliberately", "proceedAndRecord"]
                 }]}),
                 parses::<specs::persona::correlation::analyze::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CORRELATION_ANALYZE_1_1,
+            (
+                json!({ "candidate": {
+                    "type": "phone.mobile", "valueType": "string", "value": "+00 0000 0000"
+                }}),
+                parses::<specs::persona::correlation::analyze::v1_1::Payload>,
+                validates::<specs::persona::correlation::analyze::v1_1::Payload>,
+            ),
+            (
+                // The three renamed members, exercised for the same reason the
+                // 1.0 witness exercises their old spellings: the dispatch spine
+                // validates outgoing responses, so a member the schema has not
+                // caught up with is a 500 on a call that fully succeeded.
+                json!({ "findings": [{
+                    "attributeId": ATTR, "severity": "high",
+                    "why": "this value is already presented by another profile",
+                    "crossesWorlds": true,
+                    "worldIds": [FACET],
+                    "sharedWith": [{ "profileId": PROFILE, "worldId": FACET }],
+                    "remedies": ["useDifferentValue", "reissueCredentialToThisDid",
+                                 "correlateDeliberately", "proceedAndRecord"]
+                }]}),
+                parses::<specs::persona::correlation::analyze::v1_1::Response>,
             ),
         ),
         (
