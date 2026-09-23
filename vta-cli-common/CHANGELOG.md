@@ -2,6 +2,33 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.22.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.22.0...vta-cli-common-v0.22.1) — 2026-09-23
+
+
+### Added
+
+- **cli**: Pnm reaches worlds and the claim-type registry ([#1663](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1663))
+
+`persona/facet/{put,list,delete}` and `persona/claim-types/list` had no
+  method on `VtaClient` at all, so `pnm` could not reach them even though
+  both graphical clients do. The SDK gains the four, built from the
+  generated specification types rather than hand-written bodies, and
+  decoding their responses into the generated `Response` — a shape the
+  specification does not describe is then an error at the call rather than
+  a `None` three screens later.
+
+  `pnm persona world {list,put,delete}` and `pnm persona claim-types`
+  follow. Both id lists on a put replace: the specification is explicit
+  that a member whose absence meant "keep" would make emptying a world
+  impossible, so the CLI passes them through as given and says so.
+
+  The colour is a ValueEnum whose mapping to the specification's tokens is
+  written out rather than derived, pinned from both sides — `pnm-cli` does
+  not depend on the generated types and `vta-cli-common` does not know the
+  CLI's enum, so the pair of tests is what holds the wire value end to end.
+
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.21.0...vta-cli-common-v0.22.0) — 2026-09-22
 
 

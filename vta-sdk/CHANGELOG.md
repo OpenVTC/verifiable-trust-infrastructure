@@ -2,6 +2,105 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.50.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.49.0...vta-sdk-v0.50.0) — 2026-09-23
+
+
+### Added
+
+- **vtc**: A by-DID vetter status lookup ([#1671](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1671))
+
+The vetter listing omits a vetter with no published profile and one whose
+  grant was revoked in exactly the same way: both are simply absent. An
+  applicant whose vetter went quiet could not tell which had happened, and a
+  vetter could not check their own standing at all (Keyring VTI-Q3, #1651).
+
+  `vtc/vetting/vetters/show/0.1` answers by DID with `live`, `revoked`,
+  `expired` or `none`, the grant's id, the timestamp that ended or will end it,
+  and — for a live grant — whether the vetter is listed. That last member is
+  what separates "unlisted by choice" from "not a vetter".
+
+  Served over `/v1/trust-tasks`, DIDComm and TSP for applicants and members,
+  and as `POST /v1/vetting/vetters/show` for the console. `vtc-client` gains
+  `show_vetter`.
+
+  The live case goes through the same `live_grant` lookup the listing and every
+  grant check use, so "live here" cannot drift from "live there". Where a grant
+  is both revoked and expired the answer is `revoked`: the community
+  withdrawing trust and a grant lapsing are different statements, and a vetter
+  told `expired` would reasonably ask for a renewal.
+
+  `CheckShape` on the response enforces what one object's schema cannot — which
+  members belong to which status. A response saying `revoked` while carrying
+  `validUntil` and no `revokedAt` reads as an expiry to a client branching on
+  members rather than status.
+
+  Requires trust-tasks-rs 0.21.21, which publishes the spec merged as
+  trustoverip/dtgwg-trust-tasks-tf#603.
+
+- **cli**: Pnm reaches worlds and the claim-type registry ([#1663](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1663))
+
+`persona/facet/{put,list,delete}` and `persona/claim-types/list` had no
+  method on `VtaClient` at all, so `pnm` could not reach them even though
+  both graphical clients do. The SDK gains the four, built from the
+  generated specification types rather than hand-written bodies, and
+  decoding their responses into the generated `Response` — a shape the
+  specification does not describe is then an error at the call rather than
+  a `None` three screens later.
+
+  `pnm persona world {list,put,delete}` and `pnm persona claim-types`
+  follow. Both id lists on a put replace: the specification is explicit
+  that a member whose absence meant "keep" would make emptying a world
+  impossible, so the CLI passes them through as given and says so.
+
+  The colour is a ValueEnum whose mapping to the specification's tokens is
+  written out rather than derived, pinned from both sides — `pnm-cli` does
+  not depend on the generated types and `vta-cli-common` does not know the
+  CLI's enum, so the pair of tests is what holds the wire value end to end.
+
+
+
+### Fixed
+
+- Use shared_tdk_config for unified DID resolution ([#1661](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1661))
+
+
+### Security
+
+- **persona**: The correlation answer on a local write is the holder's ([#1676](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1676))
+
+Two defects in one task, found while writing a test for the first.
+
+  **The oracle.** `persona/local/profile/put` is context-scoped, and its
+  response carried `correlation.matchesPoolValue` — a yes/no on "does the
+  holder hold this exact value anywhere", computed from the agent-wide
+  index. A caller that can write is a caller that can guess, so any
+  application authorized in one context had an unbounded oracle over the
+  whole pool: one guess per write, each answer confirming or eliminating
+  one. No value crosses the boundary and none needs to — for a name, an
+  address or a date of birth, confirmation is disclosure.
+
+  The member is now told only to a caller that passes the holder test, and
+  omitted rather than softened: a coarser signal is still an oracle, only a
+  slower one. The holder still learns it, through the audit row (which
+  records it whoever asked) and `persona/correlation/analyze`. Conditional
+  by the specification too, as of dtgwg-trust-tasks-tf#609.
+
+  **The unsendable payload.** Writing that test showed the agent refusing
+  its own SDK's request: `LocalProfileEntry` reused the pool's
+  `InlineValue`, whose `provenance` is required, and the schema has no such
+  member for a context-local entry and sets `additionalProperties: false`.
+  So every local-profile write this SDK could build was rejected —
+  `persona_local_profile_put` could not express a conforming payload at
+  all. `LocalInlineValue` is that type without the member, which is the
+  boundary rather than an omission: a credentialBacked provenance names a
+  credentialId and a claimPath, and a context has nowhere to put either.
+
+  The rule against hand-writing a payload type for a task that has a
+  generated module exists for exactly this; the generated type never had
+  the member.
+
+
+
 ## [0.49.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.48.0...vta-sdk-v0.49.0) — 2026-09-22
 
 

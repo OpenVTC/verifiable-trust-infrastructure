@@ -140,7 +140,7 @@ vti-common = { path = "../vti-common", version = "0.23", features = [
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.4" }
-vta-sdk = { path = "../vta-sdk", version = "0.49", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.50", features = [
   "didcomm",
   "session",
   "config-session",
