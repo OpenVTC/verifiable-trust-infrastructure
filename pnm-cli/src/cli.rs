@@ -378,6 +378,46 @@ pub(crate) enum MessagingCommands {
         #[arg(long, conflicts_with = "context")]
         as_session: bool,
     },
+
+    /// Give another DID an account role at a mediator — typically a browser
+    /// wallet's holder, so its console can look inside the relay it uses.
+    ///
+    /// Acts as a DID from one of your contexts (the mediator's administrator,
+    /// usually) exactly as `console` does, and needs the same key export.
+    /// `admin` lets the account see the whole mediator — every account's
+    /// queues, the audit log, configuration and live traffic; `standard`
+    /// takes that away. `rootAdmin` is deliberately not offered: it can read
+    /// other accounts' message bodies and change a running mediator, which is
+    /// not a standing to hand to a key held in a browser.
+    Grant {
+        /// The DID to change (the mediator knows it by its hash).
+        target: String,
+        /// The role to give it.
+        #[arg(long, value_enum)]
+        role: GrantRole,
+        /// Context whose DID to act as.
+        #[arg(long)]
+        context: Option<String>,
+        /// The DID to act as, when a context holds several.
+        #[arg(long, conflicts_with = "as_session")]
+        did: Option<String>,
+        /// Mediator DID. Defaults to the acting DID's DIDCommMessaging
+        /// service, then this pnm's configured mediator.
+        #[arg(long)]
+        mediator: Option<String>,
+        /// Act as this pnm session's own did:key.
+        #[arg(long, conflicts_with = "context")]
+        as_session: bool,
+    },
+}
+
+/// The roles `pnm messaging grant` may give.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum GrantRole {
+    /// Sees the whole mediator.
+    Admin,
+    /// Sees only its own account.
+    Standard,
 }
 
 /// Member-side room verbs. Each mints its own presentation for exactly the

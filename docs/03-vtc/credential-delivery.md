@@ -60,11 +60,17 @@ REST convenience.
    `credential-exchange/issue/0.1` messages that are not replies to anything,
    read `credential_response.credential`, and store it. Expect two after an
    admission, in either order.
-3. **Accept messages typed as the document.** Over DIDComm the VTC accepts a
-   submit either in the binding envelope (`…/binding/didcomm/0.1/envelope`) or
-   typed as the task. It sends its reply, and the `issue` deposits, typed as
-   the document itself, not in the envelope. A client that only unwraps the
-   envelope keeps nothing, and sees no error.
+3. **Send in the envelope; accept replies typed as the document.** Over
+   DIDComm the VTC accepts a Trust Task **only** in the binding envelope
+   (`https://trusttasks.org/binding/didcomm/0.1/envelope`, the document as the
+   message body) — `bindings/didcomm/0.2` §2–§4. A submit (or any other task)
+   whose DIDComm `type` is the task URI itself is refused with a DIDComm
+   problem-report that names the envelope type, and never reaches the
+   dispatcher; there is no `trust-task-error` for it. The VTC still sends its
+   reply, and the `issue` deposits, typed as the document itself rather than
+   in the envelope, so a client that only unwraps the envelope keeps nothing
+   and sees no error. (Replies moving into the envelope, as binding §5
+   requires, is a later change; read the document's own `type` either way.)
 4. **Verify what you store.** Check the proof, check that the issuer is the
    community's DID, and check that the subject is you. A deposit is authcrypt
    from the community, but the credential is what you will later present.

@@ -124,7 +124,8 @@ would break the join ceremony rather than close anything. The default is
 A vetter is a **member the community has named a vetter**. An admin does it
 from the member's page in the admin console ("Grant vetter role"), or with
 `vtc/vetting/vetters/grant/0.1` — `POST /v1/vetting/vetters` over REST, or the
-same Trust Task document over DIDComm or TSP:
+same Trust Task document over DIDComm (in the binding envelope — a message typed
+as the task URI is refused) or TSP:
 
 ```json
 { "memberDid": "did:…", "validitySeconds": 31536000 }
@@ -201,7 +202,8 @@ REST); a delivery that cannot be handed to the transport with `unavailable`
 ### 4. Let applicants find vetters
 
 A vetter publishes a **profile** with `vtc/vetting/vetters/profile/0.1`, over
-REST (`POST /v1/trust-tasks`), DIDComm or TSP. It replaces the whole profile:
+REST (`POST /v1/trust-tasks`), DIDComm (in the binding envelope) or TSP. It
+replaces the whole profile:
 
 ```json
 {

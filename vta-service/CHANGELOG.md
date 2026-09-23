@@ -2,6 +2,134 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.39.0...vta-service-v0.40.0) — 2026-09-23
+
+
+### Added
+
+- **vta**: Advertise TSP on a minted DID when the mediator carries it ([#1665](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1665))
+
+A persona minted by a TSP-capable VTA advertised only `DIDCommMessaging`,
+  so a Rev 3 peer reading its document kept the leg on DIDComm (Keyring
+  VTI-Q11). The cause: `addTspService` defaulted to `false` at the mint, and a
+  persona is minted by a caller that sends no such field — the SDK skips it
+  when false — so the answer was always "no" however TSP-capable the stack was.
+
+  `addTspService` becomes three-state. An explicit `true` or `false` is
+  honoured exactly as before. Absent now means "decide from what this VTA and
+  its mediator can actually carry": `services.tsp` on, a mediator configured,
+  and that mediator's own document advertising `TSPTransport` — the same check
+  VTA setup makes before advertising `#tsp` for the VTA itself.
+
+  A mediator that does not resolve answers no, which is deliberately stricter
+  than setup's warn-and-proceed. There the operator named the mediator and is
+  told; here nobody asked for `#tsp` at all, so the quiet default must not
+  publish a transport peers cannot reach.
+
+  Every internal caller passes `Some(false)`, so no existing path changes.
+
+
+
+### Fixed
+
+- **vta-service**: Answer a TSP relationship request before its sender's later traffic ([#1675](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1675))
+
+Keyring VTI-43. A phone sent a TSP relationship invite (XRFI) and, 16 ms
+  later, a Trust Task. The VTA's inbound loop reads frames in order but spawns
+  each onto its own task, so the two raced: the task's ~2 ms reply (a
+  permissionDenied) was sent ~328 ms before the VTA finished answering the
+  invite with XRFA (accept_relationship resolves the peer VID and POSTs; only
+  then is the relationship Bidirectional). The phone admits application
+  messages only on a bidirectional relationship, so it dropped the reply. When
+  the accept happened to win, it worked.
+
+  The fix orders inbound frames per authenticated sender, taken on the reader
+  task (the only place that sees arrival order) before spawning:
+
+  - a TSP relationship-control frame is a barrier: it runs after every earlier
+    barrier from the same sender;
+  - TSP application frames run after every earlier barrier from their sender,
+    but not after each other, and a barrier does not wait for earlier
+    application frames — so a Trust Task awaiting a later message from the same
+    peer (a step-up approval) cannot deadlock on it, which a per-sender FIFO
+    would;
+  - different senders never wait for each other; DIDComm stays unordered.
+
+  The bookkeeping map holds only senders with a barrier in flight (bounded by
+  the loop's concurrency cap) and a wait is bounded at 15 s (R1.3): a hung
+  accept degrades the frames behind it to the old unordered behaviour rather
+  than stranding the peer. A barrier's handler releases its followers on drop,
+  so a failure or panic releases them too.
+
+  vtc-service needs no change: its inbound loop awaits each frame inline, so
+  it already processes one sender's frames in arrival order.
+
+
+
+### Security
+
+- **persona**: The correlation answer on a local write is the holder's ([#1676](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1676))
+
+Two defects in one task, found while writing a test for the first.
+
+  **The oracle.** `persona/local/profile/put` is context-scoped, and its
+  response carried `correlation.matchesPoolValue` — a yes/no on "does the
+  holder hold this exact value anywhere", computed from the agent-wide
+  index. A caller that can write is a caller that can guess, so any
+  application authorized in one context had an unbounded oracle over the
+  whole pool: one guess per write, each answer confirming or eliminating
+  one. No value crosses the boundary and none needs to — for a name, an
+  address or a date of birth, confirmation is disclosure.
+
+  The member is now told only to a caller that passes the holder test, and
+  omitted rather than softened: a coarser signal is still an oracle, only a
+  slower one. The holder still learns it, through the audit row (which
+  records it whoever asked) and `persona/correlation/analyze`. Conditional
+  by the specification too, as of dtgwg-trust-tasks-tf#609.
+
+  **The unsendable payload.** Writing that test showed the agent refusing
+  its own SDK's request: `LocalProfileEntry` reused the pool's
+  `InlineValue`, whose `provenance` is required, and the schema has no such
+  member for a context-local entry and sets `additionalProperties: false`.
+  So every local-profile write this SDK could build was rejected —
+  `persona_local_profile_put` could not express a conforming payload at
+  all. `LocalInlineValue` is that type without the member, which is the
+  boundary rather than an omission: a credentialBacked provenance names a
+  credentialId and a claimPath, and a context has nowhere to put either.
+
+  The rule against hand-writing a payload type for a task that has a
+  generated module exists for exactly this; the generated type never had
+  the member.
+
+- **persona**: Holder authority is granted, never inherited from a role ([#1673](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1673))
+
+`persona-holder` exists because no role carries authority over the
+  holder's pool — and super-admin carried it anyway. That left the premise
+  true only of the roles nobody automates with: the unrestricted admin
+  credential is the one most likely to be sitting in a script, and it read
+  the attribute pool, the faces over it and the disclosure history without
+  an ACL entry saying so.
+
+  Now the grant is the only way in. A super-admin can still grant itself
+  the capability, so this is not a boundary it cannot cross; it is the
+  difference between crossing it and crossing it deliberately. The grant is
+  an ACL write — audited, reviewable, revocable on its own — where the
+  inherited form left no trace that the pool had been read by something
+  that never asked for it.
+
+  The refusal names the command that fixes it, because an operator refused
+  against their own agent's own pool cannot guess at a capability they have
+  never heard of.
+
+  Operators upgrading: `pnm acl update --did <did> --capabilities
+  persona-holder`, or `pnm contexts create --admin-holder` when
+  provisioning a client that is the holder's own.
+
+  §7 of the persona design note records this and the three other questions
+  it left open, with the reasoning rather than only the outcome.
+
+
+
 ## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.38.0...vta-service-v0.39.0) — 2026-09-22
 
 

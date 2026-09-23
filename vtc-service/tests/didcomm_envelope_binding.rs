@@ -20,6 +20,18 @@
 //! inside" and nothing more, so one arm reaches everything the dispatcher
 //! serves, and a new verb is reachable because it is *dispatched*.
 //!
+//! ## And then the first list went too (Keyring VTI-42)
+//!
+//! The task-typed arms stayed beside the envelope for a while, so the router
+//! answered twelve verbs in either carriage and the rest in only one. A client
+//! that sent `join-requests/withdraw` typed as itself got `unsupported message
+//! type` for a verb this service plainly serves. The binding
+//! (`bindings/didcomm/0.2` §2–§5) settles it: the envelope is the **only**
+//! DIDComm carriage, and a consumer refuses any other type at the DIDComm
+//! layer, with no `trust-task-error`. So the arms are gone, and every served
+//! URI now behaves the same way in each carriage — which is what the two
+//! parity tests below hold, driven by the dispatcher's own lists.
+//!
 //! ## Why these assertions and not tighter ones
 //!
 //! The claim under test is **reachability**, not authorization: that the
@@ -37,14 +49,10 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use vtc_service::test_support::{MockVtcDidcomm, ReplyOutcome};
+use vtc_service::test_support::{MockVtcDidcomm, ReplyOutcome, served_trust_task_uris};
+use vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
-
-/// `members/personhood/challenge/0.1` — dispatched by the spine, absent from the
-/// DIDComm router.
-const PERSONHOOD_CHALLENGE: &str =
-    "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1";
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -61,59 +69,75 @@ fn is_unsupported_type(outcome: &ReplyOutcome) -> bool {
     }
 }
 
-/// **The case.** A verb with no arm of its own in the DIDComm router is reachable
-/// when it arrives in the binding envelope.
+/// **The case.** Every URI the dispatcher serves is reachable in the binding
+/// envelope — answered by the spine (a refusal is fine: a `permissionDenied` or
+/// a validation error is only reachable past the router), never by the router's
+/// fallback, and never dropped.
 #[tokio::test]
-async fn a_verb_absent_from_the_didcomm_router_is_reachable_in_the_envelope() {
+async fn every_served_uri_is_reachable_in_the_envelope() {
     init_tracing();
     let mock = MockVtcDidcomm::start_with_tsp().await;
     let vtc_did = mock.vtc_did().to_string();
 
-    let outcome = mock
-        .client
-        .try_request_enveloped(&vtc_did, PERSONHOOD_CHALLENGE, json!({}), TIMEOUT)
-        .await;
+    let mut failures = Vec::new();
+    for uri in served_trust_task_uris() {
+        let outcome = mock
+            .client
+            .try_request_enveloped(&vtc_did, uri, json!({}), TIMEOUT)
+            .await;
+        if is_unsupported_type(&outcome) || matches!(outcome, ReplyOutcome::Timeout) {
+            failures.push(format!("{uri}: {outcome:?}"));
+        }
+    }
 
     mock.shutdown().await;
 
     assert!(
-        !is_unsupported_type(&outcome),
-        "the envelope must reach the dispatcher, not the router's fallback. \
-         `{PERSONHOOD_CHALLENGE}` is dispatched over REST and TSP, so an \
-         `unsupported message type` here is the DIDComm router's second list \
-         disagreeing with the dispatcher: {outcome:?}"
-    );
-    assert!(
-        !matches!(outcome, ReplyOutcome::Timeout),
-        "an enveloped request must be answered, not dropped — a silent drop is \
-         what this arm exists to remove: {outcome:?}"
+        failures.is_empty(),
+        "an enveloped request for a dispatched URI must reach the dispatcher and be \
+         answered — `unsupported message type` is the router disagreeing with the \
+         dispatcher, a timeout is a silent drop:\n{}",
+        failures.join("\n")
     );
 }
 
-/// The same verb sent the old way, so the test above cannot pass for a reason
-/// that has nothing to do with the envelope.
+/// The same URIs typed as themselves — the carriage the binding forbids — are
+/// refused at the DIDComm layer with a problem-report that names the envelope,
+/// threaded to the request (a reply this harness could not correlate would
+/// surface as a timeout).
 ///
-/// This asserts today's behaviour, which is the defect: keyed on the task URI,
-/// the router has no arm and refuses. When the legacy task-URI arms are
-/// eventually retired this assertion flips — and it should be *read* then, not
-/// deleted, because it is the record of why the envelope arm was added.
+/// This used to assert the opposite for the verbs with a task-typed arm, and
+/// "refused" only for the ones without. Read before changing: the binding
+/// requires the refusal, and a verb that answers here has grown a second list
+/// again.
 #[tokio::test]
-async fn the_same_verb_typed_as_the_task_is_still_refused_by_the_router() {
+async fn every_served_uri_typed_as_itself_is_refused_naming_the_envelope() {
     init_tracing();
     let mock = MockVtcDidcomm::start_with_tsp().await;
     let vtc_did = mock.vtc_did().to_string();
 
-    let outcome = mock
-        .client
-        .try_request(&vtc_did, PERSONHOOD_CHALLENGE, json!({}), TIMEOUT)
-        .await;
+    let mut failures = Vec::new();
+    for uri in served_trust_task_uris() {
+        let outcome = mock
+            .client
+            .try_request_task_typed(&vtc_did, uri, json!({}), TIMEOUT)
+            .await;
+        match &outcome {
+            ReplyOutcome::Problem(p)
+                if p.comment.contains(TRUST_TASK_ENVELOPE_TYPE)
+                    // A DIDComm problem-report, not a `trust-task-error`: the
+                    // document never entered the pipeline.
+                    && p.body.get("payload").is_none() => {}
+            other => failures.push(format!("{uri}: {other:?}")),
+        }
+    }
 
     mock.shutdown().await;
 
     assert!(
-        is_unsupported_type(&outcome),
-        "expected the task-URI router to refuse a verb it has no arm for — if \
-         this now passes, the router learned the verb and this test should be \
-         re-read rather than deleted: {outcome:?}"
+        failures.is_empty(),
+        "a Trust Task typed as its own URI must get a DIDComm problem-report naming \
+         `{TRUST_TASK_ENVELOPE_TYPE}`:\n{}",
+        failures.join("\n")
     );
 }

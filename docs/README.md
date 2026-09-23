@@ -255,6 +255,15 @@ are implementer-facing rather than operator-facing.
   the transitional allowance made for the one shipping client that did not sign
   and how its stated removal condition was met, and sets out the migration path
   for the 49 tasks still served on a bearer token.
+- **[Signing from the admin console](05-design-notes/vtc-console-signing.md)** —
+  the successor to the note above. The admin SPA holds no key, so every bearer
+  route the migration would retire has to stay. Establishes the exact
+  `eddsa-jcs-2022` construction a browser must reproduce, reads the two working
+  browser implementations in the ecosystem (and a key-extractability bug in
+  one), and recommends treating a console signing key as a **credential of the
+  operator's existing admin DID** — a delegation enrolled like a passkey —
+  rather than an identity of its own, which self-promotion (VTI-OPS-050) would
+  block. Rejects server-side signing explicitly against VTI-OPS-021.
 - **[Runtime service management](05-design-notes/runtime-service-management.md)** —
   design notes for the VTA's enable/disable/migrate REST + DIDComm
   surface.

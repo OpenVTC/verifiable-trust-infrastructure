@@ -321,6 +321,15 @@ Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password
 | ------- | ----------- |
 | `messaging console [--context ID] [--did DID] [--mediator DID]` | Open the mediator console as a DID of a context |
 | `messaging console --as-session` | Open it as this pnm session's own `did:key` |
+| `messaging grant DID --role admin\|standard [--context ID] [--did DID] [--mediator DID]` | Give another DID an account role at a mediator |
+
+`pnm messaging grant` is how a browser wallet's console comes to see a whole
+relay: its Mediator Lens prints the exact command, naming the wallet's holder
+`did:key` for that agent. Run it as the mediator's administrator (its
+`admin_did`); it acts as a DID exactly as `console` does, and prints the role
+the mediator *recorded*, failing if that is not the one asked for. `rootAdmin`
+is not offered — it reads other accounts' message bodies and changes a running
+mediator, which is not a standing to give a key held in a browser.
 
 `pnm messaging console` opens a full-screen console for an Affinidi messaging
 mediator, acting as a DID this VTA manages — no profile file or secrets to keep:
