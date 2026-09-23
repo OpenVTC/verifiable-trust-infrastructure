@@ -100,13 +100,17 @@ const DEFAULT_SOURCES: &[(PolicyPurpose, &str)] = &[
         PolicyPurpose::VetterEligibility,
         include_str!("../../policies/default/vetter_eligibility.rego"),
     ),
+    (
+        PolicyPurpose::GitNamespace,
+        include_str!("../../policies/default/git_ns.rego"),
+    ),
 ];
 
 /// Number of purposes the workspace ships defaults for. Asserted
 /// against [`PolicyPurpose::ALL`] at test time so a missed entry in
 /// `DEFAULT_SOURCES` surfaces as a build-time-ish failure rather
 /// than a silent runtime gap.
-pub const DEFAULT_COUNT: usize = 12;
+pub const DEFAULT_COUNT: usize = 13;
 
 /// Return the embedded default source for `purpose`. Useful to the
 /// admin UX layer that wants to show "reset to default" diffs

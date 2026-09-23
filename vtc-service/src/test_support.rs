@@ -86,6 +86,12 @@ pub struct TestVtcBuilder {
     /// Mediator DID for `AppState.config.messaging` — paired with `atm` so the
     /// delivery path knows which mediator to forward issued credentials through.
     messaging_mediator: Option<String>,
+    /// The bridge client for `git-ns/*`. Defaults to the production client
+    /// with no messaging behind it, which answers every job `Transient` —
+    /// a VTC whose bridge is unreachable.
+    git_ns_bridge: Option<Arc<dyn crate::git_ns::bridge::BridgeClient>>,
+    /// `[git_ns]` configuration.
+    git_ns_config: Option<crate::git_ns::GitNsConfig>,
 }
 
 impl Default for TestVtcBuilder {
@@ -101,6 +107,8 @@ impl Default for TestVtcBuilder {
             supervisor: None,
             atm: None,
             messaging_mediator: None,
+            git_ns_bridge: None,
+            git_ns_config: None,
         }
     }
 }
@@ -165,6 +173,21 @@ impl TestVtcBuilder {
     /// restart routes read it).
     pub fn supervisor(mut self, kind: Option<SupervisorKind>) -> Self {
         self.supervisor = kind;
+        self
+    }
+
+    /// Substitute the client `git-ns/*` reaches bridges with — a fake bridge.
+    pub fn with_git_ns_bridge(
+        mut self,
+        bridge: Arc<dyn crate::git_ns::bridge::BridgeClient>,
+    ) -> Self {
+        self.git_ns_bridge = Some(bridge);
+        self
+    }
+
+    /// Set `[git_ns]`.
+    pub fn with_git_ns_config(mut self, config: crate::git_ns::GitNsConfig) -> Self {
+        self.git_ns_config = Some(config);
         self
     }
 
@@ -276,6 +299,9 @@ impl TestVtcBuilder {
         if let Some(url) = &self.public_url {
             config.public_url = Some(url.clone());
         }
+        if let Some(git_ns) = &self.git_ns_config {
+            config.git_ns = git_ns.clone();
+        }
         if let Some(mediator_did) = &self.messaging_mediator {
             config.messaging = Some(vti_common::config::MessagingConfig {
                 mediator_url: String::new(),
@@ -346,6 +372,27 @@ impl TestVtcBuilder {
                 .len() as u64,
         ));
 
+        let didcomm_cell = Arc::new(tokio::sync::OnceCell::new());
+        let git_ns = crate::git_ns::GitNsHandles {
+            ks: store
+                .keyspace(crate::store::keyspaces::GIT_NS)
+                .expect("git_ns ks"),
+            jobs_ks: store
+                .keyspace(crate::store::keyspaces::GIT_NS_JOBS)
+                .expect("git_ns_jobs ks"),
+            projection_ks: store
+                .keyspace(crate::store::keyspaces::GIT_NS_PROJECTION)
+                .expect("git_ns_projection ks"),
+            bridge: self.git_ns_bridge.clone().unwrap_or_else(|| {
+                Arc::new(crate::git_ns::bridge::MessagingBridgeClient::new(
+                    didcomm_cell.clone(),
+                    credential_signer.clone(),
+                    crate::hooks::PendingReplies::new(),
+                    None,
+                ))
+            }),
+        };
+
         let state = AppState {
             // Fixed key: a test never needs the counter to be unguessable, and
             // a deterministic one keeps a failure reproducible.
@@ -408,7 +455,8 @@ impl TestVtcBuilder {
             audit_writer,
             shutdown_tx: watch::channel(false).0,
             supervisor: self.supervisor,
-            didcomm: Arc::new(tokio::sync::OnceCell::new()),
+            didcomm: didcomm_cell,
+            git_ns,
         };
 
         // Every response a test provokes is validated against its Trust

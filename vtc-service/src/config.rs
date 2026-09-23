@@ -45,6 +45,11 @@ pub struct AppConfig {
     /// (`design-docs/vtc-membership-hooks.md`). Absent ⇒ no hook relay.
     #[serde(default)]
     pub hooks: crate::hooks::HooksConfig,
+    /// Git namespaces (`git-ns/*`): which bridge serves which forge, and the
+    /// consent-class fallback. Absent ⇒ manual-mode namespaces only, elevated
+    /// actions for community administrators.
+    #[serde(default)]
+    pub git_ns: crate::git_ns::GitNsConfig,
     /// Renewal-path settings (Phase 4 M4.2.2). Currently
     /// gates the renewal-time behaviour when `personhood.rego`
     /// flips a previously-asserted member's flag to `false`.

@@ -133,6 +133,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         shutdown_tx: tokio::sync::watch::channel(false).0,
         supervisor: None,
         didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        git_ns: vtc_service::git_ns::GitNsHandles::open_unconnected(&store).unwrap(),
     };
     (state, dir)
 }

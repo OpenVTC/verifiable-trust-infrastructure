@@ -1,0 +1,217 @@
+//! The `git-ns/*` Trust Task handlers — the dispatch surface over [`super::ops`].
+//!
+//! Registered on an [`AsyncDispatcher`] keyed on each task's generated
+//! payload type, exactly as the `rooms/*` family is: the URI comes from the
+//! type, so a task cannot be served under a URI nobody publishes, and
+//! [`served_uris`] is the routing table itself rather than a list kept beside
+//! it. The dispatcher also enforces each task's declared proof requirement
+//! before a handler runs.
+//!
+//! # Who is acting
+//!
+//! The actor is the DID the dispatch spine verified the document's proof
+//! against — never a payload member. Eleven of these tasks declare the proof
+//! REQUIRED, and the spine refuses them without one; `git-ns/view` and
+//! `git-ns/account/link-status` declare it RECOMMENDED ("a read … transport
+//! integrity suffices where the transport already authenticates the
+//! caller"), so for those two the transport's authenticated sender stands in
+//! when there is no proof. Over REST with neither, there is nobody to answer
+//! for, and the read is refused.
+
+use serde_json::Value;
+use trust_tasks_rs::specs::git_ns::account::{
+    link::v0_1 as link, link_status::v0_1 as link_status,
+};
+use trust_tasks_rs::specs::git_ns::bridge::{event::v0_1 as event, result::v0_1 as result};
+use trust_tasks_rs::specs::git_ns::namespace::{bind::v0_1 as bind, unbind::v0_1 as unbind};
+use trust_tasks_rs::specs::git_ns::repo::{
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    transfer::v0_1 as transfer,
+};
+use trust_tasks_rs::specs::git_ns::right::{grant::v0_1 as grant, revoke::v0_1 as revoke};
+use trust_tasks_rs::specs::git_ns::view::v0_1 as view;
+use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
+
+use crate::server::AppState;
+use crate::trust_tasks::helpers::{
+    TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
+    success_response,
+};
+
+use super::ops::{self, OpError};
+use super::store::Snapshot;
+
+static GIT_NS: std::sync::LazyLock<AsyncDispatcher<GitNsCtx, TrustTaskOutcome>> =
+    std::sync::LazyLock::new(dispatcher);
+
+/// Does this service dispatch `type_uri` as a `git-ns/*` task?
+#[must_use]
+pub(crate) fn serves(type_uri: &str) -> bool {
+    GIT_NS.registered_uris().contains(&type_uri)
+}
+
+/// Every URI this family serves.
+#[must_use]
+pub(crate) fn served_uris() -> Vec<&'static str> {
+    GIT_NS.registered_uris()
+}
+
+/// What a handler needs that is not in the document.
+#[derive(Clone)]
+pub(crate) struct GitNsCtx {
+    pub state: AppState,
+    /// The verified signer of the document's proof.
+    pub signer: Option<String>,
+    /// The transport's authenticated sender, used only by the two tasks whose
+    /// proof is RECOMMENDED.
+    pub sender: Option<String>,
+}
+
+pub(crate) async fn dispatch(
+    state: &AppState,
+    doc: TrustTask<Value>,
+    signer: Option<&str>,
+    sender: Option<&str>,
+) -> TrustTaskOutcome {
+    let ctx = GitNsCtx {
+        state: state.clone(),
+        signer: signer.map(str::to_string),
+        sender: sender.map(str::to_string),
+    };
+    match GIT_NS
+        .dispatch_or_reject(doc, ctx, format!("urn:uuid:{}", uuid::Uuid::new_v4()))
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(err_doc) => crate::trust_tasks::helpers::error_response(err_doc),
+    }
+}
+
+pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
+    AsyncDispatcher::new()
+        .on_async(handle_bind)
+        .on_async(handle_unbind)
+        .on_async(handle_create)
+        .on_async(handle_adopt)
+        .on_async(handle_transfer)
+        .on_async(handle_archive)
+        .on_async(handle_grant)
+        .on_async(handle_revoke)
+        .on_async(handle_view)
+        .on_async(handle_link)
+        .on_async(handle_link_status)
+        .on_async(handle_result)
+        .on_async(handle_event)
+}
+
+/// Render an operation's outcome.
+fn respond<P, R: serde::Serialize>(doc: &TrustTask<P>, r: Result<R, OpError>) -> TrustTaskOutcome {
+    match r {
+        Ok(body) => success_response(doc, body),
+        Err(OpError::Declared { code, message }) => {
+            reject_with_code(doc, extended_code(code), message, None)
+        }
+        Err(OpError::PermissionDenied(reason)) => {
+            reject_with(doc, RejectReason::PermissionDenied { reason })
+        }
+        Err(OpError::Malformed(reason)) => {
+            reject_with(doc, RejectReason::MalformedRequest { reason })
+        }
+        Err(OpError::Unavailable(message)) => reject_with_code(
+            doc,
+            TrustTaskCode::Standard(StandardCode::Unavailable),
+            message,
+            None,
+        ),
+        Err(OpError::Internal(e)) => app_error_to_reject(doc, &e),
+    }
+}
+
+/// The verified signer, for a task whose proof is REQUIRED. The spine has
+/// already refused a document without one; this is the belt to that brace,
+/// kept because an absent signer must never become an empty actor.
+fn signer<P>(doc: &TrustTask<P>, ctx: &GitNsCtx) -> Result<String, TrustTaskOutcome> {
+    ctx.signer
+        .clone()
+        .ok_or_else(|| reject_with(doc, RejectReason::ProofRequired))
+}
+
+/// The caller, for a task whose proof is RECOMMENDED.
+fn caller<P>(doc: &TrustTask<P>, ctx: &GitNsCtx) -> Result<String, TrustTaskOutcome> {
+    ctx.signer
+        .clone()
+        .or_else(|| ctx.sender.clone())
+        .ok_or_else(|| {
+            reject_with(
+                doc,
+                RejectReason::PermissionDenied {
+                    reason:
+                        "nobody identified: sign the document, or send it over a transport that \
+                         authenticates you"
+                            .into(),
+                },
+            )
+        })
+}
+
+macro_rules! signed_handler {
+    ($name:ident, $payload:ty, $op:path) => {
+        pub(crate) async fn $name(doc: TrustTask<$payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
+            let actor = match signer(&doc, &ctx) {
+                Ok(a) => a,
+                Err(r) => return r,
+            };
+            let r = $op(&ctx.state, &actor, doc.payload.clone()).await;
+            respond(&doc, r)
+        }
+    };
+}
+
+signed_handler!(handle_bind, bind::Payload, ops::bind);
+signed_handler!(handle_unbind, unbind::Payload, ops::unbind);
+signed_handler!(handle_create, create::Payload, ops::repo_create);
+signed_handler!(handle_adopt, adopt::Payload, ops::repo_adopt);
+signed_handler!(handle_transfer, transfer::Payload, ops::repo_transfer);
+signed_handler!(handle_archive, archive::Payload, ops::repo_archive);
+signed_handler!(handle_grant, grant::Payload, ops::right_grant);
+signed_handler!(handle_revoke, revoke::Payload, ops::right_revoke);
+signed_handler!(handle_link, link::Payload, ops::account_link);
+signed_handler!(handle_result, result::Payload, super::bridge::handle_result);
+signed_handler!(handle_event, event::Payload, super::bridge::handle_event);
+
+/// `git-ns/view/0.1` — any member, what they may see.
+pub(crate) async fn handle_view(doc: TrustTask<view::Payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
+    let who = match caller(&doc, &ctx) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let r = async {
+        let standing = ops::standing(&ctx.state, &who).await?;
+        if !standing.member {
+            return Err(OpError::PermissionDenied(
+                "git-ns/view answers members of this community".into(),
+            ));
+        }
+        let filter = match &doc.payload.resource {
+            Some(r) => Some(super::model::Resource::parse(r).map_err(OpError::Malformed)?),
+            None => None,
+        };
+        let snap = Snapshot::load(&ctx.state.git_ns.ks).await?;
+        Ok(super::view::for_member(&snap, &who, filter.as_ref())?)
+    }
+    .await;
+    respond(&doc, r)
+}
+
+/// `git-ns/account/link-status/0.1` — the member who began the link.
+pub(crate) async fn handle_link_status(
+    doc: TrustTask<link_status::Payload>,
+    ctx: GitNsCtx,
+) -> TrustTaskOutcome {
+    let who = match caller(&doc, &ctx) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let r = ops::account_link_status(&ctx.state, &who, doc.payload.clone()).await;
+    respond(&doc, r)
+}

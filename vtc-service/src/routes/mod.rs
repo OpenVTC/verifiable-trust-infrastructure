@@ -12,6 +12,7 @@ pub(crate) mod did_log;
 pub(crate) mod directory;
 pub(crate) mod endorsement_types;
 pub(crate) mod endorsements;
+mod git_ns;
 mod health;
 pub(crate) mod install;
 pub(crate) mod invitations;
@@ -133,6 +134,11 @@ pub const MAX_BODY_SIZE: usize = 1024 * 1024;
 /// JWE / sealed-transfer envelope but small enough to reject 1 MB
 /// blob floods that the rate limiter alone cannot starve out.
 pub const UNAUTH_BODY_SIZE: usize = 64 * 1024;
+
+/// `git-ns/view/0.1` — the Trust-Task URL every git-namespace admin read is
+/// gated on, read off the generated payload type rather than written out.
+const GIT_NS_VIEW: &str =
+    <trust_tasks_rs::specs::git_ns::view::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Attach the static Trust-Task URL gate to a `routes!(...)` group in one call.
 ///
@@ -384,6 +390,19 @@ fn build_api_chain(
             routes!(registry_admin::records_list),
             "https://trusttasks.org/spec/vtc/registry/records/list/0.1",
         ))
+        // The administrator's read surface over the git namespaces — the
+        // admin console's Repos plugin. Every route is a projection of the one
+        // read the `git-ns/*` family defines, so every route carries its URI.
+        // Mutations are not here: each is a signed `git-ns/*` Trust Task,
+        // authorized by the signer's git rights, on the document endpoint.
+        .routes(tt(routes!(git_ns::admin_view), GIT_NS_VIEW))
+        .routes(tt(routes!(git_ns::namespaces_list), GIT_NS_VIEW))
+        .routes(tt(routes!(git_ns::repos_list), GIT_NS_VIEW))
+        .routes(tt(routes!(git_ns::rights_list), GIT_NS_VIEW))
+        .routes(tt(routes!(git_ns::issued_by_departed), GIT_NS_VIEW))
+        .routes(tt(routes!(git_ns::drift_list), GIT_NS_VIEW))
+        .routes(tt(routes!(git_ns::jobs_list), GIT_NS_VIEW))
+        .routes(tt(routes!(git_ns::projection_show), GIT_NS_VIEW))
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension
         // header (same rationale as `did.jsonl`).

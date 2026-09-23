@@ -233,6 +233,9 @@ pub struct AppState {
     /// as `w.websocket.duplicate-channel`. Unset until the listener boots (and
     /// when messaging is disabled), so sends are best-effort.
     pub didcomm: Arc<tokio::sync::OnceCell<Arc<crate::messaging::VtcMessaging>>>,
+    /// Git namespaces (`crate::git_ns`): the three keyspaces and the bridge
+    /// client that sends `git-ns/bridge/job` documents.
+    pub git_ns: crate::git_ns::GitNsHandles,
 }
 
 /// Delivery deadline for an ordinary proactive message to a member.
@@ -761,6 +764,21 @@ pub async fn run(
         crate::members::list_members(&members_ks).await?.len() as u64,
     ));
 
+    // Git namespaces: the records, the bridge jobs, the registry mirror, and
+    // the client that reaches bridges over the messaging socket the listener
+    // publishes into `didcomm_cell`.
+    let git_ns = crate::git_ns::GitNsHandles {
+        ks: store.keyspace(keyspaces::GIT_NS)?,
+        jobs_ks: store.keyspace(keyspaces::GIT_NS_JOBS)?,
+        projection_ks: store.keyspace(keyspaces::GIT_NS_PROJECTION)?,
+        bridge: Arc::new(crate::git_ns::bridge::MessagingBridgeClient::new(
+            didcomm_cell.clone(),
+            credential_signer.clone(),
+            pending_replies.clone(),
+            did_resolver.clone(),
+        )),
+    };
+
     // Build AppState for the REST thread
     let state = AppState {
         sessions_ks,
@@ -827,6 +845,7 @@ pub async fn run(
         shutdown_tx: shutdown_tx.clone(),
         supervisor: detect_supervisor(),
         didcomm: didcomm_cell,
+        git_ns,
     };
 
     // Heal missing AdminEntries: any DID with an Admin ACL grant +
@@ -1179,6 +1198,46 @@ pub async fn run(
                     Ok(()) => break,
                     Err(join_err) if join_err.is_panic() => {
                         error!(error = %join_err, "HookRelay task panicked — restarting after backoff");
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                            _ = supervisor_shutdown.changed() => break,
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    // Git namespaces: the projector — lifecycle sweeps, forge role projection
+    // and bridge job dispatch always; the registry projection when a registry
+    // and this community's DID are both configured. Supervised like the hook
+    // relay: a panic restarts the loop after a pause rather than silently
+    // ending the projection.
+    {
+        let registry = match (state.registry_client.clone(), boot_cfg.vtc_did.clone()) {
+            (Some(client), Some(did)) => Some((client, did)),
+            _ => None,
+        };
+        let tick = std::time::Duration::from_secs(boot_cfg.git_ns.tick_seconds.max(1));
+        let projector_state = state.clone();
+        let mut supervisor_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if *supervisor_shutdown.borrow() {
+                    break;
+                }
+                let projector = crate::git_ns::projection::Projector::new(
+                    projector_state.clone(),
+                    registry.clone(),
+                    tick,
+                );
+                let run_shutdown = supervisor_shutdown.clone();
+                let child = tokio::spawn(async move { projector.run(run_shutdown).await });
+                match child.await {
+                    Ok(()) => break,
+                    Err(join_err) if join_err.is_panic() => {
+                        error!(error = %join_err, "git-ns projector panicked — restarting after backoff");
                         tokio::select! {
                             _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
                             _ = supervisor_shutdown.changed() => break,

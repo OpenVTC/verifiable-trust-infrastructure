@@ -50,6 +50,7 @@ use utoipa::openapi::{Ref, RefOr};
 use crate::protocols::vetting::vetters;
 use trust_tasks_rs::specs::credential_exchange;
 use trust_tasks_rs::specs::did_management::did::register;
+use trust_tasks_rs::specs::git_ns::view as git_ns_view;
 use trust_tasks_rs::specs::vtc::endorsement_types;
 use trust_tasks_rs::specs::vtc::invitations::deliver as invitation_deliver;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
@@ -194,6 +195,24 @@ spec_types! {
     /// `vtc/members/credentials/0.1#response` — the membership pair's bodies
     /// for one member, plus whether the acknowledgement is bound to the grant.
     MemberCredentials01Response(member_credentials::v0_1::Response);
+    /// `git-ns/view/0.1#response` — namespaces, repositories and recorded git
+    /// rights. Also the body of a VTC's `GET /v1/git-ns/view`, the
+    /// administrator's complete view.
+    GitNsView01Response(git_ns_view::v0_1::Response);
+    /// `git-ns/view/0.1`'s `RepoSummary` — one repository as the VTC records it.
+    GitNsView01RepoSummary(git_ns_view::v0_1::RepoSummary)
+        in git_ns_view::v0_1::Response as "RepoSummary";
+    /// `git-ns/view/0.1`'s `RightRecord` — one recorded git right.
+    GitNsView01RightRecord(git_ns_view::v0_1::RightRecord)
+        in git_ns_view::v0_1::Response as "RightRecord";
+    /// `git-ns/view/0.1`'s `GitNamespace` — the VTC's binding to one owner on
+    /// one forge.
+    GitNsView01GitNamespace(git_ns_view::v0_1::GitNamespace)
+        in git_ns_view::v0_1::Response as "GitNamespace";
+    /// `git-ns/view/0.1`'s `DriftItem` — one difference between the forge
+    /// and the projection.
+    GitNsView01DriftItem(git_ns_view::v0_1::DriftItem)
+        in git_ns_view::v0_1::Response as "DriftItem";
 }
 
 /// One type's component, and every other definition of its schema, which the

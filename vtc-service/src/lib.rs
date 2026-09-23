@@ -31,6 +31,7 @@ pub mod emergency;
 pub mod endorsement_types;
 pub mod endorsements;
 pub mod error;
+pub mod git_ns;
 pub mod holder_signature;
 pub mod hooks;
 pub mod install;
