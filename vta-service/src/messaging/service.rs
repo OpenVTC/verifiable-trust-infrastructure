@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
-use affinidi_messaging_core::{Inbound, MessageTransport, Protocol, ReceivedMessage};
+use affinidi_messaging_core::{Inbound, InboundKind, MessageTransport, Protocol, ReceivedMessage};
 #[cfg(feature = "didcomm")]
 use affinidi_messaging_delivery::Delivery;
 use affinidi_messaging_delivery::{MessagingService, OutboxStore};
@@ -40,6 +40,7 @@ use vti_common::outbox_store::VtiOutboxStore;
 
 #[cfg(feature = "didcomm")]
 use crate::messaging::router::{self, VtaState};
+use crate::messaging::sender_order::{FrameOrder, SenderOrder};
 #[cfg(feature = "didcomm")]
 use crate::messaging::shim::{DIDCommResponse, ProblemReport, ServiceProblemReport};
 use crate::server::AppState;
@@ -315,6 +316,15 @@ pub async fn run_inbound_loop(
     const MAX_INFLIGHT_INBOUND: usize = 32;
     let inflight = Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_INBOUND));
 
+    // Spawning gives up arrival order, and one ordering matters: a TSP
+    // relationship request must be answered before the traffic its sender sent
+    // after it (Keyring VTI-43 — a reply sent ahead of our `XRFA` lands on a
+    // relationship the peer does not have yet, and is dropped). The ticket is
+    // taken HERE, on the reader, because only the reader sees arrival order;
+    // `sender_order` has the full reasoning, including why this is a barrier
+    // rather than a per-sender FIFO.
+    let sender_order = SenderOrder::new();
+
     loop {
         tokio::select! {
             maybe = stream.next() => {
@@ -333,6 +343,9 @@ pub async fn run_inbound_loop(
                     }
                 };
 
+                let ticket = sender_order
+                    .admit(inbound.message.sender.as_deref(), frame_order(&inbound));
+
                 let messaging = Arc::clone(&messaging);
                 let app_state = app_state.clone();
                 #[cfg(feature = "didcomm")]
@@ -340,6 +353,10 @@ pub async fn run_inbound_loop(
                 let vta_did = vta_did.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
+                    // Held to the end of the handler: dropping a barrier's
+                    // ticket is what releases the frames queued behind it.
+                    ticket.ready().await;
+                    let _ticket = ticket;
                     // Two call sites rather than one with a `#[cfg]` argument:
                     // attributes on call arguments are not stable, while
                     // attributes on the parameter (below) and on a statement
@@ -357,6 +374,21 @@ pub async fn run_inbound_loop(
         }
     }
     info!("VTA messaging stopped");
+}
+
+/// How one inbound frame takes part in per-sender ordering.
+///
+/// Only TSP has relationship state for a reply to race: a relationship-control
+/// frame is a barrier, TSP application traffic follows it. DIDComm frames are
+/// unordered, as they always were — there is no handshake a reply can overtake.
+fn frame_order(inbound: &Inbound) -> FrameOrder {
+    match inbound.message.protocol {
+        Protocol::TSP => match inbound.kind {
+            InboundKind::RelationshipControl { .. } => FrameOrder::Barrier,
+            _ => FrameOrder::Follower,
+        },
+        _ => FrameOrder::Unordered,
+    }
 }
 
 /// Route one inbound frame by protocol.
@@ -779,6 +811,58 @@ mod tests {
         assert_eq!(
             inbound_gate(&received(false, Some(SENDER), true)).authenticated_sender(),
             None,
+        );
+    }
+}
+
+#[cfg(test)]
+mod frame_order_tests {
+    use super::frame_order;
+    use crate::messaging::sender_order::FrameOrder;
+    use affinidi_messaging_core::{
+        Inbound, InboundAck, InboundKind, Protocol, ReceivedMessage, RelationshipRequest,
+    };
+
+    fn inbound(protocol: Protocol) -> Inbound {
+        Inbound::new(
+            ReceivedMessage {
+                id: "urn:uuid:test".to_string(),
+                sender: Some("did:peer:2.phone".to_string()),
+                recipient: "did:key:z6MkRecipient".to_string(),
+                payload: Vec::new(),
+                protocol,
+                verified: true,
+                encrypted: true,
+            },
+            None,
+            InboundAck("ack".into()),
+        )
+    }
+
+    /// VTI-43: the invite is the barrier its sender's Trust Tasks wait behind.
+    #[test]
+    fn a_tsp_relationship_request_is_a_barrier() {
+        let xrfi = inbound(Protocol::TSP).with_kind(InboundKind::RelationshipControl {
+            request: RelationshipRequest::Invite,
+            thread_digest: [7u8; 32],
+            reply_expected: false,
+            introduces: None,
+        });
+        assert_eq!(frame_order(&xrfi), FrameOrder::Barrier);
+    }
+
+    #[test]
+    fn tsp_traffic_follows() {
+        assert_eq!(frame_order(&inbound(Protocol::TSP)), FrameOrder::Follower);
+    }
+
+    /// DIDComm has no relationship handshake to overtake, so it keeps its
+    /// previous, fully concurrent behaviour.
+    #[test]
+    fn didcomm_is_unordered() {
+        assert_eq!(
+            frame_order(&inbound(Protocol::DIDComm)),
+            FrameOrder::Unordered
         );
     }
 }
