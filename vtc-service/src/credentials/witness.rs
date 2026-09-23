@@ -20,8 +20,9 @@
 //!
 //! The recompute and the decode both go through `dtg-credentials`
 //! (`digest_multibase_json`, `decode_digest_multibase`), the implementation
-//! `DTGCredential::new_vwc` callers use to produce the value. A first version
-//! of this module digested with [`crate::credentials::ingress::digest_multibase`]
+//! `DTGCredential::new_vwc_for_session` callers use to produce the value. A
+//! first version of this module digested with
+//! [`crate::credentials::ingress::digest_multibase`]
 //! — the Trust Task framework digest, same encoding, but over the document
 //! *proof included* — and read the Working Draft 01 member name `digest`. Both
 //! compile, both produce plausible strings, and a VWC built by the library to
@@ -609,6 +610,24 @@ mod tests {
     /// `witness/session/0.1` §The nesting).
     const SESSION: &str = "urn:uuid:6f1c1c1e-5a8b-4f7e-9d0c-2b7a4e1d9c30";
 
+    /// The `witness/session` document that opened the session, as the witness
+    /// received it. `new_vwc_for_session` reads both halves of the citation off
+    /// it — `taskContext` from its `id`, `taskDigestMultibase` from its task
+    /// digest — so the two cannot disagree, and refuses anything that is not
+    /// the opening document (a `submit`, a `#response`, or one whose
+    /// `threadId` is not its own `id`).
+    fn witness_session() -> JsonValue {
+        json!({
+            "id": SESSION,
+            "type": "https://trusttasks.org/spec/witness/session/0.1",
+            "threadId": SESSION,
+            "issuer": ALICE,
+            "recipient": WITNESS,
+            "issuedAt": "2026-09-22T09:59:00Z",
+            "payload": { "parties": [ALICE, BOB] }
+        })
+    }
+
     /// A VRC as it is stored after publication: the catalog's own credential,
     /// **signed** — the `proof` is what a stored edge carries and what the VWC
     /// digest must not cover.
@@ -644,21 +663,23 @@ mod tests {
     /// issuer (DTG Credentials §VWC: "MUST be the DID of the issuer of the edge
     /// credential that the VWC attests"), and `taskContext` is REQUIRED.
     fn vwc_for(witnessed: &DTGCredential) -> DTGCredential {
-        DTGCredential::new_vwc(
+        DTGCredential::new_vwc_for_session(
             WITNESS.into(),
             witnessed.credential().issuer.clone(),
             Utc::now(),
             None,
-            SESSION.into(),
-            Some(witnessed.digest_multibase().expect("catalog digest")),
+            &witness_session(),
+            witnessed.digest_multibase().expect("catalog digest"),
             None,
         )
+        .expect("the opening witness/session document builds a VWC")
     }
 
     /// **The round trip #1068 asked for.** A VWC built through
-    /// `DTGCredential::new_vwc`, its digest produced by the catalog's own
-    /// `digest_multibase` over the witnessed VRC, binds to that VRC as this
-    /// service stores it — signed, with a `proof` the digest excludes.
+    /// `DTGCredential::new_vwc_for_session`, its digest produced by the
+    /// catalog's own `digest_multibase` over the witnessed VRC, binds to that
+    /// VRC as this service stores it — signed, with a `proof` the digest
+    /// excludes.
     ///
     /// Before this test existed the two sides disagreed twice over, and both
     /// were silent: the verifier read `credentialSubject.digest` where the
@@ -693,13 +714,28 @@ mod tests {
     }
 
     /// The same catalog-built VWC clears the receipt half of Trust Task Context
-    /// Binding (#1065): `new_vwc` cannot omit `taskContext`, and ingress, which
-    /// refuses a VWC without one, accepts it.
+    /// Binding (#1065): `new_vwc_for_session` cannot omit `taskContext`, and
+    /// ingress, which refuses a VWC without one, accepts it.
+    ///
+    /// Since dtg-credentials 0.11 it also carries `taskDigestMultibase`, the
+    /// task digest of the same document — the half that *binds* the citation,
+    /// where `taskContext` only names it (`witness/session/submit` Conformance
+    /// item 1). Both are read off one document, so they cannot disagree.
     #[test]
     fn a_catalog_built_vwc_carries_the_required_task_context() {
         let (alice_to_bob, _) = stored_signed_vrc(ALICE, BOB);
-        let vwc = dtg_json(&vwc_for(&alice_to_bob));
+        let built = vwc_for(&alice_to_bob);
+        let vwc = dtg_json(&built);
         assert_eq!(vwc["taskContext"], SESSION);
+        assert_eq!(
+            vwc["taskDigestMultibase"],
+            dtg_credentials::task_digest_multibase_json(&witness_session()).unwrap(),
+            "the digest is the session document's, not something the issuer chose"
+        );
+        assert!(
+            built.cites_task(&witness_session()).unwrap(),
+            "both halves of the citation resolve back to the document they came from"
+        );
         assert_eq!(
             crate::credentials::ingress::classify_dtg(&vwc).unwrap(),
             dtg_credentials::DTGCredentialType::Witness

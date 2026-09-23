@@ -120,18 +120,21 @@ mod tests {
         subject: &str,
         scope: &str,
         actions: Vec<String>,
-        // Required, and not by this helper's choice: since dtg-credentials 0.7 a VAC's
+        // Both ends, and not by this helper's choice. Since dtg-credentials 0.7 a VAC's
         // `validUntil` is required by the constructor, so a nomination with no expiry is a
-        // state no test can build any more. Every call already passed one.
+        // state no test can build any more; since 0.10 the constructor also refuses a
+        // window that does not open before it closes, so a test wanting an *expired*
+        // nomination has to say when it started as well as when it ended. Passing
+        // `valid_until` alone let one read as expired while being malformed.
+        valid_from: chrono::DateTime<Utc>,
         valid_until: chrono::DateTime<Utc>,
     ) -> String {
-        let now = Utc::now();
         let mut vac = DTGCredential::new_vac(
             issuer.to_string(),
             subject.to_string(),
             scope.to_string(),
             actions,
-            now - Duration::minutes(1),
+            valid_from,
             valid_until,
         )
         .expect("build the nomination")
@@ -147,6 +150,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
+            Utc::now() - Duration::minutes(1),
             Utc::now() + Duration::days(365),
         )
         .await
@@ -184,6 +188,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
+            Utc::now() - Duration::minutes(1),
             Utc::now() + Duration::days(365),
         )
         .await;
@@ -226,6 +231,7 @@ mod tests {
             &f.successor_did,
             &other_room,
             vec![ACTION_SUCCEED.into()],
+            Utc::now() - Duration::minutes(1),
             Utc::now() + Duration::days(365),
         )
         .await;
@@ -237,6 +243,12 @@ mod tests {
 
     /// The spec's advice — nominations SHOULD expire — is only advice if an expired one
     /// still works.
+    ///
+    /// The window opened two days ago and closed one day ago. It has to have *opened*:
+    /// a `validUntil` before `validFrom` is a nomination that was never valid at all,
+    /// which dtg-credentials 0.10 refuses at construction and which would prove nothing
+    /// about expiry even if it did not. This fixture said `validFrom` a minute ago and
+    /// `validUntil` a day ago until that check caught it.
     #[tokio::test]
     async fn an_expired_nomination_is_refused() {
         let f = fixture().await;
@@ -246,6 +258,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
+            Utc::now() - Duration::days(2),
             Utc::now() - Duration::days(1),
         )
         .await;
@@ -272,6 +285,7 @@ mod tests {
                 "curate".into(),
                 "admin".into(),
             ],
+            Utc::now() - Duration::minutes(1),
             Utc::now() + Duration::days(365),
         )
         .await;

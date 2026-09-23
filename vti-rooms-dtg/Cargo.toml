@@ -28,8 +28,11 @@ vti-rooms = { path = "../vti-rooms", version = "0.2" }
 vti-common = { path = "../vti-common", version = "0.23" }
 
 # `authority::verify_chain` and the VAC/VDC types. Was a pinned git rev while
-# 0.6.0 sat merged and unreleased; released 2026-09-03.
-dtg-credentials = "0.9.1"
+# 0.6.0 sat merged and unreleased; released 2026-09-03. Takes the workspace
+# requirement for the reason `vti-rooms-wasm` states: a chain built by one
+# version and verified by another is refused as a broken chain rather than as a
+# version skew, and a literal pin here is how that drift gets reintroduced.
+dtg-credentials = { workspace = true }
 
 async-trait = "0.1"
 # Both hosts already carry a `VerificationMethodResolver`, so the key adapter wraps

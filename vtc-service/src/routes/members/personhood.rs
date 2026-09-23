@@ -1132,22 +1132,51 @@ mod witness_binding_tests {
         (vtc, vrc)
     }
 
+    /// The `witness/session` document that opened the session `SESSION` names.
+    /// `new_vwc_for_session` reads `taskContext` and `taskDigestMultibase` off
+    /// it, so the pair cannot disagree.
+    fn witness_session() -> JsonValue {
+        json!({
+            "id": SESSION,
+            "type": "https://trusttasks.org/spec/witness/session/0.1",
+            "threadId": SESSION,
+            "issuer": ALICE,
+            "recipient": WITNESS,
+            "issuedAt": "2026-09-22T09:59:00Z",
+            "payload": { "parties": [ALICE, BOB] }
+        })
+    }
+
     /// A catalog-built VWC over `digest`, presented by Alice.
+    ///
+    /// `new_vwc_for_session` takes the edge digest as REQUIRED, which the
+    /// specification makes it. `digest: None` is therefore not something the
+    /// constructor can produce — it is the VWC that predates the requirement,
+    /// and the only honest way to hold one is to drop the member from the wire
+    /// form, which is how it would arrive.
     fn presentation_with_witness(digest: Option<String>) -> JsonValue {
-        let vwc = DTGCredential::new_vwc(
+        let vwc = DTGCredential::new_vwc_for_session(
             WITNESS.into(),
             ALICE.into(),
             Utc::now(),
             None,
-            SESSION.into(),
-            digest,
+            &witness_session(),
+            digest.clone().unwrap_or_default(),
             None,
-        );
+        )
+        .expect("the opening witness/session document builds a VWC");
+        let mut vwc = dtg_json(&vwc);
+        if digest.is_none() {
+            vwc["credentialSubject"]
+                .as_object_mut()
+                .expect("credentialSubject is an object")
+                .remove("digestMultibase");
+        }
         json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiablePresentation"],
             "holder": ALICE,
-            "verifiableCredential": [dtg_json(&vwc)]
+            "verifiableCredential": [vwc]
         })
     }
 
