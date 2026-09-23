@@ -230,9 +230,11 @@ pub(crate) enum Commands {
     /// show a set of them together, which face each persona wears where, and
     /// what other people have told you.
     ///
-    /// Your attributes and your faces sit ABOVE every trust context. Reaching them
-    /// needs an agent credential with no context restriction, or one granted
-    /// `persona-holder`. Wearing, contacts and what leaves are context-scoped
+    /// Your attributes and your faces sit ABOVE every trust context. Reaching
+    /// them needs a credential granted `persona-holder`, and no role carries it
+    /// — administering every context is not permission to read what sits above
+    /// them. Grant it with `pnm acl update --did <did> --capabilities
+    /// persona-holder`. Wearing, contacts and what leaves are context-scoped
     /// and take `--context`.
     Persona {
         #[command(subcommand)]
@@ -2048,12 +2050,13 @@ pub(crate) enum ContextCommands {
         /// identity** — the attribute pool, the profiles built over it, and the
         /// disclosure history — by adding the `persona-holder` capability.
         ///
-        /// That identity sits above every trust context, so a context-scoped
-        /// admin cannot reach it. Without this flag a client provisioned here
-        /// can administer its own context and nothing of the holder's; with it,
-        /// it can manage the holder's identity **without** gaining any authority
-        /// over other contexts. Grant it to a client that is the holder's own —
-        /// OpenVTC, a personal agent — and not to an integration.
+        /// That identity sits above every trust context, and no role reaches
+        /// it — not a context-scoped admin, and not a super-admin either.
+        /// Without this flag a client provisioned here can administer its own
+        /// context and nothing of the holder's; with it, it can manage the
+        /// holder's identity **without** gaining any authority over other
+        /// contexts. Grant it to a client that is the holder's own — OpenVTC, a
+        /// personal agent — and not to an integration.
         ///
         /// Super-admin only, like every grant of holder authority.
         #[arg(long, requires = "admin_did")]

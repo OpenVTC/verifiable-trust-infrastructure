@@ -1,6 +1,7 @@
 # Persona — context-first identity
 
-**Status:** proposed. The first design note for the `persona/*` family.
+**Status:** implemented. The first design note for the `persona/*` family; §7
+records what was decided where the note left a question open.
 
 Written after reviewing `vta-persona`, the `persona/*` Trust Tasks, and the
 upstream specifications in `dtgwg-trust-tasks-tf/specs/persona/` against the UX
@@ -443,23 +444,74 @@ exists (§4). No store change; `put_facet` already does what is needed.
   distinct type from `ResolvedClaim`.
 - **Local faces stay inline-only, enforced by the parser.**
 
-## 7. Open questions
+## 7. Questions, and what was decided
 
-Decided so far: retained attribute versions are acceptable when bounded by
+Decided earlier: retained attribute versions are acceptable when bounded by
 reference, with purge as the holder's explicit override (§9.1); binding expiry
 retires a face rather than deleting it (§9.5).
 
-1. **§3.5** — should super-admin continue to imply `PersonaHolder`?
-2. **§5.1** — recording the existence of a context-local value in an
-   agent-scoped blinded index is argued above as correct. It deserves an
-   explicit decision rather than an implementation.
-3. **Vocabulary.** "Face" and "facet" share a stem and both name private
-   groupings; `Facet.face_ids` already reads awkwardly. If "world" wins in the
-   UI, consider renaming the type to match rather than carrying two words for
-   adjacent ideas.
-4. **§5.2** — does an attribute criterion belong in `accepts` beside the
-   credential criteria, or in a separate member? Beside is proposed; the
-   ceremony code may prefer otherwise.
+The four that were left open are now closed. Each is recorded here rather than
+in the commit that implemented it, because the reasoning is what a later reader
+needs and a diff does not carry it.
+
+1. **§3.5 — should super-admin imply `PersonaHolder`? No.** The capability's
+   premise is that no role carries it, and inheriting it from the broadest role
+   there is left that premise true only of the roles nobody automates with: the
+   super-admin credential is the one most likely to be sitting in a script, and
+   it read the holder's pool without an ACL entry saying so.
+
+   A super-admin can still grant itself the capability — it is the same
+   credential that grants — so this is not a boundary it cannot cross. It is the
+   difference between crossing it and crossing it *deliberately*: the grant is
+   an ACL write, audited and revocable on its own, where the inherited form left
+   no trace that the pool had been read by something that never asked. The
+   refusal names the command that fixes it, because an operator refused against
+   their own agent's own pool cannot guess at a capability they have never heard
+   of.
+
+2. **§5.1 — the agent-scoped index for a context-local value: ratified.** A
+   per-context index cannot see the same value typed into two contexts, and
+   seeing across contexts is the whole reason the guard exists — a throwaway
+   identity is precisely where someone reuses a real value. What is recorded
+   above the boundary is the *existence* of a value, as
+   `HMAC-SHA256(agent_key, canonical(value))`, never the value.
+
+   **Ratifying it surfaced a real leak, in the answering rather than the
+   recording.** `persona/local/profile/put` is context-scoped and its response
+   carried `correlation.matchesPoolValue` — a yes/no on "does the holder hold
+   this exact value anywhere". A caller that can write is a caller that can
+   guess, so any application authorized in one context had an unbounded oracle
+   over the whole pool, one guess per write. No value crosses the boundary and
+   none needs to: for a name, an address or a date of birth, confirmation *is*
+   disclosure. The member is now conditional on the caller being holder-
+   authorized, and omitted rather than softened — a coarser signal is still an
+   oracle, only a slower one. The holder still gets the warning, through the
+   audit row and the holder-reach correlation task.
+
+   The general shape is worth keeping in mind: an index can be blinded, above
+   the boundary and unreadable, and still leak through a task that *answers*
+   from it. Recording and answering are separate decisions.
+
+3. **Vocabulary — "world" wins, on the wire as well as the screen.** `face` and
+   `facet` share a stem and name different things, and `Facet.faceIds` reads as
+   though one contains the other. Every UI had already resolved it by saying
+   "world", which left the collision live for anyone reading both. So
+   `persona/facet/*` becomes `persona/world/*`, `facetId` becomes `worldId`, and
+   `correlation/analyze` takes a 1.1 for the three members that carried the old
+   word. The predecessors are retired with `supersededBy` rather than deleted:
+   documents already issued stay verifiable, and that window is what consumers
+   migrate across. `facet` survives elsewhere in the registry in its ordinary
+   English sense and is left alone.
+
+4. **§5.2 — an attribute criterion sits outside every criterion, not beside
+   `presentationDefinition` inside one.** The proposal here was "beside"; what
+   shipped is `requestedAttributes` on the manifest response, and the schema
+   says why: **no `requirementsDigest` covers it**. A digest names the exact
+   version of a criterion an applicant started under, and self-asserted
+   attributes are not a requirement in that sense — a community cannot describe
+   an answer as verified, and must not make a decision that assumes it is.
+   Folding them into a criterion would have put them under a digest that implies
+   both. The answer here is the shipped one.
 
 ## 8. Sequencing
 
