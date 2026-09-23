@@ -5293,6 +5293,52 @@
         ]
       }
     },
+    "/v1/vetting/vetters/show": {
+      "post": {
+        "tags": [
+          "vetting"
+        ],
+        "summary": "One vetter's grant status, as an applicant would be told it.",
+        "description": "The body and the answer are `vtc/vetting/vetters/show/0.1`'s, and both go\nthrough [`crate::vetting::profiles::show`], so the console sees exactly what\n`POST /v1/trust-tasks` returns — including `none` for a DID this community\nholds no grant for, which is an answer and not an error.",
+        "operationId": "vettingVetterShow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VtcVettingVettersShowV0_1Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The vetter's grant status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VtcVettingVettersShowV0_1Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The payload is not a valid show request"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/vetting/vetters/{memberDid}/resend": {
       "post": {
         "tags": [
@@ -11207,6 +11253,16 @@
         "additionalProperties": true,
         "minProperties": 1
       },
+      "VtcJoinRequestsManifestV0_2ExtCritical": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*(\\.[a-z0-9-]+)+$"
+        },
+        "description": "Names the `ext` namespaces a consumer MUST understand or refuse, per SPEC.md §4.5.1.\n\nEvery entry MUST be an immediate key of the sibling `ext` object at the same level; an entry naming an absent namespace is non-conforming and the consumer rejects the document with `malformedRequest`. A consumer that does not recognize a namespace named here MUST NOT process the document as though the namespace were absent, and rejects it with `unsupportedExtension` — the exception to the rule that unrecognized namespaces are ignored.\n\nA producer marks a namespace only where the document's meaning depends on it. Marking one that merely carries a hint or an annotation turns every consumer that has not implemented it into a failure where it would otherwise have interoperated. JSON Schema cannot check either of those rules: that an entry names a present namespace is checkable only against the sibling `ext`, and whether a namespace is load-bearing is not a schema question at all. Both are consumer-side checks.",
+        "minItems": 1,
+        "uniqueItems": true
+      },
       "VtcJoinRequestsManifestV0_2RequestedAttribute": {
         "type": "object",
         "required": [
@@ -11363,6 +11419,12 @@
               }
             },
             "additionalProperties": false
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Ext"
+          },
+          "extCritical": {
+            "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2ExtCritical"
           },
           "governanceFrameworkUrl": {
             "type": "string",
@@ -12357,6 +12419,84 @@
             "type": "string",
             "format": "date-time",
             "description": "That credential's `validUntil`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersShowV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcVettingVettersShowV0_1GrantStatus": {
+        "type": "string",
+        "description": "The state of a vetter's grant in this community. The three refusing values are deliberately distinct: `revoked` says the community withdrew a grant it had made, `expired` says one ran out, and `none` says there is nothing to withdraw. An applicant reads those differently, and so does a vetter checking their own standing.",
+        "enum": [
+          "live",
+          "revoked",
+          "expired",
+          "none"
+        ]
+      },
+      "VtcVettingVettersShowV0_1Payload": {
+        "type": "object",
+        "description": "An authenticated applicant or member asks a community about one vetter, by DID. The answer is the state of that vetter's grant — `live`, `revoked`, `expired` or `none` — which a list of vetters cannot express, because an absent vetter and a revoked one look identical in it. The outer document members (id, type, issuer, recipient, issuedAt, expiresAt, proof) are owned by the framework — SPEC §6.3.",
+        "required": [
+          "vetterDid"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcVettingVettersShowV0_1Ext"
+          },
+          "vetterDid": {
+            "type": "string",
+            "description": "The DID of the vetter being asked about — the subject of the vetter role credential. The caller usually holds it from an earlier listing, or from a vetting exchange that has since gone quiet.",
+            "maxLength": 2048,
+            "minLength": 1,
+            "pattern": "^did:"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcVettingVettersShowV0_1Response": {
+        "type": "object",
+        "description": "One vetter's grant status. Carries no profile: what a vetter published for a directory is answered by vtc/vetting/vetters/list, and this task answers a caller who already knows which vetter they mean.",
+        "required": [
+          "vetterDid",
+          "status"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcVettingVettersShowV0_1Ext"
+          },
+          "grantId": {
+            "type": "string",
+            "description": "The identifier of the grant this status is about. Present for `live`, `revoked` and `expired`; absent for `none`, which is the absence of a grant and so has nothing to identify.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "listed": {
+            "type": "boolean",
+            "description": "Whether this vetter has a profile stored with `listed: true`, and so would appear in vtc/vetting/vetters/list. Present only for `live`. It is what separates the two reasons a live vetter is missing from a listing: unlisted by choice, rather than not a vetter."
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the grant was revoked. Present only for `revoked`. The reason is deliberately not carried: it is the community's internal record, and an applicant needs to know the grant does not hold, not why."
+          },
+          "status": {
+            "$ref": "#/components/schemas/VtcVettingVettersShowV0_1GrantStatus"
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The grant's `validUntil`. Present for `live` and `expired` — for `expired` it is when it ran out, which tells a caller whether it lapsed long ago or yesterday. Absent for `none`, and for `revoked`, where the revocation and not the expiry is what ended it."
+          },
+          "vetterDid": {
+            "type": "string",
+            "description": "The DID asked about, echoed so a response is self-contained.",
+            "pattern": "^did:"
           }
         },
         "additionalProperties": false

@@ -371,7 +371,7 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # `persona/profile/{retire,reinstate}` and binding `until`; 0.21.14, of
 # `persona/profile/{usage,timeline}` and face `reach`; 0.21.15, of `derived`
 # provenance, attribute `endorsements` and `vtc/invitations/deliver`.
-trust-tasks-rs = { version = "0.21.17", default-features = false, features = [
+trust-tasks-rs = { version = "0.21.21", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
