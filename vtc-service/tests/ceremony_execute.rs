@@ -60,6 +60,7 @@ async fn admit_honours_the_plan_role() {
         subject: subject.into(),
         role: "moderator".into(),
         obligations: vec![],
+        publish_consent: false,
     };
     let outcome = execute::apply(&state, plan, ACTOR_DID)
         .await
@@ -115,6 +116,7 @@ async fn admit_duplicate_acl_is_conflict() {
         subject: subject.into(),
         role: "member".into(),
         obligations: vec![],
+        publish_consent: false,
     };
     let err = execute::apply(&state, plan, ACTOR_DID)
         .await
@@ -138,6 +140,7 @@ async fn concurrent_admits_for_one_did_yield_one_membership() {
         subject: subject.into(),
         role: "member".into(),
         obligations: vec![],
+        publish_consent: false,
     };
 
     let (s1, s2) = (state.clone(), state.clone());
@@ -147,6 +150,7 @@ async fn concurrent_admits_for_one_did_yield_one_membership() {
         subject: subject.into(),
         role: "member".into(),
         obligations: vec![],
+        publish_consent: false,
     };
     let h2 = tokio::spawn(async move { execute::apply(&s2, make_plan2(), ACTOR_DID).await });
 
@@ -212,6 +216,7 @@ async fn depart_revokes_the_members_role_grants() {
         subject: subject.into(),
         role: "member".into(),
         obligations: vec![],
+        publish_consent: false,
     };
     execute::apply(&state, admit, ACTOR_DID)
         .await
@@ -303,6 +308,7 @@ async fn depart_removes_member_and_revokes() {
         subject: subject.into(),
         role: "member".into(),
         obligations: vec![],
+        publish_consent: false,
     };
     let EffectOutcome::Admitted(creds) = execute::apply(&state, admit, ACTOR_DID)
         .await
@@ -399,6 +405,7 @@ async fn remint_changes_role_and_reissues_vec() {
         subject: subject.into(),
         role: "member".into(),
         obligations: vec![],
+        publish_consent: false,
     };
     execute::apply(&state, admit, ACTOR_DID)
         .await
@@ -510,6 +517,7 @@ async fn member_count_cache_tracks_list_members_len() {
         subject: did.into(),
         role: role.into(),
         obligations: vec![],
+        publish_consent: false,
     };
 
     assert_eq!(assert_consistent(&state).await, 0, "fresh community");

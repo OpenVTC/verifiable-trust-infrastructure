@@ -146,9 +146,10 @@ pub async fn apply(
             // the reciprocal-VMC handshake lands with the join
             // ceremony route.
             obligations: _,
+            publish_consent,
         } => {
             let role = parse_role(&role)?;
-            let outcome = admit(state, &subject, role, actor_did).await?;
+            let outcome = admit(state, &subject, role, publish_consent, actor_did).await?;
             Ok(EffectOutcome::Admitted(Box::new(outcome)))
         }
         EffectPlan::Depart {
@@ -193,10 +194,19 @@ fn parse_role(role: &str) -> Result<VtcRole, AppError> {
 /// both observe "no ACL row" and both proceed, minting two VMCs and
 /// burning two status-list slots (P0.15). With the lock, the loser sees
 /// the row the winner wrote and gets a `Conflict`.
+///
+/// `publish_consent` is the applicant's `registryConsent`, written onto the
+/// Member row in its *first* store, so no reader ever sees the new row without
+/// it. The same guard means
+/// admission never overwrites a live member's consent (a live member holds an
+/// ACL row, so the admit is a `Conflict`); a re-admission follows a departure,
+/// whose tombstone already cleared the old consent, and the new application's
+/// answer is the only one that applies to the new membership.
 async fn admit(
     state: &AppState,
     subject_did: &str,
     role: VtcRole,
+    publish_consent: bool,
     actor_did: &str,
 ) -> Result<AdmitOutcome, AppError> {
     let _guard = LAST_ADMIN_LOCK.lock().await;
@@ -221,6 +231,7 @@ async fn admit(
     store_acl_entry(&state.acl_ks, &acl).await?;
 
     let mut member = Member::fresh(subject_did);
+    member.publish_consent = publish_consent;
     store_member(&state.members_ks, &member).await?;
 
     let (vmc, role_vec, status_list_index) =

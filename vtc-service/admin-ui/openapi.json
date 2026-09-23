@@ -8014,7 +8014,7 @@
           },
           "registryConsent": {
             "type": "boolean",
-            "description": "Whether the applicant consents to being published in the\ncommunity's trust-registry record (spec §8). Default\n`false`; the operator-facing surface defers this decision\nto Phase 3."
+            "description": "Whether the applicant consents to being published in the\ncommunity's trust-registry record (spec §8). Default\n`false`. Carried onto the member's `publish_consent` when this request\nadmits the applicant — on auto-admit, on a supplement that admits, and\non an operator's approval."
           },
           "status": {
             "$ref": "#/components/schemas/JoinStatus"
@@ -8758,7 +8758,7 @@
                 },
                 "registryConsent": {
                   "type": "boolean",
-                  "description": "Whether the applicant consents to being published in the\ncommunity's trust-registry record (spec §8). Default\n`false`; the operator-facing surface defers this decision\nto Phase 3."
+                  "description": "Whether the applicant consents to being published in the\ncommunity's trust-registry record (spec §8). Default\n`false`. Carried onto the member's `publish_consent` when this request\nadmits the applicant — on auto-admit, on a supplement that admits, and\non an operator's approval."
                 },
                 "status": {
                   "$ref": "#/components/schemas/JoinStatus"

@@ -4588,3 +4588,129 @@ async fn withdrawing_a_statement_as_a_non_member_is_the_declared_not_member() {
         "{body}"
     );
 }
+
+// ─── registryConsent → Member::publish_consent (Keyring Q14) ───────────────
+//
+// `registryConsent` is the applicant's opt-in to trust-registry publication.
+// It used to be stored on the join request and read by nothing: every
+// admission wrote `publish_consent: false`, so the only way a member ever
+// became publishable was an operator flipping it. Each admission path now
+// carries the applicant's answer onto the member row.
+
+const ALLOW_JOIN_POLICY: &str = "package vtc.join\nimport rego.v1\n\n\
+     default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n";
+
+/// Submit under an `allow` policy as the holder of `seed`, with `payload`'s
+/// `registryConsent` as given, and return the admitted member's
+/// `publish_consent`.
+async fn auto_admitted_publish_consent(f: &Fixture, seed: [u8; 32], payload: Value) -> bool {
+    let (did, doc) = signed_trust_task_seed(&seed, SUBMIT_TASK, payload).await;
+    let (status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(verdict_effect(&body), "allow", "{body}");
+    get_member(&f.members_ks, &did)
+        .await
+        .unwrap()
+        .expect("auto-admitted applicant has a member row")
+        .publish_consent
+}
+
+#[tokio::test]
+async fn auto_admit_carries_registry_consent_onto_the_member() {
+    let f = build_fixture().await;
+    activate_join_policy(&f, ALLOW_JOIN_POLICY).await;
+    let vp = json!({ "type": "VerifiablePresentation" });
+
+    assert!(
+        auto_admitted_publish_consent(&f, [0x71; 32], json!({ "vp": vp, "registryConsent": true }))
+            .await,
+        "an applicant who consented is publishable"
+    );
+    assert!(
+        !auto_admitted_publish_consent(
+            &f,
+            [0x72; 32],
+            json!({ "vp": vp, "registryConsent": false })
+        )
+        .await,
+        "an applicant who declined is not"
+    );
+    assert!(
+        !auto_admitted_publish_consent(&f, [0x73; 32], json!({ "vp": vp })).await,
+        "silence is not consent"
+    );
+}
+
+/// The referred path: the policy leaves the request `pending`, an operator
+/// approves it, and the approval admits with the applicant's answer — an
+/// operator admits the applicant, it does not consent on their behalf.
+#[tokio::test]
+async fn an_approved_referral_carries_registry_consent_onto_the_member() {
+    let f = build_fixture().await;
+    for (seed, consent) in [([0x74; 32], true), ([0x75; 32], false)] {
+        let (did, doc) = signed_trust_task_seed(
+            &seed,
+            SUBMIT_TASK,
+            json!({ "vp": {}, "registryConsent": consent }),
+        )
+        .await;
+        let (status, body) = post_tt(&f.router, doc).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id = tt_payload(&body)["requestId"].as_str().unwrap().to_string();
+
+        let (status, body) = send(
+            &f.router,
+            "POST",
+            &format!("/v1/join-requests/{id}/decide"),
+            DECIDE_TASK,
+            Some(&f.admin_token),
+            Some(json!({ "decision": "approved" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let member = get_member(&f.members_ks, &did)
+            .await
+            .unwrap()
+            .expect("approved applicant has a member row");
+        assert_eq!(member.publish_consent, consent, "registryConsent={consent}");
+    }
+}
+
+/// The supplement path admits through the same verdict application as a
+/// submission, off the row being re-decided — whose consent is the one the
+/// applicant gave when they applied.
+#[tokio::test]
+async fn a_supplement_that_admits_carries_registry_consent_onto_the_member() {
+    let f = build_fixture().await;
+    activate_join_policy(&f, ALLOW_JOIN_POLICY).await;
+    let applicant = "did:key:zSupplementConsent";
+    let mut request =
+        vtc_service::join::JoinRequest::new(applicant.to_string(), json!({ "vp": "x" }));
+    request.status = JoinStatus::Deferred;
+    request.registry_consent = true;
+    store_join_request(&f.state.join_requests_ks, &request)
+        .await
+        .unwrap();
+
+    let out = vtc_service::join::supplement_inner(
+        &f.state,
+        applicant,
+        Some(request.id),
+        json!({ "type": ["VerifiablePresentation"] }),
+        json!({}),
+        vtc_service::join::JoinTransport::Rest,
+    )
+    .await
+    .expect("the supplement is accepted");
+    assert!(
+        out.admit.is_some(),
+        "the allow policy admits on re-decision"
+    );
+
+    let member = get_member(&f.members_ks, applicant)
+        .await
+        .unwrap()
+        .expect("admitted applicant has a member row");
+    assert!(member.publish_consent);
+}
