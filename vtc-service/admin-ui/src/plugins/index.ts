@@ -15,6 +15,7 @@ import {
   BadgeCheck,
   ClipboardList,
   DoorOpen,
+  FolderGit2,
   Inbox,
   KeyRound,
   LayoutDashboard,
@@ -42,6 +43,7 @@ import { MyPasskeys } from "@/plugins/myPasskeys";
 import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
+import { Repos } from "@/plugins/repos";
 import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
 import { Vetting } from "@/plugins/vetting";
@@ -117,6 +119,14 @@ export function registerBuiltinPlugins(): void {
     path: "/rooms",
     iconComponent: DoorOpen,
     reactComponent: Rooms,
+  });
+
+  registerPlugin({
+    id: "repos",
+    label: "Repos",
+    path: "/repos",
+    iconComponent: FolderGit2,
+    reactComponent: Repos,
   });
 
   registerPlugin({

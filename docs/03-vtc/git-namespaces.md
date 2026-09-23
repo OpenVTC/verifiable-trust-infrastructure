@@ -203,6 +203,17 @@ DID it stands for on every member-facing `git-ns/*` task.
 Every change is a signed `git-ns/*` Trust Task on `POST /v1/trust-tasks` (or
 DIDComm/TSP). `cnm git …` signs them with the community profile's key.
 
+The admin console's **Repos** plugin (`/admin/repos`) renders these routes:
+namespace cards (kind, mode, installation state, admins, the bridge's service
+grant), each namespace's repositories with their four-step bootstrap and sync
+state, a repository's people and rights, bootstrap checklist, the guard
+design §9 expects, the registry records it puts in public, its drift, and
+the grants departed members issued. It cannot sign a Trust Task yet, so each
+change it offers — bind, grant, revoke, adopt, transfer, archive — is built
+exactly as it will be sent and handed to the administrator as the `cnm git …`
+command that signs it, and as the document itself where `cnm` has no command
+(transfer, archive).
+
 ## Limits
 
 - **No member step-up** — see *Consent classes* above.

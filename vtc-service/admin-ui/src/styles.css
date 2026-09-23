@@ -3167,3 +3167,398 @@ svg.pf {
 .pf-traced .pf-lit .pf-edge { stroke: var(--brand); stroke-width: 2.5; }
 .pf-traced .pf-lit .pf-q { stroke: var(--brand); stroke-width: 2; }
 .pf-traced .pf-lit .pf-term { stroke-width: 2.5; }
+
+/* ── Repos (git namespaces) ──────────────────────────────────────
+ *
+ * The Repos plugin (`plugins/repos*`). Everything reads tokens, so light
+ * and dark follow the shell; colour is never the only signal — every dot,
+ * chip and checklist mark has a text or aria equivalent beside it. */
+
+a.button.primary {
+  background: var(--brand);
+  color: var(--brand-fg);
+  text-decoration: none;
+}
+a.button.primary:hover {
+  background: var(--brand-hover);
+}
+
+.gitns-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+.gitns-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-leading);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tighter);
+}
+.gitns-head h2.gitns-mono {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: var(--text-xl);
+}
+.gitns-head .lead {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+  max-width: 72ch;
+}
+.gitns-head-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.gitns-mono {
+  font-family: var(--font-mono);
+}
+.gitns-small {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-leading);
+}
+.gitns-block {
+  display: block;
+}
+.gitns-bad {
+  color: var(--danger);
+  font-weight: 500;
+}
+.gitns-warn {
+  color: var(--warning);
+  font-weight: 500;
+}
+
+.gitns-ns-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+  gap: var(--space-4);
+}
+.gitns-ns.selected {
+  border-color: var(--brand);
+  box-shadow: inset 0 0 0 1px var(--brand);
+}
+.gitns-ns-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.card h3.gitns-ns-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.gitns-ns-name a {
+  color: inherit;
+  text-decoration: none;
+}
+.gitns-ns-name a:hover {
+  color: var(--brand);
+  text-decoration: underline;
+}
+.gitns-mode {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.gitns-mode.ok {
+  color: var(--success);
+}
+.gitns-mode.bad {
+  color: var(--danger);
+}
+.gitns-stats {
+  display: flex;
+  gap: var(--space-2) var(--space-6);
+  flex-wrap: wrap;
+  color: var(--text-muted);
+}
+.gitns-stats b {
+  color: var(--text);
+}
+.gitns-steps-list {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+
+.gitns-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.gitns-dots {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+.gitns-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  border: 1.5px solid var(--border-strong);
+}
+.gitns-dot.done {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.gitns-sync {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  white-space: nowrap;
+}
+
+.gitns-two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+  gap: var(--space-4);
+}
+.gitns-nsr {
+  display: grid;
+  grid-template-columns: minmax(9rem, max-content) 1fr max-content;
+  gap: var(--space-3) var(--space-4);
+  align-items: center;
+}
+.gitns-right-admin {
+  color: var(--danger);
+}
+.gitns-right-create {
+  color: var(--brand);
+}
+.gitns-holders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+.gitns-departed.warn {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 7%, var(--bg-elev));
+}
+
+.gitns-crumbs {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.gitns-chips {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+.gitns-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .gitns-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.gitns-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.gitns-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.gitns-checklist li {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+.gitns-checklist li.done > svg {
+  color: var(--success);
+  flex-shrink: 0;
+}
+.gitns-checklist li.missing > svg {
+  color: var(--danger);
+  flex-shrink: 0;
+}
+.gitns-tuples code {
+  font-size: var(--text-sm);
+}
+.gitns-activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.gitns-drift-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.confirm-dialog.gitns-sign,
+.confirm-dialog.gitns-form {
+  width: min(40rem, 100%);
+  max-height: calc(100vh - var(--space-10));
+  overflow-y: auto;
+}
+.gitns-command {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.gitns-command-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+.gitns-command-row pre {
+  flex: 1;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: var(--text-sm);
+}
+.gitns-doc summary {
+  cursor: pointer;
+  color: var(--brand);
+  font-weight: 500;
+  margin-bottom: var(--space-2);
+}
+
+.gitns-bind {
+  max-width: 56rem;
+}
+.gitns-bind-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-leading);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tighter);
+}
+.gitns-stepper {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.gitns-stepper li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.gitns-step-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+}
+.gitns-stepper li.done {
+  color: var(--success);
+  font-weight: 500;
+}
+.gitns-stepper li.done .gitns-step-mark {
+  background: var(--success);
+  border-color: var(--success);
+  color: var(--brand-fg);
+}
+.gitns-stepper li.current {
+  color: var(--brand);
+  font-weight: 600;
+}
+.gitns-stepper li.current .gitns-step-mark {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-fg);
+}
+.gitns-stepper li.skipped {
+  text-decoration: line-through;
+}
+.gitns-form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--space-4);
+}
+.gitns-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.gitns-fieldset legend {
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+.gitns-radio {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+.gitns-radio input {
+  margin-top: 3px;
+}
+.gitns-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-3);
+}
+.gitns-facts > div {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.gitns-adopt-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.gitns-adopt-list li {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+.gitns-adopt-list li button {
+  margin-left: auto;
+}
