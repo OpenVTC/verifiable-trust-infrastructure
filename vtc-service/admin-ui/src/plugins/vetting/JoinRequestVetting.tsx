@@ -60,9 +60,23 @@ export function JoinRequestVettingCard({ id }: { id: string }) {
   );
 }
 
+/**
+ * Whether a counted statement's issuer is a hidden-vetting tag rather than a DID.
+ *
+ * On the hidden path the community never learns who vetted: what lands in `issuer` is a
+ * pseudonym, deterministic for one vetter and one applicant. Rendering it as a DID is how a
+ * reviewer concludes the row is broken data, so it is rendered as what it is.
+ */
+function isHiddenVetter(issuer: string): boolean {
+  return !issuer.startsWith("did:");
+}
+
 export function VettingFacts({ facts }: { facts: JoinRequestVetting }) {
   const book = useNameBook();
   const headline = factsHeadline(facts);
+  const hidden = facts.statements.some(
+    (s) => s.issuer && isHiddenVetter(s.issuer),
+  );
   const byMethod = Object.entries(facts.byMethod)
     .filter(([, n]) => n > 0)
     .map(([method, n]) => `${methodLabel(method)} ${n}`);
@@ -99,6 +113,14 @@ export function VettingFacts({ facts }: { facts: JoinRequestVetting }) {
         <dd>
           {facts.distinctCountedVetters} distinct{" "}
           {facts.distinctCountedVetters === 1 ? "vetter" : "vetters"}
+          {hidden && (
+            <span
+              className="vet-note"
+              title="The criterion accepts a proof instead of named statements, so the community counts distinct vetters without learning which members they are."
+            >
+              Counted from a proof: this criterion hides which members vetted.
+            </span>
+          )}
         </dd>
         <dt>By method</dt>
         <dd>{byMethod.length ? byMethod.join(" · ") : "None counted"}</dd>
@@ -185,10 +207,20 @@ function StatementRow({
   return (
     <tr>
       <td>
-        {statement.issuer ? (
-          <NamedDid book={book} did={statement.issuer} />
-        ) : (
+        {!statement.issuer ? (
           <span className="muted">Signer unknown</span>
+        ) : isHiddenVetter(statement.issuer) ? (
+          <span
+            className="muted"
+            title="A tag, not a DID: deterministic for this vetter and this applicant, and unlinkable to the same vetter's attestations for anyone else."
+          >
+            Hidden vetter{" "}
+            <code title={statement.issuer}>
+              {shorten(statement.issuer, 12, 6)}
+            </code>
+          </span>
+        ) : (
+          <NamedDid book={book} did={statement.issuer} />
         )}
         {statement.id && (
           <div className="muted">
