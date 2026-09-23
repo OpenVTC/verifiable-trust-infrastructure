@@ -112,6 +112,38 @@ function showTransports(transports) {
   row.hidden = false;
 }
 
+/**
+ * Show the community DID as a QR code for a wallet to scan.
+ *
+ * The daemon renders it (`/v1/community/did-qr.svg`) from the same DID as
+ * the text beside it, and it carries the bare DID and nothing else. The
+ * image, its caption and the hero hint stay hidden until it has loaded, so
+ * a VTC whose profile is not initialised yet (404) shows the text alone
+ * rather than a broken image.
+ */
+function showDidQr() {
+  const frame = document.getElementById("pass-qr");
+  const img = document.getElementById("pass-qr-img");
+  if (!frame || !img || img.getAttribute("src")) return;
+  img.addEventListener(
+    "load",
+    () => {
+      frame.hidden = false;
+      for (const id of ["pass-caption", "pass-hint"]) {
+        const el = document.getElementById(id);
+        if (el) el.hidden = false;
+      }
+    },
+    { once: true },
+  );
+  img.addEventListener(
+    "error",
+    () => console.warn("community DID QR code failed to load"),
+    { once: true },
+  );
+  img.src = "/v1/community/did-qr.svg";
+}
+
 function showLogo(url, alt) {
   const img = document.getElementById("community-logo");
   if (!img || !url) return;
@@ -248,6 +280,13 @@ async function refresh() {
           "community-description",
           "The operator hasn't set a community name or description yet — they can do that from the admin console.",
         );
+      }
+      // The profile's DID is what the QR code encodes, so the text beside
+      // the code comes from the same place; `/health` above only covers the
+      // window before the profile is initialised.
+      if (profile.communityDid) {
+        setText("community-did", profile.communityDid);
+        showDidQr();
       }
       if (profile.description) {
         setText("community-description", profile.description);

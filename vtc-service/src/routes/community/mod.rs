@@ -5,6 +5,7 @@
 //! wiring lives in [`crate::routes::router`].
 
 pub mod branding;
+pub mod did_qr;
 pub mod join_discovery;
 pub mod profile;
 pub mod requested_attributes;

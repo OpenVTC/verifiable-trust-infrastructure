@@ -468,6 +468,9 @@ fn build_api_chain(
         // render before any session exists. Curated subset only (no
         // extensions, no registry status).
         .routes(routes!(community::profile::get_public_profile))
+        // The community DID as a QR code, for a wallet to scan off the landing
+        // page. Public for the same reason as the profile: it is the same DID.
+        .routes(routes!(community::did_qr::get_did_qr))
         // Community branding, published on `join-requests/manifest/0.2`. Admin
         // REST with no Trust Task of its own.
         .routes(routes!(
@@ -1569,6 +1572,8 @@ mod openapi_tests {
     const PUBLIC_UNGOVERNED: &[(&str, &str)] = &[
         // Public, cacheable community metadata — no secrets, cheap to serve.
         ("GET", "/v1/community/public-profile"),
+        // The community DID as an SVG QR code — the same public DID, drawn.
+        ("GET", "/v1/community/did-qr.svg"),
         // (The join manifest is now the `join-requests/manifest/1.0` Trust
         // Task verb on `POST /v1/trust-tasks`, not a bespoke public GET.)
         // Verifier-facing status list — public by the W3C BitstringStatusList model.

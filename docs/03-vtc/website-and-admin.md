@@ -188,6 +188,26 @@ that fetches `/v1/community/profile` + `/health` and renders them.
 The moment an operator sets `root_dir`, the filesystem handler
 takes over and the default is unreachable.
 
+### Community DID as a QR code
+
+The default landing page shows the community DID as a QR code beside
+the community name, so a wallet (Keyring first) can add the community
+by scanning it instead of retyping the DID. The daemon renders it:
+
+```console
+$ curl -s https://community.example/v1/community/did-qr.svg -o did-qr.svg
+```
+
+`GET /v1/community/did-qr.svg` is public and unauthenticated, like
+`public-profile`, and it encodes the **bare DID** and nothing else: the
+same string the page's Copy button copies, and the profile's
+`communityDid`. A DID is already a URI (scheme `did`), so no `did://`
+or app-specific wrapper is added; a phone's camera hands the scan to
+whichever app registers the `did` scheme. It returns 404 until the
+community profile is initialised. An operator site under
+`website.root_dir` can show the same code with
+`<img src="/v1/community/did-qr.svg" alt="QR code of the community DID">`.
+
 ### Transport connectivity
 
 `GET /v1/community/public-profile` (public, unauthenticated) carries a

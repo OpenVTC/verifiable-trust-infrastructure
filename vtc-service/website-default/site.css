@@ -207,6 +207,108 @@ main {
   color: var(--text-muted);
 }
 
+/* ── Hero grid + community DID pass ──────────────────────── */
+
+/* The hero text and the DID pass sit side by side on a wide screen and
+ * stack (text first) on a narrow one. */
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2rem;
+  align-items: center;
+}
+
+@media (min-width: 900px) {
+  .hero-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(20rem, 25rem);
+    gap: clamp(2.5rem, 5vw, 4rem);
+  }
+}
+
+.hero-hint {
+  margin: 1.25rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.pass {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow:
+    var(--shadow-card),
+    0 24px 48px -24px color-mix(in srgb, var(--brand-500) 28%, transparent);
+  padding: clamp(1.25rem, 2vw, 1.75rem);
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.pass-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.pass-head h2 {
+  margin: 0;
+}
+
+.pass-public {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* The code is always dark on white, whatever the theme: an inverted QR
+ * (light modules on dark) fails on many scanners. The SVG carries its own
+ * four-module quiet zone, so the tile needs only a little padding. */
+.pass-qr {
+  align-self: center;
+  padding: 0.5rem;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  line-height: 0;
+}
+
+.pass-qr img {
+  display: block;
+  width: min(264px, 70vw);
+  height: auto;
+  aspect-ratio: 1;
+  image-rendering: pixelated;
+}
+
+.pass-caption {
+  margin: 0;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* A phone cannot scan its own screen: there, say how to use the DID on
+ * this device instead of asking to scan it. */
+.pass-caption-touch {
+  display: none;
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .pass-caption-touch {
+    display: block;
+    margin-top: 0.25rem;
+  }
+
+  .hero-hint {
+    display: none;
+  }
+}
+
 /* ── Status card ─────────────────────────────────────────── */
 
 h2 {
