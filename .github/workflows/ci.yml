@@ -750,6 +750,17 @@ jobs:
       # enforced. See the script header.
       - name: Workflow actions are pinned to commit SHAs
         run: bash scripts/check-workflow-action-pins.sh
+      # Fourth tenant of this job, for the same reason as the third: it is a
+      # guard whose own correctness nothing else checks, and it lives in a job
+      # that finishes in seconds rather than inside the 45-minute semver
+      # report it serves. `semver-build-failure.py` decides whose fault a
+      # failed rustdoc build is — the published crate, the workspace copy, or
+      # a dependency — and #1667 is what a wrong answer costs: the report said
+      # `vta-service` 0.39.0 was broken on crates.io when it was not, and
+      # printed a reproduction that did not reproduce. The fixtures keep that
+      # answer honest when cargo-semver-checks rewords its output.
+      - name: Semver build-failure classifier self-test
+        run: python3 scripts/semver-build-failure.py --self-test
 
   lockfile-resolves:
     # The sibling of the job above, and the same misattribution failure it

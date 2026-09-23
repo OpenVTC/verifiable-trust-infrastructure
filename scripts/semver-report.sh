@@ -238,15 +238,18 @@ set -e
 # this check is the only thing in the repo that resolves like a consumer does
 # (cargo add into a fresh crate, no lockfile), so it is the only thing that can
 # notice when a *published* artifact stops building.
-if grep -qE 'failed to build rustdoc|running cargo-doc on crate' semver.log; then
-  broken="$(grep -oE 'failed to build rustdoc for crate [a-z0-9-]+' semver.log \
-    | sed 's/failed to build rustdoc for crate //' | sort -u | tr '\n' ' ')"
-  echo "::error::PUBLISHED CRATE DOES NOT BUILD: ${broken}-- the semver \
-baseline is the published crate as a consumer receives it, so a baseline that \
-fails to build means consumers cannot build it either. This is not 'the check \
-could not run'; it is the check reporting a broken artifact on crates.io. \
-Reproduce: cargo new --lib x && cd x && echo '[workspace]' >> Cargo.toml && \
-cargo add ${broken%% *} && cargo build"
+#
+# But "rustdoc failed" covers three defects with three different owners — the
+# published crate, the workspace copy, or a DEPENDENCY at the version this
+# lockfile-free resolution picked — and this block used to call all three the
+# first. That is what #1667 was: `vta-service` 0.39.0 built fine, and
+# `affinidi-messaging-mediator` 0.28.33 (reached only through the optional
+# `transport-harness` feature) did not. The report named our crate, and the
+# reproduction it printed used default features, so it did not reach the
+# dependency and did not reproduce. Attribution now lives in its own file,
+# with fixtures, because getting it wrong costs the next reader the whole
+# diagnosis again.
+if ! python3 "$(dirname "$0")/semver-build-failure.py" semver.log; then
   exit 1
 fi
 
