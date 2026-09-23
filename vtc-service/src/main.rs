@@ -342,8 +342,8 @@ async fn main() {
             }
         }
         None => {
-            let config = match AppConfig::load(cli.config) {
-                Ok(config) => config,
+            let (config, unknown_keys) = match AppConfig::load_with_unknown_keys(cli.config) {
+                Ok(loaded) => loaded,
                 Err(e) => {
                     eprintln!("Error: {e}");
                     eprintln!();
@@ -357,7 +357,7 @@ async fn main() {
             };
 
             init_tracing(&config);
-            config.warn_unknown_keys();
+            config.warn_unknown_keys(&unknown_keys);
 
             let store = store::Store::open(&config.store).expect("failed to open store");
             let secret_store = create_secret_store(&config).expect("failed to create secret store");

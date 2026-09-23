@@ -77,15 +77,6 @@ pub struct AppConfig {
     pub trust_tasks: TrustTasksConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
-    /// Dotted paths of keys in the parsed `config.toml` that no field claims —
-    /// typos, removed/renamed settings, or keys filed under the wrong
-    /// `[section]` (a key appended below a table header belongs to that
-    /// table). Collected by [`Self::load`] via `serde_ignored` and reported by
-    /// [`Self::warn_unknown_keys`] once tracing is up. Reported, never
-    /// rejected: a config that boots today must keep booting. `#[serde(skip)]`
-    /// so [`Self::save`] never writes it back. Keyring VTI-06.
-    #[serde(skip)]
-    pub unknown_keys: Vec<String>,
 }
 
 /// Trust Task document-dispatch settings. **Empty of live settings**: every
@@ -1020,6 +1011,18 @@ impl Default for ServerConfig {
 
 impl AppConfig {
     pub fn load(config_path: Option<PathBuf>) -> Result<Self, AppError> {
+        Self::load_with_unknown_keys(config_path).map(|(config, _)| config)
+    }
+
+    /// [`Self::load`], also returning the dotted path of every key in the file
+    /// that no field claims — a typo, a removed/renamed setting, or a key
+    /// filed under the wrong `[section]` (a key appended below a table header
+    /// belongs to that table). Reported, never rejected: a config that boots
+    /// today must keep booting. Pass the list to [`Self::warn_unknown_keys`]
+    /// once tracing is up — this runs before it. Keyring VTI-06.
+    pub fn load_with_unknown_keys(
+        config_path: Option<PathBuf>,
+    ) -> Result<(Self, Vec<String>), AppError> {
         let path = config_path
             .or_else(|| std::env::var("VTC_CONFIG_PATH").ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("config.toml"));
@@ -1044,7 +1047,6 @@ impl AppConfig {
                 .map_err(parse_err)?;
 
         config.config_path = path.clone();
-        config.unknown_keys = unknown_keys;
 
         // The retired `[trust_tasks] require_declared_proof`. `= false` never
         // reaches here — the deserializer refuses it, because that intent can no
@@ -1202,7 +1204,7 @@ impl AppConfig {
         }
 
         config.validate_routing_and_cors()?;
-        Ok(config)
+        Ok((config, unknown_keys))
     }
 
     /// Validate the routing + CORS sections per spec §9.2 / §9.3.
@@ -1216,11 +1218,11 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Warn once per key in [`Self::unknown_keys`], naming its full dotted
-    /// path. Call after the tracing subscriber is installed — [`Self::load`]
-    /// runs before it, so a warning logged there would be dropped.
-    pub fn warn_unknown_keys(&self) {
-        for key in &self.unknown_keys {
+    /// Warn once per key from [`Self::load_with_unknown_keys`], naming its
+    /// full dotted path. Call after the tracing subscriber is installed —
+    /// loading runs before it, so a warning logged there would be dropped.
+    pub fn warn_unknown_keys(&self, unknown_keys: &[String]) {
+        for key in unknown_keys {
             tracing::warn!("{}", unknown_key_message(&self.config_path, key));
         }
     }
@@ -1517,13 +1519,12 @@ mod tests {
     }
 
     /// Write `contents` to a `config.toml` in a fresh tempdir and run it
-    /// through the real [`AppConfig::load`] — the only path that populates
-    /// `unknown_keys`.
-    fn load(contents: &str) -> (AppConfig, tempfile::TempDir) {
+    /// through the real loader — the only path that collects unknown keys.
+    fn load(contents: &str) -> ((AppConfig, Vec<String>), tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, contents).expect("write config");
-        let config = AppConfig::load(Some(path)).expect("load config");
+        let config = AppConfig::load_with_unknown_keys(Some(path)).expect("load config");
         (config, dir)
     }
 
@@ -1532,17 +1533,17 @@ mod tests {
     /// word. It is now recorded with the dotted path it actually landed at.
     #[test]
     fn a_key_appended_after_the_last_table_is_reported_with_its_dotted_path() {
-        let (config, _dir) = load(
+        let ((config, unknown_keys), _dir) = load(
             "vtc_name = \"acme\"\n\
              [cors]\nallowed_origins = [\"https://admin.example.com\"]\n\
              [join_requests]\n\
              allowed_origins = [\"https://app.example.com\"]\n",
         );
         assert_eq!(
-            config.unknown_keys,
+            unknown_keys,
             vec!["join_requests.allowed_origins".to_string()]
         );
-        let msg = unknown_key_message(&config.config_path, &config.unknown_keys[0]);
+        let msg = unknown_key_message(&config.config_path, &unknown_keys[0]);
         assert!(msg.contains("`join_requests.allowed_origins`"), "{msg}");
         assert!(
             msg.contains("a key placed after a [table] header belongs to that table"),
@@ -1553,8 +1554,8 @@ mod tests {
     /// A top-level typo is reported as-is, with no table to blame.
     #[test]
     fn a_top_level_typo_is_reported_plainly() {
-        let (config, _dir) = load("vtc_naem = \"acme\"\n");
-        assert_eq!(config.unknown_keys, vec!["vtc_naem".to_string()]);
+        let ((config, unknown_keys), _dir) = load("vtc_naem = \"acme\"\n");
+        assert_eq!(unknown_keys, vec!["vtc_naem".to_string()]);
         assert!(!unknown_key_message(&config.config_path, "vtc_naem").contains("[table]"));
     }
 
@@ -1562,12 +1563,12 @@ mod tests {
     /// that always fires is one operators learn to ignore.
     #[test]
     fn a_valid_config_reports_no_unknown_keys() {
-        let (config, _dir) = load(
+        let ((config, unknown_keys), _dir) = load(
             "community_name = \"acme\"\n\
              [server]\nport = 9000\n\
              [cors]\nallowed_origins = [\"https://admin.example.com\"]\n",
         );
-        assert!(config.unknown_keys.is_empty(), "{:?}", config.unknown_keys);
+        assert!(unknown_keys.is_empty(), "{:?}", unknown_keys);
         assert_eq!(config.vtc_name.as_deref(), Some("acme"));
     }
 
@@ -1577,11 +1578,7 @@ mod tests {
     fn a_saved_config_reloads_with_no_unknown_keys() {
         let config: AppConfig = toml::from_str("").expect("empty TOML parses");
         let written = toml::to_string_pretty(&config).expect("serialize ok");
-        let (reloaded, _dir) = load(&written);
-        assert!(
-            reloaded.unknown_keys.is_empty(),
-            "{:?}",
-            reloaded.unknown_keys
-        );
+        let ((_, unknown_keys), _dir) = load(&written);
+        assert!(unknown_keys.is_empty(), "{:?}", unknown_keys);
     }
 }
