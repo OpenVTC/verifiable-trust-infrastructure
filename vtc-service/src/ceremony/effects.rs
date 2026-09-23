@@ -55,6 +55,15 @@ pub enum EffectPlan {
         subject: String,
         role: String,
         obligations: Vec<String>,
+        /// The applicant's own opt-in to trust-registry publication — the
+        /// `registryConsent` member of `vtc/join-requests/submit`, carried off
+        /// the join request. Becomes the new member's
+        /// [`crate::members::Member::publish_consent`].
+        ///
+        /// It is the applicant's to give, not the policy's: a verdict carries
+        /// no consent, so [`plan`] always writes `false` and a caller that
+        /// holds a join request sets it from the request.
+        publish_consent: bool,
     },
     /// Leave `allow` — remove `subject` and wind down their
     /// credentials per `disposition`. The executor revokes the VMC +
@@ -108,6 +117,8 @@ pub fn plan(
             subject,
             role: required_role(allow.role.as_deref(), "join")?,
             obligations: allow.obligations.clone(),
+            // A verdict cannot consent on the applicant's behalf.
+            publish_consent: false,
         }),
         Purpose::Leave => Ok(EffectPlan::Depart {
             subject,
@@ -236,6 +247,7 @@ mod tests {
                 subject: "did:key:zTarget".into(),
                 role: "member".into(),
                 obligations: vec!["reciprocate_vmc".into()],
+                publish_consent: false,
             }
         );
     }

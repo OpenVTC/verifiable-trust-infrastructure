@@ -61,9 +61,15 @@ pub struct Member {
     /// Phase 2's issuance flow; `None` until then.
     #[serde(default)]
     pub status_list_index: Option<u32>,
-    /// Operator-controlled flag: when `true`, the community may
-    /// publish the member's DID via the trust-registry sync path
-    /// (spec §8.2). Default `false` until the member opts in.
+    /// When `true`, the community may publish the member's DID via the
+    /// trust-registry sync path (spec §8.2). Default `false` until the member
+    /// opts in. Set at admission from the applicant's `registryConsent` on
+    /// `vtc/join-requests/submit`; an admin can change it afterwards through
+    /// the members update route.
+    ///
+    /// Not yet an enforcement point: the registry syncer (`crate::registry`)
+    /// publishes on `MemberAdded` gated only by `registry.rego`'s
+    /// `publish_on_join`, and does not read this flag.
     #[serde(default)]
     pub publish_consent: bool,
     /// Member-controlled preference for `DELETE /v1/members/me`
@@ -198,7 +204,8 @@ impl Member {
     /// join-approval flow writes (M1.10):
     ///
     /// - `joined_at` = now
-    /// - `publish_consent` = false (opt-in)
+    /// - `publish_consent` = false (opt-in; the admit effect then sets it
+    ///   from the applicant's `registryConsent`)
     /// - `departure_preference` = `PolicyDefault` (resolves to
     ///   `Tombstone` until the policy engine ships in Phase 2)
     /// - credential pointers + extensions absent
