@@ -357,6 +357,7 @@ async fn main() {
             };
 
             init_tracing(&config);
+            config.warn_unknown_keys();
 
             let store = store::Store::open(&config.store).expect("failed to open store");
             let secret_store = create_secret_store(&config).expect("failed to create secret store");

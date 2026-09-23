@@ -77,6 +77,15 @@ pub struct AppConfig {
     pub trust_tasks: TrustTasksConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+    /// Dotted paths of keys in the parsed `config.toml` that no field claims —
+    /// typos, removed/renamed settings, or keys filed under the wrong
+    /// `[section]` (a key appended below a table header belongs to that
+    /// table). Collected by [`Self::load`] via `serde_ignored` and reported by
+    /// [`Self::warn_unknown_keys`] once tracing is up. Reported, never
+    /// rejected: a config that boots today must keep booting. `#[serde(skip)]`
+    /// so [`Self::save`] never writes it back. Keyring VTI-06.
+    #[serde(skip)]
+    pub unknown_keys: Vec<String>,
 }
 
 /// Trust Task document-dispatch settings. **Empty of live settings**: every
@@ -1023,10 +1032,19 @@ impl AppConfig {
         }
 
         let contents = std::fs::read_to_string(&path).map_err(AppError::Io)?;
-        let mut config = toml::from_str::<AppConfig>(&contents)
-            .map_err(|e| AppError::Config(format!("failed to parse {}: {e}", path.display())))?;
+        // Through `serde_ignored`, so a key the schema does not recognise is
+        // recorded instead of silently dropped (Keyring VTI-06).
+        let parse_err = |e: toml::de::Error| {
+            AppError::Config(format!("failed to parse {}: {e}", path.display()))
+        };
+        let de = toml::Deserializer::parse(&contents).map_err(parse_err)?;
+        let mut unknown_keys: Vec<String> = Vec::new();
+        let mut config: AppConfig =
+            serde_ignored::deserialize(de, |key_path| unknown_keys.push(key_path.to_string()))
+                .map_err(parse_err)?;
 
         config.config_path = path.clone();
+        config.unknown_keys = unknown_keys;
 
         // The retired `[trust_tasks] require_declared_proof`. `= false` never
         // reaches here — the deserializer refuses it, because that intent can no
@@ -1198,12 +1216,39 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Warn once per key in [`Self::unknown_keys`], naming its full dotted
+    /// path. Call after the tracing subscriber is installed — [`Self::load`]
+    /// runs before it, so a warning logged there would be dropped.
+    pub fn warn_unknown_keys(&self) {
+        for key in &self.unknown_keys {
+            tracing::warn!("{}", unknown_key_message(&self.config_path, key));
+        }
+    }
+
     pub fn save(&self) -> Result<(), AppError> {
         self.validate_routing_and_cors()?;
         let contents = toml::to_string_pretty(self)
             .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))?;
         std::fs::write(&self.config_path, contents).map_err(AppError::Io)?;
         Ok(())
+    }
+}
+
+/// The operator-facing warning for one unrecognised config key.
+fn unknown_key_message(config_path: &std::path::Path, key: &str) -> String {
+    let path = config_path.display();
+    match key.rsplit_once('.') {
+        Some((table, leaf)) => format!(
+            "unknown configuration key `{key}` in {path} — ignored. There is no `{leaf}` \
+             setting in [{table}]. Check for a typo or a removed/renamed setting; if \
+             `{leaf}` belongs to another section, note that a key placed after a [table] \
+             header belongs to that table, so a key appended at the end of the file lands \
+             in its last section."
+        ),
+        None => format!(
+            "unknown configuration key `{key}` in {path} — ignored. Check for a typo or a \
+             removed/renamed setting."
+        ),
     }
 }
 
@@ -1468,6 +1513,75 @@ mod tests {
         assert!(
             !serialized.contains("require_declared_proof"),
             "a retired key must not be re-emitted: {serialized}"
+        );
+    }
+
+    /// Write `contents` to a `config.toml` in a fresh tempdir and run it
+    /// through the real [`AppConfig::load`] — the only path that populates
+    /// `unknown_keys`.
+    fn load(contents: &str) -> (AppConfig, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, contents).expect("write config");
+        let config = AppConfig::load(Some(path)).expect("load config");
+        (config, dir)
+    }
+
+    /// Keyring VTI-06: a key appended below the last table header is filed
+    /// under that table, took no effect, and used to be dropped without a
+    /// word. It is now recorded with the dotted path it actually landed at.
+    #[test]
+    fn a_key_appended_after_the_last_table_is_reported_with_its_dotted_path() {
+        let (config, _dir) = load(
+            "vtc_name = \"acme\"\n\
+             [cors]\nallowed_origins = [\"https://admin.example.com\"]\n\
+             [join_requests]\n\
+             allowed_origins = [\"https://app.example.com\"]\n",
+        );
+        assert_eq!(
+            config.unknown_keys,
+            vec!["join_requests.allowed_origins".to_string()]
+        );
+        let msg = unknown_key_message(&config.config_path, &config.unknown_keys[0]);
+        assert!(msg.contains("`join_requests.allowed_origins`"), "{msg}");
+        assert!(
+            msg.contains("a key placed after a [table] header belongs to that table"),
+            "{msg}"
+        );
+    }
+
+    /// A top-level typo is reported as-is, with no table to blame.
+    #[test]
+    fn a_top_level_typo_is_reported_plainly() {
+        let (config, _dir) = load("vtc_naem = \"acme\"\n");
+        assert_eq!(config.unknown_keys, vec!["vtc_naem".to_string()]);
+        assert!(!unknown_key_message(&config.config_path, "vtc_naem").contains("[table]"));
+    }
+
+    /// A valid config — including a serde alias — reports nothing; a warning
+    /// that always fires is one operators learn to ignore.
+    #[test]
+    fn a_valid_config_reports_no_unknown_keys() {
+        let (config, _dir) = load(
+            "community_name = \"acme\"\n\
+             [server]\nport = 9000\n\
+             [cors]\nallowed_origins = [\"https://admin.example.com\"]\n",
+        );
+        assert!(config.unknown_keys.is_empty(), "{:?}", config.unknown_keys);
+        assert_eq!(config.vtc_name.as_deref(), Some("acme"));
+    }
+
+    /// What [`AppConfig::save`] writes, [`AppConfig::load`] recognises in full
+    /// — so a config the service wrote itself never warns on the next start.
+    #[test]
+    fn a_saved_config_reloads_with_no_unknown_keys() {
+        let config: AppConfig = toml::from_str("").expect("empty TOML parses");
+        let written = toml::to_string_pretty(&config).expect("serialize ok");
+        let (reloaded, _dir) = load(&written);
+        assert!(
+            reloaded.unknown_keys.is_empty(),
+            "{:?}",
+            reloaded.unknown_keys
         );
     }
 }

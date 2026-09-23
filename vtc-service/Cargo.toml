@@ -243,6 +243,7 @@ utoipa-axum = { workspace = true }
 jsonwebtoken = { workspace = true }
 fjall = { workspace = true }
 toml = { workspace = true }
+serde_ignored = { workspace = true }
 tower-http = { workspace = true, features = ["cors", "trace", "timeout"] }
 tower_governor = "0.8"
 ipnetwork = { workspace = true }
