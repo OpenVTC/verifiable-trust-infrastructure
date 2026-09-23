@@ -16,6 +16,16 @@
 // `/v1/auth/admin-session`. A second option proxies the SIOP through the VTA
 // for a `did-self-issued` vault entry. Both end by invalidating the `whoami`
 // probe so the shell re-renders into the authenticated tree.
+//
+// The two wallet buttons can present DIFFERENT DIDs, and the VTC's ACL admits
+// a DID, not a person — so each button says which identity it presents
+// (Keyring Q13). `login()` lets the wallet choose: the persona it has bound to
+// this site if there is one, otherwise it asks, and one answer it offers is
+// the wallet's own holder key (a `did:key`). A wallet that predates per-site
+// personas always presents the holder key. The proxied path never does: it
+// always presents a VTA-held `did-self-issued` persona, which the VTA signs
+// for. An admin whose ACL entry names their VTA identity therefore has one
+// button that is certain to present it, and it is the second.
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -35,6 +45,7 @@ import {
   loginWithWallet,
   loginWithWalletProfile,
   loginWithWalletProxy,
+  SignInAsError,
   type ProxyVaultEntry,
 } from "@/lib/wallet";
 
@@ -52,6 +63,17 @@ type Phase =
   | { kind: "idle" }
   | { kind: "running" }
   | { kind: "error"; message: string; hint?: string };
+
+/** The refusal hint for a VTA-identity sign-in, which — unlike the wallet's own
+ *  `login()` — knows the DID it presented before the VTC answers. A refusal is
+ *  only actionable with that DID in hand: it is what the ACL has to name. */
+function presentedHint(did: string): string {
+  return (
+    `This sign-in presented ${did}. If the VTC refused it, that DID needs an ` +
+    `Admin entry in this VTC's ACL — ask another admin to run ` +
+    `\`vtc admin invite --did ${did}\`.`
+  );
+}
 
 export function Login() {
   // `/health` is header-exempt and unauthenticated, so this resolves on the
@@ -177,10 +199,21 @@ export function Login() {
       await finishWithBearer(result.accessToken);
     } catch (err) {
       const e = err as { message?: string };
+      // The wallet does not say which DID it presented when the sign-in is
+      // refused, so this cannot name it — but it can name the likeliest
+      // mismatch, which is the one Keyring hit: an ACL entry for a VTA
+      // identity, and a wallet that signed in with its own key.
       setWalletPhase({
         kind: "error",
         message: e.message ?? String(err),
-        hint: "Make sure the VTA wallet extension is unlocked and you approved the request.",
+        hint:
+          "Make sure the VTA wallet extension is unlocked and you approved the " +
+          "request. If the VTC refused the sign-in, the identity the wallet " +
+          "presented has no Admin entry in this VTC's ACL." +
+          (proxyAvailable
+            ? " If your entry names your VTA identity, use “Sign in as a VTA " +
+              "identity” instead — it always presents that identity."
+            : ""),
       });
     }
   };
@@ -193,7 +226,13 @@ export function Login() {
       await finishWithBearer(result.accessToken);
     } catch (err) {
       const e = err as { message?: string };
-      setWalletPhase({ kind: "error", message: e.message ?? String(err) });
+      setWalletPhase({
+        kind: "error",
+        message: e.message ?? String(err),
+        ...(entry.principalDid
+          ? { hint: presentedHint(entry.principalDid) }
+          : {}),
+      });
     }
   };
 
@@ -210,7 +249,13 @@ export function Login() {
       await finishWithBearer(result.accessToken);
     } catch (err) {
       const e = err as { message?: string };
-      setWalletPhase({ kind: "error", message: e.message ?? String(err) });
+      setWalletPhase({
+        kind: "error",
+        message: e.message ?? String(err),
+        ...(err instanceof SignInAsError
+          ? { hint: presentedHint(err.presentedDid) }
+          : {}),
+      });
     }
   };
 
@@ -228,7 +273,7 @@ export function Login() {
         setWalletPhase({
           kind: "error",
           message: "No did-self-issued vault entry is pinned to this VTC.",
-          hint: "Use “Sign in via VTA-proxied SIOP” instead — the wallet will ask which identity to use and remember it.",
+          hint: "Use “Sign in as a VTA identity” instead — the wallet will ask which identity to use and remember it.",
         });
         return;
       }
@@ -249,7 +294,8 @@ export function Login() {
       <div className="login-card">
         <h2>VTC Admin</h2>
         <p className="lead">
-          Sign in with your registered passkey or your VTA wallet.
+          Sign in with your registered passkey, or with a wallet identity
+          this community's ACL admits as an Admin.
         </p>
 
         {/* Absent while `/health` is in flight, and on a daemon that has not
@@ -286,17 +332,24 @@ export function Login() {
         </button>
 
         {walletAvailable ? (
-          <button
-            type="button"
-            className="secondary"
-            onClick={handleWalletLogin}
-            disabled={busy}
-          >
-            <Wallet size={16} aria-hidden="true" />
-            {walletPhase.kind === "running"
-              ? "Waiting for wallet…"
-              : "Sign in with VTA wallet"}
-          </button>
+          <div className="login-option">
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleWalletLogin}
+              disabled={busy}
+            >
+              <Wallet size={16} aria-hidden="true" />
+              {walletPhase.kind === "running"
+                ? "Waiting for wallet…"
+                : "Sign in with this browser's wallet"}
+            </button>
+            <p className="login-option-note">
+              The wallet presents the identity it uses for this site — its
+              own key (a <code>did:key</code>) unless you have chosen a VTA
+              identity here.
+            </p>
+          </div>
         ) : (
           <p className="lead">
             Install the VTA wallet browser extension to sign in with your
@@ -306,14 +359,20 @@ export function Login() {
 
         {proxyAvailable && (
           <>
-            <button
-              type="button"
-              className="secondary"
-              onClick={handleProxyStart}
-              disabled={busy}
-            >
-              Sign in via VTA-proxied SIOP
-            </button>
+            <div className="login-option">
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleProxyStart}
+                disabled={busy}
+              >
+                Sign in as a VTA identity
+              </button>
+              <p className="login-option-note">
+                Your VTA signs as the identity bound to this community. Use
+                this when your ACL entry names your VTA identity.
+              </p>
+            </div>
 
             {/* Secondary, and worded as the exception it is. The button above
                 uses whichever identity the wallet has bound to this site; this
@@ -325,7 +384,7 @@ export function Login() {
               onClick={handleChooseIdentity}
               disabled={busy}
             >
-              Sign in as a different identity…
+              Sign in as a different VTA identity…
             </button>
           </>
         )}

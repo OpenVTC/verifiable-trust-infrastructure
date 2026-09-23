@@ -41,9 +41,12 @@ context = "default"   # the VTA context this community provisions under
 # of being configured with both DIDs. Must be a DID, not a URL — the referral
 # names the registry by DID. Omit for a community with no registry.
 #
-# Fixed at mint time: the VTC serves a write-once did.jsonl and cannot
-# re-sign its own log, so changing this later means a VTA-side
-# `pnm did-mgmt dids edit` plus redelivering the log by hand.
+# Can be changed after mint, but not here: the VTA holds the keys that extend
+# the DID log, so the change is `pnm did-mgmt dids edit` at the VTA. A VTC that
+# serves its own did.jsonl then installs the new log with
+# `pnm did-mgmt dids get-log <did> --out did.jsonl` and
+# `cnm did-log install --file did.jsonl`; one on a DID host needs neither.
+# See docs/03-vtc/community-lifecycle.md.
 # registry_did = "did:webvh:abc:registry.example.com"
 
 # ── DID hosting (optional) ──────────────────────────────────────────────
@@ -76,9 +79,10 @@ context = "default"   # the VTA context this community provisions under
 #   Confirm your mediator advertises the matching service first — nothing
 #   here can check it for you.
 #
-# ⚠ Fixed at mint. The VTC serves a write-once did.jsonl and cannot re-sign
-#   its own log, so changing this later needs a VTA-side `dids edit` plus
-#   redelivering the log by hand.
+# Changing this after mint is the same VTA-side `pnm did-mgmt dids edit`
+#   (then `cnm did-log install` for a VTC that serves its own did.jsonl) —
+#   see docs/03-vtc/community-lifecycle.md. Setup is still the easy moment
+#   to get it right.
 # [messaging]
 # mediator_did = "did:web:mediator.example.com"
 # transports   = ["tsp", "didcomm"]

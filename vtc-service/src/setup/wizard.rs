@@ -369,9 +369,9 @@ pub(crate) struct WizardInputs {
     /// hop to its registry instead of being configured with both.
     ///
     /// Optional: a community with no registry omits it and the service entry
-    /// is pruned. It is fixed at mint time — the VTC serves a write-once
-    /// `did.jsonl` and cannot re-sign its own log, so changing it later means
-    /// a VTA-side `dids edit` plus redelivering the log by hand.
+    /// is pruned. The VTC cannot re-sign its own log, so changing it after
+    /// mint is a VTA-side `pnm did-mgmt dids edit` — then, for a VTC serving
+    /// its own `did.jsonl`, `cnm did-log install` with the extended log.
     pub(crate) registry_did: Option<String>,
     /// Messaging transports to advertise in the community's DID document.
     ///
@@ -379,11 +379,10 @@ pub(crate) struct WizardInputs {
     /// REST only, and nothing can be delivered to this community over a
     /// mediator by any route a DID-driven client would find.
     ///
-    /// Fixed at mint, like [`Self::registry_did`] and for the same reason: the
-    /// VTC serves a write-once `did.jsonl` and cannot re-sign its own log, so
-    /// adding a transport later means a VTA-side `dids edit` plus redelivering
-    /// the log by hand. This is the community's one chance to say how it can be
-    /// reached.
+    /// Changeable after mint the same way as [`Self::registry_did`] — a
+    /// VTA-side `dids edit`, then `cnm did-log install` for a self-hosted VTC
+    /// — but that is a second, manual step, so setup is the moment to say how
+    /// this community can be reached.
     pub(crate) transports: Vec<Transport>,
 }
 
@@ -547,10 +546,9 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
     println!("holds only this community's DID can resolve one hop to the registry");
     println!("rather than being configured with both DIDs.");
     println!();
-    println!("This is fixed at mint time: the VTC serves a write-once did.jsonl and");
-    println!("cannot re-sign its own log, so changing it later needs a VTA-side");
-    println!("`pnm did-mgmt dids edit` and redelivering the log by hand. Leave blank");
-    println!("if the community has no registry, or if you don't know it yet.");
+    println!("You can change it later: `pnm did-mgmt dids edit` at the VTA, then, if");
+    println!("this VTC serves its own DID log, `cnm did-log install`. Leave blank if");
+    println!("the community has no registry, or if you don't know it yet.");
     println!();
     let registry_did: String = Input::new()
         .with_prompt("Trust registry DID (blank for none)")
@@ -700,8 +698,8 @@ fn prompt_transports(mediator_did: &str) -> Result<Vec<Transport>, AppError> {
     println!("    community unreachable on it — clients will prefer it and fail.");
     println!("    Check your mediator advertises the matching service before enabling.");
     println!();
-    println!("  This is fixed at mint: the VTC serves a write-once did.jsonl and cannot");
-    println!("  re-sign its own log, so changing it later needs a VTA-side `dids edit`.");
+    println!("  To change this later: `pnm did-mgmt dids edit` at the VTA, then, if this");
+    println!("  VTC serves its own DID log, `cnm did-log install`.");
     println!();
 
     // Order matches the workspace preference (TSP > DIDComm), so the list reads
