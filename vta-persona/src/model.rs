@@ -506,7 +506,7 @@ impl ProfileStatus {
 /// None of the eight is named for success, warning or danger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum FacetColour {
+pub enum WorldColour {
     Slate,
     Indigo,
     Teal,
@@ -519,7 +519,7 @@ pub enum FacetColour {
 
 /// A named part of the holder's life, and what belongs to it. **Agent-scoped.**
 ///
-/// An *arrangement*, not a container: nothing is stored inside a facet, and
+/// An *arrangement*, not a container: nothing is stored inside a world, and
 /// deleting one deletes nothing but the arrangement. That distinction is the
 /// whole of its design, and it is worth stating in the type because the
 /// intuitive reading is the other one — a grouping that looked like a folder,
@@ -533,8 +533,8 @@ pub enum FacetColour {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct Facet {
-    pub facet_id: Ulid,
+pub struct World {
+    pub world_id: Ulid,
     /// The holder's own word — "Work", "Home". Never disclosed, and never
     /// interpreted: it is not a scope, a policy input, or a name a counterparty
     /// sees. It is also the most revealing member in the record, which is easy
@@ -542,20 +542,26 @@ pub struct Facet {
     /// nothing and "the divorce" discloses a great deal. It MUST NOT reach an
     /// operational log or a metric label.
     pub name: String,
-    pub colour: FacetColour,
+    pub colour: WorldColour,
     /// One or two emoji. Stored opaquely and never parsed; a consumer that
     /// cannot render it shows the name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// Profiles belonging to this facet. A profile belongs to **at most one**,
+    /// Profiles belonging to this world. A profile belongs to **at most one**,
     /// because this is where a consumer reads its colour from and two answers
     /// is no answer.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // Always serialised, empty or not. The response schema requires the member
+    // and an empty list is the answer rather than the absence of one — a world
+    // holding no faces is a world the holder made and has not filled. Skipping
+    // it produced a response that failed its own schema, which nothing noticed
+    // because no test had made an empty one. `default` stays, for records
+    // stored before this.
+    #[serde(default)]
     pub face_ids: Vec<Ulid>,
-    /// Attributes belonging to this facet. An attribute **may** belong to
+    /// Attributes belonging to this world. An attribute **may** belong to
     /// several — a mobile number is genuinely part of both a working life and a
     /// home one — so no exclusivity is enforced here and none may be inferred.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub attribute_ids: Vec<Ulid>,
     pub version: Version,
     pub created_at: String,

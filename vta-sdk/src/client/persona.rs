@@ -51,10 +51,11 @@ use crate::protocols::persona::{
     PersonaRenderersListBody, ProfileEntry, Provenance, ValueType,
 };
 use crate::trust_tasks;
+use trust_tasks_rs::specs::persona::attribute::get::v1_0 as attribute_get;
 use trust_tasks_rs::specs::persona::claim_types::list::v1_0 as claim_types_list;
-use trust_tasks_rs::specs::persona::facet::delete::v1_0 as facet_delete;
-use trust_tasks_rs::specs::persona::facet::list::v1_0 as facet_list;
-use trust_tasks_rs::specs::persona::facet::put::v1_0 as facet_put;
+use trust_tasks_rs::specs::persona::world::delete::v1_0 as world_delete;
+use trust_tasks_rs::specs::persona::world::list::v1_0 as world_list;
+use trust_tasks_rs::specs::persona::world::put::v1_0 as world_put;
 
 /// Round-trip timeout (seconds) for persona trust tasks. Matches the
 /// application-state and memory slices: these are local store operations, and
@@ -72,7 +73,7 @@ fn body(value: impl serde::Serialize) -> Result<Value, VtaError> {
 /// Read a response into its generated type.
 ///
 /// The older methods on this slice return `Value`, because they predate the
-/// generated modules. The four that do not — facets and the claim-type
+/// generated modules. The four that do not — worlds and the claim-type
 /// registry — decode here, so a response the specification does not describe
 /// is an error at the call rather than a `None` three screens later.
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, VtaError> {
@@ -134,6 +135,49 @@ impl VtaClient {
     /// first: values resolving to `sensitivity: high` — a card number, a
     /// passport number, a mobile — are omitted from a listing that asked for
     /// values but not for these.
+    /// `persona/attribute/get/1.0` — read one attribute, by identifier.
+    ///
+    /// The narrow read. Reaching one value through
+    /// [`persona_attribute_list`](Self::persona_attribute_list) with a type
+    /// prefix returns every attribute sharing that prefix — values included,
+    /// for a caller that wanted one of them — and records a listing of the pool
+    /// where a decision about one fact belongs.
+    ///
+    /// `include_value` is false by default here as it is there: the disclosing
+    /// path is the one a caller names. A `sensitivity: high` value needs
+    /// `include_sensitive` as well.
+    ///
+    /// `version` reads a retained earlier version — what a disclosure record or
+    /// a pinned entry names. A version the holder has purged is
+    /// `persona/attribute/get:versionPurged`, never a silent fall back to the
+    /// current value.
+    pub async fn persona_attribute_get(
+        &self,
+        attribute_id: &str,
+        include_value: bool,
+        include_sensitive: bool,
+        version: Option<std::num::NonZeroU64>,
+    ) -> Result<attribute_get::Response, VtaError> {
+        let mut payload = serde_json::json!({ "attributeId": attribute_id });
+        if include_value {
+            payload["includeValue"] = serde_json::json!(true);
+        }
+        if include_sensitive {
+            payload["includeSensitive"] = serde_json::json!(true);
+        }
+        if let Some(v) = version {
+            payload["version"] = serde_json::json!(v);
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_PERSONA_ATTRIBUTE_GET_1_0,
+                payload,
+                PERSONA_TT_TIMEOUT,
+            )
+            .await?;
+        decode(value)
+    }
+
     pub async fn persona_attribute_list(
         &self,
         type_prefix: Option<&str>,
@@ -792,27 +836,27 @@ impl VtaClient {
     }
 
     // -----------------------------------------------------------------------
-    // Facets and the claim-type registry
+    // Worlds and the claim-type registry
     // -----------------------------------------------------------------------
 
-    /// `persona/facet/put/1.0` — name a part of a life, and say which faces
+    /// `persona/world/put/1.0` — name a part of a life, and say which faces
     /// and attributes belong to it.
     ///
-    /// **Both lists replace.** Omitting `face_ids` empties the facet rather
+    /// **Both lists replace.** Omitting `face_ids` empties the world rather
     /// than leaving it as it was — the specification is explicit that a member
     /// whose absence meant "keep" would make emptying one impossible. Read the
-    /// facet first and send the list you want to end up with.
+    /// world first and send the list you want to end up with.
     ///
-    /// A face belongs to at most one facet (`faceAlreadyPlaced`); an attribute
+    /// A face belongs to at most one world (`faceAlreadyPlaced`); an attribute
     /// may belong to several, because a mobile number is genuinely both work
     /// and home.
-    pub async fn persona_facet_put(
+    pub async fn persona_world_put(
         &self,
-        payload: facet_put::Payload,
-    ) -> Result<facet_put::Response, VtaError> {
+        payload: world_put::Payload,
+    ) -> Result<world_put::Response, VtaError> {
         let value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_PERSONA_FACET_PUT_1_0,
+                trust_tasks::TASK_PERSONA_WORLD_PUT_1_0,
                 body(payload)?,
                 PERSONA_TT_TIMEOUT,
             )
@@ -820,17 +864,17 @@ impl VtaClient {
         decode(value)
     }
 
-    /// `persona/facet/list/1.0` — the parts of a life the holder has named.
+    /// `persona/world/list/1.0` — the parts of a life the holder has named.
     ///
     /// `limit` is a page size, never a cap: follow `nextCursor` to the end, or
     /// draw a partial picture of how someone has arranged their identity.
-    pub async fn persona_facet_list(
+    pub async fn persona_world_list(
         &self,
-        payload: facet_list::Payload,
-    ) -> Result<facet_list::Response, VtaError> {
+        payload: world_list::Payload,
+    ) -> Result<world_list::Response, VtaError> {
         let value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_PERSONA_FACET_LIST_1_0,
+                trust_tasks::TASK_PERSONA_WORLD_LIST_1_0,
                 body(payload)?,
                 PERSONA_TT_TIMEOUT,
             )
@@ -838,21 +882,21 @@ impl VtaClient {
         decode(value)
     }
 
-    /// `persona/facet/delete/1.0` — unname a part of a life.
+    /// `persona/world/delete/1.0` — unname a part of a life.
     ///
     /// Every face and attribute that belonged to it stays exactly where it
     /// was. There is deliberately no cascading form: an arrangement that could
     /// take its members with it is a folder, and a holder who reads it as a
     /// folder is right to be afraid of it. The response's `releasedFaces` is
-    /// how many faces now belong to no facet — the honest end of a sentence
+    /// how many faces now belong to no world — the honest end of a sentence
     /// that would otherwise read only "deleted".
-    pub async fn persona_facet_delete(
+    pub async fn persona_world_delete(
         &self,
-        payload: facet_delete::Payload,
-    ) -> Result<facet_delete::Response, VtaError> {
+        payload: world_delete::Payload,
+    ) -> Result<world_delete::Response, VtaError> {
         let value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_PERSONA_FACET_DELETE_1_0,
+                trust_tasks::TASK_PERSONA_WORLD_DELETE_1_0,
                 body(payload)?,
                 PERSONA_TT_TIMEOUT,
             )

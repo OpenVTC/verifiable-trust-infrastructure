@@ -33,6 +33,11 @@ use vti_common::auth::session::{Session, SessionState, now_epoch, store_session}
 // URIs as literals, so a constant rename in the SDK surfaces here too.
 const ATTR_PUT: &str = "https://trusttasks.org/spec/persona/attribute/put/1.0";
 const ATTR_LIST: &str = "https://trusttasks.org/spec/persona/attribute/list/1.0";
+const ATTR_GET: &str = "https://trusttasks.org/spec/persona/attribute/get/1.0";
+const WORLD_PUT: &str = "https://trusttasks.org/spec/persona/world/put/1.0";
+const WORLD_LIST: &str = "https://trusttasks.org/spec/persona/world/list/1.0";
+const FACET_PUT: &str = "https://trusttasks.org/spec/persona/facet/put/1.0";
+const FACET_LIST: &str = "https://trusttasks.org/spec/persona/facet/list/1.0";
 const ATTR_DELETE: &str = "https://trusttasks.org/spec/persona/attribute/delete/1.0";
 const ATTR_PURGE_VERSION: &str = "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
 const ATTR_PROMOTE: &str = "https://trusttasks.org/spec/persona/attribute/promote/1.0";
@@ -4206,4 +4211,130 @@ fn token_did(token: &str) -> String {
         .ok()
         .and_then(|v| v.get("sub").and_then(Value::as_str).map(str::to_string))
         .unwrap_or_default()
+}
+
+/// Reading one attribute by identifier: the value is withheld until asked for,
+/// twice for a sensitive one, and an earlier version is readable until purged.
+///
+/// The task exists because the alternative was a prefix listing filtered by the
+/// caller — every email address to show one of them.
+#[tokio::test]
+async fn one_attribute_is_read_by_name_and_says_what_it_withheld() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed_holder(&ctx, "attr-get", &[]).await;
+
+    let attr = put_attribute(&router, &holder, "email.personal", "ada@example.org").await;
+
+    // Metadata by default: the disclosing path is the one a caller names.
+    let (status, body) = post(&router, &holder, ATTR_GET, json!({ "attributeId": attr })).await;
+    assert!(!refused(status, &body), "attribute/get: {status} {body}");
+    let got = payload_of(&body);
+    assert_eq!(got["attribute"]["type"], "email.personal");
+    assert!(
+        got["attribute"].get("value").is_none(),
+        "a get returned plaintext nobody asked for: {got}"
+    );
+    assert!(
+        got.get("valueWithheld").is_none(),
+        "nothing was withheld — the value was not requested: {got}"
+    );
+
+    let (_, body) = post(
+        &router,
+        &holder,
+        ATTR_GET,
+        json!({ "attributeId": attr, "includeValue": true }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["attribute"]["value"], "ada@example.org");
+
+    // An unknown identifier is `notFound`, never an empty success: a caller
+    // that cannot tell absent from empty treats a typo as an attribute saying
+    // nothing.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_GET,
+        json!({ "attributeId": "01JB0X7K9ZQW2M4N6P8R1T3V5Y" }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(payload_of(&body)["code"], "persona/attribute/get:notFound");
+
+    // A version that was never held is `versionPurged` rather than `notFound`:
+    // the attribute is there, and its current value is readable.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_GET,
+        json!({ "attributeId": attr, "version": 99 }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/attribute/get:versionPurged"
+    );
+}
+
+/// A world is the same record whichever spelling asks for it, and each response
+/// answers in the words of the task that was sent.
+///
+/// `persona/facet/*` is retired in favour of `persona/world/*` and kept routable
+/// for a release: a document already issued against the old specification still
+/// validates, and refusing it would break a client for a rename that costs it
+/// nothing. This is what the alias window has to hold — one store, two
+/// spellings, no translation the caller can see.
+#[tokio::test]
+async fn a_world_answers_to_its_retired_name_in_that_names_words() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed_holder(&ctx, "alias", &[]).await;
+
+    // Made under the retired spelling, which answers with `facetId`.
+    let (status, body) = post(
+        &router,
+        &holder,
+        FACET_PUT,
+        json!({ "name": "Work", "colour": "teal" }),
+    )
+    .await;
+    assert!(!refused(status, &body), "facet/put: {status} {body}");
+    let made = payload_of(&body);
+    assert!(
+        made.get("worldId").is_none(),
+        "the retired spelling was answered in the new words: {made}"
+    );
+    let id = made["facetId"].as_str().expect("facetId").to_string();
+
+    // The same record, read under the new spelling, in the new words.
+    let (status, body) = post(&router, &holder, WORLD_LIST, json!({})).await;
+    assert!(!refused(status, &body), "world/list: {status} {body}");
+    let worlds = payload_of(&body)["worlds"].as_array().unwrap().clone();
+    assert_eq!(worlds.len(), 1, "{body}");
+    assert_eq!(worlds[0]["worldId"], id.as_str());
+    assert_eq!(worlds[0]["name"], "Work");
+
+    // And under the retired one, in its words.
+    let (status, body) = post(&router, &holder, FACET_LIST, json!({})).await;
+    assert!(!refused(status, &body), "facet/list: {status} {body}");
+    let facets = payload_of(&body)["facets"].as_array().unwrap().clone();
+    assert_eq!(facets.len(), 1, "{body}");
+    assert_eq!(facets[0]["facetId"], id.as_str());
+    assert!(
+        facets[0].get("worldId").is_none(),
+        "a retired listing carried the new member: {body}"
+    );
+
+    // A world put replaces the same record rather than making a second.
+    let (status, body) = post(
+        &router,
+        &holder,
+        WORLD_PUT,
+        json!({ "worldId": id, "name": "Work", "colour": "moss" }),
+    )
+    .await;
+    assert!(!refused(status, &body), "world/put: {status} {body}");
+    let (_, body) = post(&router, &holder, WORLD_LIST, json!({})).await;
+    assert_eq!(payload_of(&body)["worlds"].as_array().unwrap().len(), 1);
+    assert_eq!(payload_of(&body)["worlds"][0]["colour"], "moss");
 }
