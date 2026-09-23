@@ -136,6 +136,9 @@ pub fn publish(
         live_periods,
         live_token_labels,
         drip_per_tick,
+        // None. Event mode is the exception a community adds to a criterion it is already
+        // running (§5.1), never a state it is published into.
+        events: Vec::new(),
     })
 }
 
@@ -303,6 +306,12 @@ pub async fn drip(
             batch.label
         )));
     }
+    // An event label carries a higher rate and a smaller anonymity set, so it has four more
+    // conditions than a monthly one — approved, not self-approved, over the floor, and inside its
+    // window — and a member who never asked to be in the event is not in it
+    // ([`super::pcs_event::gate`]).
+    super::pcs_event::gate(state, config, member_did, &batch.label, now).await?;
+
     let key = drip_key(member_did, &batch.label, batch.tick);
     if let Some(row) = state
         .vetting_pcs_issue_ks
@@ -322,6 +331,10 @@ pub async fn drip(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| AppError::Validation(format!("token request: {e}")))?;
 
+    // The quota is the tier this member asked for at this event, or the community's ordinary
+    // rate for every other label. It is the community's cap either way — never the asker's.
+    let quota = super::pcs_event::quota(state, config, member_did, &batch.label).await?;
+
     let issuer = issuer(state, community_did, config)?;
     let verifier = TokenVerifier::new(
         community_did,
@@ -337,7 +350,7 @@ pub async fn drip(
                 tick: batch.tick,
                 label: &batch.label,
                 requests: &requests,
-                quota: config.drip_per_tick,
+                quota,
             },
             &mut vti_vetting_pcs::rand::rngs::OsRng,
         )

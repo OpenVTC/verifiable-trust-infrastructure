@@ -1,16 +1,18 @@
 //! Hidden vetting's community half, over the wire it actually serves.
 //!
-//! Three Trust Tasks, posted as signed documents to `/v1/trust-tasks` exactly as a vetter's or
+//! Four Trust Tasks, posted as signed documents to `/v1/trust-tasks` exactly as a vetter's or
 //! an applicant's agent would post them, and answered by the same dispatcher every other task
 //! goes through:
 //!
 //! 1. a vetter enrols (`vtc/vetting/vetters/pcs-root/0.1`) and unblinds what comes back;
 //! 2. the same vetter draws a tick of the drip (`.../pcs-tokens/0.1`) and the tokens verify;
-//! 3. an applicant asks for a challenge (`vtc/vetting/pcs-challenge/0.1`).
+//! 3. a vetter asks to vet at an event (`.../event-mode/0.1`);
+//! 4. an applicant asks for a challenge (`vtc/vetting/pcs-challenge/0.1`).
 //!
 //! Then the refusals that make each of them a rule rather than an intention: a stranger
-//! enrolling, the same vetter enrolling twice under one label, a second draw for one tick, and a
-//! batch over the published rate.
+//! enrolling, the same vetter enrolling twice under one label, a second draw for one tick, a
+//! batch over the published rate, and — for event mode — the four conditions that stand between
+//! an event being configured and its label being drawn under.
 //!
 //! Everything here runs against `vti-vetting-pcs` on the client side too, because the vetter
 //! half of the crate is what an agent runs — so a mismatch between what this service signs and
@@ -116,6 +118,25 @@ impl Harness {
             .await
             .expect("store the criterion");
         config
+    }
+
+    /// Re-store this community's criterion with `config`.
+    ///
+    /// This is how an admin approves an event: by editing the criterion that publishes it. There
+    /// is deliberately no Trust Task for it — a task the vetter could send is a task a vetter
+    /// could be made to send — so the test does what an admin does.
+    async fn store_config(&self, config: &vtc_service::vetting::pcs::HiddenVettingConfig) {
+        let mut criterion = vtc_service::schemas::accepts::get_accepts(
+            &self.tv.state.schemas_ks,
+            "hidden-criterion",
+        )
+        .await
+        .expect("read the criterion")
+        .expect("the criterion exists");
+        criterion.hidden_vetting = Some(serde_json::to_value(config).unwrap());
+        vtc_service::schemas::accepts::store_accepts(&self.tv.state.schemas_ks, &criterion)
+            .await
+            .expect("store the criterion");
     }
 
     /// A member of this community holding a live vetter grant — the community's own records,
@@ -375,4 +396,359 @@ async fn a_community_that_runs_no_hidden_criterion_refuses_a_challenge() {
     let (status, body) = h.post(&key, pcs_tasks::PCS_CHALLENGE_TYPE, json!({})).await;
     assert_ne!(status, StatusCode::OK);
     assert_eq!(refusal_code(&body), pcs_tasks::CHALLENGE_ERR_NOT_HIDDEN);
+}
+
+// --- event mode ---------------------------------------------------------------------------------
+
+const EVENT: &str = "kernel-summit-2026";
+const EVENT_LABEL: &str = "token/event/kernel-summit-2026";
+const EVENT_DRIP: usize = 20;
+
+/// The event as an admin configures it: a three-day summit, one tier, the floor §5.1 names.
+fn summit(approved_by: Option<&str>) -> vtc_service::vetting::pcs::HiddenVettingEvent {
+    vtc_service::vetting::pcs::HiddenVettingEvent {
+        event_id: EVENT.into(),
+        start_date: Utc::now().date_naive(),
+        end_date: Utc::now().date_naive() + Duration::days(2),
+        grace_days: 14,
+        group_floor: 3,
+        tiers: vec![vtc_service::vetting::pcs::HiddenVettingTier {
+            name: "desk".into(),
+            drip_per_tick: EVENT_DRIP,
+        }],
+        approved_by: approved_by.map(str::to_string),
+    }
+}
+
+/// The window a vetter asks for: the whole event.
+fn window() -> Value {
+    json!({
+        "startDate": Utc::now().date_naive().to_string(),
+        "endDate": (Utc::now().date_naive() + Duration::days(2)).to_string(),
+    })
+}
+
+/// Publish the summit on the criterion, with its label live, and grant `n` vetters.
+async fn summit_harness(approved_by: Option<&str>, n: u8) -> (Harness, Vec<(String, Secret)>) {
+    let h = Harness::start().await;
+    let mut config = h.publish().await;
+    config.live_token_labels.push(EVENT_LABEL.to_string());
+    config.events.push(summit(approved_by));
+    h.store_config(&config).await;
+
+    let mut vetters = Vec::new();
+    for i in 0..n {
+        let (did, key) = identity(0xE0 + i);
+        h.grant_vetter(&did).await;
+        vetters.push((did, key));
+    }
+    (h, vetters)
+}
+
+/// A request is a request. It is recorded, it counts towards the floor, and it grants nothing —
+/// and until the floor is met the event's label cannot be drawn under at all.
+#[tokio::test]
+async fn an_event_stays_shut_until_enough_vetters_have_asked() {
+    let (h, vetters) = summit_harness(Some("did:key:zAdminApprover"), 2).await;
+
+    let (status, body) = h
+        .post(
+            &vetters[0].1,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({ "eventId": EVENT, "tier": "desk", "window": window() }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.pointer("/payload/state").unwrap(), "pending");
+    assert_eq!(body.pointer("/payload/groupSize").unwrap(), 1);
+    assert_eq!(body.pointer("/payload/groupFloor").unwrap(), 3);
+    // The three members that would read as permission to draw are absent while it is pending.
+    assert!(body.pointer("/payload/label").is_none(), "{body}");
+    assert!(body.pointer("/payload/dripPerTick").is_none(), "{body}");
+    assert!(body.pointer("/payload/closesAfter").is_none(), "{body}");
+
+    // Asking again does not make the group bigger.
+    let (status, body) = h
+        .post(
+            &vetters[0].1,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({ "eventId": EVENT, "tier": "desk", "window": window() }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_ALREADY_REQUESTED);
+
+    // And the label it would unlock is shut, with the code the drip declares for exactly this.
+    let issuer = vtc_service::vetting::pcs_issue::derive_issuer(&h.tv.state, &h.community).unwrap();
+    let mut rng = StdRng::seed_from_u64(0x2026_1012);
+    let mut wallet = TokenWallet::new(&h.community).unwrap();
+    let requests = wallet
+        .prepare(
+            issuer.tvk(),
+            EVENT_LABEL,
+            &vetters[0].0,
+            1,
+            EVENT_DRIP,
+            &mut rng,
+        )
+        .unwrap();
+    let (status, body) = h
+        .post(
+            &vetters[0].1,
+            pcs_tasks::PCS_TOKENS_TYPE,
+            json!({
+                "label": EVENT_LABEL,
+                "tick": 1,
+                "requests": requests
+                    .iter()
+                    .map(|r| json!({
+                        "commitment": vti_vetting_pcs::scheme::enc(&r.commitment).unwrap(),
+                        "openingProof": vti_vetting_pcs::scheme::enc(&r.opening_proof).unwrap(),
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(refusal_code(&body), pcs_tasks::TOKENS_ERR_EVENT_REFUSED);
+}
+
+/// With an approver and the floor met, the label opens — at the tier's rate, which is the whole
+/// point of it, and still capped by the community rather than by what the vetter asks for.
+#[tokio::test]
+async fn an_approved_event_opens_its_label_at_the_tier_rate() {
+    let (h, vetters) = summit_harness(Some("did:key:zAdminApprover"), 3).await;
+    let ask = json!({ "eventId": EVENT, "tier": "desk", "window": window() });
+
+    for (n, (_, key)) in vetters.iter().enumerate() {
+        let (status, body) = h.post(key, pcs_tasks::EVENT_MODE_TYPE, ask.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let expected = if n + 1 >= 3 { "approved" } else { "pending" };
+        assert_eq!(
+            body.pointer("/payload/state").unwrap(),
+            expected,
+            "vetter {n} of 3: {body}"
+        );
+        if n + 1 >= 3 {
+            assert_eq!(body.pointer("/payload/label").unwrap(), EVENT_LABEL);
+            assert_eq!(body.pointer("/payload/dripPerTick").unwrap(), EVENT_DRIP);
+            assert_eq!(
+                body.pointer("/payload/closesAfter").unwrap(),
+                &json!((Utc::now().date_naive() + Duration::days(16)).to_string()),
+                "the window plus this community's grace"
+            );
+        }
+    }
+
+    let issuer = vtc_service::vetting::pcs_issue::derive_issuer(&h.tv.state, &h.community).unwrap();
+    let mut rng = StdRng::seed_from_u64(0x2026_1013);
+    let mut wallet = TokenWallet::new(&h.community).unwrap();
+    let requests = wallet
+        .prepare(
+            issuer.tvk(),
+            EVENT_LABEL,
+            &vetters[0].0,
+            1,
+            EVENT_DRIP,
+            &mut rng,
+        )
+        .unwrap();
+    let batch = |reqs: &[vti_vetting_pcs::token::TokenRequest], tick: u32| {
+        json!({
+            "label": EVENT_LABEL,
+            "tick": tick,
+            "requests": reqs
+                .iter()
+                .map(|r| json!({
+                    "commitment": vti_vetting_pcs::scheme::enc(&r.commitment).unwrap(),
+                    "openingProof": vti_vetting_pcs::scheme::enc(&r.opening_proof).unwrap(),
+                }))
+                .collect::<Vec<_>>(),
+        })
+    };
+    let (status, body) = h
+        .post(
+            &vetters[0].1,
+            pcs_tasks::PCS_TOKENS_TYPE,
+            batch(&requests, 1),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let pres: Vec<_> = body
+        .pointer("/payload/preCredentials")
+        .and_then(Value::as_array)
+        .expect("tokens")
+        .iter()
+        .map(|p| vti_vetting_pcs::scheme::dec(p.as_str().unwrap()).unwrap())
+        .collect();
+    wallet
+        .receive(issuer.tvk(), &pres)
+        .expect("event tokens verify under the same published key");
+    assert_eq!(wallet.free(), EVENT_DRIP, "the tier's rate, not the drip's");
+
+    // The tier is the cap. A vetter asking for more than it is refused the batch, exactly as
+    // under the monthly label.
+    let greedy = wallet
+        .prepare(
+            issuer.tvk(),
+            EVENT_LABEL,
+            &vetters[0].0,
+            2,
+            EVENT_DRIP + 1,
+            &mut rng,
+        )
+        .unwrap();
+    let (status, body) = h
+        .post(&vetters[0].1, pcs_tasks::PCS_TOKENS_TYPE, batch(&greedy, 2))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(refusal_code(&body), pcs_tasks::TOKENS_ERR_OVER_QUOTA);
+}
+
+/// The rule that makes the approval mean something: an approver who is in the group has approved
+/// their own cap, and the label stays shut for everyone — not just for them.
+#[tokio::test]
+async fn an_event_approved_by_one_of_its_own_vetters_opens_nothing() {
+    let (h, vetters) = summit_harness(None, 3).await;
+    let ask = json!({ "eventId": EVENT, "tier": "desk", "window": window() });
+    for (_, key) in &vetters {
+        let (status, body) = h.post(key, pcs_tasks::EVENT_MODE_TYPE, ask.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.pointer("/payload/state").unwrap(), "pending");
+    }
+
+    // The admin now approves — naming a vetter who asked to be in the group. The floor is met,
+    // the window is open, everybody asked, and it still opens nothing.
+    let mut config = h.publish().await;
+    config.live_token_labels.push(EVENT_LABEL.to_string());
+    config.events.push(summit(Some(&vetters[1].0)));
+    h.store_config(&config).await;
+
+    let issuer = vtc_service::vetting::pcs_issue::derive_issuer(&h.tv.state, &h.community).unwrap();
+    let mut rng = StdRng::seed_from_u64(0x2026_1014);
+    let mut wallet = TokenWallet::new(&h.community).unwrap();
+    // The one who did not approve, so that what is refused is the event and not the approver.
+    let requests = wallet
+        .prepare(
+            issuer.tvk(),
+            EVENT_LABEL,
+            &vetters[0].0,
+            1,
+            EVENT_DRIP,
+            &mut rng,
+        )
+        .unwrap();
+    let (status, body) = h
+        .post(
+            &vetters[0].1,
+            pcs_tasks::PCS_TOKENS_TYPE,
+            json!({
+                "label": EVENT_LABEL,
+                "tick": 1,
+                "requests": requests
+                    .iter()
+                    .map(|r| json!({
+                        "commitment": vti_vetting_pcs::scheme::enc(&r.commitment).unwrap(),
+                        "openingProof": vti_vetting_pcs::scheme::enc(&r.opening_proof).unwrap(),
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(refusal_code(&body), pcs_tasks::TOKENS_ERR_EVENT_REFUSED);
+}
+
+/// Every refusal the request itself declares, each with the code a client switches on.
+#[tokio::test]
+async fn an_event_request_refuses_with_the_codes_it_declares() {
+    let (h, vetters) = summit_harness(Some("did:key:zAdminApprover"), 1).await;
+    let (_, vetter) = &vetters[0];
+
+    let (status, body) = h
+        .post(
+            vetter,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({ "eventId": "some-other-summit", "tier": "desk", "window": window() }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_UNKNOWN_EVENT);
+
+    let (status, body) = h
+        .post(
+            vetter,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({ "eventId": EVENT, "tier": "all-day-every-day", "window": window() }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_UNKNOWN_TIER);
+
+    // A window wider than the event's own: the extra days would be tokens at the event's rate
+    // for days that are not the event.
+    let (status, body) = h
+        .post(
+            vetter,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({
+                "eventId": EVENT,
+                "tier": "desk",
+                "window": {
+                    "startDate": Utc::now().date_naive().to_string(),
+                    "endDate": (Utc::now().date_naive() + Duration::days(30)).to_string(),
+                },
+            }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_BAD_WINDOW);
+
+    // An event whose label has already closed. Its window is still the event's own, so what
+    // refuses this is the grace period running out and not the dates being wrong.
+    let mut config = h.publish().await;
+    let past = vtc_service::vetting::pcs::HiddenVettingEvent {
+        event_id: "last-years-summit".into(),
+        start_date: Utc::now().date_naive() - Duration::days(30),
+        end_date: Utc::now().date_naive() - Duration::days(28),
+        grace_days: 14,
+        group_floor: 3,
+        tiers: vec![vtc_service::vetting::pcs::HiddenVettingTier {
+            name: "desk".into(),
+            drip_per_tick: EVENT_DRIP,
+        }],
+        approved_by: Some("did:key:zAdminApprover".into()),
+    };
+    config.live_token_labels.push(EVENT_LABEL.to_string());
+    config.events.push(summit(Some("did:key:zAdminApprover")));
+    config.events.push(past.clone());
+    h.store_config(&config).await;
+    let (status, body) = h
+        .post(
+            vetter,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({
+                "eventId": past.event_id,
+                "tier": "desk",
+                "window": {
+                    "startDate": past.start_date.to_string(),
+                    "endDate": past.end_date.to_string(),
+                },
+            }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_EVENT_CLOSED);
+
+    // A member with no vetter grant is refused before anything is recorded.
+    let (_, stranger) = identity(0xEF);
+    let (status, body) = h
+        .post(
+            &stranger,
+            pcs_tasks::EVENT_MODE_TYPE,
+            json!({ "eventId": EVENT, "tier": "desk", "window": window() }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_NOT_A_VETTER);
 }

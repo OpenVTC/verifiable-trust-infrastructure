@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trusttasks.org/spec/vtc/vetting/vetters/event-mode/0.1",
+  "title": "VTC — Vetting Event Mode — payload",
+  "description": "A vetter asks to vet at a named event, at one of the rates the community publishes. The community answers where the request stands; it does not answer whether it was granted, because a vetter cannot raise its own cap and the group it would join may not exist yet.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "tier",
+    "window"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+      "description": "The event, as the community names it. It is the whole anonymity set for anything spent under this event's tokens, so it names a gathering people attend — never one desk, one day or one vetter."
+    },
+    "tier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "One of the tiers the community publishes. A tier is picked from a menu rather than a number being named, so that no vetter's requested rate is itself a distinguishing detail."
+    },
+    "window": {
+      "$ref": "#/$defs/Window"
+    },
+    "ext": {
+      "$ref": "../../../../../_framework/0.2/framework.schema.json#/$defs/Ext"
+    }
+  },
+  "$defs": {
+    "Window": {
+      "title": "Event window",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startDate",
+        "endDate"
+      ],
+      "description": "The days the event runs. Dates, not timestamps: an hour would say when a vetter expects to be at a desk, and the tokens are day-scale anyway.",
+      "properties": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "First day of the event, inclusive."
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Last day of the event, inclusive. It is not before `startDate`."
+        }
+      }
+    },
+    "Response": {
+      "$anchor": "response",
+      "title": "VTC Vetting Event Mode — response payload",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventId",
+        "state",
+        "tier",
+        "window",
+        "groupSize",
+        "groupFloor"
+      ],
+      "description": "Where the request stands. `pending` is the ordinary answer to a first request and is not a refusal — a refusal is a `trust-task-error`.",
+      "properties": {
+        "eventId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The event the request names."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved"
+          ],
+          "description": "`pending`: recorded, awaiting an approver and the group floor. `approved`: the event's label is live and this vetter may draw under it."
+        },
+        "tier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The tier recorded for this vetter at this event."
+        },
+        "window": {
+          "$ref": "#/$defs/Window"
+        },
+        "groupSize": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many vetters have asked for this event so far, including this one. A count, never a list: who else is at the event is the anonymity set, and naming its members would hand out the very thing the set exists to hide."
+        },
+        "groupFloor": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "How many vetters this community requires before an event may be approved at all. A one-vetter event is an event key with one holder, which is a name."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Present when `state` is `approved`: the token label to draw under, for `vtc/vetting/vetters/pcs-tokens`."
+        },
+        "dripPerTick": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Present when `state` is `approved`: how many tokens a tick under this label yields. It is the tier's rate, and it is the community's cap, not the vetter's request."
+        },
+        "closesAfter": {
+          "type": "string",
+          "format": "date",
+          "description": "Present when `state` is `approved`: the last day this label will be accepted. It is after `window.endDate` by the community's grace period, so an applicant met on the final day still has time to submit."
+        },
+        "ext": {
+          "$ref": "../../../../../_framework/0.2/framework.schema.json#/$defs/Ext"
+        }
+      }
+    }
+  }
+}

@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -113,12 +113,117 @@ pub struct HiddenVettingConfig {
     /// the minting half existed.
     #[serde(default = "default_drip_per_tick")]
     pub drip_per_tick: usize,
+    /// Events this community is running, if any (§5.1). Empty is the ordinary case — event mode
+    /// is the exception, not the setting.
+    #[serde(default)]
+    pub events: Vec<HiddenVettingEvent>,
+}
+
+/// An event this community publishes, with the rates a vetter may ask for and the dates the
+/// label it unlocks will be accepted.
+///
+/// The event is **not** live because it is listed here. It is live when an approver has named
+/// themselves in `approved_by`, enough vetters have asked to be in it, and the day is inside its
+/// window — three conditions checked where tokens are served, not where they are configured,
+/// because a configuration edit is exactly what a coerced approver would be asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVettingEvent {
+    /// The community's name for the gathering. It is the anonymity set for every token spent
+    /// under this event, so it names something people attend — never one desk or one shift.
+    pub event_id: String,
+    /// First day of the event, inclusive.
+    pub start_date: NaiveDate,
+    /// Last day of the event, inclusive.
+    pub end_date: NaiveDate,
+    /// Days after `end_date` the label keeps being accepted, so an applicant met on the last day
+    /// still has time to submit. It is short by design: the event key exists to make a burst of
+    /// tokens die with the event (§5.1).
+    #[serde(default = "default_event_grace_days")]
+    pub grace_days: u32,
+    /// The smallest group this community will open the label for. A one-vetter event is an event
+    /// key with one holder, which is a name.
+    #[serde(default = "default_group_floor")]
+    pub group_floor: usize,
+    /// The published menu of rates. A vetter picks a tier rather than naming a number, so that a
+    /// requested rate is not itself a distinguishing detail.
+    pub tiers: Vec<HiddenVettingTier>,
+    /// Who approved the event. `None` means nobody has, and the label is not live whatever else
+    /// is true. A member who asked to be in the event may not be the one who approved it —
+    /// raising your own cap is what a coerced vetter would be made to do.
+    #[serde(default)]
+    pub approved_by: Option<String>,
+}
+
+impl HiddenVettingEvent {
+    /// The token label this event unlocks.
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("token/event/{}", self.event_id)
+    }
+
+    /// The last day tokens under this event's label are issued or accepted.
+    #[must_use]
+    pub fn closes_after(&self) -> NaiveDate {
+        self.end_date + chrono::Duration::days(i64::from(self.grace_days))
+    }
+
+    /// The tier by name, if this event publishes one.
+    #[must_use]
+    pub fn tier(&self, name: &str) -> Option<&HiddenVettingTier> {
+        self.tiers.iter().find(|t| t.name == name)
+    }
+}
+
+/// One rate on an event's published menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVettingTier {
+    /// How the menu names it: `desk`, `busy-desk`.
+    pub name: String,
+    /// How many tokens a tick under this tier yields.
+    pub drip_per_tick: usize,
+}
+
+/// Fourteen days: long enough that someone met on the closing afternoon can still submit, short
+/// enough that a three-day burst at twenty a day does not outlive the month it was drawn in.
+fn default_event_grace_days() -> u32 {
+    14
+}
+
+/// Three, the same floor §5.1 names. Two is a coin flip.
+fn default_group_floor() -> usize {
+    3
 }
 
 /// Three a tick: enough for a vetter who meets people, small enough that a compromised vetter
 /// cannot flood a community before the next rotation.
 fn default_drip_per_tick() -> usize {
     3
+}
+
+/// The token labels a submission may spend under, now.
+///
+/// Every live label, minus any event label whose grace period has run out. That deadline is the
+/// community's own rather than an operator remembering to edit a list, and it is the second half
+/// of the rule the separate event key exists for (§5.1): tokens drawn at an event's rate die
+/// shortly after the event. Stop issuing under the label but keep accepting spends, and a
+/// three-day burst at twenty a day is still spendable for as long as nobody tidies up.
+///
+/// A label naming no event this community runs is left alone — that is every ordinary monthly
+/// label, and a stale event label with no configuration behind it, which has nothing to expire
+/// against.
+#[must_use]
+fn accepted_token_labels(config: &HiddenVettingConfig, now: DateTime<Utc>) -> Vec<String> {
+    let today = now.date_naive();
+    config
+        .live_token_labels
+        .iter()
+        .filter(|label| {
+            super::pcs_event::event_of(config, label).is_none_or(|e| today <= e.closes_after())
+        })
+        .cloned()
+        .collect()
 }
 
 /// A spent token, as stored.
@@ -265,7 +370,7 @@ pub async fn decide(
     // 2. Decide against those.
     let hvk = from_bytes(&from_multibase(&config.hvk)?)?;
     let tvk = from_bytes(&from_multibase(&config.tvk)?)?;
-    let tokens = TokenVerifier::new(community_did, tvk, config.live_token_labels.clone())?;
+    let tokens = TokenVerifier::new(community_did, tvk, accepted_token_labels(config, now))?;
     let mut verifier = Verifier::new(
         VerifierParams {
             community: community_did.to_string(),
@@ -349,6 +454,7 @@ mod tests {
             live_periods: serde_json::from_value(f["livePeriods"].clone()).unwrap(),
             live_token_labels: serde_json::from_value(f["liveTokenLabels"].clone()).unwrap(),
             drip_per_tick: default_drip_per_tick(),
+            events: Vec::new(),
         };
 
         // A signer, because masking a tag derives from the same master secret credential
@@ -516,5 +622,93 @@ mod tests {
             SpendOutcome::Fresh
         );
         assert_eq!(ledger.taken.len(), 1);
+    }
+
+    fn config_with(events: Vec<HiddenVettingEvent>, labels: &[&str]) -> HiddenVettingConfig {
+        HiddenVettingConfig {
+            suite: vti_vetting_pcs::wire::SUITE.into(),
+            hvk: "zHvk".into(),
+            tvk: "zTvk".into(),
+            live_periods: vec!["2026-09".into()],
+            live_token_labels: labels.iter().map(|s| (*s).to_string()).collect(),
+            drip_per_tick: 3,
+            events,
+        }
+    }
+
+    fn event(id: &str, ends: chrono::NaiveDate, grace: u32) -> HiddenVettingEvent {
+        HiddenVettingEvent {
+            event_id: id.into(),
+            start_date: ends - chrono::Duration::days(2),
+            end_date: ends,
+            grace_days: grace,
+            group_floor: 3,
+            tiers: vec![HiddenVettingTier {
+                name: "desk".into(),
+                drip_per_tick: 20,
+            }],
+            approved_by: Some("did:key:zApprover".into()),
+        }
+    }
+
+    /// The second half of the rule the separate event key exists for (§5.1). An operator who
+    /// forgets to prune `liveTokenLabels` must not thereby leave a conference's worth of tokens
+    /// spendable for the rest of the month — the community's own deadline is what closes it.
+    #[test]
+    fn an_event_label_stops_being_accepted_when_its_grace_runs_out() {
+        let today = chrono::Utc::now().date_naive();
+        let config = config_with(
+            vec![
+                event("open-summit", today, 14),
+                event("last-years-summit", today - chrono::Duration::days(30), 14),
+            ],
+            &[
+                "token/2026-09",
+                "token/event/open-summit",
+                "token/event/last-years-summit",
+            ],
+        );
+        let accepted = accepted_token_labels(&config, chrono::Utc::now());
+        assert_eq!(
+            accepted,
+            vec![
+                "token/2026-09".to_string(),
+                "token/event/open-summit".to_string()
+            ],
+            "the closed event's label is dropped though the operator still lists it"
+        );
+    }
+
+    /// The last day is inclusive on both counts: the event's own end, and the grace after it.
+    #[test]
+    fn the_grace_period_includes_its_last_day() {
+        let today = chrono::Utc::now().date_naive();
+        // Ended 14 days ago with 14 days of grace: today is exactly `closesAfter`.
+        let closing = config_with(
+            vec![event("summit", today - chrono::Duration::days(14), 14)],
+            &["token/event/summit"],
+        );
+        assert_eq!(
+            accepted_token_labels(&closing, chrono::Utc::now()),
+            vec!["token/event/summit".to_string()],
+        );
+        // One day further on, it is shut.
+        let closed = config_with(
+            vec![event("summit", today - chrono::Duration::days(15), 14)],
+            &["token/event/summit"],
+        );
+        assert!(accepted_token_labels(&closed, chrono::Utc::now()).is_empty());
+    }
+
+    /// A label that names no event this community runs has nothing to expire against, and is
+    /// left alone rather than guessed at.
+    #[test]
+    fn a_label_with_no_event_behind_it_is_left_alone() {
+        let config = config_with(Vec::new(), &["token/2026-09", "token/event/who-knows"]);
+        assert_eq!(
+            accepted_token_labels(&config, chrono::Utc::now()).len(),
+            2,
+            "an event label with no configuration behind it is not silently dropped"
+        );
     }
 }

@@ -478,14 +478,17 @@ async fn dispatch_typed(
         vetting_wire::VETTING_VETTER_PROFILE_TYPE => handle_vetter_profile(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
-        // Hidden vetting's community half (development branch `zkp-pcs`). Three exchanges: a
-        // vetter enrolling, a vetter drawing its drip, an applicant asking for the challenge its
-        // proof must bind. Feature-gated, because a build without the suite cannot serve them
-        // and answering "unsupported type" is the honest response.
+        // Hidden vetting's community half (development branch `zkp-pcs`). Four exchanges: a
+        // vetter enrolling, a vetter drawing its drip, a vetter asking to vet at an event, an
+        // applicant asking for the challenge its proof must bind. Feature-gated, because a build
+        // without the suite cannot serve them and answering "unsupported type" is the honest
+        // response.
         #[cfg(feature = "vetting-pcs")]
         crate::vetting::pcs_tasks::PCS_ROOT_TYPE => handle_pcs_root(state, ctx, doc).await,
         #[cfg(feature = "vetting-pcs")]
         crate::vetting::pcs_tasks::PCS_TOKENS_TYPE => handle_pcs_tokens(state, ctx, doc).await,
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::EVENT_MODE_TYPE => handle_event_mode(state, ctx, doc).await,
         #[cfg(feature = "vetting-pcs")]
         crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE => {
             handle_pcs_challenge(state, ctx, doc).await
@@ -701,11 +704,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vetting_wire::VETTING_VETTER_PROFILE_TYPE,
     vetting_wire::VETTING_VETTER_LIST_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
-    // Hidden vetting: enrolment, the drip, and the applicant's challenge.
+    // Hidden vetting: enrolment, the drip, event mode, and the applicant's challenge.
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_TOKENS_TYPE,
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
@@ -1018,6 +1023,27 @@ async fn handle_pcs_tokens(
         Err(reject) => return reject,
     };
     match crate::vetting::pcs_tasks::handle_pcs_tokens(state, &member_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/event-mode/0.1` — a vetter asks to vet at a named event.
+///
+/// The request is only ever a request. Approving it is an act by an admin of the community,
+/// through the criterion that publishes the event — deliberately not a Trust Task, because a task
+/// the vetter could send is a task a vetter could be made to send.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_event_mode(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_event_mode(state, &member_did, &doc).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -1819,7 +1845,7 @@ mod tests {
             vetting_wire::VETTING_VETTER_RESEND_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            // Hidden vetting. These three name a string constant rather than a generated
+            // Hidden vetting. These four name a string constant rather than a generated
             // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet —
             // the specifications exist, the bindings generate as 0.22, and this graph is on
             // ^0.21. `pcs_tasks::tests` holds what the generated type would have held: that the
@@ -1828,6 +1854,8 @@ mod tests {
             crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
             #[cfg(feature = "vetting-pcs")]
             crate::vetting::pcs_tasks::PCS_TOKENS_TYPE,
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
             #[cfg(feature = "vetting-pcs")]
             crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
         ];

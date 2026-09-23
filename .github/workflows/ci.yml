@@ -285,6 +285,20 @@ jobs:
 
       - run: cargo test -p vtc-service -p vtc-client
 
+      # Hidden-vetter admission (development branch `zkp-pcs`). The feature is
+      # off by default, which means the line above compiles none of it — about
+      # 1,500 lines of service code, four Trust Task handlers and their tests,
+      # invisible to every job here. That is the workspace's own "green and
+      # wrong" failure mode with a feature flag in front of it.
+      #
+      # It builds on a runner: `predicate-credential-system` is vendored and
+      # tracked, and `vti-vetting-pcs` is a path dependency, so nothing here
+      # reaches an unpublished registry.
+      - name: hidden vetting (vetting-pcs)
+        run: |
+          cargo clippy -p vtc-service --features vetting-pcs --all-targets -- -D warnings
+          cargo test -p vtc-service --features vetting-pcs --no-fail-fast
+
 
       # #1243: `vtc-service`'s build.rs used to write into the source tree —
       # `npm install` refreshed `admin-ui/package-lock.json` (a

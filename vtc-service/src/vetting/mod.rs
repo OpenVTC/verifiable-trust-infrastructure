@@ -78,10 +78,13 @@ pub mod pcs;
 /// The VTC-issued challenge a hidden submission is bound to.
 #[cfg(feature = "vetting-pcs")]
 pub mod pcs_challenge;
+/// Event mode: the exception to the constant drip, and the gate that keeps it survivable.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs_event;
 /// The community's minting half: vetter enrolment and the token drip.
 #[cfg(feature = "vetting-pcs")]
 pub mod pcs_issue;
-/// The three Trust Tasks that carry the community half.
+/// The Trust Tasks that carry the community half.
 #[cfg(feature = "vetting-pcs")]
 pub mod pcs_tasks;
 pub mod profiles;

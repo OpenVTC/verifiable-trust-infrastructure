@@ -433,11 +433,14 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // Hidden vetting's community half (development branch `zkp-pcs`): enrolment, the
     // token drip, and the applicant's submission challenge.
     //
-    // These are **authored**, not missing: the three specifications live in
-    // dtgwg-trust-tasks-tf on branch `hidden-vetting-tasks`, validated, with bindings
-    // generated for all four languages. What is missing is a release — the bindings
-    // generate as trust-tasks-rs 0.22 and this graph pins ^0.21 through published
-    // crates, so the two nodes cannot unify and no patch bridges them.
+    // These are **merged**, not missing: the specifications landed upstream in
+    // dtgwg-trust-tasks-tf #618 and #620, with bindings generated for all four languages.
+    //
+    // What is missing is not a release. trust-tasks-rs 0.22 is published, and #619 publishes
+    // 0.22.2 carrying them. What is missing is the 0.22 line reaching *this* graph, which
+    // resolves 0.21.17 because affinidi-messaging-sdk, affinidi-messaging-mediator and the
+    // trust-tasks-{proof,https,tsp,capability-client} companions are all on 0.21 and re-export
+    // trust-tasks-rs types. Bumping here alone gives two nodes that cannot unify.
     //
     // The shape-checking a generated type would have given is not skipped, it is moved:
     // `vetting::pcs_tasks::tests` validates every payload and response against the
@@ -446,12 +449,18 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     (
         "https://trusttasks.org/spec/vtc/vetting/pcs",
         1,
-        "hidden vetting: specified upstream, awaiting a trust-tasks-rs release",
+        "hidden vetting: merged upstream (#618), awaiting the 0.22 line reaching this graph",
     ),
     (
         "https://trusttasks.org/spec/vtc/vetting/vetters/pcs",
         2,
-        "hidden vetting: specified upstream, awaiting a trust-tasks-rs release",
+        "hidden vetting: merged upstream (#618), awaiting the 0.22 line reaching this graph",
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/vetting/vetters/event-mode/",
+        1,
+        "hidden vetting (event mode): merged upstream (#620), awaiting the 0.22 line reaching \
+         this graph",
     ),
     // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
     // 0.2 were bound ahead of their specs here, and went back to zero with
