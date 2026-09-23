@@ -330,6 +330,215 @@ export const deleteJson = <T>(
   }, extra.requires);
 
 // ---------------------------------------------------------------------------
+// The signed door — `POST /v1/trust-tasks`
+// ---------------------------------------------------------------------------
+//
+// One seam, deliberately. `pnm-browser-plugin` puts signing in the channel
+// rather than at ~116 call sites, and the same reasoning applies here: a
+// plugin that built and signed its own document would be a second definition
+// of what a Trust Task document is, and the first one to drift verifies
+// nowhere.
+//
+// What arrives here is a task URI and a payload. What goes on the wire is a
+// `trust_tasks_rs::TrustTask` document — `{id, type, issuer, recipient,
+// issuedAt, payload, proof}` — issued by *this browser's* console `did:key`,
+// addressed to the VTC's own DID, and carrying an `eddsa-jcs-2022` proof. The
+// daemon verifies the proof against the document's own `issuer` (SPEC §4.7),
+// bounds `issuedAt` (10 minutes, VTI-OPS-024), checks the `recipient` binding
+// and records the `id` against replay; the verb handler then reads the
+// **signer's** authority — for a console key, the delegating admin's ACL row,
+// resolved at execution time (#1692).
+//
+// Three things this path deliberately does not do:
+//
+//  - **No bearer token.** The route reads none. The session cookie rides along
+//    because `credentials: "include"` is how this console talks to the daemon,
+//    and the CSRF header goes with it because the route sits behind the same
+//    middleware, but neither is what authorises the call.
+//  - **No `vtc-session-expired` event.** The generic `request` helper fires one
+//    on any 401/403, which is right for a bearer route and wrong here: the
+//    signed door answers 403 for "your delegation was revoked" and for "your
+//    admin row no longer permits this", and signing the operator out of a
+//    working session because a *document* was refused would be a bug that
+//    reads as a flaky console.
+//  - **No `Trust-Task` header.** The document's own `type` is the routing key.
+
+import {
+  buildTrustTaskDocument,
+  ed25519Available,
+  loadConsoleKey,
+  signTrustTaskDocument,
+} from "./console-key";
+
+/**
+ * Thrown when this browser cannot produce a signed document — no WebCrypto
+ * Ed25519, or no console key enrolled yet.
+ *
+ * A distinct type because it is not a failure: every call site catches it and
+ * falls back to the bearer route, which is exactly what keeps the console
+ * working on a browser that has never enrolled. Anything else thrown by
+ * `postSignedTrustTask` is a real error and must not be swallowed.
+ */
+export class SigningUnavailableError extends Error {
+  constructor(readonly reason: "no-ed25519" | "no-key") {
+    super(
+      reason === "no-ed25519"
+        ? "this browser has no WebCrypto Ed25519, so the console cannot sign documents"
+        : "no console signing key is enrolled in this browser",
+    );
+    this.name = "SigningUnavailableError";
+  }
+}
+
+/** The community DID a signed document must be addressed to. Cached per load. */
+let vtcDidPromise: Promise<string> | null = null;
+
+async function communityDid(): Promise<string> {
+  if (!vtcDidPromise) {
+    const pending = (async () => {
+      const health = await fetchHealth();
+      if (!health.vtc_did) {
+        // A VTC mid-setup has no DID, and `dispatch_trust_task_core` skips the
+        // recipient binding in that state — but a document with no `recipient`
+        // is refused outright by SPEC §4.8.2 audience binding, so there is
+        // nothing to address and nothing to sign.
+        throw new Error(
+          "this VTC has no DID configured yet, so a signed document has nothing to address",
+        );
+      }
+      return health.vtc_did;
+    })();
+    // Never cache a rejection. A `/health` that failed once — a reload
+    // mid-restart is the ordinary case — would otherwise leave every signed
+    // call in this tab failing for the life of the page.
+    pending.catch(() => {
+      if (vtcDidPromise === pending) vtcDidPromise = null;
+    });
+    vtcDidPromise = pending;
+  }
+  return vtcDidPromise;
+}
+
+/** Can this browser sign right now? Drives which door a screen offers. */
+export async function signingAvailable(): Promise<boolean> {
+  if (!(await ed25519Available())) return false;
+  return (await loadConsoleKey()) !== null;
+}
+
+/**
+ * A `trust-task-error` document's payload, as the framework defines it.
+ * `code` is the machine-readable one (`permissionDenied`, `taskFailed`,
+ * `malformedRequest`, …); `message` is safe to show.
+ */
+interface TrustTaskErrorPayload {
+  code?: string;
+  message?: string;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Send `payload` as a signed Trust Task document and return the `#response`
+ * document's payload.
+ *
+ * Throws [`SigningUnavailableError`] when this browser cannot sign — the
+ * caller falls back to the bearer route — and an [`ApiError`] for everything
+ * else, so existing error rendering is unchanged.
+ */
+export async function postSignedTrustTask<T>(
+  typeUri: string,
+  payload: unknown,
+): Promise<T> {
+  if (!(await ed25519Available())) {
+    throw new SigningUnavailableError("no-ed25519");
+  }
+  const key = await loadConsoleKey();
+  if (!key) throw new SigningUnavailableError("no-key");
+
+  const recipient = await communityDid();
+  const unsigned = buildTrustTaskDocument({
+    typeUri,
+    payload,
+    // The document is issued by the console key's own DID, not the operator's.
+    // SPEC §4.7 binds the proof to the in-band `issuer`, so they must be the
+    // same DID; the delegation is what connects that DID to the operator's
+    // authority, and it is read server-side on every document.
+    issuer: key.consoleDid,
+    recipient,
+  });
+  const signed = await signTrustTaskDocument(unsigned, key);
+
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const csrf = csrfTokenFromCookie();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+
+  const res = await fetch("/v1/trust-tasks", {
+    method: "POST",
+    credentials: "include",
+    headers,
+    body: JSON.stringify(signed),
+  });
+
+  const body = (await res.json().catch(() => null)) as {
+    payload?: unknown;
+  } | null;
+
+  if (!res.ok) {
+    const err = (body?.payload ?? {}) as TrustTaskErrorPayload;
+    const apiError: ApiError = {
+      status: res.status,
+      message:
+        err.message ??
+        err.code ??
+        `${res.status} ${res.statusText} from the signed Trust Task endpoint`,
+    };
+    throw apiError;
+  }
+
+  if (!body || !("payload" in body)) {
+    const apiError: ApiError = {
+      status: res.status,
+      message:
+        "the signed Trust Task endpoint answered without a `payload` — the response was not a Trust Task document",
+    };
+    throw apiError;
+  }
+  return body.payload as T;
+}
+
+/**
+ * Send this as a signed document if the browser can, and over the task's
+ * transitional bearer route if it cannot.
+ *
+ * The fallback catches [`SigningUnavailableError`] and **nothing else**: a
+ * browser without WebCrypto Ed25519, or an operator who has not yet enabled
+ * signing here, keeps working exactly as before. A signed call that is
+ * *refused* — a revoked delegation, an ACL row that no longer permits it —
+ * propagates, because silently retrying it over a bearer token would use the
+ * session as the authority the signed door exists to stop relying on, and
+ * would hide a revocation from the operator who performed it.
+ *
+ * Both doors run the same inner function server-side (#1681 moved each
+ * handler's body into a transport-free inner both call), so they cannot answer
+ * differently — but they are not equivalent: the signed door additionally
+ * verifies a proof, binds the recipient, bounds the document's age and records
+ * its id against replay, and reads authority from the ACL at execution time.
+ * The bearer routes stay mounted only until every client can sign; each
+ * carries its removal point in its OpenAPI description.
+ */
+export async function signedOrBearer<T>(
+  typeUri: string,
+  payload: unknown,
+  bearer: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await postSignedTrustTask<T>(typeUri, payload);
+  } catch (e) {
+    if (e instanceof SigningUnavailableError) return bearer();
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exempt helpers — for `/health`, `/admin/build-info.json`,
 // `/admin/plugins.json`, and any future route that's outside the
 // `TrustTaskRouter`. Spelling the carve-out explicitly at the call

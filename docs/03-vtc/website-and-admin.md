@@ -368,6 +368,39 @@ it was removed in #710. It ran exactly the same mint as `POST /v1/auth/` and
 differed only by appending the cookies, so it was a second way to
 authenticate for no wire-visible gain.
 
+### Signing keys — what the console signs with
+
+A growing number of admin verbs are served as **signed Trust Task documents**
+at `POST /v1/trust-tasks` rather than as bearer REST (#1641, #1681). A
+document carries its own authentication: the daemon verifies its
+`eddsa-jcs-2022` proof, binds the proof to the document's `issuer`, requires
+the community as `recipient`, bounds its age and records its `id` against
+replay — none of which a cookie can supply. The console therefore needs a
+key, and the **Signing keys** screen is where an operator gives it one.
+
+- **What it is.** A non-extractable WebCrypto Ed25519 key, generated in the
+  browser and kept in that profile's IndexedDB as a `CryptoKey` — never as
+  bytes, and not readable by script in the origin. Its public half becomes a
+  `did:key:z6Mk…`.
+- **What it authorises.** Nothing on its own. The daemon records a
+  *delegation* — "this key may act as that admin DID" — and authority stays
+  the admin's ACL row, read afresh each time a document executes. Revoking
+  the row, or the key, stops it.
+- **Enrolling one** needs a live passkey gesture (the same step-up
+  `acl/grant` uses). That is what stops a stolen session leaving a signing
+  key behind, since the key signs with no gesture at use time.
+- **Per browser, not per operator.** Each profile, machine and private
+  window enrols its own, listed and individually revocable, exactly as
+  passkeys are. A revoked key is tombstoned and cannot be re-enrolled; the
+  browser generates a new one.
+- **Optional.** A browser without WebCrypto Ed25519 (below Chrome 137 /
+  Firefox 130 / Safari 17), or one whose operator has not enrolled, keeps
+  using the transitional bearer routes. Those stay mounted until every
+  client can sign; each carries its removal point in its OpenAPI
+  description.
+
+Design note: `docs/05-design-notes/vtc-console-signing.md`.
+
 ## Routing modes
 
 ```mermaid

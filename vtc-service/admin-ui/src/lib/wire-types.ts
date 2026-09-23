@@ -36,7 +36,23 @@ export type WhoamiResponse = Schemas["WhoamiResponse"];
 export type SessionSummary = Schemas["SessionSummary"];
 export type PasskeyLoginStartResponse = Schemas["PasskeyLoginStartResponse"];
 export type RegisteredCredential = Schemas["RegisteredCredential"];
-export type PasskeyListResponse = Schemas["ListResponse"];
+// `PasskeyListResponse` used to be aliased here as `Schemas["ListResponse"]`
+// and is gone rather than fixed, because there is nothing to fix it to.
+// #1692 added a second `ListResponse` — the console-key listing — and utoipa
+// keys `components.schemas` by the Rust type's bare name, so the two collided
+// and the console-key shape won. `GET /v1/admin/passkeys` in the published
+// document now `$ref`s a schema describing `{consoleKeys}`, which is wrong
+// about the API rather than wrong about this console, and no alias here can
+// be right while it stands. `myPasskeys.tsx` carries its own local interface,
+// which is why nothing noticed.
+//
+// The fix is server-side (`#[schema(as = …)]` on the console-key types, then
+// regenerate) and belongs to whoever owns that document; it is deliberately
+// not smuggled into a console PR. Four routes collide on `RevokeResponse` the
+// same way, and that one predates #1692.
+export type ConsoleKey = Schemas["ConsoleKey"];
+/** `{consoleKeys}` — see the note above on why this schema is named so badly. */
+export type ConsoleKeyListResponse = Schemas["ListResponse"];
 export type PasskeyRegisterStartResponse = Schemas["RegisterStartResponse"];
 export type PasskeyRevokeStartResponse = Schemas["RevokeStartResponse"];
 
