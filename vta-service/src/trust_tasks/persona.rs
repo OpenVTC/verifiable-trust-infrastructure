@@ -2727,6 +2727,9 @@ pub(super) async fn handle_local_profile_put(
     // them — "they are local, they do not matter" — and loses the guard exactly
     // where a human most needs it: a throwaway identity is precisely where
     // somebody reuses a real value.
+    //
+    // Computed for the audit row whoever asked, and told back only to the
+    // holder — see the response below.
     let matches_pool = match s.get_local_profile(&ctx, &profile_id).await {
         Ok(Some(p)) => {
             let mut found = false;
@@ -2769,18 +2772,31 @@ pub(super) async fn handle_local_profile_put(
         Some(&detail),
     )
     .await;
-    success_response(
-        &doc,
-        json!({
-            "profileId": profile_id,
-            "version": written.version,
-            "created": written.created,
-            "correlation": {
-                "severity": if matches_pool { "high" } else { "none" },
-                "matchesPoolValue": matches_pool,
-            }
-        }),
-    )
+    // `correlation` answers the agent-wide index, and this task is
+    // context-scoped: a caller authorized in one context that reads
+    // `matchesPoolValue` has a yes/no on any value it cares to guess, one guess
+    // per write, against the holder's whole pool. No value crosses the boundary
+    // and none needs to — for a name, an address or a date of birth,
+    // confirmation IS disclosure, and the guesser is inside a single context
+    // learning about all of them.
+    //
+    // So the member is for the holder's own client and nobody else. Omitted
+    // rather than softened: a coarser signal is still an oracle, only a slower
+    // one. The holder still learns it — the audit row above records it, and
+    // `persona/correlation/analyze` answers it properly. Conditional by the
+    // specification as well as here (`persona/local/profile/put/1.0`).
+    let mut body = json!({
+        "profileId": profile_id,
+        "version": written.version,
+        "created": written.created,
+    });
+    if is_holder(state, auth).await {
+        body["correlation"] = json!({
+            "severity": if matches_pool { "high" } else { "none" },
+            "matchesPoolValue": matches_pool,
+        });
+    }
+    success_response(&doc, body)
 }
 
 pub(super) async fn handle_local_profile_get(
