@@ -526,6 +526,127 @@
         ]
       }
     },
+    "/v1/admin/console-keys": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "adminConsoleKeyList",
+        "responses": {
+          "200": {
+            "description": "The caller's console keys; empty when none are enrolled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "adminConsoleKeyEnrol",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The console key may now act as the caller's admin DID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsoleKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "consoleDid is not a did:key, or is the caller's own DID"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin, or has no live step-up"
+          },
+          "409": {
+            "description": "That DID already holds an ACL row, or is already enrolled"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/console-keys/{console_did}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "adminConsoleKeyRevoke",
+        "parameters": [
+          {
+            "name": "console_did",
+            "in": "path",
+            "description": "The console key's did:key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked; the next document signed by this key is refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is neither the owning admin nor a super-admin"
+          },
+          "404": {
+            "description": "No such console key"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/admin/did/register": {
       "post": {
         "tags": [
@@ -6311,6 +6432,60 @@
           "default"
         ]
       },
+      "ConsoleKey": {
+        "type": "object",
+        "description": "One delegation as the console sees it.\n\nSeparate from the stored [`ConsoleKeyDelegation`] for the same reason\n`RegisteredCredential` is separate from `RegisteredPasskey`: that type is a\nstorage row whose member names are the on-disk format. This one can change\nwithout orphaning anything.",
+        "required": [
+          "consoleDid",
+          "adminDid",
+          "createdAt",
+          "active"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Live right now: not revoked, not expired. Computed server-side so the\nconsole does not re-implement the predicate the verifier uses — the two\ndisagreeing is how a page shows a key as working after it stopped."
+          },
+          "adminDid": {
+            "type": "string",
+            "description": "The admin DID this key acts as — always the listing caller, included so\na console need not infer it from the session."
+          },
+          "consoleDid": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
       "CreateAclRequest": {
         "type": "object",
         "description": "Canonical `acl/grant` request: the entry the maintainer should hold\nfor the subject, plus an optional operator rationale.",
@@ -7081,6 +7256,35 @@
             "description": "The type URI. Primary key — URL-encoded into the\nkeyspace key."
           }
         }
+      },
+      "EnrolRequest": {
+        "type": "object",
+        "description": "The enrolment request.\n\n**There is no `adminDid` member, and that is the design.** The delegation is\nalways written against the authenticated caller, so \"enrol a key that acts\nas somebody else\" is not a request this surface can express. See\n[`enrol`]'s own comment for why self-targeting is the only valid case here\nand why that is the *opposite* of the `acl/grant` rule.",
+        "required": [
+          "consoleDid"
+        ],
+        "properties": {
+          "consoleDid": {
+            "type": "string",
+            "description": "The console key's `did:key` — Ed25519 multikey, as the browser derives\nit from the public half of its non-extractable keypair."
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional finite lifetime. Omit — the expected case — and the delegation\nlasts until it is revoked or the browser profile is cleared."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator-supplied, e.g. `\"Work laptop — Chrome\"`. Optional; an empty\nstring is treated as absent."
+          }
+        },
+        "additionalProperties": false
       },
       "ExportResponse": {
         "type": "object",
@@ -8412,15 +8616,15 @@
       "ListResponse": {
         "type": "object",
         "required": [
-          "credentials"
+          "consoleKeys"
         ],
         "properties": {
-          "credentials": {
+          "consoleKeys": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RegisteredCredential"
+              "$ref": "#/components/schemas/ConsoleKey"
             },
-            "description": "`credentials`, the name `auth/passkey/list/0.1` publishes. It was\n`passkeys` until #1112 — the same object under a name the schema does\nnot define, so no conforming client could find it."
+            "description": "The caller's own console keys, newest first, revoked ones included so\nan operator can see that a browser was disowned rather than never\nenrolled."
           }
         }
       },

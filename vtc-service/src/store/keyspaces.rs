@@ -95,6 +95,14 @@ pub const VETTER_PROFILES: &str = "vetter_profiles";
 /// `crate::trust_tasks::accepted_ids`.
 pub const ACCEPTED_IDS: &str = "accepted_ids";
 
+/// Console signing-key delegations (#1684): one row per console `did:key` at
+/// `console_key:<consoleDid>`, saying which admin DID that key may act as.
+///
+/// A *credential* of an existing admin identity, the way a registered passkey
+/// is — it carries no role and confers nothing on its own, so a console key
+/// never appears in `acl list`. See `crate::acl::console_key`.
+pub const CONSOLE_KEYS: &str = "console_keys";
+
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
 /// exactly this set.
@@ -131,6 +139,7 @@ pub const ALL: &[&str] = &[
     VETTING_REVOCATIONS,
     VETTER_PROFILES,
     ACCEPTED_IDS,
+    CONSOLE_KEYS,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -206,6 +215,16 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // durable state, which this is not: it is execution bookkeeping, local to
     // the deployment that did the executing.
     ACCEPTED_IDS,
+    // Console signing-key delegations. Excluded deliberately, and it is the
+    // one exclusion here that is a security decision rather than a
+    // housekeeping one: a delegation names a browser profile on a particular
+    // machine, and a restore — into a rebuilt host, a staging clone, or a
+    // different operator's hands — must not hand that browser the ability to
+    // sign as an administrator again. The operator re-enrols, behind the
+    // step-up, from the browser they are actually sitting at — one passkey
+    // gesture. Nothing else goes with it: the ACL rows, the passkeys and the
+    // bearer login all come back with the backup.
+    CONSOLE_KEYS,
 ];
 
 #[cfg(test)]
@@ -217,7 +236,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 32, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 33, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

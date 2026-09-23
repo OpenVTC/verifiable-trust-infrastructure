@@ -39,9 +39,9 @@ pub use envelope::{
     verify_chain,
 };
 pub use event::{
-    AclChangeData, AclRevokedData, AdminInviteData, AdminPasskeyData, AdminPromotedData,
-    AdminUiServedData, AuditEvent, AuditKeyRotatedData, AuthSteppedUpData, BackupData,
-    CommunityBrandingUpdatedData, CommunityDidLogInstalledData, CommunityInstalledData,
+    AclChangeData, AclRevokedData, AdminConsoleKeyData, AdminInviteData, AdminPasskeyData,
+    AdminPromotedData, AdminUiServedData, AuditEvent, AuditKeyRotatedData, AuthSteppedUpData,
+    BackupData, CommunityBrandingUpdatedData, CommunityDidLogInstalledData, CommunityInstalledData,
     CommunityJoinDiscoveryUpdatedData, CommunityProfileUpdatedData,
     CommunityRequestedAttributesUpdatedData, ConfigChange, ConfigChangedData, ConfigReloadedData,
     ConfigSource, CredentialIssuedData, CrossCommunitySessionMintedData,

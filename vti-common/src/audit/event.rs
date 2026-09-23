@@ -105,6 +105,22 @@ pub enum AuditEvent {
     /// least one passkey behind.
     AdminPasskeyRevoked(AdminPasskeyData),
 
+    /// A console signing key was enrolled against an admin DID — the
+    /// delegation "console key K may act as admin DID D" (VTC #1684).
+    ///
+    /// Security-relevant for the same reason `AdminPasskeyRegistered` is, and
+    /// then some: the credential it records can author *signed documents* in
+    /// the delegating admin's name, and unlike a passkey it needs no gesture
+    /// at use time. Enrolment demands a live step-up, so a row here says a
+    /// human touched an authenticator at that moment.
+    AdminConsoleKeyEnrolled(AdminConsoleKeyData),
+
+    /// A console signing key's delegation was revoked — by its own admin, or
+    /// by a super-admin doing incident response. Takes effect on the very next
+    /// document, because the verification path reads the row rather than a
+    /// cached decision.
+    AdminConsoleKeyRevoked(AdminConsoleKeyData),
+
     /// One or more runtime configuration keys were modified via
     /// `PATCH /v1/admin/config`. Per-key sensitivity is honoured —
     /// values for keys flagged sensitive are redacted via
@@ -595,6 +611,8 @@ impl AuditEvent {
             Self::EmergencyBootstrapInvoked(..) => "EmergencyBootstrapInvoked",
             Self::AdminPasskeyRegistered(..) => "AdminPasskeyRegistered",
             Self::AdminPasskeyRevoked(..) => "AdminPasskeyRevoked",
+            Self::AdminConsoleKeyEnrolled(..) => "AdminConsoleKeyEnrolled",
+            Self::AdminConsoleKeyRevoked(..) => "AdminConsoleKeyRevoked",
             Self::ConfigChanged(..) => "ConfigChanged",
             Self::ConfigReloaded(..) => "ConfigReloaded",
             Self::RestartRequested(..) => "RestartRequested",
@@ -893,6 +911,24 @@ pub struct AdminPasskeyData {
     /// `usb` / `nfc` / `ble` / `internal` etc., as WebAuthn reports
     /// them. Helpful for "which device just got revoked" UX.
     pub transports: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::AdminConsoleKeyEnrolled`] /
+/// [`AuditEvent::AdminConsoleKeyRevoked`].
+///
+/// The console DID travels here *and* as the envelope's target, matching
+/// [`AclChangeData`]: the target member is what an erasure can reach, and the
+/// data member is what a SIEM rule can read without re-deriving an HMAC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminConsoleKeyData {
+    /// The console key's `did:key`. Not a person — a browser profile.
+    pub console_did: String,
+    /// Operator-supplied label, absent when nobody chose one. Never
+    /// synthesized: an invented label is indistinguishable from a chosen one
+    /// to somebody deciding which key to revoke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2650,6 +2686,20 @@ mod tests {
                     transports: vec![],
                 }),
                 "AdminPasskeyRevoked",
+            ),
+            (
+                AuditEvent::AdminConsoleKeyEnrolled(AdminConsoleKeyData {
+                    console_did: "did:key:z6MkConsole".into(),
+                    label: Some("Work laptop".into()),
+                }),
+                "AdminConsoleKeyEnrolled",
+            ),
+            (
+                AuditEvent::AdminConsoleKeyRevoked(AdminConsoleKeyData {
+                    console_did: "did:key:z6MkConsole".into(),
+                    label: None,
+                }),
+                "AdminConsoleKeyRevoked",
             ),
             (
                 AuditEvent::ConfigChanged(ConfigChangedData {
