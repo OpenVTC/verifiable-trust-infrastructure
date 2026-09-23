@@ -1,7 +1,7 @@
-// The forms that build a change: grant a right, adopt a repository, transfer
-// ownership. Each ends by handing its `SignedTask` to the caller, which shows
-// it in `SignTaskDialog` for the administrator to sign — none of them sends
-// anything (see `actions.ts`).
+// The forms that build a change: grant a right, adopt, create or transfer a
+// repository. Each ends by handing its `SignedTask` to the caller, which shows
+// it in `SignTaskDialog` to sign and send — the forms themselves send nothing
+// (see `actions.ts`).
 //
 // The person picker lists current members and also takes a pasted DID,
 // because whether a non-member may hold a repository right is the
@@ -19,12 +19,14 @@ import type { GitNsRight } from "@/lib/wire-types";
 
 import {
   adoptTask,
+  createTask,
   didError,
   grantTask,
+  segmentError,
   type SignedTask,
   transferTask,
 } from "./actions";
-import { fetchMemberFacts, gitNsKeys } from "./api";
+import { fetchMembers, gitNsKeys } from "./api";
 import { consentClass, RIGHT_LABEL, shortName } from "./model";
 
 const OTHER = "__other__";
@@ -125,9 +127,9 @@ function PersonField({
   const id = useId();
   const errId = useId();
   const book = useNameBook();
-  const facts = useQuery({ queryKey: gitNsKeys.memberFacts, queryFn: fetchMemberFacts });
+  const facts = useQuery({ queryKey: gitNsKeys.members, queryFn: fetchMembers });
   const [mode, setMode] = useState<"member" | "other">("member");
-  const members = (facts.data?.members ?? []).filter((m) => !exclude.includes(m.did));
+  const members = (facts.data ?? []).filter((m) => !exclude.includes(m.did));
 
   return (
     <div className="field">
@@ -409,6 +411,94 @@ export function TransferDialog({
         error={error}
         exclude={owners}
       />
+    </FormDialog>
+  );
+}
+
+export function CreateDialog({
+  namespaceId,
+  namespaceResource,
+  personal,
+  onClose,
+  onBuilt,
+}: {
+  namespaceId: string;
+  namespaceResource: string;
+  personal: boolean;
+  onClose: () => void;
+  onBuilt: (task: SignedTask) => void;
+}) {
+  const nameId = useId();
+  const descId = useId();
+  const [name, setName] = useState("");
+  const [visibility, setVisibility] = useState<"public" | "private">("public");
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = () => {
+    const e = segmentError(name, "repository");
+    setError(e);
+    if (!e) {
+      onBuilt(
+        createTask({ namespaceId, namespaceResource, name, visibility, description, personal }),
+      );
+    }
+  };
+
+  return (
+    <FormDialog
+      title={`New repository in ${namespaceResource}`}
+      onClose={onClose}
+      onSubmit={submit}
+      submitLabel="Build the repository"
+    >
+      <p className="muted">
+        {personal
+          ? "On a personal account no bot can create a repository: the VTC reserves the name and answers with the commands the account holder runs."
+          : "The bridge creates it and bootstraps commit trust. Whoever signs becomes its owner, and needs git.repo.create here."}
+      </p>
+      <div className="field">
+        <label className="field-label" htmlFor={nameId}>
+          Name
+        </label>
+        <input
+          id={nameId}
+          value={name}
+          placeholder="widgets"
+          aria-describedby={error ? `${nameId}-err` : undefined}
+          onChange={(e) => setName(e.target.value.trim())}
+        />
+        <FieldError id={`${nameId}-err`} error={error} />
+      </div>
+      <fieldset className="gitns-fieldset">
+        <legend>Visibility</legend>
+        {(["public", "private"] as const).map((v) => (
+          <label key={v} className="gitns-radio">
+            <input
+              type="radio"
+              name="gitns-visibility"
+              checked={visibility === v}
+              onChange={() => setVisibility(v)}
+            />
+            <span>{v === "public" ? "Public" : "Private"}</span>
+          </label>
+        ))}
+        <span className="field-hint">
+          Either way, who owns it and who may commit is published to the Trust Registry.
+        </span>
+      </fieldset>
+      <div className="field">
+        <label className="field-label" htmlFor={descId}>
+          Description
+        </label>
+        <input
+          id={descId}
+          value={description}
+          placeholder="Optional"
+          onChange={(e) => setDescription(e.target.value)}
+        />
+        <span className="field-hint">Shown by the forge. Nothing you would not publish.</span>
+      </div>
     </FormDialog>
   );
 }

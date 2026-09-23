@@ -2,7 +2,7 @@
 // what that puts in the public Trust Registry, where the forge has drifted, and
 // what happened to it lately.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Plus, X } from "lucide-react";
@@ -11,7 +11,6 @@ import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
 import type {
   GitNsDriftItem,
-  GitNsJobRow,
   GitNsNamespaceRow,
   GitNsRepoRow,
   GitNsRight,
@@ -20,19 +19,21 @@ import type {
 
 import { archiveTask, grantTask, revokeTask, type SignedTask } from "./actions";
 import {
+  fetchAccounts,
+  fetchActivity,
   fetchDrift,
-  fetchJobs,
-  fetchMemberFacts,
   fetchNamespaces,
   fetchProjection,
   fetchRepos,
   fetchRights,
   type ForgeAccounts,
   gitNsKeys,
+  indexAccounts,
   memberForAccount,
 } from "./api";
 import { AdoptDialog, GrantDialog, TransferDialog } from "./dialogs";
 import {
+  activityVerb,
   bootstrapSteps,
   desiredTuples,
   expiresWithin,
@@ -40,6 +41,7 @@ import {
   inheritedRights,
   isRight,
   isServiceGrant,
+  lastCheckOf,
   REPO_RIGHTS,
   repoRights,
   repoStatus,
@@ -49,6 +51,7 @@ import {
 } from "./model";
 import {
   errorMessage,
+  errorStatus,
   formatDay,
   memberPath,
   namespacePath,
@@ -290,91 +293,72 @@ function DriftList({
   );
 }
 
-interface ActivityItem {
-  at: string;
-  text: ReactNode;
-}
-
-function Activity({
-  repo,
-  rights,
-  jobs,
-}: {
-  repo: GitNsRepoRow;
-  rights: GitNsRightRow[];
-  jobs: GitNsJobRow[];
-}) {
+/** The repository's history, from the namespace's activity feed. */
+function Activity({ ns, resource }: { ns: GitNsNamespaceRow; resource: string }) {
   const book = useNameBook();
-  const items: ActivityItem[] = [];
-  items.push({
-    at: repo.createdAt,
-    text: (
-      <>
-        {repo.state === "unmanaged" ? "Found on the forge" : "Recorded"}
-        {repo.createdBy && (
-          <>
-            {" by "}
-            <NamedDid did={repo.createdBy} book={book} nameOnly={!!book.nameOf(repo.createdBy)} />
-          </>
-        )}
-      </>
-    ),
+  const q = useQuery({
+    queryKey: gitNsKeys.activity(ns.id),
+    queryFn: () => fetchActivity(ns.id),
   });
-  for (const r of rights) {
-    if (!r.grantedAt) continue;
-    items.push({
-      at: r.grantedAt,
-      text: (
-        <>
-          {r.grantedBy ? (
-            <NamedDid did={r.grantedBy} book={book} nameOnly={!!book.nameOf(r.grantedBy)} />
-          ) : (
-            "Someone"
-          )}{" "}
-          granted <b>{rightLabel(r.right).toLowerCase()}</b> to{" "}
-          <NamedDid did={r.subject} book={book} nameOnly={!!book.nameOf(r.subject)} />
-          {r.expiresAt && `, expires ${formatDay(r.expiresAt)}`}
-        </>
-      ),
-    });
-  }
-  for (const j of jobs) {
-    items.push({
-      at: j.acceptedAt ?? j.createdAt,
-      text: (
-        <>
-          Bridge job <code>{j.kind}</code> — {j.state}
-          {j.attempts > 1 && ` after ${j.attempts} attempts`}
-          {j.lastError && <span className="muted"> ({j.lastError})</span>}
-        </>
-      ),
-    });
-  }
-  items.sort((a, b) => b.at.localeCompare(a.at));
+  const items = (q.data?.items ?? []).filter((i) => i.resource === resource).slice(0, 10);
+  const who = (did: string | null | undefined) =>
+    did ? <NamedDid did={did} book={book} nameOnly={!!book.nameOf(did)} /> : null;
 
   return (
     <section className="card" aria-labelledby="gitns-activity">
       <h3 id="gitns-activity">Recent activity</h3>
-      <ul className="gitns-activity">
-        {items.slice(0, 8).map((it, i) => (
-          <li key={i}>
-            <time dateTime={it.at} className="muted">
-              {formatDay(it.at)}
-            </time>{" "}
-            · {it.text}
-          </li>
+      {q.isPending && <p>Loading activity…</p>}
+      {q.isError &&
+        (errorStatus(q.error) === 403 ? (
+          <p className="muted">
+            Activity is shown to this namespace's admins, and this session's DID does
+            not hold <code>git.ns.admin</code> on {ns.resource}.
+          </p>
+        ) : (
+          <p className="muted">Activity could not be read: {errorMessage(q.error)}.</p>
         ))}
-      </ul>
+      {q.isSuccess && items.length === 0 && (
+        <p className="muted">Nothing recorded for this repository yet.</p>
+      )}
+      {items.length > 0 && (
+        <ul className="gitns-activity">
+          {items.map((it, i) => (
+            <li key={i}>
+              <time dateTime={it.at} className="muted">
+                {formatDay(it.at)}
+              </time>{" "}
+              · {who(it.actor)}
+              {it.actor && " "}
+              {activityVerb(it.action)}
+              {it.right && (
+                <>
+                  {" "}
+                  <b>{rightLabel(it.right).toLowerCase()}</b>
+                </>
+              )}
+              {it.subject && it.subject !== it.actor && <> — {who(it.subject)}</>}
+              {it.detail && <span className="muted"> ({it.detail})</span>}
+            </li>
+          ))}
+        </ul>
+      )}
       <p className="muted gitns-small">
-        From the live rights and the bridge's jobs. Revocations and the full history
-        are in the Audit trail.
+        Rights changes, drift and bridge jobs. The full record is in the Audit trail.
       </p>
     </section>
   );
 }
 
+const OUTCOME_TONE: Record<string, "success" | "neutral" | "danger" | "accent"> = {
+  applied: "success",
+  unchanged: "neutral",
+  failed: "danger",
+  skipped: "accent",
+};
+
 function CommitTrust({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }) {
   const guard = guardFor(ns, repo);
+  const check = lastCheckOf(repo);
   return (
     <section className="card" aria-labelledby="gitns-trust">
       <h3 id="gitns-trust">Commit trust on {ns.forge}</h3>
@@ -401,14 +385,45 @@ function CommitTrust({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }
           <span className="muted">Every step is check-then-apply, so a retry is safe.</span>
         </div>
       )}
-      <div className={`finding ${guard.mode === "soloUnreviewed" ? "warn" : ""}`}>
+      {repo.steps.length > 0 && (
+        <div>
+          <span className="field-label">Last create, bootstrap or inspect</span>
+          <ol className="gitns-step-outcomes">
+            {repo.steps.map((s, i) => (
+              <li key={`${s.step}-${i}`}>
+                <span className="gitns-mono">{s.step}</span>{" "}
+                <ToneChip tone={OUTCOME_TONE[s.outcome] ?? "neutral"}>{s.outcome}</ToneChip>
+                {s.detail && <span className="muted gitns-small"> {s.detail}</span>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      <div
+        className={`finding ${guard.tone === "danger" ? "error" : guard.tone === "warning" ? "warn" : guard.tone === "success" ? "ok" : ""}`}
+      >
         <strong>Guard: {guard.label}</strong>
         <span>{guard.detail}</span>
         <span className="muted gitns-small">
-          Expected for a {ns.mode}-mode {ns.kind ?? "namespace"} (design §9). The bridge
-          reports whether the check is required, not which guard makes it so.
+          {guard.source === "reported"
+            ? "As the bridge last reported it."
+            : `Expected for a ${ns.mode}-mode ${ns.kind ?? "namespace"} (design §9); the bridge has not reported the guard in force.`}
         </span>
       </div>
+      <p className="gitns-small">
+        Last check:{" "}
+        {check ? (
+          <>
+            <ToneChip tone={check.conclusion === "success" ? "success" : check.conclusion === "failure" ? "danger" : "neutral"}>
+              {check.conclusion}
+            </ToneChip>
+            {check.at && <> {formatDay(check.at)}</>}
+            {check.sha && <> on <code>{check.sha.slice(0, 12)}</code></>}
+          </>
+        ) : (
+          <span className="muted">none reported</span>
+        )}
+      </p>
     </section>
   );
 }
@@ -516,8 +531,8 @@ export function RepoDetail() {
   const reposQ = useQuery({ queryKey: gitNsKeys.repos, queryFn: fetchRepos });
   const rightsQ = useQuery({ queryKey: gitNsKeys.rights, queryFn: fetchRights });
   const driftQ = useQuery({ queryKey: gitNsKeys.drift, queryFn: fetchDrift });
-  const jobsQ = useQuery({ queryKey: gitNsKeys.jobs, queryFn: fetchJobs });
-  const factsQ = useQuery({ queryKey: gitNsKeys.memberFacts, queryFn: fetchMemberFacts });
+  const accountsQ = useQuery({ queryKey: gitNsKeys.accounts, queryFn: fetchAccounts });
+  const forges = useMemo(() => indexAccounts(accountsQ.data), [accountsQ.data]);
 
   const repos = reposQ.data?.repos ?? [];
   const namespaces = nsQ.data?.namespaces ?? [];
@@ -574,7 +589,6 @@ export function RepoDetail() {
   const people = repoRights(allRights, repo.resource);
   const inherited = inheritedRights(allRights, ns);
   const drift = driftQ.data?.repos.find((d) => d.resource === repo.resource)?.drift ?? [];
-  const jobs = (jobsQ.data?.jobs ?? []).filter((j) => j.repo === repo.resource);
   const owners = repo.owners;
   // The service grant is the one record the community issues as itself, so its
   // granter is this VTC's DID — which lets "granted by" say so in words.
@@ -686,7 +700,7 @@ export function RepoDetail() {
               <PeopleTable
                 rows={people}
                 forge={ns.forge}
-                forges={factsQ.data?.forges}
+                forges={forges}
                 vtcDid={vtcDid}
                 readOnlyNote={(r) =>
                   r.origin === "roleDerived"
@@ -720,7 +734,7 @@ export function RepoDetail() {
               <PeopleTable
                 rows={inherited}
                 forge={ns.forge}
-                forges={factsQ.data?.forges}
+                forges={forges}
                 vtcDid={vtcDid}
                 readOnlyNote={(r) =>
                   isServiceGrant(r, ns)
@@ -739,7 +753,7 @@ export function RepoDetail() {
               )}
               <DriftList
                 items={drift}
-                forges={factsQ.data?.forges}
+                forges={forges}
                 onAdopt={(subject, right) =>
                   right &&
                   setDialog({
@@ -766,7 +780,7 @@ export function RepoDetail() {
             namespaces={namespaces}
             rights={allRights}
           />
-          <Activity repo={repo} rights={people} jobs={jobs} />
+          <Activity ns={ns} resource={repo.resource} />
         </div>
       </div>
 

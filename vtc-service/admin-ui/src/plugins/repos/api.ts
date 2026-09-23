@@ -1,18 +1,23 @@
 // Repos admin API — the reads the Repos plugin renders.
 //
-// Every route here is one of the administrator's projections of the single
-// read the `git-ns/*` family defines, and the daemon gates each of them on
-// that task's URI (`routes/mod.rs`, `GIT_NS_VIEW`), so every call carries it.
-// Borrowing another URI would be refused; sending none would be too.
+// Only one of these is a specification's read: `GET /v1/git-ns/view` answers
+// `git-ns/view/0.1#response`, and the daemon gates it on that task's URI. The
+// rest are console projections no specification defines — namespaces with
+// their admins and forge status, repositories with bootstrap and guard,
+// rights, drift, jobs, the registry mirror, linked accounts, activity — so the
+// daemon mounts them behind the admin session with **no** Trust-Task binding
+// (`routes/mod.rs`: gating them on `git-ns/view/0.1` would claim a response
+// shape they do not have). They go through `getJsonExempt` for that reason,
+// which is the smell the helper is meant to be: each one is named here.
 //
-// There are no writes in this file, and that is the daemon's decision rather
-// than an omission: every change to a git right is a *signed* `git-ns/*` Trust
-// Task, authorized by the signer's own git rights, and the console cannot yet
-// sign one (#1641). `actions.ts` builds those documents for the administrator
-// to sign instead.
+// Writes are not in this file. Every change is a signed `git-ns/*` Trust Task;
+// `actions.ts` builds them and sends them from this browser's console key
+// where one is enrolled.
 
-import { getJson } from "@/lib/api";
+import { getJson, getJsonExempt } from "@/lib/api";
 import type {
+  GitNsAccountList,
+  GitNsActivity,
   GitNsDepartedGrants,
   GitNsDriftList,
   GitNsJobList,
@@ -23,11 +28,9 @@ import type {
   MembersPage,
 } from "@/lib/wire-types";
 
-/** `git-ns/view/0.1` — the one task every admin read here is gated on. */
+/** `git-ns/view/0.1` — the one specification read in the family. */
 export const TASK_GIT_NS_VIEW = "https://trusttasks.org/spec/git-ns/view/0.1";
 const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
-
-const view = { trustTask: TASK_GIT_NS_VIEW };
 
 /** Query keys. Everything under `["git-ns"]` is refreshed together. */
 export const gitNsKeys = {
@@ -39,92 +42,74 @@ export const gitNsKeys = {
   drift: ["git-ns", "drift"] as const,
   jobs: ["git-ns", "jobs"] as const,
   projection: ["git-ns", "projection"] as const,
-  memberFacts: ["git-ns", "member-facts"] as const,
+  accounts: ["git-ns", "accounts"] as const,
+  activity: (namespace: string) => ["git-ns", "activity", namespace] as const,
+  members: ["git-ns", "members"] as const,
 };
 
 export const fetchNamespaces = (): Promise<GitNsNamespaceList> =>
-  getJson<GitNsNamespaceList>("/v1/git-ns/namespaces", {
-    ...view,
-    requires: ["namespaces"],
-  });
+  getJsonExempt<GitNsNamespaceList>("/v1/git-ns/namespaces");
 
 /** Every repository. Filtering happens client-side: the overview shows every
  *  namespace's counts at once, and a per-namespace request would be one round
  *  trip per card for rows the next click needs anyway. */
 export const fetchRepos = (): Promise<GitNsRepoList> =>
-  getJson<GitNsRepoList>("/v1/git-ns/repos", { ...view, requires: ["repos"] });
+  getJsonExempt<GitNsRepoList>("/v1/git-ns/repos");
 
 /** Live rights, recorded and role-derived, across every namespace. */
 export const fetchRights = (): Promise<GitNsRightList> =>
-  getJson<GitNsRightList>("/v1/git-ns/rights", { ...view, requires: ["rights"] });
+  getJsonExempt<GitNsRightList>("/v1/git-ns/rights");
 
 export const fetchIssuedByDeparted = (): Promise<GitNsDepartedGrants> =>
-  getJson<GitNsDepartedGrants>("/v1/git-ns/rights/issued-by-departed", {
-    ...view,
-    requires: ["granters", "cascadeOnDeparture"],
-  });
+  getJsonExempt<GitNsDepartedGrants>("/v1/git-ns/rights/issued-by-departed");
 
 export const fetchDrift = (): Promise<GitNsDriftList> =>
-  getJson<GitNsDriftList>("/v1/git-ns/drift", { ...view, requires: ["repos"] });
+  getJsonExempt<GitNsDriftList>("/v1/git-ns/drift");
 
 export const fetchJobs = (): Promise<GitNsJobList> =>
-  getJson<GitNsJobList>("/v1/git-ns/jobs", { ...view, requires: ["jobs"] });
+  getJsonExempt<GitNsJobList>("/v1/git-ns/jobs");
 
 export const fetchProjection = (): Promise<GitNsProjection> =>
-  getJson<GitNsProjection>("/v1/git-ns/projection", {
-    ...view,
-    requires: ["published", "registryConfigured"],
-  });
+  getJsonExempt<GitNsProjection>("/v1/git-ns/projection");
 
-/** One linked forge account, as the bridge stored it on the member row
- *  (`extensions.forges[<host>] = {id, login}`). `id` is authoritative;
- *  `login` is display only — logins are renamed and re-registered. */
-export interface ForgeAccount {
-  id: string;
-  login: string;
-}
-
-/** DID → forge host → linked account. */
-export type ForgeAccounts = Map<string, Map<string, ForgeAccount>>;
-
-export interface MemberFacts {
-  /** Current members, for the person picker. */
-  members: { did: string; label?: string | null }[];
-  forges: ForgeAccounts;
-}
+/** Members' linked forge accounts (`git-ns/account/link`). `id` is
+ *  authoritative; `login` is display only — logins are renamed and
+ *  re-registered. */
+export const fetchAccounts = (): Promise<GitNsAccountList> =>
+  getJsonExempt<GitNsAccountList>("/v1/git-ns/accounts");
 
 /**
- * Current members and their linked forge accounts, read off the member
- * listing.
+ * What happened in one namespace, newest first: rights changes, drift and
+ * bridge jobs, read from the git-ns audit rows and the job queue.
  *
- * No git-ns route carries the accounts: `git-ns/account/link` records the
- * link on the member, and the members listing is where a member's
- * `extensions` are served. Anything in `extensions.forges` that is not the
- * `{id, login}` the bridge writes is skipped rather than guessed at.
+ * Narrowed server-side to namespaces the *caller* administers, so a community
+ * administrator who holds no `git.ns.admin` there is answered 403 — which the
+ * screens render as that, not as an empty history.
  */
-export async function fetchMemberFacts(): Promise<MemberFacts> {
+export const fetchActivity = (namespace: string, limit = 100): Promise<GitNsActivity> =>
+  getJsonExempt<GitNsActivity>(
+    `/v1/git-ns/activity?namespace=${encodeURIComponent(namespace)}&limit=${limit}`,
+  );
+
+/** Current members, for the person picker. */
+export async function fetchMembers(): Promise<{ did: string; label?: string | null }[]> {
   const page = await getJson<MembersPage>("/v1/members?limit=500", {
     trustTask: TASK_MEMBERS_LIST,
   });
-  const members: MemberFacts["members"] = [];
-  const forges: ForgeAccounts = new Map();
-  for (const m of page.items ?? []) {
-    members.push({ did: m.did, label: m.label });
-    const linked = (m.extensions as { forges?: unknown } | null)?.forges;
-    if (!linked || typeof linked !== "object") continue;
-    const byHost = new Map<string, ForgeAccount>();
-    for (const [host, acct] of Object.entries(linked as Record<string, unknown>)) {
-      const a = acct as { id?: unknown; login?: unknown } | null;
-      if (a && (typeof a.id === "string" || typeof a.id === "number")) {
-        byHost.set(host, {
-          id: String(a.id),
-          login: typeof a.login === "string" ? a.login : String(a.id),
-        });
-      }
-    }
-    if (byHost.size > 0) forges.set(m.did, byHost);
+  return (page.items ?? []).map((m) => ({ did: m.did, label: m.label }));
+}
+
+/** DID → forge host → linked account. */
+export type ForgeAccounts = Map<string, Map<string, { id: string; login: string }>>;
+
+export function indexAccounts(list: GitNsAccountList | undefined): ForgeAccounts {
+  const out: ForgeAccounts = new Map();
+  for (const a of list?.accounts ?? []) {
+    const byHost = out.get(a.member) ?? new Map<string, { id: string; login: string }>();
+    byHost.set(a.forge, { id: a.id, login: a.login });
+    out.set(a.member, byHost);
   }
-  return { members, forges };
+  return out;
 }
 
 /** The member whose linked account on `forge` has this id, if any. */

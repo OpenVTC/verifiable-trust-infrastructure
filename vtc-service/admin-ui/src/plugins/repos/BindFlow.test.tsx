@@ -1,10 +1,23 @@
-import { fireEvent, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { postSignedTrustTask, signingAvailable } from "@/lib/api";
 
 import { Repos } from "@/plugins/repos";
 import { mockFetch, renderWithProviders } from "@/test/render";
 
 import { ACME, gitNsRoutes } from "./fixtures.test-data";
+
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  signingAvailable: vi.fn(async () => false),
+  postSignedTrustTask: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(signingAvailable).mockResolvedValue(false);
+  vi.mocked(postSignedTrustTask).mockReset();
+});
 
 const mount = (route = "/repos/bind") =>
   renderWithProviders(<Repos />, { route, path: "/repos/*" });
@@ -62,12 +75,45 @@ describe("Bind namespace", () => {
     expect(within(sign).getByLabelText("Command").textContent).toBe(
       "cnm git namespace bind --forge github.com --owner acme --mode bridge",
     );
-    expect(sign.textContent).toMatch(/cnm prints the URL the bridge returned/);
+    expect(sign.textContent).toMatch(/the bind answers with where to go on the forge/);
     fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
 
     expect(await screen.findByText("Waiting for the VTC to record github.com/acme")).toBeTruthy();
     expect(stepState(/Install on acme/)).toBe("current");
     expect(requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("signed from this browser, links the forge URL the bind answered with", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockResolvedValue({
+      namespace: { id: "ns_acme", state: "pending" },
+      next: { url: "https://github.com/apps/acme-builders-vgi/installations/new?state=n1" },
+    });
+    mockFetch(
+      gitNsRoutes({ namespaces: [{ ...ACME, state: "pending", kind: null, boundAt: null }] }),
+    );
+    mount();
+
+    fireEvent.change(await screen.findByLabelText("Organisation or account"), {
+      target: { value: "acme" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build the binding" }));
+    const sign = await screen.findByRole("dialog", { name: "Bind github.com/acme" });
+    const send = await within(sign).findByRole("button", { name: "Sign and send" });
+    fireEvent.click(within(sign).getByLabelText(/destructive and want to sign it/));
+    fireEvent.click(send);
+
+    await waitFor(() =>
+      expect(postSignedTrustTask).toHaveBeenCalledWith(
+        "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
+        { forge: "github.com", owner: "acme", mode: "bridge" },
+      ),
+    );
+    const link = await screen.findByRole("link", { name: "Continue on github.com" });
+    expect(link.getAttribute("href")).toBe(
+      "https://github.com/apps/acme-builders-vgi/installations/new?state=n1",
+    );
+    expect(stepState(/Install on acme/)).toBe("current");
   });
 
   it("a manual bind skips the App steps", async () => {

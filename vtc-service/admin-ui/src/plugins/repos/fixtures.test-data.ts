@@ -3,6 +3,8 @@
 // would in the plugin.
 
 import type {
+  GitNsAccountRow,
+  GitNsActivityItem,
   GitNsNamespaceRow,
   GitNsRepoRow,
   GitNsRightRow,
@@ -35,6 +37,8 @@ export const ACME: GitNsNamespaceRow = {
   repoCount: 4,
   headless: false,
   installationRemoved: false,
+  roleDrift: "report",
+  cascadeOnDeparture: false,
 };
 
 export const PERSONAL: GitNsNamespaceRow = {
@@ -52,6 +56,8 @@ export const PERSONAL: GitNsNamespaceRow = {
   repoCount: 0,
   headless: false,
   installationRemoved: false,
+  roleDrift: "report",
+  cascadeOnDeparture: false,
 };
 
 const BOOT_ALL = { workflow: true, keyring: true, variables: true, requiredCheck: true };
@@ -72,6 +78,7 @@ export const WIDGETS: GitNsRepoRow = {
   driftCount: 0,
   createdBy: ALICE,
   createdAt: "2026-08-02T00:00:00Z",
+  steps: [],
 };
 
 export const DOCS: GitNsRepoRow = {
@@ -147,7 +154,7 @@ export const RIGHTS: GitNsRightRow[] = [
   right({ subject: BOB, right: "git.repo.own", resource: "github.com/acme/docs" }),
 ];
 
-export const member = (did: string, label: string, forges?: Record<string, unknown>) => ({
+export const member = (did: string, label: string) => ({
   did,
   label,
   role: "member",
@@ -155,14 +162,51 @@ export const member = (did: string, label: string, forges?: Record<string, unkno
   personhood: false,
   publishConsent: false,
   departurePreference: "tombstone",
-  extensions: forges ? { forges } : {},
+  extensions: {},
 });
 
 export const MEMBERS = [
-  member(ALICE, "Alice Wong", { "github.com": { id: "1001", login: "alicew" } }),
-  member(BOB, "Bob Mensah", { "github.com": { id: "1002", login: "bobm" } }),
-  member(HANA, "Hana Sato", { "github.com": { id: "1003", login: "hsato" } }),
+  member(ALICE, "Alice Wong"),
+  member(BOB, "Bob Mensah"),
+  member(HANA, "Hana Sato"),
   member(PRIYA, "Priya Nair"),
+];
+
+export const ACCOUNTS: GitNsAccountRow[] = [
+  { member: ALICE, forge: "github.com", id: "1001", login: "alicew" },
+  { member: BOB, forge: "github.com", id: "1002", login: "bobm" },
+  { member: HANA, forge: "github.com", id: "1003", login: "hsato" },
+];
+
+export const ACTIVITY: GitNsActivityItem[] = [
+  {
+    source: "audit",
+    action: "gitNs.right.granted",
+    at: "2026-09-21T10:00:00Z",
+    actor: ALICE,
+    subject: JUN,
+    right: "git.commit.sign",
+    resource: "github.com/acme/widgets",
+    namespace: "ns_acme",
+  },
+  {
+    source: "job",
+    action: "gitNs.job.bootstrap",
+    at: "2026-08-02T00:05:00Z",
+    detail: "succeeded",
+    resource: "github.com/acme/widgets",
+    namespace: "ns_acme",
+  },
+  {
+    source: "audit",
+    action: "gitNs.right.granted",
+    at: "2026-08-10T00:00:00Z",
+    actor: BOB,
+    subject: BOB,
+    right: "git.repo.own",
+    resource: "github.com/acme/docs",
+    namespace: "ns_acme",
+  },
 ];
 
 export function gitNsRoutes(
@@ -171,6 +215,7 @@ export function gitNsRoutes(
     repos?: GitNsRepoRow[];
     rights?: GitNsRightRow[];
     extra?: MockRoute[];
+    activityStatus?: number;
   } = {},
 ): MockRoute[] {
   return [
@@ -208,6 +253,15 @@ export function gitNsRoutes(
       },
     },
     { path: "/v1/git-ns/jobs", body: { jobs: [] } },
+    { path: "/v1/git-ns/accounts", body: { accounts: ACCOUNTS } },
+    {
+      path: "/v1/git-ns/activity",
+      status: over.activityStatus,
+      body:
+        over.activityStatus === 403
+          ? { error: "you administer no namespace here" }
+          : { items: ACTIVITY },
+    },
     {
       path: "/v1/git-ns/projection",
       body: {

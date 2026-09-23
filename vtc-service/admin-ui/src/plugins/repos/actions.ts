@@ -1,32 +1,41 @@
 // The changes the Repos screens offer, as the signed Trust Tasks they are.
 //
-// ## Why the console hands these over rather than sending them
+// ## Two ways to send one
 //
 // Every change to a git right is a `git-ns/*` Trust Task whose proof is
 // REQUIRED, authorized by *the signer's own git rights* resolved from the
-// VTC's records — not by an admin session. A bearer token carries no proof,
-// so the daemon deliberately mounts no REST door for any of them
-// (`routes/git_ns.rs`), and the console cannot yet sign a document (#1641).
+// VTC's records — not by an admin session. The daemon mounts no bearer door
+// for any of them (`routes/git_ns.rs`), so there is nothing to fall back to
+// the way `signedOrBearer` falls back for the admin member verbs.
 //
-// So each action here is built exactly as it will be sent — the task URI and
-// the payload, validated the way the spec validates it — and handed to the
-// administrator to sign: as the `cnm git …` command that signs it with their
-// community profile's key where one exists, and as the document itself where
-// `cnm` has no command yet (transfer, archive). When the console gains a
-// signer, this module is where it plugs in, and nothing the screens build
-// has to change.
+// **From this browser**, where it has an enrolled console signing key
+// (#1684/#1692/#1695): `sendTask` signs the document with that key and posts
+// it to `/v1/trust-tasks`. The daemon resolves the key's delegation to the
+// operator's admin DID at execution time (`git_ns::tasks::acting_as`) and
+// authorizes the task by *that* DID's git rights — a delegation confers no
+// right of its own, so a console key is exactly as able as the operator.
+//
+// **Handed over**, where it has none (no WebCrypto Ed25519, or signing never
+// enabled here): the same task, as the `cnm git …` command that signs it with
+// the operator's community profile, and as the document itself. The dialog
+// always shows both, so an operator who would rather sign from their terminal
+// can.
+//
+// Nothing retries across the two: a signed task the VTC *refuses* is shown as
+// refused, because it would be refused from the terminal too.
 //
 // ## Step-up
 //
 // Design §6 classes grants of `own` and `repo.create`, transfer, archive and
 // adopt as *elevated* (step-up), and bind, unbind and `ns.admin` as
 // *destructive* (step-up and confirm). A passkey step-up elevates a console
-// **session**, and a signed document has none, so running one here would be
-// ceremony that authorizes nothing. The daemon's stand-in is
+// **session**, and a signed document has none, so running one before sending
+// would be ceremony that authorizes nothing. The console key was itself
+// enrolled behind a step-up; beyond that, the daemon's stand-in is
 // `[git_ns] elevated_requires_admin` (default on): an elevated or destructive
 // task is accepted only from a community administrator, in addition to the
 // rights model's own entitlement. The dialog says which class a task is and
-// what that means on this VTC; it does not pretend to have stepped anything up.
+// asks for an explicit confirmation of destructive ones before sending.
 
 import {
   consentClass,
@@ -35,6 +44,7 @@ import {
   rightLabel,
   shortName,
 } from "./model";
+import { postSignedTrustTask } from "@/lib/api";
 import type { GitNsRight } from "@/lib/wire-types";
 
 const SPEC = "https://trusttasks.org/spec/git-ns";
@@ -47,6 +57,7 @@ export const TASK_URI: Record<GitNsAction, string> = {
   "repo.adopt": `${SPEC}/repo/adopt/0.1`,
   "repo.transfer": `${SPEC}/repo/transfer/0.1`,
   "repo.archive": `${SPEC}/repo/archive/0.1`,
+  "repo.create": `${SPEC}/repo/create/0.1`,
 };
 
 /** A change, ready for the administrator to sign. */
@@ -59,9 +70,8 @@ export interface SignedTask {
   taskUri: string;
   payload: Record<string, unknown>;
   consent: ConsentClass;
-  /** The `cnm git …` command that signs and sends it, or `null` where `cnm`
-   *  has no command for this task yet. */
-  command: string | null;
+  /** The `cnm git …` command that signs and sends it. */
+  command: string;
 }
 
 /** POSIX-shell quoting, only where a value needs it. DIDs and resources pass
@@ -110,7 +120,7 @@ export function bindTask(forge: string, owner: string, mode: "bridge" | "manual"
     title: `Bind ${forge}/${owner}`,
     effect:
       mode === "bridge"
-        ? "The VTC asks the community's bridge where to send you, records the namespace as pending, and prints that URL. Install the App there; the namespace is bound when the bridge reports the install, and you become its first admin."
+        ? "The VTC asks the community's bridge where to send you, records the namespace as pending, and answers with that URL. Install the App there; the namespace is bound when the bridge reports the install, and you become its first admin."
         : "The namespace is bound at once and you become its first admin. No bridge acts on the forge: people with access carry out the steps the VTC names.",
     taskUri: TASK_URI["namespace.bind"],
     payload: { forge, owner, mode },
@@ -223,11 +233,11 @@ export function transferTask(resource: string, to: string): SignedTask {
     action: "repo.transfer",
     title: `Transfer ownership of ${shortName(resource)}`,
     effect:
-      "The recipient becomes an owner and the signer stops being one. Signed by an owner of the repository.",
+      "The recipient becomes an owner and the signer stops being one. Only an owner can transfer their own ownership; a namespace admin names an owner with a grant instead.",
     taskUri: TASK_URI["repo.transfer"],
     payload: { resource, to },
     consent: consentClass("repo.transfer"),
-    command: null,
+    command: cnm("transfer", resource, "--to", to),
   };
 }
 
@@ -240,14 +250,68 @@ export function archiveTask(resource: string): SignedTask {
     taskUri: TASK_URI["repo.archive"],
     payload: { resource },
     consent: consentClass("repo.archive"),
-    command: null,
+    command: cnm("archive", resource),
   };
+}
+
+export interface CreateInput {
+  namespaceId: string;
+  /** `github.com/acme`, for the title and the resource it will have. */
+  namespaceResource: string;
+  name: string;
+  visibility: "public" | "private";
+  description?: string;
+  /** A personal account: no bot can create there, so the VTC reserves the
+   *  name and returns the steps for the account holder. */
+  personal: boolean;
+}
+
+export function createTask(c: CreateInput): SignedTask {
+  const payload: Record<string, unknown> = {
+    namespace: c.namespaceId,
+    name: c.name,
+    visibility: c.visibility,
+  };
+  const args = ["create", "--namespace", c.namespaceId, c.name, "--visibility", c.visibility];
+  const d = c.description?.trim();
+  if (d) {
+    payload.description = d;
+    args.push("--description", shellQuote(d));
+  }
+  return {
+    action: "repo.create",
+    title: `Create ${shortName(`${c.namespaceResource}/${c.name}`)}`,
+    effect: c.personal
+      ? "The VTC reserves the name and answers with the commands the account holder runs to create it; it becomes active when adopted. The signer becomes its owner."
+      : "The bridge creates the repository and bootstraps commit trust on it — workflow, keyring, variables, required check. The signer becomes its owner. Needs git.repo.create on the namespace.",
+    taskUri: TASK_URI["repo.create"],
+    payload,
+    consent: consentClass("repo.create"),
+    command: cnm(...args),
+  };
+}
+
+/**
+ * Sign `task` with this browser's console key and send it.
+ *
+ * Throws `SigningUnavailableError` when this browser cannot sign — the dialog
+ * then offers only the hand-over — and an `ApiError` carrying the VTC's own
+ * refusal (`git-ns:lastOwner`, `permissionDenied`, …) otherwise.
+ */
+export function sendTask<T = Record<string, unknown>>(task: SignedTask): Promise<T> {
+  return postSignedTrustTask<T>(task.taskUri, task.payload);
 }
 
 /** The document body the signer wraps — URI and payload, as the dispatch
  *  spine reads them. The signer adds `id`, `issuedAt` and the proof. */
 export function documentPreview(task: SignedTask): string {
   return JSON.stringify({ type: task.taskUri, payload: task.payload }, null, 2);
+}
+
+/** The URL a bridge-mode bind answers with (`next.url`), if any. */
+export function nextUrlOf(response: unknown): string | null {
+  const url = (response as { next?: { url?: unknown } } | null)?.next?.url;
+  return typeof url === "string" && /^https:\/\//.test(url) ? url : null;
 }
 
 export const CONSENT_LABEL: Record<ConsentClass, string> = {

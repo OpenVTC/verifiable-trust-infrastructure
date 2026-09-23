@@ -204,15 +204,18 @@ Every change is a signed `git-ns/*` Trust Task on `POST /v1/trust-tasks` (or
 DIDComm/TSP). `cnm git …` signs them with the community profile's key.
 
 The admin console's **Repos** plugin (`/admin/repos`) renders these routes:
-namespace cards (kind, mode, installation state, admins, the bridge's service
-grant), each namespace's repositories with their four-step bootstrap and sync
-state, a repository's people and rights, bootstrap checklist, the guard
-design §9 expects, the registry records it puts in public, its drift, and
-the grants departed members issued. It cannot sign a Trust Task yet, so each
-change it offers — bind, grant, revoke, adopt, transfer, archive — is built
-exactly as it will be sent and handed to the administrator as the `cnm git …`
-command that signs it, and as the document itself where `cnm` has no command
-(transfer, archive).
+namespace cards (kind, mode, what the bridge reported of its App — missing
+permissions, a pending permission upgrade, org rulesets — admins, the
+bridge's service grant, the effective `role_drift` and
+`cascade_on_departure`), each namespace's repositories with their four-step
+bootstrap and sync state, a repository's people and rights, bootstrap
+checklist and step outcomes, the guard in force (or, unreported, the one
+design §9 expects, labelled so), the last check, the registry records it puts
+in public, its drift and activity, and the grants departed members issued.
+Each change it offers — bind, create, grant, revoke, adopt, transfer,
+archive — is signed with the browser's console key and sent where one is
+enrolled, and otherwise handed to the administrator as the `cnm git …`
+command that signs it, with the document itself.
 
 ## Limits
 

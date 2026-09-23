@@ -1,5 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { postSignedTrustTask, signingAvailable } from "@/lib/api";
 
 import { Repos } from "@/plugins/repos";
 import {
@@ -13,12 +15,24 @@ import {
 } from "@/plugins/repos/fixtures.test-data";
 import { mockFetch, renderWithProviders } from "@/test/render";
 
-const VIEW = "https://trusttasks.org/spec/git-ns/view/0.1";
+// The browser's signing door, controlled per test: jsdom has no IndexedDB to
+// hold a console key, and whether the key exists is exactly what these tests
+// vary. Everything else in `@/lib/api` is the real module over mocked fetch.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  signingAvailable: vi.fn(async () => false),
+  postSignedTrustTask: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(signingAvailable).mockResolvedValue(false);
+  vi.mocked(postSignedTrustTask).mockReset();
+});
 const mount = (route = "/repos") =>
   renderWithProviders(<Repos />, { route, path: "/repos/*" });
 
 describe("Repos plugin — overview", () => {
-  it("reads every git-ns route under git-ns/view and sends nothing else", async () => {
+  it("reads the console projections with no Trust-Task header, and sends nothing", async () => {
     const requests = mockFetch(gitNsRoutes());
     mount();
 
@@ -26,9 +40,11 @@ describe("Repos plugin — overview", () => {
     await screen.findByText("acme/widgets");
     const gitNs = requests.filter((r) => r.url.startsWith("/v1/git-ns/"));
     expect(gitNs.length).toBeGreaterThan(0);
+    // Only `/v1/git-ns/view` answers a specification's read; the projections
+    // are mounted with no binding, and sending one would claim a contract.
     for (const r of gitNs) {
       expect(r.method).toBe("GET");
-      expect(r.headers.get("Trust-Task")).toBe(VIEW);
+      expect(r.headers.get("Trust-Task")).toBeNull();
     }
     expect(requests.every((r) => r.method === "GET")).toBe(true);
   });
@@ -71,6 +87,46 @@ describe("Repos plugin — overview", () => {
     expect(await screen.findByText("The App lost access")).toBeTruthy();
     expect(screen.getByText("No namespace admin")).toBeTruthy();
     expect(screen.getByText("App uninstalled")).toBeTruthy();
+  });
+
+  it("warns on missing App permissions and a pending upgrade, and shows the drift settings", async () => {
+    mockFetch(
+      gitNsRoutes({
+        namespaces: [
+          {
+            ...ACME,
+            roleDrift: "enforce",
+            cascadeOnDeparture: true,
+            forgeStatus: {
+              appName: "acme-builders-vgi",
+              installationId: "55120033",
+              missingPermissions: ["organization_administration:write"],
+              permissionUpgradePending: true,
+              orgRulesets: false,
+            },
+          },
+        ],
+      }),
+    );
+    mount();
+
+    const acme = await screen.findByRole("article", { name: "github.com/acme" });
+    expect(within(acme).getByText("The App is missing a permission")).toBeTruthy();
+    expect(acme.textContent).toMatch(/organization_administration:write/);
+    expect(within(acme).getByText("Permission upgrade awaiting approval")).toBeTruthy();
+    expect(within(acme).getByText("No org rulesets on this plan")).toBeTruthy();
+    expect(acme.textContent).toMatch(/App acme-builders-vgi · installation #55120033/);
+    expect(acme.textContent).toMatch(/roles\s*enforce/);
+    expect(acme.textContent).toMatch(/revoked with them/);
+  });
+
+  it("claims nothing about App permissions the bridge has not reported", async () => {
+    mockFetch(gitNsRoutes());
+    mount();
+
+    const acme = await screen.findByRole("article", { name: "github.com/acme" });
+    expect(acme.textContent).not.toMatch(/permission/i);
+    expect(acme.textContent).toMatch(/roles\s*report/);
   });
 
   it("lists repositories with their bootstrap dots, sync state and the action each needs", async () => {
@@ -116,6 +172,121 @@ describe("Repos plugin — overview", () => {
       `cnm git adopt ${SANDBOX.resource} --owner ${BOB}`,
     );
     expect(requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("signs and sends from this browser when it holds a console key", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockResolvedValue({ repo: {} });
+    mockFetch(gitNsRoutes());
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Adopt acme/sandbox" }));
+    const form = await screen.findByRole("dialog", { name: "Adopt acme/sandbox" });
+    await within(form).findByRole("option", { name: /Bob Mensah/ });
+    fireEvent.change(within(form).getByLabelText("First owner"), { target: { value: BOB } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the adoption" }));
+
+    const sign = await screen.findByRole("dialog", { name: "Adopt acme/sandbox" });
+    fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
+    await waitFor(() =>
+      expect(postSignedTrustTask).toHaveBeenCalledWith(
+        "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
+        { resource: SANDBOX.resource, owners: [BOB] },
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("shows the VTC's refusal of a signed task in the dialog", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockRejectedValue({
+      status: 403,
+      message: "git-ns:escalation: the signer holds no right here",
+    });
+    mockFetch(gitNsRoutes());
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Assign an owner to acme/legacy-cli" }));
+    const form = await screen.findByRole("dialog", { name: "Assign an owner to acme/legacy-cli" });
+    await within(form).findByRole("option", { name: /Bob Mensah/ });
+    fireEvent.change(within(form).getByLabelText("Person"), { target: { value: BOB } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the grant" }));
+    const sign = await screen.findByRole("dialog", { name: /Grant owner on acme\/legacy-cli/ });
+    fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
+
+    expect((await within(sign).findByRole("alert")).textContent).toMatch(
+      /refused it.*git-ns:escalation/,
+    );
+  });
+
+  it("makes a destructive task be confirmed before it is signed", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockResolvedValue({});
+    mockFetch(gitNsRoutes());
+    mount();
+
+    const card = await screen.findByRole("region", { name: "Namespace rights in acme" });
+    fireEvent.click(within(card).getAllByRole("button", { name: "Grant" })[0]!);
+    const form = await screen.findByRole("dialog", { name: "Grant git.ns.admin on github.com/acme" });
+    await within(form).findByRole("option", { name: /Bob Mensah/ });
+    fireEvent.change(within(form).getByLabelText("Person"), { target: { value: BOB } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the grant" }));
+
+    const sign = await screen.findByRole("dialog", { name: /Grant namespace admin/ });
+    const send = await within(sign).findByRole("button", { name: "Sign and send" });
+    expect((send as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(sign).getByLabelText(/destructive and want to sign it/));
+    expect((send as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() => expect(postSignedTrustTask).toHaveBeenCalledTimes(1));
+  });
+
+  it("creates a repository, and on a personal account shows the holder's steps", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockResolvedValue({
+      repo: {},
+      manualSteps: ["gh repo create glenn-g/tool --public", "vgi repo init"],
+    });
+    mockFetch(gitNsRoutes());
+    mount("/repos?namespace=ns_glenn");
+
+    await screen.findByText("github.com/glenn-g · repositories");
+    fireEvent.click(screen.getByRole("button", { name: "New repo" }));
+    const form = await screen.findByRole("dialog", { name: "New repository in github.com/glenn-g" });
+    expect(form.textContent).toMatch(/no bot can create a repository/);
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Tool" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the repository" }));
+    expect(within(form).getByRole("alert").textContent).toMatch(/lowercase/);
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "tool" } });
+    fireEvent.click(within(form).getByLabelText("Private"));
+    fireEvent.click(within(form).getByRole("button", { name: "Build the repository" }));
+
+    const sign = await screen.findByRole("dialog", { name: "Create glenn-g/tool" });
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      "cnm git create --namespace ns_glenn tool --visibility private",
+    );
+    fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
+    expect(await within(sign).findByText("gh repo create glenn-g/tool --public")).toBeTruthy();
+    expect(postSignedTrustTask).toHaveBeenCalledWith(
+      "https://trusttasks.org/spec/git-ns/repo/create/0.1",
+      { namespace: "ns_glenn", name: "tool", visibility: "private" },
+    );
+  });
+
+  it("points a browser that cannot sign at enabling it", async () => {
+    mockFetch(gitNsRoutes());
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Adopt acme/sandbox" }));
+    const form = await screen.findByRole("dialog", { name: "Adopt acme/sandbox" });
+    await within(form).findByRole("option", { name: /Bob Mensah/ });
+    fireEvent.change(within(form).getByLabelText("First owner"), { target: { value: BOB } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the adoption" }));
+    const sign = await screen.findByRole("dialog", { name: "Adopt acme/sandbox" });
+    expect(
+      (await within(sign).findByRole("link", { name: "enable signing in this browser" })).getAttribute("href"),
+    ).toBe("/console-keys");
+    expect(within(sign).queryByRole("button", { name: "Sign and send" })).toBeNull();
   });
 
   it("assigns an owner to an orphaned repository as an elevated own grant", async () => {

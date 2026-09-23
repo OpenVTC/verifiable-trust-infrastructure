@@ -1,11 +1,14 @@
-import { fireEvent, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { postSignedTrustTask, signingAvailable } from "@/lib/api";
 
 import { Repos } from "@/plugins/repos";
 import { mockFetch, renderWithProviders } from "@/test/render";
 
 import {
   ACME,
+  ALICE,
   BOB,
   DOCS,
   gitNsRoutes,
@@ -14,6 +17,17 @@ import {
   PERSONAL,
   WIDGETS,
 } from "./fixtures.test-data";
+
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  signingAvailable: vi.fn(async () => false),
+  postSignedTrustTask: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(signingAvailable).mockResolvedValue(false);
+  vi.mocked(postSignedTrustTask).mockReset();
+});
 
 const mount = (resource: string) =>
   renderWithProviders(<Repos />, {
@@ -135,7 +149,7 @@ describe("Repo detail", () => {
     const trust = await screen.findByRole("region", { name: "Commit trust on github.com" });
     expect(within(trust).getAllByText("in place")).toHaveLength(4);
     expect(trust.textContent).toMatch(/Guard: Required workflow/);
-    expect(trust.textContent).toMatch(/Expected for a bridge-mode organization/);
+    expect(trust.textContent).toMatch(/Expected for a bridge-mode organization \(design §9\)/);
   });
 
   it("names a solo owner's unreviewed workflow changes on a personal account", async () => {
@@ -181,7 +195,7 @@ describe("Repo detail", () => {
     );
   });
 
-  it("hands transfer over as a document, because cnm has no command for it", async () => {
+  it("transfers ownership with cnm git transfer, excluding current owners", async () => {
     mockFetch(gitNsRoutes());
     mount(WIDGETS.resource);
 
@@ -193,22 +207,92 @@ describe("Repo detail", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Build the transfer" }));
 
     const sign = await screen.findByRole("dialog", { name: "Transfer ownership of acme/widgets" });
-    expect(within(sign).queryByLabelText("Command")).toBeNull();
-    expect(sign.textContent).toMatch(/has no command for this task yet/);
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      `cnm git transfer ${WIDGETS.resource} --to ${BOB}`,
+    );
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent!).payload).toEqual({
       resource: WIDGETS.resource,
       to: BOB,
     });
   });
 
-  it("archives as an elevated task", async () => {
+  it("archives with cnm git archive, or sends it signed from this browser", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockResolvedValue({ repo: {} });
     mockFetch(gitNsRoutes());
     mount(WIDGETS.resource);
 
     fireEvent.click(await screen.findByRole("button", { name: "Archive" }));
     const sign = await screen.findByRole("dialog", { name: "Archive acme/widgets" });
     expect(sign.textContent).toMatch(/Elevated — step-up/);
-    expect(sign.textContent).toMatch(/every commit right on it is withdrawn/);
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      `cnm git archive ${WIDGETS.resource}`,
+    );
+    fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
+    await waitFor(() =>
+      expect(postSignedTrustTask).toHaveBeenCalledWith(
+        "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
+        { resource: WIDGETS.resource },
+      ),
+    );
+  });
+
+  it("shows the guard the bridge reports, step outcomes and the last check", async () => {
+    mockFetch(
+      gitNsRoutes({
+        repos: [
+          {
+            ...WIDGETS,
+            owners: [ALICE, BOB],
+            guard: "bridgePostedCheck",
+            steps: [
+              { step: "workflow", outcome: "unchanged" },
+              { step: "ruleset", outcome: "failed", detail: "422 from the forge" },
+            ],
+            lastCheck: { conclusion: "success", at: "2026-09-20T00:00:00Z", sha: "abcdef0123456789" } as never,
+          },
+        ],
+      }),
+    );
+    mount(WIDGETS.resource);
+
+    const trust = await screen.findByRole("region", { name: "Commit trust on github.com" });
+    expect(trust.textContent).toMatch(/Guard: Bridge-posted check/);
+    expect(trust.textContent).toMatch(/As the bridge last reported it/);
+    expect(trust.textContent).toMatch(/ruleset\s*failed\s*422 from the forge/);
+    expect(trust.textContent).toMatch(/Last check:\s*success/);
+    expect(trust.textContent).toMatch(/abcdef012345/);
+  });
+
+  it("reads a reported code-owner review with one owner as unreviewed", async () => {
+    mockFetch(gitNsRoutes({ repos: [{ ...WIDGETS, guard: "codeOwnerReview" }] }));
+    mount(WIDGETS.resource);
+
+    const trust = await screen.findByRole("region", { name: "Commit trust on github.com" });
+    expect(trust.textContent).toMatch(/Solo owner — workflow changes unreviewed/);
+    expect(trust.textContent).toMatch(/Last check:\s*none reported/);
+  });
+
+  it("shows the repository's activity from the namespace feed", async () => {
+    const requests = mockFetch(gitNsRoutes());
+    mount(WIDGETS.resource);
+
+    const act = await screen.findByRole("region", { name: "Recent activity" });
+    await within(act).findByText(/bridge job bootstrap/);
+    expect(act.textContent).toMatch(/granted\s*committer/);
+    // Only this repository's items, not the namespace's.
+    expect(act.textContent).not.toMatch(/owner/);
+    expect(requests.some((r) => r.url === "/v1/git-ns/activity?namespace=ns_acme&limit=100")).toBe(
+      true,
+    );
+  });
+
+  it("says activity is for namespace admins when the feed refuses", async () => {
+    mockFetch(gitNsRoutes({ activityStatus: 403 }));
+    mount(WIDGETS.resource);
+
+    const act = await screen.findByRole("region", { name: "Recent activity" });
+    expect(await within(act).findByText(/does\s+not hold/)).toBeTruthy();
   });
 
   it("says when the VTC records no such repository", async () => {

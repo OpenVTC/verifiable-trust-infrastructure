@@ -24,7 +24,7 @@ import {
   fetchRights,
   gitNsKeys,
 } from "./api";
-import { AdoptDialog, GrantDialog } from "./dialogs";
+import { AdoptDialog, CreateDialog, GrantDialog } from "./dialogs";
 import {
   isPersonal,
   isServiceGrant,
@@ -49,6 +49,7 @@ import {
 type Dialog =
   | { kind: "grant"; resource: string; right: "git.ns.admin" | "git.repo.create" | "git.repo.own"; title?: string }
   | { kind: "adopt"; resource?: string; namespaceResource?: string }
+  | { kind: "create"; ns: GitNsNamespaceRow }
   | { kind: "sign"; task: SignedTask };
 
 function PersonalAccountHint({ ns }: { ns: GitNsNamespaceRow }) {
@@ -76,6 +77,28 @@ function PersonalAccountHint({ ns }: { ns: GitNsNamespaceRow }) {
         </ol>
       </details>
     </div>
+  );
+}
+
+/** What the bridge last reported about its standing on the owner. Every
+ *  member is optional: only what was reported is shown. */
+function ForgeStatusLine({ ns }: { ns: GitNsNamespaceRow }) {
+  const fs = ns.forgeStatus!;
+  const parts: string[] = [];
+  if (fs.appName || fs.appSlug) parts.push(`App ${fs.appName ?? fs.appSlug}`);
+  if (fs.installationId) parts.push(`installation #${fs.installationId}`);
+  if (fs.appRegistration) parts.push(`registration: ${fs.appRegistration}`);
+  if (fs.requiredWorkflow != null)
+    parts.push(fs.requiredWorkflow ? "required workflow in force" : "required workflow not in force");
+  if (fs.bridgePostedCheck != null)
+    parts.push(fs.bridgePostedCheck ? "bridge-posted check ready" : "bridge-posted check not ready");
+  if (fs.missingPermissions.length === 0 && fs.installationId) parts.push("all permissions granted");
+  if (parts.length === 0) return null;
+  return (
+    <p className="muted gitns-small">
+      {parts.join(" · ")}
+      {fs.reportedAt && <> · reported {new Date(fs.reportedAt).toLocaleDateString()}</>}
+    </p>
   );
 }
 
@@ -155,6 +178,14 @@ function NamespaceCard({
         {" · by "}
         <NamedDid did={ns.boundBy} book={book} nameOnly={!!book.nameOf(ns.boundBy)} />
       </p>
+
+      <p className="muted gitns-small">
+        Drift: rulesets <b>enforce</b> · roles <b>{ns.roleDrift}</b>
+        {" · "}grants of departed members{" "}
+        <b>{ns.cascadeOnDeparture ? "revoked with them" : "kept for review"}</b>
+      </p>
+
+      {ns.forgeStatus && <ForgeStatusLine ns={ns} />}
 
       {ns.bridgeDid && (
         <p className="muted gitns-small">
@@ -471,6 +502,14 @@ export function Overview() {
             type="button"
             className="secondary"
             disabled={!selected || selected.state !== "bound"}
+            onClick={() => selected && setDialog({ kind: "create", ns: selected })}
+          >
+            New repo
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={!selected || selected.state !== "bound"}
             onClick={() =>
               setDialog({ kind: "adopt", namespaceResource: selected?.resource })
             }
@@ -608,6 +647,15 @@ export function Overview() {
         <AdoptDialog
           resource={dialog.resource}
           namespaceResource={dialog.namespaceResource}
+          onClose={() => setDialog(null)}
+          onBuilt={(task) => setDialog({ kind: "sign", task })}
+        />
+      )}
+      {dialog?.kind === "create" && (
+        <CreateDialog
+          namespaceId={dialog.ns.id}
+          namespaceResource={dialog.ns.resource}
+          personal={isPersonal(dialog.ns)}
           onClose={() => setDialog(null)}
           onBuilt={(task) => setDialog({ kind: "sign", task })}
         />

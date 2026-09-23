@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  activityVerb,
   bootstrapSummary,
   consentClass,
   contains,
@@ -119,20 +120,49 @@ describe("guardFor — the guard design §9 assigns", () => {
   });
 
   it("is owner review, or solo-unreviewed with one owner, in fallback", () => {
-    expect(guardFor(PERSONAL, { ...WIDGETS, owners: [ALICE, HANA] }).mode).toBe("ownerReview");
+    expect(guardFor(PERSONAL, { ...WIDGETS, owners: [ALICE, HANA] }).mode).toBe("codeOwnerReview");
     expect(guardFor(PERSONAL, WIDGETS).mode).toBe("soloUnreviewed");
   });
 
   it("is the bridge-posted check on a personal account with the App", () => {
     expect(
       guardFor({ ...PERSONAL, mode: "bridge" }, { ...WIDGETS, owners: [ALICE, HANA] }).mode,
-    ).toBe("bridgeCheck");
+    ).toBe("bridgePostedCheck");
+  });
+
+  it("falls back when the owner's plan has no org rulesets", () => {
+    const ns = { ...ACME, forgeStatus: { missingPermissions: [], orgRulesets: false } };
+    expect(guardFor(ns, { ...WIDGETS, owners: [ALICE, HANA] }).mode).toBe("bridgePostedCheck");
+  });
+
+  it("prefers the guard the bridge reports, and labels which it is", () => {
+    const g = guardFor(PERSONAL, { ...WIDGETS, owners: [ALICE, HANA], guard: "protectedFiles" });
+    expect(g).toMatchObject({ mode: "protectedFiles", source: "reported" });
+    expect(guardFor(ACME, WIDGETS).source).toBe("expected");
+    expect(guardFor(ACME, { ...WIDGETS, guard: "none" }).tone).toBe("danger");
+    // An unknown report is not guessed at.
+    expect(guardFor(ACME, { ...WIDGETS, guard: "somethingNew" }).source).toBe("expected");
   });
 });
 
 describe("namespace facts", () => {
   it("recognises the bridge's service grant and nothing else", () => {
     expect(RIGHTS.filter((r) => isServiceGrant(r, ACME)).map((r) => r.subject)).toEqual([BRIDGE]);
+  });
+
+  it("warns on missing permissions and a pending upgrade only when reported", () => {
+    const titles = namespaceFindings({
+      ...ACME,
+      forgeStatus: { missingPermissions: ["members:read", "variables:write"], permissionUpgradePending: true },
+    }).map((f) => f.title);
+    expect(titles).toEqual(["The App is missing permissions", "Permission upgrade awaiting approval"]);
+    expect(namespaceFindings({ ...ACME, forgeStatus: { missingPermissions: [] } })).toEqual([]);
+  });
+
+  it("names activity actions, and keeps unknown ones verbatim", () => {
+    expect(activityVerb("gitNs.right.granted")).toBe("granted");
+    expect(activityVerb("gitNs.job.createRepo")).toBe("bridge job createRepo");
+    expect(activityVerb("gitNs.something.new")).toBe("gitNs.something.new");
   });
 
   it("reports a lost installation and a headless namespace", () => {

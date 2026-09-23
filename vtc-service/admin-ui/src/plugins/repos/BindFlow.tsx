@@ -9,18 +9,19 @@
 // (`next.url` — the App manifest registration the first time, the install
 // page after), and it is what records the namespace as pending, so the bridge
 // can prove the install it later reports was one this VTC started. There is no
-// second, post-install confirmation to sign: the namespace becomes bound when
-// the bridge reports `bindCompleted` for the job the signed bind created.
+// second confirmation to sign: the specification binds on the bridge's
+// `bindCompleted` for the job the signed bind created.
 //
 // So everything a confirmation is for — the public-visibility consequence,
-// the policy that will govern the namespace, and the step-up — is shown
+// the policy that will govern the namespace, and the step-up class — is shown
 // *before* the one thing that gets signed, and step 3 is the administrator
 // checking what the VTC recorded against what they meant to bind.
 //
-// Steps 1 and 2 happen on the forge, at the URL `cnm` prints. The console
-// cannot see them; it watches the namespace list until the pending namespace
-// appears and then turns bound. A manual-mode bind has no App and skips
-// straight to step 3.
+// Sent from this browser, the bind's answer carries `next.url` and the page
+// links it. Handed to `cnm`, cnm prints it. Either way steps 1 and 2 happen on
+// the forge, which the console cannot see: it watches the namespace list until
+// the namespace appears pending and then turns bound. A manual-mode bind has
+// no App and skips straight to step 3.
 
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -31,7 +32,7 @@ import { NamedDid } from "@/components/NamedDid";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useNameBook } from "@/lib/names";
 
-import { bindTask, forgeHostError, segmentError, type SignedTask } from "./actions";
+import { bindTask, forgeHostError, nextUrlOf, segmentError, type SignedTask } from "./actions";
 import { fetchNamespaces, fetchRepos, fetchRights, gitNsKeys } from "./api";
 import { AdoptDialog } from "./dialogs";
 import { isServiceGrant, kindLabel, shortName } from "./model";
@@ -100,6 +101,7 @@ export function BindFlow() {
     owner: null,
   });
   const [task, setTask] = useState<SignedTask | null>(null);
+  const [nextUrl, setNextUrl] = useState<string | null>(null);
   const [adoptResource, setAdoptResource] = useState<string | null>(null);
   const [adoptTaskState, setAdoptTaskState] = useState<SignedTask | null>(null);
 
@@ -325,10 +327,22 @@ export function BindFlow() {
         <div className="finding" role="status">
           <strong>Pending: install the App on {owner}</strong>
           <span>
-            Open the URL <code>cnm git namespace bind</code> printed. The first time, it
-            registers the community's App from its manifest; then install it on{" "}
-            {owner}, which needs owner rights there. This page moves on by itself when
-            the bridge reports the install.
+            {nextUrl ? (
+              <>
+                <a href={nextUrl} target="_blank" rel="noopener noreferrer">
+                  Continue on {forge}
+                </a>
+                .
+              </>
+            ) : (
+              <>
+                Open the URL the bind answered with (<code>cnm git namespace bind</code>{" "}
+                prints it).
+              </>
+            )}{" "}
+            The first time, it registers the community's App from its manifest; then
+            install it on {owner}, which needs owner rights there. This page moves on
+            by itself when the bridge reports the install.
           </span>
         </div>
       )}
@@ -424,10 +438,17 @@ export function BindFlow() {
       )}
 
       {task && (
-        <SignTaskDialog task={task} onClose={startWatching}>
+        <SignTaskDialog
+          task={task}
+          onClose={startWatching}
+          onSent={(response) => {
+            setNextUrl(nextUrlOf(response));
+            startWatching();
+          }}
+        >
           {task.payload.mode === "bridge" && (
             <p className="muted">
-              When it is accepted, cnm prints the URL the bridge returned. Close this
+              Once accepted, the bind answers with where to go on the forge. Close this
               and the page waits for the binding.
             </p>
           )}

@@ -13,10 +13,10 @@
 //     `github.com/acme` holds `github.com/acme/widgets` and not
 //     `github.com/acme-labs/x`.
 //
-// One is **an expectation, not a report**: `guardFor` says which guard design
-// §9 puts on a repository given what the VTC knows about its namespace. The
-// bridge does not report which guard is actually in force, so the screen
-// labels it as expected and never as observed.
+// One is **a report with a labelled fallback**: `guardFor` shows the guard the
+// bridge reports in force on a repository (`guard`), and only where it has
+// not reported one does it fall back to the guard design §9 assigns — labelled
+// as expected, never as observed.
 
 import type {
   GitNsBootstrapStatus,
@@ -101,7 +101,8 @@ export type GitNsAction =
   | "right.revoke"
   | "repo.adopt"
   | "repo.transfer"
-  | "repo.archive";
+  | "repo.archive"
+  | "repo.create";
 
 /** Mirrors `git_ns::ops::consent_class`. */
 export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentClass {
@@ -111,6 +112,7 @@ export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentCl
     if (right === "git.repo.own" || right === "git.repo.create") return "elevated";
     return "normal";
   }
+  if (action === "repo.create") return "normal";
   return "elevated";
 }
 
@@ -128,12 +130,14 @@ export interface Finding {
  * What an administrator must know about a namespace before anything else.
  *
  * Only what the daemon reports: a pending binding, a lost installation, a
- * namespace with no admin. What the App was granted on the forge is not
- * reported by the bridge today, so nothing here claims a permission is
- * present or missing.
+ * namespace with no admin, and — where the bridge has reported its standing
+ * on the forge (`forgeStatus`, absent until it does) — permissions the App
+ * lacks and a permission upgrade waiting on the owner. An absent report is
+ * not read as "all permissions granted": nothing is said either way.
  */
 export function namespaceFindings(ns: GitNsNamespaceRow): Finding[] {
   const out: Finding[] = [];
+  const fs = ns.forgeStatus;
   if (ns.state === "pending") {
     out.push({
       tone: "accent",
@@ -148,6 +152,29 @@ export function namespaceFindings(ns: GitNsNamespaceRow): Finding[] {
       title: "The App lost access",
       detail:
         "The bridge reported the community's App uninstalled from this owner. Rights still stand and are still published, but nothing is applied on the forge and drift is no longer checked. Reinstall the App on the owner to restore it.",
+    });
+  }
+  if (fs && fs.missingPermissions.length > 0) {
+    out.push({
+      tone: "danger",
+      title: `The App is missing ${fs.missingPermissions.length === 1 ? "a permission" : "permissions"}`,
+      detail: `The installation lacks ${fs.missingPermissions.join(", ")}. The bridge cannot do what needs ${fs.missingPermissions.length === 1 ? "it" : "them"} until the owner grants ${fs.missingPermissions.length === 1 ? "it" : "them"} in the App's installation settings.`,
+    });
+  }
+  if (fs?.permissionUpgradePending) {
+    out.push({
+      tone: "warning",
+      title: "Permission upgrade awaiting approval",
+      detail:
+        "A new bridge release asks for more permissions. The forge owner must approve the change on the App's installation page; until then the bridge works with the permissions it had.",
+    });
+  }
+  if (ns.kind === "organization" && ns.mode === "bridge" && fs?.orgRulesets === false) {
+    out.push({
+      tone: "warning",
+      title: "No org rulesets on this plan",
+      detail:
+        "The owner's plan cannot run the required workflow, so repositories here fall back to code-owner review and a bridge-posted check (design §9).",
     });
   }
   if (ns.headless) {
@@ -300,52 +327,109 @@ export function bootstrapSummary(b: GitNsBootstrapStatus): string {
 
 // ── the guard (design §9) ───────────────────────────────────────────────
 
-export type GuardMode = "requiredWorkflow" | "bridgeCheck" | "ownerReview" | "soloUnreviewed";
+export type GuardMode =
+  | "requiredWorkflow"
+  | "bridgePostedCheck"
+  | "codeOwnerReview"
+  | "protectedFiles"
+  | "soloUnreviewed"
+  | "none";
 
 export interface Guard {
   mode: GuardMode;
   label: string;
   detail: string;
+  /** `reported` — the bridge said so; `expected` — design §9 for this
+   *  namespace, because the bridge has not reported. */
+  source: "reported" | "expected";
+  tone: Tone;
 }
 
-/**
- * The guard that stops a pull request satisfying its own check, as design §9
- * assigns it for this namespace. An **expectation**: the bridge reports whether
- * the required check is in place (`bootstrap.requiredCheck`), not which of
- * these made it so, and an organisation whose plan lacks org rulesets for
- * private repositories falls back to the personal-account guard.
- */
-export function guardFor(ns: GitNsNamespaceRow, repo: GitNsRepoRow): Guard {
-  if (ns.mode === "bridge" && ns.kind === "organization") {
-    return {
-      mode: "requiredWorkflow",
-      label: "Required workflow",
-      detail:
-        "An org ruleset runs verify-trust from the bridge-managed .vgi repository at a pinned commit, so a pull request cannot change what runs.",
-    };
-  }
-  const owners = repo.owners.length;
-  if (owners <= 1) {
-    return {
-      mode: "soloUnreviewed",
-      label: "Solo owner — workflow changes unreviewed",
-      detail:
-        "Code-owner review of .github/ needs a second owner to approve. With one, the owner cannot merge their own workflow change; add a co-owner.",
-    };
-  }
-  if (ns.mode === "bridge") {
-    return {
-      mode: "bridgeCheck",
-      label: "Bridge-posted check",
-      detail:
-        "The bridge runs verify-trust itself and posts the check with the community App's identity, which the ruleset pins; no workflow can forge it. Code owners review .github/.",
-    };
-  }
-  return {
-    mode: "ownerReview",
+const GUARD: Record<GuardMode, Omit<Guard, "mode" | "source">> = {
+  requiredWorkflow: {
+    label: "Required workflow",
+    detail:
+      "An org ruleset runs verify-trust from the bridge-managed .vgi repository at a pinned commit, so a pull request cannot change what runs.",
+    tone: "success",
+  },
+  bridgePostedCheck: {
+    label: "Bridge-posted check",
+    detail:
+      "The bridge runs verify-trust itself and posts the check with the community App's identity, which the ruleset pins; no workflow can forge it.",
+    tone: "success",
+  },
+  codeOwnerReview: {
     label: "Owner review",
     detail:
-      "CODEOWNERS assigns .github/ to the repository's owners and the ruleset requires their review. Without the App, writers are trusted not to post a forged check.",
+      "CODEOWNERS assigns .github/ to the repository's owners and the ruleset requires their review, so a workflow change needs a second owner. Writers are trusted not to post a forged check.",
+    tone: "accent",
+  },
+  protectedFiles: {
+    label: "Protected workflow files",
+    detail:
+      "Branch protection refuses any pull request that touches a workflow file; such changes go through a namespace admin's direct, audited push. Writers are trusted not to forge a commit status.",
+    tone: "accent",
+  },
+  soloUnreviewed: {
+    label: "Solo owner — workflow changes unreviewed",
+    detail:
+      "Code-owner review needs a second owner to approve. With one, the owner cannot merge their own workflow change; add a co-owner.",
+    tone: "warning",
+  },
+  none: {
+    label: "None",
+    detail:
+      "Nothing stops a pull request from changing what its own check runs, so a writer could make it pass. Commit trust is not guaranteed here.",
+    tone: "danger",
+  },
+};
+
+const REPORTED: Record<string, GuardMode> = {
+  requiredWorkflow: "requiredWorkflow",
+  bridgePostedCheck: "bridgePostedCheck",
+  codeOwnerReview: "codeOwnerReview",
+  protectedFiles: "protectedFiles",
+  none: "none",
+};
+
+/**
+ * The guard that stops a pull request satisfying its own check (design §9).
+ *
+ * The bridge's report (`repo.guard`) when there is one. Code-owner review
+ * with a single owner is reported as what it is in practice — nobody reviews.
+ * With no report, the guard §9 assigns for this namespace, marked `expected`.
+ */
+export function guardFor(ns: GitNsNamespaceRow, repo: GitNsRepoRow): Guard {
+  const solo = repo.owners.length <= 1;
+  const reported = repo.guard ? REPORTED[repo.guard] : undefined;
+  if (reported) {
+    const mode = reported === "codeOwnerReview" && solo ? "soloUnreviewed" : reported;
+    return { mode, source: "reported", ...GUARD[mode] };
+  }
+  let mode: GuardMode;
+  if (ns.mode === "bridge" && ns.kind === "organization" && ns.forgeStatus?.orgRulesets !== false) {
+    mode = "requiredWorkflow";
+  } else if (solo) {
+    mode = "soloUnreviewed";
+  } else if (ns.mode === "bridge") {
+    mode = "bridgePostedCheck";
+  } else {
+    mode = "codeOwnerReview";
+  }
+  return { mode, source: "expected", ...GUARD[mode] };
+}
+
+/** The last verify-trust check the bridge saw. Carried as an object whose
+ *  documented members are `{conclusion, at, sha?}`; anything else is ignored. */
+export function lastCheckOf(
+  repo: GitNsRepoRow,
+): { conclusion: string; at?: string; sha?: string } | null {
+  const c = repo.lastCheck as Record<string, unknown> | null | undefined;
+  if (!c || typeof c.conclusion !== "string") return null;
+  return {
+    conclusion: c.conclusion,
+    at: typeof c.at === "string" ? c.at : undefined,
+    sha: typeof c.sha === "string" ? c.sha : undefined,
   };
 }
 
@@ -457,4 +541,37 @@ export function rightForForgeRole(role: string | undefined): GitNsRight | null {
     default:
       return null;
   }
+}
+
+// ── activity ────────────────────────────────────────────────────────────
+
+const ACTIVITY: Record<string, string> = {
+  "gitNs.namespace.bindRequested": "binding requested",
+  "gitNs.namespace.bound": "namespace bound",
+  "gitNs.namespace.bindFailed": "binding failed",
+  "gitNs.namespace.bindExpired": "binding expired unfinished",
+  "gitNs.namespace.unbound": "namespace unbound",
+  "gitNs.namespace.installationRemoved": "App uninstalled from the owner",
+  "gitNs.repo.reserved": "repository name reserved",
+  "gitNs.repo.activated": "repository activated",
+  "gitNs.repo.adopted": "repository adopted",
+  "gitNs.repo.archived": "repository archived",
+  "gitNs.repo.detached": "repository detached",
+  "gitNs.repo.orphaned": "repository orphaned — its last owner left",
+  "gitNs.repo.renamed": "repository renamed",
+  "gitNs.repo.transferred": "ownership transferred",
+  "gitNs.repo.protectionWeakened": "protection weakened on the forge",
+  "gitNs.right.granted": "granted",
+  "gitNs.right.revoked": "revoked",
+  "gitNs.right.lapsed": "lapsed",
+  "gitNs.drift.reported": "drift reported",
+  "gitNs.account.linked": "forge account linked",
+};
+
+/** An activity item's action in words. Unknown actions are shown verbatim
+ *  rather than dropped: a new audit action is still something that happened. */
+export function activityVerb(action: string): string {
+  if (ACTIVITY[action]) return ACTIVITY[action];
+  if (action.startsWith("gitNs.job.")) return `bridge job ${action.slice("gitNs.job.".length)}`;
+  return action;
 }

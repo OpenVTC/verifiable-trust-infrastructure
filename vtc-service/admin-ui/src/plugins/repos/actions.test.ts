@@ -4,9 +4,11 @@ import {
   adoptTask,
   archiveTask,
   bindTask,
+  createTask,
   didError,
   forgeHostError,
   grantTask,
+  nextUrlOf,
   revokeTask,
   segmentError,
   shellQuote,
@@ -65,16 +67,43 @@ describe("signed git-ns tasks", () => {
     );
   });
 
-  it("has no cnm command for transfer and archive, and says so with null", () => {
+  it("builds create, transfer and archive with the cnm verbs #1694 added", () => {
     expect(transferTask("github.com/acme/x", BOB)).toMatchObject({
       payload: { resource: "github.com/acme/x", to: BOB },
-      command: null,
+      command: `cnm git transfer github.com/acme/x --to ${BOB}`,
       consent: "elevated",
     });
     expect(archiveTask("github.com/acme/x")).toMatchObject({
       taskUri: "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
-      command: null,
+      command: "cnm git archive github.com/acme/x",
     });
+    const c = createTask({
+      namespaceId: "ns_1",
+      namespaceResource: "github.com/acme",
+      name: "gadgets",
+      visibility: "public",
+      description: "Gadget tools",
+      personal: false,
+    });
+    expect(c.taskUri).toBe("https://trusttasks.org/spec/git-ns/repo/create/0.1");
+    expect(c.payload).toEqual({
+      namespace: "ns_1",
+      name: "gadgets",
+      visibility: "public",
+      description: "Gadget tools",
+    });
+    expect(c.command).toBe(
+      "cnm git create --namespace ns_1 gadgets --visibility public --description 'Gadget tools'",
+    );
+    expect(c.consent).toBe("normal");
+  });
+
+  it("reads next.url from a bind response, https only", () => {
+    expect(nextUrlOf({ next: { url: "https://github.com/apps/x/installations/new?state=1" } })).toBe(
+      "https://github.com/apps/x/installations/new?state=1",
+    );
+    expect(nextUrlOf({ next: { url: "javascript:alert(1)" } })).toBeNull();
+    expect(nextUrlOf({ namespace: {} })).toBeNull();
   });
 });
 

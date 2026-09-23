@@ -20,39 +20,40 @@
 // before binding, not discover it afterwards, so the bind flow leads with it
 // and the repository page shows the exact records it puts there.
 //
-// ## Why no button here changes anything by itself
+// ## How a change is made
 //
 // Every change is a signed `git-ns/*` Trust Task, authorized by the **signer's
 // own git rights** read from the VTC's records at execution time. An
 // administrator's role binds namespaces and nothing more: to grant on a
-// repository, the signer must hold a right that carries that authority. A
-// console session carries no proof, so the daemon mounts no REST door for any
-// of these tasks, and the console cannot yet sign a document (#1641: #1692 is
-// the server side of a console signing key, the browser side #1684 has not
-// landed, and `git_ns` would still have to resolve that key's delegation to
-// the administrator's DID before their git rights applied to it). So each
-// action builds its task exactly as it will be sent and hands it over — as the
-// `cnm git …` command that signs it with the administrator's community
-// profile, and as the document itself. `repos/actions.ts` has the detail, and
-// is where a console signer plugs in when there is one.
+// repository, the signer must hold a right that carries that authority. There
+// is no bearer route for any of these tasks, so a console session alone can
+// change nothing here.
 //
-// The same reason explains the step-up. Design §6 puts grants of `own` and
-// `repo.create`, transfer, archive and adopt behind a step-up, and binding and
-// `ns.admin` behind a step-up and confirmation. A passkey step-up elevates a
-// session; a signed document has none. The daemon's stand-in is
-// `elevated_requires_admin` — those tasks are accepted only from a community
-// administrator who also holds the right — and the hand-over dialog says which
-// class each task is rather than running a ceremony that authorizes nothing.
+// Where this browser holds a console signing key (#1695), a change is signed
+// with it and sent; the VTC resolves the key's delegation to the operator's
+// admin DID and authorizes the task by that DID's git rights (#1692 — the key
+// confers nothing of its own). Where it does not, the same task is handed over
+// as the `cnm git …` command that signs it with the operator's community
+// profile, and as the document itself. `repos/actions.ts` has the detail.
 //
-// ## Expected is not observed
+// Step-up: design §6 puts grants of `own` and `repo.create`, transfer, archive
+// and adopt behind a step-up, and binding and `ns.admin` behind a step-up and
+// confirmation. A passkey step-up elevates a session; a signed document has
+// none. The daemon's stand-in is `elevated_requires_admin` — those tasks are
+// accepted only from a community administrator who also holds the right — and
+// the dialog says which class each task is and makes a destructive one be
+// confirmed before it is signed.
 //
-// The daemon reports each repository's bootstrap (workflow, keyring,
-// variables, required check), its sync state and its drift. It does not
-// report which guard keeps a pull request from satisfying its own check
-// (design §9: a required workflow on an organisation, a bridge-posted check
-// and code-owner review elsewhere), nor what the App was granted on the
-// forge. The repository page shows the guard §9 assigns as *expected*, and the
-// namespace cards claim nothing about App permissions at all.
+// ## Reported, and what is shown when it is not
+//
+// The daemon reports each repository's bootstrap, sync state, drift, the
+// guard the bridge last saw in force, per-step outcomes of the last create or
+// bootstrap, and the last verify-trust check; and for each namespace, what the
+// bridge reported of its App (installation, missing permissions, a pending
+// permission upgrade, org-ruleset availability). All of the bridge's reports
+// are optional. Where the guard is unreported the page shows the one design §9
+// assigns, labelled *expected*; where the App's permissions are unreported
+// nothing is claimed about them either way.
 //
 // Section links are absolute: the shell mounts plugins on `path/*`, where a
 // relative link outside the descendant `<Routes>` would resolve against the
