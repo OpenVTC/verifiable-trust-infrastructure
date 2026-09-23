@@ -231,7 +231,44 @@ const DETAILS_MAX_JCS_BYTES: usize = 4096;
 /// Companion to [`DETAILS_MAX_JCS_BYTES`].
 const DETAILS_MAX_MEMBERS: usize = 16;
 
-/// Drop a `details` that exceeds the framework's bound, keeping the `code`.
+/// Members a `details` may shed, in this order, before the whole of it is
+/// dropped — each paired with the member that replaces it and says how many
+/// items went (an array's length; `1` for anything else).
+///
+/// A member belongs here when it is a *convenience* the receiver can do
+/// without, and the rest of the `details` is what it cannot. The one entry:
+/// `auth:consent_required` carries one VTA-signed `task-consent/request` per
+/// approver so a requester can relay them where the VTA has no route. Each is
+/// around a kilobyte, so three approvers pass the default bound — and before
+/// this table the whole annex went, taking the digest, correlator and
+/// challenge with it: the requester was told consent was required and given
+/// nothing to act on (Keyring VTI-37). Shedding the requests keeps the
+/// ceremony's coordinates on the wire; the count tells the requester the
+/// relay copies exist and did not fit, rather than that there were none.
+///
+/// Whole or not at all: a partial list would read as "these are the
+/// approvers", and a requester relaying to the ones it was given would
+/// silently skip the rest.
+///
+/// Matched by member name on every bounded `details`. A rejection that does
+/// not carry one of these members is unaffected.
+const SHEDDABLE_DETAILS_MEMBERS: &[(&str, &str)] = &[("consentRequests", "consentRequestsOmitted")];
+
+/// Is `details` within the framework's default bound?
+///
+/// Uncanonicalisable is treated as out of bound: it cannot be measured, so it
+/// does not go out.
+fn details_within_bound(details: &Value) -> bool {
+    let too_many_members = details
+        .as_object()
+        .is_some_and(|o| o.len() > DETAILS_MAX_MEMBERS);
+    let too_large = serde_json_canonicalizer::to_string(details)
+        .map(|jcs| jcs.len() > DETAILS_MAX_JCS_BYTES)
+        .unwrap_or(true);
+    !too_many_members && !too_large
+}
+
+/// Bring a `details` within the framework's bound, keeping the `code`.
 ///
 /// `details` was the one error-payload member with no size bound, and it
 /// travels in the direction no producer-side bound reaches — the producer set
@@ -240,28 +277,48 @@ const DETAILS_MAX_MEMBERS: usize = 16;
 /// `explanation` on the wire, and that string is written by whoever authored
 /// the policy, with no length anybody checked.
 ///
-/// An oversized `details` is **ignored, never grounds to discard the `code`** —
-/// the code is what the receiving party actually needs, and dropping the whole
-/// rejection because its annex was too long would turn a verbose policy into an
-/// unexplained failure.
+/// An oversized `details` first sheds the members in
+/// [`SHEDDABLE_DETAILS_MEMBERS`], in order, until it fits; if it still does
+/// not, it is **ignored, never grounds to discard the `code`** — the code is
+/// what the receiving party actually needs, and dropping the whole rejection
+/// because its annex was too long would turn a verbose policy into an
+/// unexplained failure. Omitting members to stay within the bound conforms;
+/// exceeding it does not.
 fn bound_details(details: Option<Value>) -> Option<Value> {
-    let details = details?;
-    let too_many_members = details
-        .as_object()
-        .is_some_and(|o| o.len() > DETAILS_MAX_MEMBERS);
-    let too_large = serde_json_canonicalizer::to_string(&details)
-        .map(|jcs| jcs.len() > DETAILS_MAX_JCS_BYTES)
-        // Uncanonicalisable is worse than oversized: it cannot be bounded, so
-        // it does not go out.
-        .unwrap_or(true);
-    if too_many_members || too_large {
-        tracing::warn!(
-            members = details.as_object().map(serde_json::Map::len),
-            "error `details` exceeds the framework bound and was dropped; the code still went out"
-        );
-        return None;
+    let mut details = details?;
+    if details_within_bound(&details) {
+        return Some(details);
     }
-    Some(details)
+    let original_members = details.as_object().map(serde_json::Map::len);
+
+    let mut shed: Vec<&str> = Vec::new();
+    for (member, marker) in SHEDDABLE_DETAILS_MEMBERS {
+        let Some(obj) = details.as_object_mut() else {
+            break;
+        };
+        let Some(removed) = obj.remove(*member) else {
+            continue;
+        };
+        let count = removed.as_array().map_or(1, Vec::len);
+        obj.insert((*marker).to_string(), Value::from(count));
+        shed.push(member);
+        if details_within_bound(&details) {
+            tracing::warn!(
+                shed = ?shed,
+                "error `details` exceeds the framework bound; shed the listed members \
+                 (their count went out in their place) and sent the rest with the code"
+            );
+            return Some(details);
+        }
+    }
+
+    tracing::warn!(
+        members = original_members,
+        shed = ?shed,
+        "error `details` exceeds the framework bound even after shedding; dropped the whole \
+         of it and the code still went out"
+    );
+    None
 }
 
 /// The capability gate every gated task goes through.
@@ -877,6 +934,162 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
         assert_eq!(
             parsed["payload"]["details"]["reason"], "auth:consent_required",
+            "{parsed}"
+        );
+    }
+
+    /// The core members of an `auth:consent_required` annex — everything the
+    /// requester needs to follow the ceremony, and nothing it can relay.
+    const CONSENT_CORE_MEMBERS: &[&str] = &[
+        "reason",
+        "payloadDigest",
+        "correlator",
+        "challenge",
+        "approverSet",
+        "minApprovals",
+        "excludeRequester",
+    ];
+
+    /// A signed `task-consent/request` of the size the gate mints: the
+    /// envelope, a payload with one rotation effect and a state pin, and an
+    /// `eddsa-jcs-2022` proof. The e2e suite measures real ones; this keeps the
+    /// unit bound honest about the order of magnitude.
+    fn signed_consent_request(approver: usize) -> Value {
+        let vta = "did:webvh:QmSCIDabcdefghijklmnopqrstuvwxyz0123456789ABCD:vta.example.com";
+        json!({
+            "id": format!("urn:uuid:00000000-0000-4000-8000-{approver:012}"),
+            "type": crate::trust_tasks::consent_request::TASK_CONSENT_REQUEST_0_1,
+            "issuer": vta,
+            "recipient": format!("did:key:z6Mk{approver:0>44}"),
+            "issuedAt": "2026-09-23T00:00:00Z",
+            "payload": {
+                "challenge": "c".repeat(43),
+                "taskType": vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+                "payloadDigest": "d".repeat(64),
+                "sideEffects": "stateChanging",
+                "exposure": "privileged",
+                "effects": [{
+                    "kind": "keyRotation",
+                    "did": "did:webvh:QmSCIDabcdefghijklmnopqrstuvwxyz0123456789ABCD:files.example.com:acme",
+                    "from": ["z6Mk".to_string() + &"a".repeat(44)],
+                    "to": ["z6Mk".to_string() + &"b".repeat(44)],
+                }],
+                "requester": format!("did:key:z6Mk{:0>44}", 0),
+                "approverSet": "operators",
+                "minApprovals": 1,
+                "excludeRequester": true,
+                "expiresAt": "2026-09-23T00:05:00Z",
+                "statePin": { "versionId": format!("3-Qm{}", "e".repeat(44)) },
+            },
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "verificationMethod": format!("{vta}#key-0"),
+                "proofPurpose": "assertionMethod",
+                "created": "2026-09-23T00:00:00Z",
+                "proofValue": format!("z{}", "f".repeat(87)),
+            },
+        })
+    }
+
+    fn consent_required_details(approvers: usize) -> Value {
+        json!({
+            "reason": "auth:consent_required",
+            "payloadDigest": "d".repeat(64),
+            "correlator": "r".repeat(43),
+            "challenge": "c".repeat(43),
+            "approverSet": "operators",
+            "minApprovals": 1,
+            "excludeRequester": true,
+            "consentRequests": (0..approvers).map(signed_consent_request).collect::<Vec<_>>(),
+        })
+    }
+
+    /// Keyring VTI-37: an `auth:consent_required` annex with enough approvers
+    /// to pass the default bound used to be dropped whole, so the requester got
+    /// a bare code — no digest, no correlator, nothing to relay. Now the relay
+    /// copies are shed and counted, and the ceremony's coordinates always go
+    /// out; the requests go out only whole.
+    #[test]
+    fn a_consent_required_annex_sheds_its_requests_before_its_coordinates() {
+        for approvers in [1, 2, 3, 5] {
+            let sent = consent_required_details(approvers);
+            let fits_whole = details_within_bound(&sent);
+            let details = details_of(reject_with(
+                &doc(),
+                RejectReason::TaskFailed {
+                    reason: "auth:consent_required".into(),
+                    details: Some(sent.clone()),
+                },
+            ));
+
+            for member in CONSENT_CORE_MEMBERS {
+                assert_eq!(
+                    details[*member], sent[*member],
+                    "{approvers} approver(s): core member `{member}` must always go out: {details}"
+                );
+            }
+            if fits_whole {
+                assert_eq!(
+                    details["consentRequests"].as_array().map(Vec::len),
+                    Some(approvers),
+                    "{approvers} approver(s): requests that fit go out whole: {details}"
+                );
+                assert!(details.get("consentRequestsOmitted").is_none(), "{details}");
+            } else {
+                assert!(
+                    details.get("consentRequests").is_none(),
+                    "{approvers} approver(s): never a partial list: {details}"
+                );
+                assert_eq!(
+                    details["consentRequestsOmitted"],
+                    json!(approvers),
+                    "{approvers} approver(s): the count of what was shed: {details}"
+                );
+            }
+            assert!(
+                details_within_bound(&details),
+                "{approvers} approver(s): what goes out is within the bound: {details}"
+            );
+            let jcs = serde_json_canonicalizer::to_string(&details).expect("jcs");
+            assert!(jcs.len() <= DETAILS_MAX_JCS_BYTES, "{} bytes", jcs.len());
+            assert!(details.as_object().expect("object").len() <= DETAILS_MAX_MEMBERS);
+        }
+
+        // The ends are not left to the size estimate above.
+        assert!(details_within_bound(&consent_required_details(1)));
+        assert!(!details_within_bound(&consent_required_details(5)));
+    }
+
+    /// The same shedding holds on the extended-code funnel.
+    #[test]
+    fn an_extended_code_rejection_sheds_rather_than_drops() {
+        let code: TrustTaskCode = "provision/integration:contextRequired"
+            .parse()
+            .expect("a legal extended code");
+        let outcome = reject_with_code(&doc(), code, "held", Some(consent_required_details(5)));
+        let details = details_of(outcome);
+        assert_eq!(details["challenge"], json!("c".repeat(43)), "{details}");
+        assert_eq!(details["consentRequestsOmitted"], json!(5), "{details}");
+    }
+
+    /// Shedding is not a way around the bound: an annex still oversized once
+    /// every sheddable member is gone is dropped whole, as before.
+    #[test]
+    fn an_annex_still_oversized_after_shedding_is_dropped() {
+        let mut details = consent_required_details(5);
+        details["explanation"] = json!("x".repeat(DETAILS_MAX_JCS_BYTES + 1));
+        let outcome = reject_with(
+            &doc(),
+            RejectReason::TaskFailed {
+                reason: "auth:consent_required".into(),
+                details: Some(details),
+            },
+        );
+        let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+        assert_eq!(parsed["payload"]["code"], "taskFailed");
+        assert!(
+            parsed["payload"].get("details").is_none_or(Value::is_null),
             "{parsed}"
         );
     }
