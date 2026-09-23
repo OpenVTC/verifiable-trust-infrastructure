@@ -7,7 +7,10 @@
 //!    safe). Closes the rotation TOCTOU. A token that is *not* in the
 //!    index diverts to [`handle_unclaimed_refresh`] — the reuse
 //!    detection path.
-//! 2. Load session by the claimed `session_id`.
+//! 2. Load session by the claimed `session_id`, and refuse the token
+//!    unless it is the one the session currently issues
+//!    ([`SessionStore::current_refresh_hash`]) — one live chain per
+//!    session.
 //! 3. (DIDComm transports) Verify signer DID matches session DID.
 //!    REST transports can skip this — the refresh token itself is
 //!    the credential.
@@ -95,6 +98,67 @@ pub async fn handle_refresh<B: AuthBackend>(
         .await
         .map_err(|e| AuthError::Internal(format!("get_session failed: {e:?}")))?
         .ok_or(AuthError::SessionNotFound)?;
+
+    // ---- 2a. The claimed token must be the one the session issues ----
+    //
+    // Claiming the index proves only that the token was issued here at some
+    // point. A session issues one refresh token at a time, and without this
+    // check any index entry that outlived its currency — the one before a
+    // re-login, or one written by a rotation that lost a race with a login —
+    // would still mint, into a second chain that never collides with the
+    // first, so reuse detection never fires. Retiring the old entry at login
+    // is best-effort and cannot close that race; refusing here does.
+    //
+    // Currency comes from the store's own record, not `session.refresh_token`:
+    // the row is read-modify-written by activity touches and step-up, which
+    // can put an older token back into it. The row is used only for sessions
+    // issued before the record existed.
+    let presented_hash = refresh_token_hash(&input.refresh_token);
+    let current_hash = match backend
+        .sessions()
+        .current_refresh_hash(&session_id)
+        .await
+        .map_err(|e| AuthError::Internal(format!("current_refresh_hash failed: {e:?}")))?
+    {
+        Some(hash) => Some(hash),
+        None => old_session.refresh_token.as_deref().map(refresh_token_hash),
+    };
+    if current_hash.as_deref() != Some(presented_hash.as_str()) {
+        let now = now_epoch();
+        // The claim above already removed its index entry, so the token is
+        // dead either way; the tombstone is what lets a later replay be
+        // recognised instead of looking like a stranger's token.
+        if let Err(e) = backend
+            .sessions()
+            .store_refresh_tombstone(
+                &input.refresh_token,
+                &RefreshTombstone {
+                    session_id: old_session.session_id.clone(),
+                    did: old_session.did.clone(),
+                    rotated_at: now,
+                    expires_at: now.saturating_add(backend.refresh_token_ttl()),
+                    successor_hash: current_hash.unwrap_or_default(),
+                    cause: TombstoneCause::Superseded,
+                },
+            )
+            .await
+        {
+            tracing::error!(
+                session_id = %old_session.session_id,
+                did = %old_session.did,
+                "failed to tombstone a superseded refresh token: {e:?}",
+            );
+        }
+        // Same outcome as a replay of a token a login retired, for the same
+        // reasons (see `handle_unclaimed_refresh`): refused, reported, and the
+        // current session left running.
+        backend.audit(AuthAuditEvent::RefreshSuperseded {
+            did: &old_session.did,
+            session_id: &old_session.session_id,
+            rotated_at: now,
+        });
+        return Err(AuthError::RefreshTokenInvalid.into());
+    }
 
     // ---- 3. (DIDComm) Signer-DID-matches-session-DID ----
 
@@ -623,6 +687,9 @@ mod tests {
     struct MemStore {
         sessions: Mutex<HashMap<String, Session>>,
         refresh_index: Mutex<HashMap<String, String>>,
+        /// `session_id → hash` of the token it currently issues, written
+        /// only by `store_refresh_index` — as `KeyspaceSessionStore` does.
+        current: Mutex<HashMap<String, String>>,
         tombstones: Mutex<HashMap<String, RefreshTombstone>>,
     }
 
@@ -643,6 +710,7 @@ mod tests {
         }
 
         async fn delete_session(&self, id: &str) -> Result<(), AppError> {
+            self.current.lock().unwrap().remove(id);
             if let Some(s) = self.sessions.lock().unwrap().remove(id)
                 && let Some(t) = s.refresh_token
             {
@@ -652,6 +720,10 @@ mod tests {
         }
 
         async fn store_refresh_index(&self, token: &str, id: &str) -> Result<(), AppError> {
+            self.current
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), refresh_token_hash(token));
             self.refresh_index
                 .lock()
                 .unwrap()
@@ -664,6 +736,10 @@ mod tests {
             token: &str,
         ) -> Result<Option<String>, AppError> {
             Ok(self.refresh_index.lock().unwrap().remove(token))
+        }
+
+        async fn current_refresh_hash(&self, id: &str) -> Result<Option<String>, AppError> {
+            Ok(self.current.lock().unwrap().get(id).cloned())
         }
 
         async fn count_pending_challenges(&self, _: &str) -> Result<usize, AppError> {
@@ -1057,6 +1133,59 @@ mod tests {
 
     /// The retry must not buy the session a fresh 24 hours; it replays a
     /// rotation that already happened.
+    /// The residual risk on #1683: a token whose index entry outlived a
+    /// re-login — the retirement at login is best-effort and a racing
+    /// rotation can slip past it — must not mint into a second chain.
+    ///
+    /// Remove the currency check in `handle_refresh` and this succeeds,
+    /// handing the holder of the old token a live chain beside the owner's.
+    #[tokio::test]
+    async fn a_surviving_index_entry_for_a_non_current_token_is_refused() {
+        let (b, stale) = logged_in(30).await;
+        // A later login makes `refresh-1` current. Put the old entry back,
+        // as a retirement that lost its race would leave it.
+        b.store.store_refresh_index("refresh-1", DID).await.unwrap();
+        b.store
+            .refresh_index
+            .lock()
+            .unwrap()
+            .insert(stale.clone(), DID.to_string());
+
+        let err = handle_refresh(&b, input(&stale)).await.unwrap_err();
+        assert_refused(&err);
+        assert_eq!(superseded_alerts(&b), vec![DID.to_string()]);
+        assert!(alerts(&b).is_empty(), "a superseded token is not reuse");
+
+        // The current chain is untouched, and a replay of the refused
+        // token is still recognised rather than looking like a stranger's.
+        handle_refresh(&b, input("refresh-1")).await.unwrap();
+        let tomb = b.store.tombstones.lock().unwrap().get(&stale).cloned();
+        assert_eq!(tomb.map(|t| t.cause), Some(TombstoneCause::Superseded));
+    }
+
+    /// A read-modify-write of the session row (an activity touch, a
+    /// DIDComm message resolving the session, a step-up) can write an older
+    /// `refresh_token` back into it after a rotation. Currency must not be
+    /// read from the row, or the owner's current token is refused and they
+    /// are signed out.
+    #[tokio::test]
+    async fn a_stale_row_does_not_refuse_the_current_token() {
+        let (b, first) = logged_in(30).await;
+        let rotated = handle_refresh(&b, input(&first)).await.unwrap();
+        let current = rotated.tokens.refresh_token.unwrap();
+
+        // The lost-update: a writer that read the row before the rotation
+        // saves its copy back.
+        let mut row = b.store.get_session(DID).await.unwrap().unwrap();
+        row.refresh_token = Some(first.clone());
+        b.store.store_session(&row).await.unwrap();
+
+        handle_refresh(&b, input(&current))
+            .await
+            .expect("the token the client holds is still current");
+        assert!(superseded_alerts(&b).is_empty());
+    }
+
     #[tokio::test]
     async fn a_retry_does_not_extend_the_refresh_deadline() {
         let (b, first) = logged_in(3600).await;

@@ -252,6 +252,28 @@ pub trait SessionStore: Send + Sync + 'static {
         refresh_token: &str,
     ) -> Result<Option<String>, Self::Error>;
 
+    /// Hash ([`crate::auth::session::refresh_token_hash`]) of the refresh
+    /// token `session_id` currently issues — the one the most recent login
+    /// or rotation handed out.
+    ///
+    /// `/auth/refresh` refuses a claimed token that is not current, which is
+    /// what makes one live chain per session hold by construction: an index
+    /// entry left behind by an earlier login, or written by a rotation that
+    /// lost a race with a login, still claims but no longer mints.
+    ///
+    /// Must be recorded apart from the session row, by whatever writes the
+    /// refresh index, and never by the row's read-modify-write writers (an
+    /// activity touch, a step-up) — they can write an older `refresh_token`
+    /// back into the row, which is why the row cannot be the authority.
+    ///
+    /// **Default: `Ok(None)`**, meaning "not recorded". The handler then
+    /// falls back to comparing against `Session::refresh_token`, which is
+    /// correct except under that read-modify-write race. A backend should
+    /// override this together with [`Self::store_refresh_index`].
+    async fn current_refresh_hash(&self, _session_id: &str) -> Result<Option<String>, Self::Error> {
+        Ok(None)
+    }
+
     /// Record that `rotated_token` was valid here and has been retired,
     /// for the benefit of [`Self::get_refresh_tombstone`].
     ///

@@ -364,16 +364,43 @@ for the stale one's request and the forced re-login would recreate
 the same situation. Re-authentication remains the recovery path
 for the device; the audit event is the operator's signal.
 
-**Sweeping the index.** Retirement fixes new logins; it cannot
-reach entries already written. `refresh:` rows carry no TTL and a
-stale one is not inert — `/auth/refresh` authorises from the index
-alone, so it resolves again the moment its DID has a session row,
-surviving a revocation and returning at the next login.
-`cleanup_expired_sessions` therefore drops any `refresh:` entry
-that is not the token its session currently names. This is safe
-against a concurrent login or rotation because every writer stores
-the session row *before* its index entry, so an entry that
-disagrees with its row is stale rather than half-written.
+**Only the current token refreshes.** Retirement at login is not
+enough on its own. The login reads the outgoing token from the row
+before overwriting it, and a refresh racing that read can spend
+the token and write its successor's index entry *after* the login
+has chosen what to retire — leaving exactly the parallel chain this
+section exists to close. So `/auth/refresh` also refuses a claimed
+token unless it is the one the session currently issues, and treats
+it as superseded: tombstoned, `RefreshSuperseded`, session left
+running. Whichever of the two racing writes lands last is current;
+the other chain dies at its next refresh. One live chain per session
+then holds by construction rather than by cleanup, and a login's
+own claim-and-delete matters only for attribution. For that reason
+the login writes its `Superseded` tombstone **only when its claim
+wins**: a lost claim means a refresh already spent the token and
+tombstoned it `Rotated`, and relabelling it would downgrade a
+genuine-reuse replay to a non-revoking alert.
+
+Currency is **not** read from `session.refresh_token`. Several
+writers read-modify-write the session row without atomicity —
+`resolve_did_session` on every DIDComm/TSP message, `touch_last_seen`,
+step-up's `update_session` — and each writes back whatever
+`refresh_token` it read. A rotation landing between such a read
+and write is reverted in the row, and a check against the row would
+refuse (and a sweep would delete) the token the client actually
+holds. `store_refresh_index` therefore records the current token's
+hash under its own key, `refresh-current:{session_id}`, which no
+other writer touches; it writes that record before the index entry,
+so an entry that exists was current when written and only a newer
+issuance can move the record off it. Sessions issued before the
+record existed fall back to the row, which is the best evidence
+they have.
+
+**Sweeping the index.** `refresh:` rows carry no TTL.
+`cleanup_expired_sessions` drops any entry whose session row is gone
+or whose token is not current, by the same record and fallback, and
+drops `refresh-current:` records whose session row is gone. This is
+hygiene: refresh already refuses those entries.
 
 Both outcomes return the same `RefreshTokenInvalid` a stranger's
 token gets. Reporting detection to the caller would tell an

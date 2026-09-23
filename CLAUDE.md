@@ -573,11 +573,24 @@ new flow, update both this section and the relevant `docs/*.md`.
     user signed in elsewhere; revoking would sign out the client that is
     demonstrably current and the forced re-login would set the same trap again.
     Implements RFC 9700 §4.14.2.
-  - **Orphan `refresh:` entries are swept**: the index has no TTL and a stale
-    entry is not inert — it resolves again as soon as its DID has a session
-    row, so it survives a revocation and returns at the next login.
-    `cleanup_expired_sessions` drops any entry its session no longer names,
-    which also retires entries left by logins predating the retirement above.
+  - **One live chain per session, by construction**: retiring at login is
+    best-effort (a racing refresh can slip past it), so `/auth/refresh` also
+    refuses any claimed token that is not the one its session *currently*
+    issues — answered as `RefreshSuperseded`, same as above. Currency comes
+    from a `refresh-current:{session_id}` record written only by
+    `store_refresh_index` (i.e. login and rotation), **never** from
+    `session.refresh_token`: the row is read-modify-written without atomicity
+    (`resolve_did_session` on every DIDComm/TSP message, `touch_last_seen`,
+    step-up's `update_session`), which can write an older token back into it.
+    Don't gate anything on the row's `refresh_token`. The row is only a
+    fallback for sessions issued before the record existed. Login writes its
+    `Superseded` tombstone only when its claim wins, so it never relabels a
+    `Rotated` tombstone a racing refresh just wrote (that would downgrade
+    genuine reuse to a non-revoking alert).
+  - **Orphan `refresh:` entries are swept**: the index has no TTL, so
+    `cleanup_expired_sessions` drops entries whose session row is gone or
+    whose token is not current (same record, same fallback) — hygiene, since
+    refresh already refuses them.
   - **Trust-Task-wrapped responses (engine interop):** `/auth/challenge`,
     `/auth/`, and `/auth/refresh` all content-negotiate on *both* ends — when
     the request body is a Trust Task document, the response is a TT `#response`

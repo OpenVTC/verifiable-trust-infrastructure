@@ -74,6 +74,12 @@ impl SessionStore for KeyspaceSessionStore {
         session::take_session_id_by_refresh(&self.inner, refresh_token).await
     }
 
+    /// Recorded by [`session::store_refresh_index`], which is why the
+    /// index write above needs no companion call.
+    async fn current_refresh_hash(&self, session_id: &str) -> Result<Option<String>, Self::Error> {
+        session::current_refresh_hash(&self.inner, session_id).await
+    }
+
     /// Overrides the trait's no-op default so VTA and VTC get refresh
     /// reuse detection. Paired with [`Self::get_refresh_tombstone`] —
     /// either both are implemented or neither does anything.

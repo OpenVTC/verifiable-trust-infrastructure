@@ -249,10 +249,20 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     // whereas retiring first and crashing would leave the account with no
     // usable refresh token at all.
     //
-    // Claim-and-delete rather than a plain delete, so two logins racing on the
-    // same DID cannot both believe they retired it and write duplicate
-    // tombstones. The claimed session id is discarded — only the removal
-    // matters here.
+    // Claim-and-delete rather than a plain delete, and the tombstone is written
+    // only when the claim wins. `None` means someone else already disposed of
+    // the token — a concurrent refresh spent it (and wrote a `Rotated`
+    // tombstone that must survive, since a later replay of it is genuine
+    // reuse), or a racing login retired it. Writing `Superseded` over either
+    // would downgrade a revoking reuse signal to a non-revoking one.
+    //
+    // This retirement is not what keeps the account to one chain: the read
+    // above can be stale under a racing refresh, so it may name a token that
+    // is already spent while its successor lives on. `/auth/refresh` closes
+    // that by refusing any token that is not the session's current one
+    // (`SessionStore::current_refresh_hash`), which `store_refresh_index`
+    // just moved to this login's token. Retiring here is what lets a replay
+    // of the old token be *attributed* rather than merely refused.
     //
     // Store errors are logged, not returned, matching `handle_refresh`'s
     // handling of the same two writes. The login is already committed: the new
@@ -263,30 +273,37 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     // attributed, and a token whose index outlived this call is no worse off
     // than it was before this retirement existed.
     if let Some(superseded) = superseded_refresh_token {
-        if let Err(e) = backend
+        let claimed = match backend
             .sessions()
             .take_session_id_by_refresh(&superseded)
             .await
         {
-            tracing::error!(
-                did = %did,
-                "failed to retire the refresh token superseded by this login; \
-                 it stays live until it expires: {e:?}",
-            );
-        } else if let Err(e) = backend
-            .sessions()
-            .store_refresh_tombstone(
-                &superseded,
-                &RefreshTombstone {
-                    session_id: did.clone(),
-                    did: did.clone(),
-                    rotated_at: now,
-                    expires_at: now.saturating_add(backend.refresh_token_ttl()),
-                    successor_hash: refresh_token_hash(&minted.refresh_token),
-                    cause: TombstoneCause::Superseded,
-                },
-            )
-            .await
+            Ok(claimed) => claimed.is_some(),
+            Err(e) => {
+                tracing::error!(
+                    did = %did,
+                    "failed to retire the refresh token superseded by this \
+                     login; its index entry remains, but it is no longer \
+                     current and will be refused: {e:?}",
+                );
+                false
+            }
+        };
+        if claimed
+            && let Err(e) = backend
+                .sessions()
+                .store_refresh_tombstone(
+                    &superseded,
+                    &RefreshTombstone {
+                        session_id: did.clone(),
+                        did: did.clone(),
+                        rotated_at: now,
+                        expires_at: now.saturating_add(backend.refresh_token_ttl()),
+                        successor_hash: refresh_token_hash(&minted.refresh_token),
+                        cause: TombstoneCause::Superseded,
+                    },
+                )
+                .await
         {
             // Tombstoned, not merely deleted, so the retired token is still
             // *recognised* if it comes back. Deleting alone would make a
@@ -349,6 +366,8 @@ mod claim_tests {
     #[derive(Default)]
     struct MemStore {
         sessions: Mutex<HashMap<String, Session>>,
+        refresh_index: Mutex<HashMap<String, String>>,
+        tombstones: Mutex<HashMap<String, RefreshTombstone>>,
     }
 
     #[async_trait]
@@ -376,12 +395,31 @@ mod claim_tests {
             Ok(self.sessions.lock().unwrap().remove(session_id))
         }
 
-        async fn store_refresh_index(&self, _: &str, _: &str) -> Result<(), AppError> {
+        async fn store_refresh_index(&self, token: &str, id: &str) -> Result<(), AppError> {
+            self.refresh_index
+                .lock()
+                .unwrap()
+                .insert(token.to_string(), id.to_string());
             Ok(())
         }
 
-        async fn take_session_id_by_refresh(&self, _: &str) -> Result<Option<String>, AppError> {
-            Ok(None)
+        async fn take_session_id_by_refresh(
+            &self,
+            token: &str,
+        ) -> Result<Option<String>, AppError> {
+            Ok(self.refresh_index.lock().unwrap().remove(token))
+        }
+
+        async fn store_refresh_tombstone(
+            &self,
+            token: &str,
+            tombstone: &RefreshTombstone,
+        ) -> Result<(), AppError> {
+            self.tombstones
+                .lock()
+                .unwrap()
+                .insert(token.to_string(), tombstone.clone());
+            Ok(())
         }
 
         async fn count_pending_challenges(&self, did: &str) -> Result<usize, AppError> {
@@ -473,6 +511,47 @@ mod claim_tests {
             session_pubkey_b58btc: None,
             audience: AudienceBinding::Transport,
         }
+    }
+
+    /// A login whose read of the prior token raced a refresh must not
+    /// overwrite the refresh's `Rotated` tombstone with `Superseded`.
+    ///
+    /// The login reads `spent` as the outgoing token, but a concurrent
+    /// refresh has already claimed it and tombstoned it `Rotated`. A replay
+    /// of `spent` is then genuine reuse and must revoke; relabelled
+    /// `Superseded` it would only be reported. Write the tombstone
+    /// regardless of the claim's result and this fails.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_login_does_not_relabel_a_token_a_racing_refresh_spent() {
+        let backend = MockBackend {
+            store: MemStore::default(),
+        };
+        let now = now_epoch();
+        let mut prior = challenge_row();
+        prior.session_id = DID.to_string();
+        prior.state = SessionState::Authenticated;
+        prior.challenge = String::new();
+        prior.refresh_token = Some("spent".to_string());
+        backend.store.store_session(&prior).await.unwrap();
+        // What the racing refresh left: no index entry, a `Rotated` tombstone.
+        backend.store.tombstones.lock().unwrap().insert(
+            "spent".to_string(),
+            RefreshTombstone {
+                session_id: DID.to_string(),
+                did: DID.to_string(),
+                rotated_at: now,
+                expires_at: now + 86_400,
+                successor_hash: refresh_token_hash("successor"),
+                cause: TombstoneCause::Rotated,
+            },
+        );
+        backend.store.store_session(&challenge_row()).await.unwrap();
+
+        handle_authenticate(&backend, input()).await.unwrap();
+
+        let tomb = backend.store.tombstones.lock().unwrap()["spent"].clone();
+        assert_eq!(tomb.cause, TombstoneCause::Rotated);
+        assert_eq!(tomb.successor_hash, refresh_token_hash("successor"));
     }
 
     /// #1656: two presentations of the *same* challenge, interleaved, mint
