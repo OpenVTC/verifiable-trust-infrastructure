@@ -318,7 +318,9 @@ change is therefore its precondition, and the order is:
 4. Keep each bearer route as a **documented transitional path** with a stated
    removal point, said so in its OpenAPI description — the clients that call
    them today (the admin SPA, `cnm`, `vtc-client`) need the signed path before
-   the bearer route can go.
+   the bearer route can go. The admin SPA is the one with no path at all, and
+   it blocks 34 of the 49; how it gets one is
+   [`vtc-console-signing.md`](vtc-console-signing.md).
 5. Remove them, and close the Appendix F.2 entry.
 
 Steps 3 and 4 are the large ones: 49 routes, three client surfaces, and an
