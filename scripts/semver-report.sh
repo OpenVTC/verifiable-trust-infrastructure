@@ -265,6 +265,20 @@ done
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo
+  # Same principle as the build-failure classifier above: name the cause where
+  # the red is displayed. A registry fetch that fails on DNS looks, in the
+  # coverage assertion's output, exactly like the unpublished-crate abort it was
+  # written for — and it is not that, it is a runner network blip that a re-run
+  # clears. This happened on the very PR that added the classifier (#1670),
+  # which is as good an argument for saying it out loud as any.
+  if grep -qE 'failed to retrieve index of crate versions from registry' semver.log; then
+    echo "::error::THE REPORT IS INCOMPLETE — these crates were never checked: ${missing[*]}. \
+The run aborted on a REGISTRY FETCH FAILURE (see 'failed to retrieve index of crate versions \
+from registry' above, usually a DNS or connect error on the runner), not on anything in this \
+branch and not on an API break. Re-run the job. If it fails the same way twice, crates.io or \
+the runner's network is the thing to look at."
+    exit 1
+  fi
   echo "::error::THE REPORT IS INCOMPLETE — these crates were never checked: ${missing[*]}. \
 The run stopped before reaching them, so their public APIs were compared against nothing. \
 A truncated report exits non-zero exactly like a declared API break, which is how this went \
