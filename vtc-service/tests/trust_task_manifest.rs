@@ -620,12 +620,31 @@ fn collect_prefixed(dir: &Path, prefix: &str, out: &mut BTreeSet<String>) {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {
             collect_prefixed(&path, prefix, out);
-        } else if path
+            continue;
+        }
+        if !path
             .extension()
             .is_some_and(|e| e == "rs" || e == "ts" || e == "tsx")
         {
-            collect_prefixed_in_file(&path, prefix, out);
+            continue;
         }
+        // Skip the console's own test files, for the reason
+        // [`collect_prefixed_in_file`] already records on the other side of
+        // this comparison: a URI in a fixture is not wiring. A test names a
+        // URI to *simulate* a server, and it may legitimately name one the
+        // console only ever receives — `trust-task-error/0.5` is the framework
+        // error document's type, which no route binds and no client sends, so
+        // reading it as a `Trust-Task` header reports a dead page that does
+        // not exist. Every URI the console really puts on the wire is a
+        // `trustTask:` option in non-test source, so nothing is lost.
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.contains(".test."))
+        {
+            continue;
+        }
+        collect_prefixed_in_file(&path, prefix, out);
     }
 }
 

@@ -19,6 +19,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Network,
+  PenLine,
   Share2,
   ShieldCheck,
   Smartphone,
@@ -32,6 +33,7 @@ import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
 import { Audit } from "@/plugins/audit";
 import { Ceremonies } from "@/plugins/ceremonies";
+import { ConsoleKeys } from "@/plugins/consoleKeys";
 import { Dashboard } from "@/plugins/dashboard";
 import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
@@ -139,6 +141,14 @@ export function registerBuiltinPlugins(): void {
     path: "/my-passkeys",
     iconComponent: KeyRound,
     reactComponent: MyPasskeys,
+  });
+
+  registerPlugin({
+    id: "console-keys",
+    label: "Signing keys",
+    path: "/console-keys",
+    iconComponent: PenLine,
+    reactComponent: ConsoleKeys,
   });
 
   registerPlugin({

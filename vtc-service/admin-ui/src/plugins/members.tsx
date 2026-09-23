@@ -49,6 +49,7 @@ import {
   getJson,
   patchJson,
   postJson,
+  signedOrBearer,
   type MemberRelationship,
   type RelationshipsGraph,
 } from "@/lib/api";
@@ -188,11 +189,21 @@ async function fetchMember(did: string): Promise<MemberRow> {
 }
 
 /** The membership pair's bodies for one member. Admin-only, and audited
- * server-side: every call records that an administrator read them. */
+ * server-side: every call records that an administrator read them.
+ *
+ * One of the three `#1681` tasks this console can now author as a **signed
+ * document** (#1684). `signedOrBearer` sends it that way when this browser
+ * holds an enrolled console key, and over the transitional bearer route
+ * otherwise; the daemon runs the same inner function either way. */
 async function fetchMemberCredentials(did: string): Promise<MemberCredentials> {
-  return getJson<MemberCredentials>(
-    `/v1/members/${encodeURIComponent(did)}/credentials`,
-    { trustTask: TRUST_TASK_CREDENTIALS },
+  return signedOrBearer<MemberCredentials>(
+    TRUST_TASK_CREDENTIALS,
+    { did },
+    () =>
+      getJson<MemberCredentials>(
+        `/v1/members/${encodeURIComponent(did)}/credentials`,
+        { trustTask: TRUST_TASK_CREDENTIALS },
+      ),
   );
 }
 
@@ -229,17 +240,27 @@ async function adminRemove(args: {
   did: string;
   reason: string;
 }): Promise<void> {
-  // DELETE accepts an optional `{reason}` body on the server.
-  // `/members/{did}` collapses GET + PATCH + DELETE under the single
-  // `members/show/1.0` Trust Task at the router (per-method selectors are
-  // deferred infra), so the DELETE must send that task — sending
-  // `members/admin-remove/1.0` trips the exact-match soft-gate
-  // (`TrustTaskMismatch`, 415). The standalone admin-remove Trust Task still
-  // exists on disk for the soft-gate surface.
-  await deleteJson<unknown>(`/v1/members/${encodeURIComponent(args.did)}`, {
-    trustTask: TRUST_TASK_ADMIN_REMOVE,
-    body: { reason: args.reason || null },
-  });
+  // Signed when this browser can (the document carries `did` in its payload —
+  // there is no path segment to put it in), bearer otherwise.
+  //
+  // The bearer arm's own quirk, unchanged: DELETE accepts an optional
+  // `{reason}` body, and `/members/{did}` collapses GET + PATCH + DELETE under
+  // the single `members/show/0.1` Trust Task at the router (per-method
+  // selectors are deferred infra), so the DELETE must send the admin-remove
+  // task while the path is shared. The signed door has no such constraint: the
+  // document's `type` is the routing key.
+  await signedOrBearer<unknown>(
+    TRUST_TASK_ADMIN_REMOVE,
+    // `reason` is omitted rather than sent as `null` — the payload is
+    // `deny_unknown_fields` with `reason` an optional string, so `null` is a
+    // parse failure rather than "no reason".
+    args.reason ? { did: args.did, reason: args.reason } : { did: args.did },
+    () =>
+      deleteJson<unknown>(`/v1/members/${encodeURIComponent(args.did)}`, {
+        trustTask: TRUST_TASK_ADMIN_REMOVE,
+        body: { reason: args.reason || null },
+      }),
+  );
 }
 
 async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {
@@ -250,9 +271,14 @@ async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {
 }
 
 async function purgeMember(did: string): Promise<void> {
-  await deleteJson<unknown>(
-    `/v1/members/${encodeURIComponent(did)}/purge`,
-    { trustTask: TRUST_TASK_PURGE },
+  // Super-admin either way. Over the signed door the check is `ActScope`
+  // against the ACL row resolved *now*, rather than the scope copied into the
+  // JWT when the session began — so an operator demoted since sign-in is
+  // refused here and not there.
+  await signedOrBearer<unknown>(TRUST_TASK_PURGE, { did }, () =>
+    deleteJson<unknown>(`/v1/members/${encodeURIComponent(did)}/purge`, {
+      trustTask: TRUST_TASK_PURGE,
+    }),
   );
 }
 
