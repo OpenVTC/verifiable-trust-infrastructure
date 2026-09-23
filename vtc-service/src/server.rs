@@ -1080,6 +1080,7 @@ pub async fn run(
         let registry_records_ks = state.registry_records_ks.clone();
         let policies_ks = state.policies_ks.clone();
         let active_policies_ks = state.active_policies_ks.clone();
+        let members_ks = state.members_ks.clone();
         let registry_health = state.registry_health.clone();
         let audit_writer = state.audit_writer.clone();
         let mut supervisor_shutdown = shutdown_rx.clone();
@@ -1095,6 +1096,7 @@ pub async fn run(
                     registry_records_ks.clone(),
                     policies_ks.clone(),
                     active_policies_ks.clone(),
+                    members_ks.clone(),
                     client.clone(),
                     registry_health.clone(),
                     audit_writer.clone(),

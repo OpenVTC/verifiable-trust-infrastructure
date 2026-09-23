@@ -67,9 +67,13 @@ pub struct Member {
     /// `vtc/join-requests/submit`; an admin can change it afterwards through
     /// the members update route.
     ///
-    /// Not yet an enforcement point: the registry syncer (`crate::registry`)
-    /// publishes on `MemberAdded` gated only by `registry.rego`'s
-    /// `publish_on_join`, and does not read this flag.
+    /// **Enforced by the registry syncer** (`crate::registry::MembershipSyncer`),
+    /// which reads it at dispatch time: a member is published only while this
+    /// is `true`. `registry.rego`'s `publish_on_join` can narrow that but never
+    /// override a `false` — consent is the member's, not the community's.
+    /// Flipping it `true → false` removes the member's registry record on the
+    /// next sync tick; `false → true` publishes them (subject to
+    /// `publish_on_join`).
     #[serde(default)]
     pub publish_consent: bool,
     /// Member-controlled preference for `DELETE /v1/members/me`

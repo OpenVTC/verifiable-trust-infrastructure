@@ -97,7 +97,8 @@ sequenceDiagram
 The syncer:
 
 - Subscribes to audit-tail events (`MemberAdded` / `MemberRemoved`
-  / `RoleChanged`) — the audit log is the source of truth for
+  / `RoleChanged`, and `MemberUpdated` when it changes
+  `publishConsent`) — the audit log is the source of truth for
   triggers, not a separate event bus.
 - Persists each pending job in a `sync_queue` fjall keyspace so
   pending work survives restarts. At boot, the syncer replays
@@ -112,6 +113,69 @@ The syncer:
 
 `registry_status` flips to `degraded` when the queue is ≥1h behind
 (configurable via `registry.degraded_threshold_seconds`).
+
+## Who is published: member consent
+
+A member is published **only if they consented**. The consent is the
+member's `publishConsent` flag, set at admission from the applicant's
+`registryConsent` on `vtc/join-requests/submit` (the spec's
+*Consent/purpose* section: it is the applicant's consent to
+trust-registry publication) and changeable afterwards by an admin
+through `vtc/members/update`.
+
+The syncer reads the flag when it dispatches each job, not when the job
+was queued, and enforces it in code:
+
+| Member | `registry.rego` `publish_on_join` | Result |
+|---|---|---|
+| consented | `true` (default) | published |
+| consented | `false` | not published |
+| did not consent | anything | **not published** |
+
+`publish_on_join` is the operator's rule and can only narrow. No
+policy can publish a member who did not consent: consent is the
+applicant's to give, not the community's. The rule receives
+`input.member.publishConsent` (with `input.member.did` and
+`input.action == "publish"`) if a policy wants to state it.
+
+Consent can change after admission:
+
+- **Withdrawn** (`true → false`): the member's record is **removed**
+  from the registry on the next sync tick (a delete, not a
+  `Departed` record: the member has not left, they have stopped
+  agreeing to be listed).
+- **Granted** (`false → true`): the member is published on the next
+  tick, subject to `publish_on_join`.
+
+A departure (`MemberRemoved` with `tombstone` / `historical`) updates
+the record to `Departed` only if the member was published. A member who
+was never published is not published on the way out.
+
+### Upgrading: members admitted before consent was honoured
+
+Before this change the syncer ignored consent, and before #1682 every
+admission stored `publishConsent = false`. So on an existing deployment
+**every member admitted before #1682 reads as not consenting**, and may
+be in the registry anyway.
+
+Upgrading does not remove them all at once: the syncer acts per member
+when something re-decides that member (a role change, a consent change,
+a retried job, or a replay of the audit log). At that point a
+non-consenting member who holds a registry record is removed. That is
+the intended result, since they never consented. If you need them listed,
+record their consent (with their agreement) before it happens:
+
+```bash
+# For each member who has agreed to be listed:
+curl -X PATCH "$VTC/v1/members/$MEMBER_DID" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"publishConsent": true}'
+```
+
+(or the `vtc/members/update` Trust Task with `{"did": …,
+"publishConsent": true}`). The next tick publishes the member if they
+are not already listed.
 
 ## RTBF batching
 

@@ -3,10 +3,12 @@
 //! The default `registry.rego` (shipped from M2.5) emits four
 //! rules the reconciliation flow needs:
 //!
-//! - `publish_on_join: bool` — whether a `MemberAdded` event
-//!   should produce a `PublishMember` job at all. Operators
-//!   can opt out of publish-on-join entirely by overriding
-//!   this rule to `false`.
+//! - `publish_on_join: bool` — whether a member who **consented**
+//!   to publication is published on joining. Operators can opt out
+//!   of publish-on-join entirely by overriding this rule to `false`.
+//!   It can only narrow: the member's own `publish_consent` is a
+//!   floor the syncer enforces in code before this rule is consulted
+//!   (see [`evaluate_publish_on_join`]).
 //! - `default_departure: string` — the disposition the
 //!   reconciler defaults to when the member didn't pick one.
 //! - `departure_options: [string]` — the set the member's
@@ -39,17 +41,40 @@ pub enum PublishOnJoinDecision {
     SkipPublishOnJoin,
 }
 
-/// Evaluate the active `registry.rego.publish_on_join`. Fails
-/// open — any error path (no active policy, compile failure,
-/// missing rule) returns `PublishOnJoin`. The rationale: if
-/// the policy is broken, we'd rather sync (the default
-/// behaviour) than silently swallow member additions. The
-/// alternative (fail closed) would let a buggy policy upload
-/// hide the entire membership graph from the registry — a
-/// silent privacy regression.
+/// Build the `registry.rego` input for a publication decision:
+/// `{ action: "publish", member: { did, publishConsent } }` — the
+/// `{ member, action }` shape `registry.rego`'s header documents.
+///
+/// `publishConsent` is carried so a policy can state the rule it relies
+/// on, but a policy cannot use it to publish anyone: the syncer only asks
+/// this question about a member whose consent is already `true`, and a
+/// member who refused is never published whatever the rule answers.
+pub fn publish_input(member_did: &str, publish_consent: bool) -> JsonValue {
+    json!({
+        "action": "publish",
+        "member": { "did": member_did, "publishConsent": publish_consent },
+    })
+}
+
+/// Evaluate the active `registry.rego.publish_on_join` against `input`
+/// (see [`publish_input`]).
+///
+/// This is the **operator's** half of the publication decision, and it
+/// can only narrow. The member's `publish_consent` (their
+/// `registryConsent` at admission, or an admin update since) is the
+/// other half and is enforced by the syncer in code, before this is
+/// called: consent is the applicant's to give, not the community's, so
+/// no policy — default, uploaded or broken — publishes a member who did
+/// not consent.
+///
+/// With no active policy this returns `PublishOnJoin` (the shipped
+/// default). A policy that is present but emits no boolean also reads as
+/// `PublishOnJoin`; a compile or evaluation error is returned to the
+/// caller, which skips (see `MembershipSyncer::policy_skips_publish`).
 pub async fn evaluate_publish_on_join(
     policies_ks: &KeyspaceHandle,
     active_policies_ks: &KeyspaceHandle,
+    input: JsonValue,
 ) -> Result<PublishOnJoinDecision, AppError> {
     let Some(id) = get_active_policy_id(active_policies_ks, PolicyPurpose::Registry).await? else {
         // No active policy → fall back to the spec default
@@ -63,11 +88,7 @@ pub async fn evaluate_publish_on_join(
         .await?
         .ok_or_else(|| AppError::Internal(format!("active registry policy {id} not found")))?;
     let compiled = compile_policy(&policy.rego_source, policy.id)?;
-    let result = evaluate_policy(
-        &compiled,
-        "data.vtc.registry.publish_on_join",
-        JsonValue::Object(Default::default()),
-    )?;
+    let result = evaluate_policy(&compiled, "data.vtc.registry.publish_on_join", input)?;
     let publish = result
         .pointer("/result/0/expressions/0/value")
         .and_then(|v| v.as_bool())
@@ -243,7 +264,10 @@ mod tests {
     #[tokio::test]
     async fn publish_on_join_defaults_to_publish_when_no_policy() {
         let (policies, active, _dir) = temp_keyspaces().await;
-        let outcome = evaluate_publish_on_join(&policies, &active).await.unwrap();
+        let outcome =
+            evaluate_publish_on_join(&policies, &active, publish_input("did:key:zA", true))
+                .await
+                .unwrap();
         assert_eq!(outcome, PublishOnJoinDecision::PublishOnJoin);
     }
 
@@ -256,7 +280,10 @@ import rego.v1
 default publish_on_join := true
 ";
         install_registry_policy(&policies, &active, src).await;
-        let outcome = evaluate_publish_on_join(&policies, &active).await.unwrap();
+        let outcome =
+            evaluate_publish_on_join(&policies, &active, publish_input("did:key:zA", true))
+                .await
+                .unwrap();
         assert_eq!(outcome, PublishOnJoinDecision::PublishOnJoin);
     }
 
@@ -269,7 +296,10 @@ import rego.v1
 default publish_on_join := false
 ";
         install_registry_policy(&policies, &active, src).await;
-        let outcome = evaluate_publish_on_join(&policies, &active).await.unwrap();
+        let outcome =
+            evaluate_publish_on_join(&policies, &active, publish_input("did:key:zA", true))
+                .await
+                .unwrap();
         assert_eq!(outcome, PublishOnJoinDecision::SkipPublishOnJoin);
     }
 
