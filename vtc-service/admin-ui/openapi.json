@@ -2585,7 +2585,7 @@
           "join-requests"
         ],
         "summary": "GET /join-requests/manifest — the join manifest (0.2) as applicants receive\nit, for an admin session.",
-        "description": "Applicants read the manifest as a Trust Task document over\n`POST /v1/trust-tasks`. The admin console reads the same answer here, under\nthe same `vtc/join-requests/manifest/0.2` task, to show each criterion's\nvetting requirements and `requirementsDigest` — criteria are registered\nthrough `/v1/schemas/accepts`, which carries no digest.",
+        "description": "Applicants read the manifest as a Trust Task document over\n`POST /v1/trust-tasks`. The admin console reads the same answer here, under\nthe same `vtc/join-requests/manifest/0.2` task, to show each criterion's\nvetting requirements and `requirementsDigest` — criteria are registered\nthrough `/v1/schemas/accepts`, which carries no digest.\nServed as raw JSON rather than as the generated type, for the reason\n[`ServedCriterion`] exists: a criterion's `vetting.ext` is part of what the\ncommunity publishes and part of what its digest covers, and the generated\ntype drops it. The OpenAPI body above names the generated shape because it\nis the shape minus that namespace — an operator reading this endpoint should\nsee exactly what an applicant receives, extensions included.",
         "operationId": "joinRequestManifestShow",
         "responses": {
           "200": {

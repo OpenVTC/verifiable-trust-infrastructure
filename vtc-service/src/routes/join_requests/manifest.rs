@@ -32,7 +32,7 @@ use serde_json::{Map, Value};
 use vta_sdk::openapi::{JoinManifest01Response, JoinManifest02Response};
 use vta_sdk::protocols::join_requests::manifest::{v0_1, v0_2};
 use vta_sdk::protocols::vetting::{CheckShape, read_branding};
-use vta_sdk::vetting::requirements::requirements_digest;
+use vta_sdk::vetting::requirements::{REQUIREMENTS_DIGEST_MEMBER, requirements_digest};
 use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
@@ -58,11 +58,17 @@ use crate::server::AppState;
         (status = 403, description = "Caller is not an admin"),
     ),
 )]
+/// Served as raw JSON rather than as the generated type, for the reason
+/// [`ServedCriterion`] exists: a criterion's `vetting.ext` is part of what the
+/// community publishes and part of what its digest covers, and the generated
+/// type drops it. The OpenAPI body above names the generated shape because it
+/// is the shape minus that namespace — an operator reading this endpoint should
+/// see exactly what an applicant receives, extensions included.
 pub async fn admin_manifest(
     _admin: AdminAuth,
     State(state): State<AppState>,
-) -> Result<Json<JoinManifest02Response>, AppError> {
-    Ok(Json(manifest_v0_2(&state).await?.into()))
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(manifest_v0_2(&state).await?))
 }
 
 /// Which manifest version a caller asked for.
@@ -110,7 +116,7 @@ pub async fn manifest_v0_1(state: &AppState) -> Result<v0_1::Response, AppError>
 
 /// The community's `vtc/join-requests/manifest/0.2` answer. Branding only when
 /// the community has set some.
-pub async fn manifest_v0_2(state: &AppState) -> Result<v0_2::Response, AppError> {
+pub async fn manifest_v0_2(state: &AppState) -> Result<Value, AppError> {
     let branding = Some(branding::load_branding(&state.community_ks).await?)
         .filter(|b| !branding::is_empty(b));
     response_v0_2(
@@ -153,7 +159,7 @@ pub fn response_v0_2(
     stored: Vec<AcceptsCriterion>,
     branding: Option<v0_2::CommunityBranding>,
     requested_attributes: Vec<v0_2::ResponseRequestedAttributesItem>,
-) -> Result<v0_2::Response, AppError> {
+) -> Result<Value, AppError> {
     let branding = branding.filter(|branding| {
         if branding.check_shape().is_ok() {
             return true;
@@ -166,21 +172,40 @@ pub fn response_v0_2(
         );
         false
     });
-    let criteria = stored
+    let served = stored
         .into_iter()
         .map(manifest_criterion)
         .collect::<Result<Vec<_>, _>>()
         .map_err(stored_fault)?;
-    v0_2::Response::try_from(
+    let response = v0_2::Response::try_from(
         v0_2::Response::builder()
             .community_did(community_did)
-            .criteria(criteria)
+            .criteria(
+                served
+                    .iter()
+                    .map(|s| s.criterion.clone())
+                    .collect::<Vec<_>>(),
+            )
             .branding(branding)
             // Absent when the community asks for nothing: an empty array is
             // omitted by the generated type, and "asks nothing" is the answer.
             .requested_attributes(requested_attributes),
     )
-    .map_err(|e| AppError::Internal(format!("manifest 0.2: {e}")))
+    .map_err(|e| AppError::Internal(format!("manifest 0.2: {e}")))?;
+
+    // Built typed so the whole response is validated against the generated schema, then
+    // serialised and the criteria put back as they were digested. Only the criteria differ, and
+    // only by the `vetting.ext` the generated type drops — so this swap is what makes the served
+    // bytes and the digested bytes the same bytes.
+    let mut out = serde_json::to_value(&response)
+        .map_err(|e| AppError::Internal(format!("manifest 0.2 encode: {e}")))?;
+    if let Some(map) = out.as_object_mut() {
+        map.insert(
+            "criteria".to_string(),
+            Value::Array(served.into_iter().map(|s| s.json).collect()),
+        );
+    }
+    Ok(out)
 }
 
 /// The top-level members of `branding` that fail the manifest's
@@ -230,22 +255,44 @@ pub fn criterion_v0_1(stored: AcceptsCriterion) -> Result<v0_1::ResponseCriteria
     .map_err(|e| refused("criterion", e))
 }
 
+/// A criterion as the community both **serves** it and **digests** it.
+///
+/// Two forms of one thing, because the generated type cannot carry all of it. A community that
+/// runs hidden vetting publishes its parameters under `vetting.ext`, and `VettingRequirements`
+/// at the pinned `trust-tasks-rs` has no `ext` member — the schema on the registry does, so this
+/// is a version lag rather than a disagreement. The typed form is what consumers evaluate
+/// against; the JSON is what goes on the wire, and what the digest is taken over.
+///
+/// Keeping them beside each other is what stops the two drifting: the digest lives on both, and
+/// it is computed once, over [`Self::json`].
+#[derive(Debug, Clone)]
+pub struct ServedCriterion {
+    /// The generated type, with `requirementsDigest` set.
+    pub criterion: v0_2::Criterion,
+    /// The criterion as served — `vetting.ext` included, `requirementsDigest` set.
+    pub json: Value,
+}
+
 /// Project a stored criterion onto `vtc/join-requests/manifest/0.2`, with its
 /// `requirementsDigest`.
 ///
 /// The digest is computed over the criterion exactly as it is delivered, minus
 /// the digest member, so an applicant recomputes it from what it received with
-/// [`requirements_digest`] and gets the same value.
+/// [`requirements_digest`] and gets the same value. **That is why the hidden-vetting
+/// parameters are injected before the digest and not after**: they are part of what the
+/// applicant received, so they are part of what it digests, and a proof binds to that digest.
 ///
 /// # Errors
 ///
 /// [`AppError::Validation`] naming the member the manifest schema refuses.
-pub fn manifest_criterion(stored: AcceptsCriterion) -> Result<v0_2::Criterion, AppError> {
+pub fn manifest_criterion(stored: AcceptsCriterion) -> Result<ServedCriterion, AppError> {
     let description = stored
         .description
         .map(v0_2::CriterionDescription::try_from)
         .transpose()
         .map_err(|e| refused("description", e))?;
+    #[cfg(feature = "vetting-pcs")]
+    let hidden_vetting = stored.hidden_vetting.clone();
     let mut criterion = v0_2::Criterion::try_from(
         v0_2::Criterion::builder()
             .id(stored.id)
@@ -254,15 +301,72 @@ pub fn manifest_criterion(stored: AcceptsCriterion) -> Result<v0_2::Criterion, A
             .vetting(stored.vetting),
     )
     .map_err(|e| refused("criterion", e))?;
-    let delivered = serde_json::to_value(&criterion)
+    let mut delivered = serde_json::to_value(&criterion)
         .map_err(|e| AppError::Internal(format!("manifest criterion encode: {e}")))?;
+
+    // Hidden-vetter admission (development branch `zkp-pcs`). Only under the feature: a build
+    // without the suite cannot verify a proof, and advertising a mode it would then refuse is
+    // worse than not advertising it.
+    //
+    // `ext` and never `extCritical`. Critical means "refuse to apply if you cannot do this",
+    // which would lock out every named applicant of a community that also accepts named
+    // vetting — and both paths are meant to coexist (§16).
+    #[cfg(feature = "vetting-pcs")]
+    if let Some(raw) = hidden_vetting {
+        inject_hidden_vetting(&mut delivered, &raw)?;
+    }
+
     let digest = requirements_digest(&delivered)
         .map_err(|e| AppError::Internal(format!("requirements digest: {e}")))?;
     criterion.requirements_digest = Some(
-        v0_2::DigestMultibase::try_from(digest)
+        v0_2::DigestMultibase::try_from(digest.clone())
             .map_err(|e| AppError::Internal(format!("requirements digest: {e}")))?,
     );
-    Ok(criterion)
+    if let Some(map) = delivered.as_object_mut() {
+        map.insert(
+            REQUIREMENTS_DIGEST_MEMBER.to_string(),
+            Value::String(digest),
+        );
+    }
+    Ok(ServedCriterion {
+        criterion,
+        json: delivered,
+    })
+}
+
+/// Put this community's published hidden-vetting parameters into the criterion's `vetting.ext`.
+///
+/// A no-op for a criterion that asks for no vetting at all: the parameters describe *how* this
+/// community's vetting is carried out, so without requirements there is nothing for them to
+/// qualify, and a client reading them there would have nothing to apply them to.
+///
+/// # Errors
+///
+/// [`AppError::Internal`] if what was stored is not a readable configuration. It was written by
+/// an admin through a route that parses it, so an unreadable one is this service's fault, not
+/// the operator's — and serving a manifest that silently omitted the parameters would make a
+/// hidden community look like a named one.
+#[cfg(feature = "vetting-pcs")]
+fn inject_hidden_vetting(delivered: &mut Value, raw: &Value) -> Result<(), AppError> {
+    let Some(vetting) = delivered.get_mut("vetting").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    let config: crate::vetting::pcs::HiddenVettingConfig = serde_json::from_value(raw.clone())
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "stored hidden-vetting parameters are unreadable: {e}"
+            ))
+        })?;
+    let ext = vetting
+        .entry("ext")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(ext) = ext.as_object_mut() {
+        ext.insert(
+            crate::vetting::pcs::HIDDEN_VETTING_NS.to_string(),
+            config.published(),
+        );
+    }
+    Ok(())
 }
 
 fn refused(member: &str, e: impl std::fmt::Display) -> AppError {
@@ -322,8 +426,9 @@ mod tests {
 
     #[test]
     fn a_0_2_digest_recomputes_from_what_the_applicant_receives() {
-        let c = manifest_criterion(stored(Some(requirements(2)))).unwrap();
-        let received = serde_json::to_value(&c).unwrap();
+        let received = manifest_criterion(stored(Some(requirements(2))))
+            .unwrap()
+            .json;
         assert_eq!(received["vetting"]["minStatements"], 2);
         assert_eq!(
             received["requirementsDigest"].as_str().unwrap(),
@@ -332,11 +437,118 @@ mod tests {
         );
     }
 
+    /// A community that runs hidden vetting publishes its parameters where a client looks for
+    /// them. Without this the client reads `Mode::Named` from every manifest, and a hidden
+    /// community is indistinguishable from an ordinary one — which is how this branch behaved
+    /// until the parameters were put on the wire.
+    #[cfg(feature = "vetting-pcs")]
+    #[test]
+    fn a_hidden_criterion_publishes_its_parameters_where_a_client_reads_them() {
+        let mut c = stored(Some(requirements(3)));
+        c.hidden_vetting = Some(serde_json::to_value(hidden_config()).unwrap());
+        let served = manifest_criterion(c).unwrap().json;
+
+        let ext = &served["vetting"]["ext"][crate::vetting::pcs::HIDDEN_VETTING_NS];
+        assert_eq!(ext["suite"], vti_vetting_pcs::wire::SUITE);
+        assert_eq!(ext["helperKey"], "zHvk");
+        assert_eq!(ext["tokenKey"], "zTvk");
+        // Whole labels, not the bare period the store keeps: the label is what a request names.
+        assert_eq!(ext["vetterLabels"][0], "vetter/2026-09");
+        assert_eq!(ext["tokenLabels"][0], "token/2026-09");
+        assert_eq!(ext["dripPerTick"], 3);
+
+        // `ext`, never `extCritical`: a community running both paths must not lock out the
+        // applicants using the named one.
+        assert!(served["vetting"].get("extCritical").is_none());
+    }
+
+    /// The digest is what a proof binds to, so it has to cover the parameters the proof was
+    /// built under. Injected after the digest, a community could change its keys without the
+    /// digest moving, and an applicant would bind to a criterion it never saw.
+    #[cfg(feature = "vetting-pcs")]
+    #[test]
+    fn the_digest_covers_the_published_parameters() {
+        let digest_with = |tvk: &str| {
+            let mut c = stored(Some(requirements(3)));
+            let mut config = hidden_config();
+            config.tvk = tvk.into();
+            c.hidden_vetting = Some(serde_json::to_value(config).unwrap());
+            let served = manifest_criterion(c).unwrap().json;
+            // And it is recomputable from what was delivered, which is the whole contract.
+            assert_eq!(
+                served["requirementsDigest"].as_str().unwrap(),
+                requirements_digest(&served).unwrap()
+            );
+            served["requirementsDigest"].as_str().unwrap().to_string()
+        };
+        assert_ne!(digest_with("zTvk"), digest_with("zOtherTvk"));
+    }
+
+    /// Who approved an event is the community's record of its own decision. Publishing it would
+    /// name a member in a document every applicant receives, for nothing a vetter could act on.
+    #[cfg(feature = "vetting-pcs")]
+    #[test]
+    fn an_events_approver_is_never_published() {
+        let mut config = hidden_config();
+        config.events.push(crate::vetting::pcs::HiddenVettingEvent {
+            event_id: "kernel-summit-2026".into(),
+            start_date: chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
+            end_date: chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap(),
+            grace_days: 14,
+            group_floor: 3,
+            tiers: vec![crate::vetting::pcs::HiddenVettingTier {
+                name: "desk".into(),
+                drip_per_tick: 20,
+            }],
+            approved_by: Some("did:key:zTheApprover".into()),
+        });
+        let mut c = stored(Some(requirements(3)));
+        c.hidden_vetting = Some(serde_json::to_value(config).unwrap());
+        let served = manifest_criterion(c).unwrap().json;
+
+        let event = &served["vetting"]["ext"][crate::vetting::pcs::HIDDEN_VETTING_NS]["events"][0];
+        assert_eq!(event["eventId"], "kernel-summit-2026");
+        assert_eq!(event["groupFloor"], 3);
+        assert_eq!(event["tiers"][0]["dripPerTick"], 20);
+        assert!(event.get("approvedBy").is_none(), "{event}");
+        assert!(event.get("graceDays").is_none(), "{event}");
+        assert!(
+            !serde_json::to_string(&served)
+                .unwrap()
+                .contains("zTheApprover"),
+            "the approver's DID must not appear anywhere in what is served"
+        );
+    }
+
+    /// A criterion that asks for no vetting has nothing for these parameters to qualify.
+    #[cfg(feature = "vetting-pcs")]
+    #[test]
+    fn a_criterion_without_vetting_publishes_no_parameters() {
+        let mut c = stored(None);
+        c.hidden_vetting = Some(serde_json::to_value(hidden_config()).unwrap());
+        let served = manifest_criterion(c).unwrap().json;
+        assert!(served.get("vetting").is_none());
+    }
+
+    #[cfg(feature = "vetting-pcs")]
+    fn hidden_config() -> crate::vetting::pcs::HiddenVettingConfig {
+        crate::vetting::pcs::HiddenVettingConfig {
+            suite: vti_vetting_pcs::wire::SUITE.into(),
+            hvk: "zHvk".into(),
+            tvk: "zTvk".into(),
+            live_periods: vec!["2026-09".into()],
+            live_token_labels: vec!["token/2026-09".into()],
+            drip_per_tick: 3,
+            events: Vec::new(),
+        }
+    }
+
     #[test]
     fn changing_the_requirements_changes_the_digest() {
         let digest = |min| {
             manifest_criterion(stored(Some(requirements(min))))
                 .unwrap()
+                .criterion
                 .requirements_digest
                 .map(String::from)
         };
@@ -345,7 +557,7 @@ mod tests {
 
     #[test]
     fn a_criterion_without_vetting_still_gets_a_digest_under_0_2() {
-        let c = manifest_criterion(stored(None)).unwrap();
+        let c = manifest_criterion(stored(None)).unwrap().criterion;
         assert!(c.vetting.is_none());
         assert!(c.requirements_digest.is_some());
     }
@@ -394,8 +606,8 @@ mod tests {
         };
         let good = answer("https://kernel.example/logo.svg");
         assert_eq!(
-            good.branding.and_then(|b| b.logo_url),
-            Some("https://kernel.example/logo.svg".to_string())
+            good["branding"]["logoUrl"].as_str(),
+            Some("https://kernel.example/logo.svg")
         );
         for bad in [
             "https://kernel.example/my logo.svg",
@@ -403,8 +615,12 @@ mod tests {
             "http://kernel.example/logo.svg",
         ] {
             let manifest = answer(bad);
-            assert!(manifest.branding.is_none(), "{bad:?}");
-            assert_eq!(manifest.criteria.len(), 1, "{bad:?}");
+            assert!(manifest.get("branding").is_none(), "{bad:?}");
+            assert_eq!(
+                manifest["criteria"].as_array().map(Vec::len),
+                Some(1),
+                "{bad:?}"
+            );
         }
     }
 

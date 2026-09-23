@@ -192,7 +192,7 @@ pub async fn vetting_facts(
     let mut projected = Vec::new();
     for stored in list_accepts(&state.schemas_ks).await? {
         if stored.vetting.is_some() {
-            projected.push(manifest_criterion(stored)?);
+            projected.push(manifest_criterion(stored)?.criterion);
         }
     }
     let applicant_digest = extensions

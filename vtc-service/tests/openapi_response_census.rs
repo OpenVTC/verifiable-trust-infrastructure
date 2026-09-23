@@ -48,17 +48,31 @@ use std::path::{Path, PathBuf};
 /// *type*, not about the effort of fixing it. "The annotation is out of date" is
 /// never a reason to add a line here — that is the defect this census exists to
 /// catch, and the fix is one word in the annotation.
-const UNTYPED_OK: &[(&str, &str)] = &[(
-    "relationships.rs::publish",
-    "returns `trust_tasks_rs::TrustTask<PublishResponse>`. The Trust Task \
-     envelope is an external type with no `ToSchema`, so the document names the \
-     payload it wraps. Typing it properly means declaring a local mirror of the \
-     envelope — a hand-maintained copy of someone else's wire type, which is \
-     the failure mode this census exists to prevent, not a fix for it.",
-)];
+const UNTYPED_OK: &[(&str, &str)] = &[
+    (
+        "relationships.rs::publish",
+        "returns `trust_tasks_rs::TrustTask<PublishResponse>`. The Trust Task \
+         envelope is an external type with no `ToSchema`, so the document names the \
+         payload it wraps. Typing it properly means declaring a local mirror of the \
+         envelope — a hand-maintained copy of someone else's wire type, which is \
+         the failure mode this census exists to prevent, not a fix for it.",
+    ),
+    (
+        "join_requests/manifest.rs::admin_manifest",
+        "returns `Json<Value>` because a criterion's `vetting.ext` is part of what \
+         the community publishes and part of what its `requirementsDigest` covers, \
+         and `JoinManifest02Response` cannot carry it — `VettingRequirements` at the \
+         pinned trust-tasks-rs has no `ext` member. Declaring the generated type is \
+         the truthful annotation available: the served shape is that shape plus one \
+         namespaced extension, and an operator reading this endpoint should see what \
+         an applicant receives rather than a redacted copy of it. The console reads \
+         only the members the generated type names, so `wire.ts` stays correct. This \
+         entry goes when the 0.22 line reaches this graph and `ext` is typed.",
+    ),
+];
 
 /// The size of [`UNTYPED_OK`], asserted so the list cannot grow quietly.
-const UNTYPED_OK_COUNT: usize = 1;
+const UNTYPED_OK_COUNT: usize = 2;
 
 #[test]
 fn every_documented_response_names_the_type_its_handler_returns() {

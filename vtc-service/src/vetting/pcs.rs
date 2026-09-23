@@ -202,6 +202,67 @@ fn default_drip_per_tick() -> usize {
     3
 }
 
+/// The `vetting.ext` namespace a community publishes its hidden-vetting parameters under.
+///
+/// The same string the client reads (`openvtc_core::vetting::hidden::HIDDEN_VETTING_NS`). It is
+/// a namespace rather than a member of the manifest because the manifest's own schema does not
+/// enumerate these — `ext` is the framework's answer to exactly that, and a namespaced key is
+/// what lets a client that does not implement this carry on without it.
+pub const HIDDEN_VETTING_NS: &str = "org.openvtc.hidden-vetting";
+
+impl HiddenVettingConfig {
+    /// This community's parameters in the shape a client reads.
+    ///
+    /// **Not `serde_json::to_value(self)`, and the difference is the point.** What is stored is
+    /// what the community mints with; what is published is what an applicant and a vetter need
+    /// in order to talk to it. Three differences, each deliberate:
+    ///
+    /// - The keys are named for their role on the wire (`helperKey`, `tokenKey`) rather than for
+    ///   their symbols in the scheme (`hvk`, `tvk`). A client implementing this from the
+    ///   specification should not have to read the paper to find the right member.
+    /// - Class labels are published whole (`vetter/2026-09`), not as the bare period the store
+    ///   keeps. The label is what a request names, so publishing the period would make every
+    ///   client reconstruct the same string and one of them get it wrong.
+    /// - **`approvedBy` is dropped.** Who approved an event is the community's record of its own
+    ///   decision; publishing it would name a member in a document every applicant receives, to
+    ///   no purpose a vetter could act on. `graceDays` goes with it — a vetter is told
+    ///   `closesAfter` when its request is approved, which is the same fact at the point it
+    ///   matters.
+    #[must_use]
+    pub fn published(&self) -> serde_json::Value {
+        serde_json::json!({
+            "suite": self.suite,
+            "helperKey": self.hvk,
+            "tokenKey": self.tvk,
+            "vetterLabels": self
+                .live_periods
+                .iter()
+                .map(|p| format!("vetter/{p}"))
+                .collect::<Vec<_>>(),
+            "tokenLabels": self.live_token_labels,
+            "dripPerTick": self.drip_per_tick,
+            "events": self
+                .events
+                .iter()
+                .map(|e| serde_json::json!({
+                    "eventId": e.event_id,
+                    "startDate": e.start_date,
+                    "endDate": e.end_date,
+                    "groupFloor": e.group_floor,
+                    "tiers": e
+                        .tiers
+                        .iter()
+                        .map(|t| serde_json::json!({
+                            "name": t.name,
+                            "dripPerTick": t.drip_per_tick,
+                        }))
+                        .collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>(),
+        })
+    }
+}
+
 /// The token labels a submission may spend under, now.
 ///
 /// Every live label, minus any event label whose grace period has run out. That deadline is the

@@ -27,6 +27,9 @@ mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
 mod vetting;
+/// Hidden-vetter admission: the operator's publish route (development branch `zkp-pcs`).
+#[cfg(feature = "vetting-pcs")]
+pub mod vetting_hidden;
 #[cfg(feature = "website")]
 pub(crate) mod website;
 
@@ -861,6 +864,20 @@ fn build_api_chain(
         .routes(routes!(vetting::list_vetters))
         .routes(routes!(vetting::get_auto_grant, vetting::put_auto_grant))
         .routes(routes!(vetting::list_revocations))
+        // Hidden-vetter admission (development branch `zkp-pcs`): derive this
+        // community's PCS keys and publish them on a criterion. Admin REST with
+        // no Trust Task of its own — turning the mode on is an act of
+        // administration, not a task a member can ask for.
+        .merge({
+            #[cfg(feature = "vetting-pcs")]
+            {
+                OpenApiRouter::new().routes(routes!(vetting_hidden::publish_hidden_vetting))
+            }
+            #[cfg(not(feature = "vetting-pcs"))]
+            {
+                OpenApiRouter::new()
+            }
+        })
         // GET / PATCH / DELETE on `/members/{did}` each carry their own
         // canonical task. They shared `members/show/1.0` while the
         // router was believed to need per-method selectors; it does not

@@ -1012,6 +1012,12 @@ export interface paths {
          *     the same `vtc/join-requests/manifest/0.2` task, to show each criterion's
          *     vetting requirements and `requirementsDigest` — criteria are registered
          *     through `/v1/schemas/accepts`, which carries no digest.
+         *     Served as raw JSON rather than as the generated type, for the reason
+         *     [`ServedCriterion`] exists: a criterion's `vetting.ext` is part of what the
+         *     community publishes and part of what its digest covers, and the generated
+         *     type drops it. The OpenAPI body above names the generated shape because it
+         *     is the shape minus that namespace — an operator reading this endpoint should
+         *     see exactly what an applicant receives, extensions included.
          */
         get: operations["joinRequestManifestShow"];
         put?: never;
