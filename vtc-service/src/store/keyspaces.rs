@@ -89,6 +89,13 @@ pub const VETTING_REVOCATIONS: &str = "vetting_revocations";
 /// un-spends is a double spend, so this is backed up for the same reason
 /// `VETTING_REVOCATIONS` is.
 pub const VETTING_PCS_SPENT: &str = "vetting_pcs_spent";
+/// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): what the
+/// community minted — one enrolment row per vetter (the class labels they
+/// hold a credential under, and the PCS identifier they are bound to) and one
+/// row per served drip tick. Backed up: losing an enrolment row lets a member
+/// enrol twice under one label and count twice in one proof, which is the
+/// invariant the whole counting rule rests on.
+pub const VETTING_PCS_ISSUE: &str = "vetting_pcs_issue";
 /// Vetter profiles (`vtc/vetting/vetters/profile/0.1`): one row per vetter DID,
 /// written by the vetter, deleted when they no longer hold a live grant, and
 /// read by the vetter listing.
@@ -129,6 +136,7 @@ pub const ALL: &[&str] = &[
     OUTBOX,
     VETTING_REVOCATIONS,
     VETTING_PCS_SPENT,
+    VETTING_PCS_ISSUE,
     VETTER_PROFILES,
 ];
 
@@ -173,6 +181,10 @@ pub const BACKED_UP: &[&str] = &[
     // A withdrawn vetting statement must stay withdrawn across a restore, or a
     // restored community would count a statement its vetter took back.
     VETTING_PCS_SPENT,
+    // What a vetter was issued has to survive a restore for the same reason:
+    // a community that forgot an enrolment would issue a second credential
+    // under the same label.
+    VETTING_PCS_ISSUE,
     VETTING_REVOCATIONS,
     // A vetter's published profile is theirs to replace, not the community's to
     // reconstruct: a restore without it would silently unlist every vetter.

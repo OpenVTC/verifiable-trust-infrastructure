@@ -23,7 +23,11 @@ ark-ff = { version = "0.6.0", default-features = false, features = ["std"] }
 ark-serialize = { version = "0.6.0", default-features = false, features = ["std"] }
 # MUST stay 0.8, whatever the workspace pins: `ark_std::rand` re-exports rand 0.8
 # and the randomized algorithms take its traits.
-rand = { version = "0.8", features = ["std", "std_rng"] }
+rand = { version = "0.8", features = ["std", "std_rng", "getrandom"] }
+# Pairs with rand 0.8. Used for ONE thing: deriving a community's keys from a
+# secret over a specified stream, so the same secret gives the same keys on any
+# build (`issuer::Issuer::derive`).
+rand_chacha = "0.3"
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

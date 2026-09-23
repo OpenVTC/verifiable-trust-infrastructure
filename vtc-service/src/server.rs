@@ -115,6 +115,9 @@ pub struct AppState {
     /// Hidden-vetter admission (development branch `zkp-pcs`): spent attestation
     /// tokens, keyed by token label + serial (`crate::vetting::pcs`).
     pub vetting_pcs_spent_ks: KeyspaceHandle,
+    /// Hidden-vetter admission (development branch `zkp-pcs`): what the community
+    /// minted — vetter enrolments and served drip ticks (`crate::vetting::pcs_issue`).
+    pub vetting_pcs_issue_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
@@ -475,6 +478,7 @@ pub async fn run(
     let vetting_revocations_ks = store.keyspace(keyspaces::VETTING_REVOCATIONS)?;
     let vetter_profiles_ks = store.keyspace(keyspaces::VETTER_PROFILES)?;
     let vetting_pcs_spent_ks = store.keyspace(keyspaces::VETTING_PCS_SPENT)?;
+    let vetting_pcs_issue_ks = store.keyspace(keyspaces::VETTING_PCS_ISSUE)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
@@ -766,6 +770,7 @@ pub async fn run(
         vetting_revocations_ks,
         vetter_profiles_ks,
         vetting_pcs_spent_ks,
+        vetting_pcs_issue_ks,
         schemas_ks,
         endorsements_ks,
         rooms_ks,

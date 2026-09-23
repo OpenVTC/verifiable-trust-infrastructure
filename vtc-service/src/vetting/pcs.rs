@@ -14,9 +14,10 @@
 //! request took in between fails the commit, and the whole submission is refused rather than
 //! counted on a token somebody else spent (fail closed).
 //!
-//! What is here: verification and counting. What is NOT here yet: minting vetter credentials
-//! and tokens (the community's secret half, §3 and §5.1 of the design), which is why
-//! [`HiddenVettingConfig`] carries public keys only.
+//! What is here: verification and counting. The minting half — vetter enrolment and the token
+//! drip — is [`super::pcs_issue`], and the challenge a submission is bound to is
+//! [`super::pcs_challenge`]. [`HiddenVettingConfig`] carries public values only; the keys
+//! behind them are derived where they are used.
 
 use std::collections::HashMap;
 
@@ -55,6 +56,21 @@ pub struct HiddenVettingConfig {
     pub live_periods: Vec<String>,
     /// Live token labels: `["token/2026-10", "token/event/summit"]`.
     pub live_token_labels: Vec<String>,
+    /// How many attestation tokens a vetter may draw per tick — the community's published drip
+    /// rate (§5.1). It is public because it is a parameter of the deployment, not a secret: a
+    /// vetter has to know what to ask for, and an applicant may want to know how many
+    /// attestations a month can carry.
+    ///
+    /// Enforced by the issuer, never by the asker. `default` covers a criterion stored before
+    /// the minting half existed.
+    #[serde(default = "default_drip_per_tick")]
+    pub drip_per_tick: usize,
+}
+
+/// Three a tick: enough for a vetter who meets people, small enough that a compromised vetter
+/// cannot flood a community before the next rotation.
+fn default_drip_per_tick() -> usize {
+    3
 }
 
 /// A spent token, as stored.
@@ -130,6 +146,7 @@ impl SpentLedger for PreloadedLedger {
 pub async fn decide(
     state: &AppState,
     community_did: &str,
+    applicant_did: &str,
     requirements: &vta_sdk::protocols::vetting::VettingRequirements,
     requirements_digest: &str,
     config: &HiddenVettingConfig,
@@ -148,6 +165,18 @@ pub async fn decide(
         )));
     }
     let submission: Submission = wire.to_submission()?;
+
+    // 0. Spend the challenge. A proof is bound to one, and the binding means nothing unless the
+    //    community issued it and accepts it once: the same submission replayed carries the same
+    //    challenge, and finds it gone. Before the token reads, so a replay costs nothing.
+    super::pcs_challenge::consume(
+        &state.join_requests_ks,
+        applicant_did,
+        &submission.challenge,
+        now,
+    )
+    .await
+    .map_err(|e| ProtoError::Serialization(e.to_string()))?;
 
     // 1. Read what is already spent, for exactly the serials this submission presents.
     let mut ledger = PreloadedLedger::default();
@@ -214,6 +243,112 @@ pub async fn decide(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The submission the openvtc client produced, which `vti-vetting-pcs`'s own fixture test
+    /// reads back with the verifier. Here it drives the *service* path: the store, the
+    /// challenge, the spend commit.
+    const FIXTURE: &str = include_str!("../../../vti-vetting-pcs/tests/fixtures/submission.json");
+
+    /// End to end on the service: a VTC-issued challenge is spent by the submission that was
+    /// bound to it, and the same submission replayed finds nothing to spend.
+    ///
+    /// This is the half that was missing while the client minted its own challenge — the proof
+    /// verified then too, and it verified just as well the second time.
+    #[tokio::test]
+    async fn a_submission_spends_the_challenge_the_community_issued() {
+        use crate::test_support::TestVtc;
+        use chrono::Duration;
+
+        let f: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture parses");
+        let community = f["community"].as_str().unwrap();
+        let requirements = serde_json::from_value(f["requirements"].clone()).unwrap();
+        let digest = f["requirementsDigest"].as_str().unwrap();
+        let now: DateTime<Utc> = f["now"].as_str().unwrap().parse().unwrap();
+        let extensions = f["extensions"].clone();
+        let hidden = &extensions["hiddenVetting"];
+        let applicant = hidden["joinDid"].as_str().unwrap();
+        let challenge = hidden["challenge"].as_str().unwrap();
+        let config = HiddenVettingConfig {
+            suite: f["extensions"]["hiddenVetting"]["suite"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            hvk: f["hvk"].as_str().unwrap().to_string(),
+            tvk: f["tvk"].as_str().unwrap().to_string(),
+            live_periods: serde_json::from_value(f["livePeriods"].clone()).unwrap(),
+            live_token_labels: serde_json::from_value(f["liveTokenLabels"].clone()).unwrap(),
+            drip_per_tick: default_drip_per_tick(),
+        };
+
+        let tv = TestVtc::builder().vtc_did(community).build().await;
+
+        // No challenge yet: the proof verifies, and it is refused anyway.
+        let err = decide(
+            &tv.state,
+            community,
+            applicant,
+            &requirements,
+            digest,
+            &config,
+            &extensions,
+            now,
+        )
+        .await
+        .expect_err("this community issued no challenge");
+        assert!(
+            format!("{err}").contains("no open hidden-vetting challenge"),
+            "{err}"
+        );
+
+        // With the challenge recorded, the same submission is counted.
+        super::super::pcs_challenge::record(
+            &tv.state.join_requests_ks,
+            applicant,
+            challenge,
+            Duration::minutes(15),
+            now,
+        )
+        .await
+        .unwrap();
+        let decision = decide(
+            &tv.state,
+            community,
+            applicant,
+            &requirements,
+            digest,
+            &config,
+            &extensions,
+            now,
+        )
+        .await
+        .expect("the proof verifies under the published parameters")
+        .expect("the submission carries a hidden-vetting proof");
+        assert!(decision.evaluation.satisfied(), "{:?}", decision.evaluation);
+        assert_eq!(
+            decision.evaluation.distinct_vetters(),
+            f["expect"]["distinctVetters"].as_u64().unwrap() as usize
+        );
+        // And the facts carry tags, not DIDs.
+        for s in &decision.statements {
+            assert!(s.issuer.starts_with('z'), "{}", s.issuer);
+            assert_ne!(s.issuer, applicant);
+        }
+
+        // Replayed: the challenge was spent by the first one.
+        let err = decide(
+            &tv.state,
+            community,
+            applicant,
+            &requirements,
+            digest,
+            &config,
+            &extensions,
+            now,
+        )
+        .await
+        .expect_err("the challenge is gone");
+        assert!(format!("{err}").contains("already used"), "{err}");
+    }
 
     #[test]
     fn spent_keys_separate_labels_and_serials() {

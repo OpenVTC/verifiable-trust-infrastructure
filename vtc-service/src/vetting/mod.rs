@@ -31,6 +31,12 @@ pub mod auto_grant;
 /// Hidden-vetter admission (ZKP), development branch `zkp-pcs`.
 #[cfg(feature = "vetting-pcs")]
 pub mod pcs;
+/// The VTC-issued challenge a hidden submission is bound to.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs_challenge;
+/// The community's minting half: vetter enrolment and the token drip.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs_issue;
 pub mod profiles;
 pub mod revocation;
 pub mod vetters;
@@ -164,6 +170,7 @@ pub async fn vetting_facts(
     if let Some(facts) = hidden_facts(
         state,
         &community_did,
+        applicant_did,
         &selected,
         requirements,
         extensions,
@@ -315,6 +322,7 @@ pub async fn vetting_facts(
 async fn hidden_facts(
     state: &AppState,
     community_did: &str,
+    applicant_did: &str,
     selected: &Selected,
     requirements: &VettingRequirements,
     extensions: &JsonValue,
@@ -333,6 +341,7 @@ async fn hidden_facts(
     let decision = crate::vetting::pcs::decide(
         state,
         community_did,
+        applicant_did,
         requirements,
         &selected.digest,
         &config,
@@ -467,7 +476,7 @@ fn issuer_of(vc: &JsonValue) -> Option<String> {
 /// withdrawn after a statement was signed stops that statement counting. That
 /// errs toward not admitting, and it is what an operator withdrawing a vetter
 /// they no longer trust means.
-async fn vetter_eligible(
+pub(crate) async fn vetter_eligible(
     state: &AppState,
     issuer: &str,
     role: &str,

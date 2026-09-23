@@ -235,6 +235,9 @@ impl TestVtcBuilder {
         let vetting_pcs_spent_ks = store
             .keyspace("vetting_pcs_spent")
             .expect("vetting_pcs_spent ks");
+        let vetting_pcs_issue_ks = store
+            .keyspace("vetting_pcs_issue")
+            .expect("vetting_pcs_issue ks");
         let schemas_ks = store.keyspace("schemas").expect("schemas ks");
         let endorsements_ks = store.keyspace("endorsements").expect("endorsements ks");
         let rooms_ks = store.keyspace("rooms").expect("rooms ks");
@@ -375,6 +378,7 @@ impl TestVtcBuilder {
             vetting_revocations_ks,
             vetter_profiles_ks,
             vetting_pcs_spent_ks,
+            vetting_pcs_issue_ks,
             schemas_ks,
             endorsements_ks,
             rooms_ks,
