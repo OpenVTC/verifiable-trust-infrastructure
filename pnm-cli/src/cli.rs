@@ -1576,10 +1576,11 @@ pub(crate) enum DidMgmtDidCommands {
     },
     /// Print the raw `did.jsonl` log for a DID the VTA knows.
     ///
-    /// Snapshot from provisioning time — not a live resolver. Use
-    /// for audit, debugging, or republication fallback. The VTA's
-    /// endpoint is public (webvh logs are world-readable by design),
-    /// so this runs without a session token.
+    /// The VTA's stored copy, including every entry it has appended
+    /// since mint (`dids edit`, service changes) — not a live
+    /// resolver. Use it to deliver a self-hosted DID's extended log
+    /// (for a community: `cnm did-log install --file <out>`), for
+    /// audit, or for republication.
     GetLog {
         /// The DID to retrieve the log for.
         did: String,

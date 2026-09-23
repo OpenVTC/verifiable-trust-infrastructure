@@ -235,15 +235,17 @@ whole-array-element `null` pruning, which requires the caller to
 supply the entire element — so the SDK owns the `TrustRegistry` type
 and profile URI to keep one source for both constants.
 
-The referral is fixed at mint time. A VTC serves a write-once
-`did.jsonl` and holds no update authority over its own log, so
-changing the referral later needs a VTA-side `pnm did-mgmt dids edit`
-followed by redelivering the log to the VTC by hand — there is no
-automated path for that today.
+The VTC holds no update authority over its own log, so changing the
+referral after mint is a VTA-side `pnm did-mgmt dids edit`. A VTC on
+a DID host needs nothing more: the VTA publishes the new entry to the
+host. A serverless VTC serving its own `did.jsonl` takes the new log
+with `cnm did-log install` (`did-management/did/register/0.1`, VTI
+#1632), and verifies it before serving it — see
+[community lifecycle](../03-vtc/community-lifecycle.md#changing-the-communitys-transports-after-mint).
 
-DIDComm is not advertised by default — communities that need a
-mediator add it later via the existing runtime-service-management
-flow.
+Messaging transports (`#tsp`, `#didcomm`) are advertised only when
+`vtc setup` is given them; they are added or changed after mint the
+same way as the referral above.
 
 ### 4.5 Emergency bootstrap (recovery)
 

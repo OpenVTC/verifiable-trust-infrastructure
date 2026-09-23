@@ -6,15 +6,16 @@
 //! found no messaging transport at all and DIDComm only worked when the sender
 //! had been handed the mediator out of band.
 //!
-//! ## Why this has to happen at mint
+//! ## Why this is decided at mint
 //!
-//! A VTC serves a **write-once** `did.jsonl` and cannot re-sign its own log, so
-//! adding a service afterwards means a VTA-side `dids edit` plus redelivering
-//! the log by hand. That is exactly how the reference deployment acquired its
+//! A VTC cannot re-sign its own log, so adding a service afterwards is a
+//! VTA-side `dids edit` — and, for a VTC serving its own `did.jsonl`, a second
+//! step delivering the extended log to it (`cnm did-log install`, VTI #1632).
+//! Before that step existed, this is how the reference deployment acquired its
 //! `#tsp` entry at DID log version 3 — out of band, long after mint, and with
-//! nothing checking that the binary could serve it. Provisioning is the only
-//! moment the community's own setup gets to decide this, so the decision is
-//! taken there and rendered into the document it is minting.
+//! nothing checking that the binary could serve it. Provisioning is the moment
+//! the community's own setup gets to decide this, so the decision is taken
+//! there and rendered into the document it is minting.
 //!
 //! ## Both entries name the mediator, not a URL
 //!
