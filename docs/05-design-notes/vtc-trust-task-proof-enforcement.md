@@ -113,9 +113,9 @@ Two of the 51 already verify a document proof on their REST route
 the migration follows. **That leaves 49 proof-REQUIRED tasks served on a bearer
 token** — divergence 1.
 
-Of those 49, four now also have a signed-document binding (§6b, batch 1). Their
-bearer routes remain mounted, so the divergence is not yet 45: it closes per
-task when the bearer route goes, not when the signed door opens.
+Of those 49, six now also have a signed-document binding (§6b, batches 1 and
+2). Their bearer routes remain mounted, so the divergence is not yet 43: it
+closes per task when the bearer route goes, not when the signed door opens.
 
 ### Drift against the recorded entry
 
@@ -156,7 +156,9 @@ itself before the spine took over verification. **The nine `vtc/*` rows above
 are the ones the spine was lenient about.**
 
 Since then the set has grown by the tasks §6b's batches move onto this binding
-— four in batch 1, making twenty-four proof-REQUIRED. The count is asserted by
+— four in batch 1 and two in batch 2 (`vtc/join-requests/decide/0.1`,
+`vtc/community/profile/update/0.1`), making twenty-six proof-REQUIRED. The
+count is asserted by
 `the_dispatched_set_declares_the_proofs_the_design_note_records`, so a batch
 that lands without updating this note fails a test.
 
@@ -414,11 +416,66 @@ retiring its routes before it has one would take the member surface out of the
 admin UI entirely. `cnm`/`vtc-client` reach the same four routes with a bearer
 session and are in the same position.
 
-**Next batch.** The obvious one is `vtc/join-requests/decide/0.1` plus
-`vtc/admin/invites/{create,revoke}` — the same admin-from-ACL shape, the same
-console dependency — except that `vtc/invitations/*` is owned elsewhere at the
-time of writing, so `join-requests/decide` and `community/profile/update` are
-the clean pair to take next.
+**Batch 2 — the join decision and the community profile.**
+`vtc/join-requests/decide/0.1` and `vtc/community/profile/update/0.1`, on the
+same terms: bound in `DISPATCHED_URIS` / `dispatch_typed`, each route body
+lifted into a transport-free inner both doors call, authority from
+`admin_signer`'s read of the verified signer's ACL row. Two batch-specific
+findings are worth keeping:
+
+- **Neither task's bearer route applies a gate beyond `AdminAuth`.** No
+  super-admin bar, no context scoping, no vetter/admin split — a VTC community
+  is one scope, and `resolve_auth_role` admits only `VtcRole::Admin` in any
+  case, so `admin_signer` returning at all *is* `AdminAuth`. The difference is
+  the same one batch 1 found and no other: the ACL row is read at execution
+  time rather than copied into a token at login, so an expired or removed row
+  refuses here and would not have refused there.
+- **`decide` is the first migrated verb whose second execution would be
+  materially wrong**, rather than merely redundant: approving issues a
+  membership credential and a role endorsement, so a replayed decision would
+  issue two of each. Nothing was added at the handler for it. The spine's claim
+  already covers it — claim before dispatch, settle after, and a `Duplicate`
+  answered with the recorded response without re-entering the arm — and a
+  handler-level "have I seen this?" would be exactly the check-then-act the
+  claim exists to replace. The `notPending` refusal stays what it was: the
+  answer to a *different* decision aimed at an already-decided request.
+  `vti_ops_025_a_replayed_decision_does_not_issue_a_second_credential` drives
+  it through the issuance path and counts the credentials.
+- **One divergence surfaced, pinned rather than fixed.**
+  `vtc/community/profile/update/0.1` says its nullable members may be set to
+  `null` to clear them; they cannot be, because `CommunityProfileUpdate` types
+  them `Option<Option<String>>` with no double-option deserializer and serde
+  folds `null` onto the outer `None`. It is the store's behaviour rather than
+  the transport's, so it predates this binding and holds identically on the
+  bearer route — what this batch owes is that the two doors agree, and they
+  do. `an_explicit_null_does_not_yet_clear_a_nullable_member` pins it.
+
+**The 64 KiB body cap, checked for `community/profile/update`.** It is the one
+verb moved so far that carries operator-authored content, so §6b's instruction
+to check rather than assume applies. Every field the operation accepts is
+capped by `CommunityProfileUpdate::apply` before anything is written — `name`
+200 characters, `description` 4 000, `logoUrl` 2 048 and constrained to
+`http(s)` so a `data:` image cannot ride in it at all, `contactEmail` 320, and
+the `extensions` bag 16 KiB **measured serialised**. Their sum, taken at the
+worst UTF-8/escape expansion, is about 44 KiB, and a realistic maximal profile
+is nearer 25 KiB; the document envelope and its proof add roughly 1.5 KiB. So
+64 KiB is enough, with room, and the cap refuses with 413 rather than
+truncating — a large-but-valid update is never silently shortened. Three
+members are *not* capped (`publicUrl`, `personhood.governanceFrameworkUrl`,
+`personhood.acceptedIdvps`), so the payload is unbounded in principle although
+no legitimate value approaches the cap; all three are published on the
+unauthenticated public-profile endpoint, which is the same stored-payload
+argument the existing caps were added for, and capping them belongs in a change
+about that rather than in a transport migration.
+
+**Next batch.** `vtc/admin/invites/{create,revoke}` are the same admin-from-ACL
+shape and the same console dependency, and become available once the
+`vtc/invitations/*` work owned elsewhere lands. Failing that, the paired
+operator verbs `vtc/config/{export,import}` or the
+`vtc/endorsement-types` pair are the next clean ones;
+`vtc/backup/{export,import}` should wait,
+because its bodies are the one place where the 64 KiB document cap is plainly
+too small and moving it needs that decision taken first.
 
 ---
 

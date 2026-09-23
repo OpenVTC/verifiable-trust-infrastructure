@@ -32,7 +32,9 @@ use crate::auth::AdminAuth;
 use crate::ceremony::execute;
 use crate::ceremony::{EffectOutcome, EffectPlan};
 use crate::error::TaskError;
-use crate::join::{JoinDecision, JoinRequest, JoinStatus, get_join_request, store_join_request};
+use crate::join::{
+    JoinDecision, JoinRequest, JoinStatus, JoinTransport, get_join_request, store_join_request,
+};
 use crate::server::AppState;
 
 const REJECT_REASON_MAX: usize = 1024;
@@ -84,29 +86,35 @@ pub struct DecideResponse {
     pub role_vec: Option<JsonValue>,
 }
 
-/// POST /join-requests/{id}/decide — decide a pending join request.
-/// `approved` admits the applicant + issues the VMC; `rejected` refuses
-/// them with an optional reason. Auth: Admin.
-#[utoipa::path(
-    post, path = "/join-requests/{id}/decide", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Join request id")),
-    request_body = DecideBody,
-    responses(
-        (status = 200, description = "Request decided; on approve the VMC + role VEC are returned inline", body = DecideResponse),
-        (status = 400, description = "Reject reason exceeds the length cap"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Join request not found"),
-        (status = 409, description = "Request is not Pending, or applicant is already a member"),
-    ),
-)]
-pub async fn decide(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<DecideBody>,
-) -> Result<(StatusCode, Json<DecideResponse>), TaskError> {
+/// Decide a pending join request on behalf of `actor_did` — the whole of the
+/// operation, with no transport in it.
+///
+/// Both doors call this: the bearer REST route below, and the signed-document
+/// arm in [`crate::trust_tasks`] (#1641 phase 2). Keeping the body here is what
+/// stops the two answering differently — the reason cap, the pending-state
+/// gate, the credential issuance and the audit trail are decided once.
+///
+/// `transport` is recorded on the `JoinRequestApproved` envelope, so the audit
+/// row says which door the decision came through rather than claiming `rest`
+/// for a document that arrived over DIDComm or TSP.
+///
+/// # The ordering this operation depends on
+///
+/// Approving issues a membership credential and a role endorsement, so a
+/// decision executed twice issues two of each. Nothing here guards that: the
+/// caller does, by claiming the document's `id` **before** this runs and
+/// settling it after (`dispatch_trust_task_core`, §6a of
+/// `docs/05-design-notes/vtc-trust-task-proof-enforcement.md`). The
+/// pending-state gate is a second line only — it refuses the *re-decision* of
+/// an already-decided request, which is not the same thing as answering a
+/// redelivery with what the first execution returned.
+pub(crate) async fn decide_inner(
+    state: &AppState,
+    actor_did: &str,
+    transport: &str,
+    id: Uuid,
+    body: DecideBody,
+) -> Result<DecideResponse, TaskError> {
     let reason = body.reason.unwrap_or_default();
     if reason.len() > REJECT_REASON_MAX {
         return Err(AppError::Validation(format!(
@@ -139,16 +147,56 @@ pub async fn decide(
     }
 
     let response = match body.decision {
-        Decision::Approved => approve_pending(&state, &admin, id, req).await?,
-        Decision::Rejected => reject_pending(&state, &admin, id, req, reason).await?,
+        Decision::Approved => approve_pending(state, actor_did, transport, id, req).await?,
+        Decision::Rejected => reject_pending(state, actor_did, id, req, reason).await?,
     };
+    Ok(response)
+}
+
+/// POST /join-requests/{id}/decide — decide a pending join request.
+/// `approved` admits the applicant + issues the VMC; `rejected` refuses
+/// them with an optional reason. Auth: Admin.
+///
+/// **Transitional bearer-token path (#1641).**
+/// `vtc/join-requests/decide/0.1` declares `proof` REQUIRED, and the
+/// authoritative binding is the signed Trust Task document at
+/// `POST /v1/trust-tasks`, where the proof authenticates the administrator who
+/// made the decision, their authority is read from their ACL entry, and the
+/// document's `id` is claimed before the applicant is admitted so a redelivery
+/// cannot issue a second set of credentials. This route authenticates by
+/// bearer JWT, verifies no document proof, and has no document `id` to claim;
+/// it is kept only until the admin console can sign a Trust Task document, and
+/// is removed in the same change that gives it that.
+#[utoipa::path(
+    post, path = "/join-requests/{id}/decide", tag = "join-requests",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Join request id")),
+    request_body = DecideBody,
+    responses(
+        (status = 200, description = "Request decided; on approve the VMC + role VEC are returned inline", body = DecideResponse),
+        (status = 400, description = "Reject reason exceeds the length cap"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Join request not found"),
+        (status = 409, description = "Request is not Pending, or applicant is already a member"),
+    ),
+)]
+pub async fn decide(
+    admin: AdminAuth,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<DecideBody>,
+) -> Result<(StatusCode, Json<DecideResponse>), TaskError> {
+    let response =
+        decide_inner(&state, &admin.0.did, JoinTransport::Rest.as_str(), id, body).await?;
     Ok((StatusCode::OK, Json(response)))
 }
 
 /// The approve arm: admit the applicant + issue credentials.
 async fn approve_pending(
     state: &AppState,
-    admin: &AdminAuth,
+    actor_did: &str,
+    transport: &str,
     id: Uuid,
     mut req: JoinRequest,
 ) -> Result<DecideResponse, AppError> {
@@ -171,7 +219,7 @@ async fn approve_pending(
         // operator's approval admits the applicant; it does not consent for them.
         publish_consent: req.registry_consent,
     };
-    let EffectOutcome::Admitted(creds) = execute::apply(state, plan, &admin.0.did).await? else {
+    let EffectOutcome::Admitted(creds) = execute::apply(state, plan, actor_did).await? else {
         return Err(AppError::Internal(
             "admit effect did not produce credentials".into(),
         ));
@@ -203,11 +251,11 @@ async fn approve_pending(
 
     audit_writer
         .write(
-            &admin.0.did,
+            actor_did,
             Some(&req.applicant_did),
             AuditEvent::JoinRequestApproved(JoinRequestData {
                 request_id: id.to_string(),
-                transport: "rest".to_string(),
+                transport: transport.to_string(),
             }),
         )
         .await?;
@@ -216,7 +264,7 @@ async fn approve_pending(
     // record divergent trails for the same effect.
     crate::join::emit_admit_audit(
         audit_writer,
-        &admin.0.did,
+        actor_did,
         &req.applicant_did,
         &creds,
         &VtcRole::Member.to_string(),
@@ -227,7 +275,7 @@ async fn approve_pending(
     info!(
         request_id = %id,
         applicant = %req.applicant_did,
-        admin = %admin.0.did,
+        admin = %actor_did,
         status_list_index = creds.status_list_index,
         "join request approved"
     );
@@ -249,7 +297,7 @@ async fn approve_pending(
 /// The reject arm: flip the status + record the operator's reason.
 async fn reject_pending(
     state: &AppState,
-    admin: &AdminAuth,
+    actor_did: &str,
     id: Uuid,
     mut req: JoinRequest,
     reason: String,
@@ -276,7 +324,7 @@ async fn reject_pending(
 
     audit_writer
         .write(
-            &admin.0.did,
+            actor_did,
             Some(&req.applicant_did),
             AuditEvent::JoinRequestRejected(JoinRequestRejectedData {
                 request_id: id.to_string(),
@@ -291,7 +339,7 @@ async fn reject_pending(
     info!(
         request_id = %id,
         applicant = %req.applicant_did,
-        admin = %admin.0.did,
+        admin = %actor_did,
         reason_present = !reason.is_empty(),
         "join request rejected"
     );
