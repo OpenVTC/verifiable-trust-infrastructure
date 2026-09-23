@@ -252,9 +252,9 @@ are implementer-facing rather than operator-facing.
   the `issuedAt` window and the replay bound its task's own specification
   declares, on every transport (VTI-OPS-020/021/024/093). Re-derives the task
   census from the router rather than trusting the divergence register, records
-  the one shipping client that does not sign and the exact condition that ends
-  the transitional allowance made for it, and sets out the migration path for
-  the 49 tasks still served on a bearer token.
+  the transitional allowance made for the one shipping client that did not sign
+  and how its stated removal condition was met, and sets out the migration path
+  for the 49 tasks still served on a bearer token.
 - **[Runtime service management](05-design-notes/runtime-service-management.md)** —
   design notes for the VTA's enable/disable/migrate REST + DIDComm
   surface.
