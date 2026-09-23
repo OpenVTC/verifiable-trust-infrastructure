@@ -113,6 +113,10 @@ Two of the 51 already verify a document proof on their REST route
 the migration follows. **That leaves 49 proof-REQUIRED tasks served on a bearer
 token** — divergence 1.
 
+Of those 49, four now also have a signed-document binding (§6b, batch 1). Their
+bearer routes remain mounted, so the divergence is not yet 45: it closes per
+task when the bearer route goes, not when the signed door opens.
+
 ### Drift against the recorded entry
 
 The Appendix F.2 entry and #1641 record **48** (30 community + 17 canonical +
@@ -150,6 +154,11 @@ Twenty of the twenty-six declare `proof` REQUIRED. The eleven `rooms/*` arms
 already refused without a verified signer, each handler having done so for
 itself before the spine took over verification. **The nine `vtc/*` rows above
 are the ones the spine was lenient about.**
+
+Since then the set has grown by the tasks §6b's batches move onto this binding
+— four in batch 1, making twenty-four proof-REQUIRED. The count is asserted by
+`the_dispatched_set_declares_the_proofs_the_design_note_records`, so a batch
+that lands without updating this note fails a test.
 
 ---
 
@@ -305,7 +314,7 @@ change is therefore its precondition, and the order is:
 3. Bind the 49 tasks in `DISPATCHED_URIS` / `dispatch_typed`, taking
    authorization from the verified signer's ACL entry rather than from a bearer
    token. `auth/authenticate/0.1` and `vtc/relationships/publish/0.2` are the
-   two routes that already do this and are the model.
+   two routes that already do this and are the model. **In batches — see §6b.**
 4. Keep each bearer route as a **documented transitional path** with a stated
    removal point, said so in its OpenAPI description — the clients that call
    them today (the admin SPA, `cnm`, `vtc-client`) need the signed path before
@@ -357,13 +366,69 @@ close.
 
 ---
 
+### 6b. Step 3, batch by batch
+
+**Batch 1 — the admin-facing member verbs.** `vtc/members/credentials/0.1`,
+`vtc/members/update/0.1`, `vtc/members/admin-remove/0.1` and
+`vtc/members/purge/0.1` are bound in `DISPATCHED_URIS` / `dispatch_typed`.
+Authority is `admin_signer`'s read of the verified signer's ACL row
+(`crate::acl::resolve_auth_role`) at execution time. `purge` additionally
+demands an unrestricted `ActScope` — `AuthClaims::require_super_admin`, the
+same question `SuperAdminAuth` asks — because its bearer route demanded a
+super-admin and a gate copied one notch loose is the failure mode this whole
+migration risks.
+
+The batch is four rather than more because the work is not the binding: it is
+lifting each route handler's body into a transport-free inner that both doors
+call, so the two cannot answer differently. `members/update` was kept in
+despite #1645's reshaping of it: the `adminRoleForbidden` refusal happens
+before anything is read, and it is the *promotion* path — the only part that
+consults a session — that the refusal makes unreachable, so a session-less
+caller has nothing to lose.
+
+**Both doors stay open, and that does not open a replay hole.** §6a's concern
+is a document accepted on one binding being acceptable on another. It does not
+arise here, and the reason is worth writing down rather than re-deriving: the
+bearer routes take a **flat payload and a JWT**, not a document. They have no
+`id` to claim, and a captured signed document cannot be presented at them at
+all — there is no body shape that would carry it. The two doors are disjoint in
+credential type, so there is nothing for them to share. A batch that moved a
+task onto a *second document* binding would be a different matter, and would
+have to claim through `state.accepted_ids()` like the spine does.
+
+**The signed door is the governed unauth chain**, so every task moved onto it
+inherits that chain's per-IP rate limit (5/s, burst 10) and its 64 KiB body cap
+rather than the authenticated chain's 1 MB. That is the right place for a
+document whose authentication is in the document, but it is a real difference:
+an admin operation carrying a large payload — `members/update`'s `extensions`
+bag is the one in this batch — can fit on one door and not the other. Each
+batch should check its verbs against 64 KiB rather than assume.
+
+**The removal point for the bearer routes** is stated in each one's OpenAPI
+description and is the same: the admin console cannot sign. `vtc-service/
+admin-ui/src` has no signing primitive of any kind — no `eddsa-jcs-2022`, no
+Ed25519, no `crypto.subtle.sign` — and its second factor is a passkey, which is
+WebAuthn and cannot produce the Data-Integrity proof these documents need. So
+the console holds no key with which to author a Trust Task document, and
+retiring its routes before it has one would take the member surface out of the
+admin UI entirely. `cnm`/`vtc-client` reach the same four routes with a bearer
+session and are in the same position.
+
+**Next batch.** The obvious one is `vtc/join-requests/decide/0.1` plus
+`vtc/admin/invites/{create,revoke}` — the same admin-from-ACL shape, the same
+console dependency — except that `vtc/invitations/*` is owned elsewhere at the
+time of writing, so `join-requests/decide` and `community/profile/update` are
+the clean pair to take next.
+
+---
+
 ## 7. Requirement → where it is held
 
 | Requirement | Held by |
 |---|---|
-| VTI-OPS-020 (proof by the issuer) | `spec_policy_for(..).enforce` + the issuer/signer binding in `dispatch_trust_task_core`; tests `vti_ops_020_*` |
+| VTI-OPS-020 (proof by the issuer) | `spec_policy_for(..).enforce` + the issuer/signer binding in `dispatch_trust_task_core`; tests `vti_ops_020_*` in `spine_proof_tests` and `members_admin_tests`. For a migrated task the issuer is also the *authorization*: `admin_signer` reads their ACL entry — §6b |
 | VTI-OPS-021 / -093 (same requirements on every transport) | the same call, reached identically from REST, DIDComm and TSP, and unconditional since #1672; test `vti_ops_021_a_missing_proof_is_refused_on_every_transport` drives one document over all three |
 | VTI-OPS-023 (intended recipient) | `validate_basic` + `is_recipient_required` |
 | VTI-OPS-024 (acceptance window) | `freshness_policy()`; tests `vti_ops_024_*` |
-| VTI-OPS-025 / -026 (replay record, bounded) | `trust_tasks::accepted_ids::AcceptedIds` + `retain_until`; tests `vti_ops_025_*` / `vti_ops_026_*` in `accepted_ids` and `spine_proof_tests` |
+| VTI-OPS-025 / -026 (replay record, bounded) | `trust_tasks::accepted_ids::AcceptedIds` + `retain_until`; tests `vti_ops_025_*` / `vti_ops_026_*` in `accepted_ids`, `spine_proof_tests` and `members_admin_tests` — the last drives them through a verb with a real effect |
 | VTI-OPS-027 (record shared across bindings) | the same type, backed by the `accepted_ids` keyspace rather than a process-local map, reachable from any binding as `AppState::accepted_ids`; test `vti_ops_027_a_second_binding_sees_what_the_first_accepted`. Atomic within the process, **not** across replicas — see §6a |

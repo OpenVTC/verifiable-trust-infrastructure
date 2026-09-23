@@ -69,6 +69,14 @@ pub struct UpdateMemberRequest {
 }
 
 /// PATCH /members/{did} — update member role + profile fields. Auth: Admin.
+///
+/// **Transitional bearer-token path (#1641).** `vtc/members/update/0.1`
+/// declares `proof` REQUIRED, and the authoritative binding is the signed
+/// Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+/// the administrator and their authority is read from their ACL entry. This
+/// route authenticates by bearer JWT and verifies no document proof; it is kept
+/// only until the admin console can sign a Trust Task document, and is removed
+/// in the same change that gives it that.
 #[utoipa::path(
     patch, path = "/members/{did}", tag = "members",
     security(("bearer_jwt" = [])),
@@ -88,7 +96,27 @@ pub async fn update_member(
     Path(did): Path<String>,
     Json(req): Json<UpdateMemberRequest>,
 ) -> Result<Json<MemberEnvelope>, TaskError> {
-    vti_common::identifier::validate_did("did", &did)?;
+    Ok(Json(update_member_inner(&state, &auth.0, &did, req).await?))
+}
+
+/// Apply one `vtc/members/update/0.1` on behalf of `auth` — the whole of the
+/// operation, with no transport in it.
+///
+/// Both doors call this: the bearer REST route above, and the signed-document
+/// arm in [`crate::trust_tasks`] (#1641 phase 2). The signed path synthesises
+/// `auth` from the verified signer's **ACL entry**, which is why nothing here
+/// may read the caller's session: there is none. The one thing that would —
+/// the promotion step-up in [`crate::ceremony::role_change_via_pipeline`] — is
+/// unreachable, because `role: admin` is refused below before any of this runs,
+/// and it fails closed (a session-less claim has no elevation) if that ever
+/// changes.
+pub(crate) async fn update_member_inner(
+    state: &AppState,
+    auth: &vti_common::auth::extractor::AuthClaims,
+    did: &str,
+    req: UpdateMemberRequest,
+) -> Result<MemberEnvelope, TaskError> {
+    vti_common::identifier::validate_did("did", did)?;
 
     // Declared, and refused before anything is read or written: the
     // specification's consumer conformance for this task is "if `role` is
@@ -116,10 +144,10 @@ pub async fn update_member(
             AppError::NotFound(format!("member not found: {did}")),
         )
     };
-    let acl = get_acl_entry(&state.acl_ks, &did)
+    let acl = get_acl_entry(&state.acl_ks, did)
         .await?
         .ok_or_else(not_found)?;
-    let mut member = get_member(&state.members_ks, &did)
+    let mut member = get_member(&state.members_ks, did)
         .await?
         .ok_or_else(not_found)?;
 
@@ -185,7 +213,7 @@ pub async fn update_member(
             let mut updated = acl.clone();
             updated.label = new_label;
             updated.updated_at = Some(now_epoch());
-            updated.updated_by = Some(auth.0.did.clone());
+            updated.updated_by = Some(auth.did.clone());
             crate::acl::store_acl_entry(&state.acl_ks, &updated).await?;
             fields_changed.push("label".into());
         }
@@ -201,9 +229,9 @@ pub async fn update_member(
         // a demotion — the serialisation and the elevation gate the promotion
         // path needs are the ceremony's, not this handler's.
         let granted = crate::ceremony::role_change_via_pipeline(
-            &state,
-            &auth.0,
-            &did,
+            state,
+            auth,
+            did,
             &acl.role.to_string(),
             &new_role.to_string(),
         )
@@ -211,8 +239,8 @@ pub async fn update_member(
 
         audit_writer
             .write(
-                &auth.0.did,
-                Some(&did),
+                &auth.did,
+                Some(did),
                 AuditEvent::RoleChanged(RoleChangedData {
                     previous_role: granted.previous_role,
                     new_role: granted.new_role,
@@ -224,8 +252,8 @@ pub async fn update_member(
     if !fields_changed.is_empty() {
         audit_writer
             .write(
-                &auth.0.did,
-                Some(&did),
+                &auth.did,
+                Some(did),
                 AuditEvent::MemberUpdated(MemberUpdatedData {
                     fields_changed: fields_changed.clone(),
                     changes,
@@ -237,18 +265,18 @@ pub async fn update_member(
     // Re-read the authoritative state for the response — the Remint
     // executor may have changed the ACL role + the member's role-VEC
     // pointer.
-    let acl = get_acl_entry(&state.acl_ks, &did)
+    let acl = get_acl_entry(&state.acl_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;
-    let member = get_member(&state.members_ks, &did)
+    let member = get_member(&state.members_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;
 
     // `{member: …}` — the shape `vtc/members/update/0.1` publishes, same as
     // its `show` sibling. The row was returned bare until #1094.
-    Ok(Json(MemberEnvelope {
+    Ok(MemberEnvelope {
         member: MemberResponse::from_pair_for_route(acl, member),
-    }))
+    })
 }
 
 // Re-export `from_pair` under a route-only alias so this module

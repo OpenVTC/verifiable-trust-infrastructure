@@ -112,7 +112,49 @@ pub async fn self_remove(
 // DELETE /v1/members/{did} — M1.12.1 (REST only)
 // ---------------------------------------------------------------------------
 
+/// Apply one `vtc/members/admin-remove/0.1` on behalf of `actor_did` — the
+/// whole of the operation, with no transport in it.
+///
+/// Both doors call this: the bearer REST route below, and the signed-document
+/// arm in [`crate::trust_tasks`] (#1641 phase 2). Every check the REST route
+/// used to make inline is here, so neither door can lose one: the DID is well
+/// formed, an admin does not remove themselves through the admin verb, and the
+/// operator `reason` is capped.
+pub(crate) async fn admin_remove_inner(
+    state: &AppState,
+    actor_did: &str,
+    target_did: &str,
+    body: RemoveBody,
+) -> Result<LeaveOutcome, TaskError> {
+    vti_common::identifier::validate_did("did", target_did)?;
+    if actor_did == target_did {
+        return Err(AppError::Validation(
+            "use DELETE /v1/members/me to remove yourself — \
+             DELETE /v1/members/{did} is for admins removing other members"
+                .to_string(),
+        )
+        .into());
+    }
+    let reason = body.reason.unwrap_or_default();
+    if reason.len() > REASON_MAX {
+        return Err(AppError::Validation(format!(
+            "reason exceeds {REASON_MAX} chars (got {})",
+            reason.len(),
+        ))
+        .into());
+    }
+    remove_inner(state, actor_did, target_did, body.disposition, reason).await
+}
+
 /// DELETE /members/{did} — admin removes another member. Auth: Admin.
+///
+/// **Transitional bearer-token path (#1641).** `vtc/members/admin-remove/0.1`
+/// declares `proof` REQUIRED, and the authoritative binding is the signed
+/// Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+/// the administrator and their authority is read from their ACL entry. This
+/// route authenticates by bearer JWT and verifies no document proof; it is kept
+/// only until the admin console can sign a Trust Task document, and is removed
+/// in the same change that gives it that.
 #[utoipa::path(
     delete, path = "/members/{did}", tag = "members",
     security(("bearer_jwt" = [])),
@@ -131,25 +173,8 @@ pub async fn admin_remove(
     Path(target_did): Path<String>,
     body: Option<Json<RemoveBody>>,
 ) -> Result<(StatusCode, Json<RemoveResponse>), TaskError> {
-    vti_common::identifier::validate_did("did", &target_did)?;
-    if admin.0.did == target_did {
-        return Err(AppError::Validation(
-            "use DELETE /v1/members/me to remove yourself — \
-             DELETE /v1/members/{did} is for admins removing other members"
-                .to_string(),
-        )
-        .into());
-    }
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    let reason = body.reason.unwrap_or_default();
-    if reason.len() > REASON_MAX {
-        return Err(AppError::Validation(format!(
-            "reason exceeds {REASON_MAX} chars (got {})",
-            reason.len(),
-        ))
-        .into());
-    }
-    let outcome = remove_inner(&state, &admin.0.did, &target_did, body.disposition, reason).await?;
+    let outcome = admin_remove_inner(&state, &admin.0.did, &target_did, body).await?;
     Ok((StatusCode::OK, Json(RemoveResponse::from(outcome))))
 }
 
@@ -162,6 +187,14 @@ pub async fn admin_remove(
 /// was removed). Hard-deletes the ACL (if any) + Member row, decrements the
 /// count, and flips the revocation bit. Auth: **Super-admin** (forceful, skips
 /// the removal policy). Refuses the sole admin (no-last-admin invariant).
+///
+/// **Transitional bearer-token path (#1641).** `vtc/members/purge/0.1` declares
+/// `proof` REQUIRED, and the authoritative binding is the signed Trust Task
+/// document at `POST /v1/trust-tasks`, where the proof authenticates the
+/// super-administrator and their authority is read from their ACL entry. This
+/// route authenticates by bearer JWT and verifies no document proof; it is kept
+/// only until the admin console can sign a Trust Task document, and is removed
+/// in the same change that gives it that.
 #[utoipa::path(
     delete, path = "/members/{did}/purge", tag = "members",
     security(("bearer_jwt" = [])),

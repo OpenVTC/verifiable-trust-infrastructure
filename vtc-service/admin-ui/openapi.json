@@ -3128,6 +3128,7 @@
           "members"
         ],
         "summary": "DELETE /members/{did} — admin removes another member. Auth: Admin.",
+        "description": "**Transitional bearer-token path (#1641).** `vtc/members/admin-remove/0.1`\ndeclares `proof` REQUIRED, and the authoritative binding is the signed\nTrust Task document at `POST /v1/trust-tasks`, where the proof authenticates\nthe administrator and their authority is read from their ACL entry. This\nroute authenticates by bearer JWT and verifies no document proof; it is kept\nonly until the admin console can sign a Trust Task document, and is removed\nin the same change that gives it that.",
         "operationId": "admin_remove",
         "parameters": [
           {
@@ -3182,6 +3183,7 @@
           "members"
         ],
         "summary": "PATCH /members/{did} — update member role + profile fields. Auth: Admin.",
+        "description": "**Transitional bearer-token path (#1641).** `vtc/members/update/0.1`\ndeclares `proof` REQUIRED, and the authoritative binding is the signed\nTrust Task document at `POST /v1/trust-tasks`, where the proof authenticates\nthe administrator and their authority is read from their ACL entry. This\nroute authenticates by bearer JWT and verifies no document proof; it is kept\nonly until the admin console can sign a Trust Task document, and is removed\nin the same change that gives it that.",
         "operationId": "update_member",
         "parameters": [
           {
@@ -3241,7 +3243,7 @@
           "members"
         ],
         "summary": "GET /members/{did}/credentials — the membership pair's bodies. Auth: Admin.",
-        "description": "Unknown member → 404 carrying `vtc/members/credentials:notFound`. A member\nwho holds no credentials is **not** that: it is a 200 with every document\nabsent and `memberVmcBound: false`, which is the case the task exists to\nmake visible.\n\n\"Unknown\" is judged exactly as `members/show` judges it — a member row\n**and** its ACL row. A departed (tombstoned) member keeps a row but not an\nACL entry, and tombstoning clears every credential body anyway; answering\nfor one here while `show` says not-found would be two definitions of \"is a\nmember\" one route apart.\n\nEvery successful read is audited (`MemberCredentialsRead`): the\nspecification says a maintainer SHOULD record it, and a disclosure of\ncredential bodies that leaves no trace cannot be reviewed afterwards. The\naudit write happens before the bodies are returned — a read that could not\nbe recorded is refused rather than disclosed silently.",
+        "description": "Unknown member → 404 carrying `vtc/members/credentials:notFound`. A member\nwho holds no credentials is **not** that: it is a 200 with every document\nabsent and `memberVmcBound: false`, which is the case the task exists to\nmake visible.\n\n\"Unknown\" is judged exactly as `members/show` judges it — a member row\n**and** its ACL row. A departed (tombstoned) member keeps a row but not an\nACL entry, and tombstoning clears every credential body anyway; answering\nfor one here while `show` says not-found would be two definitions of \"is a\nmember\" one route apart.\n\nEvery successful read is audited (`MemberCredentialsRead`): the\nspecification says a maintainer SHOULD record it, and a disclosure of\ncredential bodies that leaves no trace cannot be reviewed afterwards. The\naudit write happens before the bodies are returned — a read that could not\nbe recorded is refused rather than disclosed silently.\n\n**Transitional bearer-token path (#1641).** `vtc/members/credentials/0.1`\ndeclares `proof` REQUIRED, and the authoritative binding is the signed\nTrust Task document at `POST /v1/trust-tasks`, where the proof authenticates\nthe administrator and their authority is read from their ACL entry. This\nroute authenticates by bearer JWT and verifies no document proof; it is kept\nonly until the admin console can sign a Trust Task document, and is removed\nin the same change that gives it that.",
         "operationId": "memberCredentials",
         "parameters": [
           {
@@ -3434,6 +3436,7 @@
           "members"
         ],
         "summary": "DELETE /members/{did}/purge — permanently delete a member row, including a\nlingering **tombstone** (a departed member whose row was kept after its ACL\nwas removed). Hard-deletes the ACL (if any) + Member row, decrements the\ncount, and flips the revocation bit. Auth: **Super-admin** (forceful, skips\nthe removal policy). Refuses the sole admin (no-last-admin invariant).",
+        "description": "**Transitional bearer-token path (#1641).** `vtc/members/purge/0.1` declares\n`proof` REQUIRED, and the authoritative binding is the signed Trust Task\ndocument at `POST /v1/trust-tasks`, where the proof authenticates the\nsuper-administrator and their authority is read from their ACL entry. This\nroute authenticates by bearer JWT and verifies no document proof; it is kept\nonly until the admin console can sign a Trust Task document, and is removed\nin the same change that gives it that.",
         "operationId": "purge",
         "parameters": [
           {
@@ -5024,6 +5027,7 @@
           "trust-tasks"
         ],
         "summary": "POST /trust-tasks — dispatch a Trust Task document. Public: the holder's\ndocument proof (or, over DIDComm, the authcrypt sender) IS the auth.",
+        "description": "No bearer token is read here. A document whose specification declares\n`proof` REQUIRED must carry one, it must verify against the document's own\n`issuer`, the document must name this community as `recipient`, its\n`issuedAt` must fall inside the acceptance window, and its `id` is recorded\nso a redelivery is answered rather than re-executed.\n\nAdministrator verbs are dispatched here too — their authority is the\nverified signer's ACL entry, read when the document executes.",
         "operationId": "dispatch",
         "requestBody": {
           "description": "A Trust Task document (trust_tasks_rs::TrustTask JSON)",

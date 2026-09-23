@@ -183,6 +183,65 @@ fn disclosed(response: &wire::Response) -> Vec<String> {
     out
 }
 
+/// Read one member's credential bodies on behalf of `actor_did`, auditing the
+/// disclosure — the whole of the operation, with no transport in it.
+///
+/// Both doors call this: the bearer REST route below, and the signed-document
+/// arm in [`crate::trust_tasks`] (#1641 phase 2). Keeping the body here is what
+/// stops the two answering differently — the "is a member" rule, the audit row
+/// and the declared not-found are decided once.
+///
+/// Unknown member → [`CredentialsError::NotFound`], which carries
+/// `vtc/members/credentials:notFound` on both surfaces. A member who holds no
+/// credentials is **not** that: it is a success with every document absent and
+/// `memberVmcBound: false`, which is the case the task exists to make visible.
+///
+/// "Unknown" is judged exactly as `members/show` judges it — a member row
+/// **and** its ACL row. A departed (tombstoned) member keeps a row but not an
+/// ACL entry, and tombstoning clears every credential body anyway; answering
+/// for one here while `show` says not-found would be two definitions of "is a
+/// member" one route apart.
+///
+/// Every successful read is audited (`MemberCredentialsRead`): the
+/// specification says a maintainer SHOULD record it, and a disclosure of
+/// credential bodies that leaves no trace cannot be reviewed afterwards. The
+/// audit write happens before the bodies are returned — a read that could not
+/// be recorded is refused rather than disclosed silently.
+pub(crate) async fn read_member_credentials(
+    state: &AppState,
+    actor_did: &str,
+    did: &str,
+) -> Result<wire::Response, CredentialsError> {
+    vti_common::identifier::validate_did("did", did)?;
+
+    let member = get_member(&state.members_ks, did)
+        .await?
+        .ok_or_else(|| CredentialsError::NotFound(format!("member not found: {did}")))?;
+    if get_acl_entry(&state.acl_ks, did).await?.is_none() {
+        return Err(CredentialsError::NotFound(format!(
+            "member not found (no ACL row): {did}"
+        )));
+    }
+
+    let response = credentials_response(&member)?;
+
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+    audit_writer
+        .write(
+            actor_did,
+            Some(did),
+            AuditEvent::MemberCredentialsRead(MemberCredentialsReadData {
+                disclosed: disclosed(&response),
+            }),
+        )
+        .await?;
+
+    Ok(response)
+}
+
 /// GET /members/{did}/credentials — the membership pair's bodies. Auth: Admin.
 ///
 /// Unknown member → 404 carrying `vtc/members/credentials:notFound`. A member
@@ -201,6 +260,14 @@ fn disclosed(response: &wire::Response) -> Vec<String> {
 /// credential bodies that leaves no trace cannot be reviewed afterwards. The
 /// audit write happens before the bodies are returned — a read that could not
 /// be recorded is refused rather than disclosed silently.
+///
+/// **Transitional bearer-token path (#1641).** `vtc/members/credentials/0.1`
+/// declares `proof` REQUIRED, and the authoritative binding is the signed
+/// Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+/// the administrator and their authority is read from their ACL entry. This
+/// route authenticates by bearer JWT and verifies no document proof; it is kept
+/// only until the admin console can sign a Trust Task document, and is removed
+/// in the same change that gives it that.
 #[utoipa::path(
     get, path = "/members/{did}/credentials",
     operation_id = "memberCredentials", tag = "members",
@@ -219,33 +286,7 @@ pub async fn credentials(
     State(state): State<AppState>,
     Path(did): Path<String>,
 ) -> Result<Json<MemberCredentials01Response>, CredentialsError> {
-    vti_common::identifier::validate_did("did", &did)?;
-
-    let member = get_member(&state.members_ks, &did)
-        .await?
-        .ok_or_else(|| CredentialsError::NotFound(format!("member not found: {did}")))?;
-    if get_acl_entry(&state.acl_ks, &did).await?.is_none() {
-        return Err(CredentialsError::NotFound(format!(
-            "member not found (no ACL row): {did}"
-        )));
-    }
-
-    let response = credentials_response(&member)?;
-
-    let audit_writer = state
-        .audit_writer
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
-    audit_writer
-        .write(
-            &auth.0.did,
-            Some(&did),
-            AuditEvent::MemberCredentialsRead(MemberCredentialsReadData {
-                disclosed: disclosed(&response),
-            }),
-        )
-        .await?;
-
+    let response = read_member_credentials(&state, &auth.0.did, &did).await?;
     Ok(Json(response.into()))
 }
 

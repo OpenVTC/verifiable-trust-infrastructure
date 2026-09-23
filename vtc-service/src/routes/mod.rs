@@ -1225,7 +1225,14 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // and are routed internally by document `type`; the holder is
         // authenticated by the document's `eddsa-jcs-2022` proof. No
         // `Trust-Task` header gate — the document's own `type` is the
-        // identity. Admin verbs are not routed here.
+        // identity.
+        //
+        // Admin verbs **are** routed here since #1641 phase 2, starting with
+        // the member ones. "Unauthenticated" is a property of the transport,
+        // not of the authority: the spine holds a document to the proof,
+        // recipient, freshness and replay rules its specification declares, and
+        // the verb reads the *verified signer's* ACL entry. See
+        // `trust_tasks::admin_signer`.
         .routes(routes!(trust_tasks::dispatch))
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
 
