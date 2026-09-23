@@ -958,13 +958,13 @@ mod tests {
         let vta = "did:webvh:QmSCIDabcdefghijklmnopqrstuvwxyz0123456789ABCD:vta.example.com";
         json!({
             "id": format!("urn:uuid:00000000-0000-4000-8000-{approver:012}"),
-            "type": "https://trusttasks.org/spec/task-consent/request/0.1",
+            "type": crate::trust_tasks::consent_request::TASK_CONSENT_REQUEST_0_1,
             "issuer": vta,
             "recipient": format!("did:key:z6Mk{approver:0>44}"),
             "issuedAt": "2026-09-23T00:00:00Z",
             "payload": {
                 "challenge": "c".repeat(43),
-                "taskType": "https://trusttasks.org/spec/webvh/dids/update/1.0",
+                "taskType": vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
                 "payloadDigest": "d".repeat(64),
                 "sideEffects": "stateChanging",
                 "exposure": "privileged",
