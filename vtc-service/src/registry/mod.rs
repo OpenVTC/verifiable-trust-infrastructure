@@ -2,9 +2,23 @@
 //!
 //! Spec §8 + §13. The VTC publishes member records to the
 //! configured trust registry asynchronously: every
-//! `MemberAdded` / `MemberRemoved` / `RoleChanged` audit event
+//! `MemberAdded` / `MemberRemoved` / `RoleChanged` audit event,
+//! and every `MemberUpdated` that changes `publishConsent`,
 //! drives a `SyncJob` against the registry, with exponential
 //! backoff and boot-time replay.
+//!
+//! ## Only members who consented are published
+//!
+//! A member is published only while their
+//! [`crate::members::Member::publish_consent`] is `true` — the
+//! applicant's `registryConsent` on `vtc/join-requests/submit`
+//! (spec: *Consent/purpose*), or an admin `members/update` since.
+//! The syncer reads it at dispatch time and enforces it in code;
+//! `registry.rego`'s `publish_on_join` can narrow publication
+//! further but can never publish a member who did not consent.
+//! Withdrawing consent removes the member's record from the
+//! registry on the next tick. See `syncer::MembershipSyncer`
+//! (`resolve`) for the full decision table.
 //!
 //! ## Transport split (planning outcome)
 //!
@@ -84,7 +98,7 @@ pub use model::{
 };
 pub use policy::{
     ClampOutcome, PublishOnJoinDecision, clamp_disposition, evaluate_publish_on_join,
-    is_rtbf_purge, read_min_disposition,
+    is_rtbf_purge, publish_input, read_min_disposition,
 };
 pub use storage::{
     REGISTRY_RECORDS_PREFIX, SYNC_QUEUE_PREFIX, clear_sync_cursor, delete_record, delete_sync_job,

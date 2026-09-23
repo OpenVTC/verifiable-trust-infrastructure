@@ -32,6 +32,12 @@
 //!   `Active`/`Departed` only — but the `UpdateMember` job
 //!   keeps the local mirror's `last_synced_at` fresh so drift
 //!   detection has something to anchor against.
+//! - `MemberUpdated` whose `fields_changed` names `publishConsent`
+//!   → `SyncJobKind::UpdateMember`. The member granted or withdrew
+//!   consent to publication; the syncer reads the new value at
+//!   dispatch and publishes (granted) or removes the record
+//!   (withdrawn). Other `MemberUpdated` fields do not reach the
+//!   registry record, so they enqueue nothing.
 //!
 //! Every other audit variant is ignored. Operator-action
 //! envelopes (`ConfigChanged`, `AdminPasskeyRegistered`, etc.)
@@ -39,7 +45,7 @@
 
 use chrono::{DateTime, Utc};
 use tracing::{debug, warn};
-use vti_common::audit::{AuditEnvelope, AuditEvent, MemberRemovedData};
+use vti_common::audit::{AuditEnvelope, AuditEvent, MemberRemovedData, MemberUpdatedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -279,6 +285,13 @@ fn audit_to_sync_job(
             let target = envelope.target_did_plain.as_deref()?;
             Some((SyncJob::fresh(SyncJobKind::UpdateMember, target), None))
         }
+        // Consent to publication changed: re-decide the member's record.
+        AuditEvent::MemberUpdated(MemberUpdatedData { fields_changed, .. })
+            if fields_changed.iter().any(|f| f == "publishConsent") =>
+        {
+            let target = envelope.target_did_plain.as_deref()?;
+            Some((SyncJob::fresh(SyncJobKind::UpdateMember, target), None))
+        }
         _ => None,
     }
 }
@@ -449,6 +462,39 @@ mod tests {
         assert_eq!(jobs[0].kind, SyncJobKind::PublishMember);
         assert_eq!(jobs[0].member_did, "did:key:zA");
         assert_eq!(jobs[0].state, SyncJobState::Pending);
+    }
+
+    /// A `publishConsent` change re-decides the member's record (granted →
+    /// publish, withdrawn → remove); any other member-field change does not
+    /// touch the registry and enqueues nothing.
+    #[tokio::test]
+    async fn member_updated_enqueues_only_for_a_publish_consent_change() {
+        let t = temp_keyspaces().await;
+        for (target, fields) in [
+            ("did:key:zConsent", vec!["publishConsent", "extensions"]),
+            ("did:key:zOther", vec!["departurePreference", "label"]),
+        ] {
+            t.writer
+                .write(
+                    "did:webvh:vtc.example",
+                    Some(target),
+                    AuditEvent::MemberUpdated(MemberUpdatedData {
+                        fields_changed: fields.into_iter().map(String::from).collect(),
+                        changes: vec![],
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+
+        let outcome = walk(&t.audit, &t.queue, &t.policies, &t.active_policies, 0, None)
+            .await
+            .unwrap();
+        assert_eq!(outcome.jobs_enqueued, 1);
+        let jobs = list_sync_jobs(&t.queue).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].kind, SyncJobKind::UpdateMember);
+        assert_eq!(jobs[0].member_did, "did:key:zConsent");
     }
 
     #[tokio::test]
