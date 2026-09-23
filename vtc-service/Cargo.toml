@@ -315,6 +315,10 @@ affinidi-crypto = { workspace = true }
 # backed stores. Also a `[dev-dependencies]` entry for the crate's own
 # `cargo test` (no feature flag) — both must stay in sync.
 tempfile = { version = "3", optional = true }
+# Renders the community DID as an SVG QR code for the landing page
+# (`GET /v1/community/did-qr.svg`). SVG only — the default `image`
+# feature would pull the whole `image` crate in for nothing.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 trust-tasks-rs = { workspace = true }

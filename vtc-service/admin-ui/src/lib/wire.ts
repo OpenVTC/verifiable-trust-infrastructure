@@ -686,6 +686,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/community/did-qr.svg": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /community/did-qr.svg — the community DID as a scannable QR code.
+         *     Public, unauthenticated.
+         */
+        get: operations["get_did_qr"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/community/join-discovery": {
         parameters: {
             query?: never;
@@ -7842,6 +7862,33 @@ export interface operations {
             };
             /** @description Audit writer not configured — change refused */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_did_qr: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SVG QR code encoding the bare community DID */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/svg+xml": string;
+                };
+            };
+            /** @description Community profile not initialised */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

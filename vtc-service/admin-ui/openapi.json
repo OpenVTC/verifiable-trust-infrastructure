@@ -1686,6 +1686,30 @@
         ]
       }
     },
+    "/v1/community/did-qr.svg": {
+      "get": {
+        "tags": [
+          "community"
+        ],
+        "summary": "GET /community/did-qr.svg — the community DID as a scannable QR code.\nPublic, unauthenticated.",
+        "operationId": "get_did_qr",
+        "responses": {
+          "200": {
+            "description": "SVG QR code encoding the bare community DID",
+            "content": {
+              "image/svg+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Community profile not initialised"
+          }
+        }
+      }
+    },
     "/v1/community/join-discovery": {
       "get": {
         "tags": [
