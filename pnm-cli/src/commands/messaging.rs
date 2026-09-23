@@ -24,7 +24,10 @@ use async_trait::async_trait;
 use vta_sdk::client::VtaClient;
 use vta_sdk::did_secrets::select_secret_kid;
 
-use crate::cli::MessagingCommands;
+use affinidi_messaging_mediator_admin::account_hash;
+use affinidi_messaging_mediator_admin::specs::account::update::v0_1::AccountType;
+
+use crate::cli::{GrantRole, MessagingCommands};
 
 /// The `IdentitySource` id for pnm's own session identity.
 const SESSION_CHOICE: &str = "pnm-session";
@@ -38,6 +41,57 @@ pub(crate) async fn run(
     command: MessagingCommands,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        MessagingCommands::Grant {
+            target,
+            role,
+            context,
+            did,
+            mediator,
+            as_session,
+        } => {
+            if !target.starts_with("did:") {
+                return Err(format!("{target} is not a DID").into());
+            }
+            let source = VtaIdentitySource {
+                client,
+                keyring_key: keyring_key.to_string(),
+            };
+            let choices = source.list().await?;
+            let choice = choose(&choices, context.as_deref(), did.as_deref(), as_session)?;
+            let console = connect(&source, &choice, mediator.as_deref(), mediator_hint).await?;
+            if !console.capabilities().mediator_wide {
+                return Err(format!(
+                    "{} is a {:?} account at {}, and only an administrator can give an \
+                     account a role. Act as the mediator's administrator (its admin_did).",
+                    console.did(),
+                    console.mode(),
+                    console.mediator_did()
+                )
+                .into());
+            }
+            let hash = account_hash(&target);
+            let updated = console
+                .update_account(Some(hash.clone()), Some(account_type(role)), None, None)
+                .await?;
+            // Report what the mediator recorded, not what was asked: a
+            // mediator that ignored the role would otherwise read as success.
+            let recorded = serde_json::to_value(updated.account_type)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| "unknown".into());
+            println!("{target}");
+            println!("  account {hash}");
+            println!("  at      {}", console.mediator_did());
+            println!("  is now  {recorded}");
+            if recorded != grant_role_wire(role) {
+                return Err(format!(
+                    "the mediator recorded {recorded}, not {} — nothing else was changed",
+                    grant_role_wire(role)
+                )
+                .into());
+            }
+            Ok(())
+        }
         MessagingCommands::Console {
             context,
             did,
@@ -50,21 +104,7 @@ pub(crate) async fn run(
             };
             let choices = source.list().await?;
             let choice = choose(&choices, context.as_deref(), did.as_deref(), as_session)?;
-            let mut identity = source.load(&choice).await?;
-            identity.mediator_did = mediator.clone();
-
-            eprintln!("connecting to the mediator as {} …", identity.alias);
-            let console = match MediatorConsole::connect(identity.clone()).await {
-                // No mediator given and none in the DID document: fall back to
-                // the mediator this pnm is configured with.
-                Err(ConsoleError::NoMediator(_))
-                    if mediator.is_none() && mediator_hint.is_some() =>
-                {
-                    identity.mediator_did = mediator_hint.map(str::to_string);
-                    MediatorConsole::connect(identity).await?
-                }
-                other => other?,
-            };
+            let console = connect(&source, &choice, mediator.as_deref(), mediator_hint).await?;
 
             // The console's address book, with every DID this VTA can name
             // filled in (not saved: the VTA stays the source of those names,
@@ -94,6 +134,43 @@ pub(crate) async fn run(
             ratatui::restore();
             Ok(result?)
         }
+    }
+}
+
+/// Connect to the mediator as `choice`: to `mediator` when given, else the
+/// one in the DID's document, else the mediator this pnm is configured with.
+async fn connect(
+    source: &VtaIdentitySource<'_>,
+    choice: &IdentityChoice,
+    mediator: Option<&str>,
+    mediator_hint: Option<&str>,
+) -> Result<MediatorConsole, Box<dyn std::error::Error>> {
+    let mut identity = source.load(choice).await?;
+    identity.mediator_did = mediator.map(str::to_string);
+    eprintln!("connecting to the mediator as {} …", identity.alias);
+    match MediatorConsole::connect(identity.clone()).await {
+        // No mediator given and none in the DID document: fall back to the
+        // mediator this pnm is configured with.
+        Err(ConsoleError::NoMediator(_)) if mediator.is_none() && mediator_hint.is_some() => {
+            identity.mediator_did = mediator_hint.map(str::to_string);
+            Ok(MediatorConsole::connect(identity).await?)
+        }
+        other => Ok(other?),
+    }
+}
+
+fn account_type(role: GrantRole) -> AccountType {
+    match role {
+        GrantRole::Admin => AccountType::Admin,
+        GrantRole::Standard => AccountType::Standard,
+    }
+}
+
+/// The wire spelling the mediator reports a role in.
+fn grant_role_wire(role: GrantRole) -> &'static str {
+    match role {
+        GrantRole::Admin => "admin",
+        GrantRole::Standard => "standard",
     }
 }
 
@@ -470,6 +547,20 @@ mod tests {
         IdentityChoice {
             did: Some(did.into()),
             ..choice(id)
+        }
+    }
+
+    #[test]
+    fn a_grant_never_names_root_admin() {
+        // The two roles a grant offers map to exactly the two account types
+        // they say, and rootAdmin is not reachable from this command at all.
+        assert_eq!(account_type(GrantRole::Admin), AccountType::Admin);
+        assert_eq!(account_type(GrantRole::Standard), AccountType::Standard);
+        for role in [GrantRole::Admin, GrantRole::Standard] {
+            assert_eq!(
+                serde_json::to_value(account_type(role)).unwrap(),
+                serde_json::Value::String(grant_role_wire(role).into())
+            );
         }
     }
 
