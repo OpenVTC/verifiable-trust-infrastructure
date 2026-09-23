@@ -7,6 +7,8 @@ pub mod consent;
 pub mod display;
 pub mod duration;
 pub mod local_keygen;
+// A DID as a QR code, for the terminal or an SVG file (`pnm vta qr`).
+pub mod qr;
 pub mod render;
 pub mod sealed_consumer;
 pub mod sealed_producer;

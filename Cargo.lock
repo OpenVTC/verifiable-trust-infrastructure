@@ -10982,6 +10982,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hkdf 0.13.0",
  "multibase",
+ "qrcode",
  "rand 0.10.2",
  "ratatui",
  "reqwest",

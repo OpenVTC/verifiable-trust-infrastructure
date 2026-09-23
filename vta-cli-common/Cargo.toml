@@ -58,6 +58,9 @@ reqwest = { workspace = true }
 # without leaning on a transitive dep.
 dialoguer = { workspace = true }
 thiserror = { workspace = true }
+# `pnm vta qr`: a DID as a terminal or SVG QR code. SVG only — the default
+# `image` feature would pull the whole `image` crate in for nothing.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 # `test-util` for `#[tokio::test(start_paused = true)]`: the consent loop sleeps
