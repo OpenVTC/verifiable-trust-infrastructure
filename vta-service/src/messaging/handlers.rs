@@ -2143,10 +2143,51 @@ pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerRe
         return Ok(None);
     }
 
+    // A Trust Task typed as itself instead of carried in the binding envelope.
+    // `bindings/didcomm/0.2` §2/§4: the envelope is the only DIDComm carriage,
+    // and any other type is refused at the DIDComm layer — no
+    // `trust-task-error`, the document never reaches the pipeline. But a bare
+    // "unsupported message type" reads as "this VTA does not do that task",
+    // which is false; name the carriage it needs (Keyring VTI-42).
+    if let Some(comment) = trust_task_needs_envelope(&message.typ) {
+        warn!(
+            from,
+            msg_type = %message.typ,
+            "Trust Task arrived typed as its task URI, not in the DIDComm binding envelope — refused"
+        );
+        return Ok(Some(
+            DIDCommResponse::problem_report(ProblemReport::bad_request(comment))
+                .thid(message.id.clone()),
+        ));
+    }
+
     warn!(from, thid, msg_type = %message.typ, "unknown message type — ignoring");
-    Ok(Some(DIDCommResponse::problem_report(
-        ProblemReport::bad_request(format!("unsupported message type: {}", message.typ)),
-    )))
+    Ok(Some(
+        DIDCommResponse::problem_report(ProblemReport::bad_request(format!(
+            "unsupported message type: {}",
+            message.typ
+        )))
+        .thid(message.id.clone()),
+    ))
+}
+
+/// Every published Trust Task type URI starts with this.
+const TRUST_TASK_SPEC_PREFIX: &str = "https://trusttasks.org/spec/";
+
+/// The problem-report comment for a DIDComm message whose `type` is a Trust
+/// Task URI, or `None` when it is not one.
+///
+/// Keyed on the published-spec prefix rather than on `dispatched_uris()`: the
+/// carriage is wrong for *every* Trust Task URI, served or not, and an
+/// unserved task sent in the envelope gets the spine's own `trust-task-error`,
+/// which is the better answer.
+pub(crate) fn trust_task_needs_envelope(typ: &str) -> Option<String> {
+    typ.starts_with(TRUST_TASK_SPEC_PREFIX).then(|| {
+        format!(
+            "unsupported message type: {typ} — Trust Tasks must be carried in the DIDComm \
+             binding envelope `{TRUST_TASK_ENVELOPE_TYPE}` with the task document as the body"
+        )
+    })
 }
 
 #[cfg(test)]

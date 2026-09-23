@@ -789,6 +789,13 @@ documented.
 **DIDComm binding.** The DIDComm message `type` field **is** the
 Trust Task URL. No shorthand; no parallel registry.
 
+> **Superseded.** The published binding (`bindings/didcomm/0.2` §2–§5)
+> carries every Trust Task in one envelope type,
+> `https://trusttasks.org/binding/didcomm/0.1/envelope`, with the document
+> as the body; the document's own `type` names the task. The VTC retired its
+> task-typed DIDComm arms (Keyring VTI-42) and refuses a message typed as
+> the task URI with a problem-report naming the envelope.
+
 **Spec format.** Two artefacts under `trust-tasks/{path}/{major}.{minor}/`:
 
 - `spec.md` — narrative with frontmatter (id, title, status,

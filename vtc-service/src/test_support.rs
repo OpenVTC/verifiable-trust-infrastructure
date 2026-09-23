@@ -653,6 +653,20 @@ pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
     .expect("offline ATM")
 }
 
+/// Every Trust Task URI this VTC's dispatcher serves: its own list plus the
+/// `rooms/*` verbs it hosts.
+///
+/// Read from the dispatcher's lists rather than retyped, so a test driven by
+/// it covers a verb the moment it is dispatched — which is the property the
+/// DIDComm envelope parity test (`tests/didcomm_envelope_binding.rs`) holds.
+pub fn served_trust_task_uris() -> Vec<&'static str> {
+    crate::trust_tasks::DISPATCHED_URIS
+        .iter()
+        .chain(vti_rooms::wire::ROOMS_DISPATCHED_URIS)
+        .copied()
+        .collect()
+}
+
 #[cfg(all(feature = "didcomm-harness", feature = "tsp"))]
 pub use didcomm_harness::Carriage;
 #[cfg(feature = "didcomm-harness")]
@@ -1103,14 +1117,11 @@ mod didcomm_harness {
         /// Send a Trust Task **in the DIDComm binding envelope** and return the
         /// threaded outcome.
         ///
-        /// The difference from [`try_request`](Self::try_request) is one field:
-        /// the DIDComm message `type` is the binding's, not the task's, which is
-        /// what a peer built on `trust-tasks-didcomm` emits. Everything else —
-        /// the document, the addressing, the threading — is identical.
-        ///
-        /// That one field is the whole of what this repo's DIDComm router keys
-        /// on, so a harness that can only send the task-typed shape cannot
-        /// observe the enveloped one at all.
+        /// The envelope is the only DIDComm carriage the binding allows, so
+        /// this is what [`try_request`](Self::try_request) does; the name stays
+        /// for tests that want to say so. Contrast
+        /// [`try_request_task_typed`](Self::try_request_task_typed), which sends
+        /// the shape the VTC refuses.
         pub async fn try_request_enveloped(
             &self,
             vtc_did: &str,
@@ -1162,7 +1173,8 @@ mod didcomm_harness {
         /// Both a normal reply and a problem-report are threaded to this
         /// request's id (the messaging framework's problem-report carries
         /// `thid = <request id>`), so the same thread-correlation predicate
-        /// catches either; the reply `typ` is what distinguishes them.
+        /// catches either; the reply's (document) `type` is what distinguishes
+        /// them. Sent in the binding envelope.
         pub async fn try_request(
             &self,
             vtc_did: &str,
@@ -1170,9 +1182,28 @@ mod didcomm_harness {
             body: Value,
             timeout: Duration,
         ) -> ReplyOutcome {
-            let req_id = Uuid::new_v4().to_string();
             // Wrap the verb payload into a Trust Task document addressed to the
-            // VTC; the DIDComm message `type` mirrors the document `type`.
+            // VTC and carry it in the binding envelope — the only DIDComm
+            // carriage the VTC accepts (Keyring VTI-42).
+            self.try_request_enveloped(vtc_did, typ, body, timeout)
+                .await
+        }
+
+        /// Send a Trust Task **typed as its own task URI** — the DIDComm
+        /// message `type` mirrors the document `type` — and return the
+        /// threaded outcome.
+        ///
+        /// The shape the binding forbids (`bindings/didcomm/0.2` §2, §4) and
+        /// the VTC refuses with a problem-report naming the envelope. Exists
+        /// only so a test can assert that refusal; nothing should send it.
+        pub async fn try_request_task_typed(
+            &self,
+            vtc_did: &str,
+            typ: &str,
+            body: Value,
+            timeout: Duration,
+        ) -> ReplyOutcome {
+            let req_id = Uuid::new_v4().to_string();
             let doc = self.document(typ, vtc_did, body).await;
             let msg = Message::build(req_id.clone(), typ.to_string(), doc)
                 .from(self.did.clone())
@@ -1199,6 +1230,17 @@ mod didcomm_harness {
                 .await;
             self.panic_on_problem_report.store(prev, Ordering::SeqCst);
 
+            // Classify on the *document's* type when the reply rides the
+            // binding envelope — the envelope names only the carriage, so a
+            // `trust-task-error` inside it would otherwise read as a success.
+            let received = received.map(|mut r| {
+                if r.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE
+                    && let Some(t) = r.body.get("type").and_then(Value::as_str)
+                {
+                    r.typ = t.to_string();
+                }
+                r
+            });
             match received {
                 Some(r) if is_error_reply(&r.typ) => {
                     let (code, comment) = extract_error(&r.typ, &r.body);

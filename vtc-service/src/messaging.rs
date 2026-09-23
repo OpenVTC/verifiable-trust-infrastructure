@@ -17,7 +17,6 @@ use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
 use serde_json::json;
-use vti_common::error::AppError;
 use vti_common::outbox_store::VtiOutboxStore;
 
 use vta_sdk::protocols::credential_exchange::PRESENT as CREDENTIAL_PRESENT_TYPE;
@@ -26,21 +25,10 @@ use vta_sdk::protocols::credential_exchange::{
     ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, PresentBody, RequestBody,
 };
 use vta_sdk::protocols::join_requests::{
-    JOIN_REQUEST_MANIFEST_0_2_TYPE, JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE,
-    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitReceiptBody,
-    MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
-    SelfRemoveReceiptBody,
-};
-use vta_sdk::protocols::members::{
-    MEMBER_VMC_RESPONSE_TYPE, MEMBER_VMC_TYPE, MemberVmcBody, MemberVmcReceiptBody,
-};
-use vta_sdk::protocols::vetting::{
-    VETTING_REVOKE_STATEMENT_TYPE, VETTING_VETTER_GRANT_TYPE, VETTING_VETTER_LIST_TYPE,
-    VETTING_VETTER_PROFILE_TYPE, VETTING_VETTER_RESEND_TYPE, VETTING_VETTER_SHOW_TYPE,
+    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JoinRequestSubmitReceiptBody,
 };
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 
-use crate::ceremony::remove_inner;
 use crate::config::AppConfig;
 use crate::join::JoinTransport;
 use crate::members::Disposition;
@@ -960,31 +948,19 @@ async fn route(msg: &Message, auth_sender: Option<String>, state: &AppState) -> 
         TRUST_PING_TYPE => trust_ping_reply(msg, auth_sender.as_deref()),
         // The binding envelope: carriage, not a verb. The document inside names
         // the task, and the spine routes on that — so this one arm reaches
-        // **every** dispatched URI, including the thirteen that have no arm of
-        // their own below (all of `rooms/*`, both `members/personhood/*`).
-        // Those dispatch over REST and TSP and answered "unsupported message
-        // type" over DIDComm, because this router is keyed on task URIs and
-        // nobody added them to it. That is the failure mode this arm removes:
-        // a verb is reachable because it is dispatched, not because someone
-        // remembered to write it down twice.
+        // **every** dispatched URI. A verb is reachable because it is
+        // dispatched, not because someone remembered to write it down twice.
         vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE => {
             envelope_task_handler(msg, auth_sender, state).await
         }
-        JOIN_REQUEST_SUBMIT_TYPE => join_request_submit_handler(msg, auth_sender, state).await,
-        // Both versions go through the document dispatcher, which answers in
-        // the shape the document's own `type` names.
-        JOIN_REQUEST_MANIFEST_TYPE | JOIN_REQUEST_MANIFEST_0_2_TYPE => {
-            join_request_manifest_handler(msg, state).await
-        }
-        JOIN_REQUEST_STATUS_TYPE => join_request_status_handler(msg, auth_sender, state).await,
-        MEMBER_SELF_REMOVE_TYPE => member_self_remove_handler(msg, auth_sender, state).await,
-        MEMBER_VMC_TYPE => member_vmc_handler(msg, auth_sender, state).await,
-        VETTING_REVOKE_STATEMENT_TYPE
-        | VETTING_VETTER_GRANT_TYPE
-        | VETTING_VETTER_PROFILE_TYPE
-        | VETTING_VETTER_LIST_TYPE
-        | VETTING_VETTER_SHOW_TYPE
-        | VETTING_VETTER_RESEND_TYPE => vetting_task_handler(msg, auth_sender, state).await,
+        // There are no task-typed arms. The binding (`bindings/didcomm/0.2`
+        // §2–§5) makes the envelope the **only** DIDComm carriage for a Trust
+        // Task and requires a consumer to refuse any other type at the DIDComm
+        // layer — so a document whose DIDComm `type` is its own task URI falls
+        // to `unhandled_message`, which says where it should have been carried
+        // (Keyring VTI-42). Twelve such arms lived here; two of them
+        // (`members/self-remove`, `members/vmc`) parsed bespoke bodies and
+        // skipped the spine's freshness, recipient and proof checks entirely.
         CREDENTIAL_REQUEST_TYPE => credential_request_handler(msg, state).await,
         CREDENTIAL_PRESENT_TYPE => credential_present_handler(msg, state).await,
         _ => unhandled_message(msg),
@@ -1062,43 +1038,6 @@ fn problem_report_details(body: &serde_json::Value) -> (String, String, String) 
     (field("code"), field("comment"), args)
 }
 
-/// The problem-report `code` for a business-logic [`AppError`],
-/// preserving the 4xx-equivalent distinction (forbidden / unauthorized
-/// / not-found / conflict / bad-request) the same way the REST boundary
-/// does — instead of collapsing every outcome into `internal-error`,
-/// where the sender can't tell a permission failure from a real bug.
-/// Genuine infra faults keep the `internal-error` code.
-///
-/// `pub(crate)` so the DIDComm test harness (`test_support::dispatch_join`)
-/// maps handler errors through the *same* taxonomy the production responder
-/// uses — otherwise the harness (and the fuzzer driving it) would see a
-/// different, staler mapping than real callers. See #485.
-pub(crate) fn app_error_code(err: &AppError) -> &'static str {
-    match err {
-        AppError::Forbidden(_) | AppError::StepUpRequired(_) => codes::FORBIDDEN,
-        AppError::Unauthorized(_) | AppError::Authentication(_) => codes::UNAUTHORIZED,
-        AppError::NotFound(_) => codes::NOT_FOUND,
-        // The affinidi taxonomy has no `gone` code, and inventing a wire code
-        // for a variant no DIDComm surface produces would be worse than
-        // approximating. `conflict` ("your request conflicts with the
-        // resource's state") is the closest caller-fault code; the
-        // `internal-error` fallback would be an outright wrong signal.
-        AppError::Conflict(_) | AppError::Gone(_) | AppError::IdempotencyKeyConflict => {
-            codes::CONFLICT
-        }
-        AppError::Validation(_)
-        | AppError::TrustTaskMalformed(_)
-        | AppError::TrustTaskMissing
-        | AppError::InvalidCursor => codes::BAD_REQUEST,
-        _ => codes::INTERNAL,
-    }
-}
-
-/// Map a business-logic [`AppError`] to a threaded problem-report reply.
-fn app_error_report(thid: String, err: &AppError) -> Reply {
-    problem_report(thid, app_error_code(err), err.to_string())
-}
-
 /// Fallback for an inbound DIDComm message whose `type` matches no handler.
 ///
 /// An unexpected/unsupported message type — e.g. a protocol-version drift
@@ -1129,6 +1068,25 @@ fn unhandled_message(message: &Message) -> Option<Reply> {
         );
         return None;
     }
+    // A Trust Task typed as itself rather than carried in the binding
+    // envelope. The binding (`bindings/didcomm/0.2` §2, §4) says this is
+    // refused at the DIDComm layer and never enters the framework pipeline —
+    // so no `trust-task-error` — but "unsupported message type" alone reads as
+    // "this service does not implement the task", which is false: it is served,
+    // just not in this carriage (Keyring VTI-42). Name the carriage it needs.
+    if let Some(comment) = trust_task_needs_envelope(&message.typ) {
+        warn!(
+            message_type = %message.typ,
+            from = message.from.as_deref().unwrap_or("<anon>"),
+            id = %message.id,
+            "Trust Task arrived typed as its task URI, not in the DIDComm binding envelope — refused"
+        );
+        return Some(problem_report(
+            message.id.clone(),
+            codes::BAD_REQUEST,
+            comment,
+        ));
+    }
     warn!(
         message_type = %message.typ,
         from = message.from.as_deref().unwrap_or("<anon>"),
@@ -1142,9 +1100,40 @@ fn unhandled_message(message: &Message) -> Option<Reply> {
     ))
 }
 
+/// The problem-report comment for a DIDComm message whose `type` is a Trust
+/// Task URI, or `None` when it is not one.
+///
+/// Keyed on the published-spec prefix, not on the dispatcher's list: the
+/// refusal is about the *carriage*, which is wrong for every Trust Task URI
+/// whether or not this service serves it — enveloped, an unserved task gets
+/// the spine's own `trust-task-error`, which is the better answer.
+pub(crate) fn trust_task_needs_envelope(typ: &str) -> Option<String> {
+    typ.starts_with(TRUST_TASK_SPEC_PREFIX).then(|| {
+        format!(
+            "unsupported message type: {typ} — Trust Tasks must be carried in the DIDComm \
+             binding envelope `{}` with the task document as the body",
+            vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE
+        )
+    })
+}
+
+/// Every published Trust Task type URI starts with this.
+const TRUST_TASK_SPEC_PREFIX: &str = "https://trusttasks.org/spec/";
+
 /// Render a [`TrustTaskOutcome`] as a DIDComm reply: the response document
 /// (self-describing — carries its own `type`, either a `#response` or a
 /// `trust-task-error`) threaded to the request id.
+///
+/// # The reply's DIDComm `type` is still the document's
+///
+/// Binding §5 (`responded`/`errored`) carries a reply in the envelope type
+/// too, and the VTA already does. This does not, yet, and deliberately: the
+/// OpenVTC client's inbound dispatch keys VTC replies on the DIDComm `type`
+/// being the response document's own (`…/submit/0.1#response`, the vetting
+/// responses — `vetting::wire::open` requires `document.type == message.typ`),
+/// so switching here would silently drop its join verdicts. Changing this
+/// wants that consumer to read the envelope first; tracked with Keyring
+/// VTI-42.
 fn tt_didcomm_reply(outcome: TrustTaskOutcome, thid: String) -> Option<Reply> {
     let doc: serde_json::Value = match serde_json::from_slice(&outcome.body) {
         Ok(d) => d,
@@ -1186,7 +1175,7 @@ fn inbound_doc_bytes(message: &Message) -> Result<Vec<u8>, String> {
 /// status), so surfacing it at the dispatch boundary is what makes a refusal
 /// diagnosable. #539 made join refusals loud; #541 moved the reason into the
 /// document body without teaching the log to read it back out — this restores
-/// that visibility. Returns `("<unparseable>", None)` if the bytes aren't a
+/// that visibility, now for every task the envelope carries. Returns `("<unparseable>", None)` if the bytes aren't a
 /// recognisable error document.
 fn error_doc_summary(body: &[u8]) -> (String, Option<String>) {
     let Ok(doc) = serde_json::from_slice::<serde_json::Value>(body) else {
@@ -1204,94 +1193,23 @@ fn error_doc_summary(body: &[u8]) -> (String, Option<String>) {
     (code, message)
 }
 
-/// The threaded UNAUTHORIZED reply for a handler that requires a proven sender
-/// but got none (anonymous / spoofed `from`). The transport already refused to
-/// bind an unauthenticated sender; this is the wire-visible refusal.
-fn unauthorized_reply(thid: String) -> Reply {
-    problem_report(
-        thid,
-        codes::UNAUTHORIZED,
-        "DIDComm message is not authcrypt-authenticated — sender cannot be trusted",
-    )
-}
-
-/// `join-requests/submit/1.0` over DIDComm — the ceremony `request` verb.
-///
-/// The message body is the Trust Task document; the authcrypt sender is the
-/// proven holder. Dispatches through the shared [`dispatch_trust_task_core`]
-/// (the same spine REST uses) and replies with a `#response` (Verdict) or a
-/// `trust-task-error` document.
-async fn join_request_submit_handler(
-    msg: &Message,
-    auth_sender: Option<String>,
-    state: &AppState,
-) -> Option<Reply> {
-    let thid = msg.id.clone();
-    let Some(applicant_did) = auth_sender else {
-        return Some(unauthorized_reply(thid));
-    };
-    let applicant_log = applicant_did.clone();
-    // Entry log: the request logger only fires once the handler *returns*, so an
-    // explicit log here distinguishes "join received + processing started" from
-    // a handler that received the request but then stalled (no completion log).
-    info!(
-        applicant = %applicant_did,
-        thid = %thid,
-        has_credential = msg
-            .body
-            .pointer("/payload/vp/verifiableCredential")
-            .is_some(),
-        "received join-request submit (Trust Task) over DIDComm"
-    );
-    let body = match inbound_doc_bytes(msg) {
-        Ok(b) => b,
-        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
-    };
-    let ctx = JoinAuthCtx::didcomm(applicant_did);
-    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
-    // Outcome observability (preserved from #539): a refused join must be loud —
-    // it replies with a `trust-task-error` and stores nothing, so without this
-    // it would look like it "silently went nowhere"; a processed one logs at
-    // info. The reply document carries the typed reject code + reason, which we
-    // unpack so the *why* (expired / malformed / invalid VIC / duplicate) is in
-    // the log, not just the status.
-    if outcome.status.is_success() {
-        info!(applicant = %applicant_log, thid = %thid, "join-request processed");
-    } else {
-        let (code, reason) = error_doc_summary(&outcome.body);
-        warn!(
-            applicant = %applicant_log,
-            thid = %thid,
-            status = outcome.status.as_u16(),
-            code = %code,
-            reason = reason.as_deref().unwrap_or("<none>"),
-            "join-request refused — trust-task-error returned, no member or pending request created"
-        );
-    }
-    tt_didcomm_reply(outcome, thid)
-}
-
-// (`join-requests/accept` over DIDComm is gone — retired upstream, superseded
-// by `members/vmc` with an optional `requestId`. The member closes an approved
-// join by delivering their reciprocal VMC through `member_vmc_handler`.)
-
 /// Any Trust Task carried in the DIDComm binding envelope.
 ///
 /// The transport-neutral path: open carriage, name the proven sender, hand the
 /// bytes to the spine, re-wrap the reply. It is the DIDComm twin of
 /// [`handle_tsp`], and between them they are the whole of what a binding
-/// adapter should be — the per-verb handlers below predate it and exist because
-/// this one did not.
+/// adapter should be. It is also the **only** DIDComm path to the spine: the
+/// per-verb, task-typed arms that predated it are retired (Keyring VTI-42).
 ///
 /// # Only the *authenticated* sender
 ///
 /// `auth_sender` is the authcrypt-proven DID; the plaintext `msg.from` is not
-/// consulted. Some per-verb handlers below do consult it, deliberately, for
-/// public reads (`join_request_manifest_handler`) — but a *generic* arm cannot
-/// make that judgement per task, and defaulting to the unproven value would
-/// hand every authenticated verb a spoofable caller. So the context carries
-/// `None` when nothing was proven, and authorization fails closed inside the
-/// handler that cares. A public read is unaffected: it never looks.
+/// consulted. The retired manifest arm did consult it, for a public read — but
+/// a *generic* arm cannot make that judgement per task, and defaulting to the
+/// unproven value would hand every authenticated verb a spoofable caller. So
+/// the context carries `None` when nothing was proven, and authorization fails
+/// closed inside the handler that cares. A public read is unaffected: it never
+/// looks.
 async fn envelope_task_handler(
     msg: &Message,
     auth_sender: Option<String>,
@@ -1311,219 +1229,21 @@ async fn envelope_task_handler(
         verified_signer: None,
     };
     let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
+    // A refusal answers with a `trust-task-error` and changes nothing, so
+    // without this line it looks like the request "went nowhere" (#539). The
+    // reason is in the error document's payload, not the status (#541).
+    if !outcome.status.is_success() {
+        let (code, reason) = error_doc_summary(&outcome.body);
+        warn!(
+            task = msg.body.get("type").and_then(|t| t.as_str()).unwrap_or("<none>"),
+            thid = %thid,
+            status = outcome.status.as_u16(),
+            code = %code,
+            reason = reason.as_deref().unwrap_or("<none>"),
+            "enveloped Trust Task refused — trust-task-error returned"
+        );
+    }
     tt_didcomm_reply(outcome, thid)
-}
-
-/// `join-requests/manifest/1.0` over DIDComm — pre-submit discovery. A
-/// public read; no sender authentication required (uses the plaintext `from`).
-async fn join_request_manifest_handler(msg: &Message, state: &AppState) -> Option<Reply> {
-    let thid = msg.id.clone();
-    let body = match inbound_doc_bytes(msg) {
-        Ok(b) => b,
-        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
-    };
-    let ctx = JoinAuthCtx {
-        transport: JoinTransport::DIDComm,
-        sender_did: msg.from.clone(),
-        // A transport proves a *sender*; it never checks the document's
-        // proof. The spine fills this in where the specification
-        // requires one.
-        verified_signer: None,
-    };
-    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
-    tt_didcomm_reply(outcome, thid)
-}
-
-/// `join-requests/status/1.0` over DIDComm — applicant poll. The authcrypt
-/// sender is the proven applicant; the document payload carries the
-/// `requestId`.
-async fn join_request_status_handler(
-    msg: &Message,
-    auth_sender: Option<String>,
-    state: &AppState,
-) -> Option<Reply> {
-    let thid = msg.id.clone();
-    let Some(applicant_did) = auth_sender else {
-        return Some(unauthorized_reply(thid));
-    };
-    let body = match inbound_doc_bytes(msg) {
-        Ok(b) => b,
-        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
-    };
-    let ctx = JoinAuthCtx::didcomm(applicant_did);
-    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
-    tt_didcomm_reply(outcome, thid)
-}
-
-/// `members/self-remove/1.0` over DIDComm (M1.11.1 twin).
-///
-/// Caller's DID = the *authcrypt-authenticated* sender, not the plaintext
-/// `from` — otherwise a spoofed `from` would self-remove the victim
-/// (`remove_inner(&caller, &caller, …)` with actor == subject). Body optionally
-/// carries the disposition; defaults match REST (Member's stored
-/// `departure_preference`, then PolicyDefault→Tombstone).
-async fn member_self_remove_handler(
-    msg: &Message,
-    auth_sender: Option<String>,
-    state: &AppState,
-) -> Option<Reply> {
-    let thid = msg.id.clone();
-    let Some(caller_did) = auth_sender else {
-        return Some(unauthorized_reply(thid));
-    };
-
-    let body: SelfRemoveBody = match serde_json::from_value(msg.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::BAD_REQUEST,
-                format!("malformed self-remove body: {e}"),
-            ));
-        }
-    };
-
-    let disposition = match body
-        .disposition
-        .as_deref()
-        .map(parse_disposition)
-        .transpose()
-    {
-        Ok(d) => d,
-        Err(e) => return Some(problem_report(thid, codes::BAD_REQUEST, e)),
-    };
-
-    // DIDComm self-leave — actor == subject. The leave decision policy
-    // allows self-leave unconditionally (spec §10.2); the no-last-admin
-    // invariant still applies in the effect stage.
-    let outcome =
-        match remove_inner(state, &caller_did, &caller_did, disposition, String::new()).await {
-            Ok(o) => o,
-            // The problem-report surface carries no extended code; it answers
-            // exactly as it did before the Trust Task path gained one.
-            Err(e) => return Some(app_error_report(thid, &AppError::from(e))),
-        };
-
-    let receipt = SelfRemoveReceiptBody {
-        did: outcome.did,
-        disposition: outcome.disposition,
-        removed: outcome.removed,
-    };
-    let body = match serde_json::to_value(&receipt) {
-        Ok(v) => v,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("receipt serialise: {e}"),
-            ));
-        }
-    };
-    Some(Reply {
-        type_: MEMBER_SELF_REMOVE_RECEIPT_TYPE.to_string(),
-        body,
-        thid,
-    })
-}
-
-/// `members/vmc/1.0` over DIDComm — a member submits their reciprocal VMC
-/// (member → community half of the membership pair), prompted or unprompted.
-///
-/// The authcrypt sender is the proven member; the body carries the member-issued
-/// VMC. [`receive_member_vmc_inner`](crate::members::inbound_vmc::receive_member_vmc_inner)
-/// verifies the issuer / subject binding + the DI proof and stores it on the
-/// member row. Replies with a receipt, or a threaded problem-report on failure.
-/// The `vtc/vetting/*` tasks over DIDComm — revoke-statement, and the vetters
-/// grant, profile, list and resend. The authcrypt sender is the proven vetter,
-/// admin or caller; the document dispatcher does the rest, exactly as over REST.
-async fn vetting_task_handler(
-    msg: &Message,
-    auth_sender: Option<String>,
-    state: &AppState,
-) -> Option<Reply> {
-    let thid = msg.id.clone();
-    let Some(vetter_did) = auth_sender else {
-        return Some(unauthorized_reply(thid));
-    };
-    let body = match inbound_doc_bytes(msg) {
-        Ok(b) => b,
-        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
-    };
-    let ctx = JoinAuthCtx::didcomm(vetter_did);
-    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
-    tt_didcomm_reply(outcome, thid)
-}
-
-async fn member_vmc_handler(
-    msg: &Message,
-    auth_sender: Option<String>,
-    state: &AppState,
-) -> Option<Reply> {
-    let thid = msg.id.clone();
-    let Some(member_did) = auth_sender else {
-        return Some(unauthorized_reply(thid));
-    };
-
-    let body: MemberVmcBody = match serde_json::from_value(msg.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::BAD_REQUEST,
-                format!("malformed member-vmc body: {e}"),
-            ));
-        }
-    };
-
-    // `request_id` travels as a string (the SDK's `members` module compiles
-    // featureless, without `uuid`); refuse a malformed id up front.
-    let request_id = match body
-        .request_id
-        .as_deref()
-        .map(uuid::Uuid::parse_str)
-        .transpose()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::BAD_REQUEST,
-                format!("requestId is not a UUID: {e}"),
-            ));
-        }
-    };
-
-    let outcome = match crate::members::inbound_vmc::receive_member_vmc_inner(
-        state, member_did, body.vc, request_id,
-    )
-    .await
-    {
-        Ok(o) => o,
-        // No extended codes on the problem-report surface; unchanged.
-        Err(e) => return Some(app_error_report(thid, &AppError::from(e))),
-    };
-
-    let receipt = MemberVmcReceiptBody {
-        member_did: outcome.member_did,
-        vmc_id: outcome.vmc_id,
-        status: "stored".to_string(),
-        request_id: outcome.request_id.map(|u| u.to_string()),
-    };
-    let body = match serde_json::to_value(&receipt) {
-        Ok(v) => v,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("receipt serialise: {e}"),
-            ));
-        }
-    };
-    Some(Reply {
-        type_: MEMBER_VMC_RESPONSE_TYPE.to_string(),
-        body,
-        thid,
-    })
 }
 
 /// `credential-exchange/request/1.0` over DIDComm (Phase 3, task 3.2 wire).
@@ -1833,48 +1553,6 @@ mod tests {
         assert_eq!(code, "<none>");
         assert_eq!(comment, "<none>");
         assert_eq!(args, "<none>");
-    }
-
-    #[test]
-    fn app_error_maps_to_typed_problem_report_codes() {
-        // 4xx-equivalent business outcomes get distinct codes instead
-        // of collapsing into internal-error (P3.6 part 2).
-        assert_eq!(
-            app_error_code(&AppError::Forbidden("nope".into())),
-            codes::FORBIDDEN
-        );
-        assert_eq!(
-            app_error_code(&AppError::Unauthorized("nope".into())),
-            codes::UNAUTHORIZED
-        );
-        assert_eq!(
-            app_error_code(&AppError::NotFound("nope".into())),
-            codes::NOT_FOUND
-        );
-        assert_eq!(
-            app_error_code(&AppError::Conflict("dup".into())),
-            codes::CONFLICT
-        );
-        assert_eq!(
-            app_error_code(&AppError::Validation("bad".into())),
-            codes::BAD_REQUEST
-        );
-        // A consumed single-use resource is a caller-visible terminal
-        // outcome. The taxonomy has no `gone` code, so it rides with
-        // `conflict` — the one thing it must not be is `internal-error`.
-        assert_eq!(
-            app_error_code(&AppError::Gone("consumed".into())),
-            codes::CONFLICT
-        );
-        assert_ne!(
-            app_error_code(&AppError::Gone("consumed".into())),
-            codes::INTERNAL
-        );
-        // Genuine infra faults stay internal.
-        assert_eq!(
-            app_error_code(&AppError::Internal("boom".into())),
-            codes::INTERNAL
-        );
     }
 
     #[test]
