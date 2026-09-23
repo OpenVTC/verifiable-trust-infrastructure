@@ -81,6 +81,9 @@ pub mod pcs_challenge;
 /// The community's minting half: vetter enrolment and the token drip.
 #[cfg(feature = "vetting-pcs")]
 pub mod pcs_issue;
+/// The three Trust Tasks that carry the community half.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs_tasks;
 pub mod profiles;
 pub mod revocation;
 pub mod vetters;

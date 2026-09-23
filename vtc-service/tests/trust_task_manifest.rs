@@ -430,6 +430,29 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
+    // Hidden vetting's community half (development branch `zkp-pcs`): enrolment, the
+    // token drip, and the applicant's submission challenge.
+    //
+    // These are **authored**, not missing: the three specifications live in
+    // dtgwg-trust-tasks-tf on branch `hidden-vetting-tasks`, validated, with bindings
+    // generated for all four languages. What is missing is a release — the bindings
+    // generate as trust-tasks-rs 0.22 and this graph pins ^0.21 through published
+    // crates, so the two nodes cannot unify and no patch bridges them.
+    //
+    // The shape-checking a generated type would have given is not skipped, it is moved:
+    // `vetting::pcs_tasks::tests` validates every payload and response against the
+    // published schema, carried verbatim in `src/vetting/schemas/`. This entry goes to
+    // zero when the release lands, and the hand-written types are deleted with it.
+    (
+        "https://trusttasks.org/spec/vtc/vetting/pcs",
+        1,
+        "hidden vetting: specified upstream, awaiting a trust-tasks-rs release",
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/vetting/vetters/pcs",
+        2,
+        "hidden vetting: specified upstream, awaiting a trust-tasks-rs release",
+    ),
     // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
     // 0.2 were bound ahead of their specs here, and went back to zero with
     // trust-tasks-rs 0.20.4, which serves all nine and generates their wire

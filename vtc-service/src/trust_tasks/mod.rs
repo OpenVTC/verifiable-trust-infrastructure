@@ -478,6 +478,18 @@ async fn dispatch_typed(
         vetting_wire::VETTING_VETTER_PROFILE_TYPE => handle_vetter_profile(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
+        // Hidden vetting's community half (development branch `zkp-pcs`). Three exchanges: a
+        // vetter enrolling, a vetter drawing its drip, an applicant asking for the challenge its
+        // proof must bind. Feature-gated, because a build without the suite cannot serve them
+        // and answering "unsupported type" is the honest response.
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::PCS_ROOT_TYPE => handle_pcs_root(state, ctx, doc).await,
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::PCS_TOKENS_TYPE => handle_pcs_tokens(state, ctx, doc).await,
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE => {
+            handle_pcs_challenge(state, ctx, doc).await
+        }
         // The rooms family. Note what these still do not take: no `ctx`, and no auth
         // claims. A room operation is authorized by the authority chain the room itself
         // issued, never by this service's ACL, roster, or the caller's session —
@@ -689,6 +701,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vetting_wire::VETTING_VETTER_PROFILE_TYPE,
     vetting_wire::VETTING_VETTER_LIST_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
+    // Hidden vetting: enrolment, the drip, and the applicant's challenge.
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::PCS_TOKENS_TYPE,
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
@@ -962,6 +981,65 @@ async fn handle_vetter_grant(
     };
     match crate::vetting::vetters::grant(state, &admin_did, &body).await {
         Ok(grant) => success_response(&doc, grant.response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/pcs-root/0.1` — a vetter enrols for a class label.
+///
+/// The sender is the proven signer, and it is the member the community checks its records for:
+/// a live vetter grant, no credential under this label yet, and the identifier they were bound
+/// to. Every one of those is [`crate::vetting::pcs_issue::enrol`]'s, read from the store.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_pcs_root(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_pcs_root(state, &member_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/pcs-tokens/0.1` — a vetter draws its tick of the drip.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_pcs_tokens(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_pcs_tokens(state, &member_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/pcs-challenge/0.1` — an applicant asks for the nonce its proof must bind.
+///
+/// Open to any party the community would take a submission from, which is the same entitlement
+/// that admits them to apply: the challenge confers no standing, it only makes one submission
+/// unrepeatable.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_pcs_challenge(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let applicant_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_pcs_challenge(state, &applicant_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
 }
@@ -1741,6 +1819,17 @@ mod tests {
             vetting_wire::VETTING_VETTER_RESEND_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            // Hidden vetting. These three name a string constant rather than a generated
+            // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet —
+            // the specifications exist, the bindings generate as 0.22, and this graph is on
+            // ^0.21. `pcs_tasks::tests` holds what the generated type would have held: that the
+            // payloads match the published schemas.
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::PCS_TOKENS_TYPE,
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
