@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 pub use storage::{
-    ENDORSEMENT_TYPES_PREFIX, delete_type, get_type, list_types, store_type, type_exists,
+    ENDORSEMENT_TYPES_PREFIX, all_types, delete_type, get_type, list_types, store_type, type_exists,
 };
 
 /// Reserved type URIs that operators cannot register because
@@ -66,12 +66,20 @@ pub struct EndorsementType {
     /// The type URI. Primary key — URL-encoded into the
     /// keyspace key.
     pub type_uri: String,
-    /// Optional JSON Schema for the claim body. Reserved for
-    /// future per-type validation; the Phase 4 issuance path
-    /// only checks "type is registered" without consulting
-    /// the schema. Operators can read the schema from
-    /// `GET /v1/endorsement-types/{uri}` and validate
-    /// client-side.
+    // Binding since #1649: `vtc/endorsements/issue/0.1` validates the claim
+    // against it and refuses a violation with `claimSchemaViolation`. It was
+    // stored and never read before that, which is why registration did not
+    // check it was a schema at all — and why a type registered with a
+    // malformed one turned every later issuance into a 500. The registrar
+    // refuses a `claimSchema` that will not compile
+    // (`crate::schemas::check_schema`); rows written before that check are
+    // reported at boot and named in the refusal issuance answers with.
+    //
+    // The doc comment below is rendered into `admin-ui/openapi.json` (and from
+    // there into `wire.ts`), so it stays short and operator-facing; the history
+    // is in this ordinary comment, which utoipa does not read.
+    /// Optional JSON Schema every claim of this type must satisfy. Issuance
+    /// validates the claim against it and refuses a violation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_schema: Option<JsonValue>,
     /// Free-form description shown in admin UIs.

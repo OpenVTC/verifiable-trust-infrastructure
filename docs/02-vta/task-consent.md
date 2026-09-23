@@ -314,6 +314,15 @@ Trust Tasks the SDK surfaces `VtaError::ConsentRequired`, carrying
 `exclude_requester` — detection keys on `details.reason`, deliberately not on the
 top-level `code` (which is `taskFailed` for every gated task).
 
+Over Trust Tasks the `auth:consent_required` `details` is held to the
+framework's default bound (4096 bytes of JCS, 16 members — no spec declares
+this shape a bound of its own). `reason`, `payloadDigest`, `correlator`,
+`challenge`, `approverSet`, `minApprovals` and `excludeRequester` always go
+out. `consentRequests` (one VTA-signed request per approver, ~1 KB each) goes
+out whole or not at all: from about three approvers it no longer fits, and is
+replaced by `consentRequestsOmitted: <n>`. A requester that sees the count
+cannot relay; the approvers learn of the request from the VTA's own push.
+
 ## Known gaps
 
 - **No CLI-side decision signer.** The signer exists in Rust

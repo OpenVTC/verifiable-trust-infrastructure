@@ -14,6 +14,7 @@ use std::sync::Arc;
 use affinidi_status_list::StatusPurpose;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use chrono::Utc;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -23,6 +24,7 @@ use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+use vtc_service::endorsement_types::{EndorsementType, get_type, store_type};
 use vtc_service::members::{Member, store_member};
 use vtc_service::status_list;
 use vtc_service::test_support::TestVtc;
@@ -552,6 +554,126 @@ async fn delete_type(fix: &Fixture, uri: &str) -> (StatusCode, Value) {
     body_value(fix.router.clone().oneshot(req).await.unwrap()).await
 }
 
+/// An endorsement type's `claimSchema` must not make the service read a local
+/// file (or fetch a URL) while it is compiled either.
+///
+/// #1660 turned the `jsonschema` resolvers off and held that manifest honest
+/// for `/v1/schemas` and for `validate_instance`. #1657 then added a third
+/// caller-supplied schema to the same compiler: `check_schema`, run when an
+/// endorsement type is registered. It makes the same `validator_for` call, so
+/// it has the same exposure and needs the same guard — otherwise restoring the
+/// features would be caught on two paths out of three.
+///
+/// The referenced file really exists and really is a valid schema, so this
+/// registration would succeed if the resolver were on.
+#[tokio::test]
+async fn a_claim_schema_with_an_external_ref_is_refused_rather_than_fetched() {
+    let fix = build().await;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let target = dir.path().join("ref-target.json");
+    std::fs::write(&target, br#"{"type": "string"}"#).expect("write target");
+    assert!(target.exists());
+
+    let uri = "https://example.com/v1/skills/external-ref";
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": uri,
+            "claimSchema": { "$ref": format!("file://{}", target.display()) },
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a claimSchema with a file:// $ref must be refused, not resolved: {body}"
+    );
+    assert_eq!(
+        rest_error_code(&body),
+        trust_tasks_rs::StandardCode::MalformedRequest.as_str(),
+        "{body}"
+    );
+    assert!(
+        get_type(&fix._vtc.state.endorsement_types_ks, uri)
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused registration must not store the type"
+    );
+
+    // The network case: refused at compile rather than attempted. The address
+    // is unroutable, so a regression shows up as a refusal that takes a
+    // connect timeout rather than as a pass.
+    let (status, _) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/external-ref-http",
+            "claimSchema": { "$ref": "http://127.0.0.1:1/schema.json" },
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an http:// $ref must not be fetched"
+    );
+
+    // An ordinary internal $ref still registers — this removes remote
+    // resolution, not `$ref` itself.
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/internal-ref",
+            "claimSchema": {
+                "type": "object",
+                "$defs": { "level": { "type": "integer" } },
+                "properties": { "level": { "$ref": "#/$defs/level" } },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// A `credentialSchema` supplied by an admin must not make the service read a
+/// local file (or fetch a URL) while compiling it.
+///
+/// The `jsonschema` crate enables `resolve-http`/`resolve-file` by default;
+/// the workspace manifest turns both off, because every schema this service
+/// compiles arrives from a caller. The referenced file really exists and is a
+/// valid schema, so this registration would succeed if the resolver were on.
+#[tokio::test]
+async fn register_schema_refuses_an_external_ref() {
+    let fix = build().await;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let target = dir.path().join("ref-target.json");
+    std::fs::write(&target, br#"{"type": "string"}"#).expect("write target");
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/schemas")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "typeUri": "https://example.test/ExternalRefCredential",
+                "dtgType": "ExternalRefCredential",
+                "kind": "issues",
+                "credentialSchema": { "$ref": format!("file://{}", target.display()) },
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a schema with a file:// $ref must be refused, not resolved: {body}"
+    );
+}
+
 /// An Accepts criterion counting statements of `statement_type`. The DCQL
 /// query references `EndorsementCredential`, so that per-type schema is
 /// registered first — `store_accepts` refuses a dangling type reference.
@@ -929,6 +1051,127 @@ async fn a_claim_failing_the_type_claim_schema_is_the_declared_violation() {
         "a refused claim must not persist an endorsement"
     );
 
+    let (status, body) = issue(&fix, uri, json!({ "level": "expert" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// A `claimSchema` that is not itself valid JSON Schema is refused at
+/// registration, naming the part of the document that is wrong.
+///
+/// `vtc/endorsement-types/register/0.1` declares no code for this —
+/// `invalidUri`, `reserved` and `exists` are its three, and none is about the
+/// schema — so the refusal carries the framework's `malformedRequest` (SPEC
+/// §8.3). Before this, the document was stored unread; #1649 made
+/// `vtc/endorsements/issue/0.1` enforce it, which turned a malformed one into
+/// an opaque 500 on every issuance of the type.
+#[tokio::test]
+async fn a_claim_schema_that_is_not_a_json_schema_is_refused_at_registration() {
+    let fix = build().await;
+    let malformed = trust_tasks_rs::StandardCode::MalformedRequest.as_str();
+
+    for (n, (schema, names)) in [
+        (json!({ "type": "not-a-type" }), "/type"),
+        (
+            json!({ "type": "object", "properties": { "level": { "type": "intiger" } } }),
+            "/properties/level/type",
+        ),
+        (json!({ "required": "level" }), "/required"),
+        (json!(true), "found a boolean"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let uri = format!("https://example.com/v1/skills/bad-{n}");
+        let (status, body) = register(&fix, json!({ "typeUri": uri, "claimSchema": schema })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{schema}: {body}");
+        assert_eq!(rest_error_code(&body), malformed, "{schema}: {body}");
+        let message = body["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("claimSchema is not a valid JSON Schema") && message.contains(names),
+            "the refusal must name the bad part — {schema}: {body}"
+        );
+        // Nothing was stored, so the type is still free to register properly.
+        assert!(
+            get_type(&fix._vtc.state.endorsement_types_ks, &uri)
+                .await
+                .unwrap()
+                .is_none(),
+            "a refused registration must not store the type"
+        );
+    }
+
+    // The same URI registers once the schema is a schema, and a type with no
+    // `claimSchema` at all is untouched by the check.
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/bad-0",
+            "claimSchema": { "type": "object", "properties": { "level": { "type": "integer" } } }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = register(&fix, json!({ "typeUri": "https://example.com/v1/plain" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// A type whose **stored** `claimSchema` will not compile answers issuance with
+/// a 5xx that names the type and says the type is at fault — not a bare 500,
+/// and not `claimSchemaViolation`, which means the caller's claim failed a
+/// valid schema and would send the operator to fix the wrong thing.
+///
+/// Registration refuses such a schema now, so the row is written straight into
+/// the keyspace: the fixed path cannot produce one.
+#[tokio::test]
+async fn a_type_with_a_corrupt_stored_claim_schema_names_the_type_not_the_claim() {
+    let fix = build().await;
+    let uri = "https://example.com/v1/skills/corrupt";
+    store_type(
+        &fix._vtc.state.endorsement_types_ks,
+        &EndorsementType {
+            type_uri: uri.into(),
+            claim_schema: Some(json!({ "type": "intiger" })),
+            description: None,
+            created_at: Utc::now(),
+            created_by_did: ADMIN_DID.into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = issue(&fix, uri, json!({ "level": "expert" })).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        "",
+        "a broken type is not one of issue/0.1's declared claim faults: {body}"
+    );
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(uri)
+            && message.contains("invalid stored claimSchema")
+            && message.contains("re-register"),
+        "the answer must name the type and say the type must be re-registered: {body}"
+    );
+    assert!(
+        fix.endorsements_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing is issued against a type whose schema cannot be read"
+    );
+
+    // Re-registering the type with a schema that compiles is the documented
+    // fix, and issuance works again afterwards.
+    let (status, body) = delete_type(&fix, uri).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = register(
+        &fix,
+        json!({ "typeUri": uri, "claimSchema": { "type": "object" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, body) = issue(&fix, uri, json!({ "level": "expert" })).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }

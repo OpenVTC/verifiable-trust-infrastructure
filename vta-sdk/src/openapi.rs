@@ -145,6 +145,10 @@ spec_types! {
     VetterList01Payload(vetters::list::v0_1::Payload);
     /// `vtc/vetting/vetters/list/0.1#response`.
     VetterList01Response(vetters::list::v0_1::Response);
+    /// `vtc/vetting/vetters/show/0.1` payload.
+    VetterShow01Payload(vetters::show::v0_1::Payload);
+    /// `vtc/vetting/vetters/show/0.1#response`.
+    VetterShow01Response(vetters::show::v0_1::Response);
     /// `vtc/vetting/vetters/resend/0.1#response`.
     VetterResend01Response(vetters::resend::v0_1::Response);
     /// `vtc/endorsement-types/delete/0.1#response`.
@@ -490,6 +494,8 @@ mod tests {
         check::<VetterGrant01Response>();
         check::<VetterList01Payload>();
         check::<VetterList01Response>();
+        check::<VetterShow01Payload>();
+        check::<VetterShow01Response>();
         check::<VetterResend01Response>();
         check::<EndorsementTypeDelete01Response>();
         check::<VetterProfile01VettingMethod>();

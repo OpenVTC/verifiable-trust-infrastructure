@@ -230,9 +230,11 @@ pub(crate) enum Commands {
     /// show a set of them together, which face each persona wears where, and
     /// what other people have told you.
     ///
-    /// Your attributes and your faces sit ABOVE every trust context. Reaching them
-    /// needs an agent credential with no context restriction, or one granted
-    /// `persona-holder`. Wearing, contacts and what leaves are context-scoped
+    /// Your attributes and your faces sit ABOVE every trust context. Reaching
+    /// them needs a credential granted `persona-holder`, and no role carries it
+    /// — administering every context is not permission to read what sits above
+    /// them. Grant it with `pnm acl update --did <did> --capabilities
+    /// persona-holder`. Wearing, contacts and what leaves are context-scoped
     /// and take `--context`.
     Persona {
         #[command(subcommand)]
@@ -1574,10 +1576,11 @@ pub(crate) enum DidMgmtDidCommands {
     },
     /// Print the raw `did.jsonl` log for a DID the VTA knows.
     ///
-    /// Snapshot from provisioning time — not a live resolver. Use
-    /// for audit, debugging, or republication fallback. The VTA's
-    /// endpoint is public (webvh logs are world-readable by design),
-    /// so this runs without a session token.
+    /// The VTA's stored copy, including every entry it has appended
+    /// since mint (`dids edit`, service changes) — not a live
+    /// resolver. Use it to deliver a self-hosted DID's extended log
+    /// (for a community: `cnm did-log install --file <out>`), for
+    /// audit, or for republication.
     GetLog {
         /// The DID to retrieve the log for.
         did: String,
@@ -2048,12 +2051,13 @@ pub(crate) enum ContextCommands {
         /// identity** — the attribute pool, the profiles built over it, and the
         /// disclosure history — by adding the `persona-holder` capability.
         ///
-        /// That identity sits above every trust context, so a context-scoped
-        /// admin cannot reach it. Without this flag a client provisioned here
-        /// can administer its own context and nothing of the holder's; with it,
-        /// it can manage the holder's identity **without** gaining any authority
-        /// over other contexts. Grant it to a client that is the holder's own —
-        /// OpenVTC, a personal agent — and not to an integration.
+        /// That identity sits above every trust context, and no role reaches
+        /// it — not a context-scoped admin, and not a super-admin either.
+        /// Without this flag a client provisioned here can administer its own
+        /// context and nothing of the holder's; with it, it can manage the
+        /// holder's identity **without** gaining any authority over other
+        /// contexts. Grant it to a client that is the holder's own — OpenVTC, a
+        /// personal agent — and not to an integration.
         ///
         /// Super-admin only, like every grant of holder authority.
         #[arg(long, requires = "admin_did")]
@@ -3455,6 +3459,23 @@ pub(crate) enum PersonaCommands {
         #[arg(long = "candidate-file")]
         candidate_file: Option<String>,
     },
+    /// Worlds — the parts of your life you have named, and which faces and
+    /// attributes belong to each.
+    ///
+    /// A world is an arrangement and nothing more: deleting one leaves every
+    /// face and attribute exactly where it was. It never contains anything, so
+    /// it cannot take anything with it.
+    World {
+        #[command(subcommand)]
+        command: PersonaWorldCommands,
+    },
+    /// The claim-type registry this VTA resolves against — what each type means,
+    /// how a client should mask it, and what it takes to let it leave.
+    ///
+    /// Read it rather than assuming: the registry is what decides whether a
+    /// value is hidden on screen and whether letting it go needs a fresh
+    /// authentication.
+    ClaimTypes,
     /// List the output formats this VTA can produce, and what each DISCARDS.
     /// Worth running before a preview: one that drops where an attribute came from
     /// turns "my employer attested this" into something you merely said.
@@ -3848,6 +3869,91 @@ pub(crate) enum PersonaBindingCommands {
 }
 
 /// `pnm persona contact …`
+#[derive(Subcommand, Debug)]
+pub(crate) enum PersonaWorldCommands {
+    /// List the worlds you have named.
+    List {
+        /// Page size to ask for — never a cap. Follow --cursor to the end.
+        #[arg(long)]
+        limit: Option<std::num::NonZeroU64>,
+        /// Continue a previous listing.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Name a world, or replace one.
+    ///
+    /// BOTH lists replace. Omitting --face empties the world's faces rather
+    /// than leaving them alone, so pass the list you want to end up with —
+    /// `persona world list` shows what is there now.
+    Put {
+        /// What you call it — "Work", "Home", "Play". Only you ever see it.
+        #[arg(long)]
+        name: String,
+        /// Its colour: slate, indigo, teal, moss, sand, clay, rose or plum.
+        #[arg(long)]
+        colour: WorldColourOpt,
+        /// One or two emoji shown beside the name.
+        #[arg(long)]
+        icon: Option<String>,
+        /// A face belonging to it. Repeatable. A face belongs to at most one
+        /// world.
+        #[arg(long = "face")]
+        face_ids: Vec<String>,
+        /// An attribute belonging to it. Repeatable. An attribute may belong
+        /// to several — a mobile number is genuinely both work and home.
+        #[arg(long = "attribute")]
+        attribute_ids: Vec<String>,
+        /// Replace an existing world instead of creating one.
+        #[arg(long = "world-id")]
+        facet_id: Option<String>,
+        /// Refuse the write unless the world is still at this version. Pass 0
+        /// to create only.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+    /// Unname a world. Every face and attribute in it stays where it was.
+    Delete {
+        /// The world to remove.
+        #[arg(long = "world-id")]
+        facet_id: String,
+        /// Refuse the delete unless the world is still at this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+}
+
+/// The eight colours a world may carry, as the specification names them.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum WorldColourOpt {
+    Slate,
+    Indigo,
+    Teal,
+    Moss,
+    Sand,
+    Clay,
+    Rose,
+    Plum,
+}
+
+impl WorldColourOpt {
+    /// The token the specification names this colour by. The generated
+    /// `FacetColour` parses these; clap's own kebab-casing happens to agree,
+    /// but the mapping is written out so a renamed variant cannot silently
+    /// start sending a colour the schema refuses.
+    pub(crate) fn as_spec_token(self) -> &'static str {
+        match self {
+            Self::Slate => "slate",
+            Self::Indigo => "indigo",
+            Self::Teal => "teal",
+            Self::Moss => "moss",
+            Self::Sand => "sand",
+            Self::Clay => "clay",
+            Self::Rose => "rose",
+            Self::Plum => "plum",
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub(crate) enum PersonaContactCommands {
     /// Record what a peer disclosed. Writes a new revision rather than
@@ -4190,5 +4296,28 @@ mod removal_verb_tests {
                 panic!("{argv:?} should parse: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod world_colour_tests {
+    use super::WorldColourOpt;
+    use clap::ValueEnum;
+
+    /// Every colour the CLI offers is a token the specification names. The
+    /// mapping is written out rather than derived, so this is what catches a
+    /// renamed variant that would otherwise send a colour the schema refuses.
+    #[test]
+    fn every_offered_colour_is_a_token_the_spec_names() {
+        let tokens: Vec<&str> = WorldColourOpt::value_variants()
+            .iter()
+            .map(|c| c.as_spec_token())
+            .collect();
+        assert_eq!(
+            tokens,
+            vec![
+                "slate", "indigo", "teal", "moss", "sand", "clay", "rose", "plum"
+            ],
+        );
     }
 }

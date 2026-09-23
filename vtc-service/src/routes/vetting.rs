@@ -32,7 +32,7 @@ use serde::Serialize;
 use uuid::Uuid;
 use vta_sdk::openapi::{
     VetterGrant01Payload, VetterGrant01Response, VetterList01Payload, VetterList01Response,
-    VetterResend01Response,
+    VetterResend01Response, VetterShow01Payload, VetterShow01Response,
 };
 use vta_sdk::protocols::vetting::{
     AutoGrantConfig, AutoGrantStatus, VetterGrantListResponse, read_checked,
@@ -152,6 +152,39 @@ pub async fn list_listed_vetters(
         .map_err(|e| AppError::Validation(e.to_string()))?;
     Ok(Json(
         crate::vetting::profiles::list(&state, &body).await?.into(),
+    ))
+}
+
+/// One vetter's grant status, as an applicant would be told it.
+///
+/// The body and the answer are `vtc/vetting/vetters/show/0.1`'s, and both go
+/// through [`crate::vetting::profiles::show`], so the console sees exactly what
+/// `POST /v1/trust-tasks` returns — including `none` for a DID this community
+/// holds no grant for, which is an answer and not an error.
+#[utoipa::path(
+    post, path = "/vetting/vetters/show",
+    operation_id = "vettingVetterShow", tag = "vetting",
+    security(("bearer_jwt" = [])),
+    request_body = VetterShow01Payload,
+    responses(
+        (status = 200, description = "The vetter's grant status", body = VetterShow01Response),
+        (status = 400, description = "The payload is not a valid show request"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn show_vetter(
+    _admin: AdminAuth,
+    State(state): State<AppState>,
+    // Read as JSON, then checked against the published schema before parsing,
+    // as the listing above does.
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<VetterShow01Response>, AppError> {
+    let body: VetterShow01Payload = read_checked(&body)
+        .map(VetterShow01Payload)
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+    Ok(Json(
+        crate::vetting::profiles::show(&state, &body).await?.into(),
     ))
 }
 

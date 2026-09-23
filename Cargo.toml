@@ -181,10 +181,25 @@ affinidi-messaging-core = "0.1"
 futures-util = "0.3"
 
 # Decentralized Trust Graph Credentials
-dtg-credentials = "0.9.1"
+dtg-credentials = "0.11"
 
-# JSON Schema validation (issue-time credentialSchema checks)
-jsonschema = "0.56"
+# JSON Schema validation (issue-time credentialSchema checks).
+#
+# `default-features = false` to drop `resolve-http` and `resolve-file`, which
+# 0.56 enables by default. Every schema we compile is caller-supplied — a
+# `credentialSchema` at schema registration, an endorsement type's
+# `claimSchema`, and both again at issuance — so with the resolvers on, an
+# external `$ref` makes the VTC fetch a URL or read a local file while
+# compiling it. Nothing we store uses an external `$ref`, and a schema that
+# needs one belongs inlined, so the resolvers buy nothing and cost an
+# admin-reachable SSRF / local-file read. Without them such a schema is
+# refused at compile, which is what `check_schema` and `validator_for` already
+# report to the caller.
+#
+# `idna` is kept: it is the `hostname`/`idn-hostname` format check, pure
+# computation and no I/O. `tls-aws-lc-rs` goes with `resolve-http` — it exists
+# only to fetch over HTTPS.
+jsonschema = { version = "0.56", default-features = false, features = ["idna"] }
 
 # Async runtime. 1.49 stabilised `runtime::Id`, which
 # `vta_sdk::resolver::shared_did_resolver` keys on.
@@ -366,7 +381,7 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # `persona/profile/{retire,reinstate}` and binding `until`; 0.21.14, of
 # `persona/profile/{usage,timeline}` and face `reach`; 0.21.15, of `derived`
 # provenance, attribute `endorsements` and `vtc/invitations/deliver`.
-trust-tasks-rs = { version = "0.21.17", default-features = false, features = [
+trust-tasks-rs = { version = "0.21.21", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

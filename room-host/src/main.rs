@@ -13,6 +13,18 @@ struct SecretsFile {
     #[serde(default)]
     secrets: vti_secrets::SecretsConfig,
 }
+
+/// Parse a `--secrets` file, returning the dotted path of every key it carries
+/// that [`SecretsFile`] does not read.
+#[cfg(any(feature = "didcomm", feature = "onboarding"))]
+fn parse_secrets_file(text: &str) -> anyhow::Result<(SecretsFile, Vec<String>)> {
+    let mut unknown_keys = Vec::new();
+    let file = serde_ignored::deserialize(toml::Deserializer::parse(text)?, |key| {
+        unknown_keys.push(key.to_string())
+    })?;
+    Ok((file, unknown_keys))
+}
+
 use room_host::{open_state_with_resolver, router_with_origins};
 
 #[derive(Parser, Debug)]
@@ -175,7 +187,19 @@ async fn main() -> anyhow::Result<()> {
         let secrets = match &args.secrets {
             Some(path) => {
                 let text = std::fs::read_to_string(path)?;
-                toml::from_str::<SecretsFile>(&text)?.secrets
+                // A key the schema does not read — a typo'd `[secret]` table,
+                // say — would otherwise leave the default (plaintext) backend in
+                // place without a word. Warn with its dotted path (Keyring VTI-06).
+                let (file, unknown_keys) = parse_secrets_file(&text)?;
+                for key in &unknown_keys {
+                    tracing::warn!(
+                        "unknown key `{key}` in {} — ignored. Check for a typo or a key \
+                         placed in the wrong [section]; a key placed after a [table] \
+                         header belongs to that table.",
+                        path.display()
+                    );
+                }
+                file.secrets
             }
             // No `[secrets]` given: keep the identity in a cleartext file under `--data-dir`,
             // and say so rather than doing it quietly. `vti-secrets` gates plaintext behind
@@ -335,4 +359,23 @@ async fn main() -> anyhow::Result<()> {
     );
     axum::serve(listener, router_with_origins(state, &args.allow_origin)).await?;
     Ok(())
+}
+
+#[cfg(all(test, any(feature = "didcomm", feature = "onboarding")))]
+mod secrets_file_tests {
+    use super::parse_secrets_file;
+
+    /// Keyring VTI-06: a misspelt table leaves the default backend in place;
+    /// the key is reported with its dotted path instead of vanishing.
+    #[test]
+    fn a_misplaced_key_is_reported_with_its_dotted_path() {
+        let (_, unknown) = parse_secrets_file("[secret]\nbackend = \"keyring\"\n").unwrap();
+        assert_eq!(unknown, vec!["secret".to_string()]);
+    }
+
+    #[test]
+    fn a_valid_file_reports_nothing() {
+        let (_, unknown) = parse_secrets_file("[secrets]\n").unwrap();
+        assert!(unknown.is_empty(), "{unknown:?}");
+    }
 }

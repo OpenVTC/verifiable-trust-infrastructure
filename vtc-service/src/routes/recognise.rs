@@ -56,7 +56,7 @@ use vti_common::audit::{AuditEvent, CrossCommunitySessionMintedData};
 
 use crate::auth::session::{Session, SessionState, now_epoch, store_session};
 use crate::credentials::exchange::verify_vp_token;
-use crate::error::AppError;
+use crate::error::{AppError, TaskError};
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
     get_policy,
@@ -145,6 +145,20 @@ pub async fn recognise_challenge(
     Ok(Json(RecogniseChallengeResponse { nonce, expires_at }))
 }
 
+/// `vtc/auth/recognise:credentialInvalid` — the VEC or VMC failed proof
+/// verification, fell outside its validity window, or was revoked through
+/// `credentialStatus`.
+pub const RECOGNISE_ERR_CREDENTIAL_INVALID: &str =
+    trust_tasks_rs::specs::vtc::auth::recognise::v0_2::error_codes::CREDENTIAL_INVALID.code;
+/// `vtc/auth/recognise:issuerNotRecognised` — the foreign issuer is not in this
+/// community's recognition graph.
+pub const RECOGNISE_ERR_ISSUER_NOT_RECOGNISED: &str =
+    trust_tasks_rs::specs::vtc::auth::recognise::v0_2::error_codes::ISSUER_NOT_RECOGNISED.code;
+/// `vtc/auth/recognise:roleNotMapped` — policy allowed the issuer but mapped
+/// the foreign role to no local role.
+pub const RECOGNISE_ERR_ROLE_NOT_MAPPED: &str =
+    trust_tasks_rs::specs::vtc::auth::recognise::v0_2::error_codes::ROLE_NOT_MAPPED.code;
+
 /// `POST /v1/auth/recognise` — cross-community session mint from a
 /// holder-signed VP embedding a foreign VEC + VMC.
 #[utoipa::path(
@@ -158,7 +172,7 @@ pub async fn recognise_challenge(
 pub async fn recognise(
     State(state): State<AppState>,
     Json(req): Json<RecogniseRequest>,
-) -> Result<Json<RecogniseResponse>, AppError> {
+) -> Result<Json<RecogniseResponse>, TaskError> {
     // Pre-flight: the route depends on optional state. Refuse cleanly when a
     // piece is missing rather than 500ing mid-handler. The `resolver` is
     // needed immediately (VP holder + issuer proof verification); the
@@ -234,7 +248,8 @@ pub async fn recognise(
         emit_denied_audit(&state, &holder_did, None, "holder-binding", None, &err).await;
         return Err(AppError::Forbidden(
             "presentation holder is not the foreign credential subject".into(),
-        ));
+        )
+        .into());
     }
 
     let registry = state.registry_client.as_ref().cloned().ok_or_else(|| {
@@ -375,7 +390,7 @@ fn vc_subject_id(vc: &VerifiableCredential) -> Option<String> {
 pub async fn mint_recognised_session(
     state: &AppState,
     verified: VerifiedForeignCredential,
-) -> Result<Json<RecogniseResponse>, AppError> {
+) -> Result<Json<RecogniseResponse>, TaskError> {
     let jwt_keys = state
         .jwt_keys
         .as_ref()
@@ -398,10 +413,13 @@ pub async fn mint_recognised_session(
                 &RecognitionError::Malformed("policy denied role mapping".into()),
             )
             .await;
-            return Err(AppError::Forbidden(format!(
-                "cross_community_roles.rego denied mapping for foreign role '{}'",
-                verified.foreign_role
-            )));
+            return Err(TaskError::declared(
+                RECOGNISE_ERR_ROLE_NOT_MAPPED,
+                AppError::Forbidden(format!(
+                    "cross_community_roles.rego denied mapping for foreign role '{}'",
+                    verified.foreign_role
+                )),
+            ));
         }
     };
 
@@ -429,8 +447,12 @@ pub async fn mint_recognised_session(
             &RecognitionError::ValidityWindow("credentials expire immediately".into()),
         )
         .await;
-        return Err(AppError::Forbidden(
-            "foreign credentials expire too soon to mint a session".into(),
+        // The declared `credentialInvalid` covers "was expired", and a window
+        // that has already closed by the time a session could be minted is
+        // that, not a policy refusal.
+        return Err(TaskError::declared(
+            RECOGNISE_ERR_CREDENTIAL_INVALID,
+            AppError::Forbidden("foreign credentials expire too soon to mint a session".into()),
         ));
     }
 
@@ -574,7 +596,7 @@ async fn map_foreign_role(
     Ok(mapped)
 }
 
-fn map_recognition_error(e: RecognitionError) -> AppError {
+fn map_recognition_error(e: RecognitionError) -> TaskError {
     use axum::http::StatusCode;
     match e {
         // The registry is a downstream dependency, not the caller —
@@ -584,14 +606,36 @@ fn map_recognition_error(e: RecognitionError) -> AppError {
         RecognitionError::RegistryUnreachable(msg) => AppError::ServiceError {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: format!("trust registry unavailable: {msg}"),
-        },
+        }
+        .into(),
         RecognitionError::RegistryRejected(msg) => AppError::ServiceError {
             status: StatusCode::BAD_GATEWAY,
             message: format!("trust registry rejected the recognise query: {msg}"),
-        },
+        }
+        .into(),
+        // The three the specification names, each carrying its declared code so
+        // a client can branch on the refusal instead of parsing prose
+        // (SPEC §8.5; `vtc/auth/recognise/0.2`).
+        //
+        // `credentialInvalid` is declared as "failed proof verification, was
+        // expired, or was revoked via credentialStatus" — exactly these three
+        // variants, and no more. `IssuerKeyUnresolved` and `Malformed` are
+        // refusals about a document that could not be checked at all rather
+        // than one that was checked and failed, so they stay uncoded rather
+        // than being filed under a code that would misdescribe them.
+        e @ (RecognitionError::ProofInvalid(_)
+        | RecognitionError::StatusListFailed(_)
+        | RecognitionError::ValidityWindow(_)) => TaskError::declared(
+            RECOGNISE_ERR_CREDENTIAL_INVALID,
+            AppError::Forbidden(e.to_string()),
+        ),
+        e @ RecognitionError::IssuerNotRecognised(_) => TaskError::declared(
+            RECOGNISE_ERR_ISSUER_NOT_RECOGNISED,
+            AppError::Forbidden(e.to_string()),
+        ),
         // All other variants are caller-driven rejection
         // signals → 403 Forbidden.
-        other => AppError::Forbidden(other.to_string()),
+        other => AppError::Forbidden(other.to_string()).into(),
     }
 }
 
@@ -763,7 +807,7 @@ mod tests {
     /// (caller's fault). Pins the P3.6 boundary mapping.
     #[test]
     fn registry_failures_map_to_5xx_not_500_or_403() {
-        let status = |e: RecognitionError| match map_recognition_error(e) {
+        let status = |e: RecognitionError| match AppError::from(map_recognition_error(e)) {
             AppError::ServiceError { status, .. } => status,
             other => panic!("expected ServiceError, got {other:?}"),
         };
@@ -778,16 +822,21 @@ mod tests {
     }
 
     /// Genuine caller-driven rejections stay 403 — a not-recognised
-    /// issuer is the operator's "forgot to add the peer" path.
+    /// issuer is the operator's "forgot to add the peer" path — and each now
+    /// carries the code its specification declares beside the status.
     #[test]
     fn caller_rejections_stay_403() {
-        assert!(matches!(
-            map_recognition_error(RecognitionError::IssuerNotRecognised("did:x".into())),
-            AppError::Forbidden(_)
-        ));
-        assert!(matches!(
-            map_recognition_error(RecognitionError::ProofInvalid("bad sig".into())),
-            AppError::Forbidden(_)
-        ));
+        let issuer = map_recognition_error(RecognitionError::IssuerNotRecognised("did:x".into()));
+        assert_eq!(issuer.code(), Some(RECOGNISE_ERR_ISSUER_NOT_RECOGNISED));
+        assert!(matches!(AppError::from(issuer), AppError::Forbidden(_)));
+
+        let proof = map_recognition_error(RecognitionError::ProofInvalid("bad sig".into()));
+        assert_eq!(proof.code(), Some(RECOGNISE_ERR_CREDENTIAL_INVALID));
+        assert!(matches!(AppError::from(proof), AppError::Forbidden(_)));
+
+        // A refusal the specification does not name stays uncoded rather than
+        // being filed under a code that would misdescribe it.
+        let malformed = map_recognition_error(RecognitionError::Malformed("no subject".into()));
+        assert_eq!(malformed.code(), None);
     }
 }

@@ -250,7 +250,7 @@ pub enum ProfileEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalProfileEntry {
     /// The value, carried in full. There is no other form.
-    pub inline: InlineValue,
+    pub inline: LocalInlineValue,
     /// The role this entry plays in the face — `displayName` for what the
     /// face calls itself. Unique within a face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -561,6 +561,35 @@ pub struct ContactDocument {
     /// Who published it, as they named themselves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher: Option<Value>,
+}
+
+/// The inline value of a **context-local** profile entry.
+///
+/// Deliberately narrower than [`InlineValue`], and the missing member is the
+/// point: there is no `provenance` here. A `credentialBacked` provenance names
+/// a `credentialId` and a `claimPath`, and a value authored inside a context
+/// has nowhere to put either — so a context-local value is self-asserted by
+/// construction, and a maintainer presents it as such. Carrying the member
+/// would let a context assert that a value is attested when no credential was
+/// ever checked, over a value the issuer never saw.
+///
+/// This existed as [`InlineValue`] until it was found that the schema refuses
+/// the member (`additionalProperties: false`), which made every local-profile
+/// write through this SDK unsendable — the type could not express a conforming
+/// payload at all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalInlineValue {
+    /// The vocabulary token naming what this value is.
+    #[serde(rename = "type")]
+    pub claim_type: String,
+    /// The value itself.
+    pub value: Value,
+    /// What the value is.
+    pub value_type: ValueType,
+    /// The holder's own name for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// `spec/persona/contact/put/1.0` — record what a peer disclosed.
@@ -1016,5 +1045,34 @@ mod tests {
     fn credential_backed_provenance_needs_its_credential() {
         serde_json::from_value::<Provenance>(serde_json::json!({ "kind": "credentialBacked" }))
             .expect_err("credentialBacked without a credentialId must not parse");
+    }
+
+    /// A context-local entry serialises without `provenance`, because the
+    /// schema refuses one.
+    ///
+    /// It used to reuse the pool's [`InlineValue`], whose `provenance` is not
+    /// optional — so every local-profile write this SDK could build was
+    /// rejected by a conforming agent with "Additional properties are not
+    /// allowed ('provenance' was unexpected)". The type could not express a
+    /// valid payload at all, which is the kind of defect a round-trip test
+    /// through a live agent finds and a type-checker never will.
+    #[test]
+    fn a_context_local_entry_carries_no_provenance() {
+        let entry = LocalProfileEntry {
+            inline: LocalInlineValue {
+                claim_type: "x:handle".into(),
+                value: serde_json::json!("ada99"),
+                value_type: ValueType::String,
+                label: None,
+            },
+            slot: None,
+        };
+        let wire = serde_json::to_value(&entry).expect("serialises");
+        assert!(
+            wire["inline"].get("provenance").is_none(),
+            "a context-local value must not claim a provenance: {wire}"
+        );
+        assert_eq!(wire["inline"]["type"], "x:handle");
+        assert_eq!(wire["inline"]["valueType"], "string");
     }
 }

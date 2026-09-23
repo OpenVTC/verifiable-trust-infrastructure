@@ -221,6 +221,17 @@ export async function loginWithWalletProxy(
   return runProxySiop(entry.principalDid, entry.id);
 }
 
+/** A VTA-identity sign-in that failed, carrying the DID it presented — the
+ *  DID a refusal is about, and the one the VTC's ACL would have to name. */
+export class SignInAsError extends Error {
+  readonly presentedDid: string;
+  constructor(message: string, presentedDid: string) {
+    super(message);
+    this.name = "SignInAsError";
+    this.presentedDid = presentedDid;
+  }
+}
+
 /**
  * The preferred VTA-proxied sign-in: let the wallet say which persona this
  * VTC knows the operator as, then run the round-trip as that persona.
@@ -251,7 +262,14 @@ export async function loginWithWalletProfile(): Promise<VtaWalletLoginResult> {
   try {
     return await runProxySiop(profile.did, profile.entryId);
   } catch (err) {
-    if (!profile.bound) throw err;
+    if (!profile.bound) {
+      // Not a first sign-in, but the DID is still the one thing a refusal
+      // needs and the page cannot otherwise see — carry it to the caller.
+      throw new SignInAsError(
+        err instanceof Error ? err.message : String(err),
+        profile.did,
+      );
+    }
     // The persona was created a moment ago, so this VTC has never seen it and
     // the ACL gate in `handle_challenge` is by far the likeliest cause. Say
     // which DID needs admitting: the operator cannot act on a 403 alone, and

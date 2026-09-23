@@ -1224,11 +1224,29 @@ export interface paths {
         get: operations["show_member"];
         put?: never;
         post?: never;
-        /** DELETE /members/{did} — admin removes another member. Auth: Admin. */
+        /**
+         * DELETE /members/{did} — admin removes another member. Auth: Admin.
+         * @description **Transitional bearer-token path (#1641).** `vtc/members/admin-remove/0.1`
+         *     declares `proof` REQUIRED, and the authoritative binding is the signed
+         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+         *     the administrator and their authority is read from their ACL entry. This
+         *     route authenticates by bearer JWT and verifies no document proof; it is kept
+         *     only until the admin console can sign a Trust Task document, and is removed
+         *     in the same change that gives it that.
+         */
         delete: operations["admin_remove"];
         options?: never;
         head?: never;
-        /** PATCH /members/{did} — update member role + profile fields. Auth: Admin. */
+        /**
+         * PATCH /members/{did} — update member role + profile fields. Auth: Admin.
+         * @description **Transitional bearer-token path (#1641).** `vtc/members/update/0.1`
+         *     declares `proof` REQUIRED, and the authoritative binding is the signed
+         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+         *     the administrator and their authority is read from their ACL entry. This
+         *     route authenticates by bearer JWT and verifies no document proof; it is kept
+         *     only until the admin console can sign a Trust Task document, and is removed
+         *     in the same change that gives it that.
+         */
         patch: operations["update_member"];
         trace?: never;
     };
@@ -1257,6 +1275,14 @@ export interface paths {
          *     credential bodies that leaves no trace cannot be reviewed afterwards. The
          *     audit write happens before the bodies are returned — a read that could not
          *     be recorded is refused rather than disclosed silently.
+         *
+         *     **Transitional bearer-token path (#1641).** `vtc/members/credentials/0.1`
+         *     declares `proof` REQUIRED, and the authoritative binding is the signed
+         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+         *     the administrator and their authority is read from their ACL entry. This
+         *     route authenticates by bearer JWT and verifies no document proof; it is kept
+         *     only until the admin console can sign a Trust Task document, and is removed
+         *     in the same change that gives it that.
          */
         get: operations["memberCredentials"];
         put?: never;
@@ -1324,6 +1350,13 @@ export interface paths {
          *     was removed). Hard-deletes the ACL (if any) + Member row, decrements the
          *     count, and flips the revocation bit. Auth: **Super-admin** (forceful, skips
          *     the removal policy). Refuses the sole admin (no-last-admin invariant).
+         * @description **Transitional bearer-token path (#1641).** `vtc/members/purge/0.1` declares
+         *     `proof` REQUIRED, and the authoritative binding is the signed Trust Task
+         *     document at `POST /v1/trust-tasks`, where the proof authenticates the
+         *     super-administrator and their authority is read from their ACL entry. This
+         *     route authenticates by bearer JWT and verifies no document proof; it is kept
+         *     only until the admin console can sign a Trust Task document, and is removed
+         *     in the same change that gives it that.
          */
         delete: operations["purge"];
         options?: never;
@@ -1881,6 +1914,14 @@ export interface paths {
         /**
          * POST /trust-tasks — dispatch a Trust Task document. Public: the holder's
          *     document proof (or, over DIDComm, the authcrypt sender) IS the auth.
+         * @description No bearer token is read here. A document whose specification declares
+         *     `proof` REQUIRED must carry one, it must verify against the document's own
+         *     `issuer`, the document must name this community as `recipient`, its
+         *     `issuedAt` must fall inside the acceptance window, and its `id` is recorded
+         *     so a redelivery is answered rather than re-executed.
+         *
+         *     Administrator verbs are dispatched here too — their authority is the
+         *     verified signer's ACL entry, read when the document executes.
          */
         post: operations["dispatch"];
         delete?: never;
@@ -1963,6 +2004,29 @@ export interface paths {
          *     what `POST /v1/trust-tasks` returns to an applicant with the same filters.
          */
         post: operations["vettingVetterListing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vetting/vetters/show": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * One vetter's grant status, as an applicant would be told it.
+         * @description The body and the answer are `vtc/vetting/vetters/show/0.1`'s, and both go
+         *     through [`crate::vetting::profiles::show`], so the console sees exactly what
+         *     `POST /v1/trust-tasks` returns — including `none` for a DID this community
+         *     holds no grant for, which is an answer and not an error.
+         */
+        post: operations["vettingVetterShow"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3534,8 +3598,9 @@ export interface components {
             /**
              * @description Whether the applicant consents to being published in the
              *     community's trust-registry record (spec §8). Default
-             *     `false`; the operator-facing surface defers this decision
-             *     to Phase 3.
+             *     `false`. Carried onto the member's `publish_consent` when this request
+             *     admits the applicant — on auto-admit, on a supplement that admits, and
+             *     on an operator's approval.
              */
             registryConsent?: boolean;
             status: components["schemas"]["JoinStatus"];
@@ -3943,8 +4008,9 @@ export interface components {
                 /**
                  * @description Whether the applicant consents to being published in the
                  *     community's trust-registry record (spec §8). Default
-                 *     `false`; the operator-facing surface defers this decision
-                 *     to Phase 3.
+                 *     `false`. Carried onto the member's `publish_consent` when this request
+                 *     admits the applicant — on auto-admit, on a supplement that admits, and
+                 *     on an operator's approval.
                  */
                 registryConsent?: boolean;
                 status: components["schemas"]["JoinStatus"];
@@ -5543,6 +5609,14 @@ export interface components {
         VtcJoinRequestsManifestV0_2Ext: {
             [key: string]: unknown;
         };
+        /**
+         * @description Names the `ext` namespaces a consumer MUST understand or refuse, per SPEC.md §4.5.1.
+         *
+         *     Every entry MUST be an immediate key of the sibling `ext` object at the same level; an entry naming an absent namespace is non-conforming and the consumer rejects the document with `malformedRequest`. A consumer that does not recognize a namespace named here MUST NOT process the document as though the namespace were absent, and rejects it with `unsupportedExtension` — the exception to the rule that unrecognized namespaces are ignored.
+         *
+         *     A producer marks a namespace only where the document's meaning depends on it. Marking one that merely carries a hint or an annotation turns every consumer that has not implemented it into a failure where it would otherwise have interoperated. JSON Schema cannot check either of those rules: that an entry names a present namespace is checkable only against the sibling `ext`, and whether a namespace is load-bearing is not a schema question at all. Both are consumer-side checks.
+         */
+        VtcJoinRequestsManifestV0_2ExtCritical: string[];
         VtcJoinRequestsManifestV0_2RequestedAttribute: {
             /** @description Why the community asks, in words shown to the applicant before they disclose. */
             purpose?: string;
@@ -5590,6 +5664,8 @@ export interface components {
                 /** @description The role named in a community-issued `CommunityRole` endorsement credential (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds that credential. */
                 role: string;
             };
+            ext?: components["schemas"]["VtcJoinRequestsManifestV0_2Ext"];
+            extCritical?: components["schemas"]["VtcJoinRequestsManifestV0_2ExtCritical"];
             /**
              * Format: uri
              * @description Where the community's vetting governance — including the attestation text vetters sign — is published.
@@ -5995,6 +6071,42 @@ export interface components {
              */
             validUntil: string;
         };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcVettingVettersShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description The state of a vetter's grant in this community. The three refusing values are deliberately distinct: `revoked` says the community withdrew a grant it had made, `expired` says one ran out, and `none` says there is nothing to withdraw. An applicant reads those differently, and so does a vetter checking their own standing.
+         * @enum {string}
+         */
+        VtcVettingVettersShowV0_1GrantStatus: "live" | "revoked" | "expired" | "none";
+        /** @description An authenticated applicant or member asks a community about one vetter, by DID. The answer is the state of that vetter's grant — `live`, `revoked`, `expired` or `none` — which a list of vetters cannot express, because an absent vetter and a revoked one look identical in it. The outer document members (id, type, issuer, recipient, issuedAt, expiresAt, proof) are owned by the framework — SPEC §6.3. */
+        VtcVettingVettersShowV0_1Payload: {
+            ext?: components["schemas"]["VtcVettingVettersShowV0_1Ext"];
+            /** @description The DID of the vetter being asked about — the subject of the vetter role credential. The caller usually holds it from an earlier listing, or from a vetting exchange that has since gone quiet. */
+            vetterDid: string;
+        };
+        /** @description One vetter's grant status. Carries no profile: what a vetter published for a directory is answered by vtc/vetting/vetters/list, and this task answers a caller who already knows which vetter they mean. */
+        VtcVettingVettersShowV0_1Response: {
+            ext?: components["schemas"]["VtcVettingVettersShowV0_1Ext"];
+            /** @description The identifier of the grant this status is about. Present for `live`, `revoked` and `expired`; absent for `none`, which is the absence of a grant and so has nothing to identify. */
+            grantId?: string;
+            /** @description Whether this vetter has a profile stored with `listed: true`, and so would appear in vtc/vetting/vetters/list. Present only for `live`. It is what separates the two reasons a live vetter is missing from a listing: unlisted by choice, rather than not a vetter. */
+            listed?: boolean;
+            /**
+             * Format: date-time
+             * @description When the grant was revoked. Present only for `revoked`. The reason is deliberately not carried: it is the community's internal record, and an applicant needs to know the grant does not hold, not why.
+             */
+            revokedAt?: string;
+            status: components["schemas"]["VtcVettingVettersShowV0_1GrantStatus"];
+            /**
+             * Format: date-time
+             * @description The grant's `validUntil`. Present for `live` and `expired` — for `expired` it is when it ran out, which tells a caller whether it lapsed long ago or yesterday. Absent for `none`, and for `revoked`, where the revocation and not the expiry is what ended it.
+             */
+            validUntil?: string;
+            /** @description The DID asked about, echoed so a response is self-contained. */
+            vetterDid: string;
+        };
         /**
          * @description Wire shape returned by `whoami`. Minimal: enough for the admin
          *     SPA's nav header to show "Signed in as …" with a role badge,
@@ -6109,8 +6221,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller lacks manage authority */
+            /** @description Caller lacks manage authority / granting `admin` without a live step-up / granting `admin` to yourself */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Entry exists at a different role — use acl/change-role */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6236,7 +6355,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not an admin / promoting to `admin` without a live step-up / self-promotion / denied by the role-change policy */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6245,6 +6364,13 @@ export interface operations {
             };
             /** @description ACL entry not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `fromRole` does not match the stored role, or the row moved under the promote lock */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9020,6 +9146,13 @@ export interface operations {
                     "application/json": components["schemas"]["MemberEnvelope"];
                 };
             };
+            /** @description role was `admin` (adminRoleForbidden) — use acl/change-role */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Missing or invalid bearer token */
             401: {
                 headers: {
@@ -9027,7 +9160,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin / role change denied by policy / step-up required for role=admin */
+            /** @description Caller is not an admin / role change denied by policy */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9036,13 +9169,6 @@ export interface operations {
             };
             /** @description Member not found */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Target is already an admin */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10846,6 +10972,51 @@ export interface operations {
                 };
             };
             /** @description A filter breaks its bounds, or the cursor was issued for other filters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vettingVetterShow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VtcVettingVettersShowV0_1Payload"];
+            };
+        };
+        responses: {
+            /** @description The vetter's grant status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VtcVettingVettersShowV0_1Response"];
+                };
+            };
+            /** @description The payload is not a valid show request */
             400: {
                 headers: {
                     [name: string]: unknown;

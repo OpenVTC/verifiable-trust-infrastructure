@@ -23,7 +23,7 @@ use crate::auth::session::{
     store_refresh_index, store_session,
 };
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
-use crate::error::AppError;
+use crate::error::{AppError, TaskError};
 use crate::routes::acl::as_vti_acl_entry;
 use crate::server::AppState;
 use tracing::{info, warn};
@@ -446,6 +446,11 @@ pub struct AdminSessionResponse {
     pub expires_at: u64,
 }
 
+/// `vtc/auth/admin_session:invalidToken` — the mirrored access token did not
+/// verify (signature, this VTC's audience, or expiry).
+pub const ADMIN_SESSION_ERR_INVALID_TOKEN: &str =
+    trust_tasks_rs::specs::vtc::auth::admin_session::v0_1::error_codes::INVALID_TOKEN.code;
+
 #[utoipa::path(
     post, path = "/auth/admin-session", tag = "auth",
     request_body = AdminSessionRequest,
@@ -457,7 +462,7 @@ pub struct AdminSessionResponse {
 pub async fn admin_session(
     State(state): State<AppState>,
     Json(req): Json<AdminSessionRequest>,
-) -> Result<axum::response::Response, AppError> {
+) -> Result<axum::response::Response, TaskError> {
     use axum::http::HeaderValue;
     use axum::http::header::SET_COOKIE;
     use axum::response::IntoResponse;
@@ -471,9 +476,12 @@ pub async fn admin_session(
     // Validate the token: signature, VTC audience (audience isolation — a
     // foreign-audience token is rejected here exactly as on every other
     // surface), and expiry. A bad token never sets a cookie.
-    let claims = jwt_keys
-        .decode(&req.access_token)
-        .map_err(|_| AppError::Authentication("invalid or expired access token".into()))?;
+    let claims = jwt_keys.decode(&req.access_token).map_err(|_| {
+        TaskError::declared(
+            ADMIN_SESSION_ERR_INVALID_TOKEN,
+            AppError::Authentication("invalid or expired access token".into()),
+        )
+    })?;
 
     let max_age = claims.exp.saturating_sub(now_epoch()).max(1);
 

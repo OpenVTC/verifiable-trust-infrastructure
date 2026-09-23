@@ -17,7 +17,8 @@ use vta_sdk::protocols::persona::{
 use crate::cli::{
     PersonaAttributeCommands, PersonaBindingCommands, PersonaCommands, PersonaContactCommands,
     PersonaDisclosureCommands, PersonaLocalBindingCommands, PersonaLocalCommands,
-    PersonaLocalProfileCommands, PersonaProfileCommands, ProofRungOpt, ProvenanceOpt, ValueTypeOpt,
+    PersonaLocalProfileCommands, PersonaProfileCommands, PersonaWorldCommands, ProofRungOpt,
+    ProvenanceOpt, ValueTypeOpt,
 };
 
 type CmdResult = Result<(), Box<dyn std::error::Error>>;
@@ -45,7 +46,42 @@ pub(crate) async fn run(client: &VtaClient, command: PersonaCommands) -> CmdResu
             }
             p::cmd_correlate(client, attribute_id, profile_id, candidate).await
         }
+        PersonaCommands::World { command } => world(client, command).await,
+        PersonaCommands::ClaimTypes => p::cmd_claim_types(client).await,
         PersonaCommands::Renderers => p::cmd_renderers(client).await,
+    }
+}
+
+async fn world(client: &VtaClient, command: PersonaWorldCommands) -> CmdResult {
+    match command {
+        PersonaWorldCommands::List { limit, cursor } => {
+            p::cmd_world_list(client, limit, cursor).await
+        }
+        PersonaWorldCommands::Put {
+            name,
+            colour,
+            icon,
+            face_ids,
+            attribute_ids,
+            facet_id,
+            expected_version,
+        } => {
+            p::cmd_world_put(
+                client,
+                name,
+                colour.as_spec_token(),
+                icon,
+                face_ids,
+                attribute_ids,
+                facet_id,
+                expected_version,
+            )
+            .await
+        }
+        PersonaWorldCommands::Delete {
+            facet_id,
+            expected_version,
+        } => p::cmd_world_delete(client, facet_id, expected_version).await,
     }
 }
 

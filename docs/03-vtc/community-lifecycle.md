@@ -197,6 +197,108 @@ moves to the new DID. `did:key` and `did:webvh` are both supported;
 for `did:webvh` rotations the VTC resolves the new DID document
 and verifies the signing key against it.
 
+## Changing the community's transports after mint
+
+The community's DID document says how anyone reaches it: `#tsp`
+(`TSPTransport`) and `#didcomm` (`DIDCommMessaging`), each naming the
+mediator by DID, alongside `#vtc-rest`. `vtc setup` renders the ones you
+chose, but they are not fixed there. To add a transport later — `#tsp`
+on a community minted with DIDComm only, say — or to change or drop one,
+edit the document at the VTA and publish the new log entry.
+
+The VTA holds the keys that extend the community's DID log, so the edit
+always happens there. What happens next depends on who serves the log.
+Check first:
+
+```sh
+pnm did-mgmt dids get <community-did>
+#   Server:          serverless     ← the VTC serves its own log: steps 1–3
+#   Server:          <server-id>    ← a DID host serves it: step 1 only
+```
+
+**A VTC on a DID host** (`[webvh] server_id` in the setup TOML, a DID
+of the form `did:webvh:<scid>:<host>:<path>`) needs only step 1: the
+VTA pushes the new entry to the host as part of the edit, and there is
+nothing to deliver.
+
+**A serverless VTC** (`did:webvh:<scid>:<host>`, served by the VTC
+itself at `/.well-known/did.jsonl`) needs all three: the VTA cannot
+reach the copy the VTC serves, so you carry the log across.
+
+1. **Edit the document** at the VTA, with a `pnm` profile that manages
+   the community's DID:
+
+   ```sh
+   pnm did-mgmt dids edit --did <community-did>
+   ```
+
+   This opens the current document in `$EDITOR`. Add the entry to
+   `service`, then save and confirm:
+
+   ```json
+   {
+     "id": "<community-did>#tsp",
+     "type": "TSPTransport",
+     "serviceEndpoint": "<mediator-did>"
+   }
+   ```
+
+   `serviceEndpoint` is the mediator's **DID**, not a URL; the URL lives
+   in the mediator's own document. Name the same mediator as the
+   `#didcomm` entry. For a scripted run, pass the edited document with
+   `--document <file> --no-confirm`
+   ([edit walkthrough](../02-vta/runtime-service-management.md#walkthrough-edit-an-existing-did-document)).
+   For a serverless DID the command ends by printing the two commands
+   below.
+
+2. **Fetch the complete log** from the VTA:
+
+   ```sh
+   pnm did-mgmt dids get-log <community-did> --out did.jsonl
+   ```
+
+3. **Install it at the community**:
+
+   ```sh
+   cnm did-log install --file did.jsonl
+   ```
+
+   `cnm` authenticates to the VTC as the community profile's DID, which
+   needs a super-admin row in the VTC's ACL
+   ([bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row)).
+   It reads the VTC's URL from the DID (`https://<host>/v1`); pass
+   `cnm --url <base> did-log install …` to override it, and `-c <slug>`
+   to pick a community profile other than the active one.
+
+   The VTC verifies the log before serving it. It refuses one that does
+   not verify, is for a different DID, or drops or rewrites an entry it
+   already serves, so only a log the key holder signed can be installed,
+   whoever delivers it. The new log is served at once, with no restart.
+   Resolvers see the new version as their caches expire.
+
+Then confirm the VTC can actually serve what the document now
+advertises. Clients prefer TSP over DIDComm over REST, so an advertised
+transport that nothing answers on strands every client that picks it:
+
+```sh
+vtc status        # on the VTC host: "Transports" compares document and build
+```
+
+- The VTC has to be connected to the mediator the entry names:
+  `[messaging]` in its `config.toml`. A VTC minted with no messaging
+  needs `[messaging]` added and a restart. One that is already connected
+  needs neither: `#tsp` and `#didcomm` share one mediator, and the
+  shipped build serves both.
+- The mediator must itself route the protocol. Nothing on the VTC side
+  can check that. Confirm the mediator's own DID document advertises
+  the matching service before you add the entry.
+- Keep `#didcomm` when you add `#tsp`. A document that offers TSP alone
+  leaves every peer that does not speak TSP with no messaging route.
+
+The same three steps publish any other change to the community's
+document after mint, such as a `TrustRegistry` referral added or
+changed, or a key rotated.
+
 ## Quick reference
 
 Member, join-queue, policy and credential administration happens in the admin

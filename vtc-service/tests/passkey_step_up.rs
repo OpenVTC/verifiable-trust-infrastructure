@@ -54,7 +54,9 @@ fn wrap_options<T: serde::de::DeserializeOwned>(inner: &serde_json::Value) -> T 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
 const FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
-const UPDATE_TASK: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
+/// Promotion is a role transition, so it is `acl/change-role` — not
+/// `vtc/members/update`, which refuses `role: admin` outright (#1645).
+const CHANGE_ROLE_TASK: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 
 struct Fixture {
     state: AppState,
@@ -69,7 +71,21 @@ struct Fixture {
 /// drive, plus a second enrolled admin used to prove that *someone else's*
 /// passkey cannot satisfy a step-up.
 async fn build_fixture() -> (Fixture, String) {
-    let vtc = TestVtc::builder().with_public_url(RP_ORIGIN).build().await;
+    // Signers + the default policy bundle: a promotion is the role-change
+    // ceremony, which decides against `role_change.rego` and re-mints the
+    // subject's role VEC. Without them this suite could only assert that the
+    // gate opened, not that the operation it gates completed.
+    let vtc = TestVtc::builder()
+        .with_public_url(RP_ORIGIN)
+        .with_signers(true)
+        .build()
+        .await;
+    vtc_service::policy::default::install_defaults(
+        &vtc.state.policies_ks,
+        &vtc.state.active_policies_ks,
+    )
+    .await
+    .expect("install default policies");
     let webauthn: Webauthn = build_webauthn(RP_ORIGIN).expect("webauthn builder");
     let mut authenticator = SoftEd25519Authenticator::new();
 
@@ -466,30 +482,45 @@ async fn a_step_up_authorises_the_promotion_it_was_run_for() {
     // The second enrolled admin is already `Admin` in the fixture, so promote
     // a plain member instead.
     let target = "did:key:zMemberToPromote";
-    store_acl_entry(
+    vtc_service::acl::store_acl_entry(
         &fix.state.acl_ks,
-        &AclEntry::new(target.to_string(), Role::Reader, &admin),
+        &vtc_service::acl::VtcAclEntry {
+            did: target.into(),
+            role: vtc_service::acl::VtcRole::Member,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: now_epoch(),
+            created_by: admin.clone(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    vtc_service::members::store_member(
+        &fix.state.members_ks,
+        &vtc_service::members::Member::fresh(target),
     )
     .await
     .unwrap();
     let _ = other_did;
 
     // Without an elevation the promotion is refused, and says why.
+    let promote = json!({ "fromRole": "member", "toRole": "admin" });
     let (status, body) = request_method(
         &fix.router,
         "PATCH",
-        &format!("/v1/members/{target}"),
-        UPDATE_TASK,
+        &format!("/v1/acl/{target}"),
+        CHANGE_ROLE_TASK,
         Some(&token),
-        Some(json!({ "role": "admin" })),
+        Some(promote.clone()),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
     assert_eq!(body["error"], "step_up_required", "got {body}");
 
-    // Step up, then retry. (The promotion itself needs a member row + policy
-    // fixture this suite doesn't build, so we assert the *gate* opened: the
-    // request gets past `step_up_required` to the member lookup.)
+    // Step up, then retry — and this time the promotion completes.
     let (status, body) = step_up_start(&fix, Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
     let auth_id = body["authId"].as_str().unwrap().to_string();
@@ -508,17 +539,18 @@ async fn a_step_up_authorises_the_promotion_it_was_run_for() {
     let (status, body) = request_method(
         &fix.router,
         "PATCH",
-        &format!("/v1/members/{target}"),
-        UPDATE_TASK,
+        &format!("/v1/acl/{target}"),
+        CHANGE_ROLE_TASK,
         Some(&token),
-        Some(json!({ "role": "admin" })),
+        Some(promote),
     )
     .await;
-    assert_ne!(
+    assert_eq!(
         status,
-        StatusCode::FORBIDDEN,
+        StatusCode::OK,
         "the elevation must open the gate, got {body}"
     );
+    assert_eq!(body["entry"]["role"], "admin", "got {body}");
 }
 
 #[tokio::test]

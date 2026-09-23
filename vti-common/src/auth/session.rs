@@ -241,6 +241,24 @@ pub async fn get_session(
     sessions.get(session_key(session_id)).await
 }
 
+/// Atomically take (read **and** remove) a session row.
+///
+/// The single-use counterpart of [`get_session`], and the same primitive
+/// [`take_session_id_by_refresh`] uses: `take_raw` is a claim, so of any
+/// number of concurrent callers exactly one observes `Some`. Used to consume
+/// a challenge row at `/auth/` — see `handlers::authenticate`.
+pub async fn take_session(
+    sessions: &KeyspaceHandle,
+    session_id: &str,
+) -> Result<Option<Session>, AppError> {
+    match sessions.take_raw(session_key(session_id)).await? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| AppError::Internal(format!("invalid session bytes: {e}"))),
+        None => Ok(None),
+    }
+}
+
 /// Update an existing session (overwrites).
 pub async fn update_session(sessions: &KeyspaceHandle, session: &Session) -> Result<(), AppError> {
     sessions

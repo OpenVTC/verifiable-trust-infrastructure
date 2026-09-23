@@ -20,6 +20,7 @@
 //! | `spec/vtc/vetting/vetters/grant/0.1` | community admin → community | [`vetters::grant::v0_1`] |
 //! | `spec/vtc/vetting/vetters/profile/0.1` | vetter → community | [`vetters::profile::v0_1`] |
 //! | `spec/vtc/vetting/vetters/list/0.1` | member or applicant → community | [`vetters::list::v0_1`] |
+//! | `spec/vtc/vetting/vetters/show/0.1` | member or applicant → community | [`vetters::show::v0_1`] |
 //! | `spec/vtc/vetting/vetters/resend/0.1` | vetter → community | [`vetters::resend::v0_1`] |
 //!
 //! Each module holds the task's `Payload` and, where it has one, its `Response`.
@@ -161,6 +162,15 @@ pub const VETTING_VETTER_LIST_TYPE: &str =
 /// `#response` variant of [`VETTING_VETTER_LIST_TYPE`].
 pub const VETTING_VETTER_LIST_RESPONSE_TYPE: &str =
     <vetters::list::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Member or applicant → community: one vetter's grant status, by DID. The
+/// listing cannot express this — a vetter who is unlisted and one whose grant
+/// was revoked are both simply absent from it.
+pub const VETTING_VETTER_SHOW_TYPE: &str =
+    <vetters::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `#response` variant of [`VETTING_VETTER_SHOW_TYPE`].
+pub const VETTING_VETTER_SHOW_RESPONSE_TYPE: &str =
+    <vetters::show::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Vetter → community: deliver the sender's live vetter grant credential again.
 pub const VETTING_VETTER_RESEND_TYPE: &str =
@@ -598,6 +608,115 @@ impl CheckShape for vetters::list::v0_1::Payload {
                 field: "eventTo",
                 rule: "must not be before eventFrom",
             });
+        }
+        Ok(())
+    }
+}
+
+impl CheckShape for vetters::show::v0_1::Payload {
+    fn check_shape(&self) -> Result<(), ShapeError> {
+        against_own_schema(self)
+    }
+}
+
+impl CheckShape for vetters::show::v0_1::Response {
+    /// The schema, plus the members Conformance items 4 to 6 attach to each
+    /// status — which the schema cannot express, since it is one object whose
+    /// required members depend on `status`.
+    ///
+    /// Worth checking rather than trusting: a response that says `revoked` while
+    /// carrying a `validUntil` and no `revokedAt` reads as an expiry to a client
+    /// branching on the members instead of the status.
+    fn check_shape(&self) -> Result<(), ShapeError> {
+        use vetters::show::v0_1::GrantStatus;
+        against_own_schema(self)?;
+
+        let require = |present: bool, field: &'static str, rule: &'static str| {
+            if present {
+                Ok(())
+            } else {
+                Err(ShapeError::Field { field, rule })
+            }
+        };
+        let forbid = |present: bool, field: &'static str, rule: &'static str| {
+            if present {
+                Err(ShapeError::Field { field, rule })
+            } else {
+                Ok(())
+            }
+        };
+
+        match self.status {
+            GrantStatus::Live => {
+                require(self.grant_id.is_some(), "grantId", "is required for live")?;
+                require(
+                    self.valid_until.is_some(),
+                    "validUntil",
+                    "is required for live",
+                )?;
+                require(self.listed.is_some(), "listed", "is required for live")?;
+                forbid(
+                    self.revoked_at.is_some(),
+                    "revokedAt",
+                    "belongs only to revoked",
+                )?;
+            }
+            GrantStatus::Revoked => {
+                require(
+                    self.grant_id.is_some(),
+                    "grantId",
+                    "is required for revoked",
+                )?;
+                require(
+                    self.revoked_at.is_some(),
+                    "revokedAt",
+                    "is required for revoked",
+                )?;
+                forbid(self.listed.is_some(), "listed", "belongs only to live")?;
+            }
+            GrantStatus::Expired => {
+                require(
+                    self.grant_id.is_some(),
+                    "grantId",
+                    "is required for expired",
+                )?;
+                require(
+                    self.valid_until.is_some(),
+                    "validUntil",
+                    "is required for expired",
+                )?;
+                forbid(
+                    self.revoked_at.is_some(),
+                    "revokedAt",
+                    "belongs only to revoked",
+                )?;
+                forbid(self.listed.is_some(), "listed", "belongs only to live")?;
+            }
+            GrantStatus::None => {
+                forbid(
+                    self.grant_id.is_some(),
+                    "grantId",
+                    "there is no grant to identify",
+                )?;
+                forbid(
+                    self.valid_until.is_some(),
+                    "validUntil",
+                    "belongs to a grant",
+                )?;
+                forbid(
+                    self.revoked_at.is_some(),
+                    "revokedAt",
+                    "belongs only to revoked",
+                )?;
+                forbid(self.listed.is_some(), "listed", "belongs only to live")?;
+            }
+            // `GrantStatus` is `#[non_exhaustive]`: a status this build has
+            // never seen comes from a newer specification, and the rules above
+            // are this version's reading of which members go with which status.
+            // The schema check has already run, so the document is well-formed;
+            // inventing a rule for a status we cannot interpret would refuse a
+            // response that is valid under the spec that produced it.
+            _ => {}
         }
         Ok(())
     }

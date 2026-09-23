@@ -34,24 +34,76 @@ pub struct RoleChangeResult {
     pub new_role: String,
 }
 
+/// Serialises admin promotions per-process, across **every** entry point.
+///
+/// Inherited from the retired `promote-to-admin` endpoint, where it closed the
+/// window between the already-admin check and the ACL write, and held by
+/// `vtc/members/update` after that. It lives here now because the window is a
+/// property of the *operation*, not of one route: with the lock on the handler,
+/// a second door onto the same ACL row (`acl/change-role`) raced the first.
+/// fjall is not multi-process safe, so a process-wide lock is the right
+/// granularity.
+static PROMOTE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Run a role change through the decision pipeline: assemble Facts → decide the
 /// active `roleChange` policy → apply via the Remint executor. A policy `deny`
-/// → 403; a `refer` (admin promotion needing step-up) → `StepUpRequired`.
+/// → 403; a `refer` → `StepUpRequired`.
 ///
-/// `step_up` reports whether a verified reauth accompanies this change. The
-/// PATCH path passes `false` (and refuses `admin` upstream); the
-/// promote-to-admin endpoint passes `true` after its UV ceremony so the policy's
-/// "admin with step-up" branch can allow. Shared by both so the operator's
-/// `role_change.rego` governs *every* role transition, including the
-/// highest-privilege admin grant (P0.14).
+/// ## The admin gate, and why it is not a parameter
+///
+/// This took a `step_up: bool` from its caller until #1645. That made the
+/// *handler* the gate — the host invariant it fed
+/// ([`Invariant::StepUpForAdmin`](super::Invariant)) could only check that
+/// somebody had said `true`, and a second route reaching the same ACL row
+/// simply said nothing. The elevation is now resolved here, from the caller's
+/// live session ([`crate::acl::elevation::verified`]), so every path into a
+/// role change is gated by construction and VTI-OPS-050/051 hold wherever the
+/// transition is driven from.
+///
+/// Promotion to `admin` additionally:
+///
+/// - is serialised on [`PROMOTE_LOCK`], and
+/// - re-reads the subject's ACL row **under that lock** and re-checks it
+///   against `current_role`, so a promotion that raced another role write is a
+///   409 rather than a silent overwrite of whatever landed in between.
 pub async fn role_change_via_pipeline(
     state: &AppState,
-    actor_did: &str,
+    actor: &vti_common::auth::extractor::AuthClaims,
     subject_did: &str,
     current_role: &str,
     target_role: &str,
-    step_up: bool,
 ) -> Result<RoleChangeResult, AppError> {
+    let actor_did = actor.did.as_str();
+    let promoting = target_role == super::invariant::ADMIN_ROLE;
+
+    // Held across the decision *and* the effect, because the effect is what
+    // performs the write. Only promotions contend: every other transition is
+    // already serialised by the executor's own `LAST_ADMIN_LOCK`.
+    let _guard = if promoting {
+        Some(PROMOTE_LOCK.lock().await)
+    } else {
+        None
+    };
+
+    // Re-read under the lock. The caller's `current_role` came from a read
+    // taken before it, so an interleaved role write could have landed since —
+    // which is exactly the compare-and-swap `acl/change-role` promises and the
+    // already-an-admin re-check `members/update` used to do by hand.
+    if promoting
+        && let Some(live) = get_acl_entry(&state.acl_ks, subject_did).await?
+        && live.role.to_string() != current_role
+    {
+        return Err(AppError::Conflict(format!(
+            "state mismatch: {subject_did} currently holds role {}, not {current_role}",
+            live.role
+        )));
+    }
+
+    // The fact the host invariant reads, resolved from the session rather than
+    // taken on trust. Only promotions need it, and reading it only for them
+    // keeps a plain demotion off the session keyspace.
+    let step_up = promoting && crate::acl::elevation::verified(actor, &state.sessions_ks).await;
+
     let facts = assemble_role_change_facts(
         state,
         actor_did,
@@ -76,6 +128,24 @@ pub async fn role_change_via_pipeline(
                 "role change deferred to the {} queue — complete the step-up ceremony",
                 r.queue
             )));
+        }
+        // The two host invariants this purpose carries are answered in their
+        // own terms. A vetoed decision is rendered as a policy deny by
+        // `decide`, and a caller told "denied by policy (step-up-required)"
+        // has to reverse-engineer a passkey ceremony out of a code; the admin
+        // console, which branches on `step_up_required`, would not recover at
+        // all.
+        Verdict::Deny(d) if d.code == super::Invariant::StepUpForAdmin.code() => {
+            return Err(crate::acl::elevation::required(&format!(
+                "promoting {subject_did} to admin"
+            )));
+        }
+        Verdict::Deny(d) if d.code == super::Invariant::SelfPromotion.code() => {
+            return Err(AppError::Forbidden(
+                "you cannot promote yourself; admin elevation requires a separate admin \
+                 caller to run acl/change-role (PATCH /v1/acl/<your-did>) for you"
+                    .into(),
+            ));
         }
         Verdict::Deny(d) => {
             return Err(AppError::Forbidden(format!(
@@ -108,10 +178,12 @@ pub async fn role_change_via_pipeline(
     // can present its updated role. Best-effort: the VEC is already issued and
     // persisted (the old one is short-lived and expires on its own validUntil —
     // role VECs carry no status entry), so a delivery failure is logged, not
-    // fatal.
-    if let Err(e) =
-        crate::credentials::delivery::deliver_credentials(state, subject_did, &[&outcome.role_vec])
-            .await
+    // fatal. `None` means the subject is an ACL entry with no member row (an
+    // integration DID, say): there was no role VEC to re-mint and nobody to
+    // deliver one to.
+    if let Some(role_vec) = outcome.role_vec.as_ref()
+        && let Err(e) =
+            crate::credentials::delivery::deliver_credentials(state, subject_did, &[role_vec]).await
     {
         warn!(
             subject = %subject_did,
@@ -572,13 +644,16 @@ fn parse_disposition_opt(s: &str) -> Option<Disposition> {
 
 #[cfg(test)]
 mod p0_14_role_change_policy_tests {
-    //! P0.14: admin promotion must flow through `role_change_via_pipeline`
-    //! (called by `promote_finish` with `step_up = true`), so the operator's
-    //! `role_change.rego` governs the grant. These exercise the shared
-    //! pipeline directly — the full UV ceremony is covered separately.
+    //! P0.14: admin promotion must flow through `role_change_via_pipeline`, so
+    //! the operator's `role_change.rego` governs the grant — and, since #1645,
+    //! so do the host invariants the pipeline resolves for itself. These
+    //! exercise the shared pipeline directly; the full UV ceremony is covered
+    //! separately.
     use super::*;
     use affinidi_status_list::StatusPurpose;
     use chrono::Utc;
+    use vti_common::auth::extractor::AuthClaims;
+    use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
     use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
     use crate::members::{Member, store_member};
@@ -588,6 +663,44 @@ mod p0_14_role_change_policy_tests {
     const RP: &str = "https://vtc.example.com";
     const ADMIN: &str = "did:key:zPromoter";
     const SUBJECT: &str = "did:key:zCandidate";
+
+    /// Claims for `did` backed by a real session row, elevated or not.
+    ///
+    /// `elevated` is the whole variable these tests turn: the pipeline reads
+    /// the live session, so an "I stepped up" flag in the test would prove
+    /// nothing about what the service does.
+    async fn caller(vtc: &TestVtc, did: &str, elevated: bool) -> AuthClaims {
+        let session_id = format!("sess-{}", uuid::Uuid::new_v4());
+        store_session(
+            &vtc.state.sessions_ks,
+            &Session {
+                session_id: session_id.clone(),
+                did: did.to_string(),
+                challenge: String::new(),
+                state: SessionState::Authenticated,
+                created_at: now_epoch(),
+                last_seen: now_epoch(),
+                refresh_token: None,
+                refresh_expires_at: None,
+                tee_attested: false,
+                amr: vec!["passkey".into()],
+                acr: "aal2".into(),
+                acr_expires_at: elevated.then(|| now_epoch() + 900),
+                token_id: None,
+                session_pubkey_b58btc: None,
+            },
+        )
+        .await
+        .unwrap();
+        AuthClaims {
+            did: did.to_string(),
+            role: vti_common::acl::Role::Admin,
+            session_id,
+            amr: vec!["passkey".into()],
+            acr: "aal2".into(),
+            ..Default::default()
+        }
+    }
 
     async fn build() -> TestVtc {
         let vtc = TestVtc::builder()
@@ -637,14 +750,80 @@ mod p0_14_role_change_policy_tests {
             .unwrap();
     }
 
+    /// VTI-OPS-051: the elevation is read from the caller's session, so a
+    /// promotion driven by an un-elevated admin session is refused whichever
+    /// route drove it.
+    #[tokio::test]
+    async fn admin_promotion_without_a_live_step_up_is_refused() {
+        let vtc = build().await;
+        let actor = caller(&vtc, ADMIN, false).await;
+        let err = role_change_via_pipeline(&vtc.state, &actor, SUBJECT, "member", "admin")
+            .await
+            .expect_err("an un-elevated session must not confer admin");
+        assert!(
+            matches!(err, AppError::StepUpRequired(_)),
+            "the refusal must be the step-up signal, got {err:?}"
+        );
+        let acl = get_acl_entry(&vtc.state.acl_ks, SUBJECT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acl.role, VtcRole::Member, "a refused promotion writes");
+    }
+
+    /// VTI-OPS-050: a second factor proves who is present, never that a second
+    /// person agreed — so it does not buy self-promotion.
+    #[tokio::test]
+    async fn self_promotion_is_refused_even_with_a_live_step_up() {
+        let vtc = build().await;
+        let actor = caller(&vtc, ADMIN, true).await;
+        seed(&vtc, "did:key:zSelf", VtcRole::Member).await;
+        let mut actor = actor;
+        actor.did = "did:key:zSelf".into();
+
+        let err = role_change_via_pipeline(&vtc.state, &actor, "did:key:zSelf", "member", "admin")
+            .await
+            .expect_err("nobody promotes themselves");
+        match err {
+            AppError::Forbidden(msg) => assert!(
+                msg.contains("acl/change-role"),
+                "the refusal should name the replacement path, got {msg}"
+            ),
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
+        let acl = get_acl_entry(&vtc.state.acl_ks, "did:key:zSelf")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acl.role, VtcRole::Member);
+    }
+
+    /// The compare-and-swap the promotion path re-checks **under the lock**: a
+    /// `current_role` that no longer matches the stored row is a race, not an
+    /// instruction to overwrite whatever landed in between.
+    #[tokio::test]
+    async fn a_promotion_racing_another_role_write_is_a_conflict() {
+        let vtc = build().await;
+        let actor = caller(&vtc, ADMIN, true).await;
+        // The caller read "member"; the row now says moderator.
+        seed(&vtc, "did:key:zRaced", VtcRole::Moderator).await;
+
+        let err = role_change_via_pipeline(&vtc.state, &actor, "did:key:zRaced", "member", "admin")
+            .await
+            .expect_err("a stale current_role must not promote");
+        assert!(
+            matches!(err, AppError::Conflict(_)),
+            "expected a conflict, got {err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn admin_promotion_with_step_up_is_allowed_by_default_policy() {
         let vtc = build().await;
-        let granted = role_change_via_pipeline(
-            &vtc.state, ADMIN, SUBJECT, "member", "admin", /* step_up */ true,
-        )
-        .await
-        .expect("default policy allows admin promotion with a verified step-up");
+        let actor = caller(&vtc, ADMIN, true).await;
+        let granted = role_change_via_pipeline(&vtc.state, &actor, SUBJECT, "member", "admin")
+            .await
+            .expect("default policy allows admin promotion with a verified step-up");
         assert_eq!(granted.new_role, "admin");
         assert_eq!(granted.previous_role, "member");
         // The Remint executor wrote the new role.
@@ -687,11 +866,10 @@ mod p0_14_role_change_policy_tests {
             .await
             .unwrap();
 
-        let err = role_change_via_pipeline(
-            &vtc.state, ADMIN, SUBJECT, "member", "admin", /* step_up */ true,
-        )
-        .await
-        .expect_err("a deny policy must block the promotion even after a valid UV");
+        let actor = caller(&vtc, ADMIN, true).await;
+        let err = role_change_via_pipeline(&vtc.state, &actor, SUBJECT, "member", "admin")
+            .await
+            .expect_err("a deny policy must block the promotion even after a valid UV");
         assert!(
             matches!(err, AppError::Forbidden(_)),
             "deny → 403 Forbidden; got {err:?}"

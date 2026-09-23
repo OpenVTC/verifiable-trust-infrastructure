@@ -27,10 +27,15 @@
 //!
 //! The join family is mostly unauthenticated/holder-bound: `submit` and
 //! `status` are bound to the holder DID (no ACL entry needed);
-//! `manifest` is public. The operator-facing `decide`/`list`/
-//! `show` verbs stay on their existing JWT-gated REST routes and are *not*
-//! routed here. `present` belongs to the `credential-exchange` family and is
-//! handled there.
+//! `manifest` is public. `present` belongs to the `credential-exchange` family
+//! and is handled there.
+//!
+//! **Administrator verbs are routed here too**, since #1641 phase 2 — the
+//! admin-facing member verbs are the first batch. Their authority is not a
+//! bearer token (this endpoint reads none) but the **verified signer's ACL
+//! entry**, read at execution time; see [`admin_signer`]. The remaining
+//! operator-facing verbs (`decide`, `list`, `show`, …) are still served only on
+//! their JWT-gated REST routes, and moving them is what the rest of phase 2 is.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
 //! member-facing half of a family whose `revoke` verb stays operator-side on
@@ -44,6 +49,11 @@
 // module's items are individually `pub(crate)` already; this widens the path,
 // not the surface.
 pub(crate) mod helpers;
+
+// The accepted-document-id record (VTI-OPS-025…027). `pub(crate)` because
+// VTI-OPS-027 makes it every binding's, not this spine's: the dispatcher below
+// is its first caller, a bearer REST route is its second (#1641 phase 2).
+pub(crate) mod accepted_ids;
 
 // The schema-conformance sweep (#1059): every bound, published `spec/vtc/*`
 // URI must speak that URI's wire shape. Lives in `src` rather than `tests`
@@ -61,6 +71,13 @@ mod error_code_census;
 
 use serde_json::Value;
 use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_1 as pa, challenge::v0_1 as pc};
+// The admin-facing member verbs (#1641 phase 2). Their wire types are
+// generated from the published schemas, so there is no hand-written SDK
+// constant to import and the Type URIs below are read off the payload types.
+use trust_tasks_rs::specs::vtc::members::{
+    admin_remove::v0_1 as member_admin_remove, credentials::v0_1 as member_credentials,
+    purge::v0_1 as member_purge, update::v0_1 as member_update,
+};
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -148,9 +165,21 @@ impl JoinAuthCtx {
     }
 }
 
-/// The transport-neutral dispatch spine. Parses the document, runs the
-/// framework's basic validation (expiry + recipient), then routes by
-/// `type` to the matching verb handler.
+/// The transport-neutral dispatch spine. Parses the document, holds it to the
+/// specification it names, then routes by `type` to the matching verb handler.
+///
+/// In order: the acceptance window over `issuedAt` (VTI-OPS-024), expiry and
+/// the recipient binding (VTI-OPS-023), the flag-driven rules the
+/// specification itself declares — `proof`, `recipient` and `issuedAt`
+/// REQUIRED, and audience binding (VTI-OPS-020, VTI-OPS-021), verification of
+/// any `proof` present against the document's own `issuer`, and the
+/// duplicate-execution record (VTI-OPS-025…027). Every one of them is reached
+/// identically from REST, DIDComm and TSP, which is VTI-OPS-021's point.
+///
+/// Every one of those checks is unconditional. There is no configuration that
+/// relaxes any of them — `docs/05-design-notes/vtc-trust-task-proof-enforcement.md`
+/// has the whole argument, including the one transitional allowance #1641
+/// shipped with and why it is gone.
 pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -162,46 +191,134 @@ pub(crate) async fn dispatch_trust_task_core(
         Err(e) => return body_parse_error_response(&e.to_string()),
     };
 
-    // 2. Framework §7.2 — expiry + recipient enforcement. The recipient
-    //    binding (document `recipient` must equal this VTC's DID) is the
-    //    replay defence that the bespoke `audience` field used to provide.
+    // One instant for every temporal decision in this dispatch. The acceptance
+    // window and the replay record's retention are the *same* bound (SPEC
+    // §7.2, *Bounding the record*), so reading the clock twice could place
+    // them on opposite sides of it.
+    let now = chrono::Utc::now();
+
+    // 2. Framework §7.2 item 13 — the timestamp bounds, and VTI-OPS-024's
+    //    acceptance window. Checked first because it is decided from the
+    //    document alone, before any resolution, verification or execution
+    //    work, and because one of its rules changes how the other reads.
+    if let Err(reason) = doc.validate_freshness(now, &freshness_policy()) {
+        return reject_with(&doc, reason);
+    }
+
+    // 2b. Framework §7.2 items 4 + 5 — expiry + recipient enforcement. The
+    //    recipient binding (document `recipient` must equal this VTC's DID) is
+    //    the replay defence that the bespoke `audience` field used to provide.
     //    Skipped while the VTC has no DID configured (setup).
-    if let Some(vtc_did) = state.config.read().await.vtc_did.clone()
-        && let Err(reason) = doc.validate_basic(chrono::Utc::now(), &vtc_did)
+    let vtc_did = state.config.read().await.vtc_did.clone();
+    if let Some(vtc_did) = vtc_did
+        && let Err(reason) = doc.validate_basic(now, &vtc_did)
     {
         return reject_with(&doc, reason);
     }
 
-    // 3. Framework §7.2 item 8 — the proof, verified here against the document
-    //    **as received**, because this is the last point at which those bytes
-    //    exist: past dispatch a handler holds a payload that may have dropped a
-    //    member it does not know, and canonicalising that yields different bytes
-    //    and refuses a valid proof.
-    //
-    //    ## Verify what is here; do not demand what the transport already proved
-    //
-    //    The obvious rule — verify wherever the published specification says
-    //    `proof` is REQUIRED — is wrong for this service, and the join tests say
-    //    so immediately. `join-requests/submit/0.2` declares a proof REQUIRED,
-    //    and over DIDComm the applicant carries none: authcrypt proved the
-    //    sender, and the document rides inside that envelope. Enforcing the
-    //    specification's flag here refuses every join over DIDComm and TSP with
-    //    "document has no proof".
-    //
-    //    That gap between the published requirement and what this service
-    //    accepts is real and predates this change; it is not something to close
-    //    by silently breaking the transport. So the rule is the one the
-    //    framework's own HTTPS binding uses for exactly this situation
-    //    (`require_attribution`): attribution must come from *somewhere* — a
-    //    verified proof, or a transport-authenticated peer. A present proof is
-    //    always checked; an absent one is the transport's business, and each
-    //    handler already knows which it needs. The `rooms/*` arms demand a
-    //    verified signer and refuse without one, which is exactly what those
-    //    handlers did for themselves before.
     let type_uri = doc.type_uri.to_string();
+
+    // 2c. SPEC §7.2's *flag-driven* checks — the ones the published
+    //    specification declares rather than this consumer chooses:
+    //
+    //    * item 5b — `recipient` REQUIRED
+    //    * item 7a — `proof` REQUIRED  → `proofRequired`
+    //    * item 8  — audience binding (proof present, no in-band recipient, on
+    //                a non-bearer specification)
+    //    * §7.3 17 — `issuedAt` REQUIRED
+    //
+    // ## Why this is here now, and what it replaces
+    //
+    // Until #1641 this spine verified a proof whenever one was present and
+    // otherwise took attribution from the transport — including for the nine
+    // dispatched tasks whose own definitions declare `proof` REQUIRED. The
+    // comment that stood here argued the transport had already proved the
+    // sender, so demanding a proof would refuse every join over DIDComm and
+    // TSP.
+    //
+    // That argument is refused by three documents at once, and none of them is
+    // ambiguous:
+    //
+    // - **VTI-OPS-021 / VTI-OPS-093.** "A node MUST apply the same document
+    //   requirements on every transport. A transport that authenticates its
+    //   sender MUST NOT be treated as relieving a producer of addressing or
+    //   signing the document it sends." A binding may not weaken the
+    //   requirement on the strength of a transport property.
+    // - **The DIDComm binding's own §5.** "A *Trust Task specification* that
+    //   declares `proof` as REQUIRED overrides this binding-level allowance:
+    //   the in-band `proof` is mandatory regardless of transport, because such
+    //   specifications produce documents intended to be replayable past the
+    //   original transport hop." The allowance the old rule leaned on is
+    //   disclaimed by the very binding that grants it.
+    // - **That binding's §6**, on where the guarantee stops: "At the message.
+    //   The envelope is discarded on unwrap, and the guarantee does not travel
+    //   with the document." Authcrypt tells this service who handed it the
+    //   bytes. It leaves nothing behind that a third party — an auditor, a
+    //   registry, the member themselves — could check afterwards.
+    //
+    // Read off `spec_policy_for`, never a list kept here: a list of URIs whose
+    // requirement is published elsewhere is a list that drifts, and the
+    // requirement moves when the specification does.
+    //
+    // The policy is enforced **as the registry states it**. #1641 shipped with
+    // one transitional narrowing — `require_declared_proof = false` cleared
+    // `is_proof_required` where the transport had authenticated the sender,
+    // because `openvtc-core` sent five of these documents unsigned. openvtc#371
+    // signs them, which was that switch's stated removal condition, so the
+    // narrowing and the config key are gone. Nothing may reintroduce a
+    // per-deployment relaxation here: VTI-OPS-093 forbids a binding weakening a
+    // document requirement on a transport property, and a switch that lets an
+    // operator do it is the same weakening with a longer path.
+    //
+    // `None` means this build knows no specification for the URI. The
+    // dispatcher refuses an unrouted URI a few lines below
+    // (`unsupported_type_or_version`), so there is no silently-unchecked task
+    // here — only tasks whose definitions this build cannot read, which is the
+    // `rooms/*`-shaped case the arms guard for themselves.
+    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+        && let Err(reason) = policy.enforce(&doc)
+    {
+        tracing::info!(
+            type_uri,
+            ?reason,
+            "document refused by its specification's own policy"
+        );
+        return reject_with(&doc, reason);
+    }
+
+    // 3. Framework §7.2 item 7, *first* clause — the proof, verified here
+    //    against the document **as received**, because this is the last point
+    //    at which those bytes exist: past dispatch a handler holds a payload
+    //    that may have dropped a member it does not know, and canonicalising
+    //    that yields different bytes and refuses a valid proof.
+    //
+    //    §4.7 binds the proof to the in-band `issuer`: the `verificationMethod`
+    //    "MUST resolve to verification material controlled by the *party*
+    //    identified by the document's `issuer` member". A valid proof by some
+    //    *other* DID is not a proof by the issuer, and without this check the
+    //    signature would establish only that somebody signed something —
+    //    which is not what `verified_signer` is read as downstream.
     let ctx = if doc.proof.is_some() {
         match verify_trust_task_proof(state, &doc).await {
-            Ok(signer) => &ctx.with_verified_signer(Some(signer)),
+            Ok(signer) => {
+                if doc.issuer.as_deref() != Some(signer.as_str()) {
+                    tracing::warn!(
+                        type_uri,
+                        issuer = ?doc.issuer,
+                        %signer,
+                        "proof verifies under a key the document's issuer does not control"
+                    );
+                    return reject_with(
+                        &doc,
+                        RejectReason::ProofInvalid {
+                            reason: "the proof's verificationMethod does not belong to the \
+                                     document's issuer (SPEC §4.7)"
+                                .to_string(),
+                        },
+                    );
+                }
+                &ctx.with_verified_signer(Some(signer))
+            }
             // A proof that is present and does not verify is always fatal,
             // whatever the transport proved separately.
             Err(e) => return app_error_to_reject(&doc, &e),
@@ -223,36 +340,28 @@ pub(crate) async fn dispatch_trust_task_core(
     // properties of the document, and a redelivered copy satisfies them exactly
     // as the first did — which is the point: it *is* the first document.
     //
-    // Deliberately the same mechanism the VTA uses rather than a cache of this
-    // service's own. `ReplayGuard` is digest-keyed, so a *different* document
-    // arriving under an already-spent `id` is `idConflict` rather than being
-    // silently absorbed as a retry, and it claims before dispatch, so two
-    // simultaneous deliveries cannot both pass a check-then-act test.
+    // The record is digest-keyed, so a *different* document arriving under an
+    // already-spent `id` is `idConflict` rather than being silently absorbed as
+    // a retry, and it claims before dispatch, so two simultaneous deliveries
+    // cannot both pass a check-then-act test.
+    //
+    // It lives in the store, not in this process, because **VTI-OPS-027**
+    // requires the record to be shared across every binding this node exposes
+    // — see [`accepted_ids`]. The dispatcher is its first caller; the bearer
+    // REST routes #1641 phase 2 migrates are its second, and they must be able
+    // to consult the same rows, or replay protection is defeated by presenting
+    // the document at the other door.
     //
     // Placed after the proof check so an unauthenticated flood cannot spend
     // another sender's ids, matching where the webvh control plane puts its own
     // gate and for the same reason.
-    let doc_id = doc.id.clone();
-    let digest = match trust_tasks_rs::document_digest(&doc) {
-        Ok(d) => d,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::InternalError {
-                    reason: format!(
-                        "cannot canonicalise the document to key its replay record: {e}"
-                    ),
-                },
-            );
-        }
-    };
-    let now = chrono::Utc::now();
-    let retain_until = retention_policy().record_expiry(&doc, now);
-    match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc_id, &digest, retain_until, now)
+    let claim = match state
+        .accepted_ids()
+        .claim(&doc, retain_until(&doc, now), now)
         .await
     {
-        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => {}
-        Ok(trust_tasks_rs::ReplayVerdict::Duplicate {
+        Ok(accepted_ids::Acceptance::Fresh(claim)) => claim,
+        Ok(accepted_ids::Acceptance::Duplicate {
             prior_response,
             in_flight,
         }) => {
@@ -287,28 +396,20 @@ pub(crate) async fn dispatch_trust_task_core(
                 },
             };
         }
-        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => {
+        Ok(accepted_ids::Acceptance::Conflict) => {
             return reject_with(&doc, RejectReason::IdConflict);
         }
         // Fail closed. A consumer that cannot establish whether a document is a
         // duplicate has not satisfied item 11, so it must not execute — and
         // `unavailable` is retryable, which is the truthful signal.
-        Err(e) => {
-            tracing::error!(error = %e, id = %doc_id, "replay guard unavailable");
-            return reject_with(&doc, RejectReason::Unavailable { retry_after: None });
-        }
-        // `ReplayVerdict` is `#[non_exhaustive]`. Every variant it has gained so
-        // far is a reason *not* to run the task; guessing permissively on an
-        // unknown one is how a duplicate-execution defence stops defending.
-        Ok(other) => {
-            tracing::error!(
-                verdict = ?other,
-                id = %doc_id,
-                "replay guard returned a verdict this build does not know",
-            );
-            return reject_with(&doc, RejectReason::Unavailable { retry_after: None });
-        }
-    }
+        //
+        // `Acceptance` is this crate's own enum rather than the library's
+        // `#[non_exhaustive] ReplayVerdict`, so the arm that used to catch a
+        // verdict this build did not know is gone: a new variant here is a
+        // compile error at this match, which is the stronger form of the same
+        // guard.
+        Err(e) => return reject_with(&doc, e.reject_reason()),
+    };
 
     // 4. Dispatch by type URI, then sign what comes back.
     let outcome = dispatch_typed(state, ctx, doc, &type_uri).await;
@@ -321,52 +422,95 @@ pub(crate) async fn dispatch_trust_task_core(
     // - **Failed** → release. A document refused downstream of the claim would
     //   otherwise burn its `id`, and a corrected resend under the same `id`
     //   would come back `idConflict` for as long as the record is retained.
-    {
-        let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
-        if outcome.status.is_success() {
-            let recorded = serde_json::from_slice::<serde_json::Value>(&outcome.body).ok();
-            if let Err(e) = guard.record_response(&doc_id, recorded.as_ref()).await {
-                // Not fatal: the effect happened and the claim stands, so item 11
-                // still holds. Only the answer-a-retry courtesy is lost.
-                tracing::warn!(error = %e, id = %doc_id, "replay guard: response not recorded");
-            }
-        } else if let Err(e) = guard.release(&doc_id, &digest).await {
-            tracing::warn!(error = %e, id = %doc_id, "replay guard: claim not released");
-        }
+    if outcome.status.is_success() {
+        let recorded = serde_json::from_slice::<serde_json::Value>(&outcome.body).ok();
+        claim.completed(recorded.as_ref()).await;
+    } else {
+        claim.release().await;
     }
 
     outcome
 }
 
-/// Process-local duplicate-execution records (SPEC §7.2 item 11).
+/// The acceptance window this VTC is willing to act inside — **VTI-OPS-024**,
+/// SPEC §7.2 item 13, and the bound the accepted-id record's retention is
+/// derived from.
 ///
-/// In-memory on purpose. Cross-restart replay is not what this defends against:
-/// the records it would need are exactly the ones a restart makes unreachable
-/// anyway, and the redelivery window it does cover is far shorter than an
-/// uptime. Capacity-bounded, so a burst of distinct documents cannot grow it
-/// without limit.
+/// # Acceptance and retention are one bound
 ///
-/// Single-process, like the VTA's. Behind a load balancer two replicas would
-/// each accept the same document once; a VTC is not deployed that way today,
-/// and making this durable is the change to make when one is.
-static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
-    std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
+/// This used to be a `retention_policy()` whose documentation said, in terms,
+/// "**retention only** — this is not an acceptance policy and must not become
+/// one", because many of this service's producers stamped no `issuedAt`. §7.2
+/// (*Bounding the record*) makes that separation unavailable: a consumer
+/// "**MUST NOT** accept for execution a document older than the window over
+/// which it retains records", and one that "can establish neither an
+/// `expiresAt` nor an age for a document has no window in which to place it,
+/// and **MUST NOT** execute a *consequential Trust Task* on it". A record kept
+/// for a window nothing is measured against is a record whose horizon is
+/// capacity eviction, which makes the defence weakest exactly when the service
+/// is busiest.
+///
+/// # Why ten minutes, and 60 seconds of skew
+///
+/// The library's `DEFAULT_MAX_AGE` is five minutes, "long enough to survive a
+/// mediator queue, a retry with backoff, and a modest clock disagreement".
+/// This service reaches members through a mediator that holds messages while a
+/// recipient reconnects, so it takes double that — the same window
+/// `vta-service` settled on, for the same reason, so a document that one
+/// accepts is not stale at the other. The skew tolerance is the library's
+/// `DEFAULT_SKEW`, 60 seconds, which is SPEC §4.2's own "typically ≤ 60s".
+///
+/// # Why `issuedAt` is required, and what that costs
+///
+/// Without it two shapes escape the window. A document carrying neither
+/// timestamp is refused anyway — as `Stale { Unboundable }`, which renders as
+/// the wire code `expired`, telling a producer to wait when what it must do is
+/// reissue with the member it omitted. And a document carrying only
+/// `expiresAt` is accepted for however long its *producer* chose, which would
+/// let the producer decide how long this consumer must remember its `id`.
+/// Requiring `issuedAt` makes the last instant an accepted document can return
+/// provable — `issuedAt + max_age + skew` — which is what [`retain_until`]
+/// caps on.
+///
+/// The cost is exact: the one shape that moves from accepted to refused is
+/// **`expiresAt` present, `issuedAt` absent**. Every VTI producer stamps
+/// `issuedAt` (`vta_sdk::trust_task_sign::build_unsigned`, and
+/// `VtaClient::dispatch_trust_task` for every transport), and 52 of the 95
+/// specifications this service binds declare the member REQUIRED in any case.
+fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
+    trust_tasks_rs::FreshnessPolicy::default()
+        .with_max_age(chrono::TimeDelta::minutes(10))
+        .requiring_issued_at()
+}
 
-/// How long a duplicate-execution record is kept.
+/// How long the duplicate-execution record for `doc` must be kept — the end of
+/// this consumer's willingness to execute it, which SPEC §7.2 makes the same
+/// instant as the end of the record's required retention.
 ///
-/// **Retention only** — this is not an acceptance policy and must not become
-/// one. The VTC does not enforce a freshness window today (many of its
-/// producers stamp no `issuedAt`), and turning one on here would refuse
-/// documents this service accepts now. What the policy supplies is the
-/// fallback horizon for a document carrying no `expiresAt`: without it such a
-/// record would be held until capacity evicted it.
+/// `FreshnessPolicy::record_expiry` takes a producer-supplied `expiresAt`
+/// **verbatim**, so a document stamped `expiresAt = now + 10 years` would pin
+/// its `id` in the accepted-id record for ten years — an entry held long past
+/// the last moment it could be needed, crowding out the records that are.
+/// `requiring_issued_at` above makes the cap provable: a document with no
+/// `issuedAt` never reaches here, and one that did reach here is refused once
+/// `issuedAt + max_age + skew` has passed.
 ///
-/// The bound may only ever be *longer* than the window in which a document is
-/// still executable. Shorter is the direction §7.2 forbids — a replay arriving
-/// while the document is still acceptable, with its record already dropped,
-/// runs twice.
-fn retention_policy() -> trust_tasks_rs::FreshnessPolicy {
-    trust_tasks_rs::FreshnessPolicy::consequential()
+/// The cap only ever moves the instant **earlier than a producer asked for**,
+/// never earlier than the acceptance window. Shortening retention below the
+/// window is the direction §7.2 forbids: a replay arriving while the document
+/// is still acceptable, with its record already dropped, executes twice.
+fn retain_until(
+    doc: &TrustTask<Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let policy = freshness_policy();
+    let expiry = policy.record_expiry(doc, now)?;
+    match (doc.issued_at, policy.max_age) {
+        (Some(issued_at), Some(max_age)) => Some(expiry.min(issued_at + max_age + policy.skew)),
+        // Unreachable while `require_issued_at` holds; if that ever changes,
+        // over-retaining is the safe direction to fail in.
+        _ => Some(expiry),
+    }
 }
 
 /// Attach this community's Data-Integrity proof to a success response.
@@ -452,10 +596,11 @@ async fn dispatch_typed(
     // That refusal is not new: each of these handlers used to call
     // `verify_trust_task_proof` itself and return this same rejection. The
     // verification moved to the spine; the requirement did not move anywhere.
-    // Stated as a guard here rather than assumed, because `verified_signer` is
-    // `None` for every transport-authenticated task that carries no proof — the
-    // normal case for join over DIDComm — and defaulting to an empty presenter
-    // would authorize a room operation against nobody.
+    // Since #1641 the spine refuses a proof-less `rooms/*` document before this
+    // arm is reached, because every one of them declares `proof` REQUIRED and
+    // `spec_policy_for` is now enforced — so this guard is belt to that brace.
+    // It stays: `verified_signer` is `Option`, and defaulting to an empty
+    // presenter would authorize a room operation against nobody.
     let rooms_presenter = ctx.verified_signer.as_deref();
 
     match type_uri {
@@ -477,6 +622,7 @@ async fn dispatch_typed(
         vetting_wire::VETTING_VETTER_GRANT_TYPE => handle_vetter_grant(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_PROFILE_TYPE => handle_vetter_profile(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
+        vetting_wire::VETTING_VETTER_SHOW_TYPE => handle_vetter_show(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
         // Hidden vetting's community half (development branch `zkp-pcs`). Four exchanges: a
         // vetter enrolling, a vetter drawing its drip, a vetter asking to vet at an event, an
@@ -523,51 +669,461 @@ async fn dispatch_typed(
         }
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
+        // The admin-facing member verbs. Each is authorized from the verified
+        // signer's ACL entry — never from a bearer token, which this endpoint
+        // does not read — see [`admin_signer`].
+        MEMBER_CREDENTIALS_TYPE => handle_member_credentials(state, ctx, doc).await,
+        MEMBER_UPDATE_TYPE => handle_member_update(state, ctx, doc).await,
+        MEMBER_ADMIN_REMOVE_TYPE => handle_member_admin_remove(state, ctx, doc).await,
+        MEMBER_PURGE_TYPE => handle_member_purge(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
     }
 }
 
+/// The spine's document-level gate: VTI-OPS-020 (a proof by the issuer),
+/// VTI-OPS-021 / -093 (the same requirements on every transport), VTI-OPS-024
+/// (the acceptance window) and VTI-OPS-025…027 (the replay record).
+///
+/// # What this module used to say, and why it no longer does
+///
+/// It held one test, `a_transport_authenticated_task_declares_a_proof_it_does_
+/// not_carry`, whose assertion was deliberately inverted: it recorded that
+/// `join-requests/submit` declares a proof REQUIRED *while this service accepts
+/// it without one*, so that "the next person to reach for `spec_policy_for` as
+/// an enforcement gate meets it as a failing test rather than as a total
+/// outage."
+///
+/// The warning was right about the consequence and wrong about the conclusion.
+/// Three documents refuse the leniency outright — VTI-OPS-021, VTI-OPS-093, and
+/// the DIDComm binding's own §5 ("a *Trust Task specification* that declares
+/// `proof` as REQUIRED overrides this binding-level allowance"). So the gate is
+/// now the specification's, and the outage it predicted was real for exactly
+/// one client: `openvtc-core`, which sent five of these documents unsigned.
+///
+/// #1641 met that by gating the refusal behind `[trust_tasks]
+/// require_declared_proof`, default `false`, whose rustdoc carried an exact
+/// removal condition — "when `openvtc-core` signs the five documents above, the
+/// default flips and this field goes with it". openvtc#371 signs them, so the
+/// gate is gone and every test here now asserts against the requirement
+/// directly, on all three transports.
+///
+/// See `docs/05-design-notes/vtc-trust-task-proof-enforcement.md`.
 #[cfg(test)]
 mod spine_proof_tests {
     use super::*;
+    use crate::test_support::{TEST_VTC_DID, build_test_vtc};
+    use serde_json::json;
 
-    /// The rule the spine actually follows, and the one it must not.
-    ///
-    /// The tempting rule is "verify wherever the published specification says
-    /// `proof` is REQUIRED". This test exists because that rule is wrong here,
-    /// and wrong in a way that takes the service down rather than tightening it:
-    /// `join-requests/submit` declares a proof REQUIRED, and over DIDComm the
-    /// applicant sends none — authcrypt proved the sender and the document rides
-    /// inside that envelope. Enforcing the flag refuses every join over DIDComm
-    /// and TSP.
-    ///
-    /// So the assertion is inverted from what it looks like it should be: these
-    /// URIs demand a proof *per the specification* while this service accepts
-    /// them without one. That divergence is real and predates the spine change.
-    /// It is recorded here so the next person to reach for `spec_policy_for` as
-    /// an enforcement gate meets it as a failing test rather than as a total
-    /// outage.
+    // One holder: a `did:key` and the private key behind it, minted the same
+    // way the rooms fixtures mint theirs.
+    use vti_rooms_dtg::test_support::Party as Holder;
+
+    fn holder() -> Holder {
+        Holder::new()
+    }
+
+    /// The unsigned document, exactly as it goes on the wire minus the proof.
+    /// `build_unsigned` is the SDK's own builder, so `issuer`, `recipient` and
+    /// `issuedAt` are set the way every real producer sets them and the tests
+    /// vary only what they mean to.
+    fn unsigned(h: &Holder, uri: &str, payload: Value) -> TrustTask<Value> {
+        vta_sdk::trust_task_sign::build_unsigned(uri, payload, &h.did, TEST_VTC_DID)
+            .expect("build the document")
+    }
+
+    async fn signed(h: &Holder, doc: TrustTask<Value>) -> TrustTask<Value> {
+        let mut doc = doc;
+        let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&h.did, &h.secret_multibase)
+            .expect("a did:key names its own verification method");
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .expect("sign the document");
+        doc
+    }
+
+    /// The `code` of the `trust-task-error` an outcome carries, or `None` when
+    /// the outcome is not an error document.
+    fn error_code(out: &TrustTaskOutcome) -> Option<String> {
+        let doc: Value = serde_json::from_slice(&out.body).ok()?;
+        doc.pointer("/payload/code")?.as_str().map(str::to_string)
+    }
+
+    async fn dispatch(state: &AppState, doc: &TrustTask<Value>) -> TrustTaskOutcome {
+        let body = serde_json::to_vec(doc).expect("a document serialises");
+        dispatch_trust_task_core(state, &JoinAuthCtx::rest(), &body).await
+    }
+
+    /// The URI these tests drive. `vtc/join-requests/status/0.1` declares
+    /// `proof` REQUIRED and needs no seeded community state to reach its
+    /// handler, so what the spine does is the only thing that varies.
+    const UNDER_TEST: &str = jr::JOIN_REQUEST_STATUS_TYPE;
+
+    /// The premise the rest of this module rests on. If the registry ever
+    /// relaxes the declaration, these tests are asserting nothing and this one
+    /// says so first.
     #[test]
-    fn a_transport_authenticated_task_declares_a_proof_it_does_not_carry() {
-        let declares_required = |uri: &str| {
-            trust_tasks_rs::schema_index::spec_policy_for(uri)
-                .is_some_and(|policy| policy.is_proof_required)
-        };
-
+    fn the_task_under_test_declares_a_proof_required() {
+        let policy = trust_tasks_rs::schema_index::spec_policy_for(UNDER_TEST)
+            .expect("the task under test has a published spec policy");
         assert!(
-            declares_required(jr::JOIN_REQUEST_SUBMIT_TYPE),
-            "if this is now false the specification changed, and the comment \
-             above — plus the rule in the spine — should be re-read"
+            policy.is_proof_required,
+            "{UNDER_TEST} no longer declares proof REQUIRED — these tests now \
+             assert nothing, and the design note should be re-read"
         );
     }
 
-    /// And the rooms family, where the requirement *is* enforced — by the arms
-    /// in `dispatch_typed`, which refuse without a verified signer exactly as
-    /// each handler used to refuse for itself.
+    /// **VTI-OPS-020 / VTI-OPS-021.** A task whose specification declares
+    /// `proof` REQUIRED is refused when it carries none, with the framework's
+    /// own code for exactly that.
+    #[tokio::test]
+    async fn vti_ops_020_a_proof_required_task_is_refused_without_a_proof() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let out = dispatch(&tv.state, &unsigned(&h, UNDER_TEST, json!({}))).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("proofRequired"),
+            "SPEC §7.2 item 7 names the code: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// …and accepted with one. "Accepted" here means the spine let it through
+    /// to the handler, which is the whole of what the spine decides — the
+    /// handler then answers for a status poll on a request that does not
+    /// exist, and that answer is not this module's business.
+    #[tokio::test]
+    async fn vti_ops_020_the_same_document_is_accepted_once_it_is_signed() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let doc = signed(&h, unsigned(&h, UNDER_TEST, json!({}))).await;
+        let out = dispatch(&tv.state, &doc).await;
+
+        assert_ne!(
+            error_code(&out).as_deref(),
+            Some("proofRequired"),
+            "a signed document must reach its handler: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_ne!(
+            error_code(&out).as_deref(),
+            Some("proofInvalid"),
+            "the spine must accept a proof it can verify: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// **VTI-OPS-020.** SPEC §4.7: the proof's `verificationMethod` "MUST
+    /// resolve to verification material controlled by the *party* identified by
+    /// the document's `issuer`". A valid signature by some *other* holder is
+    /// not a proof by the issuer, and before #1641 it satisfied the
+    /// requirement — establishing only that somebody signed something, which is
+    /// not what `verified_signer` is read as downstream.
+    #[tokio::test]
+    async fn vti_ops_020_a_proof_by_a_key_the_issuer_does_not_control_is_refused() {
+        let tv = build_test_vtc().await;
+        let issuer = holder();
+        let impostor = holder();
+
+        // Addressed from `issuer`, signed by `impostor`.
+        let doc = signed(&impostor, unsigned(&issuer, UNDER_TEST, json!({}))).await;
+        let out = dispatch(&tv.state, &doc).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("proofInvalid"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// **VTI-OPS-024.** A document issued longer ago than the acceptance
+    /// window is outside it, and `expired` is the code for a document that was
+    /// once acceptable and no longer is.
+    #[tokio::test]
+    async fn vti_ops_024_an_issued_at_older_than_the_window_is_refused() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(chrono::Utc::now() - chrono::TimeDelta::hours(2));
+        let doc = signed(&h, doc).await;
+
+        assert_eq!(
+            error_code(&dispatch(&tv.state, &doc).await).as_deref(),
+            Some("expired"),
+        );
+    }
+
+    /// **VTI-OPS-024**, the other end of the window, and the skew tolerance
+    /// that bounds it. SPEC §7.2 item 13 makes a future-dated document
+    /// `malformedRequest` rather than `expired`: it was never acceptable, so
+    /// telling the producer to wait would be wrong — it must reissue.
+    #[tokio::test]
+    async fn vti_ops_024_a_future_dated_issued_at_is_malformed_not_expired() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(chrono::Utc::now() + chrono::TimeDelta::minutes(30));
+        let doc = signed(&h, doc).await;
+
+        assert_eq!(
+            error_code(&dispatch(&tv.state, &doc).await).as_deref(),
+            Some("malformedRequest"),
+        );
+    }
+
+    /// …and a document inside the skew tolerance is not. 30 seconds ahead of
+    /// this consumer's clock is an ordinary clock disagreement, and refusing it
+    /// would make the window depend on whose NTP is better.
+    #[tokio::test]
+    async fn vti_ops_024_a_document_inside_the_skew_tolerance_is_accepted() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(chrono::Utc::now() + chrono::TimeDelta::seconds(30));
+        let doc = signed(&h, doc).await;
+        let out = dispatch(&tv.state, &doc).await;
+
+        assert_ne!(
+            error_code(&out).as_deref(),
+            Some("malformedRequest"),
+            "60s of skew is SPEC §4.2's own tolerance: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// Give `h` an open join request, so a status poll from them **succeeds**.
     ///
-    /// The two together are the whole rule: a present proof is always verified,
-    /// an absent one is the transport's business, and a handler that needs a
-    /// signed identity says so.
+    /// The replay tests below need that: the spine releases a claim whose
+    /// dispatch failed — deliberately, so a corrected resend under the same
+    /// `id` is not refused as a conflict for the rest of the retention window
+    /// — and a test driving a failing task would therefore assert against a
+    /// record that was never kept.
+    async fn seed_open_request(state: &AppState, h: &Holder) {
+        let request =
+            crate::join::JoinRequest::new(h.did.clone(), serde_json::json!({ "vp": "x" }));
+        crate::join::storage::store_join_request(&state.join_requests_ks, &request)
+            .await
+            .expect("seed an open join request");
+    }
+
+    /// **VTI-OPS-020's replay half (VTI-OPS-025…027), SPEC §7.2 item 11.** The
+    /// same document delivered twice executes once. A duplicate is answered
+    /// with the original result rather than an error — "in no case is a
+    /// duplicate reported as `taskFailed`; the task did not fail, it already
+    /// happened" — so the assertion is that the second answer is the first.
+    ///
+    /// Compared as parsed JSON rather than as bytes: the duplicate path
+    /// re-serialises the recorded `Value`, and `serde_json` without
+    /// `preserve_order` alphabetises a `Map`'s keys, so the two are the same
+    /// document and not the same bytes.
+    #[tokio::test]
+    async fn vti_ops_025_a_replayed_document_is_answered_not_executed_again() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        seed_open_request(&tv.state, &h).await;
+        let doc = signed(&h, unsigned(&h, UNDER_TEST, json!({}))).await;
+
+        let first = dispatch(&tv.state, &doc).await;
+        assert!(
+            first.status.is_success(),
+            "the fixture must reach a succeeding handler, or the claim is \
+             released and the second dispatch runs fresh: {}",
+            String::from_utf8_lossy(&first.body)
+        );
+
+        let second = dispatch(&tv.state, &doc).await;
+        assert_eq!(first.status, second.status);
+
+        let as_json = |out: &TrustTaskOutcome| -> Value {
+            serde_json::from_slice(&out.body).expect("the answer is a document")
+        };
+        assert_eq!(
+            as_json(&first),
+            as_json(&second),
+            "a redelivery is the same document, so it gets the same answer"
+        );
+    }
+
+    /// **SPEC §7.2 item 11's conflict half.** A *different* document under an
+    /// already-spent `id` is `idConflict`, never absorbed as a retry — which is
+    /// why the record is keyed by digest rather than by `id` alone.
+    #[tokio::test]
+    async fn vti_ops_025_a_different_document_reusing_an_id_is_a_conflict() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        seed_open_request(&tv.state, &h).await;
+
+        let first = signed(&h, unsigned(&h, UNDER_TEST, json!({}))).await;
+        let out = dispatch(&tv.state, &first).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        // Same `id`, different content: a different document, not a retry.
+        let mut second = unsigned(&h, UNDER_TEST, json!({}));
+        second.id = first.id.clone();
+        second.issued_at = Some(chrono::Utc::now() - chrono::TimeDelta::seconds(1));
+        let second = signed(&h, second).await;
+
+        assert_eq!(
+            error_code(&dispatch(&tv.state, &second).await).as_deref(),
+            Some("idConflict"),
+        );
+    }
+
+    /// **VTI-OPS-024 + VTI-OPS-026.** Acceptance and retention are one bound.
+    /// `record_expiry` takes a producer-supplied `expiresAt` verbatim, so
+    /// without the cap a document stamped ten years out would pin its `id`
+    /// for ten years — retention long past the last instant the document could
+    /// still be accepted, crowding out the records that can be drawn on.
+    #[test]
+    fn vti_ops_026_retention_is_capped_at_the_end_of_the_acceptance_window() {
+        let h = holder();
+        let now = chrono::Utc::now();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(now);
+        doc.expires_at = Some(now + chrono::TimeDelta::days(3650));
+
+        let policy = freshness_policy();
+        let until = retain_until(&doc, now).expect("a document with an issuedAt is boundable");
+
+        assert_eq!(
+            until,
+            now + policy.max_age.expect("the window is set") + policy.skew,
+            "retention may not outlast the window in which the document is \
+             still executable"
+        );
+    }
+
+    /// …and it never moves the instant *earlier* than that window. Shortening
+    /// retention below acceptance is the direction §7.2 forbids: a replay
+    /// arriving while the document is still acceptable, with its record
+    /// already dropped, executes twice.
+    #[test]
+    fn vti_ops_026_a_short_expiry_does_not_shorten_retention_below_the_window() {
+        let h = holder();
+        let now = chrono::Utc::now();
+        let mut doc = unsigned(&h, UNDER_TEST, json!({}));
+        doc.issued_at = Some(now);
+        doc.expires_at = Some(now + chrono::TimeDelta::seconds(30));
+
+        let until = retain_until(&doc, now).expect("boundable");
+        assert_eq!(
+            until,
+            now + chrono::TimeDelta::seconds(30),
+            "a producer that says its document lapses in 30s has said the \
+             record may be dropped then — it is unacceptable after that too"
+        );
+    }
+
+    /// **VTI-OPS-021 / VTI-OPS-093.** One unsigned document, offered on every
+    /// transport this service accepts, refused on every one of them.
+    ///
+    /// # Why this replaced three tests, and why the conclusion moved
+    ///
+    /// #1641 shipped this ground as three: a REST document was refused; the
+    /// same document over DIDComm, carrying an authcrypt sender, was
+    /// **accepted** under the shipped default; and it was refused once the
+    /// operator set `[trust_tasks] require_declared_proof = true`. The middle
+    /// one existed to pin a transitional allowance, so that flipping the
+    /// default would be "a visible change to a test rather than a silent
+    /// change in behaviour". This is that change, made visible.
+    ///
+    /// The allowance had exactly one reason: `openvtc-core` built
+    /// `join-requests/{submit,status}`, `members/{self-remove,vmc}` and
+    /// `members/personhood/assert` with no proof attached. openvtc#371 signs
+    /// all five, which is the removal condition #1659 wrote down. So the
+    /// assertion is not relaxed to match the code — it is inverted to match a
+    /// requirement that never had a transport term in it: "a node MUST apply
+    /// the same document requirements on every transport", and a transport that
+    /// authenticates its sender "MUST NOT be treated as relieving a producer of
+    /// addressing or signing the document it sends".
+    ///
+    /// Driving all three transports from one body is the point rather than
+    /// thoroughness: the old tests each asserted about a single transport, so
+    /// between them they could have agreed with VTI-OPS-021 on two and
+    /// disagreed on the third without anything noticing.
+    #[tokio::test]
+    async fn vti_ops_021_a_missing_proof_is_refused_on_every_transport() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let body =
+            serde_json::to_vec(&unsigned(&h, UNDER_TEST, json!({}))).expect("serialise document");
+
+        for ctx in [
+            JoinAuthCtx::rest(),
+            JoinAuthCtx::didcomm(h.did.clone()),
+            // TSP, whose sender VID is authenticated the way authcrypt's sender
+            // is. It has no constructor — the messaging bridge builds one
+            // inline — so this is that shape, written out.
+            JoinAuthCtx {
+                transport: JoinTransport::Tsp,
+                sender_did: Some(h.did.clone()),
+                verified_signer: None,
+            },
+        ] {
+            let transport = ctx.transport.as_str();
+            let out = dispatch_trust_task_core(&tv.state, &ctx, &body).await;
+
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{transport}: an authenticated sender is not a proof by the issuer: {}",
+                String::from_utf8_lossy(&out.body),
+            );
+        }
+    }
+
+    /// …and the refusal is about the missing proof, not about the transport.
+    ///
+    /// Without this, the test above would pass equally on a spine that refused
+    /// every DIDComm and TSP document outright — which is a way of satisfying
+    /// "the same requirements on every transport" that takes the community
+    /// offline. Each iteration signs a fresh document: the same one dispatched
+    /// three times is a replay, and the second answer would be a replay of the
+    /// first rather than a new decision.
+    #[tokio::test]
+    async fn vti_ops_021_the_same_document_signed_is_accepted_on_every_transport() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+
+        for ctx in [
+            JoinAuthCtx::rest(),
+            JoinAuthCtx::didcomm(h.did.clone()),
+            JoinAuthCtx {
+                transport: JoinTransport::Tsp,
+                sender_did: Some(h.did.clone()),
+                verified_signer: None,
+            },
+        ] {
+            let transport = ctx.transport.as_str();
+            let doc = signed(&h, unsigned(&h, UNDER_TEST, json!({}))).await;
+            let body = serde_json::to_vec(&doc).expect("serialise document");
+            let out = dispatch_trust_task_core(&tv.state, &ctx, &body).await;
+
+            assert_ne!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{transport}: a signed document must reach its handler: {}",
+                String::from_utf8_lossy(&out.body),
+            );
+            assert_ne!(
+                error_code(&out).as_deref(),
+                Some("proofInvalid"),
+                "{transport}: the spine must accept a proof it can verify: {}",
+                String::from_utf8_lossy(&out.body),
+            );
+        }
+    }
+
+    /// The rooms family, where the requirement was already enforced by the
+    /// arms in `dispatch_typed` before the spine took it on. Kept because the
+    /// arms' guard is now belt to the spine's brace, and a specification that
+    /// relaxed the declaration would leave that guard standing alone.
     #[test]
     fn every_rooms_task_declares_the_proof_its_arm_requires() {
         for uri in vti_rooms::wire::ROOMS_DISPATCHED_URIS {
@@ -579,6 +1135,35 @@ mod spine_proof_tests {
                  specification had better agree that one is required"
             );
         }
+    }
+
+    /// The proof-REQUIRED tasks this dispatcher serves, named by the registry
+    /// rather than by a literal list here. A task that stops declaring a proof
+    /// — or one that starts — moves this number, and moving it should be a
+    /// decision somebody took rather than a diff nobody read.
+    ///
+    /// It also counts the migration. #1641 phase 2 moves the VTC's bearer-token
+    /// tasks onto this binding in batches, and each batch adds its tasks here;
+    /// the first added four (`members/{credentials,update,admin-remove,purge}`)
+    /// to the nine the spine already served.
+    #[test]
+    fn the_dispatched_set_declares_the_proofs_the_design_note_records() {
+        let required: Vec<&str> = DISPATCHED_URIS
+            .iter()
+            .copied()
+            .chain(crate::rooms::handlers::served_uris())
+            .filter(|uri| {
+                trust_tasks_rs::schema_index::spec_policy_for(uri)
+                    .is_some_and(|p| p.is_proof_required)
+            })
+            .collect();
+
+        assert_eq!(
+            required.len(),
+            24,
+            "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
+             member verbs #1641 phase 2 batch 1 moved; got {required:?}"
+        );
     }
 }
 
@@ -703,6 +1288,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // (resend is also mounted for admins as `POST /v1/vetting/vetters/{memberDid}/resend`).
     vetting_wire::VETTING_VETTER_PROFILE_TYPE,
     vetting_wire::VETTING_VETTER_LIST_TYPE,
+    vetting_wire::VETTING_VETTER_SHOW_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
     // Hidden vetting: enrolment, the drip, event mode, and the applicant's challenge.
     #[cfg(feature = "vetting-pcs")]
@@ -715,6 +1301,14 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
+    // The admin-facing member verbs (#1641 phase 2). Each also remains mounted
+    // on its bearer-JWT REST route as a documented transitional path; this is
+    // the binding that holds the document requirements their specifications
+    // declare — proof, recipient, `issuedAt`, and the accepted-id record.
+    MEMBER_CREDENTIALS_TYPE,
+    MEMBER_UPDATE_TYPE,
+    MEMBER_ADMIN_REMOVE_TYPE,
+    MEMBER_PURGE_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -728,6 +1322,22 @@ pub(crate) const PERSONHOOD_CHALLENGE_TYPE: &str =
 
 /// `vtc/members/personhood/assert/0.1` — present the evidence.
 pub(crate) const PERSONHOOD_ASSERT_TYPE: &str = <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/credentials/0.1` — read one member's credential bodies.
+pub(crate) const MEMBER_CREDENTIALS_TYPE: &str =
+    <member_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/update/0.1` — update a member's role or metadata.
+pub(crate) const MEMBER_UPDATE_TYPE: &str =
+    <member_update::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/admin-remove/0.1` — an administrator removes another member.
+pub(crate) const MEMBER_ADMIN_REMOVE_TYPE: &str =
+    <member_admin_remove::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/purge/0.1` — irreversibly erase a member record.
+pub(crate) const MEMBER_PURGE_TYPE: &str =
+    <member_purge::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -1142,6 +1752,28 @@ async fn handle_vetter_list(
     }
 }
 
+/// `vtc/vetting/vetters/show/0.1` — one vetter's grant status, by DID.
+///
+/// Identified callers only, like the listing: the answer is about a named
+/// third party's standing in this community.
+async fn handle_vetter_show(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = resolve_holder(state, ctx, &doc).await {
+        return reject;
+    }
+    let body: vetting_wire::vetters::show::v0_1::Payload = match parse_checked_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::profiles::show(state, &body).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
 /// `vtc/vetting/vetters/resend/0.1` — a vetter asks for their grant credential
 /// again. Always the sender's own grant.
 async fn handle_vetter_resend(
@@ -1545,6 +2177,246 @@ async fn handle_self_remove(
     }
 }
 
+// ─── the admin-facing member verbs (#1641 phase 2) ───────────────────────
+
+/// The administrator a signed admin document is authorized as.
+///
+/// # Why this is not the bearer route's gate, and why it is not weaker
+///
+/// The REST routes these four verbs also sit on take `AdminAuth`: a live
+/// session whose JWT says `role: admin`. That claim was itself written from the
+/// caller's ACL row — `map_vtc_role_to_auth_role` admits only `VtcRole::Admin`
+/// — at the moment the session was minted, and nothing re-reads it afterwards.
+///
+/// Here there is no session, because a signed document is not a session: the
+/// proof says who authored *this document*, and **VTI-OPS-020** is satisfied by
+/// that rather than by a transport. So authority is read from the ACL entry
+/// [`crate::acl::resolve_auth_role`] finds for the verified signer, **at the
+/// time the document is executed**. That is the same rule the bearer route
+/// applies, evaluated later: a row removed, expired, or demoted since the
+/// session began refuses here and would not have refused there.
+///
+/// What does change is the revocation lever. A bearer session is killed by
+/// revoking the session; a signed document is refused by removing or expiring
+/// the ACL row, which is the only authority it ever rested on. That is
+/// deliberate — `docs/05-design-notes/vtc-trust-task-proof-enforcement.md` §1
+/// — and it is why nothing here consults `sessions_ks`.
+///
+/// The signer is taken from [`JoinAuthCtx::verified_signer`], which the spine
+/// filled in from the proof it verified against the document's own `issuer`
+/// (SPEC §4.7) — never from the transport. All four of these specifications
+/// declare `proof` REQUIRED, so the spine has already refused a document
+/// carrying none; the `None` arm is belt to that brace, exactly as the
+/// `rooms/*` arm keeps its own.
+async fn admin_signer(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome> {
+    let Some(signer) = ctx.verified_signer.clone() else {
+        return Err(reject_with(doc, RejectReason::ProofRequired));
+    };
+    let (role, allowed_contexts) = crate::acl::resolve_auth_role(&state.acl_ks, &signer)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    Ok(vti_common::auth::extractor::AuthClaims {
+        did: signer,
+        role,
+        allowed_contexts,
+        ..Default::default()
+    })
+}
+
+/// Validate a payload against its published schema and hand back the
+/// generated type.
+///
+/// The generated `Payload` carries `deny_unknown_fields` and the required set,
+/// and `validate_value` adds what serde cannot see — `const`, `enum`,
+/// `pattern`, `minLength`. The bearer routes get the first half from their
+/// hand-written bodies and the second from nothing at all, so this door is the
+/// stricter of the two.
+fn parse_spec_payload<P>(doc: &TrustTask<Value>) -> Result<P, TrustTaskOutcome>
+where
+    P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
+{
+    if let Err(e) = P::validate_value(&doc.payload) {
+        return Err(reject_with(
+            doc,
+            RejectReason::MalformedRequest {
+                reason: format!("payload: {e}"),
+            },
+        ));
+    }
+    parse_payload::<P>(doc)
+}
+
+/// `vtc/members/credentials/0.1` — the membership pair's bodies for one member.
+///
+/// Administrator only. The read is audited against the **signer**, which is the
+/// point of the task declaring a proof: the specification's own rationale is
+/// that "the record of who read a member's credentials is the only thing that
+/// makes the disclosure accountable afterwards", and a bearer token names a
+/// session rather than a key.
+async fn handle_member_credentials(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let body: member_credentials::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::members::credentials::read_member_credentials(
+        state,
+        &actor.did,
+        body.did.as_str(),
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        // The task's one declared code, carried as a code rather than flattened
+        // into `taskFailed` (SPEC §8.5) — the same distinction the REST route's
+        // `CredentialsError` makes in its body.
+        Err(crate::routes::members::credentials::CredentialsError::NotFound(message)) => {
+            task_error_to_reject(
+                &doc,
+                &crate::error::TaskError::declared(
+                    crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
+                    AppError::NotFound(message),
+                ),
+            )
+        }
+        Err(crate::routes::members::credentials::CredentialsError::Other(e)) => {
+            app_error_to_reject(&doc, &e)
+        }
+    }
+}
+
+/// `vtc/members/update/0.1` — update a member's role or metadata.
+///
+/// Administrator only, and `role: admin` is refused with the task's own
+/// `adminRoleForbidden` — the gate is on the transition, not on the route, so
+/// it holds identically on both doors.
+///
+/// # Why the payload is read twice
+///
+/// The generated `Payload` types `extensions` as a plain map with `default`, so
+/// an absent `extensions` and an empty one are the same value once parsed —
+/// and the operation's rule is that an absent field leaves the member's
+/// extensions **unchanged** while an empty object replaces them. Reading the
+/// same JSON into the route's own `UpdateMemberRequest`, whose fields are
+/// `Option`, keeps that distinction. The generated parse still runs, and runs
+/// first, because it is what validates the document against its published
+/// schema.
+async fn handle_member_update(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: member_update::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let req: crate::routes::members::update::UpdateMemberRequest = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::members::update::update_member_inner(
+        state,
+        &actor,
+        checked.did.as_str(),
+        req,
+    )
+    .await
+    {
+        Ok(envelope) => success_response(&doc, envelope),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/members/admin-remove/0.1` — an administrator removes another member.
+async fn handle_member_admin_remove(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: member_admin_remove::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    // Same reason as `update` above: `disposition` and `reason` are optional
+    // and the route's body type is the one that says so.
+    let body: crate::routes::members::remove::RemoveBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::members::remove::admin_remove_inner(
+        state,
+        &actor.did,
+        checked.did.as_str(),
+        body,
+    )
+    .await
+    {
+        Ok(outcome) => success_response(
+            &doc,
+            crate::routes::members::remove::RemoveResponse::from(outcome),
+        ),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/members/purge/0.1` — irreversibly erase a member record.
+///
+/// **Super-administrator only**, which is a stricter gate than the other three
+/// and must stay one: the bearer route takes `SuperAdminAuth`, so the signed
+/// door asks [`AuthClaims::require_super_admin`] the same question —
+/// `Role::Admin` **and** an unrestricted [`vti_common::acl::ActScope`]. Reading
+/// `allowed_contexts.is_empty()` here instead would be the exact inversion
+/// `CLAUDE.md` names: empty means *unrestricted* for an admin and *authorized
+/// nowhere* for anybody else.
+async fn handle_member_purge(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    if let Err(e) = actor.require_super_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
+    let checked: member_purge::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    // The REST route validates the path segment; here the DID rides the
+    // payload, and `purge_member` does not validate it for us.
+    if let Err(e) = vti_common::identifier::validate_did("did", checked.did.as_str()) {
+        return app_error_to_reject(&doc, &e);
+    }
+    match crate::ceremony::purge_member(state, &actor.did, checked.did.as_str()).await {
+        Ok(outcome) => success_response(
+            &doc,
+            crate::routes::members::remove::RemoveResponse::from(outcome),
+        ),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
 // ─── personhood ──────────────────────────────────────────────────────────
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce the
@@ -1842,13 +2714,20 @@ mod tests {
             vetting_wire::VETTING_VETTER_GRANT_TYPE,
             vetting_wire::VETTING_VETTER_PROFILE_TYPE,
             vetting_wire::VETTING_VETTER_LIST_TYPE,
+            vetting_wire::VETTING_VETTER_SHOW_TYPE,
             vetting_wire::VETTING_VETTER_RESEND_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <member_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <member_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <member_admin_remove::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <member_purge::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             // Hidden vetting. These four name a string constant rather than a generated
-            // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet —
-            // the specifications exist, the bindings generate as 0.22, and this graph is on
-            // ^0.21. `pcs_tasks::tests` holds what the generated type would have held: that the
+            // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet.
+            // The specifications are merged (#618, #620) and the bindings generate as 0.22;
+            // this graph resolves 0.21.17 because affinidi-messaging-sdk, the mediator and the
+            // four trust-tasks companions re-export trust-tasks-rs types from the 0.21 line.
+            // `pcs_tasks::tests` holds what the generated type would have held: that the
             // payloads match the published schemas.
             #[cfg(feature = "vetting-pcs")]
             crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
@@ -1953,6 +2832,7 @@ mod tests {
         use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
         use crate::test_support::TestVtc;
         use serde_json::json;
+        use vti_rooms_dtg::test_support::Party;
 
         const MEMBER: &str = "did:key:zPersonhoodMember";
         const STRANGER: &str = "did:key:zNotAMember";
@@ -1982,12 +2862,59 @@ mod tests {
         /// recipient binding is skipped — these tests are about the
         /// per-verb auth the handlers add, not the framework envelope
         /// checks that run ahead of every verb alike.
+        ///
+        /// The envelope is still the one a real producer sends. `issuedAt` and
+        /// `recipient` are both required of these specifications, and the spine
+        /// enforces them ahead of any handler since #1641; a bare
+        /// `TrustTask::new` was refused as `malformedRequest` before the verb
+        /// under test was ever reached.
+        ///
+        /// **No `proof`, and that is not leniency.**
+        /// `vtc/members/personhood/challenge/0.1` declares `proof` OPTIONAL, so
+        /// the spine asks for none and the authcrypt sender is the whole of the
+        /// caller's identity — which is exactly what these tests are about. Its
+        /// sibling `assert/0.1` *does* declare `proof` REQUIRED, and since
+        /// #1672 there is no setting that makes an unsigned one acceptable; the
+        /// one test that drives it uses [`signed_document`] instead.
         fn document(type_uri: &str, payload: serde_json::Value) -> Vec<u8> {
-            let doc = TrustTask::new(
+            let mut doc = TrustTask::new(
                 uuid::Uuid::new_v4().to_string(),
                 type_uri.parse().expect("dispatched URI parses as TypeUri"),
                 payload,
             );
+            doc.recipient = Some(crate::test_support::TEST_VTC_DID.to_string());
+            doc.issued_at = Some(chrono::Utc::now());
+            serde_json::to_vec(&doc).expect("serialize document")
+        }
+
+        /// The same envelope, issued by `from` and carrying `from`'s
+        /// Data-Integrity proof — what a producer sends for a task that
+        /// declares `proof` REQUIRED.
+        ///
+        /// `from` is a real `did:key` with the secret behind it, because the
+        /// spine verifies the proof against the document's own `issuer`
+        /// (SPEC §4.7): a placeholder string like [`MEMBER`] can address a
+        /// document but cannot sign one.
+        async fn signed_document(
+            from: &Party,
+            type_uri: &str,
+            payload: serde_json::Value,
+        ) -> Vec<u8> {
+            let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+                type_uri,
+                payload,
+                &from.did,
+                crate::test_support::TEST_VTC_DID,
+            )
+            .expect("build the document");
+            let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(
+                &from.did,
+                &from.secret_multibase,
+            )
+            .expect("a did:key names its own verification method");
+            vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+                .await
+                .expect("sign the document");
             serde_json::to_vec(&doc).expect("serialize document")
         }
 
@@ -2132,19 +3059,33 @@ mod tests {
         /// personhood in another's name — even though the presentation gate
         /// would also stop them, because a caller should be refused before
         /// the daemon starts verifying someone else's credentials.
+        ///
+        /// The document is **signed**, and that is the point of the fixture
+        /// change #1672 made here. `assert/0.1` declares `proof` REQUIRED; this
+        /// test used to send an unsigned one over DIDComm, which reached the
+        /// handler only through the transitional allowance the same change
+        /// removes. Left alone it would now stop at `proofRequired` and go on
+        /// passing for a reason that has nothing to do with subject binding —
+        /// a green test asserting nothing. Signing it puts the caller's
+        /// identity where the handler reads it from (`verified_signer`, bound
+        /// to the document's own `issuer`), so the refusal under test is still
+        /// the one being produced.
         #[tokio::test]
         async fn one_member_cannot_assert_personhood_for_another() {
             let vtc = fixture().await;
+            let stranger = Party::new();
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(STRANGER.into()),
-                &document(
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &signed_document(
+                    &stranger,
                     PERSONHOOD_ASSERT_TYPE,
                     json!({
                         "did": MEMBER,
                         "presentation": { "type": ["VerifiablePresentation"], "holder": MEMBER },
                     }),
-                ),
+                )
+                .await,
             )
             .await;
 
@@ -2188,5 +3129,653 @@ mod join_discovery_tests {
     #[test]
     fn a_caller_that_proves_nothing_is_unidentified() {
         assert!(!caller_is_identified(&ctx(None, None)));
+    }
+}
+
+/// The admin-facing member verbs, served as signed Trust Task documents —
+/// **#1641 phase 2, batch 1**.
+///
+/// Four tasks (`vtc/members/{credentials,update,admin-remove,purge}`) whose
+/// specifications declare `proof` REQUIRED were served only as flat-payload
+/// REST behind a bearer JWT, so they got none of what the spine enforces: no
+/// proof, no recipient binding, no acceptance window, and nothing in the
+/// accepted-id record. They are now bound here as well.
+///
+/// What these tests hold, and why each one is here:
+///
+/// - **VTI-OPS-020** — the document carries a proof by its issuer, and that
+///   issuer's **ACL entry** is what authorizes the operation. A bearer token is
+///   not read on this endpoint at all.
+/// - **VTI-OPS-025 / -026 / -027** — a redelivered document is answered with
+///   the recorded outcome rather than executed again, a *different* document
+///   under a spent `id` is `idConflict`, and the record is the shared
+///   store-backed one. All three come from the spine's claim; these drive them
+///   through a real admin verb, because the failure they guard against
+///   ("purge executed twice") is only visible at a verb with an effect.
+/// - **The gate the bearer route applied must still refuse what it refused.**
+///   Losing one silently is the risk in the whole migration, so each refusal
+///   the REST extractors made has a test here: not an admin (`AdminAuth`), and
+///   for `purge` a context-scoped admin who is not a super-admin
+///   (`SuperAdminAuth`). Plus the operations' own refusals — unknown member,
+///   `role: admin`.
+#[cfg(test)]
+mod members_admin_tests {
+    use super::*;
+    use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+    use crate::members::{Member, get_member, store_member};
+    use crate::test_support::{TEST_VTC_DID, TestVtc};
+    use serde_json::json;
+    use vti_rooms_dtg::test_support::Party;
+
+    /// The member these documents act on. Never one of the signers, so an
+    /// `admin-remove` cannot collide with the "use /members/me" guard.
+    const TARGET: &str = "did:key:zTargetMember";
+
+    struct Fixture {
+        vtc: TestVtc,
+        /// `VtcRole::Admin`, unrestricted — a super-admin, so every verb here
+        /// including `purge` is open to them.
+        admin: Party,
+        /// `VtcRole::Admin` **scoped to one context** — an admin, but not a
+        /// super-admin. `SuperAdminAuth` refuses this caller and `AdminAuth`
+        /// does not, which is the distinction `purge` rests on.
+        scoped_admin: Party,
+        /// `VtcRole::Member` — authenticated, authorized for none of this.
+        member: Party,
+    }
+
+    async fn seed_acl(vtc: &TestVtc, did: &str, role: VtcRole, contexts: Vec<String>) {
+        store_acl_entry(
+            &vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: did.into(),
+                role,
+                label: None,
+                allowed_contexts: contexts,
+                created_at: 0,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("seed ACL row");
+    }
+
+    async fn fixture() -> Fixture {
+        // `with_audit` because every one of these verbs writes an audit row and
+        // refuses rather than acting when it cannot; `with_signers` because the
+        // removal ceremony re-mints credentials and the spine signs its replies.
+        let vtc = TestVtc::builder()
+            .with_audit(true)
+            .with_signers(true)
+            .build()
+            .await;
+        crate::policy::default::install_defaults(
+            &vtc.state.policies_ks,
+            &vtc.state.active_policies_ks,
+        )
+        .await
+        .expect("install default policies");
+
+        let admin = Party::new();
+        let scoped_admin = Party::new();
+        let member = Party::new();
+        seed_acl(&vtc, &admin.did, VtcRole::Admin, vec![]).await;
+        seed_acl(
+            &vtc,
+            &scoped_admin.did,
+            VtcRole::Admin,
+            vec!["ctx-a".to_string()],
+        )
+        .await;
+        seed_acl(&vtc, &member.did, VtcRole::Member, vec![]).await;
+
+        // The subject these documents name: a member row *and* an ACL row,
+        // which is what `members/credentials` means by "is a member".
+        seed_acl(&vtc, TARGET, VtcRole::Member, vec![]).await;
+        store_member(&vtc.state.members_ks, &Member::fresh(TARGET))
+            .await
+            .expect("seed target member");
+
+        Fixture {
+            vtc,
+            admin,
+            scoped_admin,
+            member,
+        }
+    }
+
+    /// The document as a real producer builds it — `issuer`, `recipient` and
+    /// `issuedAt` set by the SDK's own builder — but unsigned.
+    fn unsigned(from: &Party, type_uri: &str, payload: Value) -> TrustTask<Value> {
+        vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &from.did, TEST_VTC_DID)
+            .expect("build the document")
+    }
+
+    async fn sign(from: &Party, mut doc: TrustTask<Value>) -> TrustTask<Value> {
+        let key =
+            vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+                .expect("a did:key names its own verification method");
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .expect("sign the document");
+        doc
+    }
+
+    async fn signed(from: &Party, type_uri: &str, payload: Value) -> TrustTask<Value> {
+        sign(from, unsigned(from, type_uri, payload)).await
+    }
+
+    async fn dispatch(vtc: &TestVtc, doc: &TrustTask<Value>) -> TrustTaskOutcome {
+        let body = serde_json::to_vec(doc).expect("a document serialises");
+        dispatch_trust_task_core(&vtc.state, &JoinAuthCtx::rest(), &body).await
+    }
+
+    fn body_of(out: &TrustTaskOutcome) -> Value {
+        serde_json::from_slice(&out.body).unwrap_or(Value::Null)
+    }
+
+    /// The `code` of a `trust-task-error` reply, or `None` when the reply is a
+    /// success document.
+    fn error_code(out: &TrustTaskOutcome) -> Option<String> {
+        body_of(out)
+            .pointer("/payload/code")?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    fn payload_of(out: &TrustTaskOutcome) -> Value {
+        body_of(out)
+            .pointer("/payload")
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    /// Validate a success reply's payload against the task's published
+    /// `#response` schema.
+    ///
+    /// The router-level `response_conformance` layer that guards every REST
+    /// route keys on the `Trust-Task` **header**, which the document endpoint
+    /// does not use — so it does not reach these replies, and this is what
+    /// stands in for it. It matters most for `update`, whose arm answers with
+    /// the route's own `MemberEnvelope` rather than the generated type: a drift
+    /// between the two would otherwise be invisible until a client hit it.
+    fn assert_conforms<R: trust_tasks_rs::validate::ValidatedPayload>(out: &TrustTaskOutcome) {
+        let payload = payload_of(out);
+        R::validate_value(&payload).unwrap_or_else(|e| {
+            panic!("response does not match its published schema: {e}\n{payload}")
+        });
+    }
+
+    // ─── the premise ─────────────────────────────────────────────────────
+
+    /// If the registry ever relaxed one of these declarations, every test below
+    /// would be asserting nothing. This one says so first.
+    #[test]
+    fn every_moved_task_declares_the_proof_these_tests_assume() {
+        for uri in [
+            MEMBER_CREDENTIALS_TYPE,
+            MEMBER_UPDATE_TYPE,
+            MEMBER_ADMIN_REMOVE_TYPE,
+            MEMBER_PURGE_TYPE,
+        ] {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
+            assert!(
+                policy.is_proof_required,
+                "{uri} no longer declares proof REQUIRED — these tests now assert \
+                 nothing, and the design note should be re-read"
+            );
+        }
+    }
+
+    // ─── VTI-OPS-020: a proof by the issuer, authorized from their ACL ────
+
+    /// **VTI-OPS-020.** A signed document from an admin is accepted and
+    /// answered with the task's own response shape.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_admin_document_reads_member_credentials() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "a signed admin document must be accepted: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["did"], TARGET);
+        assert_eq!(payload_of(&out)["memberVmcBound"], false);
+        assert_conforms::<member_credentials::Response>(&out);
+    }
+
+    /// **VTI-OPS-020.** The *same* document with its proof stripped is refused
+    /// with the framework's own code — the transport proved nothing and there
+    /// is nothing else to authorize against.
+    #[tokio::test]
+    async fn vti_ops_020_an_unsigned_admin_document_is_refused() {
+        let fix = fixture().await;
+        for uri in [
+            MEMBER_CREDENTIALS_TYPE,
+            MEMBER_UPDATE_TYPE,
+            MEMBER_ADMIN_REMOVE_TYPE,
+            MEMBER_PURGE_TYPE,
+        ] {
+            let doc = unsigned(&fix.admin, uri, json!({ "did": TARGET }));
+            let out = dispatch(&fix.vtc, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{uri}: SPEC §7.2 item 7 names the code: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+        // …and nothing was removed by the unsigned `admin-remove` / `purge`.
+        assert!(
+            get_member(&fix.vtc.state.members_ks, TARGET)
+                .await
+                .expect("read member")
+                .is_some(),
+            "an unsigned document must not have had an effect"
+        );
+    }
+
+    /// Authorization is the **signer's ACL entry**, not a bearer token: a
+    /// correctly signed document from a DID with no admin row is refused, which
+    /// is what `AdminAuth` refused on the REST route.
+    #[tokio::test]
+    async fn a_non_admin_signer_is_refused_every_admin_member_verb() {
+        let fix = fixture().await;
+        for uri in [
+            MEMBER_CREDENTIALS_TYPE,
+            MEMBER_UPDATE_TYPE,
+            MEMBER_ADMIN_REMOVE_TYPE,
+            MEMBER_PURGE_TYPE,
+        ] {
+            let doc = signed(&fix.member, uri, json!({ "did": TARGET })).await;
+            let out = dispatch(&fix.vtc, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("permissionDenied"),
+                "{uri}: a member is not an administrator: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+    }
+
+    /// A DID with **no ACL row at all** is refused the same way — the signature
+    /// verifies, and verifying a signature is not authorization.
+    #[tokio::test]
+    async fn a_signer_with_no_acl_row_is_refused() {
+        let fix = fixture().await;
+        let stranger = Party::new();
+        let doc = signed(&stranger, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
+    }
+
+    /// An **expired** ACL row no longer authorizes, which the bearer route
+    /// could not notice: its JWT was minted while the row was live and nothing
+    /// re-reads it. This is the one place the signed door is strictly stricter.
+    #[tokio::test]
+    async fn an_expired_admin_acl_row_no_longer_authorizes() {
+        let fix = fixture().await;
+        let lapsed = Party::new();
+        store_acl_entry(
+            &fix.vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: lapsed.did.clone(),
+                role: VtcRole::Admin,
+                label: None,
+                allowed_contexts: vec![],
+                created_at: 0,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: Some(1),
+            },
+        )
+        .await
+        .expect("seed a lapsed admin row");
+
+        let doc = signed(&lapsed, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
+    }
+
+    // ─── the scope gate `purge` rests on ─────────────────────────────────
+
+    /// **The `SuperAdminAuth` gate, kept.** `purge` is irreversible and the
+    /// REST route demanded a super-admin; a context-scoped admin passes
+    /// `AdminAuth` and must still be refused here.
+    ///
+    /// Decided through `ActScope`, never `allowed_contexts.is_empty()` — for a
+    /// non-admin that emptiness means the opposite.
+    #[tokio::test]
+    async fn a_context_scoped_admin_may_not_purge() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.scoped_admin,
+            MEMBER_PURGE_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("permissionDenied"),
+            "purge is super-admin only: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert!(
+            get_member(&fix.vtc.state.members_ks, TARGET)
+                .await
+                .expect("read member")
+                .is_some(),
+            "the refused purge must not have erased the member"
+        );
+    }
+
+    /// …and the same caller *is* an administrator for the other three, exactly
+    /// as `AdminAuth` admitted them. A gate copied one notch too tight is as
+    /// much a regression as one copied too loose.
+    #[tokio::test]
+    async fn a_context_scoped_admin_may_still_read_credentials() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.scoped_admin,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "a context-scoped admin passes AdminAuth and must pass here: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    // ─── the operations' own refusals ────────────────────────────────────
+
+    /// The declared `notFound`, carried as a code rather than flattened into
+    /// `taskFailed` — the same code the REST route puts in its body.
+    #[tokio::test]
+    async fn an_unknown_member_is_the_declared_not_found() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": "did:key:zNobodyAtAll" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// `role: admin` is refused with the task's `adminRoleForbidden` on this
+    /// door too. The gate is on the transition, not on the route (#1645), so
+    /// adding a second door must not add a second way past it.
+    #[tokio::test]
+    async fn update_still_refuses_promotion_to_admin() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "role": "admin" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(crate::routes::members::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let acl = get_acl_entry(&fix.vtc.state.acl_ks, TARGET)
+            .await
+            .expect("read ACL")
+            .expect("the target still has a row");
+        assert_eq!(acl.role, VtcRole::Member, "and nothing was changed");
+    }
+
+    /// A metadata update a signed document really does apply.
+    #[tokio::test]
+    async fn update_applies_a_metadata_change_from_a_signed_document() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "label": "Ada Lovelace", "publishConsent": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        assert_conforms::<member_update::Response>(&out);
+
+        let acl = get_acl_entry(&fix.vtc.state.acl_ks, TARGET)
+            .await
+            .expect("read ACL")
+            .expect("row");
+        assert_eq!(acl.label.as_deref(), Some("Ada Lovelace"));
+        // The ACL row records *the signer* as the author of the change, which
+        // is the attribution the task's proof requirement exists for.
+        assert_eq!(acl.updated_by.as_deref(), Some(fix.admin.did.as_str()));
+    }
+
+    /// An **omitted** `extensions` leaves the member's own extensions alone.
+    ///
+    /// The generated payload types `extensions` as a plain map with `default`,
+    /// so absent and empty are one value once parsed — and mapping that
+    /// straight through would silently clear the bag on every update that did
+    /// not mention it. The handler reads the raw payload for exactly this.
+    #[tokio::test]
+    async fn an_omitted_extensions_member_does_not_clear_the_bag() {
+        let fix = fixture().await;
+        let mut member = Member::fresh(TARGET);
+        member.extensions = json!({ "org": "acme" });
+        store_member(&fix.vtc.state.members_ks, &member)
+            .await
+            .expect("seed extensions");
+
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "publishConsent": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        let after = get_member(&fix.vtc.state.members_ks, TARGET)
+            .await
+            .expect("read member")
+            .expect("row");
+        assert_eq!(after.extensions, json!({ "org": "acme" }));
+    }
+
+    /// An administrator removing another member, over the signed door.
+    #[tokio::test]
+    async fn admin_remove_departs_the_member_from_a_signed_document() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_ADMIN_REMOVE_TYPE,
+            json!({ "did": TARGET, "reason": "ToS violation" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["did"], TARGET);
+        assert_eq!(payload_of(&out)["removed"], true);
+        assert_conforms::<member_admin_remove::Response>(&out);
+        assert!(
+            get_acl_entry(&fix.vtc.state.acl_ks, TARGET)
+                .await
+                .expect("read ACL")
+                .is_none(),
+            "the departed member keeps no authorization"
+        );
+    }
+
+    /// A super-admin purging a member, over the signed door.
+    #[tokio::test]
+    async fn purge_erases_the_member_from_a_signed_document() {
+        let fix = fixture().await;
+        let doc = signed(&fix.admin, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_conforms::<member_purge::Response>(&out);
+        assert!(
+            get_member(&fix.vtc.state.members_ks, TARGET)
+                .await
+                .expect("read member")
+                .is_none(),
+            "purge erases the row"
+        );
+    }
+
+    // ─── VTI-OPS-025 / -026 / -027: the accepted-id record ───────────────
+
+    /// **VTI-OPS-025.** A redelivered document is answered with the outcome
+    /// already recorded for it, not executed a second time.
+    ///
+    /// Driven through `purge`, because that is where a second execution would
+    /// actually show: the member is gone after the first, so re-running would
+    /// answer the declared `notFound` instead of the original success.
+    #[tokio::test]
+    async fn vti_ops_025_a_redelivered_document_is_answered_not_re_executed() {
+        let fix = fixture().await;
+        let doc = signed(&fix.admin, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
+
+        let first = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            first.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&first.body)
+        );
+
+        let second = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            second.status.is_success(),
+            "the redelivery must be answered, not refused: {}",
+            String::from_utf8_lossy(&second.body)
+        );
+        assert_eq!(
+            payload_of(&second),
+            payload_of(&first),
+            "the recorded outcome is what a redelivery is answered with"
+        );
+    }
+
+    /// **VTI-OPS-026.** A *different* document under an already-spent `id` is
+    /// `idConflict` — not absorbed as a retry, and not executed.
+    #[tokio::test]
+    async fn vti_ops_026_a_different_document_under_a_spent_id_conflicts() {
+        let fix = fixture().await;
+        let second_target = "did:key:zSecondTarget";
+        seed_acl(&fix.vtc, second_target, VtcRole::Member, vec![]).await;
+        store_member(&fix.vtc.state.members_ks, &Member::fresh(second_target))
+            .await
+            .expect("seed second member");
+
+        let first = signed(&fix.admin, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &first).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        // Same `id`, different subject — the shape the record exists to catch.
+        let mut collider = unsigned(
+            &fix.admin,
+            MEMBER_PURGE_TYPE,
+            json!({ "did": second_target }),
+        );
+        collider.id.clone_from(&first.id);
+        let collider = sign(&fix.admin, collider).await;
+        let out = dispatch(&fix.vtc, &collider).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("idConflict"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert!(
+            get_member(&fix.vtc.state.members_ks, second_target)
+                .await
+                .expect("read member")
+                .is_some(),
+            "the conflicting document must not have executed"
+        );
+    }
+
+    /// **VTI-OPS-027.** The record these verbs consult is the shared,
+    /// store-backed one, reachable from any binding — not a map private to this
+    /// dispatcher. Read back through `AppState::accepted_ids`, which is the
+    /// handle a second binding would use.
+    #[tokio::test]
+    async fn vti_ops_027_the_spent_id_is_visible_to_any_binding() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        let now = chrono::Utc::now();
+        let again = fix
+            .vtc
+            .state
+            .accepted_ids()
+            .claim(&doc, retain_until(&doc, now), now)
+            .await
+            .expect("the record is readable");
+        assert!(
+            matches!(again, accepted_ids::Acceptance::Duplicate { .. }),
+            "a second binding must see the id the dispatcher spent"
+        );
     }
 }

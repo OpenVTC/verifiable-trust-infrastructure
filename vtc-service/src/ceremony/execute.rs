@@ -100,7 +100,13 @@ pub struct RemintOutcome {
     pub previous_role: VtcRole,
     /// The role VEC re-minted at the new role. The DID + VMC are
     /// unchanged; only the role assertion is re-issued.
-    pub role_vec: VerifiableCredential,
+    ///
+    /// `None` when the subject holds an ACL entry but **no member row** — an
+    /// integration or operator DID reached through `acl/change-role`. A role
+    /// VEC asserts community membership at a role; there is nobody to assert
+    /// it about and nothing to repoint, and minting one anyway would make an
+    /// ACL role change impossible on a VTC without a credential signer.
+    pub role_vec: Option<VerifiableCredential>,
 }
 
 /// The result of a member departure.
@@ -140,9 +146,10 @@ pub async fn apply(
             // the reciprocal-VMC handshake lands with the join
             // ceremony route.
             obligations: _,
+            publish_consent,
         } => {
             let role = parse_role(&role)?;
-            let outcome = admit(state, &subject, role, actor_did).await?;
+            let outcome = admit(state, &subject, role, publish_consent, actor_did).await?;
             Ok(EffectOutcome::Admitted(Box::new(outcome)))
         }
         EffectPlan::Depart {
@@ -187,10 +194,19 @@ fn parse_role(role: &str) -> Result<VtcRole, AppError> {
 /// both observe "no ACL row" and both proceed, minting two VMCs and
 /// burning two status-list slots (P0.15). With the lock, the loser sees
 /// the row the winner wrote and gets a `Conflict`.
+///
+/// `publish_consent` is the applicant's `registryConsent`, written onto the
+/// Member row in its *first* store, so no reader ever sees the new row without
+/// it. The same guard means
+/// admission never overwrites a live member's consent (a live member holds an
+/// ACL row, so the admit is a `Conflict`); a re-admission follows a departure,
+/// whose tombstone already cleared the old consent, and the new application's
+/// answer is the only one that applies to the new membership.
 async fn admit(
     state: &AppState,
     subject_did: &str,
     role: VtcRole,
+    publish_consent: bool,
     actor_did: &str,
 ) -> Result<AdmitOutcome, AppError> {
     let _guard = LAST_ADMIN_LOCK.lock().await;
@@ -215,6 +231,7 @@ async fn admit(
     store_acl_entry(&state.acl_ks, &acl).await?;
 
     let mut member = Member::fresh(subject_did);
+    member.publish_consent = publish_consent;
     store_member(&state.members_ks, &member).await?;
 
     let (vmc, role_vec, status_list_index) =
@@ -356,16 +373,22 @@ async fn remint(
     acl.role = new_role.clone();
     store_acl_entry(&state.acl_ks, &acl).await?;
 
-    // Re-mint the role VEC at the new role + repoint the member.
-    let role_vec = issue_role_vec(state, subject_did, new_role).await?;
-    if let Some(mut member) = get_member(&state.members_ks, subject_did).await? {
-        let role_vec_value = serde_json::to_value(&role_vec)
-            .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
-        // The grant is untouched by a role change, so the member's
-        // acknowledgement of it still stands — only the VEC is repointed.
-        member.record_role_vec(role_vec_value);
-        store_member(&state.members_ks, &member).await?;
-    }
+    // Re-mint the role VEC at the new role + repoint the member — only where
+    // there *is* a member. An ACL-only subject has no role assertion to
+    // re-issue (see `RemintOutcome::role_vec`).
+    let role_vec = match get_member(&state.members_ks, subject_did).await? {
+        Some(mut member) => {
+            let role_vec = issue_role_vec(state, subject_did, new_role).await?;
+            let role_vec_value = serde_json::to_value(&role_vec)
+                .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+            // The grant is untouched by a role change, so the member's
+            // acknowledgement of it still stands — only the VEC is repointed.
+            member.record_role_vec(role_vec_value);
+            store_member(&state.members_ks, &member).await?;
+            Some(role_vec)
+        }
+        None => None,
+    };
 
     Ok(RemintOutcome {
         previous_role,

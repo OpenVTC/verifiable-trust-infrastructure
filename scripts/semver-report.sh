@@ -238,15 +238,18 @@ set -e
 # this check is the only thing in the repo that resolves like a consumer does
 # (cargo add into a fresh crate, no lockfile), so it is the only thing that can
 # notice when a *published* artifact stops building.
-if grep -qE 'failed to build rustdoc|running cargo-doc on crate' semver.log; then
-  broken="$(grep -oE 'failed to build rustdoc for crate [a-z0-9-]+' semver.log \
-    | sed 's/failed to build rustdoc for crate //' | sort -u | tr '\n' ' ')"
-  echo "::error::PUBLISHED CRATE DOES NOT BUILD: ${broken}-- the semver \
-baseline is the published crate as a consumer receives it, so a baseline that \
-fails to build means consumers cannot build it either. This is not 'the check \
-could not run'; it is the check reporting a broken artifact on crates.io. \
-Reproduce: cargo new --lib x && cd x && echo '[workspace]' >> Cargo.toml && \
-cargo add ${broken%% *} && cargo build"
+#
+# But "rustdoc failed" covers three defects with three different owners — the
+# published crate, the workspace copy, or a DEPENDENCY at the version this
+# lockfile-free resolution picked — and this block used to call all three the
+# first. That is what #1667 was: `vta-service` 0.39.0 built fine, and
+# `affinidi-messaging-mediator` 0.28.33 (reached only through the optional
+# `transport-harness` feature) did not. The report named our crate, and the
+# reproduction it printed used default features, so it did not reach the
+# dependency and did not reproduce. Attribution now lives in its own file,
+# with fixtures, because getting it wrong costs the next reader the whole
+# diagnosis again.
+if ! python3 "$(dirname "$0")/semver-build-failure.py" semver.log; then
   exit 1
 fi
 
@@ -262,6 +265,20 @@ done
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo
+  # Same principle as the build-failure classifier above: name the cause where
+  # the red is displayed. A registry fetch that fails on DNS looks, in the
+  # coverage assertion's output, exactly like the unpublished-crate abort it was
+  # written for — and it is not that, it is a runner network blip that a re-run
+  # clears. This happened on the very PR that added the classifier (#1670),
+  # which is as good an argument for saying it out loud as any.
+  if grep -qE 'failed to retrieve index of crate versions from registry' semver.log; then
+    echo "::error::THE REPORT IS INCOMPLETE — these crates were never checked: ${missing[*]}. \
+The run aborted on a REGISTRY FETCH FAILURE (see 'failed to retrieve index of crate versions \
+from registry' above, usually a DNS or connect error on the runner), not on anything in this \
+branch and not on an API break. Re-run the job. If it fails the same way twice, crates.io or \
+the runner's network is the thing to look at."
+    exit 1
+  fi
   echo "::error::THE REPORT IS INCOMPLETE — these crates were never checked: ${missing[*]}. \
 The run stopped before reaching them, so their public APIs were compared against nothing. \
 A truncated report exits non-zero exactly like a declared API break, which is how this went \

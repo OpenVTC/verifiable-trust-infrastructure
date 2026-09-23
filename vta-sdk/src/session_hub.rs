@@ -120,10 +120,43 @@ impl std::fmt::Display for HubError {
 
 impl std::error::Error for HubError {}
 
+/// A `TDKConfig` on the crate's shared DID resolver.
+///
+/// The TDK's own default resolver is `HostPolicy::PublicOnly` with no opt-in,
+/// so a VTA or mediator DID on a loopback or private host was refused with
+/// `BlockedHost` even when the operator had set `VTA_ALLOW_PRIVATE_ENDPOINTS`
+/// — the opt-in every other resolution in this crate honours through
+/// [`crate::resolver::webvh_host_policy`]. Handing the TDK the shared resolver
+/// gives it that policy, and one cache with the rest of the process.
+///
+/// Local mode (`None`), deliberately not `PNM_RESOLVER_URL`: the keys this
+/// resolver finds are the ones messages are encrypted to, and both paths have
+/// always verified the `did:webvh` log in-process rather than taking a
+/// sidecar's word for it — the same call `didcomm_light` makes for the same
+/// reason. Only the host policy and the cache change here.
+///
+/// Every default TDK in this crate comes from here: [`SessionHub::new`] and
+/// the REST authenticate handshake. A caller that wants a different resolver,
+/// a sidecar included, builds its own `TDKConfig` and uses
+/// [`SessionHub::with_configs`].
+pub(crate) async fn shared_tdk_config() -> Result<TDKConfig, String> {
+    let resolver = crate::resolver::shared_did_resolver(None)
+        .await
+        .map_err(|e| format!("DID resolver init failed: {e}"))?;
+    TDKConfig::builder()
+        .with_did_resolver(resolver)
+        .build()
+        .map_err(|e| format!("TDK config build failed: {e}"))
+}
+
 impl SessionHub {
     /// Build a hub with the default TDK + ATM configuration.
+    ///
+    /// The TDK is [`shared_tdk_config`], so its host policy is the crate's
+    /// rather than the TDK's `PublicOnly` default.
+    /// [`with_configs`](Self::with_configs) callers choose their own.
     pub async fn new() -> Result<Arc<Self>, Box<dyn std::error::Error>> {
-        Self::with_configs(TDKConfig::builder().build()?, ATMConfig::builder().build()?).await
+        Self::with_configs(shared_tdk_config().await?, ATMConfig::builder().build()?).await
     }
 
     /// Build a hub with explicit configuration — for consumers that need custom
@@ -518,5 +551,116 @@ mod tests {
     fn ownership_distinguishes_a_borrowed_hub_from_an_owned_one() {
         // The whole point of the enum: a shared hub must survive its sessions.
         assert_ne!(HubOwnership::Exclusive, HubOwnership::Shared);
+    }
+
+    /// Every default TDK in this crate carries the shared resolver, never one
+    /// the TDK builds for itself. The TDK default is `PublicOnly` with no way
+    /// in for `VTA_ALLOW_PRIVATE_ENDPOINTS`, which is how a local VTA at
+    /// `localhost:8100` came to fail every login with `BlockedHost` while the
+    /// opt-in was set. A config that carries a resolver never takes that
+    /// default.
+    #[tokio::test]
+    async fn shared_tdk_config_carries_the_shared_resolver() {
+        let config = shared_tdk_config().await.expect("TDK config");
+        assert!(
+            config.did_resolver().is_some(),
+            "the TDK would build its own PublicOnly resolver"
+        );
+    }
+
+    /// The fix, end to end: with `VTA_ALLOW_PRIVATE_ENDPOINTS=1` in the
+    /// environment, the TDK built from [`shared_tdk_config`] dials a loopback
+    /// `did:webvh` host instead of refusing it with `BlockedHost`.
+    ///
+    /// The opt-in is read from the process environment when the resolver is
+    /// built, and the shared resolver is cached per policy, so setting the
+    /// variable in this process would leak into every other test on this
+    /// binary — `resolver::tests` pins the strict default. The assertion
+    /// therefore runs in a child: this test binary re-invoked with the
+    /// variable set and the `#[ignore]`d half below selected.
+    #[tokio::test]
+    async fn opt_in_lets_the_tdk_dial_a_loopback_webvh_host() {
+        let exe = std::env::current_exe().expect("path of this test binary");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "session_hub::tests::child_tdk_dials_loopback_with_opt_in",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("VTA_ALLOW_PRIVATE_ENDPOINTS", "1")
+            .env_remove("PNM_RESOLVER_URL")
+            .output()
+            .expect("re-run this test binary");
+        assert!(
+            output.status.success(),
+            "child failed ({}):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// The child half of [`opt_in_lets_the_tdk_dial_a_loopback_webvh_host`];
+    /// meaningful only with `VTA_ALLOW_PRIVATE_ENDPOINTS=1` in the environment.
+    ///
+    /// Zero accepted connections is what `PublicOnly` produces (see
+    /// `resolver::tests::default_config_refuses_loopback_webvh_did_without_connecting`),
+    /// so a dial is the observable difference the opt-in makes. Resolution
+    /// itself still fails — the listener answers nothing — but not with
+    /// `BlockedHost`.
+    #[tokio::test]
+    #[ignore = "driven by opt_in_lets_the_tdk_dial_a_loopback_webvh_host, which sets the env"]
+    async fn child_tdk_dials_loopback_with_opt_in() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        assert_eq!(
+            std::env::var("VTA_ALLOW_PRIVATE_ENDPOINTS").ok().as_deref(),
+            Some("1"),
+            "run through opt_in_lets_the_tdk_dial_a_loopback_webvh_host"
+        );
+
+        // `did:webvh` takes a domain name, never an IP literal, so the DID says
+        // `localhost`. Which family that resolves to first is the OS's call,
+        // so listen on both loopbacks (the second is best-effort).
+        let v4 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let port = v4.local_addr().expect("listener address").port();
+        let v6 = tokio::net::TcpListener::bind(("::1", port)).await.ok();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        for listener in std::iter::once(v4).chain(v6) {
+            let counter = Arc::clone(&accepted);
+            tokio::spawn(async move {
+                while let Ok((socket, _)) = listener.accept().await {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    drop(socket);
+                }
+            });
+        }
+
+        let tdk = TDKSharedState::new(shared_tdk_config().await.expect("TDK config"))
+            .await
+            .expect("TDK on the shared resolver");
+        let did = format!("did:webvh:QmScidNotResolvable:localhost%3A{port}");
+        let outcome = tdk
+            .did_resolver()
+            .resolve(&did)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+
+        if let Err(message) = &outcome {
+            assert!(
+                !message.contains("BlockedHost"),
+                "opt-in set, yet the TDK's resolver refused {did}: {message}"
+            );
+        }
+        // Give the connection time to land on the listener.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            accepted.load(Ordering::SeqCst) > 0,
+            "opt-in set, yet {did} was never dialled (outcome: {outcome:?})"
+        );
     }
 }

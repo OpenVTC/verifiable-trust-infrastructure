@@ -167,6 +167,9 @@ async fn approve_pending(
         subject: req.applicant_did.clone(),
         role: VtcRole::Member.to_string(),
         obligations: vec![],
+        // The applicant's opt-in to registry publication, as submitted. An
+        // operator's approval admits the applicant; it does not consent for them.
+        publish_consent: req.registry_consent,
     };
     let EffectOutcome::Admitted(creds) = execute::apply(state, plan, &admin.0.did).await? else {
         return Err(AppError::Internal(

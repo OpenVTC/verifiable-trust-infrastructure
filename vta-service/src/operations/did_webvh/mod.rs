@@ -593,7 +593,15 @@ pub struct CreateDidWebvhParams {
     /// Ignored unless this VTA has `[services] tsp` on and a mediator
     /// configured — advertising a transport the VTA's own stack does not
     /// run is the failure this exists to prevent, not to spread.
-    pub add_tsp_service: bool,
+    ///
+    /// `None` means "decide from what this VTA and its mediator can actually
+    /// carry" (Keyring VTI-Q11): a DID minted by a TSP-capable VTA whose
+    /// mediator advertises `TSPTransport` gets the entry, and one behind a
+    /// mediator that does not carry TSP stays DIDComm-only. This is what a
+    /// persona takes, since the holder behind it is this VTA's own client and
+    /// the wire field is one a persona-minting caller does not send. An
+    /// explicit `Some` is always honoured.
+    pub add_tsp_service: Option<bool>,
     pub additional_services: Option<Vec<serde_json::Value>>,
     pub pre_rotation_count: u32,
     /// Client-provided DID Document template. Mutually exclusive with `did_log`
@@ -656,7 +664,8 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
             label: body.label,
             portable: body.portable.unwrap_or(true),
             add_mediator_service: body.add_mediator_service.unwrap_or(false),
-            add_tsp_service: body.add_tsp_service.unwrap_or(false),
+            // Absent means "decide from capability" — not "no". See the field.
+            add_tsp_service: body.add_tsp_service,
             additional_services: body.additional_services,
             pre_rotation_count: body.pre_rotation_count.unwrap_or(0),
             did_document: body.did_document,
@@ -938,6 +947,14 @@ pub async fn create_did_webvh(
         // it at the one place it is used keeps `*deps` a copy.
         ..
     } = *deps;
+
+    // Keyring VTI-Q11 (#1652): a caller that did not name `addTspService` gets
+    // the answer this VTA and its mediator can actually honour. A persona is
+    // minted through this path by a caller that sends no such field, which is
+    // why it advertised DIDComm only however TSP-capable the stack was.
+    // Resolved once, here, because both document paths below consume it.
+    let add_tsp_service =
+        document::resolve_add_tsp_service(params.add_tsp_service, config, did_resolver).await;
 
     // `KeyMint` decides *whether*; the context check below still bounds *where*.
     ensure_may_mint(acl_ks, auth).await?;
@@ -1418,7 +1435,7 @@ pub async fn create_did_webvh(
         // never reaches the builder `with_tsp_service` feeds below — which is how
         // `add_tsp_service` came to be silently ignored for every templated DID.
         // Apply it to the document itself, at the mediator the template names.
-        document::with_tsp_in_rendered_document(params.add_tsp_service, &mut rendered)?;
+        document::with_tsp_in_rendered_document(add_tsp_service, &mut rendered)?;
         params.did_document = Some(rendered);
     }
 
@@ -1427,11 +1444,8 @@ pub async fn create_did_webvh(
     // all three take `additional_services` as the extension point. The builder
     // sorts `service[]` canonically (TSP > DIDComm > REST) once everything is
     // appended, so position in this Vec does not matter.
-    let additional_services = with_tsp_service(
-        params.add_tsp_service,
-        config,
-        params.additional_services.take(),
-    );
+    let additional_services =
+        with_tsp_service(add_tsp_service, config, params.additional_services.take());
 
     // Build DID document: use client-provided template or build internally
     let did_document = match params.did_document {

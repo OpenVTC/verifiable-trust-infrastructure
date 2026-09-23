@@ -118,6 +118,13 @@ pub struct AppState {
     /// Hidden-vetter admission (development branch `zkp-pcs`): what the community
     /// minted — vetter enrolments and served drip ticks (`crate::vetting::pcs_issue`).
     pub vetting_pcs_issue_ks: KeyspaceHandle,
+    /// The accepted-document-id record (VTI-OPS-025…027). One row per Trust
+    /// Task document `id` accepted for execution. Held in the store rather
+    /// than in a process-local map because VTI-OPS-027 requires the record to
+    /// be shared across every binding this node exposes — the document
+    /// dispatcher today, a bearer REST route in #1641 phase 2. Reach it
+    /// through [`AppState::accepted_ids`].
+    pub accepted_ids_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
@@ -261,6 +268,17 @@ impl AppState {
     /// which is what a deployment with no outbound DID resolution gets.
     pub fn trust_task_vm_resolver(&self) -> vti_common::auth::TrustTaskVmResolver {
         vti_common::auth::TrustTaskVmResolver::from_optional(self.did_resolver.clone())
+    }
+
+    /// The accepted-document-id record (VTI-OPS-025…027), shared by every
+    /// binding this node exposes.
+    ///
+    /// Cheap to call — the handle is a clone and the claim path's locks are
+    /// shared statically — so a binding takes one where it needs it rather
+    /// than threading it through. See
+    /// [`crate::trust_tasks::accepted_ids`] for how a binding uses it.
+    pub(crate) fn accepted_ids(&self) -> crate::trust_tasks::accepted_ids::AcceptedIds {
+        crate::trust_tasks::accepted_ids::AcceptedIds::new(self.accepted_ids_ks.clone())
     }
 
     /// Current cached member-row count (equal to
@@ -479,6 +497,7 @@ pub async fn run(
     let vetter_profiles_ks = store.keyspace(keyspaces::VETTER_PROFILES)?;
     let vetting_pcs_spent_ks = store.keyspace(keyspaces::VETTING_PCS_SPENT)?;
     let vetting_pcs_issue_ks = store.keyspace(keyspaces::VETTING_PCS_ISSUE)?;
+    let accepted_ids_ks = store.keyspace(keyspaces::ACCEPTED_IDS)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
@@ -771,6 +790,7 @@ pub async fn run(
         vetter_profiles_ks,
         vetting_pcs_spent_ks,
         vetting_pcs_issue_ks,
+        accepted_ids_ks: accepted_ids_ks.clone(),
         schemas_ks,
         endorsements_ks,
         rooms_ks,
@@ -821,6 +841,13 @@ pub async fn run(
     if let Err(e) = heal_missing_admin_entries(&state).await {
         warn!(error = %e, "admin-entry heal scan failed");
     }
+
+    // Name any endorsement type whose stored `claimSchema` will not compile.
+    // Registration refuses one now, but a row written before that check makes
+    // every issuance of its type fail — and until an issuance is attempted,
+    // nothing says so. The scan is advisory: a read failure is logged and
+    // never stops boot, exactly like the approval-rule warning (#1633).
+    report_invalid_claim_schemas(&state).await;
 
     // One-shot heal for daemons bootstrapped before the install
     // ceremony initialised the community profile. New installs land
@@ -1172,6 +1199,7 @@ pub async fn run(
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),
         state.sync_queue_ks.clone(),
+        state.accepted_ids_ks.clone(),
         boot_cfg.join_requests.clone(),
         shutdown_rx.clone(),
     );
@@ -1375,6 +1403,43 @@ pub async fn run(
 
     info!("server shut down");
     Ok(())
+}
+
+/// WARN for every registered endorsement type whose stored `claimSchema` is
+/// not valid JSON Schema, naming the type and the part of the document that
+/// is wrong.
+///
+/// Issuance against such a type cannot succeed: `vtc/endorsements/issue/0.1`
+/// has enforced `claimSchema` since #1649, and a schema that will not compile
+/// fails the compile rather than the claim. Registration refuses one now, so
+/// anything this finds was written before that gate — and the only other way
+/// to learn of it is for a member to be refused an endorsement. One line per
+/// broken type at boot is what turns that into something an operator can act
+/// on before it bites.
+///
+/// Advisory: a read failure is logged and never stops boot.
+async fn report_invalid_claim_schemas(state: &AppState) {
+    let types = match crate::endorsement_types::all_types(&state.endorsement_types_ks).await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(error = %e, "could not scan endorsement types for invalid claimSchemas");
+            return;
+        }
+    };
+    for t in &types {
+        let Some(schema) = t.claim_schema.as_ref() else {
+            continue;
+        };
+        if let Err(detail) = crate::schemas::check_schema(schema) {
+            warn!(
+                type_uri = %t.type_uri,
+                %detail,
+                "endorsement type has an invalid stored claimSchema — every issuance of \
+                 this type will fail. Delete the type and register it again with a valid \
+                 JSON Schema (or with none).",
+            );
+        }
+    }
 }
 
 /// Walk the ACL keyspace for `Admin` entries; for each, if a

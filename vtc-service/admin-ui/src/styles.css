@@ -1456,6 +1456,22 @@ pre {
   font-size: var(--text-md);
 }
 
+/* A wallet sign-in button and the line under it saying which identity it
+   presents. The ACL admits a DID, so two buttons that present different DIDs
+   must not look interchangeable. */
+.login-option {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.login-option-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
 .login-card footer,
 .install-card footer {
   margin: 0;

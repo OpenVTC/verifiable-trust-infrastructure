@@ -537,9 +537,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.26.19"
+version = "0.26.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5406cb8a30e968afe08f03fa32d4677d6e26e830b85c8be83545932b94cc1620"
+checksum = "0c7d98b2852ffae0fff60be37212bdb3e0fcff86853b716c7a99e98ed7cf5f0a"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -558,6 +558,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "futures-util",
+ "hyper",
  "rand 0.10.2",
  "regex",
  "reqwest",
@@ -3824,9 +3825,9 @@ dependencies = [
 
 [[package]]
 name = "dtg-credentials"
-version = "0.9.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa51b03528a22ad07cd0f812a99fae834b7867c205943a40ad90bb8eb62edb08"
+checksum = "b7b54c22a4b29b0f89c767b03a9cca10832fcb6bd667da3caffdb1d86d801796"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-secrets-resolver",
@@ -5826,8 +5827,6 @@ dependencies = [
  "percent-encoding",
  "referencing 0.56.0",
  "regex",
- "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "strum",
@@ -8561,7 +8560,6 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "encoding_rs",
- "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -8699,6 +8697,7 @@ dependencies = [
  "openmls_rust_crypto",
  "reqwest",
  "serde",
+ "serde_ignored",
  "serde_json",
  "tempfile",
  "tokio",
@@ -10480,9 +10479,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.21.17"
+version = "0.21.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4636d6bcc52e0374f128412888686687922e04601844e218b0b91e70eacb3fa"
+checksum = "8400dff5e21f72f3ee48ad733eca305251712f455734dd4bb49bf52fef9a565e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11694,6 +11693,7 @@ dependencies = [
  "regorus",
  "reqwest",
  "serde",
+ "serde_ignored",
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.11.0",

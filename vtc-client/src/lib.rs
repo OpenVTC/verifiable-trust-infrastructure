@@ -114,6 +114,8 @@ pub mod task {
         "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
     pub const VETTING_VETTERS_RESEND: &str =
         "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
+    pub const VETTING_VETTERS_SHOW: &str =
+        "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1";
     pub const ENDORSEMENTS_REVOKE: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
     pub const BACKUP_EXPORT: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
@@ -1149,6 +1151,35 @@ impl VtcClient {
             created,
             grant: resp.json().await?,
         })
+    }
+
+    /// One vetter's grant status by DID (`vtc/vetting/vetters/show/0.1`, over
+    /// `POST /vetting/vetters/show`). Admin token.
+    ///
+    /// This is the question the grant listing cannot answer: a vetter who never
+    /// published a profile and one whose grant was revoked are both simply
+    /// absent from it. `status` separates them — `live`, `revoked`, `expired`
+    /// or `none` — and for a live grant, `listed` says whether the vetter
+    /// chose to appear in the directory.
+    ///
+    /// `none` is an answer, not a failure: it means this community holds no
+    /// vetter grant for that DID, and deliberately says nothing about whether
+    /// the DID is a member.
+    ///
+    /// A `live` answer is a reading at a moment, not evidence: a grant can be
+    /// revoked a second later, and eligibility is proven by the vetter's own
+    /// credential in `vetting/request`.
+    pub async fn show_vetter(
+        &self,
+        vetter_did: &str,
+    ) -> Result<vetting::vetters::show::v0_1::Response, VtcError> {
+        let url = self.api_url(&["vetting", "vetters", "show"])?;
+        let resp = self
+            .tt(reqwest::Method::POST, url, task::VETTING_VETTERS_SHOW)?
+            .json(&serde_json::json!({ "vetterDid": vetter_did }))
+            .send()
+            .await?;
+        Ok(expect_success(resp).await?.json().await?)
     }
 
     /// Revoke an endorsement by id (`vtc/endorsements/revoke/0.1`, over

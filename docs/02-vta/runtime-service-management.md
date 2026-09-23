@@ -177,7 +177,11 @@ REST URL updated.
 A self-hosted DID the VTA manages for **someone else** — a
 community's, edited with `pnm did-mgmt dids edit` — is different:
 the VTA does not serve it, so the new entry has to be delivered to
-wherever that DID's log is served, and the hint says that instead.
+wherever that DID's log is served, and the hint says that instead:
+`pnm did-mgmt dids get-log <did> --out did.jsonl`, then
+`cnm did-log install --file did.jsonl` for a community. The full
+walkthrough is
+[changing the community's transports after mint](../03-vtc/community-lifecycle.md#changing-the-communitys-transports-after-mint).
 
 Server-managed deployments — the VTA was set up with a registered
 webvh host — show no hint because the VTA already

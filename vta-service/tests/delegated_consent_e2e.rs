@@ -1090,3 +1090,114 @@ async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
         "the approved reprovision must execute: {executed}"
     );
 }
+
+/// Keyring VTI-37, over the wire with real signed requests.
+///
+/// The refusal's `details` is bounded by the framework default (4096 bytes of
+/// JCS, 16 members — no specification declares this shape a bound of its own),
+/// and each VTA-signed `task-consent/request` is around a kilobyte. At three
+/// approvers the annex used to be dropped whole: the requester got
+/// `auth:consent_required` and no digest, correlator or challenge. Now the
+/// coordinates always go out, and the relay copies go out whole or are counted
+/// in `consentRequestsOmitted`.
+#[tokio::test]
+async fn a_consent_refusal_keeps_its_coordinates_however_many_approvers() {
+    const CORE: &[&str] = &[
+        "reason",
+        "payloadDigest",
+        "correlator",
+        "challenge",
+        "approverSet",
+        "minApprovals",
+        "excludeRequester",
+    ];
+
+    let mut shed_at = None;
+    for approvers in [1usize, 2, 3, 5] {
+        let (router, ctx) = build_test_app_with(TestAppOptions {
+            provisionable_vta: true,
+            ..Default::default()
+        })
+        .await;
+        let requester = approver(REQUESTER_SEED);
+        let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
+        let (did, _scid) = create_did(&router, &ctx, &token).await;
+
+        let set: Vec<String> = (0..approvers)
+            .map(|i| approver(0x60 + i as u8).did)
+            .collect();
+        {
+            let mut cfg = ctx.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy.approver_sets.insert("operators".into(), set);
+        }
+        install_policy(&ctx, REQUIRE_CONSENT).await;
+
+        let update = envelope(
+            WEBVH_UPDATE,
+            &requester,
+            &ctx.vta_did,
+            json!({ "did": did, "document": {
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+                "service": [{
+                    "id": "#files",
+                    "type": "FileStore",
+                    "serviceEndpoint": "https://files.example.com/acme"
+                }]
+            }}),
+        );
+        let (status, rejected) = post(&router, &token, &update).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{rejected}");
+
+        let details = &rejected["payload"]["details"];
+        assert!(
+            details.is_object(),
+            "{approvers} approver(s): the annex must never be dropped whole: {rejected}"
+        );
+        for member in CORE {
+            assert!(
+                !details[*member].is_null(),
+                "{approvers} approver(s): `{member}` must always go out: {details}"
+            );
+        }
+        assert_eq!(details["reason"], "auth:consent_required");
+
+        match details["consentRequests"].as_array() {
+            Some(requests) => {
+                assert_eq!(
+                    requests.len(),
+                    approvers,
+                    "{approvers} approver(s): the requests go out whole or not at all"
+                );
+                assert!(details.get("consentRequestsOmitted").is_none(), "{details}");
+                assert!(
+                    shed_at.is_none(),
+                    "more approvers fit than fewer did: {details}"
+                );
+            }
+            None => {
+                assert_eq!(
+                    details["consentRequestsOmitted"],
+                    json!(approvers),
+                    "{approvers} approver(s): the count of what was shed: {details}"
+                );
+                shed_at.get_or_insert(approvers);
+            }
+        }
+
+        let jcs = serde_json_canonicalizer::to_string(details).expect("jcs");
+        assert!(
+            jcs.len() <= 4096,
+            "{approvers} approver(s): {} bytes of JCS",
+            jcs.len()
+        );
+        assert!(details.as_object().unwrap().len() <= 16);
+    }
+
+    // The case Keyring hit is the one that must shed; one approver must not.
+    assert!(
+        matches!(shed_at, Some(n) if n > 1 && n <= 3),
+        "expected the requests to be shed from 2 or 3 approvers on, got {shed_at:?}"
+    );
+}

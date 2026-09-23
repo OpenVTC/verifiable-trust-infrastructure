@@ -178,6 +178,16 @@ async fn build_fixture() -> Fixture {
 /// post to (routing is by the document `type`, not the URL).
 const TRUST_TASKS_URI: &str = "/v1/trust-tasks";
 
+/// An `issuedAt` inside the spine's acceptance window (VTI-OPS-024).
+///
+/// This was the literal `2026-01-01T00:00:00Z` until #1641, which is a date
+/// that has since passed: a fixture that predates the window it is now
+/// measured against is refused as `expired`, whatever the test is about.
+/// `now` is also what every real producer stamps.
+fn issued_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 /// Sign a Trust Task **document** (`type` = `typ`, `payload` = `payload`) with
 /// the shared applicant key, producing the `eddsa-jcs-2022` holder proof the
 /// REST path authenticates on. `recipient` = the test VTC DID (the replay
@@ -203,7 +213,7 @@ async fn signed_trust_task_seed(seed: &[u8; 32], typ: &str, payload: Value) -> (
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "issuer": did,
         "recipient": vtc_service::test_support::TEST_VTC_DID,
-        "issuedAt": "2026-01-01T00:00:00Z",
+        "issuedAt": issued_now(),
         "expiresAt": "2099-01-01T00:00:00Z",
         "payload": payload,
     });
@@ -348,16 +358,25 @@ async fn rest_submit_rejects_wrong_signer() {
 
 #[tokio::test]
 async fn rest_submit_rejects_missing_holder_proof() {
-    // Over REST the holder is authenticated by the document proof; a document
-    // with no proof has no proven holder and is rejected (403).
+    // `vtc/join-requests/submit/0.2` declares `proof` REQUIRED, so a document
+    // carrying none is refused by the spine before any handler runs, with the
+    // framework's own code for exactly that (SPEC §7.2 item 7, VTI-OPS-020).
+    //
+    // It used to reach `resolve_holder` and come back `permissionDenied` (403)
+    // — "nobody is authenticated" rather than "you did not sign this", which
+    // sent an applicant looking at their credentials instead of at their
+    // client. The refusal is the same; the reason it gives is now the true
+    // one. 422 is the flat "understood, well-formed, and refused" bucket the
+    // HTTPS binding §4 puts every such code in — see
+    // `rest_submit_rejects_a_foreign_recipient` for why that matters.
     let fix = build_fixture().await;
     let vp = json!({});
     let (_did, mut doc) = submit_doc(&vp).await;
     doc.as_object_mut().unwrap().remove("proof");
 
     let (status, body) = post_tt(&fix.router, doc).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
-    assert_eq!(tt_error_code(&body), "permissionDenied");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "got {body}");
+    assert_eq!(tt_error_code(&body), "proofRequired");
 }
 
 // P0.13 — replay / freshness / audience binding + per-applicant dedup.
@@ -422,10 +441,23 @@ async fn rest_submit_rejects_an_expired_document() {
     // Freshness is the document `expiresAt`: a stale (expired) document is
     // rejected `expired` (422), replacing the bespoke `created` window. Same
     // flat bucket as `wrongRecipient` above — see that test for why.
+    //
+    // Both timestamps are set, and the order between them is the point.
+    // `expired` names a document that **was** once acceptable; SPEC §7.2 item
+    // 13 makes an `expiresAt` at or before its `issuedAt` `malformedRequest`
+    // instead, because such a document was never acceptable at any instant. A
+    // lone far-past `expiresAt` beside a fresh `issuedAt` is that second case,
+    // and asserting `expired` on it would pin the wrong rule.
     let fix = build_fixture().await;
     let vp = json!({});
     let (_did, mut doc) = submit_doc(&vp).await;
-    doc["expiresAt"] = json!("2000-01-01T00:00:00Z");
+    let now = chrono::Utc::now();
+    doc["issuedAt"] = json!(
+        (now - chrono::TimeDelta::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+    doc["expiresAt"] = json!(
+        (now - chrono::TimeDelta::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
 
     let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(
@@ -2787,7 +2819,7 @@ async fn only_an_identified_caller_may_list_vetters() {
         "type": VETTING_VETTER_LIST_TYPE,
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "recipient": vtc_service::test_support::TEST_VTC_DID,
-        "issuedAt": "2026-01-01T00:00:00Z",
+        "issuedAt": issued_now(),
         "expiresAt": "2099-01-01T00:00:00Z",
         "payload": {},
     });
@@ -4559,4 +4591,130 @@ async fn withdrawing_a_statement_as_a_non_member_is_the_declared_not_member() {
         REVOKE_STATEMENT_ERR_NOT_MEMBER,
         "{body}"
     );
+}
+
+// ─── registryConsent → Member::publish_consent (Keyring Q14) ───────────────
+//
+// `registryConsent` is the applicant's opt-in to trust-registry publication.
+// It used to be stored on the join request and read by nothing: every
+// admission wrote `publish_consent: false`, so the only way a member ever
+// became publishable was an operator flipping it. Each admission path now
+// carries the applicant's answer onto the member row.
+
+const ALLOW_JOIN_POLICY: &str = "package vtc.join\nimport rego.v1\n\n\
+     default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n";
+
+/// Submit under an `allow` policy as the holder of `seed`, with `payload`'s
+/// `registryConsent` as given, and return the admitted member's
+/// `publish_consent`.
+async fn auto_admitted_publish_consent(f: &Fixture, seed: [u8; 32], payload: Value) -> bool {
+    let (did, doc) = signed_trust_task_seed(&seed, SUBMIT_TASK, payload).await;
+    let (status, body) = post_tt(&f.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(verdict_effect(&body), "allow", "{body}");
+    get_member(&f.members_ks, &did)
+        .await
+        .unwrap()
+        .expect("auto-admitted applicant has a member row")
+        .publish_consent
+}
+
+#[tokio::test]
+async fn auto_admit_carries_registry_consent_onto_the_member() {
+    let f = build_fixture().await;
+    activate_join_policy(&f, ALLOW_JOIN_POLICY).await;
+    let vp = json!({ "type": "VerifiablePresentation" });
+
+    assert!(
+        auto_admitted_publish_consent(&f, [0x71; 32], json!({ "vp": vp, "registryConsent": true }))
+            .await,
+        "an applicant who consented is publishable"
+    );
+    assert!(
+        !auto_admitted_publish_consent(
+            &f,
+            [0x72; 32],
+            json!({ "vp": vp, "registryConsent": false })
+        )
+        .await,
+        "an applicant who declined is not"
+    );
+    assert!(
+        !auto_admitted_publish_consent(&f, [0x73; 32], json!({ "vp": vp })).await,
+        "silence is not consent"
+    );
+}
+
+/// The referred path: the policy leaves the request `pending`, an operator
+/// approves it, and the approval admits with the applicant's answer — an
+/// operator admits the applicant, it does not consent on their behalf.
+#[tokio::test]
+async fn an_approved_referral_carries_registry_consent_onto_the_member() {
+    let f = build_fixture().await;
+    for (seed, consent) in [([0x74; 32], true), ([0x75; 32], false)] {
+        let (did, doc) = signed_trust_task_seed(
+            &seed,
+            SUBMIT_TASK,
+            json!({ "vp": {}, "registryConsent": consent }),
+        )
+        .await;
+        let (status, body) = post_tt(&f.router, doc).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id = tt_payload(&body)["requestId"].as_str().unwrap().to_string();
+
+        let (status, body) = send(
+            &f.router,
+            "POST",
+            &format!("/v1/join-requests/{id}/decide"),
+            DECIDE_TASK,
+            Some(&f.admin_token),
+            Some(json!({ "decision": "approved" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let member = get_member(&f.members_ks, &did)
+            .await
+            .unwrap()
+            .expect("approved applicant has a member row");
+        assert_eq!(member.publish_consent, consent, "registryConsent={consent}");
+    }
+}
+
+/// The supplement path admits through the same verdict application as a
+/// submission, off the row being re-decided — whose consent is the one the
+/// applicant gave when they applied.
+#[tokio::test]
+async fn a_supplement_that_admits_carries_registry_consent_onto_the_member() {
+    let f = build_fixture().await;
+    activate_join_policy(&f, ALLOW_JOIN_POLICY).await;
+    let applicant = "did:key:zSupplementConsent";
+    let mut request =
+        vtc_service::join::JoinRequest::new(applicant.to_string(), json!({ "vp": "x" }));
+    request.status = JoinStatus::Deferred;
+    request.registry_consent = true;
+    store_join_request(&f.state.join_requests_ks, &request)
+        .await
+        .unwrap();
+
+    let out = vtc_service::join::supplement_inner(
+        &f.state,
+        applicant,
+        Some(request.id),
+        json!({ "type": ["VerifiablePresentation"] }),
+        json!({}),
+        vtc_service::join::JoinTransport::Rest,
+    )
+    .await
+    .expect("the supplement is accepted");
+    assert!(
+        out.admit.is_some(),
+        "the allow policy admits on re-decision"
+    );
+
+    let member = get_member(&f.members_ks, applicant)
+        .await
+        .unwrap()
+        .expect("admitted applicant has a member row");
+    assert!(member.publish_consent);
 }

@@ -47,6 +47,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         join_requests: Default::default(),
         website: Default::default(),
         admin_ui: Default::default(),
+        trust_tasks: Default::default(),
         config_path: std::path::PathBuf::new(),
     }
 }

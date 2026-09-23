@@ -62,6 +62,19 @@ pub async fn delete_type(ks: &KeyspaceHandle, uri: &str) -> Result<(), AppError>
     ks.remove(key(uri)).await
 }
 
+/// Every registered type, unpaginated and in key order.
+///
+/// [`list_types`] needs an [`AuditKey`] to sign its page cursor, which a
+/// boot-time sweep has no use for. Callers that want a page still want
+/// `list_types`; this is for the whole registry at once.
+pub async fn all_types(ks: &KeyspaceHandle) -> Result<Vec<EndorsementType>, AppError> {
+    let mut pairs = ks
+        .prefix_iter_raw(ENDORSEMENT_TYPES_PREFIX.to_vec())
+        .await?;
+    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    pairs.iter().map(|(_, v)| decode(v)).collect()
+}
+
 pub async fn list_types(
     ks: &KeyspaceHandle,
     audit_key: &AuditKey,
@@ -141,6 +154,35 @@ mod tests {
         assert!(!type_exists(&ks, "https://x.example/t").await.unwrap());
         // Idempotent.
         delete_type(&ks, "https://x.example/t").await.unwrap();
+    }
+
+    /// `all_types` returns the whole registry in key order, with no cursor and
+    /// no audit key — what the boot-time `claimSchema` scan walks.
+    #[tokio::test]
+    async fn all_types_returns_every_row_in_key_order() {
+        let (ks, _audit, _dir) = temp_ks().await;
+        assert!(all_types(&ks).await.unwrap().is_empty());
+        for uri in [
+            "https://x.example/c",
+            "https://x.example/a",
+            "https://x.example/b",
+        ] {
+            store_type(&ks, &fresh(uri)).await.unwrap();
+        }
+        let uris: Vec<String> = all_types(&ks)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.type_uri)
+            .collect();
+        assert_eq!(
+            uris,
+            vec![
+                "https://x.example/a",
+                "https://x.example/b",
+                "https://x.example/c"
+            ]
+        );
     }
 
     #[tokio::test]

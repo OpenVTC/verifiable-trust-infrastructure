@@ -182,10 +182,10 @@ template without explicit scope is **context → global → builtin**:
   - `vtc-host` — Verifiable Trust Community (VTC) service identity. Mints
     the did:webvh under which a `vtc-service` binary operates and advertises
     its REST endpoint plus a placeholder URL for the BitstringStatusList
-    credentials (populated in Phase 2 of the VTC MVP). DIDComm is not
-    advertised by default — communities that need a mediator add it later
-    via the runtime-service-management flow (see
-    `runtime-service-management.md`). Requires `URL`; optional
+    credentials (populated in Phase 2 of the VTC MVP). Messaging
+    transports (`SERVICE_TSP`, `SERVICE_DIDCOMM`) are advertised only when
+    supplied — `vtc setup` asks — and can be added or changed after mint (see
+    [community lifecycle](../03-vtc/community-lifecycle.md#changing-the-communitys-transports-after-mint)). Requires `URL`; optional
     `STATUS_LIST_PATH` (default `/v1/status-lists`). `URL` must not have a
     trailing slash.
     Optionally advertises a `TrustRegistry` **referral** naming the registry
@@ -197,9 +197,12 @@ template without explicit scope is **context → global → builtin**:
     constants have one source. Omit it and the element is pruned; a community
     with no registry is unchanged. `vtc setup` surfaces this as a prompt and
     as `registry_did` in the `--from` TOML.
-    Note the entry is fixed at mint time: a VTC serves a write-once
-    `did.jsonl` and cannot re-sign its own log, so changing the referral later
-    means a VTA-side `pnm did-mgmt dids edit` plus redelivering the log.
+    Changing the entry after mint is a VTA-side `pnm did-mgmt dids edit`.
+    The VTA holds the keys that extend the log, so a community on a DID host
+    is done there — the VTA publishes to the host — while a serverless VTC
+    serving its own `did.jsonl` then takes the new log with
+    `cnm did-log install` (see
+    [community lifecycle](../03-vtc/community-lifecycle.md#changing-the-communitys-transports-after-mint)).
     The `did-host-*` names describe the DID-document shape the template
     mints — `http` = a `WebVHHosting` (HTTP resolution) endpoint,
     `didcomm` = a `DIDCommMessaging` endpoint, `tsp` = a `TSPTransport`

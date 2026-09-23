@@ -1174,7 +1174,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::update::v0_1::Payload,
             s::members::update::v0_1::Response,
-            // `UpdateMemberRequest` — routes/members/update.rs:61.
+            // `UpdateMemberRequest` — routes/members/update.rs:57.
             json!({ "did": DID, "role": "moderator", "label": "Ada Lovelace",
                     "publishConsent": true, "departurePreference": "historical",
                     "extensions": { "org": "acme" } }),
@@ -1655,6 +1655,30 @@ fn table() -> Vec<Conformance> {
                         .updated_at(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
                 )
                 .expect("profile response")
+            )
+        ),
+        checked!(
+            s::vetting::vetters::show::v0_1::Payload,
+            s::vetting::vetters::show::v0_1::Response,
+            json!({ "vetterDid": OTHER_DID }),
+            to_v(
+                s::vetting::vetters::show::v0_1::Response::try_from(
+                    s::vetting::vetters::show::v0_1::Response::builder()
+                        .vetter_did(
+                            s::vetting::vetters::show::v0_1::ResponseVetterDid::try_from(OTHER_DID)
+                                .expect("vetter did")
+                        )
+                        .status(s::vetting::vetters::show::v0_1::GrantStatus::Live)
+                        .grant_id(Some(
+                            s::vetting::vetters::show::v0_1::ResponseGrantId::try_from(
+                                "3f1b0c1e-9d2a-4a7f-9a1e-2b6c5d4e3f21"
+                            )
+                            .expect("grant id")
+                        ))
+                        .valid_until(Some(TS.parse::<DateTime<chrono::Utc>>().unwrap()))
+                        .listed(Some(true)),
+                )
+                .expect("show response")
             )
         ),
         checked!(

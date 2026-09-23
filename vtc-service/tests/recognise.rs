@@ -548,3 +548,85 @@ mod holder_binding {
         );
     }
 }
+
+fn rest_error_code(body: &serde_json::Value) -> &str {
+    body["code"].as_str().unwrap_or_default()
+}
+
+/// Render a refusal the way the route does, and read its code.
+async fn code_of(err: vtc_service::error::TaskError) -> serde_json::Value {
+    use axum::response::IntoResponse;
+    let bytes = err
+        .into_response()
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    serde_json::from_slice(&bytes).expect("json error body")
+}
+
+/// `vtc/auth/recognise/0.2` declares `roleNotMapped` and `credentialInvalid`,
+/// and both are now on the wire rather than only in the prose.
+///
+/// The two are different things to a client: `roleNotMapped` says this
+/// community accepts the credential but grants the holder's foreign role
+/// nothing here, which is an operator's policy decision; `credentialInvalid`
+/// says the credential itself did not hold up. Until now both read as a bare
+/// 403 and a client had to match on English to tell them apart.
+///
+/// `issuerNotRecognised`, the third code the spec declares, stays baselined in
+/// the census: reaching it needs a trust registry that answers "not
+/// recognised", and this workspace has no registry stub to drive that with.
+#[tokio::test]
+async fn the_recognise_task_answers_with_the_codes_its_spec_declares() {
+    use vtc_service::routes::recognise::{
+        RECOGNISE_ERR_CREDENTIAL_INVALID, RECOGNISE_ERR_ROLE_NOT_MAPPED,
+    };
+
+    // Policy allows the issuer but maps the role to nothing — `roleNotMapped`.
+    let fix = build().await;
+    install_cross_community_policy(
+        &fix.state,
+        "\
+package vtc.cross_community_roles
+import rego.v1
+default allow := true
+",
+    )
+    .await;
+    let err = mint_recognised_session(
+        &fix.state,
+        verified("did:webvh:peer.example", "did:key:zSub", "moderator", 60),
+    )
+    .await
+    .expect_err("a role that maps to nothing is refused");
+    assert_eq!(
+        rest_error_code(&code_of(err).await),
+        RECOGNISE_ERR_ROLE_NOT_MAPPED
+    );
+
+    // Same policy, but the credentials have already expired — the spec files
+    // "was expired" under `credentialInvalid`, and nothing about the role.
+    let fix = build().await;
+    install_cross_community_policy(
+        &fix.state,
+        "\
+package vtc.cross_community_roles
+import rego.v1
+default allow := true
+mapped_role := \"monitor\"
+",
+    )
+    .await;
+    let err = mint_recognised_session(
+        &fix.state,
+        verified("did:webvh:peer.example", "did:key:zSub", "moderator", -1),
+    )
+    .await
+    .expect_err("expired credentials are refused");
+    assert_eq!(
+        rest_error_code(&code_of(err).await),
+        RECOGNISE_ERR_CREDENTIAL_INVALID
+    );
+}

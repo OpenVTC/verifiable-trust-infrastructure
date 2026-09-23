@@ -130,6 +130,32 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
         backend.didcomm_freshness_window(),
     )?;
 
+    // ---- Consume the challenge (the claim) ----
+    //
+    // Every check above read the row; this takes it. It happens *before* the
+    // ACL lookup and the mint, and deliberately so: those are awaits, and
+    // while the row still existed across them two interleaved presentations
+    // of the same signed envelope both passed the `ChallengeSent` check and
+    // both minted (#1656). `take_session` is a claim — exactly one concurrent
+    // caller observes `Some` — so the loser is refused here, as a replay is.
+    //
+    // A challenge row is always uuid-keyed (`handle_challenge` mints a v4),
+    // so this can never take the DID-keyed row of an established session.
+    if backend
+        .sessions()
+        .take_session(&input.session_id)
+        .await
+        .map_err(|e| AuthError::Internal(format!("take_session failed: {e:?}")))?
+        .is_none()
+    {
+        tracing::warn!(
+            session_id = %input.session_id,
+            did = %session.did,
+            "authenticate rejected: challenge already consumed (replay or race)",
+        );
+        return Err(AuthError::SessionStateMismatch.into());
+    }
+
     // ---- Re-look-up ACL role (propagates revocation) ----
 
     let role_resolution = backend.check_acl(&session.did).await?;
@@ -163,7 +189,7 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     // identity, so one DID has one active refresh token (last-write-wins). The
     // access token is pinned via `token_id` (the jti), so the previous login's
     // access token is superseded immediately. The single-use challenge row (a
-    // distinct, ephemeral, uuid-keyed record) is deleted.
+    // distinct, ephemeral, uuid-keyed record) was already taken above.
     let auth_session = Session {
         session_id: did.clone(),
         did: did.clone(),
@@ -188,14 +214,6 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
         .store_session(&auth_session)
         .await
         .map_err(|e| AuthError::Internal(format!("store_session failed: {e:?}")))?;
-    // Remove the single-use challenge row (keyed on the ephemeral handle).
-    if input.session_id != did {
-        backend
-            .sessions()
-            .delete_session(&input.session_id)
-            .await
-            .map_err(|e| AuthError::Internal(format!("delete_session failed: {e:?}")))?;
-    }
     backend
         .sessions()
         .store_refresh_index(&minted.refresh_token, &did)
@@ -226,4 +244,230 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
                 .collect(),
         },
     })
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::*;
+    use crate::auth::backend::{AudienceBinding, RoleResolution, SessionStore};
+    use crate::auth::session::now_epoch;
+    use crate::error::AppError;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    const DID: &str = "did:key:zHolder";
+    const CHALLENGE: &str = "challenge-0";
+    const SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
+
+    /// In-memory `sessions` keyspace whose `take_session` is a real claim
+    /// (remove under the map's lock), as `KeyspaceSessionStore`'s is.
+    #[derive(Default)]
+    struct MemStore {
+        sessions: Mutex<HashMap<String, Session>>,
+    }
+
+    #[async_trait]
+    impl SessionStore for MemStore {
+        type Error = AppError;
+
+        async fn store_session(&self, s: &Session) -> Result<(), AppError> {
+            self.sessions
+                .lock()
+                .unwrap()
+                .insert(s.session_id.clone(), s.clone());
+            Ok(())
+        }
+
+        async fn get_session(&self, session_id: &str) -> Result<Option<Session>, AppError> {
+            Ok(self.sessions.lock().unwrap().get(session_id).cloned())
+        }
+
+        async fn delete_session(&self, session_id: &str) -> Result<(), AppError> {
+            self.sessions.lock().unwrap().remove(session_id);
+            Ok(())
+        }
+
+        async fn take_session(&self, session_id: &str) -> Result<Option<Session>, AppError> {
+            Ok(self.sessions.lock().unwrap().remove(session_id))
+        }
+
+        async fn store_refresh_index(&self, _: &str, _: &str) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        async fn take_session_id_by_refresh(&self, _: &str) -> Result<Option<String>, AppError> {
+            Ok(None)
+        }
+
+        async fn count_pending_challenges(&self, did: &str) -> Result<usize, AppError> {
+            Ok(self
+                .sessions
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|s| s.did == did && s.state == SessionState::ChallengeSent)
+                .count())
+        }
+    }
+
+    struct MockBackend {
+        store: MemStore,
+    }
+
+    #[async_trait]
+    impl AuthBackend for MockBackend {
+        type Store = MemStore;
+        type Error = AppError;
+        type Role = String;
+
+        fn sessions(&self) -> &MemStore {
+            &self.store
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        async fn mint_access_token(
+            &self,
+            _subject: &str,
+            _session_id: &str,
+            _role: &String,
+            _contexts: &[String],
+            _amr: &[String],
+            _acr: &str,
+            _tee_attested: bool,
+            _ttl_secs: u64,
+            jti: &str,
+        ) -> Result<String, AppError> {
+            // Minting is the expensive, awaiting part of the handler — the
+            // window the challenge row used to stay alive across. The yield
+            // makes the interleaving deterministic rather than lucky.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(format!("access:{jti}"))
+        }
+
+        async fn check_acl(&self, _did: &str) -> Result<RoleResolution<String>, AppError> {
+            Ok(RoleResolution::new("reader".to_string()))
+        }
+
+        fn challenge_ttl(&self) -> u64 {
+            60
+        }
+        fn access_token_ttl(&self) -> u64 {
+            900
+        }
+        fn refresh_token_ttl(&self) -> u64 {
+            86_400
+        }
+    }
+
+    fn challenge_row() -> Session {
+        let now = now_epoch();
+        Session {
+            session_id: SESSION_ID.to_string(),
+            did: DID.to_string(),
+            challenge: CHALLENGE.to_string(),
+            state: SessionState::ChallengeSent,
+            created_at: now,
+            last_seen: now,
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec!["did".to_string()],
+            acr: "aal1".to_string(),
+            acr_expires_at: None,
+            token_id: None,
+            session_pubkey_b58btc: None,
+        }
+    }
+
+    fn input() -> AuthenticateInput {
+        AuthenticateInput {
+            session_id: SESSION_ID.to_string(),
+            challenge: CHALLENGE.to_string(),
+            signer_did: DID.to_string(),
+            created_time: None,
+            session_pubkey_b58btc: None,
+            audience: AudienceBinding::Transport,
+        }
+    }
+
+    /// #1656: two presentations of the *same* challenge, interleaved, mint
+    /// exactly once.
+    ///
+    /// The challenge row used to be deleted after the ACL lookup and the
+    /// mint, so while those awaited, a second caller still saw a row in
+    /// `ChallengeSent` and minted too. It is now taken before them, and a
+    /// take is a claim, so the loser is refused.
+    ///
+    /// Revert the ordering and this fails with two successes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_presentations_of_one_challenge_mint_once() {
+        let backend = MockBackend {
+            store: MemStore::default(),
+        };
+        backend.store.store_session(&challenge_row()).await.unwrap();
+
+        let (first, second) = tokio::join!(
+            handle_authenticate(&backend, input()),
+            handle_authenticate(&backend, input()),
+        );
+
+        let minted = [&first, &second].iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            minted, 1,
+            "exactly one presentation may mint; got first={first:?} second={second:?}"
+        );
+        assert!(
+            backend
+                .store
+                .get_session(SESSION_ID)
+                .await
+                .unwrap()
+                .is_none(),
+            "the challenge row is gone either way"
+        );
+    }
+
+    /// The trait's default `take_session` — what a backend that does not
+    /// override it gets — reads the row and removes it.
+    #[tokio::test]
+    async fn the_default_take_session_reads_and_removes() {
+        /// A store with no override, so the default body runs.
+        #[derive(Default)]
+        struct Unoverridden(MemStore);
+
+        #[async_trait]
+        impl SessionStore for Unoverridden {
+            type Error = AppError;
+            async fn store_session(&self, s: &Session) -> Result<(), AppError> {
+                self.0.store_session(s).await
+            }
+            async fn get_session(&self, id: &str) -> Result<Option<Session>, AppError> {
+                self.0.get_session(id).await
+            }
+            async fn delete_session(&self, id: &str) -> Result<(), AppError> {
+                self.0.delete_session(id).await
+            }
+            async fn store_refresh_index(&self, _: &str, _: &str) -> Result<(), AppError> {
+                Ok(())
+            }
+            async fn take_session_id_by_refresh(
+                &self,
+                _: &str,
+            ) -> Result<Option<String>, AppError> {
+                Ok(None)
+            }
+            async fn count_pending_challenges(&self, did: &str) -> Result<usize, AppError> {
+                self.0.count_pending_challenges(did).await
+            }
+        }
+
+        let store = Unoverridden::default();
+        store.store_session(&challenge_row()).await.unwrap();
+
+        let taken = store.take_session(SESSION_ID).await.unwrap();
+        assert_eq!(taken.map(|s| s.did), Some(DID.to_string()));
+        assert!(store.get_session(SESSION_ID).await.unwrap().is_none());
+        assert!(store.take_session(SESSION_ID).await.unwrap().is_none());
+    }
 }

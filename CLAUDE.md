@@ -1000,6 +1000,22 @@ that before anyone opened the Release PR and found the identical bumps already
 proposed there. A manual bump is not merely redundant: it collides with the
 Release PR and fragments one coordinated release into several.
 
+**The other red that job produces means one of three different things.** It
+builds rustdoc twice per crate — the workspace copy (`current`) and the
+crates.io copy (`baseline`) — and a failure of either reads the same in
+`cargo-semver-checks` output. The baseline resolves **without a lockfile**, so
+it takes the newest semver-compatible release of every dependency, including
+ones `Cargo.lock` pins below; that is what makes it the only check here that
+sees what a consumer's fresh `cargo add` sees, and also what makes it catch
+somebody else's bad release. `scripts/semver-build-failure.py` does the
+attribution and names the culprit package — read what it says before assuming
+a published artifact of ours is broken. #1667 was exactly that mistake:
+`vta-service` 0.39.0 was fine, `affinidi-messaging-mediator` 0.28.33 was not,
+and it reaches us only through `vta-service`'s optional `transport-harness`
+feature, so the default-feature reproduction the report printed never touched
+it. A dependency break of this shape is fixed upstream or by a raised floor,
+never by a change here.
+
 **20 of 26 crates publish.** The six that do not — `vtc-service`,
 `vta-enclave`, `vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz` — set
 `publish = false` in their own manifest, each with a comment saying why.

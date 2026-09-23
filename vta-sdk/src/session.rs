@@ -1723,18 +1723,17 @@ pub async fn challenge_response(
     debug!("initializing DID resolver and ATM for message packing");
 
     use affinidi_tdk::common::TDKSharedState;
-    use affinidi_tdk::common::config::TDKConfig;
     use affinidi_tdk::messaging::ATM;
     use affinidi_tdk::messaging::config::ATMConfig;
     use std::sync::Arc;
 
-    let tdk = TDKSharedState::new(
-        TDKConfig::builder()
-            .build()
-            .map_err(|e| format!("TDK config build failed: {e}"))?,
-    )
-    .await
-    .map_err(|e| format!("TDK init failed: {e}"))?;
+    // On the crate's shared resolver: the TDK's own default is `PublicOnly`
+    // with no opt-in, which refused a VTA DID on a loopback host even with
+    // `VTA_ALLOW_PRIVATE_ENDPOINTS` set. Sharing also lets the VTA DID that
+    // `resolve_vta_endpoint` fetched a moment ago answer from cache.
+    let tdk = TDKSharedState::new(crate::session_hub::shared_tdk_config().await?)
+        .await
+        .map_err(|e| format!("TDK init failed: {e}"))?;
 
     // Build DIDComm secrets from the private key
     let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;

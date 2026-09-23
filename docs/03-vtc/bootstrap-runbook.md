@@ -167,7 +167,10 @@ entry with no contexts.
    ```
 
    From a running console, use **Access control → Add entry** with role
-   `admin` and no contexts.
+   `admin` and no contexts. The console asks for your passkey before it
+   writes: granting `admin` requires a live step-up (VTI-OPS-051), so the
+   operator doing the granting must already have one enrolled. If they do
+   not, use the offline command above.
 
 When the VTC refuses the sign-in, `cnm` prints that same `vtc acl add`
 command. A VTC gives the same refusal whether or not the DID is enrolled, so
@@ -177,6 +180,26 @@ time it signs in to the VTA, so run a VTA command (`cnm acl list`) before you
 add the row.
 
 Nothing below depends on `cnm`.
+
+### Adding a second admin later
+
+Two paths, and both ask the *granting* operator for their passkey first
+(VTI-OPS-051 — conferring administrative authority takes a fresh second
+factor, not just a live session):
+
+- **Promote an existing member.** Console → **Members → *the member* → Promote
+  to admin**. Over the API this is `acl/change-role/0.1`:
+  `PATCH /v1/acl/{did}` with `{"fromRole": "<their current role>", "toRole":
+  "admin"}`. `fromRole` is a compare-and-swap guard — if their role moved since
+  you read it, the change is refused rather than applied over the top.
+  `PATCH /v1/members/{did}` with `{"role": "admin"}` is **not** this: it
+  answers `adminRoleForbidden` and points here.
+- **Add an admin ACL entry for a DID that is not a member.** Console →
+  **Access control → Add entry**, or `acl/grant/0.1`.
+
+You cannot promote *yourself*, with or without a passkey: admin elevation
+takes a second person, not a second factor. If you are the only admin and have
+lost your passkey, the offline `vtc … acl add` above is the break-glass.
 
 ## Part 2 — the first vetter
 

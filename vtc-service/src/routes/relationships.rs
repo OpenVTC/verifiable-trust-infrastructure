@@ -2232,10 +2232,16 @@ mod tests {
         if let Some(bound) = ack {
             // The grant's **wire** form: `DTGCommon` does not model `credentialStatus`, so
             // digesting a re-serialised parse would drop it and match nothing.
-            let ack =
-                dtg_credentials::DTGCredential::new_member_vmc(&grant_json, m.joined_at, None)
-                    .expect("acknowledgement builds")
-                    .with_id("urn:uuid:ack-1");
+            // `new_member_vmc_for` takes the member independently of the grant
+            // and refuses a grant that names somebody else.
+            let ack = dtg_credentials::DTGCredential::new_member_vmc_for(
+                &grant_json,
+                did,
+                m.joined_at,
+                None,
+            )
+            .expect("acknowledgement builds")
+            .with_id("urn:uuid:ack-1");
             let ack_json = serde_json::to_value(ack.credential()).expect("ack serialises");
             m.record_member_vmc("urn:uuid:ack-1", ack_json, bound);
             m.member_vmc_received_at = Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap());

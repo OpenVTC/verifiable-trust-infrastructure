@@ -41,6 +41,75 @@ use crate::operations::protocol::document::{TSP_SERVICE_FRAGMENT, TSP_SERVICE_TY
 /// A caller that already hand-built a `TSPTransport` entry keeps theirs — two
 /// `#tsp` services would be a malformed document, and theirs is the more
 /// specific intent.
+/// Resolve the three-state `addTspService` into the answer the document paths
+/// take: an explicit request wins, and silence asks what this VTA and its
+/// mediator can carry (Keyring VTI-Q11, #1652).
+pub(crate) async fn resolve_add_tsp_service(
+    requested: Option<bool>,
+    config: &AppConfig,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) -> bool {
+    match requested {
+        Some(explicit) => explicit,
+        None => mediator_carries_tsp(config, resolver).await,
+    }
+}
+
+/// Whether `#tsp` should be published for a DID whose caller did not say
+/// (Keyring VTI-Q11, #1652).
+///
+/// The rule is the one VTA setup already applies to the VTA's own document:
+/// this VTA must be built with TSP *and* the mediator it names must advertise
+/// `TSPTransport`. A persona is minted through this path without the wire
+/// field, so this is what decides it — and a persona behind a mediator that
+/// does not route TSP stays DIDComm-only rather than advertising a transport
+/// its peers cannot reach it on.
+///
+/// Unlike setup, an unresolvable mediator answers **no**. There the operator
+/// named the mediator deliberately and the answer is a warning; here nobody
+/// asked for `#tsp` at all, so the quiet default must be the one that cannot
+/// publish a dead transport.
+pub(crate) async fn mediator_carries_tsp(
+    config: &AppConfig,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) -> bool {
+    if !config.services.tsp {
+        return false;
+    }
+    let Some(mediator_did) = config
+        .messaging
+        .as_ref()
+        .map(|m| m.mediator_did.trim())
+        .filter(|did| !did.is_empty())
+    else {
+        return false;
+    };
+
+    let resolved = match resolver.resolve(mediator_did).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::info!(
+                mediator = %mediator_did, error = %e,
+                "could not resolve the mediator to see whether it carries TSP; \
+                 minting this DID without `#tsp`",
+            );
+            return false;
+        }
+    };
+    match serde_json::to_value(&resolved.doc) {
+        Ok(doc) => vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(&doc)
+            .tsp
+            .is_some(),
+        Err(e) => {
+            tracing::info!(
+                mediator = %mediator_did, error = %e,
+                "could not read the mediator's DID document; minting without `#tsp`",
+            );
+            false
+        }
+    }
+}
+
 pub(crate) fn with_tsp_service(
     add_tsp_service: bool,
     config: &AppConfig,
@@ -543,7 +612,7 @@ mod tests {
     const MEDIATOR: &str = "did:webvh:mediator.example.com:mediator";
 
     /// A VTA config with a mediator and `services.tsp` set as asked.
-    fn config_with(tsp: bool, mediator: Option<&str>) -> crate::config::AppConfig {
+    pub(super) fn config_with(tsp: bool, mediator: Option<&str>) -> crate::config::AppConfig {
         let mut config = crate::test_support::test_app_config(std::path::PathBuf::from("/tmp/x"));
         config.services.tsp = tsp;
         config.messaging = mediator.map(|did| MessagingConfig {
@@ -885,5 +954,103 @@ mod tests {
         assert_eq!(ids.signing, format!("{DID}#key-0"));
         assert_eq!(ids.key_agreement, None);
         assert_eq!(ids.next_fragment_id, 2);
+    }
+}
+
+#[cfg(test)]
+mod mediator_capability_tests {
+    use super::tests::config_with;
+    use super::{mediator_carries_tsp, resolve_add_tsp_service};
+    use affinidi_did_resolver_cache_sdk::DIDCacheClient;
+    use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
+    use affinidi_tdk::dids::{PeerService, PeerServiceEndpoint};
+
+    async fn resolver() -> DIDCacheClient {
+        DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("resolver")
+    }
+
+    /// A did:peer that really resolves, advertising exactly the services given
+    /// — the mediator under test.
+    fn mediator_did(services: Vec<PeerService>) -> String {
+        let (did, _secrets) = crate::operations::did_peer::mint_did_peer_with_services(services)
+            .expect("mint did:peer");
+        did
+    }
+
+    fn tsp_service() -> PeerService {
+        PeerService {
+            type_: "TSPTransport".into(),
+            endpoint: PeerServiceEndpoint::Uri("https://mediator.example.com".into()),
+            id: Some("#tsp".into()),
+        }
+    }
+
+    fn didcomm_service() -> PeerService {
+        PeerService {
+            type_: "dm".into(),
+            endpoint: PeerServiceEndpoint::Uri("https://mediator.example.com".into()),
+            id: None,
+        }
+    }
+
+    /// Keyring VTI-Q11 (#1652): the quiet default publishes `#tsp` only when
+    /// this VTA carries TSP *and* its mediator advertises it.
+    #[tokio::test]
+    async fn tsp_is_advertised_only_when_the_vta_and_its_mediator_both_carry_it() {
+        let r = resolver().await;
+
+        let carries = mediator_did(vec![tsp_service(), didcomm_service()]);
+        assert!(
+            mediator_carries_tsp(&config_with(true, Some(&carries)), &r).await,
+            "a TSP VTA behind a TSP mediator advertises #tsp"
+        );
+
+        let didcomm_only = mediator_did(vec![didcomm_service()]);
+        assert!(
+            !mediator_carries_tsp(&config_with(true, Some(&didcomm_only)), &r).await,
+            "a mediator that does not route TSP leaves the DID DIDComm-only"
+        );
+
+        assert!(
+            !mediator_carries_tsp(&config_with(false, Some(&carries)), &r).await,
+            "a VTA not built with TSP never advertises it, whatever the mediator carries"
+        );
+
+        assert!(
+            !mediator_carries_tsp(&config_with(true, None), &r).await,
+            "no mediator, nothing to advertise through"
+        );
+
+        // Unresolvable: the conservative answer, unlike setup's warn-and-proceed —
+        // nobody asked for `#tsp` here, so it must not publish a dead transport.
+        assert!(
+            !mediator_carries_tsp(&config_with(true, Some("did:web:nonexistent.invalid")), &r)
+                .await,
+            "a mediator that cannot be resolved does not get #tsp by default"
+        );
+    }
+
+    /// What the wire field means once it reaches the mint: silence asks the
+    /// mediator, and an explicit answer is obeyed either way.
+    #[tokio::test]
+    async fn an_explicit_request_wins_over_the_capability_default() {
+        let r = resolver().await;
+        let carries = mediator_did(vec![tsp_service(), didcomm_service()]);
+        let capable = config_with(true, Some(&carries));
+        let not_capable = config_with(false, Some(&carries));
+
+        // Silence: the persona case. The capability decides.
+        assert!(resolve_add_tsp_service(None, &capable, &r).await);
+        assert!(!resolve_add_tsp_service(None, &not_capable, &r).await);
+
+        // `false` still means no, however capable the stack is — a holder that
+        // cannot decode TSP frames says so and is believed.
+        assert!(!resolve_add_tsp_service(Some(false), &capable, &r).await);
+
+        // `true` is passed through; `with_tsp_service` still applies its own
+        // `services.tsp` + mediator gates downstream.
+        assert!(resolve_add_tsp_service(Some(true), &not_capable, &r).await);
     }
 }

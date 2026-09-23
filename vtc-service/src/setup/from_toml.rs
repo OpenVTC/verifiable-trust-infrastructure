@@ -51,8 +51,9 @@ use super::wizard::{
 /// source of truth that could drift from the document it produced.
 ///
 /// `transports` is required rather than defaulted. The choice determines
-/// whether anyone can reach this community over a mediator, it cannot be
-/// changed after mint without a VTA-side `dids edit`, and a silent default
+/// whether anyone can reach this community over a mediator, changing it after
+/// mint takes a VTA-side `dids edit` (and, self-hosted, `cnm did-log
+/// install`), and a silent default
 /// would be a guess about someone else's mediator — see
 /// [`super::wizard::prompt_transports`] for the same reasoning interactively.
 #[derive(Debug, Deserialize, Serialize)]
@@ -113,9 +114,9 @@ pub(crate) struct VtcWizardInputs {
     /// Omit (or leave blank) for a community with no registry; the service
     /// entry is then pruned from the document.
     ///
-    /// Fixed at mint time: the VTC serves a write-once `did.jsonl` and cannot
-    /// re-sign its own log, so changing this later needs a VTA-side
-    /// `pnm did-mgmt dids edit` plus redelivering the log by hand.
+    /// The VTC cannot re-sign its own log, so changing this after mint is a
+    /// VTA-side `pnm did-mgmt dids edit` — then, for a VTC serving its own
+    /// `did.jsonl`, `cnm did-log install` with the extended log.
     #[serde(default)]
     pub registry_did: Option<String>,
 
@@ -273,8 +274,9 @@ fn validate(inputs: &VtcWizardInputs) -> Result<(), AppError> {
             errors.push(
                 "messaging.transports must name at least one transport when [messaging] is \
                  present — e.g. transports = [\"tsp\", \"didcomm\"]. An empty list connects this \
-                 VTC to the mediator while advertising no way to reach it, and the DID document \
-                 is write-once. Omit the whole [messaging] table for a REST-only community."
+                 VTC to the mediator while advertising no way to reach it, and correcting the \
+                 DID document afterwards takes a VTA-side edit. Omit the whole [messaging] table \
+                 for a REST-only community."
                     .into(),
             );
         }
@@ -428,8 +430,8 @@ keyring_service = "vtc-acme"
 
     /// `transports` is required, not defaulted. A `[messaging]` table without
     /// it must fail loudly at parse rather than mint a community that connects
-    /// to a mediator and advertises no way to reach it — a state the write-once
-    /// `did.jsonl` makes expensive to correct.
+    /// to a mediator and advertises no way to reach it — a state that only a
+    /// VTA-side `dids edit` (and a log install, self-hosted) can correct.
     #[test]
     fn messaging_without_transports_is_refused() {
         let err = toml::from_str::<VtcWizardInputs>(

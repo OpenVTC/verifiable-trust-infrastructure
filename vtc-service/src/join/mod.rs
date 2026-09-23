@@ -113,8 +113,9 @@ pub struct JoinRequest {
     pub policy_decision: Option<JsonValue>,
     /// Whether the applicant consents to being published in the
     /// community's trust-registry record (spec §8). Default
-    /// `false`; the operator-facing surface defers this decision
-    /// to Phase 3.
+    /// `false`. Carried onto the member's `publish_consent` when this request
+    /// admits the applicant — on auto-admit, on a supplement that admits, and
+    /// on an operator's approval.
     #[serde(default)]
     pub registry_consent: bool,
     /// Community-defined extensions slot (spec §3-M). Bounded by

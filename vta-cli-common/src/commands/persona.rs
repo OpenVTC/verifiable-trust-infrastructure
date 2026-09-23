@@ -35,7 +35,18 @@
 //! and a context-scoped operator about to request a disclosure needs it, since
 //! `persona disclosure preview` takes a renderer by name.
 
+use std::num::NonZeroU64;
+
 use serde_json::Value;
+use trust_tasks_rs::specs::persona::facet::delete::v1_0::{
+    ExpectedVersion as FacetDeleteExpectedVersion, Payload as FacetDeletePayload,
+    Ulid as FacetDeleteUlid,
+};
+use trust_tasks_rs::specs::persona::facet::list::v1_0::Payload as FacetListPayload;
+use trust_tasks_rs::specs::persona::facet::put::v1_0::{
+    ExpectedVersion as FacetPutExpectedVersion, FacetColour, Payload as FacetPutPayload,
+    PayloadIcon as FacetPutIcon, PayloadName as FacetPutName, Ulid as FacetUlid,
+};
 use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::persona::{
     ContactDocument, LocalProfileEntry, ProfileEntry, Provenance, ValueType,
@@ -837,6 +848,100 @@ pub async fn cmd_renderers(client: &VtaClient) -> CmdResult {
 }
 
 // ---------------------------------------------------------------------------
+// Worlds (facets) and the claim-type registry
+// ---------------------------------------------------------------------------
+
+/// `persona world list` — the parts of a life the holder has named.
+pub async fn cmd_world_list(
+    client: &VtaClient,
+    limit: Option<NonZeroU64>,
+    cursor: Option<String>,
+) -> CmdResult {
+    let mut payload = FacetListPayload::default();
+    if let Some(limit) = limit {
+        payload.limit = limit;
+    }
+    payload.cursor = cursor.map(|c| c.parse()).transpose().map_err(to_err)?;
+    let result = client.persona_facet_list(payload).await?;
+    print_result("Worlds:", &serde_json::to_value(result)?)
+}
+
+/// `persona world put` — name a world, or replace one.
+///
+/// Both id lists replace what is stored. The CLI passes them through as given
+/// rather than merging with what is there: a merge would make emptying a world
+/// impossible, and the specification says so explicitly.
+#[allow(clippy::too_many_arguments)] // Flat CLI surface; one argument per flag.
+pub async fn cmd_world_put(
+    client: &VtaClient,
+    name: String,
+    colour: &str,
+    icon: Option<String>,
+    face_ids: Vec<String>,
+    attribute_ids: Vec<String>,
+    facet_id: Option<String>,
+    expected_version: Option<u64>,
+) -> CmdResult {
+    let mut builder = FacetPutPayload::builder()
+        .name(name.parse::<FacetPutName>().map_err(to_err)?)
+        .colour(colour.parse::<FacetColour>().map_err(to_err)?)
+        .face_ids(ulids(face_ids)?)
+        .attribute_ids(ulids(attribute_ids)?);
+    if let Some(icon) = icon {
+        builder = builder.icon(Some(icon.parse::<FacetPutIcon>().map_err(to_err)?));
+    }
+    if let Some(id) = facet_id {
+        builder = builder.facet_id(Some(id.parse::<FacetUlid>().map_err(to_err)?));
+    }
+    if let Some(v) = expected_version {
+        builder = builder.expected_version(Some(FacetPutExpectedVersion(v)));
+    }
+    let payload: FacetPutPayload = builder.try_into().map_err(to_err)?;
+    let result = client.persona_facet_put(payload).await?;
+    print_result("World:", &serde_json::to_value(result)?)
+}
+
+/// `persona world delete` — unname a world, leaving its members where they are.
+pub async fn cmd_world_delete(
+    client: &VtaClient,
+    facet_id: String,
+    expected_version: Option<u64>,
+) -> CmdResult {
+    let mut builder = FacetDeletePayload::builder()
+        .facet_id(facet_id.parse::<FacetDeleteUlid>().map_err(to_err)?);
+    if let Some(v) = expected_version {
+        builder = builder.expected_version(Some(FacetDeleteExpectedVersion(v)));
+    }
+    let payload: FacetDeletePayload = builder.try_into().map_err(to_err)?;
+    let result = client.persona_facet_delete(payload).await?;
+    print_result("Deleted:", &serde_json::to_value(result)?)
+}
+
+/// `persona claim-types` — the registry the VTA masks and gates against.
+pub async fn cmd_claim_types(client: &VtaClient) -> CmdResult {
+    let result = client.persona_claim_types_list().await?;
+    print_result("Claim types:", &serde_json::to_value(result)?)
+}
+
+/// Parse ULIDs the generated payloads take, naming the one that was wrong.
+///
+/// The generated newtype's error says only "does not match pattern", which is
+/// unhelpful when a flag was repeated six times.
+fn ulids(ids: Vec<String>) -> Result<Vec<FacetUlid>, Box<dyn std::error::Error>> {
+    ids.into_iter()
+        .map(|id| {
+            id.parse::<FacetUlid>()
+                .map_err(|e| format!("not an id: {id} ({e})").into())
+        })
+        .collect()
+}
+
+/// Render a generated type's conversion error as a CLI error.
+fn to_err(e: impl std::fmt::Display) -> Box<dyn std::error::Error> {
+    e.to_string().into()
+}
+
+// ---------------------------------------------------------------------------
 // Context-local profiles and bindings
 // ---------------------------------------------------------------------------
 
@@ -920,4 +1025,37 @@ pub async fn cmd_local_binding_set(
         )
         .await?;
     print_result("Local binding:", &result)
+}
+
+#[cfg(test)]
+mod world_tests {
+    use super::FacetColour;
+
+    /// The other half of the guard in `pnm-cli`'s `world_colour_tests`: those
+    /// tokens are the ones this crate parses. Split across the two because
+    /// `pnm-cli` does not depend on the generated types and this crate does
+    /// not know the CLI's enum — together they pin the wire value end to end.
+    #[test]
+    fn the_spec_tokens_the_cli_offers_all_parse() {
+        for token in [
+            "slate", "indigo", "teal", "moss", "sand", "clay", "rose", "plum",
+        ] {
+            assert!(
+                token.parse::<FacetColour>().is_ok(),
+                "{token} is not a colour the specification names",
+            );
+        }
+    }
+
+    /// An id that is not a ULID is named, rather than reported as a pattern
+    /// failure against whichever of six repeated flags was wrong.
+    #[test]
+    fn a_bad_id_names_itself() {
+        let err = super::ulids(vec![
+            "01JB0X7K9ZQW2M4N6P8R1T3V5Y".into(),
+            "not-an-id".into(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("not-an-id"), "{err}");
+    }
 }

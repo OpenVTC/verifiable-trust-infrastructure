@@ -7,15 +7,15 @@
 //! - `GET /v1/members/{did}` — single member.
 //! - `GET /v1/members/{did}/credentials` — that member's credential bodies
 //!   (`vtc/members/credentials/0.1`, see `credentials.rs`).
-//! - `PATCH /v1/members/{did}` — role + profile fields, including
-//!   role=Admin. That one transition additionally requires a live
-//!   step-up elevation on the caller's session (spec §10.4's UV
-//!   requirement, now satisfied by the `auth/passkey/login` step-up
-//!   ceremony rather than a ceremony of its own).
+//! - `PATCH /v1/members/{did}` — profile fields and non-admin role
+//!   changes. `role: admin` is refused here with the task's declared
+//!   `adminRoleForbidden`; promotion is `acl/change-role/0.1`
+//!   (`PATCH /v1/acl/{did}`), behind the live step-up elevation the
+//!   role-change ceremony's host invariant demands. See `update.rs`.
 //!
 //! The fused `POST /v1/members/{did}/promote-to-admin/{start,finish}`
 //! pair is **gone**: it ran a second implementation of passkey UV
-//! inline with the role change. See `update.rs` for the split.
+//! inline with the role change. See `update.rs` for the history.
 //!
 //! All endpoints require `AdminAuth` in Phase 1 (the auth layer
 //! still uses vti-common's Role taxonomy until M1.10 introduces
