@@ -22,6 +22,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vti_vetting_pcs::{
@@ -35,6 +36,53 @@ use crate::server::AppState;
 
 /// Domain separation for spent-token keys.
 const KEY_DOMAIN: &[u8] = b"vtc-vetting-pcs-spent/v1\0";
+
+/// HKDF info for the tag-masking key. Versioned: changing it makes every stored pseudonym
+/// unlinkable from every earlier one, which is a migration, not a config change.
+const MASK_KEY_INFO: &[u8] = b"vtc-vetting-pcs-tagmask/v1";
+
+/// A tag, as this community stores it.
+///
+/// A tag is `usk·H₀(id)`. A quantum adversary takes one discrete log from it, recovers the
+/// vetter's key, and — with the community's own enrolment table — puts a name to every tag that
+/// vetter ever produced. The proof itself leaks nothing (it is simulatable), and the issuance
+/// transcript hides the identifier unconditionally; **the tag is the part worth not keeping**.
+///
+/// So nothing downstream keeps the group element. What is stored is `HKDF(key, salt =
+/// applicant, info = tag)` under a key derived from this community's master secret: stable for
+/// one applicant, so distinctness and a resubmission still compare equal, and worthless on its
+/// own to anybody holding a copy of the rows.
+///
+/// It is not a cure. A community that keeps both the key and the applicant DID can recompute
+/// the mask, so this raises the cost of a future deanonymisation rather than removing it. What
+/// removes it is retention: see `docs/design/vetting-hidden-vetters-pcs.md` §18.
+fn mask(key: &[u8; 32], applicant_did: &str, tag: &str) -> Result<String, ProtoError> {
+    let mut out = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(applicant_did.as_bytes()), key)
+        .expand(tag.as_bytes(), &mut out)
+        .map_err(|e| ProtoError::Serialization(format!("mask a tag: {e}")))?;
+    Ok(multibase::encode(multibase::Base::Base58Btc, out))
+}
+
+/// The masking key for this community, from the same master secret every other derived key
+/// comes from.
+///
+/// Absent when no credential signer is configured. That is not a reason to fall back to storing
+/// the raw tag — a deployment without a signer cannot admit anyone anyway — so the caller
+/// treats it as a failure.
+fn mask_key(state: &AppState) -> Result<[u8; 32], ProtoError> {
+    let signer = state.credential_signer.as_ref().ok_or_else(|| {
+        ProtoError::Serialization("credential signer not initialised — cannot mask tags".into())
+    })?;
+    let master = signer.ed25519_signing_key().ok_or_else(|| {
+        ProtoError::Serialization("the credential signer holds no Ed25519 key".into())
+    })?;
+    let mut key = [0u8; 32];
+    Hkdf::<Sha256>::new(None, &master.to_bytes())
+        .expand(MASK_KEY_INFO, &mut key)
+        .map_err(|e| ProtoError::Serialization(format!("derive the tag-mask key: {e}")))?;
+    Ok(key)
+}
 
 /// What a community publishes so that applicants can build a hidden submission and the VTC can
 /// check one. Public values only: the helper verification key, the token verification key, and
@@ -96,11 +144,27 @@ fn spent_key(label: &str, serial: &str) -> Vec<u8> {
 
 /// The rows already on disk for the serials one submission presents, plus the spends the
 /// verifier made against them. Synchronous, because verification is.
-#[derive(Default)]
+///
+/// The verifier hands it raw tags; what it stores are masked ones ([`mask`]). Equality is all
+/// this ledger needs — "same applicant, same vetter" for a resubmission — and equality survives
+/// the mask, so the row keeps what it has to and not the group element.
 struct PreloadedLedger {
     known: HashMap<(String, String), SpentToken>,
     /// What the verifier took this time, to be committed afterwards.
     taken: Vec<(String, String, SpentToken)>,
+    key: [u8; 32],
+    applicant: String,
+}
+
+impl PreloadedLedger {
+    fn new(key: [u8; 32], applicant: &str) -> Self {
+        Self {
+            known: HashMap::new(),
+            taken: Vec::new(),
+            key,
+            applicant: applicant.to_string(),
+        }
+    }
 }
 
 impl SpentLedger for PreloadedLedger {
@@ -115,6 +179,8 @@ impl SpentLedger for PreloadedLedger {
         id: &str,
         tag: &str,
     ) -> Result<SpendOutcome, ProtoError> {
+        let id = mask(&self.key, &self.applicant, id)?;
+        let tag = mask(&self.key, &self.applicant, tag)?;
         let key = (label.to_string(), serial.to_string());
         if let Some(existing) = self.known.get(&key) {
             // Same applicant, same vetter: a resubmission after `requestMore`; it counts once.
@@ -125,8 +191,8 @@ impl SpentLedger for PreloadedLedger {
             });
         }
         let row = SpentToken {
-            id: id.to_string(),
-            tag: tag.to_string(),
+            id,
+            tag,
             spent_at: Utc::now(),
         };
         self.known.insert(key.clone(), row.clone());
@@ -179,7 +245,8 @@ pub async fn decide(
     .map_err(|e| ProtoError::Serialization(e.to_string()))?;
 
     // 1. Read what is already spent, for exactly the serials this submission presents.
-    let mut ledger = PreloadedLedger::default();
+    let mask_key = mask_key(state)?;
+    let mut ledger = PreloadedLedger::new(mask_key, applicant_did);
     for (_, token) in &submission.statements {
         let serial = vti_vetting_pcs::scheme::scalar_text(&token.serial)?;
         let key = spent_key(&token.label, &serial);
@@ -213,7 +280,11 @@ pub async fn decide(
     // The ledger moves into the verifier for the call and comes back with what it took.
     let ledger = Box::new(ledger);
     verifier.tokens.set_ledger(ledger);
-    let decision = verifier.submit(&submission, now)?;
+    let mut decision = verifier.submit(&submission, now)?;
+    // What leaves this function is what gets stored and shown. The tag does not leave.
+    for statement in &mut decision.statements {
+        statement.issuer = mask(&mask_key, applicant_did, &statement.issuer)?;
+    }
     let taken = verifier
         .tokens
         .take_ledger()
@@ -280,7 +351,13 @@ mod tests {
             drip_per_tick: default_drip_per_tick(),
         };
 
-        let tv = TestVtc::builder().vtc_did(community).build().await;
+        // A signer, because masking a tag derives from the same master secret credential
+        // issuance does — a community that cannot sign cannot admit anyone either.
+        let tv = TestVtc::builder()
+            .vtc_did(community)
+            .with_signers(true)
+            .build()
+            .await;
 
         // No challenge yet: the proof verifies, and it is refused anyway.
         let err = decide(
@@ -328,10 +405,21 @@ mod tests {
             decision.evaluation.distinct_vetters(),
             f["expect"]["distinctVetters"].as_u64().unwrap() as usize
         );
-        // And the facts carry tags, not DIDs.
+        // The facts carry masked tags — never a DID, never the group element — and distinct
+        // vetters still read as distinct, which is the only property the counting rule needs.
+        let issuers: std::collections::HashSet<&str> = decision
+            .statements
+            .iter()
+            .map(|s| s.issuer.as_str())
+            .collect();
+        assert_eq!(issuers.len(), decision.statements.len(), "{issuers:?}");
+        let key = mask_key(&tv.state).unwrap();
         for s in &decision.statements {
             assert!(s.issuer.starts_with('z'), "{}", s.issuer);
             assert_ne!(s.issuer, applicant);
+            // Masked under this community's key and this applicant: re-masking is a no-op on
+            // an already-masked value, so the stored form is not the tag.
+            assert_ne!(s.issuer, mask(&key, applicant, &s.issuer).unwrap());
         }
 
         // Replayed: the challenge was spent by the first one.
@@ -350,6 +438,34 @@ mod tests {
         assert!(format!("{err}").contains("already used"), "{err}");
     }
 
+    /// The mask has to be a pseudonym, not an encoding: stable where equality is needed, and
+    /// different everywhere else.
+    #[test]
+    fn a_masked_tag_is_stable_per_applicant_and_nowhere_else() {
+        let a = mask(&MASK_KEY, APPLICANT, "zTagA").unwrap();
+        assert_eq!(a, mask(&MASK_KEY, APPLICANT, "zTagA").unwrap());
+        assert!(a.starts_with('z'), "{a}");
+        // The raw tag is not recoverable from, or present in, what is stored.
+        assert!(!a.contains("zTagA"));
+        // Another vetter, another applicant, another community's key: all different.
+        assert_ne!(a, mask(&MASK_KEY, APPLICANT, "zTagB").unwrap());
+        assert_ne!(
+            a,
+            mask(&MASK_KEY, "did:key:z6MkSomeoneElse", "zTagA").unwrap()
+        );
+        assert_ne!(a, mask(&[8u8; 32], APPLICANT, "zTagA").unwrap());
+    }
+
+    /// `vetting::HIDDEN_VETTING_MEMBER` is spelled by hand so that redaction works with the
+    /// feature off. This is the pin that keeps the two spellings one spelling.
+    #[test]
+    fn the_extensions_member_matches_the_crates_own() {
+        assert_eq!(
+            super::super::HIDDEN_VETTING_MEMBER,
+            vti_vetting_pcs::wire::EXTENSIONS_MEMBER
+        );
+    }
+
     #[test]
     fn spent_keys_separate_labels_and_serials() {
         let a = spent_key("token/2026-09", "zSerial");
@@ -363,14 +479,18 @@ mod tests {
         );
     }
 
+    const MASK_KEY: [u8; 32] = [9u8; 32];
+    const APPLICANT: &str = "did:key:z6MkBobsJoinDid";
+
     #[test]
     fn a_preloaded_row_for_another_applicant_is_a_double_spend() {
-        let mut ledger = PreloadedLedger::default();
+        let mut ledger = PreloadedLedger::new(MASK_KEY, APPLICANT);
+        // A stored row holds masked values, which is what the ledger compares against.
         ledger.known.insert(
             ("token/2026-09".into(), "zSerial".into()),
             SpentToken {
-                id: "zAlice".into(),
-                tag: "zTagA".into(),
+                id: mask(&MASK_KEY, APPLICANT, "zAlice").unwrap(),
+                tag: mask(&MASK_KEY, APPLICANT, "zTagA").unwrap(),
                 spent_at: Utc::now(),
             },
         );

@@ -31,6 +31,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use vti_common::audit::{AuditEvent, HiddenVetterEnrolledData, HiddenVetterTokensIssuedData};
 use vti_common::error::AppError;
 
 use vti_vetting_pcs::{
@@ -238,6 +239,7 @@ pub async fn enrol(
     >(&pre)
     .map_err(|e| AppError::Internal(format!("encode pre-credential: {e}")))?;
 
+    let rotation = !record.labels.is_empty();
     record.id = request.id.clone();
     record.labels.push((label.clone(), now));
     state
@@ -245,10 +247,33 @@ pub async fn enrol(
         .insert(enrol_key(member_did), &record)
         .await?;
 
+    // Audited after the record, so the log never claims an issuance the store did not keep.
+    // The payload carries the label, never the identifier: the enrolment row is already one
+    // half of a future deanonymisation (design §18) and the audit log holds no second copy.
+    audit(state)?
+        .write(
+            community_did,
+            Some(member_did),
+            AuditEvent::HiddenVetterEnrolled(HiddenVetterEnrolledData {
+                label: label.clone(),
+                rotation,
+            }),
+        )
+        .await?;
+
     Ok(RootCredentialWire {
         label,
         pre_credential,
     })
+}
+
+/// The audit writer, or a refusal. Minting without one would leave a community unable to say
+/// what it signed, which is the question an incident review asks first.
+fn audit(state: &AppState) -> Result<&vti_common::audit::AuditWriter, AppError> {
+    state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))
 }
 
 /// Serve one tick of the drip: at most the published rate, once per member per label per tick.
@@ -340,6 +365,20 @@ pub async fn drip(
                 issued: pre_credentials.len(),
                 issued_at: now,
             },
+        )
+        .await?;
+
+    // A constant drip says nothing about activity — that is the point of it — so this row
+    // accounts for what was signed and reveals nothing about who was vetted.
+    audit(state)?
+        .write(
+            community_did,
+            Some(member_did),
+            AuditEvent::HiddenVetterTokensIssued(HiddenVetterTokensIssuedData {
+                label: batch.label.clone(),
+                tick: batch.tick,
+                issued: pre_credentials.len(),
+            }),
         )
         .await?;
 
@@ -452,6 +491,7 @@ mod tests {
         let tv = TestVtc::builder()
             .vtc_did(COMMUNITY)
             .with_signers(true)
+            .with_audit(true)
             .build()
             .await;
         let state = tv.state;

@@ -423,6 +423,23 @@ pub enum AuditEvent {
 
     /// A vetter published or replaced their profile
     /// (`vtc/vetting/vetters/profile/0.1`). The actor is the vetter.
+    /// A vetter was issued a hidden-vetting class credential
+    /// (`vetter/<period>`) — the blind half of enrolment.
+    ///
+    /// Worth its own event because it is the one moment a community can see
+    /// the pairing at all: after this, the vetter's attestations carry a tag
+    /// and nothing else. An auditor reading "who can vet anonymously in this
+    /// period" reads these rows, and no later ones.
+    HiddenVetterEnrolled(HiddenVetterEnrolledData),
+
+    /// A vetter drew a tick of the attestation-token drip.
+    ///
+    /// The drip is deliberately constant — a vetter asks whether or not they
+    /// have vetted anyone — so these rows say nothing about activity, which is
+    /// the property they are there to preserve. They exist to account for what
+    /// the community signed.
+    HiddenVetterTokensIssued(HiddenVetterTokensIssuedData),
+
     VetterProfileUpdated(VetterProfileUpdatedData),
 
     /// A vetter's profile was deleted because they no longer hold a live grant —
@@ -640,6 +657,8 @@ impl AuditEvent {
             Self::VettingStatementRevoked(..) => "VettingStatementRevoked",
             Self::VetterGranted(..) => "VetterGranted",
             Self::VetterAutoGranted(..) => "VetterAutoGranted",
+            Self::HiddenVetterEnrolled(..) => "HiddenVetterEnrolled",
+            Self::HiddenVetterTokensIssued(..) => "HiddenVetterTokensIssued",
             Self::VetterProfileUpdated(..) => "VetterProfileUpdated",
             Self::VetterProfileDeleted(..) => "VetterProfileDeleted",
             Self::VetterGrantResent(..) => "VetterGrantResent",
@@ -1548,6 +1567,34 @@ pub struct VetterGrantedData {
     pub endorsement_id: String,
     /// The grant's slot on the `Revocation` status list.
     pub status_list_index: u32,
+}
+
+/// Payload for [`AuditEvent::HiddenVetterEnrolled`].
+///
+/// Deliberately carries no PCS identifier. The enrolment record binding a
+/// member to their identifier is the other half of a future deanonymisation
+/// (see the hidden-vetting design, §18); the audit log does not need to hold a
+/// second copy of it to answer what it is asked.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterEnrolledData {
+    /// The class label issued under, e.g. `vetter/2026-09`.
+    pub label: String,
+    /// Whether this member already held a credential under an earlier label —
+    /// a rotation rather than a first enrolment.
+    pub rotation: bool,
+}
+
+/// Payload for [`AuditEvent::HiddenVetterTokensIssued`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterTokensIssuedData {
+    /// The token label served, e.g. `token/2026-09`.
+    pub label: String,
+    /// The vetter's own schedule counter for this label.
+    pub tick: u32,
+    /// How many tokens were signed. Never more than the published drip rate.
+    pub issued: usize,
 }
 
 /// Payload for [`AuditEvent::VetterProfileUpdated`].

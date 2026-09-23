@@ -28,6 +28,50 @@
 //! separately signed (VTI-CMP-070): distinct vetters are distinct *members*.
 
 pub mod auto_grant;
+/// The member of a join submission's `extensions` a hidden-vetting proof rides in.
+///
+/// Spelled here rather than imported so that [`redact_hidden_submission`] runs whether or not
+/// this build implements the suite: a community that never verifies one still has no reason to
+/// keep it. `vetting::pcs`'s tests pin it against the crate's own constant.
+pub const HIDDEN_VETTING_MEMBER: &str = "hiddenVetting";
+
+/// Replace a hidden-vetting proof with a digest of itself, once it has been decided.
+///
+/// A proof is evidence for exactly one decision, and after that it is a liability: it carries
+/// the tags, and a tag is one discrete log from the vetter who made it (`docs/design/
+/// vetting-hidden-vetters-pcs.md` §18). The facts row is what every reader downstream actually
+/// uses; the submission is not read again.
+///
+/// What stays is enough to answer "was this decided on the evidence we think" — the suite, the
+/// size, and a SHA-256 of the canonical bytes — and nothing that links a vetter to anything.
+///
+/// Returns true when there was a proof to redact.
+pub fn redact_hidden_submission(extensions: &mut JsonValue) -> bool {
+    let Some(obj) = extensions.as_object_mut() else {
+        return false;
+    };
+    let Some(proof) = obj.get(HIDDEN_VETTING_MEMBER) else {
+        return false;
+    };
+    let bytes = serde_json::to_vec(proof).unwrap_or_default();
+    let suite = proof
+        .get("suite")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+    obj.insert(
+        HIDDEN_VETTING_MEMBER.to_string(),
+        serde_json::json!({
+            "redacted": true,
+            "suite": suite,
+            "bytes": bytes.len(),
+            "sha256": digest,
+        }),
+    );
+    true
+}
+
 /// Hidden-vetter admission (ZKP), development branch `zkp-pcs`.
 #[cfg(feature = "vetting-pcs")]
 pub mod pcs;
@@ -505,6 +549,46 @@ pub(crate) async fn vetter_eligible(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A decided proof is replaced by a digest of itself: enough to say what was decided on,
+    /// nothing that links a vetter.
+    #[test]
+    fn a_decided_hidden_proof_is_redacted_to_a_digest() {
+        let mut extensions = json!({
+            "requirementsDigest": "zQmDigest",
+            HIDDEN_VETTING_MEMBER: {
+                "suite": "ps-ddh-bls12381",
+                "id": "z7Applicant",
+                "proof": "zTheWholeProofWithTagsInside",
+                "statements": [{ "meta": {}, "token": {} }],
+            },
+        });
+        assert!(redact_hidden_submission(&mut extensions));
+
+        let left = &extensions[HIDDEN_VETTING_MEMBER];
+        assert_eq!(left["redacted"], json!(true));
+        assert_eq!(left["suite"], json!("ps-ddh-bls12381"));
+        assert!(left["bytes"].as_u64().unwrap() > 0);
+        assert_eq!(left["sha256"].as_str().unwrap().len(), 64);
+        // Nothing of the proof survives.
+        let text = serde_json::to_string(&extensions).unwrap();
+        assert!(!text.contains("zTheWholeProofWithTagsInside"), "{text}");
+        assert!(!text.contains("z7Applicant"), "{text}");
+        // Everything beside it does.
+        assert_eq!(extensions["requirementsDigest"], json!("zQmDigest"));
+    }
+
+    /// A named-path submission has nothing to redact, and is left exactly as it was.
+    #[test]
+    fn redaction_leaves_a_named_submission_alone() {
+        let before = json!({ "requirementsDigest": "zQmDigest" });
+        let mut after = before.clone();
+        assert!(!redact_hidden_submission(&mut after));
+        assert_eq!(before, after);
+        // And a submission that is not an object at all is not a panic.
+        let mut odd = json!("not an object");
+        assert!(!redact_hidden_submission(&mut odd));
+    }
 
     /// A digest-shaped value per criterion id.
     fn digest(id: &str) -> String {
