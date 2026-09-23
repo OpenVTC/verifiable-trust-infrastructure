@@ -38,14 +38,14 @@
 use std::num::NonZeroU64;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::persona::facet::delete::v1_0::{
-    ExpectedVersion as FacetDeleteExpectedVersion, Payload as FacetDeletePayload,
-    Ulid as FacetDeleteUlid,
+use trust_tasks_rs::specs::persona::world::delete::v1_0::{
+    ExpectedVersion as WorldDeleteExpectedVersion, Payload as WorldDeletePayload,
+    Ulid as WorldDeleteUlid,
 };
-use trust_tasks_rs::specs::persona::facet::list::v1_0::Payload as FacetListPayload;
-use trust_tasks_rs::specs::persona::facet::put::v1_0::{
-    ExpectedVersion as FacetPutExpectedVersion, FacetColour, Payload as FacetPutPayload,
-    PayloadIcon as FacetPutIcon, PayloadName as FacetPutName, Ulid as FacetUlid,
+use trust_tasks_rs::specs::persona::world::list::v1_0::Payload as WorldListPayload;
+use trust_tasks_rs::specs::persona::world::put::v1_0::{
+    ExpectedVersion as WorldPutExpectedVersion, Payload as WorldPutPayload,
+    PayloadIcon as WorldPutIcon, PayloadName as WorldPutName, Ulid as WorldUlid, WorldColour,
 };
 use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::persona::{
@@ -857,12 +857,12 @@ pub async fn cmd_world_list(
     limit: Option<NonZeroU64>,
     cursor: Option<String>,
 ) -> CmdResult {
-    let mut payload = FacetListPayload::default();
+    let mut payload = WorldListPayload::default();
     if let Some(limit) = limit {
         payload.limit = limit;
     }
     payload.cursor = cursor.map(|c| c.parse()).transpose().map_err(to_err)?;
-    let result = client.persona_facet_list(payload).await?;
+    let result = client.persona_world_list(payload).await?;
     print_result("Worlds:", &serde_json::to_value(result)?)
 }
 
@@ -879,41 +879,41 @@ pub async fn cmd_world_put(
     icon: Option<String>,
     face_ids: Vec<String>,
     attribute_ids: Vec<String>,
-    facet_id: Option<String>,
+    world_id: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
-    let mut builder = FacetPutPayload::builder()
-        .name(name.parse::<FacetPutName>().map_err(to_err)?)
-        .colour(colour.parse::<FacetColour>().map_err(to_err)?)
+    let mut builder = WorldPutPayload::builder()
+        .name(name.parse::<WorldPutName>().map_err(to_err)?)
+        .colour(colour.parse::<WorldColour>().map_err(to_err)?)
         .face_ids(ulids(face_ids)?)
         .attribute_ids(ulids(attribute_ids)?);
     if let Some(icon) = icon {
-        builder = builder.icon(Some(icon.parse::<FacetPutIcon>().map_err(to_err)?));
+        builder = builder.icon(Some(icon.parse::<WorldPutIcon>().map_err(to_err)?));
     }
-    if let Some(id) = facet_id {
-        builder = builder.facet_id(Some(id.parse::<FacetUlid>().map_err(to_err)?));
+    if let Some(id) = world_id {
+        builder = builder.world_id(Some(id.parse::<WorldUlid>().map_err(to_err)?));
     }
     if let Some(v) = expected_version {
-        builder = builder.expected_version(Some(FacetPutExpectedVersion(v)));
+        builder = builder.expected_version(Some(WorldPutExpectedVersion(v)));
     }
-    let payload: FacetPutPayload = builder.try_into().map_err(to_err)?;
-    let result = client.persona_facet_put(payload).await?;
+    let payload: WorldPutPayload = builder.try_into().map_err(to_err)?;
+    let result = client.persona_world_put(payload).await?;
     print_result("World:", &serde_json::to_value(result)?)
 }
 
 /// `persona world delete` — unname a world, leaving its members where they are.
 pub async fn cmd_world_delete(
     client: &VtaClient,
-    facet_id: String,
+    world_id: String,
     expected_version: Option<u64>,
 ) -> CmdResult {
-    let mut builder = FacetDeletePayload::builder()
-        .facet_id(facet_id.parse::<FacetDeleteUlid>().map_err(to_err)?);
+    let mut builder = WorldDeletePayload::builder()
+        .world_id(world_id.parse::<WorldDeleteUlid>().map_err(to_err)?);
     if let Some(v) = expected_version {
-        builder = builder.expected_version(Some(FacetDeleteExpectedVersion(v)));
+        builder = builder.expected_version(Some(WorldDeleteExpectedVersion(v)));
     }
-    let payload: FacetDeletePayload = builder.try_into().map_err(to_err)?;
-    let result = client.persona_facet_delete(payload).await?;
+    let payload: WorldDeletePayload = builder.try_into().map_err(to_err)?;
+    let result = client.persona_world_delete(payload).await?;
     print_result("Deleted:", &serde_json::to_value(result)?)
 }
 
@@ -927,10 +927,10 @@ pub async fn cmd_claim_types(client: &VtaClient) -> CmdResult {
 ///
 /// The generated newtype's error says only "does not match pattern", which is
 /// unhelpful when a flag was repeated six times.
-fn ulids(ids: Vec<String>) -> Result<Vec<FacetUlid>, Box<dyn std::error::Error>> {
+fn ulids(ids: Vec<String>) -> Result<Vec<WorldUlid>, Box<dyn std::error::Error>> {
     ids.into_iter()
         .map(|id| {
-            id.parse::<FacetUlid>()
+            id.parse::<WorldUlid>()
                 .map_err(|e| format!("not an id: {id} ({e})").into())
         })
         .collect()
@@ -1029,7 +1029,7 @@ pub async fn cmd_local_binding_set(
 
 #[cfg(test)]
 mod world_tests {
-    use super::FacetColour;
+    use super::WorldColour;
 
     /// The other half of the guard in `pnm-cli`'s `world_colour_tests`: those
     /// tokens are the ones this crate parses. Split across the two because
@@ -1041,7 +1041,7 @@ mod world_tests {
             "slate", "indigo", "teal", "moss", "sand", "clay", "rose", "plum",
         ] {
             assert!(
-                token.parse::<FacetColour>().is_ok(),
+                token.parse::<WorldColour>().is_ok(),
                 "{token} is not a colour the specification names",
             );
         }

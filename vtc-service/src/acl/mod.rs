@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod console_key;
 pub mod elevation;
 pub mod entry;
 pub mod role;

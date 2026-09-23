@@ -2,6 +2,57 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.22.1...vta-cli-common-v0.23.0) — 2026-09-23
+
+
+### Added
+
+- **persona**: Worlds on the wire, and a narrow read of one attribute ([#1690](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1690))
+
+Takes trust-tasks-rs 0.22, which has been unreachable since 0.21.21:
+  affinidi-messaging-sdk required ^0.21.20 and `MediatorAcl` crosses that
+  SDK's API, so a graph holding both versions failed to compile rather than
+  merely carrying a duplicate. affinidi/affinidi-tdk-rs#885 moved the
+  messaging crates; this takes the line they are now on. One
+  `trust-tasks-rs`, one `affinidi-messaging-sdk`, one `affinidi-tdk`.
+
+  **Worlds.** `persona/facet/*` is `persona/world/*`, `facetId` is
+  `worldId`, and `correlation/analyze` takes a 1.1 for its three renamed
+  members. `face` and `facet` shared a stem while naming different things —
+  a projection of the pool, and an arrangement of those projections — and
+  every UI had already resolved it by saying "world" on screen, which left
+  the collision live for anyone reading both.
+
+  The retired spellings stay routable for a release and answer in their own
+  words: `facetId` for `worldId`, `facets` for `worlds`, `crossesFacets`
+  for `crossesWorlds`. A document already issued against one still
+  validates, and refusing it would break a caller for a rename that costs
+  it nothing. The whole alias is marked for deletion in one commit.
+
+  **`persona/attribute/get`.** Reading one value meant
+  `persona/attribute/list` with a type prefix, filtered by the caller — so
+  revealing one email address decrypted every email address the holder has,
+  and the audit row recorded a listing of the pool rather than a decision
+  about one fact. `PersonaStore::get_attribute` applies exactly what a
+  listing applies: visibility, retention, credential re-derivation.
+  `versionPurged` is distinct from `notFound` because the attribute is
+  still there, and `retainedVersions` lets a holder see what purging would
+  take away rather than deciding blind.
+
+  Two latent defects, both found by the new tests:
+
+  - `correlation/analyze/1.0` was already answering with 1.1's member
+    names. Nothing noticed because 1.1 did not exist.
+  - A world with no faces and no attributes serialised without `faceIds`
+    and `attributeIds`, which its own response schema requires, so listing
+    an empty one returned a 500. `skip_serializing_if` on a required
+    member; no test had made an empty one.
+
+  The `pf:` storage prefix is unchanged — it is an opaque key prefix, not
+  the noun, and renaming it would orphan every world already stored.
+
+
+
 ## [0.22.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.22.0...vta-cli-common-v0.22.1) — 2026-09-23
 
 

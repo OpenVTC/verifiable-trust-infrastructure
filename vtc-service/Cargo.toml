@@ -133,7 +133,7 @@ vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
 predicate-credential-system = { version = "0.1.0", path = "../vendor/predicate-credential-system", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.2" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.23", features = [
+vti-common = { path = "../vti-common", version = "0.24", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -151,7 +151,7 @@ vti-common = { path = "../vti-common", version = "0.23", features = [
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.4" }
-vta-sdk = { path = "../vta-sdk", version = "0.50", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.51", features = [
   "didcomm",
   "session",
   "config-session",
@@ -239,7 +239,7 @@ affinidi-messaging-didcomm = "0.15"
 # mediator-side twin of the client-side failure this crate's TSP work is about.
 # Always on (not conditioned on this crate's `tsp`): the harness is test-only,
 # and a mediator that can route TSP is harmless to the DIDComm suite.
-affinidi-messaging-test-mediator = { version = "0.9", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.10", optional = true, features = [
     "tsp",
 ] }
 tokio-util = { workspace = true, features = ["rt"] }

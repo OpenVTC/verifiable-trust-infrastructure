@@ -992,6 +992,10 @@ pub const TASK_VTA_MEMORY_DELETE_0_1: &str = "https://trusttasks.org/spec/vta/me
 pub const TASK_PERSONA_ATTRIBUTE_PUT_1_0: &str =
     "https://trusttasks.org/spec/persona/attribute/put/1.0";
 
+/// `spec/persona/attribute/get/1.0`
+pub const TASK_PERSONA_ATTRIBUTE_GET_1_0: &str =
+    "https://trusttasks.org/spec/persona/attribute/get/1.0";
+
 /// `spec/persona/attribute/list/1.0`
 pub const TASK_PERSONA_ATTRIBUTE_LIST_1_0: &str =
     "https://trusttasks.org/spec/persona/attribute/list/1.0";
@@ -1044,13 +1048,34 @@ pub const TASK_PERSONA_PROFILE_LIST_1_0: &str =
 pub const TASK_PERSONA_PROFILE_DELETE_1_0: &str =
     "https://trusttasks.org/spec/persona/profile/delete/1.0";
 
-/// `spec/persona/facet/put/1.0`
+/// `spec/persona/world/put/1.0`
+pub const TASK_PERSONA_WORLD_PUT_1_0: &str = "https://trusttasks.org/spec/persona/world/put/1.0";
+
+/// `spec/persona/world/list/1.0`
+pub const TASK_PERSONA_WORLD_LIST_1_0: &str = "https://trusttasks.org/spec/persona/world/list/1.0";
+
+/// `spec/persona/world/delete/1.0`
+pub const TASK_PERSONA_WORLD_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/persona/world/delete/1.0";
+
+// The retired `persona/facet/*` spellings of the three above. An arrangement of
+// faces is a **world**; `facet` shared a stem with `face` while naming
+// something else. The specifications are retired rather than deleted
+// (`supersededBy`), so a document already issued against one still validates,
+// and an agent keeps routing it for a release. New work uses the constants
+// above; these exist so a client that has not moved yet is answered rather than
+// refused, and they go when the window closes.
+
+/// `spec/persona/facet/put/1.0` — retired, superseded by
+/// [`TASK_PERSONA_WORLD_PUT_1_0`].
 pub const TASK_PERSONA_FACET_PUT_1_0: &str = "https://trusttasks.org/spec/persona/facet/put/1.0";
 
-/// `spec/persona/facet/list/1.0`
+/// `spec/persona/facet/list/1.0` — retired, superseded by
+/// [`TASK_PERSONA_WORLD_LIST_1_0`].
 pub const TASK_PERSONA_FACET_LIST_1_0: &str = "https://trusttasks.org/spec/persona/facet/list/1.0";
 
-/// `spec/persona/facet/delete/1.0`
+/// `spec/persona/facet/delete/1.0` — retired, superseded by
+/// [`TASK_PERSONA_WORLD_DELETE_1_0`].
 pub const TASK_PERSONA_FACET_DELETE_1_0: &str =
     "https://trusttasks.org/spec/persona/facet/delete/1.0";
 
@@ -1094,7 +1119,16 @@ pub const TASK_PERSONA_DISCLOSURE_PRESENT_1_0: &str =
 pub const TASK_PERSONA_DISCLOSURE_HISTORY_1_0: &str =
     "https://trusttasks.org/spec/persona/disclosure/history/1.0";
 
-/// `spec/persona/correlation/analyze/1.0`
+/// `spec/persona/correlation/analyze/1.1`
+///
+/// 1.1 renames three response members and nothing else: `facetId`, `facetIds`
+/// and `crossesFacets` are `worldId`, `worldIds` and `crossesWorlds`.
+pub const TASK_PERSONA_CORRELATION_ANALYZE_1_1: &str =
+    "https://trusttasks.org/spec/persona/correlation/analyze/1.1";
+
+/// `spec/persona/correlation/analyze/1.0` — retired, superseded by
+/// [`TASK_PERSONA_CORRELATION_ANALYZE_1_1`]. Answered for a release, with the
+/// response members spelled the way the version asked for them.
 pub const TASK_PERSONA_CORRELATION_ANALYZE_1_0: &str =
     "https://trusttasks.org/spec/persona/correlation/analyze/1.0";
 
@@ -2197,6 +2231,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_APP_STATE_PUT_MANY_1_0,
     // Persona slice — the holder's own identity.
     TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+    TASK_PERSONA_ATTRIBUTE_GET_1_0,
     TASK_PERSONA_ATTRIBUTE_LIST_1_0,
     TASK_PERSONA_ATTRIBUTE_DELETE_1_0,
     TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
@@ -2213,6 +2248,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_FACET_PUT_1_0,
     TASK_PERSONA_FACET_LIST_1_0,
     TASK_PERSONA_FACET_DELETE_1_0,
+    TASK_PERSONA_WORLD_PUT_1_0,
+    TASK_PERSONA_WORLD_LIST_1_0,
+    TASK_PERSONA_WORLD_DELETE_1_0,
     TASK_PERSONA_BINDING_SET_1_0,
     TASK_PERSONA_BINDING_GET_1_0,
     TASK_PERSONA_BINDING_LIST_1_0,
@@ -2224,6 +2262,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_DISCLOSURE_PRESENT_1_0,
     TASK_PERSONA_DISCLOSURE_HISTORY_1_0,
     TASK_PERSONA_CORRELATION_ANALYZE_1_0,
+    TASK_PERSONA_CORRELATION_ANALYZE_1_1,
     TASK_PERSONA_RENDERERS_LIST_1_0,
     TASK_PERSONA_CLAIM_TYPES_LIST_1_0,
     TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,

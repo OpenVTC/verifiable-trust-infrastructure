@@ -20,6 +20,11 @@
 //!
 //! 3. **Dispatch** — for each `Pending` row where
 //!    `now >= next_attempt_at`:
+//!    - Resolve what the job does from current state: a member is
+//!      published only while their `publish_consent` is `true`
+//!      (and `registry.rego`'s `publish_on_join` agrees, on first
+//!      publication); a member who withdrew consent has their
+//!      record removed. See `MembershipSyncer::resolve`.
 //!    - Flip to `InFlight`.
 //!    - Call the appropriate `TrustRegistryClient` method.
 //!    - On success: delete the row + emit
@@ -56,11 +61,13 @@ use vti_common::store::KeyspaceHandle;
 use super::client::{RegistryError, TrustRegistryClient};
 use super::health::RegistryHealth;
 use super::model::{RegistryRecord, SyncJob, SyncJobKind, SyncJobState};
-use super::policy::{PublishOnJoinDecision, evaluate_publish_on_join};
+use super::policy::{PublishOnJoinDecision, evaluate_publish_on_join, publish_input};
 use super::storage::{
-    delete_sync_job, get_sync_cursor, list_sync_jobs, set_sync_cursor, store_record, store_sync_job,
+    delete_sync_job, get_record, get_sync_cursor, list_sync_jobs, set_sync_cursor, store_record,
+    store_sync_job,
 };
 use super::tail::walk;
+use crate::members::get_member;
 
 /// Default tick interval. Mirrors the spec §8.3 ≥-1h-behind
 /// threshold by being well under it.
@@ -76,6 +83,11 @@ pub struct MembershipSyncer {
     registry_records_ks: KeyspaceHandle,
     policies_ks: KeyspaceHandle,
     active_policies_ks: KeyspaceHandle,
+    /// The member rows — read at dispatch time for
+    /// [`crate::members::Member::publish_consent`], the member's own
+    /// consent to publication. Required: a syncer that cannot see
+    /// consent cannot honour it.
+    members_ks: KeyspaceHandle,
     client: Arc<dyn TrustRegistryClient>,
     health: RegistryHealth,
     audit_writer: Option<AuditWriter>,
@@ -88,6 +100,22 @@ pub struct MembershipSyncer {
     rtbf_batch_window_hours: u64,
 }
 
+/// What one sync job does against the registry, decided at dispatch time
+/// by `MembershipSyncer::resolve`.
+#[derive(Debug, Clone, PartialEq)]
+enum SyncAction {
+    /// Write this record (an `Active` publication or a `Departed` update).
+    Publish(RegistryRecord),
+    /// Remove the member's record — a `DeleteMember` job.
+    Delete,
+    /// Remove the record of a live member who does not (or no longer)
+    /// consent to publication. The same registry call as [`Self::Delete`];
+    /// kept distinct so the log says why.
+    Withdraw,
+    /// Nothing to do; the job completes without a registry call.
+    Skip(&'static str),
+}
+
 impl MembershipSyncer {
     /// Construct a fresh syncer. `actor_did` is the VTC's
     /// own DID — used as the `actor_did` on
@@ -96,7 +124,9 @@ impl MembershipSyncer {
     /// `vtc_service::policy` storage keyspaces — the syncer
     /// re-resolves the active `registry.rego` on every dispatch
     /// so a freshly-uploaded policy takes effect on the next
-    /// tick (no warm-up required, no stale cache).
+    /// tick (no warm-up required, no stale cache). `members_ks` is
+    /// read on every publish decision for the member's
+    /// `publish_consent`, for the same reason.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         audit_ks: KeyspaceHandle,
@@ -105,6 +135,7 @@ impl MembershipSyncer {
         registry_records_ks: KeyspaceHandle,
         policies_ks: KeyspaceHandle,
         active_policies_ks: KeyspaceHandle,
+        members_ks: KeyspaceHandle,
         client: Arc<dyn TrustRegistryClient>,
         health: RegistryHealth,
         audit_writer: Option<AuditWriter>,
@@ -117,6 +148,7 @@ impl MembershipSyncer {
             registry_records_ks,
             policies_ks,
             active_policies_ks,
+            members_ks,
             client,
             health,
             audit_writer,
@@ -277,16 +309,29 @@ impl MembershipSyncer {
     /// never propagate — every error is captured on the job
     /// row + the audit envelope.
     async fn dispatch_one(&self, mut job: SyncJob) {
-        // M3.5: consult `registry.rego.publish_on_join` for
-        // PublishMember jobs *at dispatch time* — the operator
-        // may have flipped the policy between enqueue and tick.
-        // Resolving here means a fresh policy upload takes
-        // effect on the next tick without bouncing the daemon
-        // or draining the queue manually. Other job kinds
-        // (UpdateMember, MarkDeparted, DeleteMember) bypass the
-        // gate: `publish_on_join` only governs new-member
-        // publication, not lifecycle updates / departures.
-        if job.kind == SyncJobKind::PublishMember && self.policy_skips_publish().await {
+        // Decide what this job does *at dispatch time*, from current state:
+        // the member's consent and the active `registry.rego` may both have
+        // changed since the job was enqueued, and a retried or replayed job
+        // must not act on a stale answer. See [`Self::resolve`].
+        let action = match self.resolve(&job).await {
+            Ok(action) => action,
+            Err(e) => {
+                // A local read failed (member row / mirror). Not the
+                // registry's fault, so health is untouched; the retry is
+                // bounded by the job's own backoff + max attempts.
+                warn!(error = %e, job_id = %job.id, "could not resolve sync job — will retry");
+                job.record_failure(format!("{e}"));
+                if let Err(s) = store_sync_job(&self.sync_queue_ks, &job).await {
+                    warn!(error = %s, job_id = %job.id, "failed to persist retry state");
+                }
+                if job.state == SyncJobState::Failed {
+                    self.emit_outcome(&job, false);
+                }
+                return;
+            }
+        };
+
+        if let SyncAction::Skip(reason) = action {
             // Delete first, audit second. Emitting the success
             // envelope before the delete used to mean: if the
             // delete failed (transient fjall error, etc.), the job
@@ -301,7 +346,7 @@ impl MembershipSyncer {
                 warn!(
                     error = %e,
                     job_id = %job.id,
-                    "failed to delete policy-skipped PublishMember job — will retry next tick"
+                    "failed to delete skipped sync job — will retry next tick"
                 );
                 return;
             }
@@ -309,10 +354,19 @@ impl MembershipSyncer {
             self.emit_outcome(&job, true);
             debug!(
                 job_id = %job.id,
+                kind = job.kind.as_str(),
                 did = %job.member_did,
-                "registry.rego.publish_on_join=false — skipping PublishMember"
+                reason,
+                "sync job skipped — nothing to publish"
             );
             return;
+        }
+        if action == SyncAction::Withdraw {
+            info!(
+                job_id = %job.id,
+                did = %job.member_did,
+                "member has not consented to publication but holds a registry record — removing it"
+            );
         }
 
         // Flip to InFlight + persist before the network call
@@ -324,14 +378,13 @@ impl MembershipSyncer {
             return;
         }
 
-        let outcome = self.run_call(&job).await;
+        let outcome = self.run_call(&job, &action).await;
         match outcome {
             Ok(()) => {
                 job.record_success();
-                // Mirror update: PublishMember + UpdateMember
-                // land as Active records; MarkDeparted lands
-                // as Departed; DeleteMember removes the row.
-                self.update_mirror(&job).await;
+                // Mirror update: a publish lands the record it
+                // wrote; a delete / withdrawal removes the row.
+                self.update_mirror(&job, &action).await;
                 self.health
                     .record_success(self.audit_writer.as_ref(), &self.actor_did)
                     .await;
@@ -406,8 +459,80 @@ impl MembershipSyncer {
         }
     }
 
+    /// Decide what `job` does against the registry, from the state as it
+    /// is **now**.
+    ///
+    /// Publication needs two answers, and they are not equal:
+    ///
+    /// 1. **The member's consent** — [`crate::members::Member::publish_consent`],
+    ///    the applicant's `registryConsent` on `vtc/join-requests/submit`
+    ///    (spec: *Consent/purpose*) or an admin `members/update` since. A
+    ///    hard floor enforced here, in code. Consent is the member's to
+    ///    give, not the community's, so no policy can publish a member who
+    ///    did not give it.
+    /// 2. **The operator's policy** — `registry.rego`'s `publish_on_join`,
+    ///    consulted only for a member who consented, and only on first
+    ///    publication. It may narrow; it cannot widen.
+    ///
+    /// | job | member | mirror holds a record | action |
+    /// |---|---|---|---|
+    /// | `DeleteMember` | any | any | delete |
+    /// | `MarkDeparted` | any | yes | publish `Departed` |
+    /// | `MarkDeparted` | any | no | skip — never published, so nothing to depart |
+    /// | `PublishMember` / `UpdateMember` | missing or removed | any | skip — the removal's own job owns the record |
+    /// | `PublishMember` / `UpdateMember` | live, no consent | yes | **withdraw** (delete the record) |
+    /// | `PublishMember` / `UpdateMember` | live, no consent | no | skip |
+    /// | `PublishMember` | live, consented | any | policy → publish `Active` / skip |
+    /// | `UpdateMember` | live, consented | no | policy → publish `Active` / skip (first publication) |
+    /// | `UpdateMember` | live, consented | yes | publish `Active` |
+    ///
+    /// The "mirror holds a record" column is the `registry_records` row the
+    /// syncer writes on every successful publish, i.e. what this community
+    /// believes it published.
+    async fn resolve(&self, job: &SyncJob) -> Result<SyncAction, AppError> {
+        let did = job.member_did.as_str();
+        match job.kind {
+            SyncJobKind::DeleteMember => Ok(SyncAction::Delete),
+            SyncJobKind::MarkDeparted => {
+                // A departure re-publishes the record as `Departed`. For a
+                // member who was never published — they did not consent, or
+                // the policy said no — that would disclose a membership at
+                // the moment it ends. Only transition what we published.
+                if get_record(&self.registry_records_ks, did).await?.is_none() {
+                    return Ok(SyncAction::Skip("departed member was never published"));
+                }
+                Ok(match RegistryRecord::for_job(job) {
+                    Some(record) => SyncAction::Publish(record),
+                    None => SyncAction::Delete,
+                })
+            }
+            SyncJobKind::PublishMember | SyncJobKind::UpdateMember => {
+                let Some(member) = get_member(&self.members_ks, did).await? else {
+                    return Ok(SyncAction::Skip("member no longer exists"));
+                };
+                if member.is_removed() {
+                    return Ok(SyncAction::Skip("member has departed"));
+                }
+                let published = get_record(&self.registry_records_ks, did).await?.is_some();
+                if !member.publish_consent {
+                    return Ok(if published {
+                        SyncAction::Withdraw
+                    } else {
+                        SyncAction::Skip("member has not consented to publication")
+                    });
+                }
+                let first_publication = job.kind == SyncJobKind::PublishMember || !published;
+                if first_publication && self.policy_skips_publish(did, member.publish_consent).await
+                {
+                    return Ok(SyncAction::Skip("registry.rego publish_on_join is false"));
+                }
+                Ok(SyncAction::Publish(RegistryRecord::fresh_active(did)))
+            }
+        }
+    }
+
     /// Resolve `data.vtc.registry.publish_on_join` against the
-    /// currently-active `registry.rego`.
+    /// currently-active `registry.rego`, for a member who consented.
     ///
     /// Three outcomes:
     /// - `Ok(SkipPublishOnJoin)` — operator policy explicitly
@@ -423,8 +548,14 @@ impl MembershipSyncer {
     ///   instead so the queue depth surfaces in
     ///   `/v1/health/diagnostics` and the operator can fix the
     ///   rego file before retrying.
-    async fn policy_skips_publish(&self) -> bool {
-        match evaluate_publish_on_join(&self.policies_ks, &self.active_policies_ks).await {
+    async fn policy_skips_publish(&self, member_did: &str, publish_consent: bool) -> bool {
+        match evaluate_publish_on_join(
+            &self.policies_ks,
+            &self.active_policies_ks,
+            publish_input(member_did, publish_consent),
+        )
+        .await
+        {
             Ok(PublishOnJoinDecision::SkipPublishOnJoin) => true,
             Ok(PublishOnJoinDecision::PublishOnJoin) => false,
             Err(e) => {
@@ -437,32 +568,34 @@ impl MembershipSyncer {
         }
     }
 
-    async fn run_call(&self, job: &SyncJob) -> Result<(), RegistryError> {
-        // `for_job` yields the record to publish for every kind except
-        // DeleteMember, which removes the member from the registry instead.
-        match RegistryRecord::for_job(job) {
-            Some(record) => self.client.publish_member(&record).await,
-            None => self.client.delete_member(&job.member_did).await,
+    async fn run_call(&self, job: &SyncJob, action: &SyncAction) -> Result<(), RegistryError> {
+        match action {
+            SyncAction::Publish(record) => self.client.publish_member(record).await,
+            SyncAction::Delete | SyncAction::Withdraw => {
+                self.client.delete_member(&job.member_did).await
+            }
+            // `dispatch_one` returns before dispatching a skip.
+            SyncAction::Skip(_) => Ok(()),
         }
     }
 
-    async fn update_mirror(&self, job: &SyncJob) {
-        // Mirror the same disposition the registry call applied (P2.7): a
-        // record to store for publish/update/departed, or a delete for
-        // DeleteMember.
-        match RegistryRecord::for_job(job) {
-            Some(record) => {
-                if let Err(e) = store_record(&self.registry_records_ks, &record).await {
+    async fn update_mirror(&self, job: &SyncJob, action: &SyncAction) {
+        // Mirror the same disposition the registry call applied (P2.7): the
+        // record a publish wrote, or a delete for a delete / withdrawal.
+        match action {
+            SyncAction::Publish(record) => {
+                if let Err(e) = store_record(&self.registry_records_ks, record).await {
                     warn!(error = %e, did = %job.member_did, "failed to update registry_records mirror");
                 }
             }
-            None => {
+            SyncAction::Delete | SyncAction::Withdraw => {
                 if let Err(e) =
                     super::storage::delete_record(&self.registry_records_ks, &job.member_did).await
                 {
                     warn!(error = %e, did = %job.member_did, "failed to delete registry_records mirror row");
                 }
             }
+            SyncAction::Skip(_) => {}
         }
     }
 
@@ -523,6 +656,7 @@ mod tests {
         let registry_records_ks = store.keyspace("registry_records").unwrap();
         let policies_ks = store.keyspace("policies").unwrap();
         let active_policies_ks = store.keyspace("active_policies").unwrap();
+        let members_ks = store.keyspace("members").unwrap();
         let key_store = AuditKeyStore::new(audit_key_ks);
         key_store.ensure_initial(&[0xAB; 32]).await.unwrap();
         let audit_writer = AuditWriter::new(audit_ks.clone(), key_store);
@@ -535,6 +669,7 @@ mod tests {
             registry_records_ks,
             policies_ks,
             active_policies_ks,
+            members_ks,
             client,
             RegistryHealth::new(),
             Some(audit_writer),
@@ -564,9 +699,72 @@ mod tests {
         .unwrap();
     }
 
+    /// A live member row with the given publication consent — what the admit
+    /// executor writes before the `MemberAdded` envelope.
+    async fn seed_member(syncer: &MembershipSyncer, did: &str, publish_consent: bool) {
+        let mut member = crate::members::Member::fresh(did);
+        member.publish_consent = publish_consent;
+        crate::members::store_member(&syncer.members_ks, &member)
+            .await
+            .unwrap();
+    }
+
+    /// An admin `members/update` of `publishConsent`: the row, then the
+    /// `MemberUpdated` envelope naming the field — the route's order.
+    async fn update_consent(syncer: &MembershipSyncer, did: &str, publish_consent: bool) {
+        seed_member(syncer, did, publish_consent).await;
+        let w = test_writer(&syncer.audit_ks).await;
+        w.write(
+            "did:key:zAdmin",
+            Some(did),
+            AuditEvent::MemberUpdated(vti_common::audit::MemberUpdatedData {
+                fields_changed: vec!["publishConsent".into()],
+                changes: vec![],
+            }),
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn test_writer(audit_ks: &KeyspaceHandle) -> AuditWriter {
+        // Leak the tempdir: the writer's key store must outlive this call.
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let aks = AuditKeyStore::new(store.keyspace("audit_key").unwrap());
+        aks.ensure_initial(&[0xAB; 32]).await.unwrap();
+        AuditWriter::new(audit_ks.clone(), aks)
+    }
+
+    async fn install_registry_policy(syncer: &MembershipSyncer, src: &str) {
+        use crate::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
+        use sha2::{Digest, Sha256};
+        let sha: [u8; 32] = Sha256::digest(src.as_bytes()).into();
+        let id = uuid::Uuid::new_v4();
+        let policy = Policy {
+            id,
+            purpose: PolicyPurpose::Registry,
+            rego_source: src.into(),
+            sha256: sha,
+            activated_at: Some(chrono::Utc::now()),
+            author_did: "did:key:test".into(),
+            created_at: chrono::Utc::now(),
+            version: 1,
+            name: None,
+            description: None,
+        };
+        store_policy(&syncer.policies_ks, &policy).await.unwrap();
+        set_active_policy_id(&syncer.active_policies_ks, PolicyPurpose::Registry, id)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn happy_path_drains_one_publish_job() {
         let (syncer, mock, _dir) = fixture().await;
+        seed_member(&syncer, "did:key:zA", true).await;
         write_member_added(&syncer.audit_ks, "did:key:zA").await;
 
         syncer.tick().await.unwrap();
@@ -596,6 +794,7 @@ mod tests {
     #[tokio::test]
     async fn transient_failure_bumps_attempts_and_keeps_job_pending() {
         let (syncer, mock, _dir) = fixture().await;
+        seed_member(&syncer, "did:key:zA", true).await;
         write_member_added(&syncer.audit_ks, "did:key:zA").await;
         mock.fail_next_publish(RegistryError::Transient("flaky".into()))
             .await;
@@ -612,6 +811,7 @@ mod tests {
     #[tokio::test]
     async fn permanent_failure_flips_to_failed_immediately() {
         let (syncer, mock, _dir) = fixture().await;
+        seed_member(&syncer, "did:key:zA", true).await;
         write_member_added(&syncer.audit_ks, "did:key:zA").await;
         mock.fail_next_publish(RegistryError::Permanent("bad input".into()))
             .await;
@@ -670,6 +870,9 @@ default publish_on_join := false
             .await
             .unwrap();
 
+        // The member consented, so it is the policy — not the consent
+        // floor — that skips here.
+        seed_member(&syncer, "did:key:zSkip", true).await;
         write_member_added(&syncer.audit_ks, "did:key:zSkip").await;
         syncer.tick().await.unwrap();
 
@@ -774,6 +977,7 @@ default publish_on_join := false
             registry_records_ks.clone(),
             policies_ks.clone(),
             active_policies_ks.clone(),
+            store.keyspace("members").unwrap(),
             client.clone(),
             RegistryHealth::new(),
             Some(broken_writer),
@@ -805,6 +1009,7 @@ default publish_on_join := false
             registry_records_ks.clone(),
             policies_ks.clone(),
             active_policies_ks.clone(),
+            store.keyspace("members").unwrap(),
             client,
             RegistryHealth::new(),
             Some(good_writer),
@@ -819,6 +1024,238 @@ default publish_on_join := false
         assert!(
             get_sync_cursor(&sync_cursor_ks).await.unwrap().is_some(),
             "cursor advances once the override is durably audited"
+        );
+    }
+
+    // ─── publish_consent is a floor no policy lowers ─────────────────────
+    //
+    // `registryConsent` on `vtc/join-requests/submit` is the applicant's
+    // consent to trust-registry publication (spec: Consent/purpose). The
+    // syncer publishes only members who gave it; `publish_on_join` narrows.
+
+    /// Registry state + mirror for one DID: (in the registry, in the mirror).
+    async fn published(
+        syncer: &MembershipSyncer,
+        mock: &MockRegistryClient,
+        did: &str,
+    ) -> (bool, bool) {
+        (
+            mock.snapshot().await.contains_key(did),
+            get_record(&syncer.registry_records_ks, did)
+                .await
+                .unwrap()
+                .is_some(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_member_who_did_not_consent_is_not_published_on_join() {
+        let (syncer, mock, _dir) = fixture().await;
+        // An explicit `publish_on_join := true` — and one that says yes to
+        // everyone regardless of the input. Neither publishes a refusal.
+        install_registry_policy(
+            &syncer,
+            "package vtc.registry\nimport rego.v1\ndefault publish_on_join := true\n",
+        )
+        .await;
+        seed_member(&syncer, "did:key:zYes", true).await;
+        seed_member(&syncer, "did:key:zNo", false).await;
+        write_member_added(&syncer.audit_ks, "did:key:zYes").await;
+        write_member_added(&syncer.audit_ks, "did:key:zNo").await;
+
+        syncer.tick().await.unwrap();
+
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zYes").await,
+            (true, true)
+        );
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zNo").await,
+            (false, false)
+        );
+        assert_eq!(
+            mock.call_counts().await.publish,
+            1,
+            "only the consenting member"
+        );
+        assert!(
+            list_sync_jobs(&syncer.sync_queue_ks)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a consent skip completes the job"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_policy_reading_publish_consent_sees_it_in_the_input() {
+        let (syncer, mock, _dir) = fixture().await;
+        // A policy that states the rule itself: publish iff the member
+        // consented. It sees `input.member.publishConsent`.
+        install_registry_policy(
+            &syncer,
+            "package vtc.registry\nimport rego.v1\ndefault publish_on_join := false\n\
+             publish_on_join if input.member.publishConsent == true\n",
+        )
+        .await;
+        seed_member(&syncer, "did:key:zYes", true).await;
+        write_member_added(&syncer.audit_ks, "did:key:zYes").await;
+
+        syncer.tick().await.unwrap();
+
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zYes").await,
+            (true, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn withdrawing_consent_removes_the_record() {
+        let (syncer, mock, _dir) = fixture().await;
+        seed_member(&syncer, "did:key:zA", true).await;
+        write_member_added(&syncer.audit_ks, "did:key:zA").await;
+        syncer.tick().await.unwrap();
+        assert_eq!(published(&syncer, &mock, "did:key:zA").await, (true, true));
+
+        update_consent(&syncer, "did:key:zA", false).await;
+        syncer.tick().await.unwrap();
+
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zA").await,
+            (false, false)
+        );
+        assert_eq!(mock.call_counts().await.delete, 1);
+        assert!(
+            list_sync_jobs(&syncer.sync_queue_ks)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn granting_consent_later_publishes_the_member() {
+        let (syncer, mock, _dir) = fixture().await;
+        seed_member(&syncer, "did:key:zA", false).await;
+        write_member_added(&syncer.audit_ks, "did:key:zA").await;
+        syncer.tick().await.unwrap();
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zA").await,
+            (false, false)
+        );
+
+        update_consent(&syncer, "did:key:zA", true).await;
+        syncer.tick().await.unwrap();
+
+        assert_eq!(published(&syncer, &mock, "did:key:zA").await, (true, true));
+    }
+
+    /// First publication is the policy's to narrow, whichever job asks: a
+    /// late grant (or a role change) must not route around
+    /// `publish_on_join := false`.
+    #[tokio::test]
+    async fn a_late_grant_still_answers_to_publish_on_join() {
+        let (syncer, mock, _dir) = fixture().await;
+        install_registry_policy(
+            &syncer,
+            "package vtc.registry\nimport rego.v1\ndefault publish_on_join := false\n",
+        )
+        .await;
+        seed_member(&syncer, "did:key:zA", false).await;
+        update_consent(&syncer, "did:key:zA", true).await;
+
+        syncer.tick().await.unwrap();
+
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zA").await,
+            (false, false)
+        );
+        assert_eq!(mock.call_counts().await.publish, 0);
+    }
+
+    /// A role change for a member who never consented must not publish
+    /// them — `UpdateMember` re-publishes an `Active` record.
+    #[tokio::test]
+    async fn a_role_change_does_not_publish_a_member_who_did_not_consent() {
+        let (syncer, mock, _dir) = fixture().await;
+        seed_member(&syncer, "did:key:zA", false).await;
+        store_sync_job(
+            &syncer.sync_queue_ks,
+            &SyncJob::fresh(SyncJobKind::UpdateMember, "did:key:zA"),
+        )
+        .await
+        .unwrap();
+
+        syncer.tick().await.unwrap();
+
+        assert_eq!(mock.call_counts().await.publish, 0);
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zA").await,
+            (false, false)
+        );
+    }
+
+    /// A departure re-publishes the record as `Departed`; for a member who
+    /// was never published that would disclose the membership as it ends.
+    #[tokio::test]
+    async fn a_departure_of_a_never_published_member_publishes_nothing() {
+        let (syncer, mock, _dir) = fixture().await;
+        let mut job = SyncJob::fresh(SyncJobKind::MarkDeparted, "did:key:zGone");
+        job.disposition = Some("tombstone".into());
+        store_sync_job(&syncer.sync_queue_ks, &job).await.unwrap();
+
+        syncer.tick().await.unwrap();
+
+        assert_eq!(mock.call_counts().await.publish, 0);
+        assert!(
+            list_sync_jobs(&syncer.sync_queue_ks)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A replay of the audit log (cursor reset) re-decides every member
+    /// against current consent. The legacy member here was published while
+    /// consent went unread — every member admitted before #1682 holds
+    /// `publish_consent = false` — and nothing has touched them since, so
+    /// the record survives until something re-decides it. A replay does:
+    /// the consenting member stays, the legacy member is removed.
+    #[tokio::test]
+    async fn a_replay_honours_current_consent() {
+        let (syncer, mock, _dir) = fixture().await;
+        seed_member(&syncer, "did:key:zYes", true).await;
+        seed_member(&syncer, "did:key:zLegacy", true).await;
+        write_member_added(&syncer.audit_ks, "did:key:zYes").await;
+        write_member_added(&syncer.audit_ks, "did:key:zLegacy").await;
+        syncer.tick().await.unwrap();
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zLegacy").await,
+            (true, true)
+        );
+
+        // The row as a pre-#1682 admission left it — no audit event, so no
+        // job: the published record is untouched by an ordinary tick.
+        seed_member(&syncer, "did:key:zLegacy", false).await;
+        syncer.tick().await.unwrap();
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zLegacy").await,
+            (true, true)
+        );
+
+        // Replay from the start of the audit log.
+        super::super::storage::clear_sync_cursor(&syncer.sync_cursor_ks)
+            .await
+            .unwrap();
+        syncer.tick().await.unwrap();
+
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zYes").await,
+            (true, true)
+        );
+        assert_eq!(
+            published(&syncer, &mock, "did:key:zLegacy").await,
+            (false, false)
         );
     }
 

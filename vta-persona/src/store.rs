@@ -118,6 +118,26 @@ pub struct Listing {
     pub withheld_sensitive: usize,
 }
 
+/// What [`PersonaStore::get_attribute`] found.
+///
+/// Three outcomes rather than an `Option`, because "no such attribute" and
+/// "that version is no longer held" are different answers to a caller: the
+/// second means the attribute is there and readable at its current version,
+/// and collapsing them would send a holder looking for a record that exists.
+#[derive(Clone, Debug)]
+pub enum AttributeRead {
+    Found {
+        /// Boxed because the other variants carry nothing, and an `Attribute`
+        /// is large enough that the enum would be sized by this one arm.
+        attribute: Box<Attribute>,
+        /// The value was held back by sensitivity, not absent.
+        withheld: bool,
+    },
+    NotFound,
+    /// The attribute exists; the version asked for has been purged.
+    RetainedGone,
+}
+
 /// Outcome of a delete. `existed` distinguishes a removal from a no-op.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Deleted {
@@ -437,6 +457,84 @@ impl PersonaStore {
     /// Stale credential-backed attributes are returned carrying their reason
     /// rather than omitted: a pool that looks smaller than it is would leave
     /// the holder unaware that a claim has stopped being presentable.
+    /// One attribute, by identifier, under the same rules a listing applies.
+    ///
+    /// The narrow read behind `persona/attribute/get`. It exists because the
+    /// alternative was a prefix listing filtered by the caller: to show one
+    /// value a client asked for every attribute sharing its vocabulary prefix,
+    /// values included, and the store obliged.
+    ///
+    /// Everything a listing does to a row, this does to the one row —
+    /// visibility, retention and re-derivation — because a read that answered
+    /// differently depending on which task asked would be a second set of
+    /// rules to keep in step. `withheld` says the value was held back by
+    /// sensitivity rather than absent, which a caller cannot otherwise tell.
+    ///
+    /// `version` reads a retained earlier version instead of the current one.
+    /// A version no longer held is [`RetainedGone`](AttributeRead::RetainedGone)
+    /// rather than a fall back to the current value: a caller asking what an
+    /// attribute said in March must not be handed April's answer.
+    pub async fn get_attribute(
+        &self,
+        attribute_id: &str,
+        version: Option<u64>,
+        values: ValueVisibility,
+    ) -> Result<AttributeRead, AppError> {
+        let Some(mut attribute) = self.get(attribute_id).await? else {
+            return Ok(AttributeRead::NotFound);
+        };
+        let retained = self.retained_versions(attribute_id).await?;
+
+        if let Some(want) = version
+            && want != attribute.version
+        {
+            let Some(earlier) = self
+                .ks
+                .get::<Attribute>(storage::retained_key(attribute_id, want))
+                .await?
+            else {
+                return Ok(AttributeRead::RetainedGone);
+            };
+            attribute = earlier;
+        }
+
+        let mut withheld = false;
+        match values {
+            ValueVisibility::Metadata => attribute.value = None,
+            ValueVisibility::Ordinary
+                if attribute.value.is_some()
+                    && claim_types::sensitivity_of(&attribute) == Sensitivity::High =>
+            {
+                withheld = true;
+                attribute.value = None;
+            }
+            ValueVisibility::Ordinary | ValueVisibility::All => {}
+        }
+
+        // As in a listing: a credential-backed value is re-derived before it is
+        // shown, and a value this read withheld stays withheld — deriving is
+        // not a reason to disclose.
+        match self.rederive(&attribute.provenance).await? {
+            None => {}
+            Some(crate::Derived::Value(v)) => {
+                if attribute.value.is_some() {
+                    attribute.value = Some(v);
+                }
+            }
+            Some(crate::Derived::Stale(reason)) => {
+                attribute.value = None;
+                attribute.stale = Some(true);
+                attribute.stale_reason = Some(reason);
+            }
+        }
+
+        attribute.retained_versions = retained;
+        Ok(AttributeRead::Found {
+            attribute: Box::new(attribute),
+            withheld,
+        })
+    }
+
     pub async fn list_attributes(
         &self,
         type_prefix: Option<&str>,

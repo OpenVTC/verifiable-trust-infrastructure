@@ -30,6 +30,8 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   EmergencyBootstrapInvoked: "Emergency bootstrap triggered",
   AdminPasskeyRegistered: "Admin registered a passkey",
   AdminPasskeyRevoked: "Admin revoked a passkey",
+  AdminConsoleKeyEnrolled: "Admin enrolled a console signing key",
+  AdminConsoleKeyRevoked: "Admin revoked a console signing key",
   ConfigChanged: "Daemon configuration changed",
   ConfigReloaded: "Daemon configuration reloaded",
   RestartRequested: "Daemon restart requested",
