@@ -313,6 +313,75 @@ pub struct Namespace {
     /// The bridge reported it lost access to the namespace.
     #[serde(default)]
     pub installation_removed: bool,
+    /// What the bridge last reported about its standing on the forge owner —
+    /// see [`NamespaceForgeStatus`]. Absent until the bridge says anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forge_status: Option<NamespaceForgeStatus>,
+}
+
+/// The bridge's report of its own standing on a namespace's forge owner.
+///
+/// None of this is in the specification's event or result payloads; a bridge
+/// carries it in their `ext` member under [`FORGE_REPORT_EXT`], and the VTC
+/// keeps it only to show an administrator. It changes no right and no
+/// decision. Every member is optional: a field the bridge has not reported is
+/// absent, not `false`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceForgeStatus {
+    /// The forge's installation of the community's app (GitHub).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_slug: Option<String>,
+    /// Where the app's manifest registration stands (`registered`,
+    /// `pending`, …), in the bridge's words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_registration: Option<String>,
+    /// Permissions the app needs and the installation has not granted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_permissions: Vec<String>,
+    /// A new app version asks for permissions the owner has not approved yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_upgrade_pending: Option<bool>,
+    /// Organisation rulesets are available on the owner's plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_rulesets: Option<bool>,
+    /// The org ruleset's required workflow (design §9) is in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_workflow: Option<bool>,
+    /// The bridge can post the verify-trust check itself (the fallback mode
+    /// of design §9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_posted_check: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_at: Option<DateTime<Utc>>,
+}
+
+/// The `ext` key a bridge reports forge status under, in
+/// `git-ns/bridge/result` and `git-ns/bridge/event`:
+/// `{"namespace": NamespaceForgeStatus, "repo": RepoForgeReport}`.
+pub const FORGE_REPORT_EXT: &str = "org.openvtc.git-ns";
+
+/// The bridge's report on one repository beyond what the specification's
+/// result carries.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoForgeReport {
+    /// The guard actually in force against a pull request satisfying its own
+    /// check (design §9): `requiredWorkflow`, `codeOwnerReview`,
+    /// `bridgePostedCheck`, `protectedFiles`, or `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<String>,
+    /// The last verify-trust check the bridge saw: `{conclusion, at, sha?}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<Value>,
+    /// The per-step outcomes of the last create, bootstrap or inspect job, as
+    /// the bridge reported them (`{step, outcome, detail?}`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<Value>,
 }
 
 impl Namespace {
@@ -478,6 +547,9 @@ pub struct Repo {
     /// Digest of the last role set sent to the bridge for this repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles_digest: Option<String>,
+    /// What the bridge last reported beyond the specification's members.
+    #[serde(default)]
+    pub forge_report: RepoForgeReport,
 }
 
 impl Repo {

@@ -51,8 +51,9 @@ use crate::messaging::VtcMessaging;
 use crate::server::AppState;
 
 use super::model::{
-    ForgeAccount, LinkState, Mode, Namespace, NamespaceState, OwnerKind, Repo, RepoState, Resource,
-    Right, RightRow, Scope, SyncState, SyncStatus, Visibility, new_id,
+    FORGE_REPORT_EXT, ForgeAccount, LinkState, Mode, Namespace, NamespaceForgeStatus,
+    NamespaceState, OwnerKind, Repo, RepoForgeReport, RepoState, Resource, Right, RightRow, Scope,
+    SyncState, SyncStatus, Visibility, new_id,
 };
 use super::ops::{self, Audit, OpError, OpResult, audit, now};
 use super::rules;
@@ -1077,8 +1078,80 @@ pub async fn handle_result(
             }
         }
     }
+    // The bridge's report beyond the specification: the per-step outcomes
+    // (for the console's create-progress view), and anything in `ext`.
+    let (ns_status, mut repo_report) = ext_report(&raw);
+    if matches!(
+        job.kind,
+        JobKind::CreateRepo | JobKind::Bootstrap | JobKind::Inspect
+    ) && !steps.is_empty()
+    {
+        repo_report.get_or_insert_with(Default::default).steps = steps.clone();
+    }
+    if let (Some(report), Some(repo_id)) = (repo_report, job.repo_id.as_ref())
+        && let Some(mut repo) = store::get_repo(&state.git_ns.ks, repo_id).await?
+    {
+        merge_repo_report(&mut repo, report);
+        store::put_repo(&state.git_ns.ks, &repo).await?;
+    }
+    if let Some(status) = ns_status
+        && let Some(mut ns) = store::get_namespace(&state.git_ns.ks, &job.namespace_id).await?
+    {
+        merge_ns_status(&mut ns, status);
+        store::put_namespace(&state.git_ns.ks, &ns).await?;
+    }
     put_job(&state.git_ns.jobs_ks, &job).await?;
     Ok(ack)
+}
+
+/// The bridge's `ext` report ([`FORGE_REPORT_EXT`]) on a result or event.
+/// Unreadable parts are ignored: the report is for display, and a malformed
+/// one must not fail the result it rides on.
+fn ext_report(raw: &Value) -> (Option<NamespaceForgeStatus>, Option<RepoForgeReport>) {
+    let Some(ext) = raw.get("ext").and_then(|e| e.get(FORGE_REPORT_EXT)) else {
+        return (None, None);
+    };
+    let ns = ext
+        .get("namespace")
+        .and_then(|v| serde_json::from_value::<NamespaceForgeStatus>(v.clone()).ok());
+    let repo = ext
+        .get("repo")
+        .and_then(|v| serde_json::from_value::<RepoForgeReport>(v.clone()).ok());
+    (ns, repo)
+}
+
+/// Overwrite what the bridge reported; keep what it did not mention.
+fn merge_ns_status(ns: &mut Namespace, s: NamespaceForgeStatus) {
+    let cur = ns.forge_status.get_or_insert_with(Default::default);
+    macro_rules! take {
+        ($($f:ident),*) => { $( if s.$f.is_some() { cur.$f = s.$f.clone(); } )* };
+    }
+    take!(
+        installation_id,
+        app_name,
+        app_slug,
+        app_registration,
+        permission_upgrade_pending,
+        org_rulesets,
+        required_workflow,
+        bridge_posted_check
+    );
+    if !s.missing_permissions.is_empty() || s.permission_upgrade_pending.is_some() {
+        cur.missing_permissions = s.missing_permissions;
+    }
+    cur.reported_at = Some(now());
+}
+
+fn merge_repo_report(repo: &mut Repo, r: RepoForgeReport) {
+    if r.guard.is_some() {
+        repo.forge_report.guard = r.guard;
+    }
+    if r.last_check.is_some() {
+        repo.forge_report.last_check = r.last_check;
+    }
+    if !r.steps.is_empty() {
+        repo.forge_report.steps = r.steps;
+    }
 }
 
 /// Set a repository detached and withdraw its rights — a repository deleted
@@ -1270,6 +1343,7 @@ pub async fn handle_event(
                         failed_step: None,
                         last_error: None,
                         roles_digest: None,
+                        forge_report: Default::default(),
                     };
                     store::put_repo(&state.git_ns.ks, &repo).await?;
                 }
@@ -1416,10 +1490,38 @@ pub async fn handle_event(
             } else {
                 SyncState::Drift
             };
+            if !items.is_empty() {
+                // For the namespace admins' activity feed: the drift, counted.
+                // The items themselves (forge accounts of people outside the
+                // VTC) stay on the repository, not in the audit log.
+                audit(
+                    state,
+                    issuer,
+                    None,
+                    Audit {
+                        action: "gitNs.drift.reported",
+                        namespace: Some(&repo.namespace_id),
+                        resource: Some(repo.resource.clone()),
+                        right: None,
+                        policy_version: None,
+                        detail: Some(items.len().to_string()),
+                    },
+                )
+                .await;
+            }
             repo.sync.drift = items;
             repo.sync.checked_at = Some(t);
+            if let Some(report) = ext_report(&raw).1 {
+                merge_repo_report(&mut repo, report);
+            }
             store::put_repo(&state.git_ns.ks, &repo).await?;
         }
+    }
+    if let Some(status) = ext_report(&raw).0
+        && let Some(mut ns) = store::get_namespace(&state.git_ns.ks, &ns.id).await?
+    {
+        merge_ns_status(&mut ns, status);
+        store::put_namespace(&state.git_ns.ks, &ns).await?;
     }
     Ok(ack)
 }

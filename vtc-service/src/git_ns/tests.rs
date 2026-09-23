@@ -1344,3 +1344,180 @@ async fn a_bound_bridge_namespace_grants_its_bridge_commit_sign_and_nothing_else
         "the admin's ns.admin and the bridge's grant"
     );
 }
+
+// ── console-key delegation (#1684, #1692) ───────────────────────────────────
+
+#[tokio::test]
+async fn a_console_key_acts_as_its_admin_and_a_revoked_one_as_nobody() {
+    let f = fixture().await;
+    let console = Party::new();
+    crate::acl::console_key::enrol_delegation(
+        &f.vtc.state.console_keys_ks,
+        &f.vtc.state.acl_ks,
+        &console.did,
+        &f.admin.did,
+        Some("browser".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    // The console key binds as the admin: the binder, and the first
+    // `git.ns.admin`, is the admin DID, not the key.
+    let body = ok(&send(
+        &f.vtc.state,
+        &console,
+        "namespace/bind",
+        json!({ "forge": "github.com", "owner": "acme", "mode": "manual" }),
+    )
+    .await);
+    let ns = body["namespace"]["id"].as_str().unwrap().to_string();
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert_eq!(
+        super::rules::admins(&snap, &ns, super::ops::now()),
+        vec![f.admin.did.clone()]
+    );
+    // …and grants with the admin's git rights.
+    ok(&grant(
+        &f,
+        &console,
+        &f.bob.did,
+        "git.repo.create",
+        "github.com/acme",
+    )
+    .await);
+
+    crate::acl::console_key::revoke_delegation(
+        &f.vtc.state.console_keys_ks,
+        &console.did,
+        &f.admin.did,
+    )
+    .await
+    .unwrap();
+    let out = grant(
+        &f,
+        &console,
+        &f.carol.did,
+        "git.repo.create",
+        "github.com/acme",
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+}
+
+// ── the bridge's ext report ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn the_bridges_ext_report_reaches_the_admin_rows() {
+    let f = fixture().await;
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/bind",
+        json!({ "forge": "github.com", "owner": "acme", "mode": "bridge" }),
+    )
+    .await);
+    let ns = body["namespace"]["id"].as_str().unwrap().to_string();
+    let job = f.bridge.jobs.lock().unwrap()[0].1["jobId"].clone();
+    ok(&send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/event",
+        json!({
+            "namespace": ns,
+            "event": { "type": "bindCompleted", "jobId": job, "ownerId": "1", "kind": "organization" },
+            "ext": { "org.openvtc.git-ns": { "namespace": {
+                "installationId": "55120033", "appSlug": "acme-vgi",
+                "missingPermissions": ["organization_administration"],
+                "orgRulesets": true
+            } } },
+        }),
+    )
+    .await);
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let status = snap.namespace(&ns).unwrap().forge_status.clone().unwrap();
+    assert_eq!(status.installation_id.as_deref(), Some("55120033"));
+    assert_eq!(
+        status.missing_permissions,
+        vec!["organization_administration"]
+    );
+    assert_eq!(status.org_rulesets, Some(true));
+
+    // A repository's guard and step outcomes, from an inspect result.
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/adopt",
+        json!({ "resource": "github.com/acme/widgets", "owners": [f.bob.did] }),
+    )
+    .await);
+    let inspect = super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.kind == super::bridge::JobKind::Inspect)
+        .unwrap();
+    ok(&send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/result",
+        json!({
+            "jobId": inspect.job_id, "outcome": "partial",
+            "repo": { "resource": "github.com/acme/widgets", "forgeId": "7" },
+            "steps": [{ "step": "requiredCheck", "outcome": "failed", "detail": "not required" }],
+            "ext": { "org.openvtc.git-ns": { "repo": { "guard": "codeOwnerReview" } } },
+        }),
+    )
+    .await);
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at("github.com/acme/widgets").unwrap();
+    assert_eq!(repo.forge_report.guard.as_deref(), Some("codeOwnerReview"));
+    assert_eq!(repo.forge_report.steps.len(), 1);
+}
+
+// ── the admin and activity reads ────────────────────────────────────────────
+
+/// A REST read under a session. `contexts` empty is a community-wide admin;
+/// a named context is an admin session scoped narrower than the community —
+/// the only other kind a VTC authenticates (it admits the admin role alone).
+async fn get(f: &Fixture, did: &str, contexts: Vec<String>, path: &str) -> (u16, Value) {
+    use tower::ServiceExt;
+    let token = f.vtc.token(did, "admin", contexts).await;
+    let req = axum::http::Request::builder()
+        .uri(format!("/v1{path}"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = f.vtc.router.clone().oneshot(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn a_namespace_admin_reads_their_activity_and_nobody_elses() {
+    let f = fixture().await;
+    let ns = bind_manual(&f).await;
+    ok(&grant(&f, &f.admin, &f.bob.did, "git.ns.admin", "github.com/acme").await);
+
+    // Bob administers the namespace; he is not a community administrator.
+    let (status, body) = get(&f, &f.bob.did, vec!["ops".into()], "/git-ns/activity").await;
+    assert_eq!(status, 200, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert!(items.iter().any(|i| i["action"] == "gitNs.right.granted"
+        && i["subject"] == json!(f.bob.did)
+        && i["namespace"] == json!(ns)));
+
+    // Carol administers nothing.
+    let (status, _) = get(&f, &f.carol.did, vec!["ops".into()], "/git-ns/activity").await;
+    assert_eq!(status, 403);
+
+    // The community administrator reads the linked accounts.
+    let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/accounts").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body["accounts"].as_array().unwrap().is_empty());
+}

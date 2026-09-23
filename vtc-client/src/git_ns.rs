@@ -28,7 +28,10 @@ pub use trust_tasks_rs::specs::git_ns as specs;
 
 use specs::account::link::v0_1 as link;
 use specs::namespace::{bind::v0_1 as bind, unbind::v0_1 as unbind};
-use specs::repo::{adopt::v0_1 as adopt, create::v0_1 as create};
+use specs::repo::{
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    transfer::v0_1 as transfer,
+};
 use specs::right::{grant::v0_1 as grant, revoke::v0_1 as revoke};
 use specs::view::v0_1 as view;
 
@@ -136,6 +139,38 @@ impl VtcClient {
         let payload = serde_json::json!({ "resource": resource, "owners": owners });
         self.git_ns_task(
             <adopt::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/repo/transfer/0.1` — hand `key`'s ownership of `resource` to
+    /// `to`.
+    pub async fn git_ns_transfer(
+        &self,
+        resource: &str,
+        to: &str,
+        key: &HolderKey,
+    ) -> Result<transfer::Response, VtcError> {
+        let payload = serde_json::json!({ "resource": resource, "to": to });
+        self.git_ns_task(
+            <transfer::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/repo/archive/0.1`.
+    pub async fn git_ns_archive(
+        &self,
+        resource: &str,
+        key: &HolderKey,
+    ) -> Result<archive::Response, VtcError> {
+        let payload = serde_json::json!({ "resource": resource });
+        self.git_ns_task(
+            <archive::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             &payload,
             key,
         )

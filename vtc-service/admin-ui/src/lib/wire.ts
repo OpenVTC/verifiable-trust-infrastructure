@@ -906,6 +906,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/git-ns/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["gitNsAccountsList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/git-ns/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["gitNsActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/git-ns/drift": {
         parameters: {
             query?: never;
@@ -3417,6 +3449,45 @@ export interface components {
             roleVec: components["schemas"]["Value"];
             vmc: components["schemas"]["Value"];
         };
+        GitNsAccountList: {
+            accounts: components["schemas"]["GitNsAccountRow"][];
+        };
+        /** @description One member's account on one forge, as linked through `git-ns/account/link`. */
+        GitNsAccountRow: {
+            forge: string;
+            /** @description The forge's id for the account — authoritative. */
+            id: string;
+            linkedAt?: string | null;
+            /** @description The login — display only: logins are renamed and re-registered. */
+            login: string;
+            member: string;
+        };
+        GitNsActivity: {
+            items: components["schemas"]["GitNsActivityItem"][];
+        };
+        /** @description One thing that happened in a namespace. */
+        GitNsActivityItem: {
+            /**
+             * @description `gitNs.right.granted`, `gitNs.repo.renamed`, `gitNs.drift.reported`,
+             *     `gitNs.job.createRepo`, …
+             */
+            action: string;
+            /** @description Who acted. Absent when an erasure has removed it from the audit row. */
+            actor?: string | null;
+            at: string;
+            /**
+             * @description A machine-readable qualifier (`departed`, the old name of a rename, a
+             *     job's state, a drift count).
+             */
+            detail?: string | null;
+            namespace?: string | null;
+            resource?: string | null;
+            right?: string | null;
+            /** @description `audit` or `job`. */
+            source: string;
+            /** @description Whose right it was. Absent likewise. */
+            subject?: string | null;
+        };
         /** @description Whether each step that turns commit trust on is in place. */
         GitNsBootstrapStatus: {
             keyring: boolean;
@@ -3447,6 +3518,29 @@ export interface components {
             drift: components["schemas"]["GitNsViewV0_1DriftItem"][];
             resource: string;
             state: string;
+        };
+        /**
+         * @description The bridge's report of its standing on a namespace's forge owner, carried
+         *     in the `ext` member (`org.openvtc.git-ns`) of its results and events.
+         *     Every field is absent until the bridge reports it.
+         */
+        GitNsForgeStatus: {
+            appName?: string | null;
+            /** @description The app's manifest registration state, in the bridge's words. */
+            appRegistration?: string | null;
+            appSlug?: string | null;
+            /** @description The bridge can post the verify-trust check itself (fallback mode). */
+            bridgePostedCheck?: boolean | null;
+            installationId?: string | null;
+            /** @description Permissions the app needs and the installation lacks. */
+            missingPermissions: string[];
+            /** @description Organisation rulesets are available on the owner's plan. */
+            orgRulesets?: boolean | null;
+            /** @description A new app version awaits the owner's approval of more permissions. */
+            permissionUpgradePending?: boolean | null;
+            reportedAt?: string | null;
+            /** @description The org ruleset's required workflow is in force (design §9). */
+            requiredWorkflow?: boolean | null;
         };
         GitNsJobList: {
             jobs: components["schemas"]["GitNsJobRow"][];
@@ -3488,7 +3582,10 @@ export interface components {
             boundBy: string;
             /** @description The bridge that serves it (bridge mode). */
             bridgeDid?: string | null;
+            /** @description The active policy's `cascade_on_departure` setting in effect. */
+            cascadeOnDeparture: boolean;
             forge: string;
+            forgeStatus?: null | components["schemas"]["GitNsForgeStatus"];
             /**
              * @description Bound, with no live admin: its last admin left or lapsed. Nobody can
              *     grant in it until it is unbound and bound again.
@@ -3507,6 +3604,11 @@ export interface components {
             requestedAt: string;
             /** @description `github.com/acme`. */
             resource: string;
+            /**
+             * @description The active policy's `role_drift` setting in effect: `report` or
+             *     `enforce`.
+             */
+            roleDrift: string;
             /** @description `pending` | `bound`. */
             state: string;
         };
@@ -3549,7 +3651,15 @@ export interface components {
             /** @description The step that failed on the last create or bootstrap. */
             failedStep?: string | null;
             forgeId?: string | null;
+            /**
+             * @description The guard actually in force against a pull request satisfying its own
+             *     check, as the bridge last reported it: `requiredWorkflow`,
+             *     `codeOwnerReview`, `bridgePostedCheck`, `protectedFiles` or `none`.
+             */
+            guard?: string | null;
             id: string;
+            /** @description The last verify-trust check the bridge saw (`{conclusion, at, sha?}`). */
+            lastCheck?: Record<string, never> | null;
             lastError?: string | null;
             maintainers: number;
             namespace: string;
@@ -3560,6 +3670,8 @@ export interface components {
              *     `unmanaged`.
              */
             state: string;
+            /** @description Per-step outcomes of the last create, bootstrap or inspect job. */
+            steps: components["schemas"]["GitNsStepOutcome"][];
             /** @description `inSync` | `drift` | `pending` | `unchecked`. */
             syncState: string;
             /** @description `public` | `private`. */
@@ -3587,6 +3699,13 @@ export interface components {
             subject: string;
             /** @description Whether the subject is a current member (an external signer is not). */
             subjectMember: boolean;
+        };
+        /** @description One bootstrap step's outcome, as the bridge reported it. */
+        GitNsStepOutcome: {
+            detail?: string | null;
+            /** @description `applied` | `unchanged` | `failed` | `skipped`. */
+            outcome: string;
+            step: string;
         };
         /** @description Whether each step that turns commit trust on for a repository is in place, as last reported. A step that this forge's plan does not need reads `true`. */
         GitNsViewV0_1Bootstrap: {
@@ -8916,6 +9035,79 @@ export interface operations {
             };
             /** @description Endorsement type not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    gitNsAccountsList: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Members' linked forge accounts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitNsAccountList"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    gitNsActivity: {
+        parameters: {
+            query?: {
+                /** @description Only this namespace (its identifier). */
+                namespace?: string;
+                /** @description At most this many items, newest first. Default 100, at most 500. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recent activity in the namespaces the caller administers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitNsActivity"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller administers no namespace (or not the one named) */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

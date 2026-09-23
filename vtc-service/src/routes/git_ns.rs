@@ -8,9 +8,11 @@
 //! no proof, and these tasks declare one REQUIRED, so there is no bearer door
 //! to them here; the console acts by having the administrator sign.
 //!
-//! Each route is gated on an admin session and on the `git-ns/view/0.1`
-//! Trust-Task header — the one read the family defines, of which these are the
-//! administrator's complete projections:
+//! Each route is gated on an admin session. `view` also carries the
+//! `git-ns/view/0.1` Trust-Task header, because its body is that task's
+//! response; the others are console projections no specification defines,
+//! and carry no Trust-Task URL rather than one whose response they do not
+//! match:
 //!
 //! - `GET /v1/git-ns/view`                         — `git-ns/view/0.1#response`, every record, every reason
 //! - `GET /v1/git-ns/namespaces`                   — bound and pending namespaces, with their admins and bridge
@@ -20,6 +22,19 @@
 //! - `GET /v1/git-ns/drift`                        — repositories whose forge differs from the projection
 //! - `GET /v1/git-ns/jobs`                         — bridge jobs and their state
 //! - `GET /v1/git-ns/projection`                   — what is published to the Trust Registry
+//! - `GET /v1/git-ns/accounts`                     — members' linked forge accounts
+//!
+//! And one read that is not the community administrator's alone:
+//!
+//! - `GET /v1/git-ns/activity` — rights changes, drift and bridge jobs in the
+//!   namespaces the caller administers (`git.ns.admin`), for any authenticated
+//!   session; a community administrator sees every namespace. The VTC issues
+//!   sessions to admin-role entries only, so in practice this is a
+//!   context-scoped administrator reading the namespaces they administer; a
+//!   namespace admin who is an ordinary member has no session and no route
+//!   here — there is no `git-ns/*` Trust Task for an activity read. It is read from
+//!   the git-ns audit rows and the job queue, so a namespace admin needs no
+//!   access to the community's whole audit log to see their own namespace.
 
 use std::collections::BTreeMap;
 
@@ -110,6 +125,48 @@ pub struct GitNsNamespaceRow {
     pub headless: bool,
     /// The bridge reported losing its access to the forge owner.
     pub installation_removed: bool,
+    /// What the bridge last reported about its app and the owner's plan —
+    /// absent until it reports. Display only; it changes no decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge_status: Option<GitNsForgeStatus>,
+    /// The active policy's `role_drift` setting in effect: `report` or
+    /// `enforce`.
+    pub role_drift: String,
+    /// The active policy's `cascade_on_departure` setting in effect.
+    pub cascade_on_departure: bool,
+}
+
+/// The bridge's report of its standing on a namespace's forge owner, carried
+/// in the `ext` member (`org.openvtc.git-ns`) of its results and events.
+/// Every field is absent until the bridge reports it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsForgeStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_slug: Option<String>,
+    /// The app's manifest registration state, in the bridge's words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_registration: Option<String>,
+    /// Permissions the app needs and the installation lacks.
+    pub missing_permissions: Vec<String>,
+    /// A new app version awaits the owner's approval of more permissions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_upgrade_pending: Option<bool>,
+    /// Organisation rulesets are available on the owner's plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org_rulesets: Option<bool>,
+    /// The org ruleset's required workflow is in force (design §9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_workflow: Option<bool>,
+    /// The bridge can post the verify-trust check itself (fallback mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge_posted_check: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -158,6 +215,28 @@ pub struct GitNsRepoRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
     pub created_at: String,
+    /// The guard actually in force against a pull request satisfying its own
+    /// check, as the bridge last reported it: `requiredWorkflow`,
+    /// `codeOwnerReview`, `bridgePostedCheck`, `protectedFiles` or `none`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guard: Option<String>,
+    /// Per-step outcomes of the last create, bootstrap or inspect job.
+    pub steps: Vec<GitNsStepOutcome>,
+    /// The last verify-trust check the bridge saw (`{conclusion, at, sha?}`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub last_check: Option<Value>,
+}
+
+/// One bootstrap step's outcome, as the bridge reported it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsStepOutcome {
+    pub step: String,
+    /// `applied` | `unchanged` | `failed` | `skipped`.
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -328,6 +407,12 @@ pub async fn namespaces_list(
     let snap = Snapshot::load(&state.git_ns.ks).await?;
     let t = now();
     let headless = lifecycle::headless(&snap);
+    let settings = crate::git_ns::policy::active_settings(&state).await;
+    let role_drift = if settings.enforce_role_drift {
+        "enforce"
+    } else {
+        "report"
+    };
     let namespaces = snap
         .namespaces
         .iter()
@@ -354,6 +439,20 @@ pub async fn namespaces_list(
                     .count(),
                 headless: headless.contains(&ns.id),
                 installation_removed: ns.installation_removed,
+                forge_status: ns.forge_status.as_ref().map(|s| GitNsForgeStatus {
+                    installation_id: s.installation_id.clone(),
+                    app_name: s.app_name.clone(),
+                    app_slug: s.app_slug.clone(),
+                    app_registration: s.app_registration.clone(),
+                    missing_permissions: s.missing_permissions.clone(),
+                    permission_upgrade_pending: s.permission_upgrade_pending,
+                    org_rulesets: s.org_rulesets,
+                    required_workflow: s.required_workflow,
+                    bridge_posted_check: s.bridge_posted_check,
+                    reported_at: s.reported_at.map(wire::timestamp),
+                }),
+                role_drift: role_drift.to_string(),
+                cascade_on_departure: settings.cascade_on_departure,
             }
         })
         .collect();
@@ -412,6 +511,18 @@ pub async fn repos_list(
                 last_error: r.last_error.clone(),
                 created_by: r.created_by.clone(),
                 created_at: wire::timestamp(r.created_at),
+                guard: r.forge_report.guard.clone(),
+                steps: r
+                    .forge_report
+                    .steps
+                    .iter()
+                    .map(|s| GitNsStepOutcome {
+                        step: s["step"].as_str().unwrap_or_default().to_string(),
+                        outcome: s["outcome"].as_str().unwrap_or_default().to_string(),
+                        detail: s.get("detail").and_then(Value::as_str).map(str::to_string),
+                    })
+                    .collect(),
+                last_check: r.forge_report.last_check.clone(),
             }
         })
         .collect();
@@ -672,4 +783,211 @@ pub async fn projection_show(
         published,
         pending_changes,
     }))
+}
+
+// ── linked forge accounts ───────────────────────────────────────────────────
+
+/// One member's account on one forge, as linked through `git-ns/account/link`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsAccountRow {
+    pub member: String,
+    pub forge: String,
+    /// The forge's id for the account — authoritative.
+    pub id: String,
+    /// The login — display only: logins are renamed and re-registered.
+    pub login: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct GitNsAccountList {
+    pub accounts: Vec<GitNsAccountRow>,
+}
+
+#[utoipa::path(
+    get, path = "/git-ns/accounts",
+    operation_id = "gitNsAccountsList", tag = "git-ns",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Members' linked forge accounts", body = GitNsAccountList),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn accounts_list(
+    _auth: AdminAuth,
+    State(state): State<AppState>,
+) -> Result<Json<GitNsAccountList>, AppError> {
+    let mut accounts = Vec::new();
+    for m in crate::members::list_members(&state.members_ks).await? {
+        if m.removed_at.is_some() {
+            continue;
+        }
+        let Some(forges) = m.extensions.get("forges").and_then(Value::as_object) else {
+            continue;
+        };
+        for (forge, a) in forges {
+            let (Some(id), Some(login)) = (
+                a.get("id").and_then(Value::as_str),
+                a.get("login").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            accounts.push(GitNsAccountRow {
+                member: m.did.clone(),
+                forge: forge.clone(),
+                id: id.to_string(),
+                login: login.to_string(),
+                linked_at: a
+                    .get("linkedAt")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            });
+        }
+    }
+    Ok(Json(GitNsAccountList { accounts }))
+}
+
+// ── activity ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct ActivityFilter {
+    /// Only this namespace (its identifier).
+    pub namespace: Option<String>,
+    /// At most this many items, newest first. Default 100, at most 500.
+    pub limit: Option<usize>,
+}
+
+/// One thing that happened in a namespace.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsActivityItem {
+    pub at: String,
+    /// `gitNs.right.granted`, `gitNs.repo.renamed`, `gitNs.drift.reported`,
+    /// `gitNs.job.createRepo`, …
+    pub action: String,
+    /// `audit` or `job`.
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right: Option<String>,
+    /// Who acted. Absent when an erasure has removed it from the audit row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Whose right it was. Absent likewise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// A machine-readable qualifier (`departed`, the old name of a rename, a
+    /// job's state, a drift count).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct GitNsActivity {
+    pub items: Vec<GitNsActivityItem>,
+}
+
+#[utoipa::path(
+    get, path = "/git-ns/activity",
+    operation_id = "gitNsActivity", tag = "git-ns",
+    params(ActivityFilter),
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Recent activity in the namespaces the caller administers", body = GitNsActivity),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "The caller administers no namespace (or not the one named)"),
+    ),
+)]
+pub async fn activity(
+    auth: vti_common::auth::AuthClaims,
+    State(state): State<AppState>,
+    Query(q): Query<ActivityFilter>,
+) -> Result<Json<GitNsActivity>, AppError> {
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let t = now();
+    let caller = standing(&state, &auth.did).await?;
+    // Which namespaces: all for a community administrator; otherwise the ones
+    // the caller holds `git.ns.admin` on. Held by explicit record only — the
+    // one thing that implies it is itself.
+    let mut allowed: std::collections::BTreeSet<String> = snap
+        .namespaces
+        .iter()
+        .filter(|n| caller.community_admin || rules::admins(&snap, &n.id, t).contains(&auth.did))
+        .map(|n| n.id.clone())
+        .collect();
+    if let Some(n) = &q.namespace {
+        if !allowed.contains(n) {
+            return Err(AppError::Forbidden(format!(
+                "you do not administer namespace `{n}`"
+            )));
+        }
+        allowed = std::iter::once(n.clone()).collect();
+    }
+    if allowed.is_empty() && !caller.community_admin {
+        return Err(AppError::Forbidden(
+            "git-ns activity is for namespace administrators; you hold git.ns.admin on no \
+             namespace"
+                .into(),
+        ));
+    }
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+
+    let mut items = Vec::new();
+    for (_, v) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
+        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
+            continue;
+        };
+        let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event else {
+            continue;
+        };
+        // A row for a namespace since unbound is still the history of a
+        // namespace the caller no longer administers, so only a community
+        // administrator sees rows outside the allowed set.
+        let visible = match &d.namespace {
+            Some(n) => allowed.contains(n),
+            None => caller.community_admin && q.namespace.is_none(),
+        };
+        if !visible {
+            continue;
+        }
+        items.push(GitNsActivityItem {
+            at: wire::timestamp(env.timestamp),
+            action: d.action,
+            source: "audit".into(),
+            namespace: d.namespace,
+            resource: d.resource,
+            right: d.right,
+            actor: env.actor_did_plain,
+            subject: env.target_did_plain,
+            detail: d.detail,
+        });
+    }
+    for job in bridge::list_jobs(&state.git_ns.jobs_ks).await? {
+        if !allowed.contains(&job.namespace_id) {
+            continue;
+        }
+        let row = job_row(&job);
+        items.push(GitNsActivityItem {
+            at: wire::timestamp(job.accepted_at.unwrap_or(job.created_at)),
+            action: format!("gitNs.job.{}", job.kind.as_str()),
+            source: "job".into(),
+            namespace: Some(job.namespace_id.clone()),
+            resource: row.repo,
+            right: None,
+            actor: None,
+            subject: None,
+            detail: Some(row.state),
+        });
+    }
+    items.sort_by(|a, b| b.at.cmp(&a.at));
+    items.truncate(limit);
+    Ok(Json(GitNsActivity { items }))
 }

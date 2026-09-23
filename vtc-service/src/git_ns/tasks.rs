@@ -154,7 +154,63 @@ fn caller<P>(doc: &TrustTask<P>, ctx: &GitNsCtx) -> Result<String, TrustTaskOutc
         })
 }
 
+/// The DID a member-facing task acts as.
+///
+/// Usually the signer. The exception is a **console signing key** (#1684,
+/// #1692): a `did:key` the admin console enrolled as a credential of the
+/// operator's admin DID. A signer with no ACL row of its own and a live
+/// delegation acts as the delegating admin DID — whose ACL row and whose git
+/// rights are then read, at execution time, exactly as for a signer who used
+/// their own key. The same resolution, and the same rule, as the admin verbs'
+/// `admin_signer`: the fall-through is only for a signer with *no row at
+/// all*, so a delegation can never route around a row that refuses; a revoked
+/// or expired delegation resolves to the signer itself, who holds nothing. A
+/// delegation carries no role and no right of its own (VTI-OPS-050: it is not
+/// self-promotion).
+///
+/// Never applied to `git-ns/bridge/*`: a bridge is identified by its own DID
+/// and nothing else.
+async fn acting_as(state: &AppState, signer: &str) -> Result<String, OpError> {
+    if crate::acl::get_acl_entry(&state.acl_ks, signer)
+        .await?
+        .is_some()
+    {
+        return Ok(signer.to_string());
+    }
+    match crate::acl::console_key::resolve_delegated_admin(&state.console_keys_ks, signer).await? {
+        Some(delegation) => {
+            crate::acl::console_key::touch_last_used(&state.console_keys_ks, &delegation).await;
+            tracing::info!(
+                console_did = %signer,
+                admin_did = %delegation.admin_did,
+                "authorizing a git-ns document under a console-key delegation"
+            );
+            Ok(delegation.admin_did)
+        }
+        None => Ok(signer.to_string()),
+    }
+}
+
 macro_rules! signed_handler {
+    ($name:ident, $payload:ty, $op:path) => {
+        pub(crate) async fn $name(doc: TrustTask<$payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
+            let signer = match signer(&doc, &ctx) {
+                Ok(a) => a,
+                Err(r) => return r,
+            };
+            let actor = match acting_as(&ctx.state, &signer).await {
+                Ok(a) => a,
+                Err(e) => return respond::<_, ()>(&doc, Err(e)),
+            };
+            let r = $op(&ctx.state, &actor, doc.payload.clone()).await;
+            respond(&doc, r)
+        }
+    };
+}
+
+/// As [`signed_handler`], for the bridge's tasks: the signer is the actor,
+/// with no delegation — only the namespace's own bridge DID is accepted.
+macro_rules! bridge_handler {
     ($name:ident, $payload:ty, $op:path) => {
         pub(crate) async fn $name(doc: TrustTask<$payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
             let actor = match signer(&doc, &ctx) {
@@ -176,8 +232,8 @@ signed_handler!(handle_archive, archive::Payload, ops::repo_archive);
 signed_handler!(handle_grant, grant::Payload, ops::right_grant);
 signed_handler!(handle_revoke, revoke::Payload, ops::right_revoke);
 signed_handler!(handle_link, link::Payload, ops::account_link);
-signed_handler!(handle_result, result::Payload, super::bridge::handle_result);
-signed_handler!(handle_event, event::Payload, super::bridge::handle_event);
+bridge_handler!(handle_result, result::Payload, super::bridge::handle_result);
+bridge_handler!(handle_event, event::Payload, super::bridge::handle_event);
 
 /// `git-ns/view/0.1` — any member, what they may see.
 pub(crate) async fn handle_view(doc: TrustTask<view::Payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
@@ -186,6 +242,7 @@ pub(crate) async fn handle_view(doc: TrustTask<view::Payload>, ctx: GitNsCtx) ->
         Err(r) => return r,
     };
     let r = async {
+        let who = acting_as(&ctx.state, &who).await?;
         let standing = ops::standing(&ctx.state, &who).await?;
         if !standing.member {
             return Err(OpError::PermissionDenied(
@@ -212,6 +269,9 @@ pub(crate) async fn handle_link_status(
         Ok(w) => w,
         Err(r) => return r,
     };
-    let r = ops::account_link_status(&ctx.state, &who, doc.payload.clone()).await;
+    let r = match acting_as(&ctx.state, &who).await {
+        Ok(who) => ops::account_link_status(&ctx.state, &who, doc.payload.clone()).await,
+        Err(e) => Err(e),
+    };
     respond(&doc, r)
 }

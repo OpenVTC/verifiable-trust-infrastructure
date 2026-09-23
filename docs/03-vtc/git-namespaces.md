@@ -135,18 +135,31 @@ forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
 
 ## Administrator surface
 
-Read-only, admin session, `Trust-Task: https://trusttasks.org/spec/git-ns/view/0.1`:
+Read-only, admin session. `view` also takes
+`Trust-Task: https://trusttasks.org/spec/git-ns/view/0.1`, because its body is
+that task's response; the rest are console projections no specification
+defines, and carry no Trust-Task URL.
 
 | Route | Body |
 |---|---|
 | `GET /v1/git-ns/view?resource=` | `git-ns/view/0.1#response`, every record and reason |
-| `GET /v1/git-ns/namespaces` | namespaces with admins, bridge, headless flag |
-| `GET /v1/git-ns/repos?namespace=` | repositories with owners, bootstrap, sync |
+| `GET /v1/git-ns/namespaces` | namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure` |
+| `GET /v1/git-ns/repos?namespace=` | repositories with owners, bootstrap, sync, guard in force, step outcomes, last check |
 | `GET /v1/git-ns/rights?resource=&subject=` | recorded and role-derived rights |
 | `GET /v1/git-ns/rights/issued-by-departed` | grants whose granter left |
 | `GET /v1/git-ns/drift` | repositories with outstanding drift |
 | `GET /v1/git-ns/jobs` | bridge jobs |
 | `GET /v1/git-ns/projection` | what is published, and how many changes are pending |
+| `GET /v1/git-ns/accounts` | members' linked forge accounts |
+| `GET /v1/git-ns/activity?namespace=&limit=` | rights changes, drift and jobs in the namespaces the caller administers (any session) |
+
+The bridge reports what the specification's payloads do not carry — its app
+installation, missing permissions, the owner's plan, the guard in force on a
+repository, the last check — in the `ext` member of its results and events,
+under `org.openvtc.git-ns`: `{"namespace": {...}, "repo": {...}}`.
+
+A console signing key (a delegation enrolled under #1692) acts as the admin
+DID it stands for on every member-facing `git-ns/*` task.
 
 Every change is a signed `git-ns/*` Trust Task on `POST /v1/trust-tasks` (or
 DIDComm/TSP). `cnm git …` signs them with the community profile's key.

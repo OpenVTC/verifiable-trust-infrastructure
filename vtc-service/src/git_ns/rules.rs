@@ -401,6 +401,7 @@ mod tests {
             bound_at: Some(now()),
             roles_digest: None,
             installation_removed: false,
+            forge_status: None,
         });
         s.repos.push(Repo {
             id: "r1".into(),
@@ -417,6 +418,7 @@ mod tests {
             failed_step: None,
             last_error: None,
             roles_digest: None,
+            forge_report: Default::default(),
         });
         s.rights.insert(
             Scope::Namespace("ns1".into()),

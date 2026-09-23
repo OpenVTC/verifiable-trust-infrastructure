@@ -69,6 +69,34 @@ pub enum GitCommands {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Create a repository in a namespace, becoming its owner (needs
+    /// `git.repo.create`). Where no bot can create it, prints the steps.
+    Create {
+        /// The namespace identifier (`namespace list`).
+        #[arg(long)]
+        namespace: String,
+        /// The repository name, lowercase.
+        name: String,
+        #[arg(long, value_enum, default_value_t = VisibilityArg::Public)]
+        visibility: VisibilityArg,
+        /// Shown by the forge; do not put anything here you would not publish.
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Hand this profile's ownership of a repository to someone else.
+    Transfer {
+        /// `github.com/acme/widgets`.
+        resource: String,
+        /// Who receives ownership.
+        #[arg(long)]
+        to: String,
+    },
+    /// Archive a repository: the forge makes it read-only and every
+    /// commit-signing right on it is revoked. No task reverses it.
+    Archive {
+        /// `github.com/acme/widgets`.
+        resource: String,
+    },
     /// Bring an existing repository under governance and name its owners.
     Adopt {
         /// `github.com/acme/widgets`.
@@ -110,6 +138,12 @@ pub enum NamespaceCommands {
     },
     /// List bound and pending namespaces (admin session).
     List,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum VisibilityArg {
+    Public,
+    Private,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -186,6 +220,15 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
         "git-ns:unknownRepo" => format!(
             "\nThe VTC records no repository there. Bring it under governance first:\n  {bin} \
              git adopt <resource> --owner <did>"
+        ),
+        "git-ns/repo/transfer:notOwner" => format!(
+            "\nA transfer hands over your own ownership record. A namespace admin names an \
+             owner instead:\n  {bin} git grant --subject <did> --right git.repo.own --resource \
+             <repository>"
+        ),
+        "git-ns/repo/create:nameTaken" => format!(
+            "\nThe community already records a repository there. See it:\n  {bin} git view \
+             --resource <resource>"
         ),
         "git-ns/right/revoke:notGranted" => "\nNothing to revoke: no live record matches. \
              Implied rights (an owner's commit right, an admin's ownership) are not records."
@@ -339,6 +382,65 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 .map_err(|e| format!("that revocation is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_revoke(&payload, &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            show(&resp)
+        }
+        GitCommands::Create {
+            namespace,
+            name,
+            visibility,
+            description,
+        } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let mut payload = json!({
+                "namespace": namespace,
+                "name": name.to_lowercase(),
+                "visibility": match visibility {
+                    VisibilityArg::Public => "public",
+                    VisibilityArg::Private => "private",
+                },
+            });
+            if let Some(d) = description {
+                payload["description"] = json!(d);
+            }
+            let payload: specs::repo::create::v0_1::Payload = serde_json::from_value(payload)
+                .map_err(|e| format!("that repository is not well formed: {e}"))?;
+            let resp = anon()
+                .git_ns_create_repo(&payload, &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            let v = serde_json::to_value(&resp)?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            println!(
+                "{BOLD}{}{RESET} — {}",
+                v["repo"]["resource"].as_str().unwrap_or_default(),
+                v["repo"]["state"].as_str().unwrap_or_default()
+            );
+            for (i, step) in v["manualSteps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                println!("  {}. {}", i + 1, step.as_str().unwrap_or_default());
+            }
+            Ok(())
+        }
+        GitCommands::Transfer { resource, to } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let resp = anon()
+                .git_ns_transfer(&resource.to_lowercase(), &to, &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            show(&resp)
+        }
+        GitCommands::Archive { resource } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let resp = anon()
+                .git_ns_archive(&resource.to_lowercase(), &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
