@@ -2,6 +2,102 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.23.1...vti-common-v0.24.0) — 2026-09-23
+
+
+### Added
+
+- **vtc**: A console signing key is a credential of the operator's admin DID ([#1692](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1692))
+
+Server side of #1684, against the design note merged in #1685
+  (`vtc-console-signing.md`, Option A). The admin console cannot author a signed
+  Trust Task document, which is what keeps every bearer route #1641 would retire
+  mounted — 34 of the 49 are console-reachable, including all four #1681 kept.
+
+  A console signing key is a credential of the operator's existing admin DID, the
+  way a passkey is. Not an identity of its own and not an ACL row: giving a
+  console key its own admin row is self-promotion by a longer path, and #1658's
+  `Invariant::SelfPromotion` (VTI-OPS-050) refuses it. What the VTC stores is a
+  delegation — "console key K may act as admin DID D" — which confers no role.
+  Authority remains D's ACL row, read at execution time, so the property #1681
+  established (`admin_signer` never consults `sessions_ks`) survives intact.
+
+  - `console_keys` keyspace, `console_key:<consoleDid>` → the delegation, and
+    EXCLUDED_FROM_BACKUP. That exclusion is a security decision rather than
+    housekeeping: a restore into a rebuilt host, a staging clone or different
+    hands must not hand a browser profile the ability to sign as an administrator
+    again.
+  - Enrolment behind `AdminAuth` plus `acl::elevation::verified`, which reads the
+    session row — a stolen session alone cannot leave a signing key behind. The
+    subject is the proven caller and the body cannot name it, so self-targeted is
+    the only case this surface can express. That inverts `acl/grant`'s rule
+    deliberately: a delegation confers nothing, so there is nothing to promote,
+    and it is a credential of your own identity.
+  - `admin_signer` gains one step. A signer with no ACL row of its own may be a
+    delegated console key, in which case the delegating admin's row is resolved,
+    at execution time, as before. A signer that has a row is answered by that row,
+    including when it refuses — tighter than the note's sketch, so a stale
+    delegation cannot route around a demotion.
+  - List and revoke on the passkey management model. Revocation tombstones the row
+    (a burned key cannot be re-enrolled), takes effect on the next document, and
+    needs no second factor: an operator who suspects a browser should not have to
+    find their authenticator before disowning it.
+  - `AdminConsoleKeyEnrolled` / `AdminConsoleKeyRevoked` audit events.
+
+  No published Trust Task covers this. `device/register/0.1` registers a device as
+  a consumer in its own right, with a granted `Capability` set — the shape
+  VTI-OPS-050 refuses here — and `auth/passkey/*` is WebAuthn end to end. So the
+  three routes are mounted without a Trust-Task binding, the same exemption
+  `relationships::{suspend,restore}` carries, and `routes/admin/console_keys.rs`
+  records what the upstream `auth/signing-key/{enroll,list,revoke}` family should
+  be. The bodies here are already those payloads.
+
+- **persona**: Worlds on the wire, and a narrow read of one attribute ([#1690](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1690))
+
+Takes trust-tasks-rs 0.22, which has been unreachable since 0.21.21:
+  affinidi-messaging-sdk required ^0.21.20 and `MediatorAcl` crosses that
+  SDK's API, so a graph holding both versions failed to compile rather than
+  merely carrying a duplicate. affinidi/affinidi-tdk-rs#885 moved the
+  messaging crates; this takes the line they are now on. One
+  `trust-tasks-rs`, one `affinidi-messaging-sdk`, one `affinidi-tdk`.
+
+  **Worlds.** `persona/facet/*` is `persona/world/*`, `facetId` is
+  `worldId`, and `correlation/analyze` takes a 1.1 for its three renamed
+  members. `face` and `facet` shared a stem while naming different things —
+  a projection of the pool, and an arrangement of those projections — and
+  every UI had already resolved it by saying "world" on screen, which left
+  the collision live for anyone reading both.
+
+  The retired spellings stay routable for a release and answer in their own
+  words: `facetId` for `worldId`, `facets` for `worlds`, `crossesFacets`
+  for `crossesWorlds`. A document already issued against one still
+  validates, and refusing it would break a caller for a rename that costs
+  it nothing. The whole alias is marked for deletion in one commit.
+
+  **`persona/attribute/get`.** Reading one value meant
+  `persona/attribute/list` with a type prefix, filtered by the caller — so
+  revealing one email address decrypted every email address the holder has,
+  and the audit row recorded a listing of the pool rather than a decision
+  about one fact. `PersonaStore::get_attribute` applies exactly what a
+  listing applies: visibility, retention, credential re-derivation.
+  `versionPurged` is distinct from `notFound` because the attribute is
+  still there, and `retainedVersions` lets a holder see what purging would
+  take away rather than deciding blind.
+
+  Two latent defects, both found by the new tests:
+
+  - `correlation/analyze/1.0` was already answering with 1.1's member
+    names. Nothing noticed because 1.1 did not exist.
+  - A world with no faces and no attributes serialised without `faceIds`
+    and `attributeIds`, which its own response schema requires, so listing
+    an empty one returned a 500. `skip_serializing_if` on a required
+    member; no test had made an empty one.
+
+  The `pf:` storage prefix is unchanged — it is an opaque key prefix, not
+  the noun, and renaming it would orphan every world already stored.
+
+
+
 ## [0.23.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.23.0...vti-common-v0.23.1) — 2026-09-23
 
 
