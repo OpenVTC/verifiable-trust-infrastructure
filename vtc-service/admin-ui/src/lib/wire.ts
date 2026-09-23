@@ -1224,11 +1224,29 @@ export interface paths {
         get: operations["show_member"];
         put?: never;
         post?: never;
-        /** DELETE /members/{did} — admin removes another member. Auth: Admin. */
+        /**
+         * DELETE /members/{did} — admin removes another member. Auth: Admin.
+         * @description **Transitional bearer-token path (#1641).** `vtc/members/admin-remove/0.1`
+         *     declares `proof` REQUIRED, and the authoritative binding is the signed
+         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+         *     the administrator and their authority is read from their ACL entry. This
+         *     route authenticates by bearer JWT and verifies no document proof; it is kept
+         *     only until the admin console can sign a Trust Task document, and is removed
+         *     in the same change that gives it that.
+         */
         delete: operations["admin_remove"];
         options?: never;
         head?: never;
-        /** PATCH /members/{did} — update member role + profile fields. Auth: Admin. */
+        /**
+         * PATCH /members/{did} — update member role + profile fields. Auth: Admin.
+         * @description **Transitional bearer-token path (#1641).** `vtc/members/update/0.1`
+         *     declares `proof` REQUIRED, and the authoritative binding is the signed
+         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+         *     the administrator and their authority is read from their ACL entry. This
+         *     route authenticates by bearer JWT and verifies no document proof; it is kept
+         *     only until the admin console can sign a Trust Task document, and is removed
+         *     in the same change that gives it that.
+         */
         patch: operations["update_member"];
         trace?: never;
     };
@@ -1257,6 +1275,14 @@ export interface paths {
          *     credential bodies that leaves no trace cannot be reviewed afterwards. The
          *     audit write happens before the bodies are returned — a read that could not
          *     be recorded is refused rather than disclosed silently.
+         *
+         *     **Transitional bearer-token path (#1641).** `vtc/members/credentials/0.1`
+         *     declares `proof` REQUIRED, and the authoritative binding is the signed
+         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
+         *     the administrator and their authority is read from their ACL entry. This
+         *     route authenticates by bearer JWT and verifies no document proof; it is kept
+         *     only until the admin console can sign a Trust Task document, and is removed
+         *     in the same change that gives it that.
          */
         get: operations["memberCredentials"];
         put?: never;
@@ -1324,6 +1350,13 @@ export interface paths {
          *     was removed). Hard-deletes the ACL (if any) + Member row, decrements the
          *     count, and flips the revocation bit. Auth: **Super-admin** (forceful, skips
          *     the removal policy). Refuses the sole admin (no-last-admin invariant).
+         * @description **Transitional bearer-token path (#1641).** `vtc/members/purge/0.1` declares
+         *     `proof` REQUIRED, and the authoritative binding is the signed Trust Task
+         *     document at `POST /v1/trust-tasks`, where the proof authenticates the
+         *     super-administrator and their authority is read from their ACL entry. This
+         *     route authenticates by bearer JWT and verifies no document proof; it is kept
+         *     only until the admin console can sign a Trust Task document, and is removed
+         *     in the same change that gives it that.
          */
         delete: operations["purge"];
         options?: never;
@@ -1881,6 +1914,14 @@ export interface paths {
         /**
          * POST /trust-tasks — dispatch a Trust Task document. Public: the holder's
          *     document proof (or, over DIDComm, the authcrypt sender) IS the auth.
+         * @description No bearer token is read here. A document whose specification declares
+         *     `proof` REQUIRED must carry one, it must verify against the document's own
+         *     `issuer`, the document must name this community as `recipient`, its
+         *     `issuedAt` must fall inside the acceptance window, and its `id` is recorded
+         *     so a redelivery is answered rather than re-executed.
+         *
+         *     Administrator verbs are dispatched here too — their authority is the
+         *     verified signer's ACL entry, read when the document executes.
          */
         post: operations["dispatch"];
         delete?: never;

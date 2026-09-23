@@ -27,10 +27,15 @@
 //!
 //! The join family is mostly unauthenticated/holder-bound: `submit` and
 //! `status` are bound to the holder DID (no ACL entry needed);
-//! `manifest` is public. The operator-facing `decide`/`list`/
-//! `show` verbs stay on their existing JWT-gated REST routes and are *not*
-//! routed here. `present` belongs to the `credential-exchange` family and is
-//! handled there.
+//! `manifest` is public. `present` belongs to the `credential-exchange` family
+//! and is handled there.
+//!
+//! **Administrator verbs are routed here too**, since #1641 phase 2 — the
+//! admin-facing member verbs are the first batch. Their authority is not a
+//! bearer token (this endpoint reads none) but the **verified signer's ACL
+//! entry**, read at execution time; see [`admin_signer`]. The remaining
+//! operator-facing verbs (`decide`, `list`, `show`, …) are still served only on
+//! their JWT-gated REST routes, and moving them is what the rest of phase 2 is.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
 //! member-facing half of a family whose `revoke` verb stays operator-side on
@@ -66,6 +71,13 @@ mod error_code_census;
 
 use serde_json::Value;
 use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_1 as pa, challenge::v0_1 as pc};
+// The admin-facing member verbs (#1641 phase 2). Their wire types are
+// generated from the published schemas, so there is no hand-written SDK
+// constant to import and the Type URIs below are read off the payload types.
+use trust_tasks_rs::specs::vtc::members::{
+    admin_remove::v0_1 as member_admin_remove, credentials::v0_1 as member_credentials,
+    purge::v0_1 as member_purge, update::v0_1 as member_update,
+};
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -642,6 +654,13 @@ async fn dispatch_typed(
         }
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
+        // The admin-facing member verbs. Each is authorized from the verified
+        // signer's ACL entry — never from a bearer token, which this endpoint
+        // does not read — see [`admin_signer`].
+        MEMBER_CREDENTIALS_TYPE => handle_member_credentials(state, ctx, doc).await,
+        MEMBER_UPDATE_TYPE => handle_member_update(state, ctx, doc).await,
+        MEMBER_ADMIN_REMOVE_TYPE => handle_member_admin_remove(state, ctx, doc).await,
+        MEMBER_PURGE_TYPE => handle_member_purge(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1103,10 +1122,15 @@ mod spine_proof_tests {
         }
     }
 
-    /// The nine `vtc/*` tasks #1641 is about, named by the registry rather than
-    /// by a literal list here. A task that stops declaring a proof — or one
-    /// that starts — moves this number, and moving it should be a decision
-    /// somebody took rather than a diff nobody read.
+    /// The proof-REQUIRED tasks this dispatcher serves, named by the registry
+    /// rather than by a literal list here. A task that stops declaring a proof
+    /// — or one that starts — moves this number, and moving it should be a
+    /// decision somebody took rather than a diff nobody read.
+    ///
+    /// It also counts the migration. #1641 phase 2 moves the VTC's bearer-token
+    /// tasks onto this binding in batches, and each batch adds its tasks here;
+    /// the first added four (`members/{credentials,update,admin-remove,purge}`)
+    /// to the nine the spine already served.
     #[test]
     fn the_dispatched_set_declares_the_proofs_the_design_note_records() {
         let required: Vec<&str> = DISPATCHED_URIS
@@ -1121,8 +1145,9 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            20,
-            "the design note records 9 `vtc/*` + 11 `rooms/*`; got {required:?}"
+            24,
+            "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
+             member verbs #1641 phase 2 batch 1 moved; got {required:?}"
         );
     }
 }
@@ -1252,6 +1277,14 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
+    // The admin-facing member verbs (#1641 phase 2). Each also remains mounted
+    // on its bearer-JWT REST route as a documented transitional path; this is
+    // the binding that holds the document requirements their specifications
+    // declare — proof, recipient, `issuedAt`, and the accepted-id record.
+    MEMBER_CREDENTIALS_TYPE,
+    MEMBER_UPDATE_TYPE,
+    MEMBER_ADMIN_REMOVE_TYPE,
+    MEMBER_PURGE_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -1265,6 +1298,22 @@ pub(crate) const PERSONHOOD_CHALLENGE_TYPE: &str =
 
 /// `vtc/members/personhood/assert/0.1` — present the evidence.
 pub(crate) const PERSONHOOD_ASSERT_TYPE: &str = <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/credentials/0.1` — read one member's credential bodies.
+pub(crate) const MEMBER_CREDENTIALS_TYPE: &str =
+    <member_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/update/0.1` — update a member's role or metadata.
+pub(crate) const MEMBER_UPDATE_TYPE: &str =
+    <member_update::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/admin-remove/0.1` — an administrator removes another member.
+pub(crate) const MEMBER_ADMIN_REMOVE_TYPE: &str =
+    <member_admin_remove::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/purge/0.1` — irreversibly erase a member record.
+pub(crate) const MEMBER_PURGE_TYPE: &str =
+    <member_purge::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -2024,6 +2073,246 @@ async fn handle_self_remove(
     }
 }
 
+// ─── the admin-facing member verbs (#1641 phase 2) ───────────────────────
+
+/// The administrator a signed admin document is authorized as.
+///
+/// # Why this is not the bearer route's gate, and why it is not weaker
+///
+/// The REST routes these four verbs also sit on take `AdminAuth`: a live
+/// session whose JWT says `role: admin`. That claim was itself written from the
+/// caller's ACL row — `map_vtc_role_to_auth_role` admits only `VtcRole::Admin`
+/// — at the moment the session was minted, and nothing re-reads it afterwards.
+///
+/// Here there is no session, because a signed document is not a session: the
+/// proof says who authored *this document*, and **VTI-OPS-020** is satisfied by
+/// that rather than by a transport. So authority is read from the ACL entry
+/// [`crate::acl::resolve_auth_role`] finds for the verified signer, **at the
+/// time the document is executed**. That is the same rule the bearer route
+/// applies, evaluated later: a row removed, expired, or demoted since the
+/// session began refuses here and would not have refused there.
+///
+/// What does change is the revocation lever. A bearer session is killed by
+/// revoking the session; a signed document is refused by removing or expiring
+/// the ACL row, which is the only authority it ever rested on. That is
+/// deliberate — `docs/05-design-notes/vtc-trust-task-proof-enforcement.md` §1
+/// — and it is why nothing here consults `sessions_ks`.
+///
+/// The signer is taken from [`JoinAuthCtx::verified_signer`], which the spine
+/// filled in from the proof it verified against the document's own `issuer`
+/// (SPEC §4.7) — never from the transport. All four of these specifications
+/// declare `proof` REQUIRED, so the spine has already refused a document
+/// carrying none; the `None` arm is belt to that brace, exactly as the
+/// `rooms/*` arm keeps its own.
+async fn admin_signer(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome> {
+    let Some(signer) = ctx.verified_signer.clone() else {
+        return Err(reject_with(doc, RejectReason::ProofRequired));
+    };
+    let (role, allowed_contexts) = crate::acl::resolve_auth_role(&state.acl_ks, &signer)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    Ok(vti_common::auth::extractor::AuthClaims {
+        did: signer,
+        role,
+        allowed_contexts,
+        ..Default::default()
+    })
+}
+
+/// Validate a payload against its published schema and hand back the
+/// generated type.
+///
+/// The generated `Payload` carries `deny_unknown_fields` and the required set,
+/// and `validate_value` adds what serde cannot see — `const`, `enum`,
+/// `pattern`, `minLength`. The bearer routes get the first half from their
+/// hand-written bodies and the second from nothing at all, so this door is the
+/// stricter of the two.
+fn parse_spec_payload<P>(doc: &TrustTask<Value>) -> Result<P, TrustTaskOutcome>
+where
+    P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
+{
+    if let Err(e) = P::validate_value(&doc.payload) {
+        return Err(reject_with(
+            doc,
+            RejectReason::MalformedRequest {
+                reason: format!("payload: {e}"),
+            },
+        ));
+    }
+    parse_payload::<P>(doc)
+}
+
+/// `vtc/members/credentials/0.1` — the membership pair's bodies for one member.
+///
+/// Administrator only. The read is audited against the **signer**, which is the
+/// point of the task declaring a proof: the specification's own rationale is
+/// that "the record of who read a member's credentials is the only thing that
+/// makes the disclosure accountable afterwards", and a bearer token names a
+/// session rather than a key.
+async fn handle_member_credentials(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let body: member_credentials::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::members::credentials::read_member_credentials(
+        state,
+        &actor.did,
+        body.did.as_str(),
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        // The task's one declared code, carried as a code rather than flattened
+        // into `taskFailed` (SPEC §8.5) — the same distinction the REST route's
+        // `CredentialsError` makes in its body.
+        Err(crate::routes::members::credentials::CredentialsError::NotFound(message)) => {
+            task_error_to_reject(
+                &doc,
+                &crate::error::TaskError::declared(
+                    crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
+                    AppError::NotFound(message),
+                ),
+            )
+        }
+        Err(crate::routes::members::credentials::CredentialsError::Other(e)) => {
+            app_error_to_reject(&doc, &e)
+        }
+    }
+}
+
+/// `vtc/members/update/0.1` — update a member's role or metadata.
+///
+/// Administrator only, and `role: admin` is refused with the task's own
+/// `adminRoleForbidden` — the gate is on the transition, not on the route, so
+/// it holds identically on both doors.
+///
+/// # Why the payload is read twice
+///
+/// The generated `Payload` types `extensions` as a plain map with `default`, so
+/// an absent `extensions` and an empty one are the same value once parsed —
+/// and the operation's rule is that an absent field leaves the member's
+/// extensions **unchanged** while an empty object replaces them. Reading the
+/// same JSON into the route's own `UpdateMemberRequest`, whose fields are
+/// `Option`, keeps that distinction. The generated parse still runs, and runs
+/// first, because it is what validates the document against its published
+/// schema.
+async fn handle_member_update(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: member_update::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let req: crate::routes::members::update::UpdateMemberRequest = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::members::update::update_member_inner(
+        state,
+        &actor,
+        checked.did.as_str(),
+        req,
+    )
+    .await
+    {
+        Ok(envelope) => success_response(&doc, envelope),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/members/admin-remove/0.1` — an administrator removes another member.
+async fn handle_member_admin_remove(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: member_admin_remove::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    // Same reason as `update` above: `disposition` and `reason` are optional
+    // and the route's body type is the one that says so.
+    let body: crate::routes::members::remove::RemoveBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::members::remove::admin_remove_inner(
+        state,
+        &actor.did,
+        checked.did.as_str(),
+        body,
+    )
+    .await
+    {
+        Ok(outcome) => success_response(
+            &doc,
+            crate::routes::members::remove::RemoveResponse::from(outcome),
+        ),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/members/purge/0.1` — irreversibly erase a member record.
+///
+/// **Super-administrator only**, which is a stricter gate than the other three
+/// and must stay one: the bearer route takes `SuperAdminAuth`, so the signed
+/// door asks [`AuthClaims::require_super_admin`] the same question —
+/// `Role::Admin` **and** an unrestricted [`vti_common::acl::ActScope`]. Reading
+/// `allowed_contexts.is_empty()` here instead would be the exact inversion
+/// `CLAUDE.md` names: empty means *unrestricted* for an admin and *authorized
+/// nowhere* for anybody else.
+async fn handle_member_purge(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    if let Err(e) = actor.require_super_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
+    let checked: member_purge::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    // The REST route validates the path segment; here the DID rides the
+    // payload, and `purge_member` does not validate it for us.
+    if let Err(e) = vti_common::identifier::validate_did("did", checked.did.as_str()) {
+        return app_error_to_reject(&doc, &e);
+    }
+    match crate::ceremony::purge_member(state, &actor.did, checked.did.as_str()).await {
+        Ok(outcome) => success_response(
+            &doc,
+            crate::routes::members::remove::RemoveResponse::from(outcome),
+        ),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
 // ─── personhood ──────────────────────────────────────────────────────────
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce the
@@ -2325,6 +2614,10 @@ mod tests {
             vetting_wire::VETTING_VETTER_RESEND_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <member_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <member_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <member_admin_remove::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <member_purge::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
@@ -2717,5 +3010,653 @@ mod join_discovery_tests {
     #[test]
     fn a_caller_that_proves_nothing_is_unidentified() {
         assert!(!caller_is_identified(&ctx(None, None)));
+    }
+}
+
+/// The admin-facing member verbs, served as signed Trust Task documents —
+/// **#1641 phase 2, batch 1**.
+///
+/// Four tasks (`vtc/members/{credentials,update,admin-remove,purge}`) whose
+/// specifications declare `proof` REQUIRED were served only as flat-payload
+/// REST behind a bearer JWT, so they got none of what the spine enforces: no
+/// proof, no recipient binding, no acceptance window, and nothing in the
+/// accepted-id record. They are now bound here as well.
+///
+/// What these tests hold, and why each one is here:
+///
+/// - **VTI-OPS-020** — the document carries a proof by its issuer, and that
+///   issuer's **ACL entry** is what authorizes the operation. A bearer token is
+///   not read on this endpoint at all.
+/// - **VTI-OPS-025 / -026 / -027** — a redelivered document is answered with
+///   the recorded outcome rather than executed again, a *different* document
+///   under a spent `id` is `idConflict`, and the record is the shared
+///   store-backed one. All three come from the spine's claim; these drive them
+///   through a real admin verb, because the failure they guard against
+///   ("purge executed twice") is only visible at a verb with an effect.
+/// - **The gate the bearer route applied must still refuse what it refused.**
+///   Losing one silently is the risk in the whole migration, so each refusal
+///   the REST extractors made has a test here: not an admin (`AdminAuth`), and
+///   for `purge` a context-scoped admin who is not a super-admin
+///   (`SuperAdminAuth`). Plus the operations' own refusals — unknown member,
+///   `role: admin`.
+#[cfg(test)]
+mod members_admin_tests {
+    use super::*;
+    use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+    use crate::members::{Member, get_member, store_member};
+    use crate::test_support::{TEST_VTC_DID, TestVtc};
+    use serde_json::json;
+    use vti_rooms_dtg::test_support::Party;
+
+    /// The member these documents act on. Never one of the signers, so an
+    /// `admin-remove` cannot collide with the "use /members/me" guard.
+    const TARGET: &str = "did:key:zTargetMember";
+
+    struct Fixture {
+        vtc: TestVtc,
+        /// `VtcRole::Admin`, unrestricted — a super-admin, so every verb here
+        /// including `purge` is open to them.
+        admin: Party,
+        /// `VtcRole::Admin` **scoped to one context** — an admin, but not a
+        /// super-admin. `SuperAdminAuth` refuses this caller and `AdminAuth`
+        /// does not, which is the distinction `purge` rests on.
+        scoped_admin: Party,
+        /// `VtcRole::Member` — authenticated, authorized for none of this.
+        member: Party,
+    }
+
+    async fn seed_acl(vtc: &TestVtc, did: &str, role: VtcRole, contexts: Vec<String>) {
+        store_acl_entry(
+            &vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: did.into(),
+                role,
+                label: None,
+                allowed_contexts: contexts,
+                created_at: 0,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("seed ACL row");
+    }
+
+    async fn fixture() -> Fixture {
+        // `with_audit` because every one of these verbs writes an audit row and
+        // refuses rather than acting when it cannot; `with_signers` because the
+        // removal ceremony re-mints credentials and the spine signs its replies.
+        let vtc = TestVtc::builder()
+            .with_audit(true)
+            .with_signers(true)
+            .build()
+            .await;
+        crate::policy::default::install_defaults(
+            &vtc.state.policies_ks,
+            &vtc.state.active_policies_ks,
+        )
+        .await
+        .expect("install default policies");
+
+        let admin = Party::new();
+        let scoped_admin = Party::new();
+        let member = Party::new();
+        seed_acl(&vtc, &admin.did, VtcRole::Admin, vec![]).await;
+        seed_acl(
+            &vtc,
+            &scoped_admin.did,
+            VtcRole::Admin,
+            vec!["ctx-a".to_string()],
+        )
+        .await;
+        seed_acl(&vtc, &member.did, VtcRole::Member, vec![]).await;
+
+        // The subject these documents name: a member row *and* an ACL row,
+        // which is what `members/credentials` means by "is a member".
+        seed_acl(&vtc, TARGET, VtcRole::Member, vec![]).await;
+        store_member(&vtc.state.members_ks, &Member::fresh(TARGET))
+            .await
+            .expect("seed target member");
+
+        Fixture {
+            vtc,
+            admin,
+            scoped_admin,
+            member,
+        }
+    }
+
+    /// The document as a real producer builds it — `issuer`, `recipient` and
+    /// `issuedAt` set by the SDK's own builder — but unsigned.
+    fn unsigned(from: &Party, type_uri: &str, payload: Value) -> TrustTask<Value> {
+        vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &from.did, TEST_VTC_DID)
+            .expect("build the document")
+    }
+
+    async fn sign(from: &Party, mut doc: TrustTask<Value>) -> TrustTask<Value> {
+        let key =
+            vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+                .expect("a did:key names its own verification method");
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .expect("sign the document");
+        doc
+    }
+
+    async fn signed(from: &Party, type_uri: &str, payload: Value) -> TrustTask<Value> {
+        sign(from, unsigned(from, type_uri, payload)).await
+    }
+
+    async fn dispatch(vtc: &TestVtc, doc: &TrustTask<Value>) -> TrustTaskOutcome {
+        let body = serde_json::to_vec(doc).expect("a document serialises");
+        dispatch_trust_task_core(&vtc.state, &JoinAuthCtx::rest(), &body).await
+    }
+
+    fn body_of(out: &TrustTaskOutcome) -> Value {
+        serde_json::from_slice(&out.body).unwrap_or(Value::Null)
+    }
+
+    /// The `code` of a `trust-task-error` reply, or `None` when the reply is a
+    /// success document.
+    fn error_code(out: &TrustTaskOutcome) -> Option<String> {
+        body_of(out)
+            .pointer("/payload/code")?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    fn payload_of(out: &TrustTaskOutcome) -> Value {
+        body_of(out)
+            .pointer("/payload")
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    /// Validate a success reply's payload against the task's published
+    /// `#response` schema.
+    ///
+    /// The router-level `response_conformance` layer that guards every REST
+    /// route keys on the `Trust-Task` **header**, which the document endpoint
+    /// does not use — so it does not reach these replies, and this is what
+    /// stands in for it. It matters most for `update`, whose arm answers with
+    /// the route's own `MemberEnvelope` rather than the generated type: a drift
+    /// between the two would otherwise be invisible until a client hit it.
+    fn assert_conforms<R: trust_tasks_rs::validate::ValidatedPayload>(out: &TrustTaskOutcome) {
+        let payload = payload_of(out);
+        R::validate_value(&payload).unwrap_or_else(|e| {
+            panic!("response does not match its published schema: {e}\n{payload}")
+        });
+    }
+
+    // ─── the premise ─────────────────────────────────────────────────────
+
+    /// If the registry ever relaxed one of these declarations, every test below
+    /// would be asserting nothing. This one says so first.
+    #[test]
+    fn every_moved_task_declares_the_proof_these_tests_assume() {
+        for uri in [
+            MEMBER_CREDENTIALS_TYPE,
+            MEMBER_UPDATE_TYPE,
+            MEMBER_ADMIN_REMOVE_TYPE,
+            MEMBER_PURGE_TYPE,
+        ] {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
+            assert!(
+                policy.is_proof_required,
+                "{uri} no longer declares proof REQUIRED — these tests now assert \
+                 nothing, and the design note should be re-read"
+            );
+        }
+    }
+
+    // ─── VTI-OPS-020: a proof by the issuer, authorized from their ACL ────
+
+    /// **VTI-OPS-020.** A signed document from an admin is accepted and
+    /// answered with the task's own response shape.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_admin_document_reads_member_credentials() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "a signed admin document must be accepted: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["did"], TARGET);
+        assert_eq!(payload_of(&out)["memberVmcBound"], false);
+        assert_conforms::<member_credentials::Response>(&out);
+    }
+
+    /// **VTI-OPS-020.** The *same* document with its proof stripped is refused
+    /// with the framework's own code — the transport proved nothing and there
+    /// is nothing else to authorize against.
+    #[tokio::test]
+    async fn vti_ops_020_an_unsigned_admin_document_is_refused() {
+        let fix = fixture().await;
+        for uri in [
+            MEMBER_CREDENTIALS_TYPE,
+            MEMBER_UPDATE_TYPE,
+            MEMBER_ADMIN_REMOVE_TYPE,
+            MEMBER_PURGE_TYPE,
+        ] {
+            let doc = unsigned(&fix.admin, uri, json!({ "did": TARGET }));
+            let out = dispatch(&fix.vtc, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{uri}: SPEC §7.2 item 7 names the code: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+        // …and nothing was removed by the unsigned `admin-remove` / `purge`.
+        assert!(
+            get_member(&fix.vtc.state.members_ks, TARGET)
+                .await
+                .expect("read member")
+                .is_some(),
+            "an unsigned document must not have had an effect"
+        );
+    }
+
+    /// Authorization is the **signer's ACL entry**, not a bearer token: a
+    /// correctly signed document from a DID with no admin row is refused, which
+    /// is what `AdminAuth` refused on the REST route.
+    #[tokio::test]
+    async fn a_non_admin_signer_is_refused_every_admin_member_verb() {
+        let fix = fixture().await;
+        for uri in [
+            MEMBER_CREDENTIALS_TYPE,
+            MEMBER_UPDATE_TYPE,
+            MEMBER_ADMIN_REMOVE_TYPE,
+            MEMBER_PURGE_TYPE,
+        ] {
+            let doc = signed(&fix.member, uri, json!({ "did": TARGET })).await;
+            let out = dispatch(&fix.vtc, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("permissionDenied"),
+                "{uri}: a member is not an administrator: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+    }
+
+    /// A DID with **no ACL row at all** is refused the same way — the signature
+    /// verifies, and verifying a signature is not authorization.
+    #[tokio::test]
+    async fn a_signer_with_no_acl_row_is_refused() {
+        let fix = fixture().await;
+        let stranger = Party::new();
+        let doc = signed(&stranger, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
+    }
+
+    /// An **expired** ACL row no longer authorizes, which the bearer route
+    /// could not notice: its JWT was minted while the row was live and nothing
+    /// re-reads it. This is the one place the signed door is strictly stricter.
+    #[tokio::test]
+    async fn an_expired_admin_acl_row_no_longer_authorizes() {
+        let fix = fixture().await;
+        let lapsed = Party::new();
+        store_acl_entry(
+            &fix.vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: lapsed.did.clone(),
+                role: VtcRole::Admin,
+                label: None,
+                allowed_contexts: vec![],
+                created_at: 0,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: Some(1),
+            },
+        )
+        .await
+        .expect("seed a lapsed admin row");
+
+        let doc = signed(&lapsed, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
+    }
+
+    // ─── the scope gate `purge` rests on ─────────────────────────────────
+
+    /// **The `SuperAdminAuth` gate, kept.** `purge` is irreversible and the
+    /// REST route demanded a super-admin; a context-scoped admin passes
+    /// `AdminAuth` and must still be refused here.
+    ///
+    /// Decided through `ActScope`, never `allowed_contexts.is_empty()` — for a
+    /// non-admin that emptiness means the opposite.
+    #[tokio::test]
+    async fn a_context_scoped_admin_may_not_purge() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.scoped_admin,
+            MEMBER_PURGE_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("permissionDenied"),
+            "purge is super-admin only: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert!(
+            get_member(&fix.vtc.state.members_ks, TARGET)
+                .await
+                .expect("read member")
+                .is_some(),
+            "the refused purge must not have erased the member"
+        );
+    }
+
+    /// …and the same caller *is* an administrator for the other three, exactly
+    /// as `AdminAuth` admitted them. A gate copied one notch too tight is as
+    /// much a regression as one copied too loose.
+    #[tokio::test]
+    async fn a_context_scoped_admin_may_still_read_credentials() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.scoped_admin,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "a context-scoped admin passes AdminAuth and must pass here: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    // ─── the operations' own refusals ────────────────────────────────────
+
+    /// The declared `notFound`, carried as a code rather than flattened into
+    /// `taskFailed` — the same code the REST route puts in its body.
+    #[tokio::test]
+    async fn an_unknown_member_is_the_declared_not_found() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": "did:key:zNobodyAtAll" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// `role: admin` is refused with the task's `adminRoleForbidden` on this
+    /// door too. The gate is on the transition, not on the route (#1645), so
+    /// adding a second door must not add a second way past it.
+    #[tokio::test]
+    async fn update_still_refuses_promotion_to_admin() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "role": "admin" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(crate::routes::members::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let acl = get_acl_entry(&fix.vtc.state.acl_ks, TARGET)
+            .await
+            .expect("read ACL")
+            .expect("the target still has a row");
+        assert_eq!(acl.role, VtcRole::Member, "and nothing was changed");
+    }
+
+    /// A metadata update a signed document really does apply.
+    #[tokio::test]
+    async fn update_applies_a_metadata_change_from_a_signed_document() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "label": "Ada Lovelace", "publishConsent": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        assert_conforms::<member_update::Response>(&out);
+
+        let acl = get_acl_entry(&fix.vtc.state.acl_ks, TARGET)
+            .await
+            .expect("read ACL")
+            .expect("row");
+        assert_eq!(acl.label.as_deref(), Some("Ada Lovelace"));
+        // The ACL row records *the signer* as the author of the change, which
+        // is the attribution the task's proof requirement exists for.
+        assert_eq!(acl.updated_by.as_deref(), Some(fix.admin.did.as_str()));
+    }
+
+    /// An **omitted** `extensions` leaves the member's own extensions alone.
+    ///
+    /// The generated payload types `extensions` as a plain map with `default`,
+    /// so absent and empty are one value once parsed — and mapping that
+    /// straight through would silently clear the bag on every update that did
+    /// not mention it. The handler reads the raw payload for exactly this.
+    #[tokio::test]
+    async fn an_omitted_extensions_member_does_not_clear_the_bag() {
+        let fix = fixture().await;
+        let mut member = Member::fresh(TARGET);
+        member.extensions = json!({ "org": "acme" });
+        store_member(&fix.vtc.state.members_ks, &member)
+            .await
+            .expect("seed extensions");
+
+        let doc = signed(
+            &fix.admin,
+            MEMBER_UPDATE_TYPE,
+            json!({ "did": TARGET, "publishConsent": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        let after = get_member(&fix.vtc.state.members_ks, TARGET)
+            .await
+            .expect("read member")
+            .expect("row");
+        assert_eq!(after.extensions, json!({ "org": "acme" }));
+    }
+
+    /// An administrator removing another member, over the signed door.
+    #[tokio::test]
+    async fn admin_remove_departs_the_member_from_a_signed_document() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_ADMIN_REMOVE_TYPE,
+            json!({ "did": TARGET, "reason": "ToS violation" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["did"], TARGET);
+        assert_eq!(payload_of(&out)["removed"], true);
+        assert_conforms::<member_admin_remove::Response>(&out);
+        assert!(
+            get_acl_entry(&fix.vtc.state.acl_ks, TARGET)
+                .await
+                .expect("read ACL")
+                .is_none(),
+            "the departed member keeps no authorization"
+        );
+    }
+
+    /// A super-admin purging a member, over the signed door.
+    #[tokio::test]
+    async fn purge_erases_the_member_from_a_signed_document() {
+        let fix = fixture().await;
+        let doc = signed(&fix.admin, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_conforms::<member_purge::Response>(&out);
+        assert!(
+            get_member(&fix.vtc.state.members_ks, TARGET)
+                .await
+                .expect("read member")
+                .is_none(),
+            "purge erases the row"
+        );
+    }
+
+    // ─── VTI-OPS-025 / -026 / -027: the accepted-id record ───────────────
+
+    /// **VTI-OPS-025.** A redelivered document is answered with the outcome
+    /// already recorded for it, not executed a second time.
+    ///
+    /// Driven through `purge`, because that is where a second execution would
+    /// actually show: the member is gone after the first, so re-running would
+    /// answer the declared `notFound` instead of the original success.
+    #[tokio::test]
+    async fn vti_ops_025_a_redelivered_document_is_answered_not_re_executed() {
+        let fix = fixture().await;
+        let doc = signed(&fix.admin, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
+
+        let first = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            first.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&first.body)
+        );
+
+        let second = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            second.status.is_success(),
+            "the redelivery must be answered, not refused: {}",
+            String::from_utf8_lossy(&second.body)
+        );
+        assert_eq!(
+            payload_of(&second),
+            payload_of(&first),
+            "the recorded outcome is what a redelivery is answered with"
+        );
+    }
+
+    /// **VTI-OPS-026.** A *different* document under an already-spent `id` is
+    /// `idConflict` — not absorbed as a retry, and not executed.
+    #[tokio::test]
+    async fn vti_ops_026_a_different_document_under_a_spent_id_conflicts() {
+        let fix = fixture().await;
+        let second_target = "did:key:zSecondTarget";
+        seed_acl(&fix.vtc, second_target, VtcRole::Member, vec![]).await;
+        store_member(&fix.vtc.state.members_ks, &Member::fresh(second_target))
+            .await
+            .expect("seed second member");
+
+        let first = signed(&fix.admin, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &first).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        // Same `id`, different subject — the shape the record exists to catch.
+        let mut collider = unsigned(
+            &fix.admin,
+            MEMBER_PURGE_TYPE,
+            json!({ "did": second_target }),
+        );
+        collider.id.clone_from(&first.id);
+        let collider = sign(&fix.admin, collider).await;
+        let out = dispatch(&fix.vtc, &collider).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("idConflict"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert!(
+            get_member(&fix.vtc.state.members_ks, second_target)
+                .await
+                .expect("read member")
+                .is_some(),
+            "the conflicting document must not have executed"
+        );
+    }
+
+    /// **VTI-OPS-027.** The record these verbs consult is the shared,
+    /// store-backed one, reachable from any binding — not a map private to this
+    /// dispatcher. Read back through `AppState::accepted_ids`, which is the
+    /// handle a second binding would use.
+    #[tokio::test]
+    async fn vti_ops_027_the_spent_id_is_visible_to_any_binding() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        let now = chrono::Utc::now();
+        let again = fix
+            .vtc
+            .state
+            .accepted_ids()
+            .claim(&doc, retain_until(&doc, now), now)
+            .await
+            .expect("the record is readable");
+        assert!(
+            matches!(again, accepted_ids::Acceptance::Duplicate { .. }),
+            "a second binding must see the id the dispatcher spent"
+        );
     }
 }
