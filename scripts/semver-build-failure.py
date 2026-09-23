@@ -85,6 +85,9 @@ def classify(lines: list[str]) -> list[Failure]:
         m = BUILDING.match(stripped)
         if m:
             last_build = (m["crate"], m["version"], m["side"])
+            # The tool has moved on to the next build, so whatever it was
+            # printing about the last failure has ended.
+            collecting_repro = False
             continue
 
         m = CARGO_DOC_FAILED.match(stripped)
