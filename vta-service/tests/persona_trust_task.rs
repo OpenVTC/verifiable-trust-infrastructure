@@ -4105,3 +4105,105 @@ async fn a_face_is_worn_here_as_the_persona_the_holder_already_uses() {
         .collect();
     assert_eq!(named, vec!["did:key:z6MkOne", "did:key:z6MkTwo"]);
 }
+
+/// The correlation flag on a context-local write is the holder's, and a
+/// context-scoped caller is told nothing.
+///
+/// `matchesPoolValue` answers the agent-wide index — "does the holder hold this
+/// exact value anywhere". A caller that can write is a caller that can guess, so
+/// handing that answer to anyone authorized in one context is an unbounded
+/// oracle over the whole pool, one guess per write. No value crosses the
+/// boundary and none needs to: for a name or a date of birth, a confirmed guess
+/// is disclosure.
+///
+/// The holder still learns it, which is the half that must not be lost — the
+/// audit row records it whoever asked.
+#[tokio::test]
+async fn the_correlation_flag_on_a_local_write_is_answered_only_to_the_holder() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed_holder(&ctx, "oracle-holder", &[]).await;
+    // Somebody else, authorized in the context and nothing more — an
+    // application, or an administrator of that one context.
+    let scoped = authed_other(&ctx, "oracle-scoped", &[CTX]).await;
+
+    // A value the holder holds in their pool, so the flag would read `true`.
+    put_attribute(&router, &holder, "email.personal", "ada@example.org").await;
+
+    let local = |token: String| {
+        let router = router.clone();
+        async move {
+            post_as_or_post(
+                &router,
+                &token,
+                json!({
+                    "contextId": CTX,
+                    "name": "guess",
+                    // No `provenance`: the schema has no such member for a
+                    // context-local entry, and refuses one. A value authored
+                    // inside a context is self-asserted by construction.
+                    "entries": [{
+                        "inline": {
+                            "type": "email.personal",
+                            "value": "ada@example.org",
+                            "valueType": "string",
+                        }
+                    }],
+                }),
+            )
+            .await
+        }
+    };
+
+    // The holder is told, because the warning that a throwaway is reusing a
+    // real value is the reason the write is indexed at all.
+    let (status, body) = local(holder).await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/put: {status} {body}"
+    );
+    assert_eq!(
+        payload_of(&body)["correlation"]["matchesPoolValue"],
+        json!(true),
+        "the holder was not told their throwaway reuses a real value: {body}"
+    );
+
+    // The context is told nothing — not a softer answer, no member at all.
+    let (status, body) = local(scoped).await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/put: {status} {body}"
+    );
+    assert!(
+        payload_of(&body).get("correlation").is_none(),
+        "a context-scoped caller was handed the agent-wide correlation answer: {body}"
+    );
+}
+
+/// POST `local/profile/put` as whichever identity the token belongs to.
+///
+/// The two callers in the test above sign as different identities, and SPEC
+/// §7.2 item 6 refuses a document whose issuer disagrees with the transport
+/// identity, so the envelope has to follow the token.
+async fn post_as_or_post(
+    router: &axum::Router,
+    token: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    if token_did(token) == vta_service::test_support::did_for_seed(OTHER_SEED).0 {
+        post_as_other(router, token, LOCAL_PROFILE_PUT, payload).await
+    } else {
+        post(router, token, LOCAL_PROFILE_PUT, payload).await
+    }
+}
+
+/// The `sub` of a JWT, read without verifying it — this is a test helper
+/// deciding which envelope to build, not a security check.
+fn token_did(token: &str) -> String {
+    let payload = token.split('.').nth(1).unwrap_or_default();
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+        .unwrap_or_default();
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|v| v.get("sub").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default()
+}
