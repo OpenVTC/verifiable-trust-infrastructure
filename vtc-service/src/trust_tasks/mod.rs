@@ -134,6 +134,11 @@ pub(crate) struct JoinAuthCtx {
 
 impl JoinAuthCtx {
     /// The DIDComm context: the authcrypt sender is the proven holder.
+    ///
+    /// The envelope arm builds its context field by field, because an
+    /// unauthenticated sender there is `None` rather than a refusal; this
+    /// shorthand is for a caller that already holds a proven DID.
+    #[allow(dead_code)]
     pub fn didcomm(sender_did: String) -> Self {
         Self {
             transport: JoinTransport::DIDComm,
@@ -1833,15 +1838,14 @@ async fn handle_status(
 /// `members/self-remove/0.1` as a Trust Task document — the member-initiated
 /// leave (R-L-1).
 ///
-/// Same spine as the DIDComm protocol-message handler
-/// (`messaging::member_self_remove_handler`): actor == subject, and the leave
-/// policy allows self-leave unconditionally (spec §10.2) with the
-/// no-last-admin invariant still enforced in the effect stage. What the
-/// document form adds is reach — a member can now perform it over **any**
-/// transport this dispatcher serves, TSP included, rather than DIDComm only.
+/// Actor == subject, and the leave policy allows self-leave unconditionally
+/// (spec §10.2) with the no-last-admin invariant still enforced in the effect
+/// stage. A member performs it over any transport this dispatcher serves —
+/// over DIDComm, in the binding envelope.
 ///
-/// The bare-body handler stays for existing senders; both produce the same
-/// receipt payload, so a migrating client sees no behaviour change.
+/// The bare-body DIDComm handler that predated this (typed as the task, with
+/// none of the spine's freshness, recipient or proof checks) was retired for
+/// Keyring VTI-42; this is now the only path.
 /// `vtc/join-requests/supplement/0.1` — the applicant answers the community's
 /// request for more evidence, against the request they already have open.
 ///

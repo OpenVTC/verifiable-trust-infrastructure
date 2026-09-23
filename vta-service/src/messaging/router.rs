@@ -610,3 +610,125 @@ pub async fn dispatch(
     // ── Fallback ─────────────────────────────────────────────────────
     finish(handlers::handle_unknown(ctx, msg).await)
 }
+
+/// Keyring VTI-42: the DIDComm binding envelope is the only carriage for a
+/// Trust Task (`bindings/didcomm/0.2` §2–§5).
+///
+/// Driven by the dispatcher's own list, so a verb added to the spine is
+/// covered without anybody remembering to add it here — the failure this
+/// router used to have on the VTC side.
+#[cfg(all(test, feature = "didcomm"))]
+mod envelope_only_carriage {
+    use super::*;
+    use serde_json::json;
+    use trust_tasks_didcomm::ENVELOPE_TYPE;
+
+    /// A sender the VTA has never heard of: the spine must still *answer* —
+    /// with a refusal — which is only reachable past the router.
+    const STRANGER: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    /// Served URIs that also have a task-typed arm in [`dispatch`]. Both have
+    /// task-typed senders: `vta_sdk::provision_integration::didcomm` still
+    /// sends `provision/integration` typed as the task, and the `swap-key` arm
+    /// shares its handler with the pre-envelope FPN `swap-acl` message. So
+    /// retiring either is a client migration first, not a router edit. Only
+    /// shrinks.
+    #[cfg(feature = "webvh")]
+    const LEGACY_TASK_TYPED_ARMS: &[&str] = &[
+        vta_sdk::protocols::acl_management::ACL_SWAP_KEY,
+        provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_3,
+    ];
+    #[cfg(not(feature = "webvh"))]
+    const LEGACY_TASK_TYPED_ARMS: &[&str] = &[vta_sdk::protocols::acl_management::ACL_SWAP_KEY];
+
+    fn problem_comment(resp: &DIDCommResponse) -> Option<&str> {
+        (resp.type_ == vta_sdk::protocols::PROBLEM_REPORT_TYPE)
+            .then(|| resp.body.get("comment").and_then(|c| c.as_str()))
+            .flatten()
+    }
+
+    #[tokio::test]
+    async fn every_dispatched_uri_is_served_in_the_envelope_and_refused_typed_as_itself() {
+        let (app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_state = Arc::new(VtaState::from(&app_state));
+        let uris = crate::trust_tasks::dispatched_uris();
+        assert!(!uris.is_empty(), "the dispatcher serves nothing?");
+        let mut typed_arm: Vec<&str> = Vec::new();
+
+        for uri in uris {
+            let doc = json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": uri,
+                "issuer": STRANGER,
+                "payload": {},
+            });
+
+            // Enveloped: reaches the spine, answered in the envelope.
+            let req_id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+            let msg = Message::build(req_id.clone(), ENVELOPE_TYPE.to_string(), doc.clone())
+                .from(STRANGER.to_string())
+                .finalize();
+            let ctx = HandlerContext {
+                sender_did: Some(STRANGER.to_string()),
+            };
+            let resp = dispatch(msg, ctx, vta_state.clone(), app_state.clone())
+                .await
+                .unwrap_or_else(|| panic!("`{uri}` in the envelope got no reply at all"));
+            assert!(
+                !problem_comment(&resp).is_some_and(|c| c.contains("unsupported message type")),
+                "`{uri}` is dispatched, but the router refused its envelope: {:?}",
+                resp.body
+            );
+            assert_eq!(
+                resp.type_, ENVELOPE_TYPE,
+                "`{uri}`: a reply to an enveloped request rides the envelope (binding §5)"
+            );
+
+            // Typed as the task: refused at the DIDComm layer, naming the
+            // envelope, threaded to the request.
+            let req_id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+            let msg = Message::build(req_id.clone(), uri.to_string(), doc)
+                .from(STRANGER.to_string())
+                .finalize();
+            let ctx = HandlerContext {
+                sender_did: Some(STRANGER.to_string()),
+            };
+            let resp = dispatch(msg, ctx, vta_state.clone(), app_state.clone())
+                .await
+                .unwrap_or_else(|| panic!("`{uri}` typed as itself got no reply at all"));
+            let refused = problem_comment(&resp).is_some_and(|c| c.contains(ENVELOPE_TYPE));
+            if !refused {
+                typed_arm.push(uri);
+                continue;
+            }
+            assert_eq!(
+                resp.thid.as_deref(),
+                Some(req_id.as_str()),
+                "`{uri}`: unthreaded"
+            );
+        }
+
+        // A served URI the router *also* answers typed as itself is a legacy
+        // task-typed arm (the binding says it must be refused). The VTA keeps
+        // these for now — they predate the envelope and have callers — so they
+        // are pinned here instead: the list may only shrink, and an entry that
+        // no longer has an arm fails, so it cannot go stale.
+        typed_arm.sort_unstable();
+        let mut expected = LEGACY_TASK_TYPED_ARMS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            typed_arm, expected,
+            "the served URIs the router still answers typed as the task changed. A new one \
+             is a regression — carry it in the envelope instead; a removed one should be \
+             deleted from `LEGACY_TASK_TYPED_ARMS`"
+        );
+    }
+
+    /// Not every unknown type is a Trust Task, and those keep the plain answer.
+    #[test]
+    fn a_non_trust_task_type_is_not_told_about_the_envelope() {
+        assert!(
+            handlers::trust_task_needs_envelope("https://example.com/protocols/x/1.0/y").is_none()
+        );
+    }
+}
