@@ -690,10 +690,13 @@ mod didcomm_harness {
     use super::TestVtc;
 
     /// Wrap a verb payload into a Trust Task **document** ready to ride a
-    /// DIDComm message body: `type` = the verb URI, `issuer` = the authcrypt
-    /// sender, `recipient` = the VTC DID (the framework recipient binding),
-    /// and a far-future `expiresAt`. Over DIDComm the authcrypt sender
-    /// authenticates the holder, so the document carries no `proof`.
+    /// DIDComm or TSP body: `type` = the verb URI, `issuer` = the sender,
+    /// `recipient` = the VTC DID (the framework recipient binding), and a
+    /// far-future `expiresAt`.
+    ///
+    /// **Unsigned.** Use it only for a task whose specification declares
+    /// `proof` OPTIONAL, or for a case that is *about* a missing proof;
+    /// [`sign_trust_task`] is what a real producer sends.
     fn wrap_trust_task(typ: &str, issuer: &str, recipient: &str, payload: Value) -> Value {
         json!({
             "type": typ,
@@ -704,6 +707,44 @@ mod didcomm_harness {
             "expiresAt": "2099-01-01T00:00:00Z",
             "payload": payload,
         })
+    }
+
+    /// Attach `signer`'s `eddsa-jcs-2022` Data-Integrity proof to a document
+    /// built by [`wrap_trust_task`].
+    ///
+    /// # Why the harness signs at all
+    ///
+    /// It did not, until #1672. The comment on [`wrap_trust_task`] read "over
+    /// DIDComm the authcrypt sender authenticates the holder, so the document
+    /// carries no `proof`", which was this repository's rule and is not the
+    /// specification's: VTI-OPS-021 says a transport that authenticates its
+    /// sender "MUST NOT be treated as relieving a producer of addressing or
+    /// signing the document it sends", and twenty of the twenty-six tasks this
+    /// service dispatches declare `proof` REQUIRED. #1659 enforced that behind
+    /// a config switch; #1672 made it unconditional, and a harness that still
+    /// sent unsigned documents would from then on be exercising a wire shape no
+    /// client produces — every one of these journeys would stop at
+    /// `proofRequired` before reaching the behaviour under test.
+    ///
+    /// The signer is the applicant's own `did:peer` authentication key, so the
+    /// document's `issuer` and the authcrypt sender stay the same party. That
+    /// matters beyond tidiness: the spine binds the proof to the in-band
+    /// `issuer` (SPEC §4.7), and every assertion in these tests names the
+    /// applicant by its `did:peer`.
+    async fn sign_trust_task(doc: Value, signer: &Secret) -> Value {
+        let mut doc: trust_tasks_rs::TrustTask<Value> =
+            serde_json::from_value(doc).expect("the harness document is a Trust Task");
+        let key = vta_sdk::trust_task_sign::HolderKey::new(
+            signer.id.clone(),
+            signer
+                .get_private_keymultibase()
+                .expect("the applicant's signing key encodes as a multikey"),
+        )
+        .expect("a did:peer secret id names its own verification method");
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .expect("sign the Trust Task document");
+        serde_json::to_value(&doc).expect("a signed Trust Task serialises")
     }
 
     /// `true` if a reply message type names an error envelope — a DIDComm
@@ -929,6 +970,13 @@ mod didcomm_harness {
         /// A standalone holder signing key for building demo `vp_token`s via
         /// `vta_sdk::vp` — its `id` is a `did:key`.
         holder_secret: Secret,
+        /// The applicant's own `did:peer` Ed25519 authentication key, used to
+        /// sign every Trust Task document this client sends (see
+        /// [`sign_trust_task`]). It is `transport_secrets[0]` — `peer_key_roles`
+        /// puts the `Verification` key first and `generate_did_peer_with_services`
+        /// names it `<did:peer>#key-1`, which is what the proof's
+        /// `verificationMethod` has to be for the spine to resolve it.
+        signing_secret: Secret,
         inbox: Mutex<VecDeque<Received>>,
         /// When set (the default), [`recv_matching`](Self::recv_matching) panics
         /// on any inbound problem-report — the right ergonomics for a happy-path
@@ -946,6 +994,11 @@ mod didcomm_harness {
             mediator_did: String,
             holder_secret: Secret,
         ) -> Self {
+            let signing_secret = transport_secrets
+                .iter()
+                .find(|s| s.id.ends_with("#key-1"))
+                .expect("the applicant did:peer carries its Ed25519 authentication key first")
+                .clone();
             let atm = build_atm(transport_secrets).await;
             let profile = ATMProfile::new(&atm, None, did.clone(), Some(mediator_did.clone()))
                 .await
@@ -965,6 +1018,7 @@ mod didcomm_harness {
                 did,
                 mediator_did,
                 holder_secret,
+                signing_secret,
                 inbox: Mutex::new(VecDeque::new()),
                 panic_on_problem_report: AtomicBool::new(true),
             }
@@ -990,6 +1044,17 @@ mod didcomm_harness {
         /// manifest's DCQL via `vta_sdk::vp::build_vp_token`.
         pub fn holder_secret(&self) -> &Secret {
             &self.holder_secret
+        }
+
+        /// The Trust Task document this client puts on the wire: addressed to
+        /// `vtc_did`, issued by this applicant, and **signed** by it.
+        ///
+        /// One place, so the three senders below (task-typed DIDComm,
+        /// enveloped DIDComm, TSP) cannot disagree about what a producer sends.
+        /// See [`sign_trust_task`] for why the signature is here at all.
+        async fn document(&self, typ: &str, vtc_did: &str, payload: Value) -> Value {
+            let doc = wrap_trust_task(typ, &self.did, vtc_did, payload);
+            sign_trust_task(doc, &self.signing_secret).await
         }
 
         /// Await the next inbound Trust-Task envelope, whatever it is threaded
@@ -1050,7 +1115,7 @@ mod didcomm_harness {
             timeout: Duration,
         ) -> ReplyOutcome {
             let req_id = Uuid::new_v4().to_string();
-            let doc = wrap_trust_task(typ, &self.did, vtc_did, body);
+            let doc = self.document(typ, vtc_did, body).await;
             let msg = Message::build(
                 req_id.clone(),
                 vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
@@ -1104,7 +1169,7 @@ mod didcomm_harness {
             let req_id = Uuid::new_v4().to_string();
             // Wrap the verb payload into a Trust Task document addressed to the
             // VTC; the DIDComm message `type` mirrors the document `type`.
-            let doc = wrap_trust_task(typ, &self.did, vtc_did, body);
+            let doc = self.document(typ, vtc_did, body).await;
             let msg = Message::build(req_id.clone(), typ.to_string(), doc)
                 .from(self.did.clone())
                 .to(vtc_did.to_string())
@@ -1211,7 +1276,7 @@ mod didcomm_harness {
             payload: Value,
             carriage: Carriage,
         ) {
-            let doc = wrap_trust_task(typ, &self.did, vtc_did, payload);
+            let doc = self.document(typ, vtc_did, payload).await;
             let document = serde_json::to_vec(&doc).expect("serialise Trust Task document");
             let bytes = match carriage {
                 Carriage::BindingEnvelope => vta_sdk::tsp_binding::wrap_envelope(&document),

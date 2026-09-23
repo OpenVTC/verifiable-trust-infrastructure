@@ -159,8 +159,10 @@ impl JoinAuthCtx {
 /// duplicate-execution record (VTI-OPS-025…027). Every one of them is reached
 /// identically from REST, DIDComm and TSP, which is VTI-OPS-021's point.
 ///
-/// `docs/05-design-notes/vtc-trust-task-proof-enforcement.md` has the whole
-/// argument, including the one transitional allowance and what ends it.
+/// Every one of those checks is unconditional. There is no configuration that
+/// relaxes any of them — `docs/05-design-notes/vtc-trust-task-proof-enforcement.md`
+/// has the whole argument, including the one transitional allowance #1641
+/// shipped with and why it is gone.
 pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -190,13 +192,7 @@ pub(crate) async fn dispatch_trust_task_core(
     //    recipient binding (document `recipient` must equal this VTC's DID) is
     //    the replay defence that the bespoke `audience` field used to provide.
     //    Skipped while the VTC has no DID configured (setup).
-    let (vtc_did, require_declared_proof) = {
-        let config = state.config.read().await;
-        (
-            config.vtc_did.clone(),
-            config.trust_tasks.require_declared_proof,
-        )
-    };
+    let vtc_did = state.config.read().await.vtc_did.clone();
     if let Some(vtc_did) = vtc_did
         && let Err(reason) = doc.validate_basic(now, &vtc_did)
     {
@@ -247,22 +243,30 @@ pub(crate) async fn dispatch_trust_task_core(
     // requirement is published elsewhere is a list that drifts, and the
     // requirement moves when the specification does.
     //
+    // The policy is enforced **as the registry states it**. #1641 shipped with
+    // one transitional narrowing — `require_declared_proof = false` cleared
+    // `is_proof_required` where the transport had authenticated the sender,
+    // because `openvtc-core` sent five of these documents unsigned. openvtc#371
+    // signs them, which was that switch's stated removal condition, so the
+    // narrowing and the config key are gone. Nothing may reintroduce a
+    // per-deployment relaxation here: VTI-OPS-093 forbids a binding weakening a
+    // document requirement on a transport property, and a switch that lets an
+    // operator do it is the same weakening with a longer path.
+    //
     // `None` means this build knows no specification for the URI. The
     // dispatcher refuses an unrouted URI a few lines below
     // (`unsupported_type_or_version`), so there is no silently-unchecked task
     // here — only tasks whose definitions this build cannot read, which is the
     // `rooms/*`-shaped case the arms guard for themselves.
-    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri) {
-        let policy =
-            narrow_for_transitional_allowance(policy, &doc, ctx, require_declared_proof, &type_uri);
-        if let Err(reason) = policy.enforce(&doc) {
-            tracing::info!(
-                type_uri,
-                ?reason,
-                "document refused by its specification's own policy"
-            );
-            return reject_with(&doc, reason);
-        }
+    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+        && let Err(reason) = policy.enforce(&doc)
+    {
+        tracing::info!(
+            type_uri,
+            ?reason,
+            "document refused by its specification's own policy"
+        );
+        return reject_with(&doc, reason);
     }
 
     // 3. Framework §7.2 item 7, *first* clause — the proof, verified here
@@ -446,59 +450,6 @@ pub(crate) async fn dispatch_trust_task_core(
 /// and making this durable is the change to make when one is.
 static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
     std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
-
-/// The specification's policy with the **one** transitional allowance applied,
-/// or unchanged — see [`crate::config::TrustTasksConfig::require_declared_proof`]
-/// for why the allowance exists and what ends it.
-///
-/// Returns a *policy*, not a decision about a refusal, so every other rule
-/// `SpecPolicy::enforce` applies still runs. That distinction is load-bearing:
-/// `enforce` returns on its first failure, so skipping the whole call on a
-/// waived `proofRequired` would also skip the `issuedAt` and audience-binding
-/// rules that come after it, and a flag-driven rule the library adds later
-/// would arrive inside a branch somebody had to remember to narrow. Narrowing
-/// the input instead means the allowance can only ever relax the one flag it
-/// names.
-///
-/// Three conditions, all required:
-///
-/// 1. the specification declares `proof` REQUIRED and the document carries
-///    none — a *missing* proof, never an invalid one;
-/// 2. the operator has not turned enforcement on; and
-/// 3. the transport authenticated the sender. Over REST nothing does, so a
-///    REST document with no proof is refused whatever this is set to — which
-///    is the whole point of the allowance: it substitutes one form of
-///    attribution for another, and cannot substitute for none.
-///
-/// Every waiver logs, at `warn!`, naming the requirement it is standing down
-/// and the task it stood down for. A carve-out nobody can count is how the
-/// divergence this closes came to be.
-fn narrow_for_transitional_allowance(
-    policy: trust_tasks_rs::SpecPolicy,
-    doc: &TrustTask<Value>,
-    ctx: &JoinAuthCtx,
-    require_declared_proof: bool,
-    type_uri: &str,
-) -> trust_tasks_rs::SpecPolicy {
-    if require_declared_proof || !policy.is_proof_required || doc.proof.is_some() {
-        return policy;
-    }
-    let Some(sender) = ctx.sender_did.as_deref() else {
-        return policy;
-    };
-    tracing::warn!(
-        type_uri,
-        sender,
-        requirement = "VTI-OPS-021",
-        "accepting a document with no proof for a task whose specification declares one \
-         REQUIRED, on the strength of the transport-authenticated sender alone. Set \
-         `[trust_tasks] require_declared_proof = true` to refuse it.",
-    );
-    trust_tasks_rs::SpecPolicy {
-        is_proof_required: false,
-        ..policy
-    }
-}
 
 /// The acceptance window this VTC is willing to act inside — **VTI-OPS-024**,
 /// SPEC §7.2 item 13, and the bound [`REPLAY_GUARD`]'s retention is derived
@@ -743,10 +694,15 @@ async fn dispatch_typed(
 /// Three documents refuse the leniency outright — VTI-OPS-021, VTI-OPS-093, and
 /// the DIDComm binding's own §5 ("a *Trust Task specification* that declares
 /// `proof` as REQUIRED overrides this binding-level allowance"). So the gate is
-/// now the specification's, the outage it predicted is real for exactly one
-/// client, and that client is named in
-/// [`crate::config::TrustTasksConfig::require_declared_proof`] rather than
-/// papered over here.
+/// now the specification's, and the outage it predicted was real for exactly
+/// one client: `openvtc-core`, which sent five of these documents unsigned.
+///
+/// #1641 met that by gating the refusal behind `[trust_tasks]
+/// require_declared_proof`, default `false`, whose rustdoc carried an exact
+/// removal condition — "when `openvtc-core` signs the five documents above, the
+/// default flips and this field goes with it". openvtc#371 signs them, so the
+/// gate is gone and every test here now asserts against the requirement
+/// directly, on all three transports.
 ///
 /// See `docs/05-design-notes/vtc-trust-task-proof-enforcement.md`.
 #[cfg(test)]
@@ -1061,78 +1017,104 @@ mod spine_proof_tests {
         );
     }
 
-    /// **VTI-OPS-021 / VTI-OPS-093.** The transitional allowance in
-    /// [`crate::config::TrustTasksConfig::require_declared_proof`] does **not**
-    /// reach a REST document. Over REST nothing authenticates the sender, so
-    /// there is no attribution for a missing proof to be substituted by — and
-    /// the allowance is a substitution, not a suspension.
+    /// **VTI-OPS-021 / VTI-OPS-093.** One unsigned document, offered on every
+    /// transport this service accepts, refused on every one of them.
+    ///
+    /// # Why this replaced three tests, and why the conclusion moved
+    ///
+    /// #1641 shipped this ground as three: a REST document was refused; the
+    /// same document over DIDComm, carrying an authcrypt sender, was
+    /// **accepted** under the shipped default; and it was refused once the
+    /// operator set `[trust_tasks] require_declared_proof = true`. The middle
+    /// one existed to pin a transitional allowance, so that flipping the
+    /// default would be "a visible change to a test rather than a silent
+    /// change in behaviour". This is that change, made visible.
+    ///
+    /// The allowance had exactly one reason: `openvtc-core` built
+    /// `join-requests/{submit,status}`, `members/{self-remove,vmc}` and
+    /// `members/personhood/assert` with no proof attached. openvtc#371 signs
+    /// all five, which is the removal condition #1659 wrote down. So the
+    /// assertion is not relaxed to match the code — it is inverted to match a
+    /// requirement that never had a transport term in it: "a node MUST apply
+    /// the same document requirements on every transport", and a transport that
+    /// authenticates its sender "MUST NOT be treated as relieving a producer of
+    /// addressing or signing the document it sends".
+    ///
+    /// Driving all three transports from one body is the point rather than
+    /// thoroughness: the old tests each asserted about a single transport, so
+    /// between them they could have agreed with VTI-OPS-021 on two and
+    /// disagreed on the third without anything noticing.
     #[tokio::test]
-    async fn vti_ops_093_the_transitional_allowance_never_reaches_rest() {
-        let tv = build_test_vtc().await;
-        assert!(
-            !tv.state
-                .config
-                .read()
-                .await
-                .trust_tasks
-                .require_declared_proof,
-            "the fixture runs with the shipped default, which is the lenient one"
-        );
-        let h = holder();
-
-        assert_eq!(
-            error_code(&dispatch(&tv.state, &unsigned(&h, UNDER_TEST, json!({}))).await).as_deref(),
-            Some("proofRequired"),
-            "a REST document has no transport-authenticated sender to stand in"
-        );
-    }
-
-    /// The allowance, where it does apply: a transport-authenticated sender
-    /// over DIDComm, under the shipped default. This is the one path #1641
-    /// leaves open, and it is pinned so that flipping the default is a visible
-    /// change to a test rather than a silent change in behaviour.
-    #[tokio::test]
-    async fn vti_ops_021_a_transport_authenticated_sender_is_accepted_while_the_allowance_stands() {
+    async fn vti_ops_021_a_missing_proof_is_refused_on_every_transport() {
         let tv = build_test_vtc().await;
         let h = holder();
         let body =
             serde_json::to_vec(&unsigned(&h, UNDER_TEST, json!({}))).expect("serialise document");
 
-        let out =
-            dispatch_trust_task_core(&tv.state, &JoinAuthCtx::didcomm(h.did.clone()), &body).await;
+        for ctx in [
+            JoinAuthCtx::rest(),
+            JoinAuthCtx::didcomm(h.did.clone()),
+            // TSP, whose sender VID is authenticated the way authcrypt's sender
+            // is. It has no constructor — the messaging bridge builds one
+            // inline — so this is that shape, written out.
+            JoinAuthCtx {
+                transport: JoinTransport::Tsp,
+                sender_did: Some(h.did.clone()),
+                verified_signer: None,
+            },
+        ] {
+            let transport = ctx.transport.as_str();
+            let out = dispatch_trust_task_core(&tv.state, &ctx, &body).await;
 
-        assert_ne!(
-            error_code(&out).as_deref(),
-            Some("proofRequired"),
-            "while `require_declared_proof` is false, an authcrypt sender stands in: {}",
-            String::from_utf8_lossy(&out.body)
-        );
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{transport}: an authenticated sender is not a proof by the issuer: {}",
+                String::from_utf8_lossy(&out.body),
+            );
+        }
     }
 
-    /// …and does not once the operator turns enforcement on. Same document,
-    /// same transport, one config line apart.
+    /// …and the refusal is about the missing proof, not about the transport.
+    ///
+    /// Without this, the test above would pass equally on a spine that refused
+    /// every DIDComm and TSP document outright — which is a way of satisfying
+    /// "the same requirements on every transport" that takes the community
+    /// offline. Each iteration signs a fresh document: the same one dispatched
+    /// three times is a replay, and the second answer would be a replay of the
+    /// first rather than a new decision.
     #[tokio::test]
-    async fn vti_ops_021_the_same_didcomm_document_is_refused_once_enforcement_is_on() {
+    async fn vti_ops_021_the_same_document_signed_is_accepted_on_every_transport() {
         let tv = build_test_vtc().await;
-        tv.state
-            .config
-            .write()
-            .await
-            .trust_tasks
-            .require_declared_proof = true;
         let h = holder();
-        let body =
-            serde_json::to_vec(&unsigned(&h, UNDER_TEST, json!({}))).expect("serialise document");
 
-        let out =
-            dispatch_trust_task_core(&tv.state, &JoinAuthCtx::didcomm(h.did.clone()), &body).await;
+        for ctx in [
+            JoinAuthCtx::rest(),
+            JoinAuthCtx::didcomm(h.did.clone()),
+            JoinAuthCtx {
+                transport: JoinTransport::Tsp,
+                sender_did: Some(h.did.clone()),
+                verified_signer: None,
+            },
+        ] {
+            let transport = ctx.transport.as_str();
+            let doc = signed(&h, unsigned(&h, UNDER_TEST, json!({}))).await;
+            let body = serde_json::to_vec(&doc).expect("serialise document");
+            let out = dispatch_trust_task_core(&tv.state, &ctx, &body).await;
 
-        assert_eq!(
-            error_code(&out).as_deref(),
-            Some("proofRequired"),
-            "{}",
-            String::from_utf8_lossy(&out.body)
-        );
+            assert_ne!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{transport}: a signed document must reach its handler: {}",
+                String::from_utf8_lossy(&out.body),
+            );
+            assert_ne!(
+                error_code(&out).as_deref(),
+                Some("proofInvalid"),
+                "{transport}: the spine must accept a proof it can verify: {}",
+                String::from_utf8_lossy(&out.body),
+            );
+        }
     }
 
     /// The rooms family, where the requirement was already enforced by the
@@ -2469,6 +2451,7 @@ mod tests {
         use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
         use crate::test_support::TestVtc;
         use serde_json::json;
+        use vti_rooms_dtg::test_support::Party;
 
         const MEMBER: &str = "did:key:zPersonhoodMember";
         const STRANGER: &str = "did:key:zNotAMember";
@@ -2503,10 +2486,15 @@ mod tests {
         /// `recipient` are both required of these specifications, and the spine
         /// enforces them ahead of any handler since #1641; a bare
         /// `TrustTask::new` was refused as `malformedRequest` before the verb
-        /// under test was ever reached. No `proof`: these five run over
-        /// DIDComm, where the transitional allowance stands (see
-        /// [`crate::config::TrustTasksConfig::require_declared_proof`]) — which
-        /// is itself worth having under test from a second direction.
+        /// under test was ever reached.
+        ///
+        /// **No `proof`, and that is not leniency.**
+        /// `vtc/members/personhood/challenge/0.1` declares `proof` OPTIONAL, so
+        /// the spine asks for none and the authcrypt sender is the whole of the
+        /// caller's identity — which is exactly what these tests are about. Its
+        /// sibling `assert/0.1` *does* declare `proof` REQUIRED, and since
+        /// #1672 there is no setting that makes an unsigned one acceptable; the
+        /// one test that drives it uses [`signed_document`] instead.
         fn document(type_uri: &str, payload: serde_json::Value) -> Vec<u8> {
             let mut doc = TrustTask::new(
                 uuid::Uuid::new_v4().to_string(),
@@ -2515,6 +2503,37 @@ mod tests {
             );
             doc.recipient = Some(crate::test_support::TEST_VTC_DID.to_string());
             doc.issued_at = Some(chrono::Utc::now());
+            serde_json::to_vec(&doc).expect("serialize document")
+        }
+
+        /// The same envelope, issued by `from` and carrying `from`'s
+        /// Data-Integrity proof — what a producer sends for a task that
+        /// declares `proof` REQUIRED.
+        ///
+        /// `from` is a real `did:key` with the secret behind it, because the
+        /// spine verifies the proof against the document's own `issuer`
+        /// (SPEC §4.7): a placeholder string like [`MEMBER`] can address a
+        /// document but cannot sign one.
+        async fn signed_document(
+            from: &Party,
+            type_uri: &str,
+            payload: serde_json::Value,
+        ) -> Vec<u8> {
+            let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+                type_uri,
+                payload,
+                &from.did,
+                crate::test_support::TEST_VTC_DID,
+            )
+            .expect("build the document");
+            let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(
+                &from.did,
+                &from.secret_multibase,
+            )
+            .expect("a did:key names its own verification method");
+            vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+                .await
+                .expect("sign the document");
             serde_json::to_vec(&doc).expect("serialize document")
         }
 
@@ -2659,19 +2678,33 @@ mod tests {
         /// personhood in another's name — even though the presentation gate
         /// would also stop them, because a caller should be refused before
         /// the daemon starts verifying someone else's credentials.
+        ///
+        /// The document is **signed**, and that is the point of the fixture
+        /// change #1672 made here. `assert/0.1` declares `proof` REQUIRED; this
+        /// test used to send an unsigned one over DIDComm, which reached the
+        /// handler only through the transitional allowance the same change
+        /// removes. Left alone it would now stop at `proofRequired` and go on
+        /// passing for a reason that has nothing to do with subject binding —
+        /// a green test asserting nothing. Signing it puts the caller's
+        /// identity where the handler reads it from (`verified_signer`, bound
+        /// to the document's own `issuer`), so the refusal under test is still
+        /// the one being produced.
         #[tokio::test]
         async fn one_member_cannot_assert_personhood_for_another() {
             let vtc = fixture().await;
+            let stranger = Party::new();
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(STRANGER.into()),
-                &document(
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &signed_document(
+                    &stranger,
                     PERSONHOOD_ASSERT_TYPE,
                     json!({
                         "did": MEMBER,
                         "presentation": { "type": ["VerifiablePresentation"], "holder": MEMBER },
                     }),
-                ),
+                )
+                .await,
             )
             .await;
 

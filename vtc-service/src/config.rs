@@ -69,67 +69,94 @@ pub struct AppConfig {
     /// origin can drive the API.
     #[serde(default)]
     pub admin_ui: AdminUiConfig,
-    /// Trust Task document-dispatch settings (#1641). Today one switch: whether
-    /// the spine holds a producer to the `proof` its task's own specification
-    /// declares REQUIRED.
+    /// Trust Task document-dispatch settings (#1641). Holds no switch any more
+    /// — the one it carried, `require_declared_proof`, became the only
+    /// behaviour — and exists to keep a config that still declares the retired
+    /// key from being read as if it said nothing.
     #[serde(default)]
     pub trust_tasks: TrustTasksConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
 }
 
-/// How strictly the Trust Task document dispatcher holds a producer to the
-/// specification the document names (`VTI-OPS-020`, `VTI-OPS-021`).
+/// Trust Task document-dispatch settings. **Empty of live settings**: every
+/// check the dispatcher applies is now unconditional.
 ///
-/// Everything else the dispatcher checks is unconditional — the acceptance
-/// window over `issuedAt` (`VTI-OPS-024`), the in-band `recipient`
-/// (`VTI-OPS-023`), audience binding, the replay record (`VTI-OPS-025`…`027`),
-/// and verification of any `proof` that *is* present, against the document's
-/// own `issuer`. The single switch here governs one thing: refusing a document
-/// that carries **no** proof for a task whose specification declares one
-/// REQUIRED.
+/// The acceptance window over `issuedAt` (`VTI-OPS-024`), the in-band
+/// `recipient` (`VTI-OPS-023`), audience binding, the replay record
+/// (`VTI-OPS-025`…`027`), verification of any `proof` present against the
+/// document's own `issuer`, and — since this change — the refusal of a
+/// document carrying **no** proof for a task whose specification declares one
+/// REQUIRED (`VTI-OPS-020`, `VTI-OPS-021`, `VTI-OPS-093`).
+///
+/// What remains here is the retired key, kept so a config that still sets it
+/// is answered rather than ignored.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct TrustTasksConfig {
-    /// Refuse a document carrying no `proof` where its specification declares
-    /// `proof` REQUIRED (SPEC §7.2 item 7, VTI-OPS-021, VTI-OPS-093).
+    /// **Retired**: `[trust_tasks] require_declared_proof` (#1641, removed by
+    /// #1672).
     ///
-    /// # Why this exists at all, and why it defaults to `false`
+    /// It gated one refusal — a document carrying no `proof` for a task whose
+    /// specification declares one REQUIRED (SPEC §7.2 item 7, VTI-OPS-021,
+    /// VTI-OPS-093) — and defaulted to `false` for exactly one reason:
+    /// `openvtc-core` built `join-requests/{submit,status}`,
+    /// `members/{self-remove,vmc}` and `members/personhood/assert` with a
+    /// deliberate "no `proof` is attached", so enforcing would have refused
+    /// every join on a community serving that client. #1659's own removal
+    /// condition was "when `openvtc-core` signs the five documents above, the
+    /// default flips and this field goes with it". openvtc#371 signs them
+    /// (`trust_task_doc::build_signed_value`), so it has.
     ///
-    /// It should not exist, and the default should be the other way round.
-    /// Both are true, and neither is an argument for hiding the fact.
+    /// Present only to answer a config that still declares it, and the two
+    /// values are answered differently because they are different intents:
     ///
-    /// Nine of the tasks this service dispatches declare `proof` REQUIRED, and
-    /// the DIDComm binding's own §5 says such a declaration "overrides this
-    /// binding-level allowance: the in-band `proof` is mandatory regardless of
-    /// transport". VTI-OPS-021 says the same thing from the other side: a
-    /// transport that authenticates its sender "MUST NOT be treated as
-    /// relieving a producer of addressing or signing the document it sends".
+    /// - `true` — the behaviour the operator asked for, which is now the only
+    ///   behaviour. Nothing is lost by proceeding, so [`AppConfig::load`]
+    ///   warns and starts. Delete the line.
+    /// - `false` — an intent that can no longer be honoured at all. Starting
+    ///   anyway would enforce the opposite of what the file says, so the
+    ///   deserializer refuses it here, where the operator is still reading
+    ///   their own config rather than a client's refusals.
     ///
-    /// One shipping client does not sign. `openvtc-core` builds
-    /// `join-requests/{submit,status}`, `members/{self-remove,vmc}` and
-    /// `members/personhood/assert` documents with a deliberate "no `proof` is
-    /// attached", relying on the authcrypt sender (or the TSP sender VID)
-    /// instead. Turning this on with such a client in the field refuses every
-    /// join, every status poll and every VMC collection on the community.
-    /// `pnm-browser-plugin` and this workspace's own `vtc-client` / `vta-sdk`
-    /// sign on every channel, so a deployment serving only those can turn this
-    /// on today and should.
-    ///
-    /// So the switch is transitional and the default preserves what this
-    /// service already accepted. Its removal condition is exact: when
-    /// `openvtc-core` signs the five documents above, the default flips and
-    /// this field goes with it. Until then the spine emits a `warn!` naming
-    /// `VTI-OPS-021` and the task URI on **every** document it lets through
-    /// unsigned, so the debt is counted rather than assumed away.
-    ///
-    /// The allowance is narrow even while it is on: it relaxes a *missing*
-    /// proof, only where the transport authenticated the sender, and nothing
-    /// else. A proof that is present is always verified and always bound to
-    /// the `issuer`; a REST document, which has no authenticated sender to
-    /// stand in, is refused either way.
-    #[serde(default)]
-    pub require_declared_proof: bool,
+    /// Absent (the state to arrive at) deserializes to `None` via `default`.
+    #[serde(
+        default,
+        deserialize_with = "refuse_disabling_declared_proof",
+        skip_serializing
+    )]
+    pub require_declared_proof: Option<bool>,
+}
+
+/// Reject `require_declared_proof = false`, and pass `true` through for
+/// [`AppConfig::load`] to warn about.
+///
+/// Only ever called when the key is present — `#[serde(default)]` covers its
+/// absence — so reaching this function means the operator wrote it down.
+///
+/// The refusal is here, in the deserializer, rather than in `load`: it must
+/// hold for every path that parses an `AppConfig`, not only the one the daemon
+/// boots through. The *warning* cannot be, because `load` runs before
+/// `init_tracing` and a `warn!` with no subscriber installed is exactly the
+/// silence this is meant to avoid.
+fn refuse_disabling_declared_proof<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    if bool::deserialize(d)? {
+        return Ok(Some(true));
+    }
+    Err(serde::de::Error::custom(
+        "`[trust_tasks] require_declared_proof = false` has been retired and \
+         cannot be honoured. A document carrying no `proof` for a task whose \
+         specification declares one REQUIRED is now always refused \
+         (VTI-OPS-020/021/093, Trust Tasks SPEC §7.2 item 7); the switch \
+         existed only while `openvtc-core` sent those documents unsigned, and \
+         openvtc#371 signs them. Delete the key. A community still serving an \
+         `openvtc` build older than that change must upgrade the client — \
+         there is no longer a setting that will accept its unsigned joins, \
+         status polls, self-removals, VMC collection or personhood assertions.",
+    ))
 }
 
 /// Admin UX configuration (§12.2, Phase 5 M5.7).
@@ -1001,6 +1028,25 @@ impl AppConfig {
 
         config.config_path = path.clone();
 
+        // The retired `[trust_tasks] require_declared_proof`. `= false` never
+        // reaches here — the deserializer refuses it, because that intent can no
+        // longer be honoured. `= true` is now the only behaviour, so the
+        // operator's intent is intact and the only thing left to do is delete
+        // the line; say so and start.
+        //
+        // `eprintln!` rather than `warn!` deliberately: this runs before
+        // `init_tracing`, so a `warn!` here would have no subscriber and the
+        // operator would never learn their config has a dead key in it.
+        if config.trust_tasks.require_declared_proof == Some(true) {
+            eprintln!(
+                "warning: {}: `[trust_tasks] require_declared_proof = true` has been retired. \
+                 It is now the only behaviour — a document carrying no `proof` for a task whose \
+                 specification declares one REQUIRED is always refused (VTI-OPS-020/021/093) — \
+                 so this deployment's behaviour is unchanged. Delete the key.",
+                path.display()
+            );
+        }
+
         // Apply env var overrides
         if let Ok(vtc_did) = std::env::var("VTC_DID") {
             config.vtc_did = Some(vtc_did);
@@ -1371,5 +1417,57 @@ mod tests {
         assert_eq!(parsed.vta_did, original.vta_did);
         assert_eq!(parsed.vtc_name, original.vtc_name);
         assert_eq!(parsed.public_url, original.public_url);
+    }
+
+    // -- the retired `[trust_tasks] require_declared_proof` (#1641 → #1672) --
+
+    /// The intent that can no longer be honoured. Starting on this config would
+    /// enforce the opposite of what it says, so it does not start — and the
+    /// error names what replaced the switch, because "delete this key" is not
+    /// actionable for the operator whose clients are about to be refused.
+    #[test]
+    fn a_config_asking_to_disable_the_declared_proof_check_fails_to_load() {
+        let err = toml::from_str::<AppConfig>("[trust_tasks]\nrequire_declared_proof = false\n")
+            .expect_err("the retired leniency must not be honoured");
+
+        let rendered = err.to_string();
+        for expected in ["retired", "openvtc#371", "VTI-OPS-020/021/093"] {
+            assert!(
+                rendered.contains(expected),
+                "the refusal must name {expected}, got: {rendered}"
+            );
+        }
+    }
+
+    /// The other half, and the reason this is a warning rather than a second
+    /// refusal: `= true` asked for what the service now does unconditionally,
+    /// so the operator's intent survives and only the line is stale.
+    /// `AppConfig::load` says so on stderr; parsing must not fail.
+    #[test]
+    fn a_config_that_already_enabled_it_still_loads() {
+        let config: AppConfig = toml::from_str("[trust_tasks]\nrequire_declared_proof = true\n")
+            .expect("`= true` was already the behaviour; it must not become a startup failure");
+        assert_eq!(config.trust_tasks.require_declared_proof, Some(true));
+    }
+
+    /// Absence is the state to arrive at, and it is silent.
+    #[test]
+    fn a_config_without_the_retired_key_says_nothing() {
+        let config: AppConfig = toml::from_str("").expect("empty TOML must parse");
+        assert_eq!(config.trust_tasks.require_declared_proof, None);
+    }
+
+    /// The retired key is `skip_serializing`, so a config this service writes
+    /// back never re-emits it — an operator who deletes it does not get it
+    /// handed back by the next round trip.
+    #[test]
+    fn the_retired_key_is_never_written_back() {
+        let config: AppConfig =
+            toml::from_str("[trust_tasks]\nrequire_declared_proof = true\n").expect("parses");
+        let serialized = toml::to_string_pretty(&config).expect("serialize ok");
+        assert!(
+            !serialized.contains("require_declared_proof"),
+            "a retired key must not be re-emitted: {serialized}"
+        );
     }
 }

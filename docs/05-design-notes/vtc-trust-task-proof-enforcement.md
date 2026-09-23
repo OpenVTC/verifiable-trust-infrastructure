@@ -163,7 +163,7 @@ The question that decides whether enforcement is a tightening or an outage.
 | `vtc-client` `submit_join_as` | submit | **yes** (`build_signed_with`), and on the session path too — it delegates to the SDK above | yes | REST + session |
 | `pnm-browser-plugin` `@pnm/core` | submit, status, vmc, self-remove | **yes**, on all three channels; a channel cannot be constructed without a signer | yes | REST, DIDComm, TSP |
 | `openvtc-core` **vetting** | `vetting/revoke-statement` | **yes** (`capabilities::sign_document`, eddsa-jcs-2022) | yes | DIDComm |
-| `openvtc-core` **join / members / personhood** | submit, status, self-remove, vmc, personhood/assert | **no** — deliberate; the builder's own comment says "no `proof` is attached", relying on the authcrypt sender or the TSP sender VID | yes | DIDComm, TSP |
+| `openvtc-core` **join / members / personhood** | submit, status, self-remove, vmc, personhood/assert | **now yes** — openvtc#371, via `trust_task_doc::build_signed_value`. Before it: deliberately unsigned, the builder's own comment saying "no `proof` is attached", relying on the authcrypt sender or the TSP sender VID | yes | DIDComm, TSP |
 
 Two findings fall out of the table.
 
@@ -178,9 +178,11 @@ the DIDComm binding, not a missing capability. **No upstream change is needed.**
 only handlers, tests and generated bindings reference them. Enforcing on those
 two costs nothing today.
 
-So the break is precisely: `openvtc-core`'s join, status, self-remove, VMC and
-personhood-assert paths. Everything else already sends what the specification
-asks for.
+So the break was precisely: `openvtc-core`'s join, status, self-remove, VMC and
+personhood-assert paths. Everything else already sent what the specification
+asks for. **openvtc#371 closed it**, which is what let #1672 remove the switch
+§4 describes; a community still serving an `openvtc` build older than that has
+those five paths refused and must upgrade the client.
 
 ---
 
@@ -214,28 +216,59 @@ In `dispatch_trust_task_core`, in order, before any handler runs:
    `issuedAt + max_age + skew`, so a document stamped `expiresAt = now + 10
    years` can no longer pin an id for ten years. **VTI-OPS-025 … 027.**
 
-Steps 1, 2, 4 and 5 are **unconditional**. Step 3 is unconditional for every
-rule except one.
+All five steps are **unconditional**. There is no configuration that relaxes
+any of them.
 
-### The gate, and why there is one
+### The gate that used to be here, and how it went away
 
-`[trust_tasks] require_declared_proof` (default `false`) governs exactly one
-refusal: a document carrying **no** proof for a task that declares one
-REQUIRED. The allowance applies only where the transport authenticated the
-sender — over REST nothing does, so a REST document with no proof is refused
-whatever the setting. Every waiver logs at `warn!`, naming `VTI-OPS-021` and
-the task URI.
+#1641 shipped step 3's `proof`-REQUIRED refusal behind `[trust_tasks]
+require_declared_proof`, default `false`. It governed exactly that one refusal,
+it applied only where the transport had authenticated the sender (so a REST
+document with no proof was refused whatever the setting), and every waiver
+logged at `warn!` naming `VTI-OPS-021` and the task URI.
 
-It defaults to `false` because this repository cannot land the `openvtc-core`
-change in the same pull request, and turning it on with such a client in the
-field refuses every join, every status poll and every VMC collection on that
-community. A deployment serving only `pnm-browser-plugin`, `vtc-client` or
-`vta-sdk` clients can set it to `true` today and should.
+It existed because this repository could not land the `openvtc-core` change in
+the same pull request, and turning it on with such a client in the field would
+have refused every join, every status poll and every VMC collection on that
+community. Its removal condition was written down and exact: *when
+`openvtc-core` signs the five documents in §3, the default flips and the field
+goes with it.*
 
-**Its removal condition is exact**: when `openvtc-core` signs the five
-documents in §3, the default flips and the field goes with it. That is a
-one-line change here and roughly a five-call-site change there, and it is what
-closes divergence 2 rather than merely making it visible.
+**openvtc#371 signs them** — all five now go through
+`trust_task_doc::build_signed_value` — so #1672 did both: the default flipped
+and the field is gone. Divergence 2 is closed rather than merely visible.
+
+Nothing should put a switch back. VTI-OPS-093 forbids a binding weakening a
+document requirement on the strength of a transport property; a per-deployment
+setting that lets an operator do it is the same weakening reached by a longer
+path.
+
+### What a config still carrying the key does
+
+The key is retired, not ignored — the two values were different intents and are
+answered differently:
+
+| in `config.toml` | what happens |
+|---|---|
+| `require_declared_proof = true` | a warning at load naming the retired key, then a normal start. It asked for the behaviour that is now the only behaviour, so nothing is lost; the line should be deleted. |
+| `require_declared_proof = false` | **the config fails to load**, with an error naming openvtc#371 and saying the client must be upgraded. That intent cannot be honoured, and starting anyway would enforce the opposite of what the file says. |
+| absent | nothing. This is the state to arrive at. |
+
+The refusal lives in the deserializer (`refuse_disabling_declared_proof`), so it
+holds on every path that parses an `AppConfig`. The warning lives in
+`AppConfig::load` and goes to stderr rather than `warn!`, because config loads
+before `init_tracing` and a `warn!` with no subscriber is exactly the silence
+this is meant to avoid.
+
+### Rollout
+
+A deployment running an `openvtc` build older than openvtc#371 sends those five
+documents unsigned, so after this change its joins, status polls,
+self-removals, VMC collection and personhood assertions are refused with
+`proofRequired` — correctly, but abruptly, and there is no setting that will
+accept them. **The fix is to upgrade the client.** A deployment that already
+set the flag to `true` has been running this behaviour since #1641 and is
+unaffected; it has one line to delete.
 
 ---
 
@@ -260,10 +293,10 @@ dispatcher". That closes nothing while the dispatcher does not enforce — the
 tasks would simply arrive somewhere else and still be accepted unsigned. This
 change is therefore its precondition, and the order is:
 
-1. **(this change)** the spine can enforce, and does, for everything but the
-   gated case.
-2. `openvtc-core` signs. Flip `require_declared_proof`'s default; delete the
-   field. Divergence 2 closes.
+1. **(#1641)** the spine can enforce, and does, for everything but the gated
+   case. ✅
+2. **(openvtc#371 + #1672)** `openvtc-core` signs; the default flipped and the
+   field is deleted. Divergence 2 closes. ✅
 3. Bind the 49 tasks in `DISPATCHED_URIS` / `dispatch_typed`, taking
    authorization from the verified signer's ACL entry rather than from a bearer
    token. `auth/authenticate/0.1` and `vtc/relationships/publish/0.2` are the
@@ -292,7 +325,7 @@ the two bindings must share the record.
 | Requirement | Held by |
 |---|---|
 | VTI-OPS-020 (proof by the issuer) | `spec_policy_for(..).enforce` + the issuer/signer binding in `dispatch_trust_task_core`; tests `vti_ops_020_*` |
-| VTI-OPS-021 / -093 (same requirements on every transport) | the same call, reached identically from REST, DIDComm and TSP; gated by `require_declared_proof` while `openvtc-core` is unsigned |
+| VTI-OPS-021 / -093 (same requirements on every transport) | the same call, reached identically from REST, DIDComm and TSP, and unconditional since #1672; test `vti_ops_021_a_missing_proof_is_refused_on_every_transport` drives one document over all three |
 | VTI-OPS-023 (intended recipient) | `validate_basic` + `is_recipient_required` |
 | VTI-OPS-024 (acceptance window) | `freshness_policy()`; tests `vti_ops_024_*` |
 | VTI-OPS-025 … 027 (replay record) | `REPLAY_GUARD` + `retain_until`; test `vti_ops_020_and_025_a_replayed_document_id_is_refused`. **-027 is not met across bindings** — see §6 |
