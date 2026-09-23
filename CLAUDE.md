@@ -547,15 +547,37 @@ new flow, update both this section and the relevant `docs/*.md`.
     token works exactly once. Each rotation leaves a hashed tombstone
     (`rotated:{sha256}`), so a *replayed* token is distinguishable from one
     this node never issued. A replay is forgiven only as a lost-response retry
-    (session alive, inside `refresh_reuse_grace()` — default 30s — **and** the
-    tombstoned successor still unspent), in which case the same pair is
-    re-served without rotating. Otherwise it is reuse: the session is revoked
-    (killing every descendant token) and `AuthAuditEvent::RefreshReuseDetected`
-    fires at `error!` with `security_alert = true`. The caller sees the same
-    401 either way, so detection isn't an oracle. Tombstones are reaped on time
-    only (`rotated_at + refresh_token_ttl`), never alongside their session —
-    post-revocation replay is the case most worth catching. Implements
-    RFC 9700 §4.14.2.
+    (cause `Rotated`, session alive, inside `refresh_reuse_grace()` — default
+    30s; raise to 60s if real clients retry later than their HTTP timeout
+    allows — **and** the tombstoned
+    successor still unspent), in which case the same pair is re-served without
+    rotating. Otherwise it is reuse: the session is revoked (killing every
+    descendant token) and `AuthAuditEvent::RefreshReuseDetected` fires at
+    `error!` with `security_alert = true`. The caller sees the same 401 either
+    way, so detection isn't an oracle. Tombstones are reaped on time only
+    (`rotated_at + refresh_token_ttl`), never alongside their session —
+    post-revocation replay is the case most worth catching.
+  - **A fresh login retires the previous refresh token**: `/auth/refresh`
+    authorises from the `refresh:{hash}` index alone and never consults
+    `session.refresh_token`, so overwriting `session:{did}` on login did *not*
+    retire the old token — it left a second live chain that, sharing no token
+    with the first, never replayed and so was never detected. `handle_authenticate`
+    now claim-and-deletes the prior token's index entry and leaves a
+    `Superseded` tombstone. That cause is excluded from the grace window on
+    purpose: a client that just logged in holds its new token, so honouring a
+    replay there would hand the new token to a pre-login theft. Replaying a
+    superseded token is **refused and audited
+    (`AuthAuditEvent::RefreshSuperseded`, `warn!` +`security_alert`) but does
+    *not* revoke** — unlike reuse, the retired token is already dead, and the
+    usual cause is a second device still holding what it was issued before the
+    user signed in elsewhere; revoking would sign out the client that is
+    demonstrably current and the forced re-login would set the same trap again.
+    Implements RFC 9700 §4.14.2.
+  - **Orphan `refresh:` entries are swept**: the index has no TTL and a stale
+    entry is not inert — it resolves again as soon as its DID has a session
+    row, so it survives a revocation and returns at the next login.
+    `cleanup_expired_sessions` drops any entry its session no longer names,
+    which also retires entries left by logins predating the retirement above.
   - **Trust-Task-wrapped responses (engine interop):** `/auth/challenge`,
     `/auth/`, and `/auth/refresh` all content-negotiate on *both* ends — when
     the request body is a Trust Task document, the response is a TT `#response`

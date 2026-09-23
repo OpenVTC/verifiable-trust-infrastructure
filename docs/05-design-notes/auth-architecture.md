@@ -219,9 +219,11 @@ Every rotation therefore writes a `RefreshTombstone` at
 ```rust
 struct RefreshTombstone {
     session_id: String,
+    did: String,            // so the alert can name the account
     rotated_at: u64,
     expires_at: u64,      // rotated_at + refresh_token_ttl
     successor_hash: String, // sha256 of the token that replaced it
+    cause: TombstoneCause,  // Rotated | Superseded
 }
 ```
 
@@ -240,16 +242,26 @@ as theft and sign the user out — so the common network fault
 would raise the alarm while a patient attacker would not. A
 replay is treated as an innocent retry only when *all* of:
 
+- the tombstone's cause is `Rotated`, never `Superseded` (below);
 - the session is alive and `Authenticated`;
 - `now - rotated_at < refresh_reuse_grace()` (default 30s,
   strictly inside, so `0` disables the concession entirely);
 - the tombstone's `successor_hash` is **still** the session's
   live refresh token.
 
-The last condition is what keeps this narrow: it holds only while
-the successor has never been used, which is exactly the situation
-of a client that never received it. Once anyone spends the
-successor the window shuts early, so a stolen token replayed
+30s is a starting point, not a ceiling. A client only discovers a
+lost response when its own HTTP timeout fires, and 30s is a common
+default — so a deployment whose clients retry later than that may
+see legitimate retries land just outside the window and be signed
+out. Raising this to 60s is the intended adjustment if that shows
+up in practice; it is a user-experience call rather than a
+security one, because the successor condition below, not the
+clock, is what keeps the concession narrow.
+
+The successor condition is what keeps this narrow: it holds only
+while the successor has never been used, which is exactly the
+situation of a client that never received it. Once anyone spends
+the successor the window shuts early, so a stolen token replayed
 seconds after a legitimate refresh is still caught.
 
 An innocent retry re-serves the *same* pair, with the access
@@ -289,12 +301,79 @@ its user out and reports a compromise, so the alarm fires for the
 routine fault while an attacker who waits out any window never
 trips it either way.
 
+**A token retired by a newer login** is refused and audited as
+`AuthAuditEvent::RefreshSuperseded` (`warn!`, `security_alert =
+true`), and the session is **left running**. The retired token is
+already dead — the login took its index entry — so revoking adds
+nothing against a thief, while the ordinary cause is a second
+device presenting what it was issued before the user signed in
+elsewhere. Killing the session there would sign out the client
+that is demonstrably live, and the re-login it forces would set
+the same trap again.
+
 **Anything else is reuse**: the session is deleted (which takes
 its live refresh index down with it, killing every descendant of
 the replayed token), and `AuthAuditEvent::RefreshReuseDetected`
 fires with a `RefreshReuseReason` of `GraceExpired`,
 `ChainAdvanced`, or `SessionGone`. The default `audit` impl emits
 it at `error!` with `security_alert = true`.
+
+### A fresh login retires the previous token
+
+Rotation and detection between them only catch a token that is
+presented *twice*. `/auth/` is keyed per DID and overwrites
+`session:{did}`, but the reverse index is a separate
+`refresh:{hash}` row per token, and `/auth/refresh` authorises
+from that index alone — it never consults `session.refresh_token`.
+
+So a login that merely added its new index row left the previous
+one live: two working chains on one account that never shared a
+token, therefore never replayed, therefore never detected. A
+token stolen before a re-login kept working indefinitely and
+silently, which is the impact paragraph of the original finding.
+It also defeated the one recovery step available to a user
+unaided — logging in again did nothing to the thief's token.
+
+`handle_authenticate` therefore retires the outgoing token before
+returning: it reads the prior session's `refresh_token` *before*
+`store_session` overwrites the row, removes that token's index
+entry by claim-and-delete (atomic, so two racing logins cannot
+both retire it), and leaves a `Superseded` tombstone. Ordered
+after the new chain is durable, as on the rotation path — a crash
+in between leaves the old token live, which is merely the former
+behaviour, rather than leaving the account with no usable token.
+
+`Superseded` is a distinct cause because the grace window must
+**not** apply to it. The concession answers a lost rotation
+response; a client that has just logged in holds its new token and
+has no reason to present the old one. Were the concession allowed
+here, whoever replayed a token stolen before the re-login would be
+handed the token that replaced it — strictly worse than the gap
+being closed.
+
+One consequence to be aware of: a stale second device now surfaces.
+Under coalesce-per-DID that device was already signed out (its
+access token is superseded by the `token_id` pin), and its next
+refresh attempt is now refused rather than silently rotating into
+a parallel chain. It raises `RefreshSuperseded` but does **not**
+revoke the newer session — the node cannot distinguish a forgotten
+device from a thief, and of the two readings only one is worth
+acting on automatically: the retired token has already stopped
+working either way, so revoking would penalise the current client
+for the stale one's request and the forced re-login would recreate
+the same situation. Re-authentication remains the recovery path
+for the device; the audit event is the operator's signal.
+
+**Sweeping the index.** Retirement fixes new logins; it cannot
+reach entries already written. `refresh:` rows carry no TTL and a
+stale one is not inert — `/auth/refresh` authorises from the index
+alone, so it resolves again the moment its DID has a session row,
+surviving a revocation and returning at the next login.
+`cleanup_expired_sessions` therefore drops any `refresh:` entry
+that is not the token its session currently names. This is safe
+against a concurrent login or rotation because every writer stores
+the session row *before* its index entry, so an entry that
+disagrees with its row is stale rather than half-written.
 
 Both outcomes return the same `RefreshTokenInvalid` a stranger's
 token gets. Reporting detection to the caller would tell an

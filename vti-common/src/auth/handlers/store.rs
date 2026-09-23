@@ -80,20 +80,9 @@ impl SessionStore for KeyspaceSessionStore {
     async fn store_refresh_tombstone(
         &self,
         rotated_token: &str,
-        session_id: &str,
-        successor_token: &str,
-        rotated_at: u64,
-        ttl: u64,
+        tombstone: &session::RefreshTombstone,
     ) -> Result<(), Self::Error> {
-        session::store_refresh_tombstone(
-            &self.inner,
-            rotated_token,
-            session_id,
-            successor_token,
-            rotated_at,
-            ttl,
-        )
-        .await
+        session::store_refresh_tombstone(&self.inner, rotated_token, tombstone).await
     }
 
     async fn get_refresh_tombstone(

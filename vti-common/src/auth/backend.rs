@@ -252,17 +252,18 @@ pub trait SessionStore: Send + Sync + 'static {
         refresh_token: &str,
     ) -> Result<Option<String>, Self::Error>;
 
-    /// Record that `rotated_token` was valid here and has been replaced
-    /// by `successor_token`, for the benefit of [`Self::get_refresh_tombstone`].
+    /// Record that `rotated_token` was valid here and has been retired,
+    /// for the benefit of [`Self::get_refresh_tombstone`].
     ///
     /// Invoked by `/auth/refresh` after the replacement token's index is
-    /// durable, so a crash between the two costs detection of a future
-    /// replay but never the session itself. An `Err` from this method is
-    /// logged and does not fail the refresh, for the same reason.
+    /// durable, and by `/auth/` when a fresh login supersedes the
+    /// previous token, so a crash between the two costs detection of a
+    /// future replay but never the session itself.
     ///
     /// Implementors MUST NOT store either token in recoverable form —
-    /// `rotated_token` belongs in a one-way key and `successor_token`
-    /// as a hash (see [`crate::auth::session::RefreshTombstone`]).
+    /// `rotated_token` belongs in a one-way key and the successor is
+    /// already carried as a hash (see
+    /// [`crate::auth::session::RefreshTombstone`]).
     ///
     /// **Default: a no-op.** Reuse detection is an enhancement over the
     /// rotation that already protects every backend, and a store with
@@ -275,10 +276,7 @@ pub trait SessionStore: Send + Sync + 'static {
     async fn store_refresh_tombstone(
         &self,
         _rotated_token: &str,
-        _session_id: &str,
-        _successor_token: &str,
-        _rotated_at: u64,
-        _ttl: u64,
+        _tombstone: &crate::auth::session::RefreshTombstone,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -505,6 +503,36 @@ pub trait AuthBackend: Send + Sync + 'static {
                     "refresh token reuse detected — session revoked",
                 );
             }
+            // `warn!`, not `error!`, and deliberately not revoking: unlike
+            // the variant above this one has a routine explanation. A
+            // second device — or a second tab — that logged in while the
+            // first was idle leaves the first holding a retired token, and
+            // presenting it is the only way that client can discover it
+            // has been superseded. The token is already dead, so the
+            // security outcome is settled before this fires; escalating to
+            // a session kill would sign the *active* client out over the
+            // stale one's first request, and a re-login would start the
+            // cycle again.
+            //
+            // Still audited, and still `security_alert`: a token presented
+            // after a re-login is also exactly what a pre-login theft looks
+            // like, and the operator correlating these is the one who can
+            // tell a spare device from a stolen token.
+            AuthAuditEvent::RefreshSuperseded {
+                did,
+                session_id,
+                rotated_at,
+            } => {
+                tracing::warn!(
+                    audit = true,
+                    security_alert = true,
+                    %did,
+                    %session_id,
+                    rotated_at,
+                    "refresh token superseded by a newer login was presented \
+                     — refused, session left running",
+                );
+            }
         }
     }
 
@@ -546,12 +574,22 @@ pub trait AuthBackend: Send + Sync + 'static {
     /// would produce the alarm while a patient attacker (who simply
     /// waits) would not.
     ///
-    /// The window is narrow on purpose, and it is not the only
-    /// condition: `handle_refresh` also requires that the successor
-    /// recorded in the tombstone still be the session's live token, so
-    /// a retry only passes while the client demonstrably never received
-    /// the response it is retrying for. Returning `0` disables the
-    /// concession and makes every replay a compromise signal.
+    /// The window is not the only condition: `handle_refresh` also
+    /// requires that the successor recorded in the tombstone still be
+    /// the session's live token, so a retry only passes while the
+    /// client demonstrably never received the response it is retrying
+    /// for — and it never applies to a token retired by a re-login
+    /// ([`crate::auth::session::TombstoneCause::Superseded`]).
+    /// Returning `0` disables the concession and makes every replay a
+    /// compromise signal.
+    ///
+    /// 30s is the starting point, not a ceiling. A client only learns
+    /// its response was lost when its own HTTP timeout fires, so a
+    /// deployment whose clients time out at 30s or later may see
+    /// legitimate retries land just outside the window and be signed
+    /// out. If that shows up in practice, raising this to 60s is the
+    /// intended adjustment — the successor-unspent condition, not the
+    /// clock, is what keeps the concession narrow.
     fn refresh_reuse_grace(&self) -> u64 {
         30
     }
@@ -689,15 +727,37 @@ pub enum AuthAuditEvent<'a> {
     /// completed flow, and it is the signal that was missing while
     /// rotation refused replays silently.
     RefreshReuseDetected {
-        /// Session owner. Empty when the session row was already gone
-        /// (reason [`RefreshReuseReason::SessionGone`]) and the DID
-        /// could not be recovered.
+        /// Session owner, carried on the tombstone so the alert names
+        /// the account even when the session row is already gone.
         did: &'a str,
         session_id: &'a str,
-        /// When the replayed token had been rotated out — how long the
+        /// When the replayed token had been retired — how long the
         /// attacker sat on it.
         rotated_at: u64,
         reason: RefreshReuseReason,
+    },
+    /// A refresh token retired by a **newer login on the same DID** was
+    /// presented.
+    ///
+    /// Distinct from [`Self::RefreshReuseDetected`] because the
+    /// consequence is different: the token is refused, but the session
+    /// is **left running**. The retired token is already dead — the
+    /// login removed its index entry — so nothing is gained by killing
+    /// the live session on top, and the benign reading (a second device
+    /// still holding the token it was issued before the user logged in
+    /// elsewhere) is common enough that revoking would turn an ordinary
+    /// second sign-in into a mutual sign-out.
+    ///
+    /// Audited at `warn!` with `security_alert = true` all the same: a
+    /// token surviving a re-login is also what a pre-login theft looks
+    /// like, and only the operator can tell the two apart.
+    RefreshSuperseded {
+        /// Session owner, carried on the tombstone so the alert names
+        /// the account even when the session row is already gone.
+        did: &'a str,
+        session_id: &'a str,
+        /// When the login retired this token.
+        rotated_at: u64,
     },
 }
 

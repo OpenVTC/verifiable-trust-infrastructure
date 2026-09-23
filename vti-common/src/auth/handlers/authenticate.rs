@@ -29,7 +29,9 @@ use vta_sdk::protocols::auth::{
 
 use crate::auth::AuthError;
 use crate::auth::backend::{AuthBackend, AuthenticateInput, SessionStore};
-use crate::auth::session::{Session, SessionState, now_epoch};
+use crate::auth::session::{
+    RefreshTombstone, Session, SessionState, TombstoneCause, now_epoch, refresh_token_hash,
+};
 
 /// Default first-factor AMR; the transport layer (or step-up
 /// handler) can override by passing different values to
@@ -186,10 +188,30 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     // ---- Create the authenticated session, replace the challenge row ----
     //
     // Coalesce-per-DID: a fresh login overwrites any prior session for this
-    // identity, so one DID has one active refresh token (last-write-wins). The
-    // access token is pinned via `token_id` (the jti), so the previous login's
-    // access token is superseded immediately. The single-use challenge row (a
-    // distinct, ephemeral, uuid-keyed record) was already taken above.
+    // identity, so one DID has one active refresh token. The access token is
+    // pinned via `token_id` (the jti), so the previous login's access token is
+    // superseded immediately. The single-use challenge row (a distinct,
+    // ephemeral, uuid-keyed record) is deleted.
+    //
+    // "One active refresh token" holds only because the previous token is
+    // explicitly retired below. Overwriting the session row does not do it:
+    // the reverse index is a separate `refresh:{hash}` row per token, and
+    // `/auth/refresh` authorises from that index alone without consulting
+    // `session.refresh_token`. Leaving the old entry behind therefore left a
+    // second, fully live chain on the same account — a token stolen before a
+    // re-login kept working, in its own chain, and since the two chains never
+    // shared a token no replay ever occurred and reuse detection never fired.
+    // Read the outgoing token *before* `store_session` overwrites the row —
+    // afterwards there is nothing left to say which token this login is
+    // replacing. `None` on a first login, or on a prior session that carried
+    // no refresh token (an intrinsic DIDComm/TSP session).
+    let superseded_refresh_token = backend
+        .sessions()
+        .get_session(&did)
+        .await
+        .map_err(|e| AuthError::Internal(format!("get_session failed: {e:?}")))?
+        .and_then(|prior| prior.refresh_token);
+
     let auth_session = Session {
         session_id: did.clone(),
         did: did.clone(),
@@ -219,6 +241,68 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
         .store_refresh_index(&minted.refresh_token, &did)
         .await
         .map_err(|e| AuthError::Internal(format!("store_refresh_index failed: {e:?}")))?;
+
+    // ---- Retire the token this login replaces ----
+    //
+    // Ordered after the new chain is durable, as on the rotation path: a crash
+    // here leaves the old token live, which is merely the previous behaviour,
+    // whereas retiring first and crashing would leave the account with no
+    // usable refresh token at all.
+    //
+    // Claim-and-delete rather than a plain delete, so two logins racing on the
+    // same DID cannot both believe they retired it and write duplicate
+    // tombstones. The claimed session id is discarded — only the removal
+    // matters here.
+    //
+    // Store errors are logged, not returned, matching `handle_refresh`'s
+    // handling of the same two writes. The login is already committed: the new
+    // session and its index are durable and the caller's tokens are minted, so
+    // failing here would report an error for a login that in fact succeeded
+    // and withhold the tokens it had already issued. The cost of continuing is
+    // bounded — a retired-but-untombstoned token is still refused, just not
+    // attributed, and a token whose index outlived this call is no worse off
+    // than it was before this retirement existed.
+    if let Some(superseded) = superseded_refresh_token {
+        if let Err(e) = backend
+            .sessions()
+            .take_session_id_by_refresh(&superseded)
+            .await
+        {
+            tracing::error!(
+                did = %did,
+                "failed to retire the refresh token superseded by this login; \
+                 it stays live until it expires: {e:?}",
+            );
+        } else if let Err(e) = backend
+            .sessions()
+            .store_refresh_tombstone(
+                &superseded,
+                &RefreshTombstone {
+                    session_id: did.clone(),
+                    did: did.clone(),
+                    rotated_at: now,
+                    expires_at: now.saturating_add(backend.refresh_token_ttl()),
+                    successor_hash: refresh_token_hash(&minted.refresh_token),
+                    cause: TombstoneCause::Superseded,
+                },
+            )
+            .await
+        {
+            // Tombstoned, not merely deleted, so the retired token is still
+            // *recognised* if it comes back. Deleting alone would make a
+            // replay indistinguishable from a token this node never issued,
+            // and a token presented after a re-login is worth reporting: the
+            // legitimate client holds the new one and has no reason to send
+            // the old. `TombstoneCause::Superseded` withholds the
+            // innocent-retry grace, which exists only for a lost rotation
+            // response.
+            tracing::error!(
+                did = %did,
+                "failed to tombstone the refresh token superseded by this \
+                 login; a replay of it will be refused but not attributed: {e:?}",
+            );
+        }
+    }
 
     // ---- Build canonical response ----
 
