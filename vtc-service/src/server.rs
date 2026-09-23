@@ -119,6 +119,11 @@ pub struct AppState {
     /// dispatcher today, a bearer REST route in #1641 phase 2. Reach it
     /// through [`AppState::accepted_ids`].
     pub accepted_ids_ks: KeyspaceHandle,
+    /// Console signing-key delegations (#1684) — `console_key:<consoleDid>` →
+    /// the admin DID that key may act as. Read on the signed-document path
+    /// when a signer holds no ACL row of its own; see
+    /// [`crate::acl::console_key`].
+    pub console_keys_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
@@ -490,6 +495,7 @@ pub async fn run(
     let vetting_revocations_ks = store.keyspace(keyspaces::VETTING_REVOCATIONS)?;
     let vetter_profiles_ks = store.keyspace(keyspaces::VETTER_PROFILES)?;
     let accepted_ids_ks = store.keyspace(keyspaces::ACCEPTED_IDS)?;
+    let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
@@ -781,6 +787,7 @@ pub async fn run(
         vetting_revocations_ks,
         vetter_profiles_ks,
         accepted_ids_ks: accepted_ids_ks.clone(),
+        console_keys_ks,
         schemas_ks,
         endorsements_ks,
         rooms_ks,

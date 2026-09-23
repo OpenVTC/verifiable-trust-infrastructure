@@ -134,6 +134,7 @@ cloned cheaply into handlers. The complete list:
 | `vetting_revocations` | Vetting statement withdrawal notices |
 | `vetter_profiles` | Vetter profiles (`vtc/vetting/vetters/profile/0.1`), one per vetter DID |
 | `accepted_ids` | Accepted Trust Task document ids (VTI-OPS-025…027), one row per accepted `id` for the acceptance window. Shared by every binding, so a document accepted on one cannot be replayed on another |
+| `console_keys` | Console signing-key delegations (#1684): one row per console `did:key`, naming the admin DID that key may act as. Confers no role of its own — the delegating admin's ACL row is the authority, read at execution time |
 | `audit` | HMAC-actor-hashing audit envelopes |
 | `audit_key` | HMAC audit key + rotation history |
 

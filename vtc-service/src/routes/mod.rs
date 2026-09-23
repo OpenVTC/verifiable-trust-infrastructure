@@ -576,6 +576,21 @@ fn build_api_chain(
             routes!(admin::passkeys::revoke_finish),
             "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
         ))
+        // Admin console signing keys (#1684) — the delegation that lets the
+        // admin SPA author signed Trust Task documents at all.
+        //
+        // Mounted **without** a Trust-Task binding, like
+        // `relationships::{suspend,restore}` and the `schemas` routes above:
+        // no published task family covers enrolling a signing-key delegation
+        // (`device/register/0.1` grants a device its own capabilities, which is
+        // the shape VTI-OPS-050 refuses here, and `auth/passkey/*` is WebAuthn
+        // end to end). The spec moves first; `routes/admin/console_keys.rs`
+        // records what the upstream `auth/signing-key/*` family should be.
+        .routes(routes!(
+            admin::console_keys::enrol,
+            admin::console_keys::list
+        ))
+        .routes(routes!(admin::console_keys::revoke))
         // Admin invites — REST mirror of `vtc admin invite`. GET +
         // POST share the same mount; DELETE on `/admin/invites/{jti}`
         // revokes outstanding (Issued) invites. Consumed rows are

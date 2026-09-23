@@ -232,6 +232,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     let tsp_relationships_ks = store.keyspace("tsp_relationships").unwrap();
     let invitations_ks = store.keyspace("invitations").unwrap();
     let consumed_invitations_ks = store.keyspace("consumed_invitations").unwrap();
+    let console_keys_ks = store.keyspace("console_keys").unwrap();
     let install_store = InstallTokenStore::new(install_ks.clone());
 
     let bundle = test_bundle();
@@ -334,6 +335,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         room_epoch_links_ks: room_epoch_links_ks.clone(),
         invitations_ks,
         consumed_invitations_ks,
+        console_keys_ks,
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
         registry_drift: vtc_service::registry::DriftState::new(),

@@ -38,8 +38,17 @@ AES-256-GCM encryption of:
 `sessions`, browser `passkey` credentials, one-shot `install` tokens, the
 re-syncable `registry_records`, the `sync_queue`/`sync_cursor`, the `config`
 keyspace overlay (its meaningful values ride in the identity snapshot above),
-and `accepted_ids` — the Trust Task replay record, whose whole horizon is the
-minutes-long acceptance window, so a restored row is expired before it is read.
+`accepted_ids` — the Trust Task replay record, whose whole horizon is the
+minutes-long acceptance window, so a restored row is expired before it is read —
+and `console_keys`, the admin console's signing-key delegations.
+
+That last exclusion is a security decision rather than a housekeeping one. A
+delegation names a browser profile on a particular machine; a restore — into a
+rebuilt host, a staging clone, or a different operator's hands — must not hand
+that browser the ability to sign as an administrator again. Operators re-enrol
+from the browser they are actually sitting at, behind the same passkey step-up
+the first enrolment cost. Nothing else is lost: the ACL rows, the passkeys and
+the bearer login all come back with the backup.
 
 ## Export
 

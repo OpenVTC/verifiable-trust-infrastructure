@@ -2130,6 +2130,46 @@ async fn handle_self_remove(
 /// declare `proof` REQUIRED, so the spine has already refused a document
 /// carrying none; the `None` arm is belt to that brace, exactly as the
 /// `rooms/*` arm keeps its own.
+///
+/// # Acting as, via a console-key delegation (#1684)
+///
+/// A signer with **no ACL row of its own** may still be a console signing key
+/// — a `did:key` the admin SPA generated in the browser and enrolled as a
+/// credential of the operator's admin DID, so the console can author a signed
+/// document at all. Then the delegation names an admin DID and *that* DID's
+/// ACL row is resolved, here, at execution time. Nothing in the paragraphs
+/// above changes: a delegation carries no role, the row is still the whole
+/// authority, and a row removed, demoted or expired since the key was enrolled
+/// refuses exactly as it would for a direct signer. `sessions_ks` is still not
+/// consulted.
+///
+/// **The fall-through is only for a signer with no row at all.** A signer that
+/// *has* one is answered by it, including when it refuses. The design note
+/// sketches falling through on `Forbidden` too; that would let a delegation
+/// route around a row that has since been demoted or expired, which is the one
+/// thing "authority is the ACL row" exists to prevent.
+/// [`crate::acl::console_key`] carries the matching enrolment refusal, so the
+/// two halves cannot drift.
+///
+/// # What a delegated key may *not* do, and why nothing here enforces it
+///
+/// Two escalations are worth naming, because both are closed structurally and
+/// a later change could quietly open either.
+///
+/// - **It cannot enrol another delegation.** `POST /v1/admin/console-keys` is a
+///   bearer route under `AdminAuth`, and a bearer session is minted only for a
+///   DID that `resolve_auth_role` admits — which a console DID, holding no ACL
+///   row, never is. A console key therefore cannot authenticate at all, let
+///   alone reach the enrolment door. `tests/admin_console_keys.rs::
+///   a_console_key_gains_no_bearer_authority` pins that.
+/// - **It cannot spend a step-up.** These claims carry `session_id: ""` (the
+///   `Default`), so `AuthClaims::require_fresh_step_up` finds no session and
+///   refuses. That is already true of every signed document — the six verbs
+///   dispatched here confer no administrative authority, so none asks — but
+///   when `acl/grant` or `acl/change-role` move onto this door (design note
+///   §6f) the gate they need reads a *live session*, which a signed document
+///   does not have. It fails closed, which is right; making it pass will take
+///   a deliberate design, not a convenience.
 async fn admin_signer(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -2138,11 +2178,54 @@ async fn admin_signer(
     let Some(signer) = ctx.verified_signer.clone() else {
         return Err(reject_with(doc, RejectReason::ProofRequired));
     };
-    let (role, allowed_contexts) = crate::acl::resolve_auth_role(&state.acl_ks, &signer)
+
+    // The signer's own row first — unchanged for the CLI, integrations and
+    // wallets, which is every caller that is not a browser.
+    let has_own_row = crate::acl::get_acl_entry(&state.acl_ks, &signer)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?
+        .is_some();
+
+    if !has_own_row
+        && let Some(delegation) =
+            crate::acl::console_key::resolve_delegated_admin(&state.console_keys_ks, &signer)
+                .await
+                .map_err(|e| app_error_to_reject(doc, &e))?
+    {
+        // Resolve the delegating admin's row *before* stamping last-used, so
+        // the stamp records an authorized use rather than an attempt.
+        let claims = resolve_admin_claims(state, doc, &delegation.admin_did).await?;
+        crate::acl::console_key::touch_last_used(&state.console_keys_ks, &delegation).await;
+        tracing::info!(
+            console_did = %signer,
+            admin_did = %delegation.admin_did,
+            task = %doc.type_uri,
+            "authorizing a signed document under a console-key delegation"
+        );
+        return Ok(claims);
+    }
+
+    // Not delegated, or delegated and revoked/expired. Falls through to the
+    // ordinary resolve, so the refusal is the same `permissionDenied` an
+    // unknown signer has always got — a distinct code here would tell a prober
+    // which DIDs are, or once were, console keys.
+    resolve_admin_claims(state, doc, &signer).await
+}
+
+/// Read `did`'s ACL row and shape it into the claims the admin verbs take.
+///
+/// Split out of [`admin_signer`] because the delegated arm needs the identical
+/// resolution, and "identical" has to be structural rather than remembered.
+async fn resolve_admin_claims(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    did: &str,
+) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome> {
+    let (role, allowed_contexts) = crate::acl::resolve_auth_role(&state.acl_ks, did)
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?;
     Ok(vti_common::auth::extractor::AuthClaims {
-        did: signer,
+        did: did.to_string(),
         role,
         allowed_contexts,
         ..Default::default()
@@ -3555,6 +3638,210 @@ mod members_admin_tests {
             out.status.is_success(),
             "a context-scoped admin passes AdminAuth and must pass here: {}",
             String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    // ─── console-key delegations: acting as, and the four ways it stops ──
+    //
+    // #1684. A console signing key is a credential of an admin DID, not an
+    // identity — it holds no ACL row and confers nothing. These drive the one
+    // property that makes that safe: the delegation is *only* a name lookup,
+    // and everything that decides authority is still the ACL row, read at
+    // execution time. Four separate levers must each stop it dead.
+
+    /// Enrol a console key for an admin directly in the store, the way
+    /// `POST /v1/admin/console-keys` does behind its step-up. The route's own
+    /// gates are exercised in `tests/admin_console_keys.rs`; these tests are
+    /// about what the *verifier* does with the record afterwards.
+    async fn delegate(vtc: &TestVtc, console: &Party, admin_did: &str) {
+        crate::acl::console_key::enrol_delegation(
+            &vtc.state.console_keys_ks,
+            &vtc.state.acl_ks,
+            &console.did,
+            admin_did,
+            Some("test browser".into()),
+            None,
+        )
+        .await
+        .expect("enrol the delegation");
+    }
+
+    /// The point of the whole change: a document signed by a key with **no ACL
+    /// row of its own** is accepted, because the key is enrolled as a
+    /// credential of a DID that has one.
+    #[tokio::test]
+    async fn a_delegated_console_key_acts_as_its_admin() {
+        let fix = fixture().await;
+        let console = Party::new();
+        delegate(&fix.vtc, &console, &fix.admin.did).await;
+
+        let doc = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "a delegated console key must authorize as its admin: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["did"], TARGET);
+    }
+
+    /// Lever 1 — **revocation, effective on the next document.** Nothing is
+    /// cached, so there is no window in which a revoked browser still works.
+    #[tokio::test]
+    async fn a_revoked_delegation_stops_authorizing_immediately() {
+        let fix = fixture().await;
+        let console = Party::new();
+        delegate(&fix.vtc, &console, &fix.admin.did).await;
+
+        // It works…
+        let first = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        assert!(dispatch(&fix.vtc, &first).await.status.is_success());
+
+        crate::acl::console_key::revoke_delegation(
+            &fix.vtc.state.console_keys_ks,
+            &console.did,
+            &fix.admin.did,
+        )
+        .await
+        .expect("revoke");
+
+        // …and then it does not, with no restart, no re-login and no sweep.
+        let second = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        let out = dispatch(&fix.vtc, &second).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("permissionDenied"),
+            "a revoked console key must be refused: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// Lever 2 — **the delegating admin's ACL row is removed.** The row was
+    /// always the authority; dropping it kills every key delegated from it at
+    /// once, which is why a delegation needs no separate cascade.
+    #[tokio::test]
+    async fn removing_the_admins_acl_row_stops_the_delegated_key() {
+        let fix = fixture().await;
+        let console = Party::new();
+        delegate(&fix.vtc, &console, &fix.admin.did).await;
+
+        crate::acl::delete_acl_entry(&fix.vtc.state.acl_ks, &fix.admin.did)
+            .await
+            .expect("remove the admin row");
+
+        let doc = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        assert_eq!(
+            error_code(&dispatch(&fix.vtc, &doc).await).as_deref(),
+            Some("permissionDenied")
+        );
+    }
+
+    /// Lever 3 — **the delegating admin is demoted.** `resolve_auth_role`
+    /// admits only `VtcRole::Admin`, and it runs against the row as it is now,
+    /// not as it was when the key was enrolled.
+    #[tokio::test]
+    async fn demoting_the_admin_stops_the_delegated_key() {
+        let fix = fixture().await;
+        let console = Party::new();
+        delegate(&fix.vtc, &console, &fix.admin.did).await;
+
+        seed_acl(&fix.vtc, &fix.admin.did, VtcRole::Member, vec![]).await;
+
+        let doc = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        assert_eq!(
+            error_code(&dispatch(&fix.vtc, &doc).await).as_deref(),
+            Some("permissionDenied")
+        );
+    }
+
+    /// Lever 4 — **the delegating admin's row expires.** Same read, same
+    /// instant, same refusal.
+    #[tokio::test]
+    async fn an_expired_admin_row_stops_the_delegated_key() {
+        let fix = fixture().await;
+        let console = Party::new();
+        delegate(&fix.vtc, &console, &fix.admin.did).await;
+
+        store_acl_entry(
+            &fix.vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: fix.admin.did.clone(),
+                role: VtcRole::Admin,
+                label: None,
+                allowed_contexts: vec![],
+                created_at: 0,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: Some(1),
+            },
+        )
+        .await
+        .expect("expire the admin row");
+
+        let doc = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        assert_eq!(
+            error_code(&dispatch(&fix.vtc, &doc).await).as_deref(),
+            Some("permissionDenied")
+        );
+    }
+
+    /// **A delegation cannot reach further than the admin it acts for.** A key
+    /// delegated by a *context-scoped* admin is refused `purge` exactly as that
+    /// admin is — the delegation is a name lookup, not a widening.
+    #[tokio::test]
+    async fn a_delegation_inherits_its_admins_ceiling_and_no_more() {
+        let fix = fixture().await;
+        let console = Party::new();
+        delegate(&fix.vtc, &console, &fix.scoped_admin.did).await;
+
+        let purge = signed(&console, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
+        assert_eq!(
+            error_code(&dispatch(&fix.vtc, &purge).await).as_deref(),
+            Some("permissionDenied"),
+            "purge is super-admin only, delegation or not"
+        );
+        // …and it is not refused *everything*: the scoped admin's own reach is
+        // intact through the delegation. A ceiling copied one notch too tight
+        // is as much a regression as one copied too loose.
+        let read = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        assert!(dispatch(&fix.vtc, &read).await.status.is_success());
+    }
+
+    /// **A signer with a row of its own is answered by that row, even when the
+    /// row refuses.** This is where the implementation is deliberately tighter
+    /// than the design note's sketch: falling through to a delegation on
+    /// `Forbidden` would let a stale delegation route around a demotion, which
+    /// is the exact thing "authority is the ACL row" exists to prevent. Paired
+    /// with `console_key`'s enrolment refusal, so the two halves cannot drift.
+    #[tokio::test]
+    async fn a_signer_holding_its_own_row_is_never_answered_by_a_delegation() {
+        let fix = fixture().await;
+        let console = Party::new();
+        delegate(&fix.vtc, &console, &fix.admin.did).await;
+        // Someone gives the console DID a row of its own, at a role that
+        // authorizes nothing here.
+        seed_acl(&fix.vtc, &console.did, VtcRole::Member, vec![]).await;
+
+        let doc = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        assert_eq!(
+            error_code(&dispatch(&fix.vtc, &doc).await).as_deref(),
+            Some("permissionDenied"),
+            "the row is the answer, and it says no"
+        );
+    }
+
+    /// An *undelegated* stranger is refused with the same code a delegated one
+    /// gets after revocation — so the refusal is not an oracle for which DIDs
+    /// are, or once were, console keys.
+    #[tokio::test]
+    async fn an_undelegated_signer_is_refused_indistinguishably() {
+        let fix = fixture().await;
+        let stranger = Party::new();
+        let doc = signed(&stranger, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        assert_eq!(
+            error_code(&dispatch(&fix.vtc, &doc).await).as_deref(),
+            Some("permissionDenied")
         );
     }
 
