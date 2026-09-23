@@ -1042,6 +1042,19 @@ pub(crate) enum VtaCommands {
     },
     /// Show current VTA details
     Info,
+    /// Show the VTA's DID as a QR code, for a phone (Keyring) to scan.
+    ///
+    /// The code carries the bare DID and nothing else, so it is safe to show
+    /// on a shared screen. Offline: the DID comes from this machine's config
+    /// (`--vta` picks which VTA).
+    Qr {
+        /// Encode this DID instead of the VTA's.
+        #[arg(long)]
+        did: Option<String>,
+        /// Also write the code to this file as an SVG image.
+        #[arg(long, value_name = "FILE.svg")]
+        out: Option<std::path::PathBuf>,
+    },
     /// Restart the VTA service (soft restart — reloads config and reconnects)
     Restart,
 }
@@ -4265,6 +4278,39 @@ mod removal_verb_tests {
         };
         assert_eq!(slug, "my-vta");
         assert!(!yes);
+    }
+
+    /// `vta qr` runs offline off the config, so it takes no positional
+    /// argument; `--did` and `--out` are the only knobs.
+    #[test]
+    fn vta_qr_parses_with_and_without_flags() {
+        let cli = Cli::try_parse_from(["pnm", "vta", "qr"]).unwrap();
+        let Commands::Vta {
+            command: VtaCommands::Qr { did, out },
+        } = cli.command
+        else {
+            panic!("expected `vta qr`");
+        };
+        assert!(did.is_none() && out.is_none());
+
+        let cli = Cli::try_parse_from([
+            "pnm",
+            "vta",
+            "qr",
+            "--did",
+            "did:key:z6Mk",
+            "--out",
+            "vta.svg",
+        ])
+        .unwrap();
+        let Commands::Vta {
+            command: VtaCommands::Qr { did, out },
+        } = cli.command
+        else {
+            panic!("expected `vta qr`");
+        };
+        assert_eq!(did.as_deref(), Some("did:key:z6Mk"));
+        assert_eq!(out.as_deref(), Some(std::path::Path::new("vta.svg")));
     }
 
     /// `remove` was the name before removal commands were standardised on

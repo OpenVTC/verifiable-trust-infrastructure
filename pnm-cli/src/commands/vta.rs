@@ -140,8 +140,73 @@ pub(crate) async fn run_offline(
             }
             true
         }
+        VtaCommands::Qr { did, out } => {
+            let (label, did) = match qr_subject(vta_override, pnm_config, did.as_deref()) {
+                Ok(subject) => subject,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = show_qr(label.as_deref(), &did, out.as_deref()) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+            true
+        }
         VtaCommands::Restart => false,
     }
+}
+
+/// The DID `pnm vta qr` draws, and the label to print above it: the `--did`
+/// given, else the active VTA's (`--vta`, then the default).
+fn qr_subject(
+    vta_override: Option<&str>,
+    pnm_config: &PnmConfig,
+    explicit: Option<&str>,
+) -> Result<(Option<String>, String), Box<dyn std::error::Error>> {
+    if let Some(did) = explicit {
+        if !did.starts_with("did:") {
+            return Err(format!("'{did}' is not a DID — it should start with `did:`").into());
+        }
+        return Ok((None, did.to_string()));
+    }
+    let (slug, vta) = config::resolve_vta(vta_override, pnm_config)?;
+    let did = vta.vta_did.clone().ok_or_else(|| {
+        format!(
+            "no DID is stored for VTA '{slug}'.\n\n\
+             Finish its setup with `pnm setup continue {slug}`, or pass --did <DID>."
+        )
+    })?;
+    Ok((Some(format!("{slug} ({})", vta.name)), did))
+}
+
+/// `pnm vta qr` — print `did` as a terminal QR code, and write it as an SVG
+/// when `out` is given.
+fn show_qr(
+    label: Option<&str>,
+    did: &str,
+    out: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let lines = vta_cli_common::qr::terminal_lines(did)?;
+    if let Some(label) = label {
+        println!("{DIM}VTA{RESET}  {label}");
+    }
+    println!();
+    for line in &lines {
+        // Indented so the code's white margin stands clear of the prompt.
+        println!("  {line}");
+    }
+    println!();
+    println!("{DIM}DID{RESET}  {did}");
+    println!("{DIM}Scan with Keyring. The code holds only this public DID.{RESET}");
+
+    if let Some(path) = out {
+        std::fs::write(path, vta_cli_common::qr::svg(did)?)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        println!("{GREEN}✓{RESET} Wrote {}", path.display());
+    }
+    Ok(())
 }
 
 /// `pnm vta restart` — soft restart the VTA service and poll health.
@@ -192,5 +257,58 @@ fn print_local_only_notice(slug: &str, client_did: Option<&str>) {
             "  To revoke a credential on the VTA as well, run `pnm acl delete <did>` from \
              an admin connection to it."
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::VtaConfig;
+
+    fn config_with(vta_did: Option<&str>) -> PnmConfig {
+        let mut config = PnmConfig::default();
+        config.default_vta = Some("personal".into());
+        config.vtas.insert(
+            "personal".into(),
+            VtaConfig {
+                name: "Personal VTA".into(),
+                vta_did: vta_did.map(str::to_string),
+                url: None,
+                mediator_did: None,
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn qr_draws_the_default_vta_did() {
+        let config = config_with(Some("did:webvh:QmScid:vta.example.com"));
+        let (label, did) = qr_subject(None, &config, None).unwrap();
+        assert_eq!(did, "did:webvh:QmScid:vta.example.com");
+        assert_eq!(label.as_deref(), Some("personal (Personal VTA)"));
+    }
+
+    #[test]
+    fn qr_did_flag_overrides_the_vta_and_needs_no_config() {
+        let (label, did) = qr_subject(None, &PnmConfig::default(), Some("did:key:z6Mk")).unwrap();
+        assert_eq!(did, "did:key:z6Mk");
+        assert!(label.is_none());
+    }
+
+    #[test]
+    fn qr_refuses_something_that_is_not_a_did() {
+        let err = qr_subject(None, &PnmConfig::default(), Some("https://vta.example.com"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a DID"), "{err}");
+    }
+
+    #[test]
+    fn qr_on_an_unknown_vta_names_the_list_command() {
+        let config = config_with(Some("did:webvh:QmScid:vta.example.com"));
+        let err = qr_subject(Some("missing"), &config, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pnm vta list"), "{err}");
     }
 }
