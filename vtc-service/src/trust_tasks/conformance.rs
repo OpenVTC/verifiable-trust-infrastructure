@@ -164,6 +164,18 @@ fn collect_from_dir(dir: &Path, out: &mut BTreeSet<String>) {
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
+        // Hidden vetting's modules (`vetting/pcs*.rs`) are compiled only with `vetting-pcs`;
+        // without it their literals bind nothing, and scanning them would demand witnesses
+        // for tasks this build cannot serve.
+        if !cfg!(feature = "vetting-pcs")
+            && path.parent().is_some_and(|d| d.ends_with("vetting"))
+            && path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("pcs"))
+        {
+            continue;
+        }
         let text = std::fs::read_to_string(&path).expect("read source file");
         for (idx, _) in text.match_indices(VTC_PREFIX) {
             if idx == 0 || !text[..idx].ends_with('"') {
@@ -624,7 +636,8 @@ fn table() -> Vec<Conformance> {
     use vta_sdk::protocols::join_requests as jr;
     use vta_sdk::protocols::members as mem;
 
-    vec![
+    #[allow(unused_mut)]
+    let mut table = vec![
         // ─── admin ───────────────────────────────────────────────────
         checked!(
             s::admin::bootstrap::v0_1::Payload,
@@ -1725,6 +1738,95 @@ fn table() -> Vec<Conformance> {
                 )
                 .expect("resend response")
             )
+        ),
+    ];
+    #[cfg(feature = "vetting-pcs")]
+    table.extend(pcs_witnesses());
+    table
+}
+
+/// Hidden vetting's four exchanges (`zkp-pcs`), witnessed only where they are bound.
+///
+/// Built from the handler's own wire structs in `vetting::pcs_tasks`, which are hand-written
+/// rather than generated. The multibase values are placeholders of the right alphabet: whether
+/// the library's real encoding of a root request and a token batch meets these schemas is
+/// asserted against live output in `vetting::pcs_issue`'s enrolment test, where one exists.
+#[cfg(feature = "vetting-pcs")]
+fn pcs_witnesses() -> Vec<Conformance> {
+    use crate::vetting::pcs_tasks as pcs;
+    use trust_tasks_rs::specs::vtc as s;
+    const MB: &str = "z3yZe7d4yBMmB6ifs9NAJ3Z6z1pkcvXq5j3HLMdjU8uK";
+    let date = |d: &str| d.parse::<chrono::NaiveDate>().expect("fixture date");
+    let window = || pcs::EventWindow {
+        start_date: date("2026-10-05"),
+        end_date: date("2026-10-07"),
+    };
+    vec![
+        checked!(
+            s::vetting::vetters::pcs_root::v0_1::Payload,
+            s::vetting::vetters::pcs_root::v0_1::Response,
+            to_v(pcs::PcsRootPayload {
+                label: "vetter/2026-09".into(),
+                id: MB.into(),
+                request: json!({ "encoding": MB, "t0": MB, "proof": MB }),
+                ext: None,
+            }),
+            to_v(pcs::PcsRootResponse {
+                label: "vetter/2026-09".into(),
+                pre_credential: MB.into(),
+                ext: None,
+            })
+        ),
+        checked!(
+            s::vetting::vetters::pcs_tokens::v0_1::Payload,
+            s::vetting::vetters::pcs_tokens::v0_1::Response,
+            to_v(pcs::PcsTokensPayload {
+                label: "vetting-token/2026-09".into(),
+                tick: 3,
+                requests: vec![pcs::PcsTokenRequest {
+                    commitment: MB.into(),
+                    opening_proof: MB.into(),
+                }],
+                ext: None,
+            }),
+            to_v(pcs::PcsTokensResponse {
+                label: "vetting-token/2026-09".into(),
+                tick: 3,
+                pre_credentials: vec![MB.into()],
+                ext: None,
+            })
+        ),
+        checked!(
+            s::vetting::vetters::event_mode::v0_1::Payload,
+            s::vetting::vetters::event_mode::v0_1::Response,
+            to_v(pcs::EventModePayload {
+                event_id: "devcon-2026".into(),
+                tier: "desk".into(),
+                window: window(),
+                ext: None,
+            }),
+            to_v(pcs::EventModeResponse {
+                event_id: "devcon-2026".into(),
+                state: "approved".into(),
+                tier: "desk".into(),
+                window: window(),
+                group_size: 4,
+                group_floor: 3,
+                label: Some("vetting-token/devcon-2026/desk".into()),
+                drip_per_tick: Some(5),
+                closes_after: Some(date("2026-10-08")),
+                ext: None,
+            })
+        ),
+        checked!(
+            s::vetting::pcs_challenge::v0_1::Payload,
+            s::vetting::pcs_challenge::v0_1::Response,
+            to_v(pcs::PcsChallengePayload::default()),
+            to_v(pcs::PcsChallengeResponse {
+                challenge: "0123456789abcdef0123456789abcdef".into(),
+                expires_at: TS.parse::<DateTime<chrono::Utc>>().unwrap(),
+                ext: None,
+            })
         ),
     ]
 }

@@ -1172,12 +1172,16 @@ mod spine_proof_tests {
             })
             .collect();
 
+        // Hidden vetting's four tasks (`zkp-pcs`) declare a proof since their specifications
+        // were published (trust-tasks-rs 0.22); they are bound only with `vetting-pcs`.
+        let hidden_vetting = if cfg!(feature = "vetting-pcs") { 4 } else { 0 };
         assert_eq!(
             required.len(),
-            26,
+            26 + hidden_vetting,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
-             (`join-requests/decide`, `community/profile/update`); got {required:?}"
+             (`join-requests/decide`, `community/profile/update`), + the 4 \
+             hidden-vetting tasks under `vetting-pcs`; got {required:?}"
         );
     }
 }

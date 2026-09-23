@@ -94,7 +94,8 @@ fn witnesses() -> Vec<Witness> {
     use vta_sdk::protocols::join_requests as jr;
     use vta_sdk::protocols::vetting as vet;
 
-    vec![
+    #[allow(unused_mut)]
+    let mut table = vec![
         witness!(
             s::join_requests::withdraw::v0_1::error_codes::NOT_FOUND,
             jr::JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND,
@@ -596,6 +597,127 @@ fn witnesses() -> Vec<Witness> {
             crate::routes::recognise::RECOGNISE_ERR_CREDENTIAL_INVALID,
             "recognise.rs",
             "the_recognise_task_answers_with_the_codes_its_spec_declares"
+        ),
+    ];
+    #[cfg(feature = "vetting-pcs")]
+    table.extend(pcs_witnesses());
+    table
+}
+
+/// Hidden vetting's declared codes (`zkp-pcs`), witnessed only where its tasks are bound. Every
+/// one is driven over `/v1/trust-tasks` as a signed document, as a vetter's agent sends it.
+#[cfg(feature = "vetting-pcs")]
+fn pcs_witnesses() -> Vec<Witness> {
+    use crate::vetting::pcs_tasks as pcs;
+    use trust_tasks_rs::specs::vtc as s;
+    vec![
+        witness!(
+            s::vetting::vetters::pcs_root::v0_1::error_codes::ALREADY_ENROLLED,
+            pcs::ROOT_ERR_ALREADY_ENROLLED,
+            "hidden_vetting_tasks.rs",
+            "a_vetter_enrols_draws_and_an_applicant_gets_a_challenge"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_root::v0_1::error_codes::NOT_A_VETTER,
+            pcs::ROOT_ERR_NOT_A_VETTER,
+            "hidden_vetting_tasks.rs",
+            "a_vetter_enrols_draws_and_an_applicant_gets_a_challenge"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_root::v0_1::error_codes::WRONG_LABEL,
+            pcs::ROOT_ERR_WRONG_LABEL,
+            "hidden_vetting_tasks.rs",
+            "the_enrolment_and_the_drip_refuse_with_the_codes_they_declare"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_root::v0_1::error_codes::BAD_REQUEST,
+            pcs::ROOT_ERR_BAD_REQUEST,
+            "hidden_vetting_tasks.rs",
+            "the_enrolment_and_the_drip_refuse_with_the_codes_they_declare"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_root::v0_1::error_codes::IDENTIFIER_REBOUND,
+            pcs::ROOT_ERR_IDENTIFIER_REBOUND,
+            "hidden_vetting_tasks.rs",
+            "the_enrolment_and_the_drip_refuse_with_the_codes_they_declare"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_tokens::v0_1::error_codes::NOT_A_VETTER,
+            pcs::TOKENS_ERR_NOT_A_VETTER,
+            "hidden_vetting_tasks.rs",
+            "the_enrolment_and_the_drip_refuse_with_the_codes_they_declare"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_tokens::v0_1::error_codes::ALREADY_SERVED,
+            pcs::TOKENS_ERR_ALREADY_SERVED,
+            "hidden_vetting_tasks.rs",
+            "a_vetter_enrols_draws_and_an_applicant_gets_a_challenge"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_tokens::v0_1::error_codes::OVER_QUOTA,
+            pcs::TOKENS_ERR_OVER_QUOTA,
+            "hidden_vetting_tasks.rs",
+            "a_vetter_enrols_draws_and_an_applicant_gets_a_challenge"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_tokens::v0_1::error_codes::EVENT_REFUSED,
+            pcs::TOKENS_ERR_EVENT_REFUSED,
+            "hidden_vetting_tasks.rs",
+            "an_event_stays_shut_until_enough_vetters_have_asked"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_tokens::v0_1::error_codes::LABEL_NOT_LIVE,
+            pcs::TOKENS_ERR_LABEL_NOT_LIVE,
+            "hidden_vetting_tasks.rs",
+            "the_enrolment_and_the_drip_refuse_with_the_codes_they_declare"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_tokens::v0_1::error_codes::BAD_OPENING_PROOF,
+            pcs::TOKENS_ERR_BAD_OPENING_PROOF,
+            "hidden_vetting_tasks.rs",
+            "the_enrolment_and_the_drip_refuse_with_the_codes_they_declare"
+        ),
+        witness!(
+            s::vetting::vetters::event_mode::v0_1::error_codes::ALREADY_REQUESTED,
+            pcs::EVENT_ERR_ALREADY_REQUESTED,
+            "hidden_vetting_tasks.rs",
+            "an_event_stays_shut_until_enough_vetters_have_asked"
+        ),
+        witness!(
+            s::vetting::vetters::event_mode::v0_1::error_codes::UNKNOWN_EVENT,
+            pcs::EVENT_ERR_UNKNOWN_EVENT,
+            "hidden_vetting_tasks.rs",
+            "an_event_request_refuses_with_the_codes_it_declares"
+        ),
+        witness!(
+            s::vetting::vetters::event_mode::v0_1::error_codes::UNKNOWN_TIER,
+            pcs::EVENT_ERR_UNKNOWN_TIER,
+            "hidden_vetting_tasks.rs",
+            "an_event_request_refuses_with_the_codes_it_declares"
+        ),
+        witness!(
+            s::vetting::vetters::event_mode::v0_1::error_codes::BAD_WINDOW,
+            pcs::EVENT_ERR_BAD_WINDOW,
+            "hidden_vetting_tasks.rs",
+            "an_event_request_refuses_with_the_codes_it_declares"
+        ),
+        witness!(
+            s::vetting::vetters::event_mode::v0_1::error_codes::EVENT_CLOSED,
+            pcs::EVENT_ERR_EVENT_CLOSED,
+            "hidden_vetting_tasks.rs",
+            "an_event_request_refuses_with_the_codes_it_declares"
+        ),
+        witness!(
+            s::vetting::vetters::event_mode::v0_1::error_codes::NOT_A_VETTER,
+            pcs::EVENT_ERR_NOT_A_VETTER,
+            "hidden_vetting_tasks.rs",
+            "an_event_request_refuses_with_the_codes_it_declares"
+        ),
+        witness!(
+            s::vetting::pcs_challenge::v0_1::error_codes::NOT_HIDDEN_VETTING,
+            pcs::CHALLENGE_ERR_NOT_HIDDEN,
+            "hidden_vetting_tasks.rs",
+            "a_community_that_runs_no_hidden_criterion_refuses_a_challenge"
         ),
     ]
 }

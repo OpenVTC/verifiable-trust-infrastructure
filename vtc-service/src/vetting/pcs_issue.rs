@@ -538,6 +538,17 @@ mod tests {
             .await
             .expect("a granted vetter enrols");
         assert_eq!(answer.label, format!("vetter/{PERIOD}"));
+        // The real exchange, against the published specification: the conformance witness
+        // for this task is a hand-built fixture, so only here does the library's own encoding
+        // of a root request meet the schema.
+        {
+            use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_root::v0_1 as spec;
+            use trust_tasks_rs::validate::ValidatedPayload;
+            spec::Payload::validate_value(&serde_json::to_value(req).unwrap())
+                .expect("a vetter's root request is what the specification describes");
+            spec::Response::validate_value(&serde_json::to_value(&answer).unwrap())
+                .expect("the community's answer is what the specification describes");
+        }
         let pre = vti_vetting_pcs::scheme::dec(&answer.pre_credential).unwrap();
         issuer
             .open()
@@ -615,6 +626,14 @@ mod tests {
             .await
             .expect("a tick of the drip");
         assert_eq!(served.pre_credentials.len(), 3);
+        {
+            use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_tokens::v0_1 as spec;
+            use trust_tasks_rs::validate::ValidatedPayload;
+            spec::Payload::validate_value(&serde_json::to_value(&batch).unwrap())
+                .expect("a vetter's token batch is what the specification describes");
+            spec::Response::validate_value(&serde_json::to_value(&served).unwrap())
+                .expect("the served batch is what the specification describes");
+        }
         let pres = served
             .pre_credentials
             .iter()

@@ -204,7 +204,7 @@ impl Harness {
 }
 
 /// The code a refusal carries, from the framework's error document.
-fn refusal_code(body: &Value) -> String {
+fn tt_error_code(body: &Value) -> String {
     body.pointer("/payload/code")
         .or_else(|| body.pointer("/payload/error/code"))
         .and_then(Value::as_str)
@@ -273,7 +273,7 @@ async fn a_vetter_enrols_draws_and_an_applicant_gets_a_challenge() {
         )
         .await;
     assert_ne!(status, StatusCode::OK, "a second enrolment must be refused");
-    assert_eq!(refusal_code(&body), pcs_tasks::ROOT_ERR_ALREADY_ENROLLED);
+    assert_eq!(tt_error_code(&body), pcs_tasks::ROOT_ERR_ALREADY_ENROLLED);
 
     // A member with no grant is refused before any crypto happens.
     let (stranger_did, stranger_key) = identity(0xB7);
@@ -290,7 +290,7 @@ async fn a_vetter_enrols_draws_and_an_applicant_gets_a_challenge() {
         )
         .await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::ROOT_ERR_NOT_A_VETTER);
+    assert_eq!(tt_error_code(&body), pcs_tasks::ROOT_ERR_NOT_A_VETTER);
 
     // --- 2. draw ----------------------------------------------------------------------------
     let mut wallet = TokenWallet::new(&h.community).unwrap();
@@ -327,7 +327,7 @@ async fn a_vetter_enrols_draws_and_an_applicant_gets_a_challenge() {
     // The same tick again is refused — the store says so, not a memory.
     let (status, body) = h.post(&vetter_key, pcs_tasks::PCS_TOKENS_TYPE, batch).await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::TOKENS_ERR_ALREADY_SERVED);
+    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_ALREADY_SERVED);
 
     // And more than the published rate is refused whatever the vetter asks for.
     let greedy = wallet
@@ -358,7 +358,7 @@ async fn a_vetter_enrols_draws_and_an_applicant_gets_a_challenge() {
         )
         .await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::TOKENS_ERR_OVER_QUOTA);
+    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_OVER_QUOTA);
 
     // --- 3. the applicant's challenge -------------------------------------------------------
     let (_applicant_did, applicant_key) = identity(0xC7);
@@ -395,7 +395,7 @@ async fn a_community_that_runs_no_hidden_criterion_refuses_a_challenge() {
     let (_did, key) = identity(0xD7);
     let (status, body) = h.post(&key, pcs_tasks::PCS_CHALLENGE_TYPE, json!({})).await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::CHALLENGE_ERR_NOT_HIDDEN);
+    assert_eq!(tt_error_code(&body), pcs_tasks::CHALLENGE_ERR_NOT_HIDDEN);
 }
 
 // --- event mode ---------------------------------------------------------------------------------
@@ -476,7 +476,7 @@ async fn an_event_stays_shut_until_enough_vetters_have_asked() {
         )
         .await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_ALREADY_REQUESTED);
+    assert_eq!(tt_error_code(&body), pcs_tasks::EVENT_ERR_ALREADY_REQUESTED);
 
     // And the label it would unlock is shut, with the code the drip declares for exactly this.
     let issuer = vtc_service::vetting::pcs_issue::derive_issuer(&h.tv.state, &h.community).unwrap();
@@ -510,7 +510,7 @@ async fn an_event_stays_shut_until_enough_vetters_have_asked() {
         )
         .await;
     assert_ne!(status, StatusCode::OK, "{body}");
-    assert_eq!(refusal_code(&body), pcs_tasks::TOKENS_ERR_EVENT_REFUSED);
+    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_EVENT_REFUSED);
 }
 
 /// With an approver and the floor met, the label opens — at the tier's rate, which is the whole
@@ -602,7 +602,7 @@ async fn an_approved_event_opens_its_label_at_the_tier_rate() {
         .post(&vetters[0].1, pcs_tasks::PCS_TOKENS_TYPE, batch(&greedy, 2))
         .await;
     assert_ne!(status, StatusCode::OK, "{body}");
-    assert_eq!(refusal_code(&body), pcs_tasks::TOKENS_ERR_OVER_QUOTA);
+    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_OVER_QUOTA);
 }
 
 /// The rule that makes the approval mean something: an approver who is in the group has approved
@@ -656,7 +656,7 @@ async fn an_event_approved_by_one_of_its_own_vetters_opens_nothing() {
         )
         .await;
     assert_ne!(status, StatusCode::OK, "{body}");
-    assert_eq!(refusal_code(&body), pcs_tasks::TOKENS_ERR_EVENT_REFUSED);
+    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_EVENT_REFUSED);
 }
 
 /// Every refusal the request itself declares, each with the code a client switches on.
@@ -673,7 +673,7 @@ async fn an_event_request_refuses_with_the_codes_it_declares() {
         )
         .await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_UNKNOWN_EVENT);
+    assert_eq!(tt_error_code(&body), pcs_tasks::EVENT_ERR_UNKNOWN_EVENT);
 
     let (status, body) = h
         .post(
@@ -683,7 +683,7 @@ async fn an_event_request_refuses_with_the_codes_it_declares() {
         )
         .await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_UNKNOWN_TIER);
+    assert_eq!(tt_error_code(&body), pcs_tasks::EVENT_ERR_UNKNOWN_TIER);
 
     // A window wider than the event's own: the extra days would be tokens at the event's rate
     // for days that are not the event.
@@ -702,7 +702,7 @@ async fn an_event_request_refuses_with_the_codes_it_declares() {
         )
         .await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_BAD_WINDOW);
+    assert_eq!(tt_error_code(&body), pcs_tasks::EVENT_ERR_BAD_WINDOW);
 
     // An event whose label has already closed. Its window is still the event's own, so what
     // refuses this is the grace period running out and not the dates being wrong.
@@ -738,7 +738,7 @@ async fn an_event_request_refuses_with_the_codes_it_declares() {
         )
         .await;
     assert_ne!(status, StatusCode::OK, "{body}");
-    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_EVENT_CLOSED);
+    assert_eq!(tt_error_code(&body), pcs_tasks::EVENT_ERR_EVENT_CLOSED);
 
     // A member with no vetter grant is refused before anything is recorded.
     let (_, stranger) = identity(0xEF);
@@ -750,5 +750,150 @@ async fn an_event_request_refuses_with_the_codes_it_declares() {
         )
         .await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(refusal_code(&body), pcs_tasks::EVENT_ERR_NOT_A_VETTER);
+    assert_eq!(tt_error_code(&body), pcs_tasks::EVENT_ERR_NOT_A_VETTER);
+}
+
+/// The enrolment and drip refusals nothing above reaches, each with its declared code: a label
+/// the community is not issuing, a request that does not verify, a second identifier after the
+/// label rotates, a token label that is not live, an opening proof made for someone else, and a
+/// draw by someone who is not a vetter.
+#[tokio::test]
+async fn the_enrolment_and_the_drip_refuse_with_the_codes_they_declare() {
+    const NEXT: &str = "2026-10";
+    let h = Harness::start().await;
+    h.publish().await;
+    let issuer = vtc_service::vetting::pcs_issue::derive_issuer(&h.tv.state, &h.community)
+        .expect("the service's own issuer");
+    let mut rng = StdRng::seed_from_u64(0x2026_0927);
+    let (vetter_did, vetter_key) = identity(0xC7);
+    h.grant_vetter(&vetter_did).await;
+
+    let (id, usk) = issuer.open().user_keygen(&mut rng).unwrap();
+    let root = |label: &str, id: &vti_vetting_pcs::scheme::G1, request: &Value| json!({ "label": label, "id": point_text(id).unwrap(), "request": request });
+    let request_for = |period: &str, rng: &mut StdRng| {
+        let (request, _) = issuer
+            .open()
+            .root_request(issuer.hvk(), &vetter_predicate(period), &id, &usk, rng)
+            .unwrap();
+        serde_json::to_value(&request).unwrap()
+    };
+
+    // A label this community is not issuing under.
+    let good = request_for(PERIOD, &mut rng);
+    let (status, body) = h
+        .post(
+            &vetter_key,
+            pcs_tasks::PCS_ROOT_TYPE,
+            root("vetter/1999-01", &id, &good),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(tt_error_code(&body), pcs_tasks::ROOT_ERR_WRONG_LABEL);
+
+    // The right label, but a request proved for another period's predicate: it does not verify.
+    let stale = request_for("1999-01", &mut rng);
+    let label = format!("vetter/{PERIOD}");
+    let (status, body) = h
+        .post(
+            &vetter_key,
+            pcs_tasks::PCS_ROOT_TYPE,
+            root(&label, &id, &stale),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(tt_error_code(&body), pcs_tasks::ROOT_ERR_BAD_REQUEST);
+
+    // Enrol, then rotate the label: the member is bound to the identifier they enrolled with,
+    // and a second one is refused rather than counted as a second vetter.
+    let (status, body) = h
+        .post(
+            &vetter_key,
+            pcs_tasks::PCS_ROOT_TYPE,
+            root(&label, &id, &good),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rotated = vtc_service::vetting::pcs_issue::publish(
+        &h.tv.state,
+        &h.community,
+        vec![NEXT.to_string(), PERIOD.to_string()],
+        vec![TOKEN_LABEL.to_string()],
+        DRIP,
+    )
+    .expect("the community rotates its vetter label");
+    h.store_config(&rotated).await;
+    let (other_id, _) = issuer.open().user_keygen(&mut rng).unwrap();
+    let (status, body) = h
+        .post(
+            &vetter_key,
+            pcs_tasks::PCS_ROOT_TYPE,
+            root(&format!("vetter/{NEXT}"), &other_id, &good),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(tt_error_code(&body), pcs_tasks::ROOT_ERR_IDENTIFIER_REBOUND);
+
+    // The drip: a token label that is not live.
+    let mut wallet = TokenWallet::new(&h.community).unwrap();
+    let batch = |label: &str, requests: &[vti_vetting_pcs::token::TokenRequest]| {
+        json!({
+            "label": label,
+            "tick": 1,
+            "requests": requests
+                .iter()
+                .map(|r| json!({
+                    "commitment": vti_vetting_pcs::scheme::enc(&r.commitment).unwrap(),
+                    "openingProof": vti_vetting_pcs::scheme::enc(&r.opening_proof).unwrap(),
+                }))
+                .collect::<Vec<_>>(),
+        })
+    };
+    let requests = wallet
+        .prepare(issuer.tvk(), TOKEN_LABEL, &vetter_did, 1, 1, &mut rng)
+        .unwrap();
+    let (status, body) = h
+        .post(
+            &vetter_key,
+            pcs_tasks::PCS_TOKENS_TYPE,
+            batch("token/1999-01", &requests),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_LABEL_NOT_LIVE);
+
+    // Opening proofs bind who asks: ones made for another member do not verify for this one.
+    let borrowed = wallet
+        .prepare(
+            issuer.tvk(),
+            TOKEN_LABEL,
+            "did:key:z6MkSomeoneElse",
+            1,
+            1,
+            &mut rng,
+        )
+        .unwrap();
+    let (status, body) = h
+        .post(
+            &vetter_key,
+            pcs_tasks::PCS_TOKENS_TYPE,
+            batch(TOKEN_LABEL, &borrowed),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::TOKENS_ERR_BAD_OPENING_PROOF
+    );
+
+    // And a member with no grant draws nothing, whatever it sends.
+    let (_, stranger_key) = identity(0xD7);
+    let (status, body) = h
+        .post(
+            &stranger_key,
+            pcs_tasks::PCS_TOKENS_TYPE,
+            batch(TOKEN_LABEL, &requests),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_NOT_A_VETTER);
 }
