@@ -236,32 +236,23 @@ pub const PROFILE_UPDATE_ERR_VALIDATION_FAILED: &str =
     trust_tasks_rs::specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED
         .code;
 
-/// PUT handler. Admin-only. Refuses changes to `community_did`.
+/// Apply a profile patch on behalf of `actor_did` — the whole of the
+/// operation, with no transport in it.
 ///
-/// Emits a `CommunityProfileUpdated` audit event keyed to the
-/// calling admin's real DID. Audit is fail-closed: a change that
-/// can't be recorded (no `AuditWriter`) returns 503 rather than
-/// persisting silently — matching the `/v1/admin/config` doors so
-/// auditability doesn't depend on which surface the admin used.
-/// PUT /community/profile — update the community profile. Auth: Admin.
-/// Refuses changes to the immutable `community_did`.
-#[utoipa::path(
-    put, path = "/community/profile", tag = "community",
-    security(("bearer_jwt" = [])),
-    request_body = CommunityProfileUpdate,
-    responses(
-        (status = 200, description = "Updated profile + the fields that changed", body = UpdateProfileResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Community profile not initialised"),
-        (status = 503, description = "Audit writer not configured — change refused"),
-    ),
-)]
-pub async fn put_profile(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(update): Json<CommunityProfileUpdate>,
-) -> Result<(StatusCode, Json<UpdateProfileResponse>), crate::error::TaskError> {
+/// Both doors call this: the bearer REST route below, and the signed-document
+/// arm in [`crate::trust_tasks`] (#1641 phase 2). Keeping the body here is what
+/// stops the two answering differently — the field validation, the no-op
+/// short-circuit, the fail-closed audit and the persisted row are decided once.
+///
+/// Audit is fail-closed: a change that can't be recorded (no `AuditWriter`)
+/// returns 503 rather than persisting silently — matching the
+/// `/v1/admin/config` doors so auditability doesn't depend on which surface the
+/// admin used.
+pub(crate) async fn update_profile_inner(
+    state: &AppState,
+    actor_did: &str,
+    update: CommunityProfileUpdate,
+) -> Result<UpdateProfileResponse, crate::error::TaskError> {
     use crate::error::TaskError;
     let mut profile = load_profile(&state.community_ks).await?.ok_or_else(|| {
         AppError::NotFound("community profile not initialised — cannot PUT before bootstrap".into())
@@ -277,13 +268,10 @@ pub async fn put_profile(
     if fields_changed.is_empty() {
         // Nothing changed — return 200 with the existing profile.
         // PUT semantics tolerate idempotent no-ops.
-        return Ok((
-            StatusCode::OK,
-            Json(UpdateProfileResponse {
-                profile,
-                fields_changed,
-            }),
-        ));
+        return Ok(UpdateProfileResponse {
+            profile,
+            fields_changed,
+        });
     }
 
     // Fail-closed: refuse to persist a change we can't audit.
@@ -304,7 +292,7 @@ pub async fn put_profile(
 
     audit_writer
         .write(
-            &admin.0.did,
+            actor_did,
             None,
             AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
                 fields_changed: fields_changed.clone(),
@@ -313,13 +301,49 @@ pub async fn put_profile(
         )
         .await?;
 
-    Ok((
-        StatusCode::OK,
-        Json(UpdateProfileResponse {
-            profile,
-            fields_changed,
-        }),
-    ))
+    Ok(UpdateProfileResponse {
+        profile,
+        fields_changed,
+    })
+}
+
+/// PUT handler. Admin-only. Refuses changes to `community_did`.
+///
+/// Emits a `CommunityProfileUpdated` audit event keyed to the
+/// calling admin's real DID. Audit is fail-closed: a change that
+/// can't be recorded (no `AuditWriter`) returns 503 rather than
+/// persisting silently — matching the `/v1/admin/config` doors so
+/// auditability doesn't depend on which surface the admin used.
+/// PUT /community/profile — update the community profile. Auth: Admin.
+/// Refuses changes to the immutable `community_did`.
+///
+/// **Transitional bearer-token path (#1641).**
+/// `vtc/community/profile/update/0.1` declares `proof` REQUIRED, and the
+/// authoritative binding is the signed Trust Task document at
+/// `POST /v1/trust-tasks`, where the proof authenticates the administrator
+/// editing the community's public identity and their authority is read from
+/// their ACL entry. This route authenticates by bearer JWT and verifies no
+/// document proof; it is kept only until the admin console can sign a Trust
+/// Task document, and is removed in the same change that gives it that.
+#[utoipa::path(
+    put, path = "/community/profile", tag = "community",
+    security(("bearer_jwt" = [])),
+    request_body = CommunityProfileUpdate,
+    responses(
+        (status = 200, description = "Updated profile + the fields that changed", body = UpdateProfileResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Community profile not initialised"),
+        (status = 503, description = "Audit writer not configured — change refused"),
+    ),
+)]
+pub async fn put_profile(
+    admin: AdminAuth,
+    State(state): State<AppState>,
+    Json(update): Json<CommunityProfileUpdate>,
+) -> Result<(StatusCode, Json<UpdateProfileResponse>), crate::error::TaskError> {
+    let response = update_profile_inner(&state, &admin.0.did, update).await?;
+    Ok((StatusCode::OK, Json(response)))
 }
 
 // ---------------------------------------------------------------------------

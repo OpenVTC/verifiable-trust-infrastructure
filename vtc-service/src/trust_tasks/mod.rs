@@ -31,11 +31,13 @@
 //! and is handled there.
 //!
 //! **Administrator verbs are routed here too**, since #1641 phase 2 — the
-//! admin-facing member verbs are the first batch. Their authority is not a
-//! bearer token (this endpoint reads none) but the **verified signer's ACL
-//! entry**, read at execution time; see [`admin_signer`]. The remaining
-//! operator-facing verbs (`decide`, `list`, `show`, …) are still served only on
-//! their JWT-gated REST routes, and moving them is what the rest of phase 2 is.
+//! admin-facing member verbs were the first batch, `join-requests/decide` and
+//! `community/profile/update` the second. Their authority is not a bearer
+//! token (this endpoint reads none) but the **verified signer's ACL entry**,
+//! read at execution time; see [`admin_signer`]. The remaining operator-facing
+//! verbs (`list`, `show`, the config and backup pairs, …) are still served
+//! only on their JWT-gated REST routes, and moving them is what the rest of
+//! phase 2 is.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
 //! member-facing half of a family whose `revoke` verb stays operator-side on
@@ -78,6 +80,11 @@ use trust_tasks_rs::specs::vtc::members::{
     admin_remove::v0_1 as member_admin_remove, credentials::v0_1 as member_credentials,
     purge::v0_1 as member_purge, update::v0_1 as member_update,
 };
+// The admin verbs #1641 phase 2 batch 2 moved: the join decision and the
+// community profile edit. Same story — generated wire types, Type URIs read
+// off the payload types.
+use trust_tasks_rs::specs::vtc::community::profile::update::v0_1 as community_profile_update;
+use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1 as join_decide;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -666,6 +673,8 @@ async fn dispatch_typed(
         MEMBER_UPDATE_TYPE => handle_member_update(state, ctx, doc).await,
         MEMBER_ADMIN_REMOVE_TYPE => handle_member_admin_remove(state, ctx, doc).await,
         MEMBER_PURGE_TYPE => handle_member_purge(state, ctx, doc).await,
+        JOIN_DECIDE_TYPE => handle_join_decide(state, ctx, doc).await,
+        COMMUNITY_PROFILE_UPDATE_TYPE => handle_community_profile_update(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1150,9 +1159,10 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            24,
+            26,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
-             member verbs #1641 phase 2 batch 1 moved; got {required:?}"
+             member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
+             (`join-requests/decide`, `community/profile/update`); got {required:?}"
         );
     }
 }
@@ -1290,6 +1300,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     MEMBER_UPDATE_TYPE,
     MEMBER_ADMIN_REMOVE_TYPE,
     MEMBER_PURGE_TYPE,
+    // Batch 2: the join decision and the community-profile edit, on the same
+    // terms — the bearer routes stay mounted as documented transitional paths.
+    JOIN_DECIDE_TYPE,
+    COMMUNITY_PROFILE_UPDATE_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -1319,6 +1333,14 @@ pub(crate) const MEMBER_ADMIN_REMOVE_TYPE: &str =
 /// `vtc/members/purge/0.1` — irreversibly erase a member record.
 pub(crate) const MEMBER_PURGE_TYPE: &str =
     <member_purge::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/join-requests/decide/0.1` — admit or refuse a pending applicant.
+pub(crate) const JOIN_DECIDE_TYPE: &str =
+    <join_decide::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/community/profile/update/0.1` — edit the community's public profile.
+pub(crate) const COMMUNITY_PROFILE_UPDATE_TYPE: &str =
+    <community_profile_update::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -2317,6 +2339,144 @@ async fn handle_member_purge(
     }
 }
 
+// ─── the join decision + the community profile (#1641 phase 2, batch 2) ──
+
+/// `vtc/join-requests/decide/0.1` — admit or refuse a pending applicant.
+///
+/// Administrator only, read from the signer's ACL entry — the same
+/// `VtcRole::Admin` the REST route's `AdminAuth` demanded, and the only gate
+/// that route applies. There is no context scoping on either door: a VTC
+/// community is one scope, and a join request belongs to the community rather
+/// than to a context within it.
+///
+/// # Why the double-issue this task could suffer is already closed
+///
+/// Approving issues a membership credential and a role endorsement. Executed
+/// twice, it issues two of each — and a redelivery from the mediator is the
+/// routine case, not an attack (SPEC §7.2 item 11). The spine claims the
+/// document's `id` **before** dispatching here and settles it after, so a
+/// redelivery is answered with the *recorded* response and never reaches this
+/// function. That is the ordering §6a of the design note requires, and it is
+/// why this arm is not the place to add an idempotency check of its own: a
+/// check-then-act at the handler is the TOCTOU the claim exists to close.
+///
+/// The `notPending` refusal is a second line rather than that guard. It
+/// catches a *second, different* decision document aimed at a request already
+/// decided — which is a conflict the operator should see, not a duplicate to
+/// absorb.
+async fn handle_join_decide(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: join_decide::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    // The REST route takes the request id as a typed path segment; here it
+    // rides the payload as a string, so the parse is this arm's to make. A
+    // non-UUID id never named a request, so it is a malformed payload rather
+    // than the task's declared `notFound` — which would tell an operator a
+    // request had been deleted when what they sent was not an id at all.
+    let id = match uuid::Uuid::parse_str(checked.id.as_str()) {
+        Ok(id) => id,
+        Err(e) => {
+            return app_error_to_reject(
+                &doc,
+                &AppError::Validation(format!("`id` is not a join-request id: {e}")),
+            );
+        }
+    };
+    let decision = match &checked.decision {
+        join_decide::PayloadDecision::Approved => {
+            crate::routes::join_requests::decide::Decision::Approved
+        }
+        join_decide::PayloadDecision::Rejected => {
+            crate::routes::join_requests::decide::Decision::Rejected
+        }
+        // `PayloadDecision` is `#[non_exhaustive]`, so a later registry version
+        // may add an outcome this build has no handling for. Refusing is the
+        // only honest answer: mapping an unknown decision onto either of the
+        // two known ones would admit or foreclose an applicant on a decision
+        // nobody made.
+        other => {
+            return app_error_to_reject(
+                &doc,
+                &AppError::Validation(format!("unsupported `decision`: {other}")),
+            );
+        }
+    };
+    let body = crate::routes::join_requests::decide::DecideBody {
+        decision,
+        reason: checked.reason.as_ref().map(|r| r.as_str().to_string()),
+    };
+    match crate::routes::join_requests::decide::decide_inner(
+        state,
+        &actor.did,
+        ctx.transport.as_str(),
+        id,
+        body,
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/community/profile/update/0.1` — edit the community's public profile.
+///
+/// Administrator only, from the signer's ACL entry — `AdminAuth`'s question,
+/// and the only one the REST route asks.
+///
+/// # Why the payload is read twice
+///
+/// The same reason `members/update` reads it twice. The generated `Payload`
+/// types `extensions` as a map with `default`, so once parsed an **absent**
+/// bag and an empty one are the same value — and this task's rule is that
+/// absent leaves the field unchanged while a supplied value replaces it.
+/// Mapping the generated type straight through would clear the community's
+/// extensions on every update that did not mention them. The route's own
+/// `CommunityProfileUpdate` types it `Option<Value>` and keeps the
+/// distinction. The generated parse still runs, and runs first, because it is
+/// what validates the document against its published schema.
+///
+/// The nullable members (`logoUrl`, `publicUrl`, `contactEmail`) are a
+/// *different* case and the double read does not rescue them: the published
+/// task says an explicit `null` clears them, and
+/// `CommunityProfileUpdate`'s `Option<Option<String>>` has no double-option
+/// deserializer, so serde folds `null` onto the outer `None` and the operation
+/// reads it as "unchanged". That is the store's behaviour, identical on the
+/// bearer route, and it is pinned by
+/// `an_explicit_null_does_not_yet_clear_a_nullable_member` rather than left
+/// for a client to find.
+async fn handle_community_profile_update(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let _checked: community_profile_update::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let update: crate::community::CommunityProfileUpdate = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::community::profile::update_profile_inner(state, &actor.did, update).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
 // ─── personhood ──────────────────────────────────────────────────────────
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce the
@@ -2622,6 +2782,8 @@ mod tests {
             <member_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <member_admin_remove::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <member_purge::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <join_decide::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <community_profile_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
@@ -3017,6 +3179,11 @@ mod join_discovery_tests {
     }
 }
 
+/// The helpers below are `pub(super)` so [`join_decide_profile_tests`] — batch
+/// 2's tests — build and dispatch documents exactly as these do. Two harnesses
+/// for one binding would diverge, and the first thing to drift would be what
+/// "signed" means.
+///
 /// The admin-facing member verbs, served as signed Trust Task documents —
 /// **#1641 phase 2, batch 1**.
 ///
@@ -3069,7 +3236,7 @@ mod members_admin_tests {
         member: Party,
     }
 
-    async fn seed_acl(vtc: &TestVtc, did: &str, role: VtcRole, contexts: Vec<String>) {
+    pub(super) async fn seed_acl(vtc: &TestVtc, did: &str, role: VtcRole, contexts: Vec<String>) {
         store_acl_entry(
             &vtc.state.acl_ks,
             &VtcAclEntry {
@@ -3134,12 +3301,12 @@ mod members_admin_tests {
 
     /// The document as a real producer builds it — `issuer`, `recipient` and
     /// `issuedAt` set by the SDK's own builder — but unsigned.
-    fn unsigned(from: &Party, type_uri: &str, payload: Value) -> TrustTask<Value> {
+    pub(super) fn unsigned(from: &Party, type_uri: &str, payload: Value) -> TrustTask<Value> {
         vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &from.did, TEST_VTC_DID)
             .expect("build the document")
     }
 
-    async fn sign(from: &Party, mut doc: TrustTask<Value>) -> TrustTask<Value> {
+    pub(super) async fn sign(from: &Party, mut doc: TrustTask<Value>) -> TrustTask<Value> {
         let key =
             vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
                 .expect("a did:key names its own verification method");
@@ -3149,29 +3316,29 @@ mod members_admin_tests {
         doc
     }
 
-    async fn signed(from: &Party, type_uri: &str, payload: Value) -> TrustTask<Value> {
+    pub(super) async fn signed(from: &Party, type_uri: &str, payload: Value) -> TrustTask<Value> {
         sign(from, unsigned(from, type_uri, payload)).await
     }
 
-    async fn dispatch(vtc: &TestVtc, doc: &TrustTask<Value>) -> TrustTaskOutcome {
+    pub(super) async fn dispatch(vtc: &TestVtc, doc: &TrustTask<Value>) -> TrustTaskOutcome {
         let body = serde_json::to_vec(doc).expect("a document serialises");
         dispatch_trust_task_core(&vtc.state, &JoinAuthCtx::rest(), &body).await
     }
 
-    fn body_of(out: &TrustTaskOutcome) -> Value {
+    pub(super) fn body_of(out: &TrustTaskOutcome) -> Value {
         serde_json::from_slice(&out.body).unwrap_or(Value::Null)
     }
 
     /// The `code` of a `trust-task-error` reply, or `None` when the reply is a
     /// success document.
-    fn error_code(out: &TrustTaskOutcome) -> Option<String> {
+    pub(super) fn error_code(out: &TrustTaskOutcome) -> Option<String> {
         body_of(out)
             .pointer("/payload/code")?
             .as_str()
             .map(str::to_string)
     }
 
-    fn payload_of(out: &TrustTaskOutcome) -> Value {
+    pub(super) fn payload_of(out: &TrustTaskOutcome) -> Value {
         body_of(out)
             .pointer("/payload")
             .cloned()
@@ -3187,7 +3354,9 @@ mod members_admin_tests {
     /// stands in for it. It matters most for `update`, whose arm answers with
     /// the route's own `MemberEnvelope` rather than the generated type: a drift
     /// between the two would otherwise be invisible until a client hit it.
-    fn assert_conforms<R: trust_tasks_rs::validate::ValidatedPayload>(out: &TrustTaskOutcome) {
+    pub(super) fn assert_conforms<R: trust_tasks_rs::validate::ValidatedPayload>(
+        out: &TrustTaskOutcome,
+    ) {
         let payload = payload_of(out);
         R::validate_value(&payload).unwrap_or_else(|e| {
             panic!("response does not match its published schema: {e}\n{payload}")
@@ -3661,6 +3830,648 @@ mod members_admin_tests {
         assert!(
             matches!(again, accepted_ids::Acceptance::Duplicate { .. }),
             "a second binding must see the id the dispatcher spent"
+        );
+    }
+}
+
+/// The join decision and the community-profile edit, served as signed Trust
+/// Task documents — **#1641 phase 2, batch 2**.
+///
+/// `vtc/join-requests/decide/0.1` and `vtc/community/profile/update/0.1` both
+/// declare `proof` REQUIRED and were served only as flat-payload REST behind a
+/// bearer JWT. They are now bound here as well, on batch 1's terms.
+///
+/// What these tests hold beyond batch 1's, and why:
+///
+/// - **`decide` has a consequence a replay would duplicate.** Approving issues
+///   a membership credential and a role endorsement, so a decision executed
+///   twice issues two of each — the first migrated verb where a second
+///   execution is materially wrong rather than merely redundant.
+///   `vti_ops_025_a_replayed_decision_does_not_issue_a_second_credential`
+///   drives the redelivery through the issuance path and checks the credential
+///   the member ends up holding, not only the reply.
+/// - **The gate each bearer route applied must still refuse what it refused.**
+///   Both routes apply exactly `AdminAuth` and nothing further — no
+///   super-admin bar, no context scoping — so the tests hold that shape: a
+///   member is refused, a context-scoped admin is *not*.
+/// - **The `#response` schema.** Both arms answer with the route's own
+///   response struct, so a drift from the published schema would be invisible
+///   until a client hit it; the document endpoint does not carry the
+///   router-level `response_conformance` layer that covers the REST doors.
+#[cfg(test)]
+mod join_decide_profile_tests {
+    use super::members_admin_tests::{
+        assert_conforms, dispatch, error_code, payload_of, seed_acl, sign, signed, unsigned,
+    };
+    use super::*;
+    use crate::acl::VtcRole;
+    use crate::community::{CommunityProfile, load_profile, store_profile};
+    use crate::join::{JoinRequest, JoinStatus, get_join_request, store_join_request};
+    use crate::members::get_member;
+    use crate::test_support::{TEST_VTC_DID, TestVtc};
+    use serde_json::json;
+    use vti_rooms_dtg::test_support::Party;
+
+    const APPLICANT: &str = "did:key:zApplicant";
+    const PUBLIC_URL: &str = "https://vtc.example.com";
+
+    struct Fixture {
+        vtc: TestVtc,
+        /// `VtcRole::Admin`, unrestricted.
+        admin: Party,
+        /// `VtcRole::Admin` scoped to one context. Still an administrator —
+        /// neither of these verbs asks the super-admin question, so this
+        /// caller must be admitted, and a gate copied one notch too tight is
+        /// as much a regression as one copied too loose.
+        scoped_admin: Party,
+        /// `VtcRole::Member` — authenticated, authorized for none of this.
+        member: Party,
+    }
+
+    async fn fixture() -> Fixture {
+        // `with_audit` because both verbs refuse rather than act when they
+        // cannot record what they did; `with_signers` because approving mints
+        // a VMC and a role VEC, and the spine signs its replies;
+        // `with_public_url` because the credentials name the status list by
+        // URL.
+        let vtc = TestVtc::builder()
+            .with_audit(true)
+            .with_signers(true)
+            .with_public_url(PUBLIC_URL)
+            .build()
+            .await;
+        crate::policy::default::install_defaults(
+            &vtc.state.policies_ks,
+            &vtc.state.active_policies_ks,
+        )
+        .await
+        .expect("install default policies");
+        // Both status lists, as `server::run` seeds them at boot: approving
+        // allocates a slot in each, and an unseeded list fails the issuance
+        // as an internal error rather than as anything a caller could read.
+        for purpose in [
+            affinidi_status_list::StatusPurpose::Revocation,
+            affinidi_status_list::StatusPurpose::Suspension,
+        ] {
+            crate::status_list::ensure_initial(
+                &vtc.state.status_lists_ks,
+                purpose,
+                format!("{PUBLIC_URL}/v1/status-lists/{purpose}"),
+            )
+            .await
+            .expect("seed the status list");
+        }
+        store_profile(
+            &vtc.state.community_ks,
+            &CommunityProfile::new(TEST_VTC_DID, "Example Community"),
+        )
+        .await
+        .expect("seed the community profile");
+
+        let admin = Party::new();
+        let scoped_admin = Party::new();
+        let member = Party::new();
+        seed_acl(&vtc, &admin.did, VtcRole::Admin, vec![]).await;
+        seed_acl(
+            &vtc,
+            &scoped_admin.did,
+            VtcRole::Admin,
+            vec!["ctx-a".to_string()],
+        )
+        .await;
+        seed_acl(&vtc, &member.did, VtcRole::Member, vec![]).await;
+
+        Fixture {
+            vtc,
+            admin,
+            scoped_admin,
+            member,
+        }
+    }
+
+    /// A pending join request from `APPLICANT`, ready to be decided.
+    async fn pending_request(vtc: &TestVtc) -> uuid::Uuid {
+        let req = JoinRequest::new(APPLICANT, json!({}));
+        let id = req.id;
+        store_join_request(&vtc.state.join_requests_ks, &req)
+            .await
+            .expect("seed a pending join request");
+        id
+    }
+
+    // ─── the premise ─────────────────────────────────────────────────────
+
+    /// If the registry ever relaxed one of these declarations, every test
+    /// below would be asserting nothing. This one says so first.
+    #[test]
+    fn every_moved_task_declares_the_proof_these_tests_assume() {
+        for uri in [JOIN_DECIDE_TYPE, COMMUNITY_PROFILE_UPDATE_TYPE] {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
+            assert!(
+                policy.is_proof_required,
+                "{uri} no longer declares proof REQUIRED — these tests now assert \
+                 nothing, and the design note should be re-read"
+            );
+        }
+    }
+
+    // ─── VTI-OPS-020: a proof by the issuer, authorized from their ACL ────
+
+    /// **VTI-OPS-020.** A signed admin document admits the applicant, and the
+    /// reply is the task's own response shape.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_admin_document_approves_a_join_request() {
+        let fix = fixture().await;
+        let id = pending_request(&fix.vtc).await;
+
+        let doc = signed(
+            &fix.admin,
+            JOIN_DECIDE_TYPE,
+            json!({ "id": id.to_string(), "decision": "approved" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "a signed admin document must be accepted: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["requestId"], id.to_string());
+        assert_eq!(payload_of(&out)["status"], "approved");
+        assert!(
+            payload_of(&out)["vmc"].is_object(),
+            "approval delivers the membership credential inline"
+        );
+        assert_conforms::<join_decide::Response>(&out);
+
+        let member = get_member(&fix.vtc.state.members_ks, APPLICANT)
+            .await
+            .expect("read member")
+            .expect("the applicant is now a member");
+        assert!(member.current_vmc_id.is_some());
+    }
+
+    /// **VTI-OPS-020.** A signed admin document edits the community profile,
+    /// and the reply conforms to the published `#response`.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_admin_document_updates_the_profile() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({ "name": "Renamed Community", "description": "A better blurb." }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["profile"]["name"], "Renamed Community");
+        assert_conforms::<community_profile_update::Response>(&out);
+
+        let stored = load_profile(&fix.vtc.state.community_ks)
+            .await
+            .expect("read profile")
+            .expect("row");
+        assert_eq!(stored.name, "Renamed Community");
+        assert_eq!(stored.description, "A better blurb.");
+    }
+
+    /// **VTI-OPS-020.** The same documents with their proofs stripped are
+    /// refused with the framework's own code, and nothing happens.
+    #[tokio::test]
+    async fn vti_ops_020_an_unsigned_admin_document_is_refused() {
+        let fix = fixture().await;
+        let id = pending_request(&fix.vtc).await;
+
+        for (uri, payload) in [
+            (
+                JOIN_DECIDE_TYPE,
+                json!({ "id": id.to_string(), "decision": "approved" }),
+            ),
+            (COMMUNITY_PROFILE_UPDATE_TYPE, json!({ "name": "Hijacked" })),
+        ] {
+            let doc = unsigned(&fix.admin, uri, payload);
+            let out = dispatch(&fix.vtc, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{uri}: SPEC §7.2 item 7 names the code: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+
+        assert_eq!(
+            get_join_request(&fix.vtc.state.join_requests_ks, id)
+                .await
+                .expect("read request")
+                .expect("row")
+                .status,
+            JoinStatus::Pending,
+            "an unsigned decision must not have decided anything"
+        );
+        assert_eq!(
+            load_profile(&fix.vtc.state.community_ks)
+                .await
+                .expect("read profile")
+                .expect("row")
+                .name,
+            "Example Community",
+        );
+    }
+
+    /// Authorization is the **signer's ACL entry**, not a bearer token: a
+    /// correctly signed document from a member is refused, which is what
+    /// `AdminAuth` refused on both REST routes.
+    #[tokio::test]
+    async fn a_non_admin_signer_is_refused_both_verbs() {
+        let fix = fixture().await;
+        let id = pending_request(&fix.vtc).await;
+
+        for (uri, payload) in [
+            (
+                JOIN_DECIDE_TYPE,
+                json!({ "id": id.to_string(), "decision": "approved" }),
+            ),
+            (COMMUNITY_PROFILE_UPDATE_TYPE, json!({ "name": "Hijacked" })),
+        ] {
+            let doc = signed(&fix.member, uri, payload).await;
+            let out = dispatch(&fix.vtc, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("permissionDenied"),
+                "{uri}: a member is not an administrator: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+        assert!(
+            get_member(&fix.vtc.state.members_ks, APPLICANT)
+                .await
+                .expect("read member")
+                .is_none(),
+            "the refused decision must not have admitted anybody"
+        );
+    }
+
+    /// A DID with **no ACL row at all** is refused the same way — the
+    /// signature verifies, and verifying a signature is not authorization.
+    #[tokio::test]
+    async fn a_signer_with_no_acl_row_is_refused() {
+        let fix = fixture().await;
+        let stranger = Party::new();
+        let doc = signed(
+            &stranger,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({ "name": "Hijacked" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
+    }
+
+    /// **Neither verb is super-admin-only, and neither is context-scoped.**
+    /// Both bearer routes take `AdminAuth`, which a context-scoped admin
+    /// satisfies, so this door must admit them too.
+    #[tokio::test]
+    async fn a_context_scoped_admin_may_decide_and_may_edit_the_profile() {
+        let fix = fixture().await;
+        let id = pending_request(&fix.vtc).await;
+
+        let doc = signed(
+            &fix.scoped_admin,
+            JOIN_DECIDE_TYPE,
+            json!({ "id": id.to_string(), "decision": "rejected", "reason": "not this time" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "a context-scoped admin passes AdminAuth and must pass here: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["status"], "rejected");
+
+        let doc = signed(
+            &fix.scoped_admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({ "name": "Scoped Rename" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    // ─── the operations' own refusals ────────────────────────────────────
+
+    /// The declared `notFound`, carried as a code rather than flattened into
+    /// `taskFailed` — the same code the REST route puts in its body.
+    #[tokio::test]
+    async fn an_unknown_request_is_the_declared_not_found() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            JOIN_DECIDE_TYPE,
+            json!({ "id": uuid::Uuid::new_v4().to_string(), "decision": "approved" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(crate::routes::join_requests::decide::DECIDE_ERR_NOT_FOUND),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// An `id` that is not a join-request id is a **malformed payload**, not
+    /// the declared `notFound`. Answering `notFound` would tell an operator a
+    /// request had been deleted when what they sent was never an id.
+    #[tokio::test]
+    async fn an_id_that_is_not_an_id_is_malformed_not_not_found() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            JOIN_DECIDE_TYPE,
+            json!({ "id": "not-a-uuid", "decision": "approved" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("malformedRequest"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// A *second, different* decision aimed at an already-decided request is
+    /// the declared `notPending`. This is not the duplicate guard — it is the
+    /// conflict an operator should see.
+    #[tokio::test]
+    async fn a_second_decision_on_a_decided_request_is_not_pending() {
+        let fix = fixture().await;
+        let id = pending_request(&fix.vtc).await;
+
+        let first = signed(
+            &fix.admin,
+            JOIN_DECIDE_TYPE,
+            json!({ "id": id.to_string(), "decision": "approved" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &first).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        // A fresh document — new `id`, so the accepted-id record has nothing
+        // to say about it — carrying the opposite decision.
+        let second = signed(
+            &fix.admin,
+            JOIN_DECIDE_TYPE,
+            json!({ "id": id.to_string(), "decision": "rejected" }),
+        )
+        .await;
+        assert_ne!(first.id, second.id, "these must be distinct documents");
+        let out = dispatch(&fix.vtc, &second).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(crate::routes::join_requests::decide::DECIDE_ERR_NOT_PENDING),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// A field failing validation is the task's own `validationFailed`.
+    #[tokio::test]
+    async fn a_bad_profile_field_is_the_declared_validation_failure() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            // Not an http(s) URL — refused so it cannot reach an `<img src>`
+            // on the public page.
+            json!({ "logoUrl": "javascript:alert(1)" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(crate::routes::community::profile::PROFILE_UPDATE_ERR_VALIDATION_FAILED),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// An **omitted** member leaves the stored value alone — the distinction
+    /// the double parse exists for.
+    ///
+    /// The generated `Payload` types `extensions` as a map with `default`, so
+    /// once parsed an absent bag and an empty one are the same value, and
+    /// mapping that straight through would clear the community's extensions on
+    /// every update that did not mention them. The handler reads the raw
+    /// payload for exactly this.
+    #[tokio::test]
+    async fn an_omitted_member_does_not_clear_what_it_did_not_mention() {
+        let fix = fixture().await;
+        let set = signed(
+            &fix.admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({
+                "logoUrl": "https://example.com/logo.png",
+                "extensions": { "org": "acme" },
+            }),
+        )
+        .await;
+        assert!(dispatch(&fix.vtc, &set).await.status.is_success());
+
+        let other = signed(
+            &fix.admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({ "name": "Still Logoed" }),
+        )
+        .await;
+        assert!(dispatch(&fix.vtc, &other).await.status.is_success());
+
+        let stored = load_profile(&fix.vtc.state.community_ks)
+            .await
+            .expect("read profile")
+            .expect("row");
+        assert_eq!(
+            stored.logo_url.as_deref(),
+            Some("https://example.com/logo.png"),
+            "an omitted `logoUrl` must leave the stored one alone"
+        );
+        assert_eq!(
+            stored.extensions,
+            json!({ "org": "acme" }),
+            "and an omitted `extensions` must not clear the bag"
+        );
+    }
+
+    /// An explicit `null` **does not** clear a nullable member, on either
+    /// door — a divergence from the published task, recorded here rather than
+    /// left for a client to discover.
+    ///
+    /// `vtc/community/profile/update/0.1` says the nullable members "may be
+    /// explicitly set to `null` to clear them". They cannot be:
+    /// `CommunityProfileUpdate` types them `Option<Option<String>>` but
+    /// declares no double-option deserializer, and serde maps an explicit
+    /// `null` onto the *outer* `None` — which this operation reads as "leave
+    /// unchanged". That is the store's behaviour rather than the transport's,
+    /// so it predates this binding and holds identically on the bearer route.
+    /// What #1641 phase 2 is answerable for is that the two doors agree, and
+    /// they do; fixing it is a change to `CommunityProfileUpdate` that moves
+    /// both doors at once and belongs in its own.
+    #[tokio::test]
+    async fn an_explicit_null_does_not_yet_clear_a_nullable_member() {
+        let fix = fixture().await;
+        let set = signed(
+            &fix.admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({ "logoUrl": "https://example.com/logo.png" }),
+        )
+        .await;
+        assert!(dispatch(&fix.vtc, &set).await.status.is_success());
+
+        let clear = signed(
+            &fix.admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({ "logoUrl": null }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &clear).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(
+            load_profile(&fix.vtc.state.community_ks)
+                .await
+                .expect("read profile")
+                .expect("row")
+                .logo_url
+                .as_deref(),
+            Some("https://example.com/logo.png"),
+            "the logo survives a `null` the specification says should clear it"
+        );
+    }
+
+    // ─── VTI-OPS-025 / -026: the accepted-id record, on a verb that issues ─
+
+    /// **VTI-OPS-025 — the one this batch exists to get right.**
+    ///
+    /// A redelivered approval is answered with the outcome already recorded
+    /// for it, and **does not issue a second membership credential**. The
+    /// mediator re-pushes an undelivered inbox as a matter of routine, so this
+    /// is the ordinary case rather than an attack, and without the spine's
+    /// claim-before-execute the applicant would end up holding two VMCs with
+    /// two status-list slots — one of which nobody could later revoke, because
+    /// only the last write is on the member row.
+    #[tokio::test]
+    async fn vti_ops_025_a_replayed_decision_does_not_issue_a_second_credential() {
+        let fix = fixture().await;
+        let id = pending_request(&fix.vtc).await;
+        let doc = signed(
+            &fix.admin,
+            JOIN_DECIDE_TYPE,
+            json!({ "id": id.to_string(), "decision": "approved" }),
+        )
+        .await;
+
+        let first = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            first.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&first.body)
+        );
+        let issued = get_member(&fix.vtc.state.members_ks, APPLICANT)
+            .await
+            .expect("read member")
+            .expect("the applicant is a member");
+        let first_vmc_id = issued.current_vmc_id.clone().expect("a VMC was issued");
+        let first_slot = issued.status_list_index;
+
+        let second = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            second.status.is_success(),
+            "the redelivery must be answered, not refused: {}",
+            String::from_utf8_lossy(&second.body)
+        );
+        assert_eq!(
+            payload_of(&second),
+            payload_of(&first),
+            "the recorded outcome is what a redelivery is answered with — a \
+             second execution would have answered `notPending` instead"
+        );
+
+        let after = get_member(&fix.vtc.state.members_ks, APPLICANT)
+            .await
+            .expect("read member")
+            .expect("row");
+        assert_eq!(
+            after.current_vmc_id.as_deref(),
+            Some(first_vmc_id.as_str()),
+            "the member still holds the credential the first execution issued"
+        );
+        assert_eq!(
+            after.status_list_index, first_slot,
+            "and no second status-list slot was burned"
+        );
+    }
+
+    /// **VTI-OPS-026.** A *different* document under an already-spent `id` is
+    /// `idConflict` — not absorbed as a retry, and not executed.
+    #[tokio::test]
+    async fn vti_ops_026_a_different_document_under_a_spent_id_conflicts() {
+        let fix = fixture().await;
+        let first = signed(
+            &fix.admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({ "name": "First Name" }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &first).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        let mut collider = unsigned(
+            &fix.admin,
+            COMMUNITY_PROFILE_UPDATE_TYPE,
+            json!({ "name": "Second Name" }),
+        );
+        collider.id.clone_from(&first.id);
+        let collider = sign(&fix.admin, collider).await;
+        let out = dispatch(&fix.vtc, &collider).await;
+
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("idConflict"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(
+            load_profile(&fix.vtc.state.community_ks)
+                .await
+                .expect("read profile")
+                .expect("row")
+                .name,
+            "First Name",
+            "the conflicting document must not have executed"
         );
     }
 }

@@ -695,6 +695,15 @@ export interface paths {
          *     auditability doesn't depend on which surface the admin used.
          *     PUT /community/profile — update the community profile. Auth: Admin.
          *     Refuses changes to the immutable `community_did`.
+         *
+         *     **Transitional bearer-token path (#1641).**
+         *     `vtc/community/profile/update/0.1` declares `proof` REQUIRED, and the
+         *     authoritative binding is the signed Trust Task document at
+         *     `POST /v1/trust-tasks`, where the proof authenticates the administrator
+         *     editing the community's public identity and their authority is read from
+         *     their ACL entry. This route authenticates by bearer JWT and verifies no
+         *     document proof; it is kept only until the admin console can sign a Trust
+         *     Task document, and is removed in the same change that gives it that.
          */
         put: operations["put_profile"];
         post?: never;
@@ -1079,6 +1088,16 @@ export interface paths {
          * POST /join-requests/{id}/decide — decide a pending join request.
          *     `approved` admits the applicant + issues the VMC; `rejected` refuses
          *     them with an optional reason. Auth: Admin.
+         * @description **Transitional bearer-token path (#1641).**
+         *     `vtc/join-requests/decide/0.1` declares `proof` REQUIRED, and the
+         *     authoritative binding is the signed Trust Task document at
+         *     `POST /v1/trust-tasks`, where the proof authenticates the administrator who
+         *     made the decision, their authority is read from their ACL entry, and the
+         *     document's `id` is claimed before the applicant is admitted so a redelivery
+         *     cannot issue a second set of credentials. This route authenticates by
+         *     bearer JWT, verifies no document proof, and has no document `id` to claim;
+         *     it is kept only until the admin console can sign a Trust Task document, and
+         *     is removed in the same change that gives it that.
          */
         post: operations["decide"];
         delete?: never;

@@ -1673,7 +1673,7 @@
           "community"
         ],
         "summary": "PUT handler. Admin-only. Refuses changes to `community_did`.",
-        "description": "Emits a `CommunityProfileUpdated` audit event keyed to the\ncalling admin's real DID. Audit is fail-closed: a change that\ncan't be recorded (no `AuditWriter`) returns 503 rather than\npersisting silently — matching the `/v1/admin/config` doors so\nauditability doesn't depend on which surface the admin used.\nPUT /community/profile — update the community profile. Auth: Admin.\nRefuses changes to the immutable `community_did`.",
+        "description": "Emits a `CommunityProfileUpdated` audit event keyed to the\ncalling admin's real DID. Audit is fail-closed: a change that\ncan't be recorded (no `AuditWriter`) returns 503 rather than\npersisting silently — matching the `/v1/admin/config` doors so\nauditability doesn't depend on which surface the admin used.\nPUT /community/profile — update the community profile. Auth: Admin.\nRefuses changes to the immutable `community_did`.\n\n**Transitional bearer-token path (#1641).**\n`vtc/community/profile/update/0.1` declares `proof` REQUIRED, and the\nauthoritative binding is the signed Trust Task document at\n`POST /v1/trust-tasks`, where the proof authenticates the administrator\nediting the community's public identity and their authority is read from\ntheir ACL entry. This route authenticates by bearer JWT and verifies no\ndocument proof; it is kept only until the admin console can sign a Trust\nTask document, and is removed in the same change that gives it that.",
         "operationId": "put_profile",
         "requestBody": {
           "content": {
@@ -2709,6 +2709,7 @@
           "join-requests"
         ],
         "summary": "POST /join-requests/{id}/decide — decide a pending join request.\n`approved` admits the applicant + issues the VMC; `rejected` refuses\nthem with an optional reason. Auth: Admin.",
+        "description": "**Transitional bearer-token path (#1641).**\n`vtc/join-requests/decide/0.1` declares `proof` REQUIRED, and the\nauthoritative binding is the signed Trust Task document at\n`POST /v1/trust-tasks`, where the proof authenticates the administrator who\nmade the decision, their authority is read from their ACL entry, and the\ndocument's `id` is claimed before the applicant is admitted so a redelivery\ncannot issue a second set of credentials. This route authenticates by\nbearer JWT, verifies no document proof, and has no document `id` to claim;\nit is kept only until the admin console can sign a Trust Task document, and\nis removed in the same change that gives it that.",
         "operationId": "decide",
         "parameters": [
           {
