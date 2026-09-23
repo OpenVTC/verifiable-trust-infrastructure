@@ -165,6 +165,22 @@ affinidi-messaging-delivery = "0.1"
 # `ReceivedMessage`, `MessagingError`) the delivery layer builds on. Referenced
 # directly by services that demux `MessagingService::subscribe()` inbound.
 affinidi-messaging-core = "0.1"
+# The messaging SDK, taken directly (not only through `affinidi-tdk`) so a
+# member's `tsp` feature can turn on the SDK's own `tsp` ops (`atm.tsp()`),
+# which `affinidi-tdk/tsp` does not forward. One requirement here rather than a
+# literal per member: five members asked for it by hand, and a literal that
+# lags the others does not fail — it resolves, and the lag only shows when
+# `affinidi-tdk` next moves a minor and the graph splits.
+#
+# It moves in lockstep with `affinidi-tdk` and `trust-tasks-rs`: its public API
+# carries `trust_tasks_rs` types (`MediatorAcl` among them), so a graph holding
+# two `trust-tasks-rs` versions does not compile. `default-features = false` so
+# a member adds only what it needs; `tests/e2e` asks for `default` explicitly.
+#
+# 0.27.1 is a FLOOR: it is the release in which `record_incoming_control`
+# answers a mutual §7.3 cancellation itself (Keyring VTI-38), which is what the
+# VTA's and VTC's `handle_tsp_control` rely on when they stop answering it.
+affinidi-messaging-sdk = { version = "0.27.1", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
@@ -371,7 +387,11 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # `persona/profile/{retire,reinstate}` and binding `until`; 0.21.14, of
 # `persona/profile/{usage,timeline}` and face `reach`; 0.21.15, of `derived`
 # provenance, attribute `endorsements` and `vtc/invitations/deliver`.
-trust-tasks-rs = { version = "0.22.1", default-features = false, features = [
+#
+# 0.22.3 raises it again: it is the first release carrying the `git-ns` family
+# (`trust_tasks_rs::specs::git_ns`), which `all-specs` enables. 0.22 as a whole
+# moved in lockstep with `affinidi-messaging-sdk` 0.27 — see that entry.
+trust-tasks-rs = { version = "0.22.3", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
@@ -407,7 +427,7 @@ trust-tasks-didcomm = { version = "0.22", default-features = false }
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
 trust-tasks-tsp = { version = "0.22", default-features = false }
-trust-tasks-proof = { version = "0.22", default-features = false, features = ["affinidi"] }
+trust-tasks-proof = { version = "0.22.3", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }

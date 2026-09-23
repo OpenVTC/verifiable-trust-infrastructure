@@ -130,6 +130,13 @@ pub enum ControlDecision {
     /// **answering** a peer's cancellation of a mutual relationship (§7.3)
     /// rather than refusing anything. Calling it `Refuse` would make a courtesy
     /// read as hostility.
+    ///
+    /// Since affinidi-messaging-sdk 0.27.1 the transport sends that answer
+    /// itself, while recording the peer's cancellation, so this fires only
+    /// when *its* send failed and the answer is still owed. The relationship
+    /// is already forgotten by then, so it is sent with
+    /// `TspOps::answer_cancellation` — `cancel_relationship` would run the
+    /// state machine and refuse `SendCancel` out of `None` (Keyring VTI-38).
     Cancel(&'static str),
     /// Send nothing. The message needed recording and nothing else.
     Nothing,
@@ -175,9 +182,13 @@ pub fn decide_control(request: RelationshipRequest, reply_expected: bool) -> Con
         // state change; answering an accept would start a loop.
         RelationshipRequest::Accept => ControlDecision::Nothing,
         // §7.3: a cancellation for a relationship held in both directions is
-        // answered with one of our own before forgetting it. `reply_expected`
-        // is the transport's reading of that condition, deliberately not
-        // re-derived here.
+        // answered with one of our own before forgetting it. The transport
+        // (affinidi-messaging-sdk 0.27.1+) sends that answer itself, and
+        // `reply_expected` means "the answer is still owed": false once it
+        // went out, or when none was due; true only when the transport's own
+        // send failed. So this retries a failed answer and never sends a
+        // second one. The condition is the transport's reading, deliberately
+        // not re-derived here.
         RelationshipRequest::Cancel => {
             if reply_expected {
                 ControlDecision::Cancel("the peer cancelled a mutual relationship (§7.3)")
@@ -233,9 +244,12 @@ mod tests {
     }
 
     /// §7.3 — and `reply_expected` is the transport's reading of the condition,
-    /// deliberately not re-derived here.
+    /// deliberately not re-derived here. Since affinidi-messaging-sdk 0.27.1 it
+    /// means "the answer is still owed": the transport answers a mutual
+    /// cancellation itself, so `false` also covers "already answered", and
+    /// answering then would send the peer a second cancellation.
     #[test]
-    fn a_cancellation_is_answered_only_when_the_relationship_was_mutual() {
+    fn a_cancellation_is_answered_only_when_the_answer_is_still_owed() {
         assert_eq!(
             decide_control(RelationshipRequest::Cancel, false),
             ControlDecision::Nothing
