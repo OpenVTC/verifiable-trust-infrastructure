@@ -56,16 +56,23 @@ impl RetentionSweeper {
     /// Spawn the sweeper. Returns immediately; the task runs
     /// until the daemon's shutdown watcher fires.
     ///
-    /// Sweeps four kinds of stale row each tick:
+    /// Sweeps five kinds of stale row each tick:
     /// - `Rejected` / `Withdrawn` join requests past the retention window
     ///   (PII in the submitted VP — the headline);
     /// - expired `present-challenge:` + `credx-pending:` rows (TTLs are
     ///   otherwise enforced only on the read path) — both in `join_requests_ks`;
     /// - `Failed` registry sync jobs past the retention window
-    ///   (`sync_queue_ks`).
+    ///   (`sync_queue_ks`);
+    /// - accepted-document-id records past their retention deadline
+    ///   (`accepted_ids_ks`). Unlike the others this one is a **storage**
+    ///   bound, not a correctness one: an expired record is already treated as
+    ///   absent by `crate::trust_tasks::accepted_ids::AcceptedIds::claim`. The
+    ///   in-memory guard it replaced was bounded by capacity eviction; a
+    ///   keyspace is not.
     pub fn spawn(
         join_requests_ks: KeyspaceHandle,
         sync_queue_ks: KeyspaceHandle,
+        accepted_ids_ks: KeyspaceHandle,
         config: JoinRequestsConfig,
         mut shutdown_rx: watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
@@ -81,6 +88,7 @@ impl RetentionSweeper {
             if let Err(e) = sweep_all(
                 &join_requests_ks,
                 &sync_queue_ks,
+                &accepted_ids_ks,
                 config.retention_days,
                 Utc::now(),
             )
@@ -98,6 +106,7 @@ impl RetentionSweeper {
                         if let Err(e) = sweep_all(
                             &join_requests_ks,
                             &sync_queue_ks,
+                            &accepted_ids_ks,
                             config.retention_days,
                             Utc::now(),
                         )
@@ -112,13 +121,14 @@ impl RetentionSweeper {
     }
 }
 
-/// One full retention pass across all four stale-row kinds. Each sub-sweep is
+/// One full retention pass across all five stale-row kinds. Each sub-sweep is
 /// independent; an error in one is propagated but the others on the same tick
 /// have already run (sweeps are ordered, not transactional). `present-challenge:`
 /// and `credx-pending:` share `join_requests_ks` with the join rows.
 async fn sweep_all(
     join_requests_ks: &KeyspaceHandle,
     sync_queue_ks: &KeyspaceHandle,
+    accepted_ids_ks: &KeyspaceHandle,
     retention_days: u32,
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
@@ -129,11 +139,17 @@ async fn sweep_all(
     let failed_jobs =
         crate::registry::storage::sweep_failed_sync_jobs(sync_queue_ks, retention_days, now)
             .await?;
-    if challenges + offers + failed_jobs > 0 {
+    // VTI-OPS-026: the accepted-id record is bounded by the acceptance window.
+    // Its deadline (~11 minutes) is far shorter than this sweep's cadence, which
+    // costs only storage — `claim` already treats an expired record as absent.
+    let accepted_ids =
+        crate::trust_tasks::accepted_ids::sweep_expired(accepted_ids_ks, now).await?;
+    if challenges + offers + failed_jobs + accepted_ids > 0 {
         info!(
             expired_challenges = challenges,
             expired_offers = offers,
             failed_sync_jobs = failed_jobs,
+            expired_accepted_ids = accepted_ids,
             "retention sweep purged auxiliary stale rows"
         );
     }
@@ -263,6 +279,9 @@ mod tests {
         .unwrap();
         let join_ks = store.keyspace("join_requests").unwrap();
         let sync_ks = store.keyspace("sync_queue").unwrap();
+        let accepted_ids_ks = store
+            .keyspace(crate::store::keyspaces::ACCEPTED_IDS)
+            .unwrap();
         let now = Utc::now();
 
         // --- stale rows (all must be purged) ---
@@ -310,7 +329,9 @@ mod tests {
         .await
         .unwrap();
 
-        sweep_all(&join_ks, &sync_ks, 30, now).await.unwrap();
+        sweep_all(&join_ks, &sync_ks, &accepted_ids_ks, 30, now)
+            .await
+            .unwrap();
 
         // Stale join purged, fresh join survives.
         let join_ids: Vec<_> = list_join_requests(&join_ks)

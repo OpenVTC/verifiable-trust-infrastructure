@@ -87,6 +87,13 @@ pub const VETTING_REVOCATIONS: &str = "vetting_revocations";
 /// written by the vetter, deleted when they no longer hold a live grant, and
 /// read by the vetter listing.
 pub const VETTER_PROFILES: &str = "vetter_profiles";
+/// The accepted-document-id record (VTI-OPS-025…027, SPEC §7.2 item 11): one
+/// row per Trust Task document `id` accepted for execution, carrying the
+/// digest of the document accepted under it and the instant the record may be
+/// dropped. In the store rather than in a process-local map because VTI-OPS-027
+/// requires the record to be **shared across every binding** — see
+/// `crate::trust_tasks::accepted_ids`.
+pub const ACCEPTED_IDS: &str = "accepted_ids";
 
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
@@ -123,6 +130,7 @@ pub const ALL: &[&str] = &[
     OUTBOX,
     VETTING_REVOCATIONS,
     VETTER_PROFILES,
+    ACCEPTED_IDS,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -191,6 +199,13 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // deployment's mediator socket — a restore into a different environment
     // must not resurrect handshakes; peers re-relate on demand.
     TSP_RELATIONSHIPS,
+    // The accepted-document-id record. Its whole horizon is the acceptance
+    // window — minutes — so a restored row is all but certainly expired
+    // already, and an expired row refuses nothing. Carrying it would also put
+    // recorded task *responses* into an export whose scope is the community's
+    // durable state, which this is not: it is execution bookkeeping, local to
+    // the deployment that did the executing.
+    ACCEPTED_IDS,
 ];
 
 #[cfg(test)]
@@ -202,7 +217,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 31, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 32, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or
