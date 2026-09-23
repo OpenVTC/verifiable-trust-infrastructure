@@ -112,6 +112,13 @@ pub struct AppState {
     pub vetting_revocations_ks: KeyspaceHandle,
     /// Vetter profiles, keyed by vetter DID (`crate::vetting::profiles`).
     pub vetter_profiles_ks: KeyspaceHandle,
+    /// The accepted-document-id record (VTI-OPS-025…027). One row per Trust
+    /// Task document `id` accepted for execution. Held in the store rather
+    /// than in a process-local map because VTI-OPS-027 requires the record to
+    /// be shared across every binding this node exposes — the document
+    /// dispatcher today, a bearer REST route in #1641 phase 2. Reach it
+    /// through [`AppState::accepted_ids`].
+    pub accepted_ids_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
@@ -255,6 +262,17 @@ impl AppState {
     /// which is what a deployment with no outbound DID resolution gets.
     pub fn trust_task_vm_resolver(&self) -> vti_common::auth::TrustTaskVmResolver {
         vti_common::auth::TrustTaskVmResolver::from_optional(self.did_resolver.clone())
+    }
+
+    /// The accepted-document-id record (VTI-OPS-025…027), shared by every
+    /// binding this node exposes.
+    ///
+    /// Cheap to call — the handle is a clone and the claim path's locks are
+    /// shared statically — so a binding takes one where it needs it rather
+    /// than threading it through. See
+    /// [`crate::trust_tasks::accepted_ids`] for how a binding uses it.
+    pub(crate) fn accepted_ids(&self) -> crate::trust_tasks::accepted_ids::AcceptedIds {
+        crate::trust_tasks::accepted_ids::AcceptedIds::new(self.accepted_ids_ks.clone())
     }
 
     /// Current cached member-row count (equal to
@@ -471,6 +489,7 @@ pub async fn run(
     let endorsement_types_ks = store.keyspace(keyspaces::ENDORSEMENT_TYPES)?;
     let vetting_revocations_ks = store.keyspace(keyspaces::VETTING_REVOCATIONS)?;
     let vetter_profiles_ks = store.keyspace(keyspaces::VETTER_PROFILES)?;
+    let accepted_ids_ks = store.keyspace(keyspaces::ACCEPTED_IDS)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
@@ -761,6 +780,7 @@ pub async fn run(
         endorsement_types_ks,
         vetting_revocations_ks,
         vetter_profiles_ks,
+        accepted_ids_ks: accepted_ids_ks.clone(),
         schemas_ks,
         endorsements_ks,
         rooms_ks,
@@ -1169,6 +1189,7 @@ pub async fn run(
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),
         state.sync_queue_ks.clone(),
+        state.accepted_ids_ks.clone(),
         boot_cfg.join_requests.clone(),
         shutdown_rx.clone(),
     );

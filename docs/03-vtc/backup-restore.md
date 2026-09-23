@@ -36,8 +36,10 @@ AES-256-GCM encryption of:
 
 **Not** in a backup (re-established after a restore, not carried): live
 `sessions`, browser `passkey` credentials, one-shot `install` tokens, the
-re-syncable `registry_records`, the `sync_queue`/`sync_cursor`, and the `config`
-keyspace overlay (its meaningful values ride in the identity snapshot above).
+re-syncable `registry_records`, the `sync_queue`/`sync_cursor`, the `config`
+keyspace overlay (its meaningful values ride in the identity snapshot above),
+and `accepted_ids` — the Trust Task replay record, whose whole horizon is the
+minutes-long acceptance window, so a restored row is expired before it is read.
 
 ## Export
 

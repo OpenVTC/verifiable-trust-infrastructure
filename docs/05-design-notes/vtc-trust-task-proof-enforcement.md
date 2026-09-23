@@ -215,6 +215,9 @@ In `dispatch_trust_task_core`, in order, before any handler runs:
    bound. `retain_until` now caps a producer-chosen `expiresAt` at
    `issuedAt + max_age + skew`, so a document stamped `expiresAt = now + 10
    years` can no longer pin an id for ten years. **VTI-OPS-025 … 027.**
+   *(Step 1a replaced the mechanism: the record is now store-backed and
+   shared across bindings, which is what -027 requires. The cap is
+   unchanged. See §6a.)*
 
 All five steps are **unconditional**. There is no configuration that relaxes
 any of them.
@@ -295,6 +298,8 @@ change is therefore its precondition, and the order is:
 
 1. **(#1641)** the spine can enforce, and does, for everything but the gated
    case. ✅
+1a. **(#1674)** the accepted-id record moves into the store, so any binding can
+   consult it — the precondition step 3 would otherwise defeat. See §6a.
 2. **(openvtc#371 + #1672)** `openvtc-core` signs; the default flipped and the
    field is deleted. Divergence 2 closes. ✅
 3. Bind the 49 tasks in `DISPATCHED_URIS` / `dispatch_typed`, taking
@@ -311,12 +316,44 @@ Steps 3 and 4 are the large ones: 49 routes, three client surfaces, and an
 admin SPA that has broken silently on response reshapes before. They are not
 one pull request.
 
-One thing to carry into step 3: **VTI-OPS-027** requires the accepted-identifier
-record to be shared across every binding. Today's `REPLAY_GUARD` is
-process-local and covers only the document dispatcher, so a task served on both
-the bearer route and the dispatcher would have a record on one binding and none
-on the other. Binding a task in the dispatcher must retire its bearer route, or
-the two bindings must share the record.
+### 6a. Why the record had to move first (step 1a)
+
+**VTI-OPS-027** requires the accepted-identifier record to be shared across
+every binding a node exposes. The `REPLAY_GUARD` #1659 left in place was an
+in-process `InMemoryReplayGuard` reachable only from
+`dispatch_trust_task_core`, which is adequate while the dispatcher is the only
+door and stops being adequate the moment step 3 makes a task reachable through
+two. A task bound in the dispatcher *and* still served on its bearer route
+would keep a record on one and none on the other, and the specification's own
+rationale says what that is worth: "the node's replay protection is exactly as
+good as its least-used transport."
+
+So this is **not** something to carry into step 3 — doing it in the same pull
+request as the first batch means the migration itself opens the hole. It is
+step 1a, and it is done:
+
+- The record is `crate::trust_tasks::accepted_ids`, backed by the
+  `accepted_ids` keyspace, and any binding reaches it as
+  `state.accepted_ids()`. `AcceptedIds::claim` returns `Acceptance::{Fresh,
+  Duplicate, Conflict}`; a `Fresh` claim is settled with
+  `AcceptedClaim::{completed, release}`. Each phase-2 call site is that
+  match, not a redesign.
+- It is bounded by the acceptance window (`retain_until` still caps a
+  producer-chosen `expiresAt` at `issuedAt + max_age + skew`) and swept on the
+  retention sweeper's tick, because a keyspace has no capacity eviction to
+  bound it the way the in-memory map did.
+- Claim-and-insert is atomic **within the process**, which is the whole scope
+  in which two claims can race: fjall holds an exclusive lock on the store
+  directory, so a second process cannot open it. It is *not* cross-replica, and
+  no shared store backend exists for the VTC to make it so. A replicated VTC
+  would double-execute; closing that needs a native conditional write at the
+  store layer (Redis `SET NX`, DynamoDB `ConditionExpression`) behind a new
+  `KeyspaceHandle` primitive, at which point `claim` becomes one call to it.
+
+What step 3 must then do at each site: take the claim **before** the effect,
+settle it after, and refuse `Conflict` as `idConflict` — not "check whether the
+id was seen". A check-then-act at the route is the TOCTOU the claim exists to
+close.
 
 ---
 
@@ -328,4 +365,5 @@ the two bindings must share the record.
 | VTI-OPS-021 / -093 (same requirements on every transport) | the same call, reached identically from REST, DIDComm and TSP, and unconditional since #1672; test `vti_ops_021_a_missing_proof_is_refused_on_every_transport` drives one document over all three |
 | VTI-OPS-023 (intended recipient) | `validate_basic` + `is_recipient_required` |
 | VTI-OPS-024 (acceptance window) | `freshness_policy()`; tests `vti_ops_024_*` |
-| VTI-OPS-025 … 027 (replay record) | `REPLAY_GUARD` + `retain_until`; test `vti_ops_020_and_025_a_replayed_document_id_is_refused`. **-027 is not met across bindings** — see §6 |
+| VTI-OPS-025 / -026 (replay record, bounded) | `trust_tasks::accepted_ids::AcceptedIds` + `retain_until`; tests `vti_ops_025_*` / `vti_ops_026_*` in `accepted_ids` and `spine_proof_tests` |
+| VTI-OPS-027 (record shared across bindings) | the same type, backed by the `accepted_ids` keyspace rather than a process-local map, reachable from any binding as `AppState::accepted_ids`; test `vti_ops_027_a_second_binding_sees_what_the_first_accepted`. Atomic within the process, **not** across replicas — see §6a |
