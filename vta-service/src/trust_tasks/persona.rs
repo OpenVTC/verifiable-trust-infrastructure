@@ -195,7 +195,7 @@ pub fn reach_of(uri: &str) -> Option<Reach> {
 /// to a holder-reach task, for the members of a context-reach response that
 /// only the holder may read.
 async fn is_holder(state: &AppState, claims: &AuthClaims) -> bool {
-    claims.is_super_admin() || holder_capability_granted(state, claims).await
+    holder_capability_granted(state, claims).await
 }
 
 async fn holder_capability_granted(state: &AppState, claims: &AuthClaims) -> bool {
@@ -219,20 +219,26 @@ async fn holder_capability_granted(state: &AppState, claims: &AuthClaims) -> boo
 
 /// Gate a persona task on the reach its URI declares.
 ///
-/// `Holder` is satisfied two ways, and only two: an **unscoped holder
-/// credential** (`Admin` with unrestricted scope), or an entry granted
+/// `Holder` is satisfied exactly one way: an entry granted
 /// [`Capability::PersonaHolder`](vti_common::acl::Capability::PersonaHolder) by
-/// name. A context-scoped admin holding neither is refused, which is the whole
-/// point.
+/// name. A context-scoped admin is refused, and so is an unscoped one — **no
+/// role implies this capability, including super-admin**.
 ///
-/// The capability exists because the first form was, until now, the *only*
-/// form: managing your own identity from a client meant giving that client
-/// authority over every context on the agent. It grants the pool without
-/// granting that.
+/// That last part used to be untrue, and the exception was the one credential
+/// most likely to be sitting in a script: a super-admin passed every holder
+/// task without an ACL entry saying so. The capability's whole premise is that
+/// no role carries it, so inheriting it from the broadest role there is left
+/// the premise true only of the roles nobody uses for automation.
 ///
-/// The ACL read happens only where it can change the answer — a `Holder` task,
-/// for a caller who is not already unscoped — so the context-scoped tasks and
-/// the super-admin path cost exactly what they did.
+/// A super-admin can of course grant itself the capability — it is the same
+/// credential that grants — so this is not a boundary it cannot cross. It is
+/// the difference between crossing it and crossing it *on purpose*: the grant
+/// is an ACL write, which is audited, reviewable, and revocable on its own,
+/// while the inherited form left no trace that the pool had been read by
+/// something that never asked for it.
+///
+/// The ACL read happens only where it can change the answer — a `Holder` task —
+/// so the context-scoped tasks cost exactly what they did.
 pub async fn authorize(
     state: &AppState,
     claims: &AuthClaims,
@@ -240,7 +246,6 @@ pub async fn authorize(
     context_id: Option<&str>,
 ) -> Result<(), AppError> {
     let granted = matches!(reach_of(uri), Some(Reach::Holder))
-        && !claims.is_super_admin()
         && holder_capability_granted(state, claims).await;
     decide(claims, uri, context_id, granted)
 }
@@ -262,14 +267,17 @@ fn decide(
             "unknown persona task {uri}: refusing rather than defaulting a reach"
         ))),
         Some(Reach::Holder) => {
-            if claims.is_super_admin() || holder_granted {
+            if holder_granted {
                 return Ok(());
             }
             Err(AppError::Forbidden(
                 "this task reads or writes the holder's attribute pool, which sits above every \
-                 trust context. It requires an unscoped holder credential, or an ACL entry \
-                 granted the `persona-holder` capability; an administrator scoped to a context \
-                 and holding neither is refused here exactly as an application would be."
+                 trust context. It requires an ACL entry granted the `persona-holder` \
+                 capability, and no role carries it — not even super-admin, which is what a \
+                 credential that administers every context does NOT get to read by default. \
+                 Grant it deliberately: `pnm acl update --did <did> --capabilities \
+                 persona-holder`. An administrator scoped to a context is refused here exactly \
+                 as an application would be."
                     .into(),
             ))
         }
@@ -3458,16 +3466,68 @@ mod tests {
         }
     }
 
+    /// **No role reaches the pool, including super-admin.**
+    ///
+    /// An unrestricted admin is the broadest credential the agent issues and
+    /// the one most likely to be sitting in a script; it passed every holder
+    /// task without an ACL entry saying so, which left the capability's premise
+    /// — that no role carries it — true only of the roles nobody automates
+    /// with. A super-admin can still grant itself the capability, so this is
+    /// not a boundary it cannot cross; it is the difference between crossing it
+    /// and crossing it deliberately, with an audited ACL write to show for it.
     #[test]
-    fn an_unscoped_holder_reaches_the_pool() {
+    fn no_role_reaches_the_pool_without_the_grant() {
+        for role in [
+            Role::Admin,
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+            Role::Monitor,
+        ] {
+            let unscoped = claims(role.clone(), &[]);
+            for (uri, reach) in REACH {
+                if *reach != Reach::Holder {
+                    continue;
+                }
+                let err = decide(&unscoped, uri, None, false).unwrap_err();
+                assert!(
+                    matches!(err, AppError::Forbidden(_)),
+                    "{uri} admitted an unscoped {role:?} who was granted nothing"
+                );
+            }
+        }
+    }
+
+    /// And the grant is what admits them — whatever their scope.
+    #[test]
+    fn the_grant_reaches_the_pool() {
         let holder = claims(Role::Admin, &[]);
         for (uri, reach) in REACH {
             if *reach == Reach::Holder {
-                decide(&holder, uri, None, false).unwrap_or_else(|e| {
-                    panic!("{uri} refused an unscoped holder: {e:?}");
+                decide(&holder, uri, None, true).unwrap_or_else(|e| {
+                    panic!("{uri} refused a granted holder: {e:?}");
                 });
             }
         }
+    }
+
+    /// The refusal names the command that fixes it, because an operator who
+    /// reads "forbidden" against their own agent's own pool has no way to guess
+    /// that a capability they have never heard of is what they are missing.
+    #[test]
+    fn the_refusal_says_how_to_grant_it() {
+        let err = decide(
+            &claims(Role::Admin, &[]),
+            uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0,
+            None,
+            false,
+        )
+        .unwrap_err();
+        let AppError::Forbidden(message) = err else {
+            panic!("expected a refusal");
+        };
+        assert!(message.contains("persona-holder"), "{message}");
+        assert!(message.contains("pnm acl update"), "{message}");
     }
 
     /// The capability's whole reason to exist: a context-scoped admin reaches

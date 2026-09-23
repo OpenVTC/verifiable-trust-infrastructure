@@ -110,6 +110,96 @@ async fn authed(ctx: &TestAppContext, tag: &str, role: &str, allowed_contexts: &
     ctx.jwt_keys.encode(&claims).unwrap()
 }
 
+/// The seed for a caller that is NOT the holder.
+///
+/// Every other caller in this file is `holder_did()`, which is convenient and
+/// usually harmless: a context task does not care who asks, only where. It
+/// stops being harmless where a test needs a granted holder and an ungranted
+/// caller *at the same time* — the grant is an ACL entry, the entry is keyed by
+/// DID, and one DID cannot be both. SPEC §7.2 item 6 refuses a document whose
+/// issuer disagrees with the transport identity, so a second caller needs its
+/// own seed to sign with, not merely its own claims.
+const OTHER_SEED: u8 = 9;
+
+/// A token for a context-scoped caller that is somebody else.
+async fn authed_other(ctx: &TestAppContext, tag: &str, allowed_contexts: &[&str]) -> String {
+    let did = vta_service::test_support::did_for_seed(OTHER_SEED).0;
+    let session_id = format!("sess-persona-other-{tag}");
+    let session = Session {
+        session_id: session_id.clone(),
+        did: did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        last_seen: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: Some(now_epoch() + 86_400),
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        acr_expires_at: None,
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&ctx.sessions_ks, &session).await.unwrap();
+    let contexts: Vec<String> = allowed_contexts.iter().map(|s| s.to_string()).collect();
+    let claims =
+        ctx.jwt_keys
+            .new_claims(did, session_id, "admin".to_string(), contexts, 900, false);
+    ctx.jwt_keys.encode(&claims).unwrap()
+}
+
+/// POST as [`authed_other`]'s identity — its seed signs, and its DID issues.
+async fn post_as_other(
+    router: &axum::Router,
+    token: &str,
+    uri: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
+        "id": format!("tt-{}", uuid::Uuid::new_v4()),
+        "type": uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": vta_service::test_support::did_for_seed(OTHER_SEED).0,
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        "payload": payload,
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(OTHER_SEED, &mut typed);
+    let doc = serde_json::to_value(&typed).expect("envelope serialises");
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/trust-tasks")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes).into_owned() }));
+    (status, body)
+}
+
+/// As [`authed`], with the ACL entry that reaches the holder's pool.
+///
+/// The capability is granted by name and by nothing else — no role carries it,
+/// including super-admin — so a fixture that wants to exercise a holder task
+/// has to say so, exactly as an operator does. Every holder-reach test here
+/// uses this; [`authed`] alone is what a caller without the grant looks like,
+/// and is used deliberately where that is the thing under test.
+async fn authed_holder(ctx: &TestAppContext, tag: &str, allowed_contexts: &[&str]) -> String {
+    let entry = vti_common::acl::AclEntry::new(holder_did(), vti_common::acl::Role::Admin, "test")
+        .with_contexts(allowed_contexts.iter().map(|s| s.to_string()).collect())
+        .with_capabilities(vec![vti_common::acl::Capability::PersonaHolder])
+        .with_created_at(1);
+    vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
+        .await
+        .expect("grant the holder capability");
+    authed(ctx, tag, "admin", allowed_contexts).await
+}
+
 /// POST a persona Trust Task to the cheap sentinel-DID app and return
 /// `(status, parsed body)`.
 async fn post(
@@ -329,15 +419,31 @@ async fn a_context_admin_cannot_reach_the_pool_over_the_wire() {
 /// refuses everybody — which is the classic way a security test stops testing
 /// anything.
 #[tokio::test]
-async fn an_unrestricted_admin_can_reach_the_pool() {
+async fn the_grant_reaches_the_pool_and_nothing_else_does() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "holder-reach", "admin", &[]).await;
 
+    // No grant: refused, however broad the credential. An unrestricted admin
+    // administers every context, and that is not permission to read what sits
+    // above them — the refusal names the command that fixes it.
+    let ungranted = authed(&ctx, "holder-reach-ungranted", "admin", &[]).await;
+    for (uri, payload) in [(ATTR_LIST, json!({})), (PROFILE_LIST, json!({}))] {
+        let (status, body) = post(&router, &ungranted, uri, payload).await;
+        assert!(
+            refused(status, &body),
+            "{uri} admitted an unrestricted admin who was granted nothing: {status} {body}"
+        );
+        assert!(
+            body.to_string().contains("persona-holder"),
+            "{uri} refused without naming the capability to grant: {body}"
+        );
+    }
+
+    let holder = authed_holder(&ctx, "holder-reach", &[]).await;
     for (uri, payload) in [(ATTR_LIST, json!({})), (PROFILE_LIST, json!({}))] {
         let (status, body) = post(&router, &holder, uri, payload).await;
         assert!(
             !refused(status, &body),
-            "{uri} was refused for an unrestricted admin: {status} {body}"
+            "{uri} was refused for a granted holder: {status} {body}"
         );
     }
 }
@@ -395,7 +501,7 @@ async fn listing_renderers_is_open_to_scoped_and_unscoped_callers_alike() {
 #[tokio::test]
 async fn an_attribute_reaches_a_context_only_as_a_count() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "arc", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "arc", &[]).await;
 
     let attr = put_attribute(&router, &holder, "phone.mobile", "+61 400 000 000").await;
 
@@ -474,7 +580,7 @@ async fn an_attribute_reaches_a_context_only_as_a_count() {
 #[tokio::test]
 async fn editing_the_pool_updates_an_already_bound_context() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "edit", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "edit", &[]).await;
 
     let attr = put_attribute(&router, &holder, "name.display", "Ada").await;
     let (_, body) = post(
@@ -592,7 +698,7 @@ async fn an_unbound_persona_reads_back_cleanly() {
 #[tokio::test]
 async fn an_inline_entry_resolves_without_pool_identity() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "inline", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "inline", &[]).await;
 
     let (status, body) = post(
         &router,
@@ -662,7 +768,7 @@ async fn an_inline_entry_resolves_without_pool_identity() {
 #[tokio::test]
 async fn a_pool_backed_entry_still_carries_its_identity() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "pool-backed", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "pool-backed", &[]).await;
 
     let attr = put_attribute(&router, &holder, "name.display", "Ada").await;
     let (_, body) = post(
@@ -918,7 +1024,7 @@ async fn the_context_local_family_round_trips() {
 #[tokio::test]
 async fn the_holder_only_tasks_also_succeed_for_a_holder() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "holder-happy", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "holder-happy", &[]).await;
 
     let attr = put_attribute(&router, &holder, "name.legal", "Ada Lovelace").await;
 
@@ -989,7 +1095,7 @@ async fn the_holder_only_tasks_also_succeed_for_a_holder() {
 #[tokio::test]
 async fn a_disclosure_needs_a_preview_and_cannot_replay_one() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "gate", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "gate", &[]).await;
     let scoped = authed(&ctx, "gate-scoped", "admin", &[CTX]).await;
 
     // A preview id that was never minted.
@@ -1157,7 +1263,7 @@ async fn a_context_local_profile_cannot_reference_the_pool() {
 #[tokio::test]
 async fn a_pool_edit_reaches_the_copy_a_verifier_is_shown() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "push", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "push", &[]).await;
     let scoped = authed(&ctx, "push-scoped", "admin", &[CTX]).await;
 
     let attr = put_attribute(&router, &holder, "name.display", "Ada").await;
@@ -1273,7 +1379,7 @@ async fn audit_rows(
 #[tokio::test]
 async fn a_persona_write_is_audited_with_what_changed_and_not_the_value() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "audit-detail", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "audit-detail", &[]).await;
 
     // A value distinctive enough that finding it anywhere in the log is
     // unambiguous — a substring like "Ada" could appear by coincidence in a
@@ -1410,7 +1516,7 @@ async fn details_for(ctx: &TestAppContext, action: &str) -> Vec<String> {
 #[tokio::test]
 async fn a_listing_withholds_sensitive_values_and_says_so_in_the_audit_trail() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "sensitive", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "sensitive", &[]).await;
 
     // Distinctive enough that finding it anywhere in a response or a row is
     // unambiguous.
@@ -1528,7 +1634,7 @@ async fn a_listing_withholds_sensitive_values_and_says_so_in_the_audit_trail() {
 #[tokio::test]
 async fn a_holders_sensitivity_override_survives_the_write_and_decides_the_read() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "sensitivity-override", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "sensitivity-override", &[]).await;
 
     // `account.handle` is `normal` in the registry; this holder disagrees.
     let (status, body) = post(
@@ -1650,7 +1756,7 @@ async fn a_holders_sensitivity_override_survives_the_write_and_decides_the_read(
 #[tokio::test]
 async fn a_correlation_finding_names_where_the_shared_value_went() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "correlate", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "correlate", &[]).await;
     let persona = "did:peer:2.Ez6LSpersonaCorrelate.Vz6MkpersonaCorrelate";
 
     // The same value under two claim types. `subject` is the one being
@@ -1766,7 +1872,7 @@ async fn preview_a_face_holding(
     claim_type: &str,
     value: &str,
 ) -> (String, String) {
-    let holder = authed(ctx, &format!("{tag}-holder"), "admin", &[]).await;
+    let holder = authed_holder(ctx, &format!("{tag}-holder"), &[]).await;
     let scoped = authed(ctx, &format!("{tag}-scoped"), "admin", &[CTX]).await;
 
     let vta = &ctx.vta_did;
@@ -2111,7 +2217,7 @@ async fn an_ungated_claim_is_not_gated() {
 async fn a_holders_release_override_gates_a_type_the_registry_does_not() {
     let (router, ctx) = build_provisionable_test_app().await;
     let vta = &ctx.vta_did;
-    let holder = authed(&ctx, "rel-holder", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "rel-holder", &[]).await;
     let scoped = authed(&ctx, "rel-scoped", "admin", &[CTX]).await;
 
     let (status, body) = post_to(
@@ -2201,7 +2307,7 @@ async fn a_holders_release_override_gates_a_type_the_registry_does_not() {
 
     // And the override is what did it — the same type with no override is not
     // gated. Without this the test passes for a gate that fires on everything.
-    let plain = authed(&ctx, "rel-plain", "admin", &[]).await;
+    let plain = authed_holder(&ctx, "rel-plain", &[]).await;
     let (_, body) = post_to(
         &router,
         &plain,
@@ -2330,7 +2436,7 @@ async fn the_served_registry_is_the_one_the_agent_enforces() {
     let served_card_release = find("payment.card")["release"].clone();
     assert_eq!(served_card_release, "stepUp", "{p:#}");
 
-    let holder = authed(&ctx, "ct-holder", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "ct-holder", &[]).await;
     let attr = put_attribute_at(&router, &holder, vta, "payment.card", "4242424242424242").await;
     let (_, body) = post_to(
         &router,
@@ -2571,7 +2677,7 @@ async fn a_bound_approval_asked_in_0_2_still_elevates() {
 #[tokio::test]
 async fn two_local_faces_sharing_a_value_are_a_finding_and_profile_id_narrows() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "correlate-local", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "correlate-local", &[]).await;
 
     let mut faces = Vec::new();
     for name in ["market", "forum"] {
@@ -2673,7 +2779,7 @@ async fn two_local_faces_sharing_a_value_are_a_finding_and_profile_id_narrows() 
 #[tokio::test]
 async fn a_matching_candidate_is_a_conformant_finding() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "correlate-candidate", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "correlate-candidate", &[]).await;
     put_attribute(&router, &holder, "phone.mobile", "+61 400 555 000").await;
 
     let (status, body) = post(
@@ -2710,8 +2816,11 @@ async fn a_matching_candidate_is_a_conformant_finding() {
 #[tokio::test]
 async fn a_name_change_is_answerable_end_to_end() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "rename-holder", "admin", &[]).await;
-    let scoped = authed(&ctx, "rename-scoped", "admin", &[CTX]).await;
+    let holder = authed_holder(&ctx, "rename-holder", &[]).await;
+    // Somebody else's credential, scoped to the context: this test needs a
+    // caller that is NOT the holder at the same moment the holder is granted,
+    // and the grant is keyed by DID.
+    let scoped = authed_other(&ctx, "rename-scoped", &[CTX]).await;
     let persona = "did:key:z6MkPersonaRename";
 
     let (status, body) = post(
@@ -2763,7 +2872,7 @@ async fn a_name_change_is_answerable_end_to_end() {
     assert!(!refused(status, &body), "binding/set: {status} {body}");
 
     // The context reads the label, never the holder's filing.
-    let (status, body) = post(
+    let (status, body) = post_as_other(
         &router,
         &scoped,
         BINDING_GET,
@@ -2777,7 +2886,8 @@ async fn a_name_change_is_answerable_end_to_end() {
         got.get("profileName").is_none(),
         "a context-scoped caller was handed the holder's own name for the face: {got}"
     );
-    let (_, body) = post(&router, &scoped, BINDING_LIST, json!({ "contextId": CTX })).await;
+    let (_, body) =
+        post_as_other(&router, &scoped, BINDING_LIST, json!({ "contextId": CTX })).await;
     let row = &payload_of(&body)["personas"][0];
     assert_eq!(row["label"], "Ada at the co-op");
     assert!(row.get("profileName").is_none(), "{row}");
@@ -2792,7 +2902,7 @@ async fn a_name_change_is_answerable_end_to_end() {
     assert_eq!(payload_of(&body)["profileName"], "the divorce");
 
     // Disclose, then read the history: current.
-    let (status, body) = post(
+    let (status, body) = post_as_other(
         &router,
         &scoped,
         PREVIEW,
@@ -2804,7 +2914,7 @@ async fn a_name_change_is_answerable_end_to_end() {
     .await;
     assert!(!refused(status, &body), "preview: {status} {body}");
     let preview_id = payload_of(&body)["previewId"].as_str().unwrap().to_string();
-    let (status, body) = post(
+    let (status, body) = post_as_other(
         &router,
         &scoped,
         PRESENT,
@@ -2881,7 +2991,7 @@ async fn a_name_change_is_answerable_end_to_end() {
 #[tokio::test]
 async fn a_face_names_itself_by_slot_and_only_once() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "slot-holder", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "slot-holder", &[]).await;
     let legal = put_attribute(&router, &holder, "name.legal", "Donald Fauntleroy Duck").await;
     let known_as = put_attribute(&router, &holder, "name.display", "Donald").await;
 
@@ -3000,7 +3110,7 @@ async fn a_face_names_itself_by_slot_and_only_once() {
 #[tokio::test]
 async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "pin-holder", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "pin-holder", &[]).await;
 
     let (status, body) = post(
         &router,
@@ -3148,7 +3258,7 @@ async fn a_face_composed_in_a_context_stays_there_until_promoted() {
     use trust_tasks_rs::specs::persona::{attribute::promote, profile::compose};
 
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "compose", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "compose", &[]).await;
     let persona = "did:key:z6MkComposedPersona";
 
     // Refusals carry the specification's codes and write nothing.
@@ -3356,7 +3466,7 @@ async fn a_face_is_retired_kept_and_reinstated_and_a_binding_can_end_on_its_own(
     use trust_tasks_rs::specs::persona::profile::{get, retire};
 
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "lifecycle", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "lifecycle", &[]).await;
     let persona = "did:key:z6MkLifecyclePersona";
 
     let (status, body) = post(
@@ -3517,7 +3627,7 @@ async fn a_face_goes_only_where_its_reach_allows_and_its_timeline_says_what_it_d
     use trust_tasks_rs::specs::persona::profile::{timeline, usage};
 
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "reach", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "reach", &[]).await;
     let persona = "did:key:z6MkReachPersona";
 
     let later = (chrono::Utc::now() + chrono::Duration::days(2))
@@ -3642,7 +3752,7 @@ async fn a_derived_value_stays_derived_and_an_endorsement_must_be_held() {
     use vta_service::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
 
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "derived", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "derived", &[]).await;
 
     let derived =
         json!({ "kind": "derived", "source": "github", "derivedAt": "2026-09-01T00:00:00Z" });
@@ -3758,7 +3868,7 @@ async fn a_credential_backed_value_follows_its_credential_and_fails_closed() {
     use vta_service::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
 
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "credbacked", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "credbacked", &[]).await;
     let backed = json!({
         "kind": "credentialBacked",
         "credentialId": "cred-degree",
@@ -3891,7 +4001,7 @@ async fn a_credential_backed_value_follows_its_credential_and_fails_closed() {
 #[tokio::test]
 async fn a_face_is_worn_here_as_the_persona_the_holder_already_uses() {
     let (router, ctx) = build_test_app().await;
-    let holder = authed(&ctx, "wearhere", "admin", &[]).await;
+    let holder = authed_holder(&ctx, "wearhere", &[]).await;
     let typed = json!([{ "type": "name.display", "valueType": "string", "value": "Ada" }]);
 
     // No persona here yet: refused, and nothing is minted.
