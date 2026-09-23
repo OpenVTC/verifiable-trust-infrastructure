@@ -706,19 +706,29 @@ async fn handle_tsp_control(
                 ),
             }
         }
+        // Reached only when the transport's own §7.3 answer failed to send
+        // (affinidi-messaging-sdk 0.27.1: `reply_expected` = "still owed").
+        // The relationship is already forgotten, so this must be
+        // `answer_cancellation`, which sends without running the state machine;
+        // `cancel_relationship` refuses `SendCancel` out of `None`, which is
+        // how the peer went unanswered before (Keyring VTI-38). For a
+        // cancellation, `thread_digest` is the relationship digest the peer
+        // named — the one the answer has to name back.
         ControlDecision::Cancel(why) => {
             match atm
                 .tsp()
-                .cancel_relationship(&profile, sender_vid, thread_digest)
+                .answer_cancellation(&profile, sender_vid, thread_digest)
                 .await
             {
-                Ok(state) => info!(
-                    sender = %sender_vid, ?request, ?state, reason = %why,
-                    "answered an inbound TSP relationship request with a cancellation",
+                Ok(_) => info!(
+                    sender = %sender_vid, ?request, reason = %why,
+                    "answered an inbound TSP relationship cancellation (§7.3) after the \
+                     transport's own answer failed",
                 ),
                 Err(e) => warn!(
                     sender = %sender_vid, reason = %why, error = %e,
-                    "could not send a TSP relationship cancellation",
+                    "could not send the §7.3 answer to a TSP relationship cancellation; \
+                     the relationship is forgotten on this side, but the peer sees no answer",
                 ),
             }
         }

@@ -721,6 +721,11 @@ enum ControlDecision {
     /// Send a cancellation, carrying why. Named for the wire action rather than
     /// the intent, because it serves **answering** a peer's cancellation of a
     /// mutual relationship (§7.3), not refusing anything.
+    ///
+    /// Since affinidi-messaging-sdk 0.27.1 the transport sends that answer
+    /// itself, so this fires only when its send failed and the answer is still
+    /// owed — and goes out through `answer_cancellation`, because the
+    /// relationship is already forgotten (Keyring VTI-38).
     Cancel(&'static str),
     /// Record only — no reply is due.
     Nothing,
@@ -745,8 +750,11 @@ fn decide_control(
         // state change; answering an accept would start a loop.
         RelationshipRequest::Accept => ControlDecision::Nothing,
         // §7.3: a cancellation for a relationship held in both directions is
-        // answered with one of our own before forgetting it. `reply_expected`
-        // is the transport's reading of that condition, not re-derived here.
+        // answered with one of our own before forgetting it. The transport
+        // (affinidi-messaging-sdk 0.27.1+) sends that answer itself;
+        // `reply_expected` means "the answer is still owed" — true only when
+        // the transport's own send failed. So this retries a failed answer and
+        // never sends a second one. The transport's reading, not re-derived here.
         RelationshipRequest::Cancel => {
             if reply_expected {
                 ControlDecision::Cancel("the peer cancelled a mutual relationship (§7.3)")
@@ -795,19 +803,27 @@ async fn handle_tsp_control(
                 ),
             }
         }
+        // Reached only when the transport's own §7.3 answer failed to send.
+        // The relationship is already forgotten, so this must be
+        // `answer_cancellation` (no state machine); `cancel_relationship`
+        // refuses `SendCancel` out of `None`, which is how the peer went
+        // unanswered before (Keyring VTI-38). For a cancellation,
+        // `thread_digest` is the relationship digest the peer named.
         ControlDecision::Cancel(why) => {
             match atm
                 .tsp()
-                .cancel_relationship(profile, sender_vid, thread_digest)
+                .answer_cancellation(profile, sender_vid, thread_digest)
                 .await
             {
-                Ok(state) => info!(
-                    sender = %sender_vid, ?request, ?state, reason = %why,
-                    "answered an inbound TSP relationship request with a cancellation",
+                Ok(_) => info!(
+                    sender = %sender_vid, ?request, reason = %why,
+                    "answered an inbound TSP relationship cancellation (§7.3) after the \
+                     transport's own answer failed",
                 ),
                 Err(e) => warn!(
                     sender = %sender_vid, reason = %why, error = %e,
-                    "could not send a TSP relationship cancellation",
+                    "could not send the §7.3 answer to a TSP relationship cancellation; \
+                     the relationship is forgotten on this side, but the peer sees no answer",
                 ),
             }
         }
@@ -844,8 +860,11 @@ mod tsp_control_tests {
         );
     }
 
+    /// `reply_expected` means "the answer is still owed" (affinidi-messaging-sdk
+    /// 0.27.1): the transport answers a mutual cancellation itself, so `false`
+    /// also covers "already answered", and answering then would send twice.
     #[test]
-    fn a_cancel_is_answered_only_when_a_reply_is_expected() {
+    fn a_cancel_is_answered_only_when_the_answer_is_still_owed() {
         assert!(matches!(
             decide_control(RelationshipRequest::Cancel, true),
             ControlDecision::Cancel(_)

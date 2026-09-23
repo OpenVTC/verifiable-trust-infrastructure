@@ -266,9 +266,9 @@ futures-util = "0.3"
 # Direct (optional) dependency only so the `tsp` feature can turn on the
 # messaging-SDK's own `tsp` ops (`atm.tsp()`), which are gated behind that
 # crate's `tsp` feature and are NOT reachable via `affinidi-tdk/tsp`. The crate
-# is already present transitively via `affinidi-tdk` at the same 0.18.x; this
-# entry adds no new code when `tsp` is off (optional + default-features off).
-affinidi-messaging-sdk = { version = "0.27.0", optional = true, default-features = false }
+# is already present transitively via `affinidi-tdk`, at the version the workspace
+# table pins; this entry adds no new code when `tsp` is off (optional + default-features off).
+affinidi-messaging-sdk = { workspace = true, optional = true }
 async-trait = "0.1"
 # 0.6.11 moves in lockstep with `affinidi-did-resolver-cache-sdk` 0.8.37: it is
 # the release built against that resolver, so a floor below it can resolve a
