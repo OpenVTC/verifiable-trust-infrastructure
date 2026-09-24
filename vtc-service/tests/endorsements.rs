@@ -1248,3 +1248,54 @@ async fn an_unknown_endorsement_is_the_declared_not_found() {
         "the capability check precedes the lookup: {body}"
     );
 }
+
+/// The bearer route enforces the bounds the signed door does, so the two doors
+/// agree about what registers (#1641 batch 4).
+///
+/// `description` is the task's published `maxLength: 1024`, which the signed
+/// door's schema check already held and this route did not. `claimSchema` is
+/// capped at 32 KiB serialised — the task publishes no bound, but a schema
+/// that registered here and could not fit a 64 KiB signed document would be
+/// the two doors disagreeing.
+#[tokio::test]
+async fn the_bearer_route_enforces_the_signed_doors_size_bounds() {
+    let fix = build().await;
+    let malformed = trust_tasks_rs::StandardCode::MalformedRequest.as_str();
+
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/long-description",
+            "description": "x".repeat(1025),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(rest_error_code(&body), malformed, "{body}");
+
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/huge-schema",
+            "claimSchema": {
+                "type": "object",
+                // `CLAIM_SCHEMA_MAX_BYTES` (32 KiB); the padding alone reaches it.
+                "description": "x".repeat(32 * 1024),
+            },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(rest_error_code(&body), malformed, "{body}");
+
+    // At the bound itself, both register.
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/max-description",
+            "description": "x".repeat(1024),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}

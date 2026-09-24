@@ -105,6 +105,16 @@ pub struct RegisterBody {
     pub description: Option<String>,
 }
 
+/// POST /endorsement-types — register an endorsement type. Auth: Admin.
+///
+/// **Transitional bearer-token path (#1641).**
+/// `vtc/endorsement-types/register/0.1` declares `proof` REQUIRED, and the
+/// authoritative binding is the signed Trust Task document at
+/// `POST /v1/trust-tasks`, where the proof authenticates the administrator and
+/// their authority is read from their ACL entry. This route authenticates by
+/// bearer JWT and verifies no document proof; the admin console uses it only
+/// from a browser with no console signing key enrolled, and it is removed once
+/// every client signs.
 #[utoipa::path(
     post, path = "/endorsement-types",
     operation_id = "endorsementTypeRegister", tag = "endorsement-types",
@@ -121,12 +131,73 @@ pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterBody>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), TaskError> {
+    let response = register_inner(&state, &auth.0.did, body).await?;
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+/// The largest `claimSchema` a registration accepts, measured serialised.
+///
+/// The task publishes no bound, but the signed door caps a whole document at
+/// 64 KiB, and a schema that registers over the bearer route but not over the
+/// signed one is two doors disagreeing. 32 KiB leaves the document envelope,
+/// the proof and the other members plenty of room, and is an order of
+/// magnitude past any claim schema written for an endorsement.
+pub const CLAIM_SCHEMA_MAX_BYTES: usize = 32 * 1024;
+
+/// `description`'s bound, as `vtc/endorsement-types/register/0.1` publishes it
+/// (`maxLength: 1024`, in characters).
+pub const DESCRIPTION_MAX_CHARS: usize = 1024;
+
+/// The registration, independent of the door it arrived through — the bearer
+/// route above and the signed `vtc/endorsement-types/register/0.1` document
+/// (`trust_tasks::handle_endorsement_type_register`) both call this, so the
+/// two cannot answer differently. `actor_did` is whoever the door
+/// authenticated: the session's subject on one, the verified signer on the
+/// other; it is what the audit row and `createdByDid` name.
+pub(crate) async fn register_inner(
+    state: &AppState,
+    actor_did: &str,
+    body: RegisterBody,
+) -> Result<RegisterResponse, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
     // Validation.
+    //
+    // The two size bounds come first and carry the framework's
+    // `malformedRequest`, as the schema check below does: the task declares no
+    // code for an oversized member. The signed door's schema check already
+    // refuses a long `description`; enforcing it here is what makes the bearer
+    // route agree.
+    if body
+        .description
+        .as_ref()
+        .is_some_and(|d| d.chars().count() > DESCRIPTION_MAX_CHARS)
+    {
+        return Err(TaskError::declared(
+            malformed_request_code(),
+            AppError::Validation(format!(
+                "description exceeds {DESCRIPTION_MAX_CHARS} characters"
+            )),
+        ));
+    }
+    if let Some(schema) = body.claim_schema.as_ref() {
+        let size = serde_json::to_vec(schema)
+            .map(|b| b.len())
+            .unwrap_or(usize::MAX);
+        if size > CLAIM_SCHEMA_MAX_BYTES {
+            return Err(TaskError::declared(
+                malformed_request_code(),
+                AppError::Validation(format!(
+                    "claimSchema is {size} bytes serialised; the limit is \
+                     {CLAIM_SCHEMA_MAX_BYTES}. Shorten the schema and register \
+                     again."
+                )),
+            ));
+        }
+    }
     let uri = body.type_uri.trim();
     if uri.is_empty() {
         return Err(TaskError::declared(
@@ -181,13 +252,13 @@ pub async fn register(
         claim_schema: body.claim_schema,
         description: body.description.clone(),
         created_at: Utc::now(),
-        created_by_did: auth.0.did.clone(),
+        created_by_did: actor_did.to_string(),
     };
     store_type(&state.endorsement_types_ks, &row).await?;
 
     audit_writer
         .write(
-            &auth.0.did,
+            actor_did,
             None,
             AuditEvent::EndorsementTypeRegistered(EndorsementTypeRegisteredData {
                 type_uri: uri.to_string(),
@@ -196,14 +267,11 @@ pub async fn register(
         )
         .await?;
 
-    info!(type_uri = %uri, by = %auth.0.did, "endorsement type registered");
+    info!(type_uri = %uri, by = %actor_did, "endorsement type registered");
 
-    Ok((
-        StatusCode::CREATED,
-        Json(RegisterResponse {
-            endorsement_type: row,
-        }),
-    ))
+    Ok(RegisterResponse {
+        endorsement_type: row,
+    })
 }
 
 /// `{ endorsementType: … }` — the shape `vtc/endorsement-types/register/0.1`
@@ -287,6 +355,15 @@ pub async fn list(
 /// handler's return type must name the same thing, because that annotation
 /// is what generates the console's `wire.ts` and a mismatch ships a console
 /// reading a shape the daemon never sends.
+///
+/// **Transitional bearer-token path (#1641).**
+/// `vtc/endorsement-types/delete/0.1` declares `proof` REQUIRED, and the
+/// authoritative binding is the signed Trust Task document at
+/// `POST /v1/trust-tasks`, where the proof authenticates the administrator and
+/// their authority is read from their ACL entry. This route authenticates by
+/// bearer JWT and verifies no document proof; the admin console uses it only
+/// from a browser with no console signing key enrolled, and it is removed once
+/// every client signs.
 #[utoipa::path(
     delete, path = "/endorsement-types/{type_uri}",
     operation_id = "endorsementTypeDelete", tag = "endorsement-types",
@@ -304,6 +381,20 @@ pub async fn delete(
     State(state): State<AppState>,
     Path(type_uri): Path<String>,
 ) -> Result<(StatusCode, Json<EndorsementTypeDelete01Response>), TaskError> {
+    let body = delete_inner(&state, &auth.0.did, type_uri).await?;
+    Ok((StatusCode::OK, Json(body.into())))
+}
+
+/// The deletion, independent of the door it arrived through — the bearer
+/// route above and the signed `vtc/endorsement-types/delete/0.1` document
+/// (`trust_tasks::handle_endorsement_type_delete`) both call this. It answers
+/// with the generated response type; the bearer route wraps it in the OpenAPI
+/// newtype, and the signed door returns it as the document's payload.
+pub(crate) async fn delete_inner(
+    state: &AppState,
+    actor_did: &str,
+    type_uri: String,
+) -> Result<DeleteTaskResponse, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -346,7 +437,7 @@ pub async fn delete(
 
     audit_writer
         .write(
-            &auth.0.did,
+            actor_did,
             None,
             AuditEvent::EndorsementTypeDeleted(EndorsementTypeDeletedData {
                 type_uri: type_uri.clone(),
@@ -355,20 +446,14 @@ pub async fn delete(
         )
         .await?;
 
-    info!(type_uri = %type_uri, by = %auth.0.did, "endorsement type deleted");
+    info!(type_uri = %type_uri, by = %actor_did, "endorsement type deleted");
 
-    Ok((
-        StatusCode::OK,
-        Json({
-            let body: DeleteTaskResponse = DeleteTaskResponse::builder()
-                .type_uri(type_uri)
-                .try_into()
-                .map_err(|e| {
-                    AppError::Internal(format!("delete response does not match its schema: {e}"))
-                })?;
-            body.into()
-        }),
-    ))
+    Ok(DeleteTaskResponse::builder()
+        .type_uri(type_uri)
+        .try_into()
+        .map_err(|e| {
+            AppError::Internal(format!("delete response does not match its schema: {e}"))
+        })?)
 }
 
 /// The 409 body for a type something still references.
