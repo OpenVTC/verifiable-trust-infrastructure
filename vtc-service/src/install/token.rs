@@ -265,7 +265,6 @@ pub struct InstallSessionClaims {
 /// `jti`, the ephemeral signing key the caller must persist into
 /// the `install` keyspace state alongside `(jti, cnonce_bytes)`,
 /// and the wall-clock expiry.
-#[derive(Debug)]
 pub struct MintedInstallToken {
     pub jwt: String,
     pub jti: Uuid,
@@ -279,6 +278,20 @@ pub struct MintedInstallToken {
     /// [`InstallTokenClaims::epubkey`].
     pub ephemeral_signing_key: Zeroizing<[u8; 32]>,
     pub expires_at_unix: u64,
+}
+
+/// Written by hand so the ephemeral signing key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for MintedInstallToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MintedInstallToken")
+            .field("jwt", &"<redacted>")
+            .field("jti", &self.jti)
+            .field("claims", &self.claims)
+            .field("cnonce_bytes", &self.cnonce_bytes)
+            .field("ephemeral_signing_key", &"<redacted>")
+            .field("expires_at_unix", &self.expires_at_unix)
+            .finish()
+    }
 }
 
 /// Mint a fresh install token. Generates the `jti`, the WebAuthn

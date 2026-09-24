@@ -74,7 +74,7 @@ use crate::server::AppState;
 // Wire shapes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimStartRequest {
     pub install_token: String,
@@ -87,6 +87,19 @@ pub struct ClaimStartRequest {
     /// error codes (`claim_secret_required` / `claim_secret_invalid`).
     #[serde(default)]
     pub claim_secret: Option<String>,
+}
+
+/// Written by hand so the install token and claim code never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for ClaimStartRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaimStartRequest")
+            .field("install_token", &"<redacted>")
+            .field(
+                "claim_secret",
+                &self.claim_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -103,7 +116,7 @@ pub struct ClaimStartResponse {
     pub options: CreationChallengeResponse,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimFinishRequest {
     pub install_token: String,
@@ -112,12 +125,33 @@ pub struct ClaimFinishRequest {
     pub webauthn_response: RegisterPublicKeyCredential,
 }
 
-#[derive(Debug, Serialize)]
+/// Written by hand so the install token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ClaimFinishRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaimFinishRequest")
+            .field("install_token", &"<redacted>")
+            .field("registration_id", &self.registration_id)
+            .field("webauthn_response", &self.webauthn_response)
+            .finish()
+    }
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct ClaimFinishResponse {
     pub admin_did: String,
     pub setup_session_token: String,
+}
+
+/// Written by hand so the setup-session token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ClaimFinishResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaimFinishResponse")
+            .field("admin_did", &self.admin_did)
+            .field("setup_session_token", &"<redacted>")
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------

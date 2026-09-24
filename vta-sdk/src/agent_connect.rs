@@ -149,7 +149,7 @@ impl ConnectMode {
 /// Bridges are expected to populate this from their own CLI/env layer; the SDK
 /// deliberately reads no environment variables of its own, so a library
 /// embedding a bridge can't be reconfigured behind its back.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct AgentConnect {
     /// did:webvh agent secrets bundle: a path to a JSON `DidSecretsBundle`, or
     /// the inline JSON itself.
@@ -177,6 +177,28 @@ pub struct AgentConnect {
     /// construction and token mode is REST by construction, so this only
     /// applies to the session rung. Defaults to [`TransportChoice::Auto`].
     pub transport: TransportChoice,
+}
+
+/// Written by hand so the agent private key and bearer token never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for AgentConnect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConnect")
+            .field(
+                "agent_secrets",
+                &self.agent_secrets.as_ref().map(|_| "<redacted>"),
+            )
+            .field("agent_did", &self.agent_did)
+            .field("agent_key", &self.agent_key.as_ref().map(|_| "<redacted>"))
+            .field("vta_did", &self.vta_did)
+            .field("mediator_did", &self.mediator_did)
+            .field("url", &self.url)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("session_key", &self.session_key)
+            .field("service_name", &self.service_name)
+            .field("sessions_dir", &self.sessions_dir)
+            .field("transport", &self.transport)
+            .finish()
+    }
 }
 
 macro_rules! setter {

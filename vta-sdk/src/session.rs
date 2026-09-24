@@ -21,7 +21,7 @@ pub mod testing;
 
 // ── Session (internal) ──────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Session {
     client_did: String,
     private_key: String,
@@ -50,6 +50,24 @@ struct Session {
     /// (maybe over chat/email) does not remain long-lived.
     #[serde(default)]
     needs_rotation: bool,
+}
+
+/// Written by hand so the private key and access token never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("client_did", &self.client_did)
+            .field("private_key", &"<redacted>")
+            .field("vta_did", &self.vta_did)
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("access_expires_at", &self.access_expires_at)
+            .field("token_origin", &self.token_origin)
+            .field("needs_rotation", &self.needs_rotation)
+            .finish()
+    }
 }
 
 /// Pull the VTA DID out of a session or error with the deferred-setup

@@ -752,7 +752,6 @@ impl ProvisionRequestBuilder {
 /// `seed` is wrapped in [`Zeroizing`] so the in-memory copy is scrubbed
 /// on drop. Clone before persisting if you need the bytes after this
 /// struct goes out of scope.
-#[derive(Debug)]
 pub struct SignedEphemeralRequest {
     /// The signed VP — serialize with serde_json and hand to the VTA
     /// operator, or write to disk.
@@ -766,6 +765,18 @@ pub struct SignedEphemeralRequest {
     /// 16-byte nonce used both as the VP's `nonce` field and as the
     /// sealed-bundle id. Lookup key for the persisted seed.
     pub bundle_id: [u8; 16],
+}
+
+/// Written by hand so the seed never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for SignedEphemeralRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignedEphemeralRequest")
+            .field("request", &self.request)
+            .field("client_did", &self.client_did)
+            .field("seed", &"<redacted>")
+            .field("bundle_id", &self.bundle_id)
+            .finish()
+    }
 }
 
 // Helpers ---------------------------------------------------------------

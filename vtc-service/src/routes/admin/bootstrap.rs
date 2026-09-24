@@ -36,11 +36,20 @@ use crate::error::TaskError;
 use crate::install::InstallTokenSigner;
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[schema(as = AdminBootstrapRequest)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapRequest {
     pub setup_session_token: String,
+}
+
+/// Written by hand so the setup-session token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for BootstrapRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapRequest")
+            .field("setup_session_token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]

@@ -15,7 +15,7 @@ use crate::session::TokenResult;
 ///
 /// `mediator_did.is_some()` selects DIDComm; otherwise a REST
 /// challenge-response handshake is used.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AutoConnect<'a> {
     /// VTA REST base URL. May be empty on the DIDComm path (fully-DIDComm
     /// VTAs publishing no `#vta-rest` service); when non-empty it is passed
@@ -31,6 +31,19 @@ pub struct AutoConnect<'a> {
     /// `Some(mediator)` => connect over DIDComm via this mediator;
     /// `None` => authenticate over REST challenge-response.
     pub mediator_did: Option<&'a str>,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl<'a> std::fmt::Debug for AutoConnect<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoConnect")
+            .field("vta_url", &self.vta_url)
+            .field("vta_did", &self.vta_did)
+            .field("credential_did", &self.credential_did)
+            .field("private_key_multibase", &"<redacted>")
+            .field("mediator_did", &self.mediator_did)
+            .finish()
+    }
 }
 
 /// Result of [`VtaClient::connect_auto`].

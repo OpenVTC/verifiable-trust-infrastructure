@@ -19,7 +19,7 @@ use crate::store::keyspaces;
 use vti_common::audit::{AuditEvent, BackupData};
 
 /// `POST /v1/backup/export` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[schema(as = BackupExportRequest)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportRequest {
@@ -29,6 +29,16 @@ pub struct ExportRequest {
     /// can be large and carry plaintext DIDs.
     #[serde(default)]
     pub include_audit: bool,
+}
+
+/// Written by hand so the backup password never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ExportRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExportRequest")
+            .field("password", &"<redacted>")
+            .field("include_audit", &self.include_audit)
+            .finish()
+    }
 }
 
 /// `{ envelope: … }` — the shape `vtc/backup/export/0.1` publishes.
@@ -43,7 +53,7 @@ pub struct ExportResponse {
 }
 
 /// `POST /v1/backup/import` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[schema(as = BackupImportRequest)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRequest {
@@ -55,6 +65,17 @@ pub struct ImportRequest {
     /// `true` clears the backed-up keyspaces and applies the backup.
     #[serde(default)]
     pub confirm: bool,
+}
+
+/// Written by hand so the backup password never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ImportRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportRequest")
+            .field("backup", &self.backup)
+            .field("password", &"<redacted>")
+            .field("confirm", &self.confirm)
+            .finish()
+    }
 }
 
 /// POST /backup/export — encrypted full-state backup. Auth: super-admin.

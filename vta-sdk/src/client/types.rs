@@ -96,7 +96,7 @@ pub struct UpdateConfigRequest {
     pub patch: crate::protocols::vta_management::update_config::UpdateConfigBody,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[must_use]
 pub struct CreateKeyRequest {
     pub key_type: KeyType,
@@ -115,6 +115,21 @@ pub struct CreateKeyRequest {
     /// from backup, and **cannot be recovered from the mnemonic or otherwise**.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub internal: Option<bool>,
+}
+
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for CreateKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateKeyRequest")
+            .field("key_type", &self.key_type)
+            .field("derivation_path", &self.derivation_path)
+            .field("key_id", &self.key_id)
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .field("label", &self.label)
+            .field("context_id", &self.context_id)
+            .field("internal", &self.internal)
+            .finish()
+    }
 }
 
 impl CreateKeyRequest {
@@ -153,7 +168,7 @@ impl CreateKeyRequest {
 
 // ── Import key types ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct ImportKeyRequest {
     pub key_type: KeyType,
     /// Sealed-transfer armored bundle carrying a
@@ -177,6 +192,29 @@ pub struct ImportKeyRequest {
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ImportKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportKeyRequest")
+            .field("key_type", &self.key_type)
+            .field(
+                "private_key_sealed",
+                &self.private_key_sealed.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "private_key_jwe",
+                &self.private_key_jwe.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "private_key_multibase",
+                &self.private_key_multibase.as_ref().map(|_| "<redacted>"),
+            )
+            .field("label", &self.label)
+            .field("context_id", &self.context_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,10 +389,19 @@ pub use crate::protocols::seed_management::list::SeedInfo as SeedInfoResponse;
 /// Decode target for `seeds/list` — the agent's own body type.
 pub use crate::protocols::seed_management::list::ListSeedsResultBody as ListSeedsResponse;
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct RotateSeedRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
+}
+
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RotateSeedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RotateSeedRequest")
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Decode target for `seeds/rotate` — the agent's own body type.

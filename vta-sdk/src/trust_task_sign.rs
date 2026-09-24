@@ -127,10 +127,20 @@ pub fn build_unsigned(
 /// method but one. That is the shape the restriction had before this type:
 /// not a policy anyone chose, but a helper that only knew how to build one
 /// kind of identifier.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HolderKey {
     verification_method: String,
     private_key_multibase: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for HolderKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HolderKey")
+            .field("verification_method", &self.verification_method)
+            .field("private_key_multibase", &"<redacted>")
+            .finish()
+    }
 }
 
 impl HolderKey {

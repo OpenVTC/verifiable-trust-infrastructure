@@ -70,7 +70,6 @@ pub const REFRESH_TYPE: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 /// the caller owns the lifetime — important because `private_key`
 /// is secret material that should be zeroized on drop in whatever
 /// holds it.
-#[derive(Debug)]
 pub struct VtaSigningIdentity<'a> {
     /// VTA's base DID (no `#fragment`). Goes into the DIDComm `from:`.
     pub vta_did: &'a str,
@@ -81,6 +80,17 @@ pub struct VtaSigningIdentity<'a> {
     /// 32-byte Ed25519 seed. `pack_signed` derives the signing key
     /// from this on every call; we never hold the expanded key.
     pub private_key: &'a [u8; 32],
+}
+
+/// Written by hand so the Ed25519 private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for VtaSigningIdentity<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VtaSigningIdentity")
+            .field("vta_did", &self.vta_did)
+            .field("signing_kid", &self.signing_kid)
+            .field("private_key", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Daemon-side context for the authenticate redemption — values

@@ -22,13 +22,25 @@ use super::error::ProvisionError;
 
 /// On-disk representation. Kept deliberately small — only the two strings
 /// the auth paths actually consume.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct PersistedKey {
     version: u8,
     did: String,
     private_key_multibase: String,
     #[serde(default)]
     note: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for PersistedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersistedKey")
+            .field("version", &self.version)
+            .field("did", &self.did)
+            .field("private_key_multibase", &"<redacted>")
+            .field("note", &self.note)
+            .finish()
+    }
 }
 
 /// An ephemeral Ed25519 `did:key` minted for a single provisioning run.

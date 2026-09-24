@@ -94,7 +94,7 @@ struct SiopAuthEnvelope {
     payload: SiopAuthPayload,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct SiopAuthPayload {
     /// Self-issued SIOPv2 id_token (compact EdDSA JWS). Required — its
     /// presence is what distinguishes this from a DIDComm-packed body.
@@ -102,6 +102,17 @@ struct SiopAuthPayload {
     session_id: String,
     #[serde(default)]
     session_pubkey_b58btc: Option<String>,
+}
+
+/// Written by hand so the id_token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for SiopAuthPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SiopAuthPayload")
+            .field("id_token", &"<redacted>")
+            .field("session_id", &self.session_id)
+            .field("session_pubkey_b58btc", &self.session_pubkey_b58btc)
+            .finish()
+    }
 }
 
 /// Try to authenticate a VTA-wallet SIOP `id_token`.
@@ -374,7 +385,7 @@ async fn authenticate_trust_task(
 // ---------- POST /auth/admin-session ----------
 
 /// Request body for [`admin_session`].
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct AdminSessionRequest {
@@ -391,6 +402,16 @@ pub struct AdminSessionRequest {
     /// [`refresh_token_from_ext`].
     #[serde(default)]
     pub ext: Option<JsonValue>,
+}
+
+/// Written by hand so the access token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for AdminSessionRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminSessionRequest")
+            .field("access_token", &"<redacted>")
+            .field("ext", &self.ext.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// The `ext` member the console puts the refresh token under.

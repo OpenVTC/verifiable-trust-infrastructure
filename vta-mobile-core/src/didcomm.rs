@@ -28,7 +28,7 @@ use crate::error::FfiError;
 /// Holder key material for a DIDComm session. **Tier-2 (software-held)** — see
 /// the module docs. Native loads these from the keystore and SHOULD zeroize
 /// them on session end.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct HolderKeys {
     /// The holder DID (used as the authcrypt sender).
     pub did: String,
@@ -40,6 +40,19 @@ pub struct HolderKeys {
     pub signing_kid: String,
     /// Ed25519 signing private key (32 bytes).
     pub signing_private_ed25519: Vec<u8>,
+}
+
+/// Written by hand so the holder's private keys never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for HolderKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HolderKeys")
+            .field("did", &self.did)
+            .field("key_agreement_kid", &self.key_agreement_kid)
+            .field("key_agreement_private_x25519", &"<redacted>")
+            .field("signing_kid", &self.signing_kid)
+            .field("signing_private_ed25519", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A resolved peer's public key-agreement key — e.g. from [`crate::resolver`].

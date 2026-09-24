@@ -50,7 +50,7 @@ use vti_rooms::{Record, storage};
 use crate::HostState;
 
 /// One room this host mirrors, and everything needed to keep it current.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MirroredRoom {
     /// The room's DID — the same identifier the primary knows it by. A mirror
@@ -72,6 +72,21 @@ pub struct MirroredRoom {
     pub signer_did: String,
     /// That DID's private key, multibase.
     pub signer_key_multibase: String,
+}
+
+/// Written by hand so the signer's private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for MirroredRoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MirroredRoom")
+            .field("room_id", &self.room_id)
+            .field("primary_url", &self.primary_url)
+            .field("primary_did", &self.primary_did)
+            .field("membership", &self.membership)
+            .field("authority", &self.authority)
+            .field("signer_did", &self.signer_did)
+            .field("signer_key_multibase", &"<redacted>")
+            .finish()
+    }
 }
 
 /// The file an operator points `--mirror-config` at.

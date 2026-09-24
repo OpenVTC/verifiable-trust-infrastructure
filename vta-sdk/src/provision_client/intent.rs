@@ -75,10 +75,20 @@ pub enum VtaReply {
 }
 
 /// Payload of [`VtaReply::AdminOnly`] — an admin DID and its private key.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AdminCredentialReply {
     /// Admin DID the integration authenticates as.
     pub admin_did: String,
     /// Private key (multibase) paired with `admin_did`.
     pub admin_private_key_mb: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for AdminCredentialReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminCredentialReply")
+            .field("admin_did", &self.admin_did)
+            .field("admin_private_key_mb", &"<redacted>")
+            .finish()
+    }
 }

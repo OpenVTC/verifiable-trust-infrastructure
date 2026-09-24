@@ -49,7 +49,7 @@ const DEFAULT_HEARTBEAT_SECS: u64 = 300;
 ///
 /// Build with [`AgentConfig::new`] (fills sensible defaults) then chain the
 /// `with`-style setters.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentConfig {
     /// The agent's own DID (its long-term key, already in the VTA's ACL).
     pub client_did: String,
@@ -71,6 +71,24 @@ pub struct AgentConfig {
     pub hpke_public_key: Option<String>,
     /// Heartbeat cadence in seconds.
     pub heartbeat_secs: u64,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfig")
+            .field("client_did", &self.client_did)
+            .field("private_key_multibase", &"<redacted>")
+            .field("vta_did", &self.vta_did)
+            .field("mediator_did", &self.mediator_did)
+            .field("rest_url", &self.rest_url)
+            .field("display_name", &self.display_name)
+            .field("service_kind", &self.service_kind)
+            .field("platform", &self.platform)
+            .field("hpke_public_key", &self.hpke_public_key)
+            .field("heartbeat_secs", &self.heartbeat_secs)
+            .finish()
+    }
 }
 
 impl AgentConfig {
