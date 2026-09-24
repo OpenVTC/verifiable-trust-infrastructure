@@ -594,6 +594,20 @@ pub enum AuditEvent {
     /// A credential schema or accepts-criterion was deleted
     /// (`DELETE /v1/schemas/{type_uri}` or `/v1/schemas/accepts/{id}`).
     SchemaDeleted(SchemaChangeData),
+
+    /// A change to a community's governance of forge repositories — the
+    /// `git-ns/*` Trust Task family: a namespace bound or unbound, a
+    /// repository created, adopted, archived, renamed or detached, a git right
+    /// granted, revoked or lapsed, a forge account linked.
+    ///
+    /// One variant for the family, with the action as a dotted string, for the
+    /// reason [`Self::VtaOperation`] gives: the vocabulary grows with the task
+    /// family, and a variant per action would make the enum change whenever a
+    /// task does. The subject of a right travels in the envelope's hashed
+    /// `target_did_*` members, where an erasure reaches it; a grant's free-text
+    /// `reason` is never recorded here, because the audit log outlives the
+    /// right and the reason is the granter's, not the community's.
+    GitNsOperation(GitNsOperationData),
 }
 
 impl AuditEvent {
@@ -688,6 +702,9 @@ impl AuditEvent {
             Self::CommunityDidLogInstalled(..) => "CommunityDidLogInstalled",
             Self::SchemaRegistered(..) => "SchemaRegistered",
             Self::SchemaDeleted(..) => "SchemaDeleted",
+            // As for `VtaOperation`: one kind for the family, `data.action`
+            // says which operation.
+            Self::GitNsOperation(..) => "GitNsOperation",
             // The variant name, not the action inside it. A consumer
             // discriminating on `type` sees one kind for every VTA
             // operation and reads `data.action` for which one — the same
@@ -828,6 +845,35 @@ pub struct CommunityDidLogInstalledData {
     pub previous_version_id: String,
     /// How many entries the install added.
     pub entries_added: u64,
+}
+
+/// Payload for [`AuditEvent::GitNsOperation`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsOperationData {
+    /// Dotted action name — `gitNs.right.granted`, `gitNs.namespace.bound`,
+    /// `gitNs.repo.renamed`, … Part of the wire contract for consumers that
+    /// filter on it.
+    pub action: String,
+    /// The namespace the operation acted in, by the VTC's identifier for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// The forge-qualified resource acted on (`github.com/acme/widgets`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    /// The right, where the operation concerns one (`git.repo.own`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<String>,
+    /// The version of the git-namespace policy that governed the decision,
+    /// where one was consulted (VTI-VTC-031: a past decision must be
+    /// explicable by the policy that made it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+    /// A short machine-readable qualifier — `departed`, `lapsed`,
+    /// `unbound`, the previous resource of a rename. Never free text a
+    /// member wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Payload for [`AuditEvent::SchemaRegistered`] / [`AuditEvent::SchemaDeleted`].

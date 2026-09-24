@@ -51,6 +51,7 @@ const PURPOSE_ORDER: Record<Purpose, true> = {
   roleChange: true,
   rooms: true,
   vetterEligibility: true,
+  gitNamespace: true,
 };
 
 export const ALL_PURPOSES = Object.keys(PURPOSE_ORDER) as Purpose[];

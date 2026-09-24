@@ -398,6 +398,10 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == AUDIT => &state.audit_ks,
         x if x == AUDIT_KEY => &state.audit_key_ks,
         x if x == AUDIT_CHECKPOINT => &state.audit_checkpoint_ks,
+        // The git-namespace records are the source of truth for every right
+        // this community has published about its repositories; the registry
+        // and the forge are rebuilt from them.
+        x if x == GIT_NS => &state.git_ns.ks,
         _ => return None,
     })
 }

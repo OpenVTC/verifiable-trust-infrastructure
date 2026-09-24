@@ -359,6 +359,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         shutdown_tx: tokio::sync::watch::channel(false).0,
         supervisor: None,
         didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        git_ns: vtc_service::git_ns::GitNsHandles::open_unconnected(&store).unwrap(),
     };
 
     let router = routes::router().with_state(state);

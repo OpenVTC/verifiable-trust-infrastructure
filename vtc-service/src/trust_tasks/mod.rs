@@ -676,6 +676,23 @@ async fn dispatch_typed(
             };
             crate::rooms::handlers::dispatch(state, doc, presenter).await
         }
+        // Every `git-ns/*` task, in one arm, read off that family's own
+        // dispatcher as the rooms arm is. Authority there is the signer's git
+        // rights, resolved from the VTC's records at execution time — never
+        // a bearer token, never a payload member. `view` and
+        // `account/link-status` declare the proof RECOMMENDED, so the
+        // transport's authenticated sender is passed for them to fall back
+        // on; every other task requires the proof, which the spine has
+        // already enforced.
+        uri if crate::git_ns::tasks::serves(uri) => {
+            crate::git_ns::tasks::dispatch(
+                state,
+                doc,
+                ctx.verified_signer.as_deref(),
+                ctx.sender_did.as_deref(),
+            )
+            .await
+        }
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
         // The admin-facing member verbs. Each is authorized from the verified
@@ -1238,6 +1255,7 @@ fn unsupported_type_or_version(doc: &TrustTask<Value>, type_uri: &str) -> TrustT
         .iter()
         .copied()
         .chain(crate::rooms::handlers::served_uris())
+        .chain(crate::git_ns::tasks::served_uris())
         .filter(|uri| family.is_some() && task_family(uri) == family)
         .collect();
     served.sort_unstable();

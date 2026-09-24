@@ -935,6 +935,29 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta-service/src/routes/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
 - **Docs**: `docs/02-vta/did-templates.md`.
 
+### VTC git namespaces (`git-ns/*`)
+- **What**: A VTC governs repositories on the forges it has bound — who may
+  create them, who owns each, whose commits its CI check accepts — and
+  publishes those rights to its Trust Registry. The VTC is the source of
+  truth; the registry and the forge (through a per-community bridge) are
+  projections of it.
+- **Wire**: the `git-ns/*` Trust Tasks, generated types under
+  `trust_tasks_rs::specs::git_ns`, served on the document dispatcher. Authority
+  is the proof signer's **git rights**, read from the VTC's records at
+  execution time — never a bearer token, and never the community-admin role
+  (which only binds). The admin REST routes (`/v1/git-ns/*`) are read-only.
+- **Invariants to preserve**: the fixed rules of `git-ns/right/grant` live in
+  `git_ns::rules` and run before the `gitNamespace` policy, which can only
+  refuse; rights are keyed by repository id, not name (a rename moves them, a
+  new repository at the old name inherits nothing); the projection withdraws
+  before it publishes, and publishes the implied `git.commit.sign` of every
+  `own`, `maintain` and `ns.admin`; a grant's `reason` is never published or
+  audited.
+- **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
+  `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
+  `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.
+- **Docs**: `docs/03-vtc/git-namespaces.md`.
+
 ## Runtime guards to preserve
 
 These are load-bearing — know they exist before adjusting nearby code.

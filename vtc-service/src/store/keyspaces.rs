@@ -94,6 +94,17 @@ pub const VETTER_PROFILES: &str = "vetter_profiles";
 /// requires the record to be **shared across every binding** — see
 /// `crate::trust_tasks::accepted_ids`.
 pub const ACCEPTED_IDS: &str = "accepted_ids";
+/// Git namespaces (`crate::git_ns`): the namespaces this community has bound
+/// on the forges, the repositories in them, the git rights recorded on each,
+/// and forge-account link attempts. The source of truth for every git right
+/// the community publishes — the registry and the forge are projections of it.
+pub const GIT_NS: &str = "git_ns";
+/// Outstanding `git-ns/bridge/job` jobs and their results.
+pub const GIT_NS_JOBS: &str = "git_ns_jobs";
+/// The mirror of what the git-namespace projection has published to the Trust
+/// Registry, and its audit-tail cursor. A cache of a remote effect, rebuilt by
+/// reconciling against [`GIT_NS`].
+pub const GIT_NS_PROJECTION: &str = "git_ns_projection";
 
 /// Console signing-key delegations (#1684): one row per console `did:key` at
 /// `console_key:<consoleDid>`, saying which admin DID that key may act as.
@@ -140,6 +151,9 @@ pub const ALL: &[&str] = &[
     VETTER_PROFILES,
     ACCEPTED_IDS,
     CONSOLE_KEYS,
+    GIT_NS,
+    GIT_NS_JOBS,
+    GIT_NS_PROJECTION,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -186,6 +200,10 @@ pub const BACKED_UP: &[&str] = &[
     // A vetter's published profile is theirs to replace, not the community's to
     // reconstruct: a restore without it would silently unlist every vetter.
     VETTER_PROFILES,
+    // Who owns and who may commit to each governed repository. Restoring
+    // without it would restore a community whose published rights no longer
+    // have a source, and the next projection pass would withdraw them all.
+    GIT_NS,
 ];
 
 /// Keyspaces deliberately omitted from backup (P3.9): ephemeral auth,
@@ -225,6 +243,12 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // gesture. Nothing else goes with it: the ACL rows, the passkeys and the
     // bearer login all come back with the backup.
     CONSOLE_KEYS,
+    // Bridge jobs are convergent and re-derived: the projector sends the
+    // desired roles again, and an unfinished create shows as `pendingCreate`.
+    GIT_NS_JOBS,
+    // A mirror of the registry, like `registry_records`: rebuilt by the next
+    // reconciliation against the restored `git_ns`.
+    GIT_NS_PROJECTION,
 ];
 
 #[cfg(test)]
@@ -236,7 +260,8 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 33, "ALL must list every AppState keyspace");
+        // 33 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
+        assert_eq!(ALL.len(), 36, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

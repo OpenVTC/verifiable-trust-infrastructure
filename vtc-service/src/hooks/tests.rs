@@ -303,3 +303,85 @@ async fn boot_recovery_flips_in_flight_back_to_pending() {
     let jobs = list_jobs(&ks.queue).await.unwrap();
     assert_eq!(jobs[0].state, HookJobState::Pending);
 }
+
+/// Review finding 3: one writer per registry key. A role-derived resource
+/// inside a bound git namespace is the git-ns projection's to publish, so the
+/// relay drops its job instead of writing the same key.
+#[tokio::test]
+async fn a_resource_inside_a_bound_git_namespace_is_left_to_the_projection() {
+    use crate::git_ns::model::{Mode, Namespace, NamespaceState};
+    let ks = temp_keyspaces().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&StoreConfig {
+        data_dir: dir.path().to_path_buf(),
+    })
+    .unwrap();
+    let git_ns_ks = store.keyspace("git_ns").unwrap();
+    crate::git_ns::store::put_namespace(
+        &git_ns_ks,
+        &Namespace {
+            id: "ns1".into(),
+            forge: "github.com".into(),
+            owner: "acme".into(),
+            mode: Mode::Manual,
+            state: NamespaceState::Bound,
+            owner_id: None,
+            kind: None,
+            bridge_did: None,
+            bind_job_id: None,
+            bound_by: VTC.into(),
+            requested_at: Utc::now(),
+            bound_at: Some(Utc::now()),
+            roles_digest: None,
+            installation_removed: false,
+            forge_status: None,
+        },
+    )
+    .await
+    .unwrap();
+    let cfg = GitTrustHooksConfig {
+        grant_on_role: BTreeMap::from([
+            (
+                "maintainer".to_string(),
+                "github.com/acme/widgets".to_string(),
+            ),
+            ("committer".to_string(), "openvtc/openvtc".to_string()),
+        ]),
+        revoke_with_membership: true,
+    };
+    for (role, resource) in [
+        ("maintainer", "github.com/acme/widgets"),
+        ("committer", "openvtc/openvtc"),
+    ] {
+        let _ = role;
+        store_job(
+            &ks.queue,
+            &HookJob::new(
+                format!("seq-{resource}"),
+                HookOp::Grant,
+                ALICE.into(),
+                resource.into(),
+                None,
+                Utc::now(),
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    let writer = Arc::new(MockWriter::default());
+    let relay = HookRelay::new(
+        ks.audit.clone(),
+        ks.queue.clone(),
+        ks.cursor.clone(),
+        cfg,
+        writer.clone(),
+    )
+    .with_git_ns(git_ns_ks);
+    relay.dispatch_due().await.unwrap();
+    let written: Vec<String> = writer.written().into_iter().map(|j| j.resource).collect();
+    assert_eq!(written, vec!["openvtc/openvtc".to_string()]);
+    assert!(
+        list_jobs(&ks.queue).await.unwrap().is_empty(),
+        "the git-ns resource's job is dropped, not left to retry"
+    );
+}

@@ -99,6 +99,8 @@ pub use vta_sdk::trust_task_sign::HolderKey;
 #[cfg(feature = "didcomm")]
 const SESSION_TIMEOUT_SECS: u64 = 60;
 
+pub mod git_ns;
+
 /// The `Trust-Task` URL each route this client calls is gated on, as declared
 /// in `vtc-service/src/routes/mod.rs`.
 ///

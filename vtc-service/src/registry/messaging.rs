@@ -778,6 +778,121 @@ impl TrustRegistryClient for MessagingRegistryClient {
         }
     }
 
+    async fn put_trust_record(&self, record: &Value) -> Result<(), RegistryError> {
+        // Refuse a record written under anyone else's authority: this client
+        // signs as the community, and a record naming another authority would
+        // be a statement the community did not make.
+        let authority = self.authority()?.to_string();
+        if record.get("authority_id").and_then(Value::as_str) != Some(authority.as_str()) {
+            return Err(RegistryError::Permanent(
+                "an authorization record must carry this community as its authority".into(),
+            ));
+        }
+        match self.select().await? {
+            // The REST arm is TRQP queries only; it has no write surface.
+            Protocol::Rest => Err(RegistryError::Permanent(
+                "the trust registry is reachable only over REST, which has no record-write \
+                 surface; the git-namespace projection needs TSP or DIDComm"
+                    .into(),
+            )),
+            protocol => {
+                let payload = json!({ "record": record });
+                let reply = self.round_trip(RECORD_PUT, payload, true, protocol).await?;
+                classify(&reply, "registry/record/put")
+            }
+        }
+    }
+
+    async fn list_trust_records(&self, action: &str) -> Result<Vec<Value>, RegistryError> {
+        let authority = self.authority()?.to_string();
+        match self.select().await? {
+            Protocol::Rest => Err(crate::registry::drift::unsupported()),
+            protocol => {
+                let mut out = Vec::new();
+                let mut cursor: Option<String> = None;
+                // Bounded as `list_records` is, and for the same reason: a
+                // partial enumeration compared against the mirror would
+                // invent missing tuples, so running out of pages is an error.
+                const MAX_PAGES: usize = 50;
+                const PAGE: u32 = 200;
+                for page in 0..MAX_PAGES {
+                    let mut payload = json!({
+                        "authority_id": authority,
+                        "action": action,
+                        "limit": PAGE,
+                    });
+                    if let Some(c) = &cursor {
+                        payload["cursor"] = json!(c);
+                    }
+                    let reply = self
+                        .round_trip(RECORD_QUERY, payload, false, protocol)
+                        .await?;
+                    classify(&reply, "registry/record/query")?;
+                    out.extend(
+                        reply
+                            .payload
+                            .get("records")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .cloned(),
+                    );
+                    cursor = reply
+                        .payload
+                        .get("nextCursor")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if cursor.is_none() {
+                        return Ok(out);
+                    }
+                    if page + 1 == MAX_PAGES {
+                        return Err(RegistryError::Transient(format!(
+                            "the trust registry is still paginating `{action}` after \
+                             {MAX_PAGES} pages; refusing to verify against a partial list"
+                        )));
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    async fn delete_trust_record(
+        &self,
+        entity_id: &str,
+        action: &str,
+        resource: &str,
+    ) -> Result<(), RegistryError> {
+        let authority = self.authority()?.to_string();
+        match self.select().await? {
+            Protocol::Rest => Err(RegistryError::Permanent(
+                "the trust registry is reachable only over REST, which has no record-delete \
+                 surface"
+                    .into(),
+            )),
+            protocol => {
+                let payload = json!({
+                    "entity_id": entity_id,
+                    "authority_id": authority,
+                    "action": action,
+                    "resource": resource,
+                });
+                let reply = self
+                    .round_trip(RECORD_DELETE, payload, true, protocol)
+                    .await?;
+                match classify(&reply, "registry/record/delete") {
+                    // Already absent is the effect a delete wants.
+                    Err(RegistryError::Permanent(m))
+                        if m.contains("registry/record/delete:notFound") =>
+                    {
+                        Ok(())
+                    }
+                    other => other,
+                }
+            }
+        }
+    }
+
     fn transport(&self) -> RegistryTransport {
         // A poisoned lock only happens if a writer panicked mid-update; report
         // the address we were configured with rather than failing a diagnostics

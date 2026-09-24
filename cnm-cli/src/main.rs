@@ -3,6 +3,7 @@ mod auth;
 mod backup;
 mod config;
 mod did_log;
+mod git;
 mod setup;
 mod vetting;
 mod vtc;
@@ -200,6 +201,13 @@ enum Commands {
     Vetting {
         #[command(subcommand)]
         command: vetting::VettingCommands,
+    },
+
+    /// Git namespaces: bind a forge owner, grant and revoke git rights,
+    /// adopt repositories, list what the community governs.
+    Git {
+        #[command(subcommand)]
+        command: git::GitCommands,
     },
 
     /// The community's own DID log, when the community self-hosts it: install a
@@ -891,6 +899,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             // nor want a VTA connection first. See `vtc.rs`.
             | Commands::DidLog { .. }
             | Commands::Vetting { .. }
+            | Commands::Git { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1431,6 +1440,12 @@ async fn main() {
         Commands::Vetting { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => vetting::run(command, &key, &target).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Git { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => git::run(command, &key, &target).await,
                 Err(e) => Err(e),
             }
         }

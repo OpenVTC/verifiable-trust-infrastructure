@@ -2312,6 +2312,385 @@
         ]
       }
     },
+    "/v1/git-ns/accounts": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsAccountsList",
+        "responses": {
+          "200": {
+            "description": "Members' linked forge accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsAccountList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not a community administrator"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/activity": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsActivity",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "query",
+            "description": "Only this namespace (its identifier).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many items, newest first. Default 100, at most 500.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent activity in the namespaces the caller administers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsActivity"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "The caller administers no namespace (or not the one named)"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/drift": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsDriftList",
+        "responses": {
+          "200": {
+            "description": "Repositories whose forge differs from the projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsDriftList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not a community administrator"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/jobs": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsJobsList",
+        "responses": {
+          "200": {
+            "description": "Bridge jobs, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsJobList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/namespaces": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsNamespacesList",
+        "responses": {
+          "200": {
+            "description": "Bound and pending namespaces",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsNamespaceList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/projection": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsProjection",
+        "responses": {
+          "200": {
+            "description": "What is published to the Trust Registry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsProjection"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not a community administrator"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/repos": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsReposList",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "query",
+            "description": "Only repositories in this namespace (its identifier).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recorded repositories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsRepoList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/rights": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsRightsList",
+        "parameters": [
+          {
+            "name": "resource",
+            "in": "query",
+            "description": "Only rights on this resource or inside it.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject",
+            "in": "query",
+            "description": "Only rights held by this DID.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recorded and role-derived git rights",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsRightList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The resource is not a forge-qualified resource"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not a community administrator"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/rights/issued-by-departed": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsRightsIssuedByDeparted",
+        "responses": {
+          "200": {
+            "description": "Grants whose granter has left the community",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsDepartedGrants"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not a community administrator"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/git-ns/view": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsAdminView",
+        "parameters": [
+          {
+            "name": "resource",
+            "in": "query",
+            "description": "Narrow to this forge-qualified resource and everything it contains\n(`github.com/acme`, `github.com/acme/widgets`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every namespace, repository and recorded right, reasons included",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsViewV0_1Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The resource is not a forge-qualified resource"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not a community administrator"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/health/diagnostics": {
       "get": {
         "tags": [
@@ -7533,6 +7912,1157 @@
           }
         }
       },
+      "GitNsAccountList": {
+        "type": "object",
+        "required": [
+          "accounts"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsAccountRow"
+            }
+          }
+        }
+      },
+      "GitNsAccountRow": {
+        "type": "object",
+        "description": "One member's account on one forge, as linked through `git-ns/account/link`.",
+        "required": [
+          "member",
+          "forge",
+          "id",
+          "login"
+        ],
+        "properties": {
+          "forge": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "The forge's id for the account — authoritative."
+          },
+          "linkedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "login": {
+            "type": "string",
+            "description": "The login — display only: logins are renamed and re-registered."
+          },
+          "member": {
+            "type": "string"
+          }
+        }
+      },
+      "GitNsActivity": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsActivityItem"
+            }
+          }
+        }
+      },
+      "GitNsActivityItem": {
+        "type": "object",
+        "description": "One thing that happened in a namespace.",
+        "required": [
+          "at",
+          "action",
+          "source"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`gitNs.right.granted`, `gitNs.repo.renamed`, `gitNs.drift.reported`,\n`gitNs.job.createRepo`, …"
+          },
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who acted. Absent when an erasure has removed it from the audit row."
+          },
+          "at": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A machine-readable qualifier (`departed`, the old name of a rename, a\njob's state, a drift count)."
+          },
+          "namespace": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "right": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "description": "`audit` or `job`."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Whose right it was. Absent likewise."
+          }
+        }
+      },
+      "GitNsBootstrapStatus": {
+        "type": "object",
+        "description": "Whether each step that turns commit trust on is in place.",
+        "required": [
+          "workflow",
+          "keyring",
+          "variables",
+          "requiredCheck"
+        ],
+        "properties": {
+          "keyring": {
+            "type": "boolean"
+          },
+          "requiredCheck": {
+            "type": "boolean"
+          },
+          "variables": {
+            "type": "boolean"
+          },
+          "workflow": {
+            "type": "boolean"
+          }
+        }
+      },
+      "GitNsDepartedGranter": {
+        "type": "object",
+        "description": "The grants one departed member issued.",
+        "required": [
+          "granter",
+          "rights"
+        ],
+        "properties": {
+          "granter": {
+            "type": "string"
+          },
+          "rights": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsRightRow"
+            }
+          }
+        }
+      },
+      "GitNsDepartedGrants": {
+        "type": "object",
+        "required": [
+          "cascadeOnDeparture",
+          "granters"
+        ],
+        "properties": {
+          "cascadeOnDeparture": {
+            "type": "boolean",
+            "description": "Whether the active policy revokes these instead\n(`cascade_on_departure`). While it is off they stay, for review."
+          },
+          "granters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsDepartedGranter"
+            }
+          }
+        }
+      },
+      "GitNsDriftList": {
+        "type": "object",
+        "required": [
+          "repos"
+        ],
+        "properties": {
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsDriftRow"
+            }
+          }
+        }
+      },
+      "GitNsDriftRow": {
+        "type": "object",
+        "description": "The outstanding drift on one repository.",
+        "required": [
+          "resource",
+          "state",
+          "drift"
+        ],
+        "properties": {
+          "checkedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "drift": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsViewV0_1DriftItem"
+            },
+            "description": "The bridge's items, each a `DriftItem` of the shared schema."
+          },
+          "resource": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "GitNsForgeStatus": {
+        "type": "object",
+        "description": "The bridge's report of its standing on a namespace's forge owner, carried\nin the `ext` member (`org.openvtc.git-ns`) of its results and events.\nEvery field is absent until the bridge reports it.",
+        "required": [
+          "missingPermissions"
+        ],
+        "properties": {
+          "appName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "appRegistration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's manifest registration state, in the bridge's words."
+          },
+          "appSlug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bridgePostedCheck": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The bridge can post the verify-trust check itself (fallback mode)."
+          },
+          "installationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "missingPermissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Permissions the app needs and the installation lacks."
+          },
+          "orgRulesets": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Organisation rulesets are available on the owner's plan."
+          },
+          "permissionUpgradePending": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "A new app version awaits the owner's approval of more permissions."
+          },
+          "reportedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requiredWorkflow": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The org ruleset's required workflow is in force (design §9)."
+          }
+        }
+      },
+      "GitNsJobList": {
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsJobRow"
+            }
+          }
+        }
+      },
+      "GitNsJobRow": {
+        "type": "object",
+        "description": "One bridge job.",
+        "required": [
+          "jobId",
+          "namespace",
+          "bridgeDid",
+          "kind",
+          "state",
+          "attempts",
+          "createdAt"
+        ],
+        "properties": {
+          "acceptedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "bridgeDid": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |\n`beginBind` | `beginAccountLink`."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending` | `accepted` | `succeeded` | `partial` | `failed` |\n`cancelled`."
+          }
+        }
+      },
+      "GitNsNamespaceList": {
+        "type": "object",
+        "required": [
+          "namespaces"
+        ],
+        "properties": {
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsNamespaceRow"
+            }
+          }
+        }
+      },
+      "GitNsNamespaceRow": {
+        "type": "object",
+        "description": "One namespace, as the console's Namespaces card shows it.",
+        "required": [
+          "id",
+          "forge",
+          "owner",
+          "resource",
+          "mode",
+          "state",
+          "boundBy",
+          "requestedAt",
+          "admins",
+          "repoCount",
+          "headless",
+          "installationRemoved",
+          "roleDrift",
+          "cascadeOnDeparture"
+        ],
+        "properties": {
+          "admins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Its explicit `git.ns.admin` holders — every one of them can grant\nanything in the namespace."
+          },
+          "boundAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "boundBy": {
+            "type": "string",
+            "description": "The administrator who bound it."
+          },
+          "bridgeDid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bridge that serves it (bridge mode)."
+          },
+          "cascadeOnDeparture": {
+            "type": "boolean",
+            "description": "The active policy's `cascade_on_departure` setting in effect."
+          },
+          "forge": {
+            "type": "string"
+          },
+          "forgeStatus": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsForgeStatus",
+                "description": "What the bridge last reported about its app and the owner's plan —\nabsent until it reports. Display only; it changes no decision."
+              }
+            ]
+          },
+          "headless": {
+            "type": "boolean",
+            "description": "Bound, with no live admin: its last admin left or lapsed. Nobody can\ngrant in it until it is unbound and bound again."
+          },
+          "id": {
+            "type": "string"
+          },
+          "installationRemoved": {
+            "type": "boolean",
+            "description": "The bridge reported losing its access to the forge owner."
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`organization` | `user`, once the forge has said."
+          },
+          "mode": {
+            "type": "string",
+            "description": "`bridge` | `manual`."
+          },
+          "owner": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repoCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "requestedAt": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string",
+            "description": "`github.com/acme`."
+          },
+          "roleDrift": {
+            "type": "string",
+            "description": "The active policy's `role_drift` setting in effect: `report` or\n`enforce`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending` | `bound`."
+          }
+        }
+      },
+      "GitNsProjection": {
+        "type": "object",
+        "required": [
+          "registryConfigured",
+          "published",
+          "pendingChanges"
+        ],
+        "properties": {
+          "pendingChanges": {
+            "type": "integer",
+            "description": "Records that should be published and are not yet, or that are\npublished and should not be — what the next pass will change.",
+            "minimum": 0
+          },
+          "published": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsPublishedRow"
+            }
+          },
+          "registryConfigured": {
+            "type": "boolean",
+            "description": "Whether this VTC can publish at all (a registry and its DID are\nconfigured). With none, the list is what was last published."
+          }
+        }
+      },
+      "GitNsPublishedRow": {
+        "type": "object",
+        "description": "One record published to the Trust Registry.",
+        "required": [
+          "entity",
+          "action",
+          "resource",
+          "context",
+          "publishedAt"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "description": "The record's `context` as published (framework, origin,\nactiveFrom, activeTo, impliedBy)."
+          },
+          "entity": {
+            "type": "string"
+          },
+          "publishedAt": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          }
+        }
+      },
+      "GitNsRepoList": {
+        "type": "object",
+        "required": [
+          "repos"
+        ],
+        "properties": {
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsRepoRow"
+            }
+          }
+        }
+      },
+      "GitNsRepoRow": {
+        "type": "object",
+        "description": "One repository, as the console's Repos table shows it.",
+        "required": [
+          "id",
+          "namespace",
+          "resource",
+          "visibility",
+          "state",
+          "owners",
+          "maintainers",
+          "committers",
+          "bootstrap",
+          "syncState",
+          "driftCount",
+          "createdAt",
+          "steps"
+        ],
+        "properties": {
+          "bootstrap": {
+            "$ref": "#/components/schemas/GitNsBootstrapStatus"
+          },
+          "checkedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "committers": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "driftCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failedStep": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The step that failed on the last create or bootstrap."
+          },
+          "forgeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "guard": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The guard actually in force against a pull request satisfying its own\ncheck, as the bridge last reported it: `requiredWorkflow`,\n`codeOwnerReview`, `bridgePostedCheck`, `protectedFiles` or `none`."
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastCheck": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The last verify-trust check the bridge saw (`{conclusion, at, sha?}`)."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "maintainers": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resource": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pendingCreate` | `active` | `archived` | `detached` | `orphaned` |\n`unmanaged`."
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsStepOutcome"
+            },
+            "description": "Per-step outcomes of the last create, bootstrap or inspect job."
+          },
+          "syncState": {
+            "type": "string",
+            "description": "`inSync` | `drift` | `pending` | `unchecked`."
+          },
+          "visibility": {
+            "type": "string",
+            "description": "`public` | `private`."
+          }
+        }
+      },
+      "GitNsRightList": {
+        "type": "object",
+        "required": [
+          "rights"
+        ],
+        "properties": {
+          "rights": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsRightRow"
+            }
+          }
+        }
+      },
+      "GitNsRightRow": {
+        "type": "object",
+        "description": "One git right, recorded or role-derived.",
+        "required": [
+          "subject",
+          "right",
+          "resource",
+          "origin",
+          "subjectMember",
+          "granterDeparted"
+        ],
+        "properties": {
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "granterDeparted": {
+            "type": "boolean",
+            "description": "Whether the granter has since left the community."
+          },
+          "origin": {
+            "type": "string",
+            "description": "`recorded` — a `git-ns/*` record, governed by the rights model;\n`roleDerived` — a v0.1 `[hooks.git-trust] grant_on_role` grant,\npublished by the hook relay and managed only through configuration."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource": {
+            "type": "string"
+          },
+          "right": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "subjectMember": {
+            "type": "boolean",
+            "description": "Whether the subject is a current member (an external signer is not)."
+          }
+        }
+      },
+      "GitNsStepOutcome": {
+        "type": "object",
+        "description": "One bootstrap step's outcome, as the bridge reported it.",
+        "required": [
+          "step",
+          "outcome"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`applied` | `unchanged` | `failed` | `skipped`."
+          },
+          "step": {
+            "type": "string"
+          }
+        }
+      },
+      "GitNsViewV0_1Bootstrap": {
+        "type": "object",
+        "description": "Whether each step that turns commit trust on for a repository is in place, as last reported. A step that this forge's plan does not need reads `true`.",
+        "required": [
+          "workflow",
+          "keyring",
+          "variables",
+          "requiredCheck"
+        ],
+        "properties": {
+          "keyring": {
+            "type": "boolean",
+            "description": "The exempt platform keyring for forge-signed merge commits is committed, or the forge's plan does not need one."
+          },
+          "requiredCheck": {
+            "type": "boolean",
+            "description": "The forge refuses to merge into the default branch unless the verify-trust check passes, with no bypass, and a pull request cannot change what that check runs: an organisation-required workflow, code-owner review of workflow files, or protected workflow paths, as the forge allows."
+          },
+          "variables": {
+            "type": "boolean",
+            "description": "The repository names the Trust Registry and this VTC as its trust anchors."
+          },
+          "workflow": {
+            "type": "boolean",
+            "description": "The verify-trust check runs on the repository's pull requests — from a workflow committed to it, or, where the forge supports it, required on it from the namespace's own bridge-managed workflow repository at a pinned commit."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GitNsViewV0_1Did": {
+        "type": "string",
+        "description": "A DID, compared by exact string equality.",
+        "maxLength": 2048,
+        "pattern": "^did:[a-z0-9]+:\\S+$"
+      },
+      "GitNsViewV0_1DriftItem": {
+        "type": "object",
+        "description": "One difference between the forge's observed state and the VTC's projection of a repository.",
+        "required": [
+          "type",
+          "resource"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/GitNsViewV0_1ForgeAccount"
+          },
+          "expected": {
+            "type": "string",
+            "description": "What the projection calls for, in the forge's own vocabulary. Absent when the projection calls for nothing.",
+            "maxLength": 256
+          },
+          "observed": {
+            "type": "string",
+            "description": "What the forge shows, in the forge's own vocabulary (a role name such as `maintain`, a setting name). Absent when nothing is there.",
+            "maxLength": 256
+          },
+          "resource": {
+            "$ref": "#/components/schemas/GitNsViewV0_1RepoResource"
+          },
+          "type": {
+            "type": "string",
+            "description": "`roleAdded` — someone holds a forge role the projection does not give them. `roleRemoved` — a projected role is missing. `roleChanged` — a projected role is present at another level. `requiredCheckMissing` — the verify-trust check is no longer required. `protectionWeakened` — branch protection or a ruleset is weaker than the projection in another way (force-push allowed, bypass actors added). `bootstrapMissing` — a bootstrap file or variable is gone.",
+            "enum": [
+              "roleAdded",
+              "roleRemoved",
+              "roleChanged",
+              "requiredCheckMissing",
+              "protectionWeakened",
+              "bootstrapMissing"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "GitNsViewV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "GitNsViewV0_1ForgeAccount": {
+        "type": "object",
+        "description": "A person's account on one forge. `id` is authoritative; `login` is for display only, because logins can be renamed and re-registered.",
+        "required": [
+          "forge",
+          "id",
+          "login"
+        ],
+        "properties": {
+          "forge": {
+            "$ref": "#/components/schemas/GitNsViewV0_1ForgeHost"
+          },
+          "id": {
+            "$ref": "#/components/schemas/GitNsViewV0_1ForgeId"
+          },
+          "login": {
+            "type": "string",
+            "description": "The account's current login, as the forge reported it when last seen. Display only.",
+            "maxLength": 100,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "GitNsViewV0_1ForgeHost": {
+        "type": "string",
+        "description": "The lowercased DNS host of a forge: `github.com`, a GitHub Enterprise Server host, `codeberg.org`, or a self-hosted Forgejo instance such as `git.example.org`. No scheme, no port, no path. The host is a segment of every resource, so a right never crosses forges.",
+        "maxLength": 253,
+        "minLength": 3,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$"
+      },
+      "GitNsViewV0_1ForgeId": {
+        "type": "string",
+        "description": "An identifier the forge itself assigns — a repository id, a user or organisation id — carried as a string so a forge whose ids are not numbers needs no new version. GitHub and Forgejo ids are decimal integers written as strings (`\"812736451\"`). Unlike a name, it survives renames and transfers, which is why rights and bindings are keyed by it.",
+        "maxLength": 64,
+        "minLength": 1
+      },
+      "GitNsViewV0_1GitNamespace": {
+        "type": "object",
+        "description": "The VTC's binding to one owner on one forge.",
+        "required": [
+          "id",
+          "forge",
+          "owner",
+          "mode",
+          "state"
+        ],
+        "properties": {
+          "forge": {
+            "$ref": "#/components/schemas/GitNsViewV0_1ForgeHost"
+          },
+          "id": {
+            "$ref": "#/components/schemas/GitNsViewV0_1NamespaceId"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Whether the owner is an organisation or a personal account, as the forge reports it. Present once known: a bridge-mode namespace learns it when binding completes, and a manual-mode namespace MAY never learn it.",
+            "enum": [
+              "organization",
+              "user"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "description": "`bridge` — a bridge service acts on the forge for this namespace (creates repositories, projects roles, reports drift). `manual` — no automation; people with forge access carry out the steps the VTC names, and the VTC governs the rights alone.",
+            "enum": [
+              "bridge",
+              "manual"
+            ]
+          },
+          "owner": {
+            "$ref": "#/components/schemas/GitNsViewV0_1Segment"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending` — binding has started and the forge-side proof has not arrived yet. `bound` — the VTC governs rights under this namespace.",
+            "enum": [
+              "pending",
+              "bound"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "GitNsViewV0_1NamespaceId": {
+        "type": "string",
+        "description": "The VTC's opaque identifier for a namespace, assigned when it is bound. Stable for the life of the binding; never reused for another binding.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "GitNsViewV0_1RepoResource": {
+        "type": "string",
+        "description": "A forge-qualified resource naming exactly one repository: `<forge-host>/<owner>/<repo>`, lowercase.",
+        "maxLength": 455,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/[a-z0-9_-][a-z0-9._-]{0,99}/[a-z0-9_-][a-z0-9._-]{0,99}$"
+      },
+      "GitNsViewV0_1RepoSummary": {
+        "type": "object",
+        "description": "One repository as the VTC records it.",
+        "required": [
+          "resource",
+          "visibility",
+          "state",
+          "owners",
+          "bootstrap",
+          "sync"
+        ],
+        "properties": {
+          "bootstrap": {
+            "$ref": "#/components/schemas/GitNsViewV0_1Bootstrap"
+          },
+          "forgeId": {
+            "$ref": "#/components/schemas/GitNsViewV0_1ForgeId"
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsViewV0_1Did"
+            },
+            "description": "The DIDs holding `git.repo.own` on this repository by an explicit grant. Empty only for an `unmanaged` repository, and for an `orphaned` one whose ownership rests with the namespace admins by implication.",
+            "uniqueItems": true
+          },
+          "resource": {
+            "$ref": "#/components/schemas/GitNsViewV0_1RepoResource"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pendingCreate` — the name is reserved and the repository is not yet confirmed on the forge. `active` — managed. `archived` — archived through git-ns/repo/archive; commit rights on it are revoked. `detached` — no longer governed: its namespace was unbound, or it moved outside the namespace. `orphaned` — its last owner left the community and ownership passed to the namespace admins, who have not yet named a new owner. `unmanaged` — it exists on the forge inside a bound namespace but was never created or adopted through the VTC.",
+            "enum": [
+              "pendingCreate",
+              "active",
+              "archived",
+              "detached",
+              "orphaned",
+              "unmanaged"
+            ]
+          },
+          "sync": {
+            "$ref": "#/components/schemas/GitNsViewV0_1Sync"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/GitNsViewV0_1RepoVisibility"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GitNsViewV0_1RepoVisibility": {
+        "type": "string",
+        "description": "Repository visibility on the forge.",
+        "enum": [
+          "public",
+          "private"
+        ]
+      },
+      "GitNsViewV0_1Resource": {
+        "type": "string",
+        "description": "A forge-qualified resource: `<forge-host>/<owner>` for a namespace, or `<forge-host>/<owner>/<repo>` for one repository, all lowercase — `github.com/acme`, `github.com/acme/widgets`, `codeberg.org/acme`. The forge is never implied: `acme/widgets` alone is not a resource. Containment is by whole segment: `github.com/acme` contains `github.com/acme/widgets` and does not contain `github.com/acme-labs/x` or `codeberg.org/acme/widgets`.",
+        "maxLength": 455,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:/[a-z0-9_-][a-z0-9._-]{0,99}){1,2}$"
+      },
+      "GitNsViewV0_1Response": {
+        "type": "object",
+        "description": "What the caller may see.",
+        "required": [
+          "namespaces",
+          "repos",
+          "rights"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/GitNsViewV0_1Ext"
+          },
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsViewV0_1GitNamespace"
+            },
+            "description": "Namespaces bound to this VTC that contain, or are contained by, `resource`."
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsViewV0_1RepoSummary"
+            },
+            "description": "Repositories within `resource`. `unmanaged` repositories are included only for callers holding `git.ns.admin` over them."
+          },
+          "rights": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsViewV0_1RightRecord"
+            },
+            "description": "Rights within `resource` the caller may see: always the caller's own; every right on a resource the caller owns or administers. `reason` is omitted except on resources the caller owns or administers."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GitNsViewV0_1Right": {
+        "type": "string",
+        "description": "One of the five git rights. Each string is also the TRQP `action` the VTC publishes the right under in its Trust Registry, so it is carried verbatim. `git.ns.admin` and `git.repo.create` apply to a namespace resource; `git.repo.own` and `git.repo.maintain` to a repository resource; `git.commit.sign` to either.",
+        "enum": [
+          "git.ns.admin",
+          "git.repo.create",
+          "git.repo.own",
+          "git.repo.maintain",
+          "git.commit.sign"
+        ]
+      },
+      "GitNsViewV0_1RightRecord": {
+        "type": "object",
+        "description": "One recorded right. Implied rights (§4.2 of the rights model: `own` implies `maintain` implies `commit.sign` on the same resource; `ns.admin` implies `repo.create` and `own` across its namespace) are not records and never appear as RightRecords.",
+        "required": [
+          "subject",
+          "right",
+          "resource",
+          "grantedBy",
+          "grantedAt"
+        ],
+        "properties": {
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the right lapses. Absent: no expiry."
+          },
+          "grantedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "grantedBy": {
+            "$ref": "#/components/schemas/GitNsViewV0_1Did"
+          },
+          "reason": {
+            "type": "string",
+            "description": "The granter's free-text reason. Disclosed only to holders of `git.repo.own` on the resource and of `git.ns.admin` over it.",
+            "maxLength": 1024
+          },
+          "resource": {
+            "$ref": "#/components/schemas/GitNsViewV0_1Resource"
+          },
+          "right": {
+            "$ref": "#/components/schemas/GitNsViewV0_1Right"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/GitNsViewV0_1Did"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GitNsViewV0_1Segment": {
+        "type": "string",
+        "description": "One lowercased owner or repository name. Forges compare these case-insensitively, so the wire form is always lowercase and a producer lowercases before sending. A leading `.` is refused, which rules out `.` and `..`.",
+        "maxLength": 100,
+        "minLength": 1,
+        "pattern": "^[a-z0-9_-][a-z0-9._-]*$"
+      },
+      "GitNsViewV0_1Sync": {
+        "type": "object",
+        "description": "How the forge compares with the VTC's projection for one repository.",
+        "required": [
+          "state",
+          "drift"
+        ],
+        "properties": {
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the forge was last compared. Absent if never."
+          },
+          "drift": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsViewV0_1DriftItem"
+            },
+            "description": "Outstanding drift. Empty unless `state` is `drift`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`inSync` — the last comparison found no drift. `drift` — it found some, listed in `drift`. `pending` — a change has been sent to the forge and not yet confirmed. `unchecked` — nothing compares this repository (a manual-mode namespace).",
+            "enum": [
+              "inSync",
+              "drift",
+              "pending",
+              "unchecked"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "GrantEntry": {
         "type": "object",
         "description": "The writable subset of a canonical `AclEntry`. Server-owned fields\n(`createdAt`/`createdBy`/`updatedAt`/`updatedBy`) are deliberately\nabsent — a caller must not be able to backdate provenance.",
@@ -9421,7 +10951,8 @@
           "relationships",
           "roleChange",
           "rooms",
-          "vetterEligibility"
+          "vetterEligibility",
+          "gitNamespace"
         ]
       },
       "PolicyStatusFilter": {
