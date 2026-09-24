@@ -1233,6 +1233,11 @@ async fn detach(state: &AppState, actor: &str, repo: &mut Repo, why: &str) -> Re
     store::put_rights(&state.git_ns.ks, &scope, &Default::default()).await?;
     repo.state = RepoState::Detached;
     repo.roles_digest = None;
+    // The forge id leaves with the repository: a detached row is not
+    // addressable by it, and keeping it would put a second row on the forge
+    // id the moment another repository is recorded under it. The audit rows
+    // above keep the history.
+    repo.forge_id = None;
     audit(
         state,
         actor,
@@ -1317,6 +1322,7 @@ pub async fn handle_event(
                 resource.and_then(|r| {
                     snap.repos.iter().find(|repo| {
                         repo.namespace_id == ns.id
+                            && repo.state != RepoState::Detached
                             && repo.resource == r
                             && (repo.forge_id.is_none()
                                 || forge_id.is_none()

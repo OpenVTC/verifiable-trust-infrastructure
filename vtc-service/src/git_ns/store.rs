@@ -246,10 +246,15 @@ impl Snapshot {
         })
     }
 
+    /// The live repository the forge knows as `forge_id`. A detached row is
+    /// never an answer: it is history, not something an event can address,
+    /// and the forge id may since have been recorded for a live one.
     pub fn repo_by_forge_id(&self, namespace_id: &str, forge_id: &str) -> Option<&Repo> {
-        self.repos
-            .iter()
-            .find(|r| r.namespace_id == namespace_id && r.forge_id.as_deref() == Some(forge_id))
+        self.repos.iter().find(|r| {
+            r.namespace_id == namespace_id
+                && r.state != super::model::RepoState::Detached
+                && r.forge_id.as_deref() == Some(forge_id)
+        })
     }
 
     pub fn rows(&self, scope: &Scope) -> &[RightRow] {

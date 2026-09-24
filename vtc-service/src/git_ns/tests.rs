@@ -1706,6 +1706,13 @@ async fn finding_1_events_are_confined_to_their_namespace_and_a_transfer_out_det
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+    let widgets_id = Snapshot::load(&f.vtc.state.git_ns.ks)
+        .await
+        .unwrap()
+        .repo_at("github.com/acme/widgets")
+        .unwrap()
+        .id
+        .clone();
     // A second namespace of this VTC, governed separately.
     ok(&send(
         &f.vtc.state,
@@ -1750,13 +1757,13 @@ async fn finding_1_events_are_confined_to_their_namespace_and_a_transfer_out_det
     )
     .await);
     let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
-    let a = snap
-        .repos
-        .iter()
-        .find(|r| r.forge_id.as_deref() == Some("100"))
-        .unwrap();
+    let a = snap.repo(&widgets_id).unwrap();
     assert_eq!(a.state, RepoState::Detached);
     assert_eq!(a.resource, "github.com/acme/widgets");
+    assert_eq!(
+        a.forge_id, None,
+        "a detached row is not addressable by forge id"
+    );
     assert!(snap.rows(&Scope::Repo(a.id.clone())).is_empty());
     assert!(snap.repo_at("github.com/beta/widgets").is_none());
 }
@@ -3024,5 +3031,402 @@ mod r1_probes {
         assert_eq!(code(&out), "unavailable");
         let out = adopt(&f, X, &f.carol).await;
         assert_eq!(code(&out), "unavailable");
+    }
+
+    // ── the verifier's recheck of c6df22af ──
+    const Y: &str = "github.com/acme/other";
+    fn live_with_fid(s: &Snapshot, fid: &str) -> Vec<Repo> {
+        s.repos
+            .iter()
+            .filter(|r| r.state != RepoState::Detached && r.forge_id.as_deref() == Some(fid))
+            .cloned()
+            .collect()
+    }
+    fn assert_invariants(s: &Snapshot, ctx: &str) {
+        let mut names = std::collections::BTreeMap::<String, usize>::new();
+        let mut fids = std::collections::BTreeMap::<String, usize>::new();
+        for r in s.repos.iter().filter(|r| r.state != RepoState::Detached) {
+            *names.entry(r.resource.clone()).or_default() += 1;
+            if let Some(f) = &r.forge_id {
+                *fids.entry(f.clone()).or_default() += 1;
+            }
+        }
+        assert!(
+            names.values().all(|n| *n <= 1),
+            "{ctx}: two live rows at a name {:?}",
+            s.repos
+        );
+        assert!(
+            fids.values().all(|n| *n <= 1),
+            "{ctx}: two live rows with a forge id {:?}",
+            s.repos
+        );
+    }
+    async fn ev(f: &Fixture, ns: &str, v: Value) {
+        ok(&event(f, ns, v).await);
+    }
+
+    /// (a) created(200, X) with 200 known at Y (unmanaged or adopted) and a reservation at X.
+    #[tokio::test]
+    async fn rc_a_over_reservation_loop() {
+        for run in 0..20u64 {
+            let mut seed = run * 31 + 5;
+            let f = fixture().await;
+            let ns = bind_bridge(&f).await;
+            let adopted_y = rng(&mut seed).is_multiple_of(2);
+            if adopted_y {
+                ok(&adopt(&f, Y, &f.carol).await);
+                answer_latest_inspect(&f, Y, "200").await;
+            } else {
+                ev(
+                    &f,
+                    &ns,
+                    json!({ "type": "repoCreatedUnmanaged", "forgeId": "200", "resource": Y }),
+                )
+                .await;
+            }
+            let before_y = snap(&f).await.repo_at(Y).unwrap().clone();
+            ok(&send(
+                &f.vtc.state,
+                &f.admin,
+                "repo/create",
+                json!({ "namespace": ns, "name": "widgets", "visibility": "public" }),
+            )
+            .await);
+            let reps = 1 + rng(&mut seed) % 2;
+            for _ in 0..reps {
+                ev(
+                    &f,
+                    &ns,
+                    json!({ "type": "repoCreatedUnmanaged", "forgeId": "200", "resource": X }),
+                )
+                .await;
+            }
+            let s = snap(&f).await;
+            let at = all_at(&s, X);
+            assert_eq!(at.len(), 1, "run {run} adopted_y {adopted_y}: {at:?}");
+            assert_eq!(at[0].state, RepoState::PendingCreate, "run {run}");
+            assert_eq!(at[0].forge_id, None, "run {run}");
+            let y = s.repo_at(Y).unwrap();
+            assert_eq!(
+                (y.id.clone(), y.state, y.forge_id.clone()),
+                (
+                    before_y.id.clone(),
+                    before_y.state,
+                    before_y.forge_id.clone()
+                ),
+                "run {run}"
+            );
+            assert_invariants(&s, &format!("run {run}"));
+        }
+    }
+
+    /// (b) created(200, X) over an adopted row at X with no forge id yet, 200 known at Y; then X's inspection says 200.
+    #[tokio::test]
+    async fn rc_b_over_fresh_adoption_loop() {
+        for run in 0..20u64 {
+            let mut seed = run * 97 + 3;
+            let f = fixture().await;
+            let ns = bind_bridge(&f).await;
+            let adopted_y = rng(&mut seed).is_multiple_of(2);
+            let y_first = rng(&mut seed).is_multiple_of(2);
+            if !y_first {
+                ok(&adopt(&f, X, &f.carol).await);
+            }
+            if adopted_y {
+                ok(&adopt(&f, Y, &f.bob).await);
+                answer_latest_inspect(&f, Y, "200").await;
+            } else {
+                ev(
+                    &f,
+                    &ns,
+                    json!({ "type": "repoCreatedUnmanaged", "forgeId": "200", "resource": Y }),
+                )
+                .await;
+            }
+            if y_first {
+                ok(&adopt(&f, X, &f.carol).await);
+            }
+            let xid = snap(&f).await.repo_at(X).unwrap().id.clone();
+            ev(
+                &f,
+                &ns,
+                json!({ "type": "repoCreatedUnmanaged", "forgeId": "200", "resource": X }),
+            )
+            .await;
+            let s = snap(&f).await;
+            let at = all_at(&s, X);
+            assert_eq!(at.len(), 1, "run {run}: {at:?}");
+            assert_eq!(at[0].id, xid);
+            assert_eq!(at[0].forge_id, None, "run {run}");
+            assert!(carol_holds(&s, &xid, &f.carol.did));
+            assert_eq!(s.repo_at(Y).unwrap().forge_id.as_deref(), Some("200"));
+            assert_invariants(&s, &format!("run {run} pre-inspect"));
+            answer_latest_inspect(&f, X, "200").await;
+            let s = snap(&f).await;
+            assert_eq!(s.repo_at(X).unwrap().forge_id, None, "run {run}");
+            assert!(
+                s.repo_at(X)
+                    .unwrap()
+                    .last_error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("200")
+            );
+            assert_eq!(live_with_fid(&s, "200").len(), 1);
+            assert_invariants(&s, &format!("run {run} post-inspect"));
+        }
+    }
+
+    /// Rename window: a row with no forge id (fresh adopt, or re-adopt after unbind) is never moved by a rename.
+    #[tokio::test]
+    async fn rc_rename_window_loop() {
+        for run in 0..20u64 {
+            let mut seed = run * 13 + 1;
+            let f = fixture().await;
+            let mut ns = bind_bridge(&f).await;
+            let variant = rng(&mut seed) % 3;
+            if variant == 0 {
+                ok(&adopt(&f, X, &f.bob).await);
+                answer_latest_inspect(&f, X, "100").await;
+                ok(&send(
+                    &f.vtc.state,
+                    &f.admin,
+                    "namespace/unbind",
+                    json!({ "namespace": ns }),
+                )
+                .await);
+                ns = bind_bridge(&f).await;
+            }
+            ok(&adopt(&f, X, &f.carol).await);
+            let s = snap(&f).await;
+            let id = s.repo_at(X).unwrap().id.clone();
+            assert_eq!(s.repo_at(X).unwrap().forge_id, None);
+            let ev_json = if variant == 2 {
+                json!({ "type": "repoRenamed", "from": X, "to": Z })
+            } else {
+                json!({ "type": "repoRenamed", "forgeId": "100", "from": X, "to": Z })
+            };
+            let kind = if rng(&mut seed).is_multiple_of(2) {
+                "repoRenamed"
+            } else {
+                "repoTransferred"
+            };
+            let mut e = ev_json.clone();
+            e["type"] = json!(kind);
+            let _ = event(&f, &ns, e).await;
+            let s = snap(&f).await;
+            assert!(s.repo_at(Z).is_none(), "run {run} v{variant} {kind}: moved");
+            let at = s.repo_at(X).unwrap();
+            assert_eq!(at.id, id);
+            assert_eq!(at.state, RepoState::Active, "run {run}: {:?}", at.state);
+            assert!(carol_holds(&s, &id, &f.carol.did));
+            // Its inspection then reconciles it.
+            answer_latest_inspect(&f, X, "300").await;
+            assert_eq!(
+                snap(&f).await.repo_at(X).unwrap().forge_id.as_deref(),
+                Some("300")
+            );
+            assert_invariants(&snap(&f).await, &format!("run {run}"));
+        }
+    }
+
+    /// A detached row keeping forge id 200 and a live row holding 200: created(200, X) / rename(200) must act on the live one.
+    #[tokio::test]
+    async fn rc_detached_and_live_same_forge_id_loop() {
+        let mut bad_create = 0;
+        let mut bad_rename = 0;
+        for _run in 0..30u64 {
+            let f = fixture().await;
+            let ns = bind_bridge(&f).await;
+            ok(&adopt(&f, X, &f.bob).await);
+            answer_latest_inspect(&f, X, "200").await;
+            ev(
+                &f,
+                &ns,
+                json!({ "type": "repoDeleted", "forgeId": "200", "resource": X }),
+            )
+            .await;
+            ok(&adopt(&f, Y, &f.carol).await);
+            answer_latest_inspect(&f, Y, "200").await;
+            let s = snap(&f).await;
+            let yid = s.repo_at(Y).unwrap().id.clone();
+            let y_has = s.repo_at(Y).unwrap().forge_id.clone();
+            assert_eq!(
+                y_has.as_deref(),
+                Some("200"),
+                "a detached row does not hold a forge id"
+            );
+            // rename 200 Y -> Z
+            let _ = event(
+                &f,
+                &ns,
+                json!({ "type": "repoRenamed", "forgeId": "200", "from": Y, "to": Z }),
+            )
+            .await;
+            let s = snap(&f).await;
+            if y_has.is_some() && s.repo_at(Z).map(|r| r.id.clone()) != Some(yid.clone()) {
+                bad_rename += 1;
+            }
+            ev(
+                &f,
+                &ns,
+                json!({ "type": "repoCreatedUnmanaged", "forgeId": "200", "resource": X }),
+            )
+            .await;
+            let s = snap(&f).await;
+            let live = live_with_fid(&s, "200");
+            if live.len() > 1 {
+                bad_create += 1;
+            }
+        }
+        assert_eq!((bad_rename, bad_create), (0, 0));
+    }
+
+    /// Inspection: held by a live row -> not recorded; held only by a detached row -> recorded; own id -> fine.
+    #[tokio::test]
+    async fn rc_inspection_forge_id_rules() {
+        for run in 0..20u64 {
+            let f = fixture().await;
+            let ns = bind_bridge(&f).await;
+            // live unmanaged row holds 500
+            ev(
+                &f,
+                &ns,
+                json!({ "type": "repoCreatedUnmanaged", "forgeId": "500", "resource": Y }),
+            )
+            .await;
+            ok(&adopt(&f, X, &f.carol).await);
+            answer_latest_inspect(&f, X, "500").await;
+            let s = snap(&f).await;
+            assert_eq!(s.repo_at(X).unwrap().forge_id, None, "run {run}");
+            assert_eq!(live_with_fid(&s, "500").len(), 1);
+            // a later inspection with a free id is recorded
+            ok(&adopt(&f, Z, &f.carol).await);
+            answer_latest_inspect(&f, Z, "600").await;
+            assert_eq!(
+                snap(&f).await.repo_at(Z).unwrap().forge_id.as_deref(),
+                Some("600")
+            );
+            assert_invariants(&snap(&f).await, &format!("run {run}"));
+        }
+    }
+
+    /// repo_at ambiguity: every write refuses, reads see nothing, events do not add a third.
+    #[tokio::test]
+    async fn rc_ambiguous_name_every_write_refuses() {
+        for run in 0..10u64 {
+            let f = fixture_with(GitNsConfig {
+                elevated_requires_admin: false,
+                ..GitNsConfig::default()
+            })
+            .await;
+            let ns = bind_bridge(&f).await;
+            ok(&adopt(&f, X, &f.bob).await);
+            answer_latest_inspect(&f, X, "100").await;
+            let s = snap(&f).await;
+            let orig = s.repo_at(X).unwrap().clone();
+            let mut twin = orig.clone();
+            twin.id = format!("repo_twin{run}");
+            if run % 2 == 1 {
+                twin.forge_id = None;
+            }
+            store::put_repo(&f.vtc.state.git_ns.ks, &twin)
+                .await
+                .unwrap();
+            let s = snap(&f).await;
+            assert!(s.lookup_repo(X).is_err());
+            assert!(s.repo_at(X).is_none());
+            let outs = vec![
+                (
+                    "grant",
+                    grant(&f, &f.admin, &f.carol.did, "git.commit.sign", X).await,
+                ),
+                ("adopt", adopt(&f, X, &f.carol).await),
+                (
+                    "create",
+                    send(
+                        &f.vtc.state,
+                        &f.admin,
+                        "repo/create",
+                        json!({ "namespace": ns, "name": "widgets", "visibility": "public" }),
+                    )
+                    .await,
+                ),
+                (
+                    "revoke",
+                    send(
+                        &f.vtc.state,
+                        &f.admin,
+                        "right/revoke",
+                        json!({ "subject": f.bob.did, "right": "git.repo.own", "resource": X }),
+                    )
+                    .await,
+                ),
+                (
+                    "transfer",
+                    send(
+                        &f.vtc.state,
+                        &f.bob,
+                        "repo/transfer",
+                        json!({ "resource": X, "to": f.carol.did }),
+                    )
+                    .await,
+                ),
+                (
+                    "archive",
+                    send(
+                        &f.vtc.state,
+                        &f.admin,
+                        "repo/archive",
+                        json!({ "resource": X }),
+                    )
+                    .await,
+                ),
+            ];
+            for (name, out) in outs {
+                assert_eq!(
+                    code(&out),
+                    "unavailable",
+                    "run {run} {name}: {}",
+                    String::from_utf8_lossy(&out.body)
+                );
+            }
+            // A bridge report of what is at the name now resolves the
+            // ambiguity: a governed row there under another forge id has left
+            // the name and is detached with its rights. A row with no forge id
+            // yet (the odd runs' twin) is the adopted-awaiting-inspection
+            // case, and takes up the reported id.
+            let _ = event(
+                &f,
+                &ns,
+                json!({ "type": "repoCreatedUnmanaged", "forgeId": "700", "resource": X }),
+            )
+            .await;
+            let s = snap(&f).await;
+            let live = live_at(&s, X);
+            assert_eq!(live.len(), 1, "run {run}: {:?}", all_at(&s, X));
+            assert_eq!(live[0].forge_id.as_deref(), Some("700"));
+            let keeps = if twin.forge_id.is_none() {
+                assert_eq!(live[0].id, twin.id, "run {run}");
+                twin.id.clone()
+            } else {
+                assert_eq!(live[0].state, RepoState::Unmanaged, "run {run}");
+                live[0].id.clone()
+            };
+            assert_invariants(&s, &format!("run {run}"));
+            for id in [&orig.id, &twin.id].into_iter().filter(|id| **id != keeps) {
+                assert!(
+                    s.rows(&Scope::Repo(id.clone())).is_empty(),
+                    "run {run}: {id} kept rights"
+                );
+                assert!(
+                    s.repos
+                        .iter()
+                        .all(|r| &r.id != id || r.state == RepoState::Detached),
+                    "run {run}: {id} still live"
+                );
+            }
+        }
     }
 }
