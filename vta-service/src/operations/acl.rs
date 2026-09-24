@@ -780,6 +780,38 @@ async fn change_role(
     Ok(to_result_body(&entry))
 }
 
+/// Whether `auth` may act on `subject` as a principal: enumerate or terminate
+/// its sessions (VTI-SES-043), and anything else that reaches another
+/// subject's account rather than a resource.
+///
+/// The rule is the one [`delete_acl`] applies to the subject's entry: a caller
+/// who could remove the subject's access may also end its sessions, and no one
+/// else may (VTI-ACL-050). Concretely, the subject is the caller itself, or the
+/// caller is a super-admin, or the caller holds a managing role *and* can see
+/// the subject's entry *and* is at least as privileged. A subject with no entry
+/// belongs to no context, so only a super-admin reaches it.
+///
+/// A super-admin's entry names no context and so is never visible to a scoped
+/// caller: a context admin cannot end a super-admin's sessions. Role alone
+/// (`Role::Admin`) was the previous rule, and it let any context's admin end
+/// every session on the VTA, super-admins' included.
+pub async fn may_manage_subject(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    subject: &str,
+) -> Result<bool, AppError> {
+    if auth.did == subject || auth.is_super_admin() {
+        return Ok(true);
+    }
+    if auth.require_manage().is_err() {
+        return Ok(false);
+    }
+    let Some(entry) = get_acl_entry(acl_ks, subject).await? else {
+        return Ok(false);
+    };
+    Ok(is_acl_entry_visible(auth, &entry) && validate_role_assignment(auth, &entry.role).is_ok())
+}
+
 pub async fn delete_acl(
     acl_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
@@ -1208,6 +1240,54 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// VTI-SES-043 / VTI-ACL-050: session management follows ACL management.
+    /// A context admin reaches subjects it could remove, never a super-admin,
+    /// never a subject in another context, never a subject with no entry.
+    #[tokio::test]
+    async fn may_manage_subject_follows_acl_management() {
+        let (_store, acl_ks, _audit, _contexts_ks, _dir) = fresh_store().await;
+        seed_target(&acl_ks, "did:key:zInA", &["ctx-a"]).await;
+        seed_target(&acl_ks, "did:key:zInB", &["ctx-b"]).await;
+        seed_target(&acl_ks, "did:key:zSuper", &[]).await;
+        let a_admin = ctx_admin("did:key:zAdminA", &["ctx-a"]);
+        let may = async |auth: &AuthClaims, subject: &str| {
+            may_manage_subject(&acl_ks, auth, subject).await.unwrap()
+        };
+
+        assert!(may(&a_admin, "did:key:zAdminA").await, "own sessions");
+        assert!(
+            may(&a_admin, "did:key:zInA").await,
+            "a subject in its context"
+        );
+        assert!(
+            !may(&a_admin, "did:key:zInB").await,
+            "another context's subject"
+        );
+        assert!(!may(&a_admin, "did:key:zSuper").await, "a super-admin");
+        assert!(
+            !may(&a_admin, "did:key:zNoEntry").await,
+            "a subject with no entry"
+        );
+
+        let sup = super_admin("did:key:zRoot");
+        for s in [
+            "did:key:zInA",
+            "did:key:zInB",
+            "did:key:zSuper",
+            "did:key:zNoEntry",
+        ] {
+            assert!(may(&sup, s).await, "super-admin reaches {s}");
+        }
+
+        // A reader manages nobody but itself.
+        let reader = AuthClaims {
+            role: Role::Reader,
+            ..ctx_admin("did:key:zReader", &["ctx-a"])
+        };
+        assert!(may(&reader, "did:key:zReader").await);
+        assert!(!may(&reader, "did:key:zInA").await);
     }
 
     // ── read/manage split ───────────────────────────────────────────

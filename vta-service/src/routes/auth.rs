@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use vta_sdk::protocols::auth::{AuthenticateResponse, ChallengeRequest};
 
-use crate::acl::{Role, check_acl};
+use crate::acl::check_acl;
 use crate::audit::audit;
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, list_sessions, now_epoch, store_session,
@@ -459,23 +459,73 @@ impl From<Session> for SessionSummary {
     }
 }
 
-/// GET /auth/sessions — list all active sessions. Auth: Admin or Initiator.
+/// Refuse a session operation on another subject, and audit the refusal
+/// (VTI-AUD-003, VTI-SES-041).
+async fn refuse_session_op(
+    state: &AppState,
+    auth: &AuthClaims,
+    action: &str,
+    resource: &str,
+    message: &str,
+) -> AppError {
+    warn!(
+        audit = true,
+        security_alert = true,
+        caller = %auth.did,
+        action,
+        resource,
+        "session operation on another subject refused"
+    );
+    crate::audit::record_with_detail_best_effort(
+        &state.audit_sink,
+        action,
+        &auth.did,
+        Some(resource),
+        "denied",
+        Some("rest"),
+        None,
+        Some(message),
+    )
+    .await;
+    AppError::Forbidden(message.to_string())
+}
+
+/// GET /auth/sessions — list active sessions. Auth: Admin or Initiator; the
+/// list holds only sessions of subjects the caller may manage (its own, and
+/// those whose ACL entry it could remove; everything for a super-admin).
 #[utoipa::path(
     get, path = "/auth/sessions", tag = "auth",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "Active sessions", body = [SessionSummary]),
+        (status = 200, description = "Active sessions the caller may manage", body = [SessionSummary]),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin/initiator"),
     ),
 )]
 pub async fn session_list(
-    _auth: ManageAuth,
+    ManageAuth(auth): ManageAuth,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SessionSummary>>, AppError> {
     let all = list_sessions(&state.sessions_ks).await?;
-    let summaries: Vec<SessionSummary> = all.into_iter().map(SessionSummary::from).collect();
-    info!(caller = %_auth.0.did, count = summaries.len(), "sessions listed");
+    // Session ids are bearer-adjacent and the subject list is a map of who is
+    // active on the VTA; a context-scoped caller sees only its own reach.
+    let mut decided: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut summaries = Vec::new();
+    for s in all {
+        let allowed = match decided.get(&s.did) {
+            Some(a) => *a,
+            None => {
+                let a = crate::operations::acl::may_manage_subject(&state.acl_ks, &auth, &s.did)
+                    .await?;
+                decided.insert(s.did.clone(), a);
+                a
+            }
+        };
+        if allowed {
+            summaries.push(SessionSummary::from(s));
+        }
+    }
+    info!(caller = %auth.did, count = summaries.len(), "sessions listed");
     Ok(Json(summaries))
 }
 
@@ -502,11 +552,18 @@ pub async fn revoke_session(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("session not found: {session_id}")))?;
 
-    // Allow if caller owns the session or is admin
-    if session.did != auth.did && auth.role != Role::Admin {
-        return Err(AppError::Forbidden(
-            "cannot revoke another user's session".into(),
-        ));
+    // Allow if the caller owns the session or may manage its subject. The admin
+    // role alone was the old rule, and let any context's admin end anyone's
+    // session, a super-admin's included.
+    if !crate::operations::acl::may_manage_subject(&state.acl_ks, &auth, &session.did).await? {
+        return Err(refuse_session_op(
+            &state,
+            &auth,
+            "session.revoke",
+            &session_id,
+            "cannot revoke the session of a subject outside your authority",
+        )
+        .await);
     }
 
     delete_session(&state.sessions_ks, &session_id).await?;
@@ -533,7 +590,10 @@ pub struct RevokeByDidResponse {
     pub revoked: u64,
 }
 
-/// DELETE /auth/sessions?did=X — revoke all sessions for a given DID. Auth: Admin only.
+/// DELETE /auth/sessions?did=X — revoke all sessions for a given DID
+/// (VTI-SES-043). Auth: Admin, and the DID must be a subject the caller may
+/// manage (its ACL entry is one the caller could remove; any DID for a
+/// super-admin).
 #[utoipa::path(
     delete, path = "/auth/sessions", tag = "auth",
     security(("bearer_jwt" = [])),
@@ -541,14 +601,24 @@ pub struct RevokeByDidResponse {
     responses(
         (status = 200, description = "Sessions revoked", body = RevokeByDidResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not an admin, or the DID is outside its authority"),
     ),
 )]
 pub async fn revoke_sessions_by_did(
-    _auth: AdminAuth,
+    AdminAuth(auth): AdminAuth,
     State(state): State<AppState>,
     Query(query): Query<RevokeByDidQuery>,
 ) -> Result<Json<RevokeByDidResponse>, AppError> {
+    if !crate::operations::acl::may_manage_subject(&state.acl_ks, &auth, &query.did).await? {
+        return Err(refuse_session_op(
+            &state,
+            &auth,
+            "session.revoke_by_did",
+            &query.did,
+            "cannot revoke the sessions of a subject outside your authority",
+        )
+        .await);
+    }
     let all = list_sessions(&state.sessions_ks).await?;
     let mut revoked = 0u64;
 
@@ -559,10 +629,10 @@ pub async fn revoke_sessions_by_did(
         }
     }
 
-    info!(caller = %_auth.0.did, target_did = %query.did, revoked, "sessions revoked by DID");
+    info!(caller = %auth.did, target_did = %query.did, revoked, "sessions revoked by DID");
     audit!(
         "session.revoke_by_did",
-        actor = &_auth.0.did,
+        actor = &auth.did,
         resource = &query.did,
         outcome = "success"
     );

@@ -141,9 +141,9 @@ vta-service/src/
 | POST | /auth/ | None | Submit signed challenge, get tokens |
 | POST | /auth/refresh | None | Refresh access token |
 | POST | /auth/credentials | Manage | Generate did:key credential |
-| GET | /auth/sessions | Manage | List sessions |
-| DELETE | /auth/sessions/{id} | Auth | Revoke session |
-| DELETE | /auth/sessions?did=X | Admin | Revoke all sessions for a DID |
+| GET | /auth/sessions | Manage | List sessions of subjects the caller may manage (own + ACL entries it could remove; all for a super-admin) |
+| DELETE | /auth/sessions/{id} | Auth | Revoke a session: own, or of a subject the caller may manage |
+| DELETE | /auth/sessions?did=X | Admin | Revoke all sessions for a DID the caller may manage (never a super-admin's, for a scoped admin) |
 
 ### Configuration
 

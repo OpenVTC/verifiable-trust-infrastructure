@@ -4278,6 +4278,115 @@ mod response_coverage {
         }
     }
 
+    /// Dispatch `uri` as `claims` and return the payload's `code`, or
+    /// `"ok"` on a success response.
+    async fn outcome_as(
+        state: &crate::server::AppState,
+        claims: &crate::auth::AuthClaims,
+        uri: &str,
+        payload: Value,
+    ) -> String {
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(uri, &vta_did, payload);
+        let outcome = super::dispatch_trust_task_core(
+            state,
+            claims,
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        if doc["type"] == format!("{uri}#response") {
+            "ok".to_string()
+        } else {
+            doc["payload"]["code"].as_str().unwrap_or("?").to_string()
+        }
+    }
+
+    fn consent_subject() -> Value {
+        json!({ "platform": "slack", "conversationRef": "conv-9f3", "kind": "dm", "agent": "agent-1" })
+    }
+
+    async fn store_grant(state: &crate::server::AppState, context: Option<&str>) {
+        let grant = vti_common::consent::ConsentGrant {
+            subject: serde_json::from_value::<vti_common::consent::ConsentSubject>(json!({
+                "platform": "slack", "conversation_ref": "conv-9f3", "kind": "dm", "agent": "agent-1"
+            }))
+            .expect("subject"),
+            effect: vti_common::consent::ConsentEffect::Allow,
+            scope: Some(vti_common::consent::ConsentScope::Converse),
+            granted_by: "did:key:zOperator".into(),
+            granted_at: 1,
+            expires_at: None,
+            evidence: "did-signed".into(),
+            context: context.map(str::to_string),
+        };
+        vti_common::consent::store_consent_grant(&state.consent_ks, &grant)
+            .await
+            .expect("store grant");
+    }
+
+    /// VTI-CTX-002: withdrawing a grant needs authority over the grant's
+    /// context; a grant with no context needs a super-admin. Admin role alone
+    /// let any context's admin withdraw every grant on the VTA.
+    #[tokio::test]
+    async fn consent_revoke_is_scoped_to_the_grants_context() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let revoke = json!({ "subject": consent_subject() });
+        let a = crate::test_support::admin_claims_for_context("ctx-a");
+        let b = crate::test_support::admin_claims_for_context("ctx-b");
+        let t = t::TASK_CONSENT_REVOKE_1_0;
+
+        store_grant(&state, Some("ctx-a")).await;
+        assert_eq!(
+            outcome_as(&state, &b, t, revoke.clone()).await,
+            "permissionDenied"
+        );
+        assert_eq!(outcome_as(&state, &a, t, revoke.clone()).await, "ok");
+
+        store_grant(&state, None).await;
+        assert_eq!(
+            outcome_as(&state, &a, t, revoke.clone()).await,
+            "permissionDenied"
+        );
+        let sup = crate::test_support::super_admin_claims();
+        assert_eq!(outcome_as(&state, &sup, t, revoke).await, "ok");
+    }
+
+    /// An operator pre-authorization (a decision with no challenge) writes a
+    /// grant that belongs to no context, so only a super-admin may make one.
+    #[tokio::test]
+    async fn consent_decision_without_a_challenge_is_super_admin_only() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let decision = json!({ "subject": consent_subject(), "effect": "allow" });
+        let t = t::TASK_CONSENT_DECISION_1_0;
+        let a = crate::test_support::admin_claims_for_context("ctx-a");
+        assert_eq!(
+            outcome_as(&state, &a, t, decision.clone()).await,
+            "permissionDenied"
+        );
+        let sup = crate::test_support::super_admin_claims();
+        assert_eq!(outcome_as(&state, &sup, t, decision).await, "ok");
+    }
+
+    /// `consent/request`'s `contextHint` routes the request and becomes the
+    /// grant's context, so it must be a context the caller may act in.
+    #[tokio::test]
+    async fn consent_request_hint_must_be_in_the_callers_scope() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let a = crate::test_support::admin_claims_for_context("ctx-a");
+        let request = json!({
+            "subject": consent_subject(),
+            "scope": "converse",
+            "challenge": "chal-0123456789abcdef",
+            "contextHint": "ctx-b",
+        });
+        assert_eq!(
+            outcome_as(&state, &a, t::TASK_CONSENT_REQUEST_1_0, request).await,
+            "permissionDenied"
+        );
+    }
+
     /// `keys/import` and `keys/derive-and-sign-document`.
     ///
     /// Import needs a transport that is confidential end to end; the cleartext
