@@ -16,9 +16,19 @@
 //! `didcomm` / `tsp`) and they go over the session; build it any other way and
 //! they go over HTTPS.
 //!
-//! The **admin verbs** cannot. Each is gated on a bearer token *and* a per-route
-//! `Trust-Task` header, which is a URL-shaped surface; a session-only client
-//! answers them with [`VtcError::NoRestTransport`] rather than failing obscurely.
+//! The **admin verbs** are split by what the VTC serves (#1641):
+//!
+//! - Those whose tasks the VTC binds as signed documents — a join decision,
+//!   `members/{update,admin-remove,credentials}`, `backup/export` — go as
+//!   documents too: over the session when there is one, otherwise signed with
+//!   the operator's own key (the one [`VtcClient::connect`] authenticated with)
+//!   and posted to `POST {base}/trust-tasks`. A client holding that key never
+//!   falls back to the bearer route for them, even against a VTC too old to
+//!   serve the document. A client built from a token alone
+//!   ([`VtcClient::with_token`]) holds no key and uses the bearer routes.
+//! - The rest are gated on a bearer token *and* a per-route `Trust-Task`
+//!   header, which is a URL-shaped surface; a session-only client answers them
+//!   with [`VtcError::NoRestTransport`] rather than failing obscurely.
 //!
 //! The session transports are **delegated to `vta_sdk::client::VtaClient`**,
 //! which already owns session setup, `thid` demultiplexing, retry under one
@@ -175,6 +185,12 @@ const MAX_AUDIT_VERIFY_RESPONSE_BYTES: usize = 1024 * 1024;
 /// request body, so an export larger than this could not be restored anyway.
 const MAX_BACKUP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
+/// The bound on any other `#response` document read from the document
+/// endpoint. Generous for every verb that goes there — the largest, a join
+/// decision, carries two credentials — and small enough that a misbehaving
+/// endpoint cannot make this client buffer without limit.
+const MAX_DOCUMENT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Re-export of the published join-request protocol wire types, so a consumer
 /// driving the join ceremony depends on one crate.
 pub use vta_sdk::protocols::join_requests;
@@ -246,10 +262,11 @@ pub enum VtcError {
     /// A verb that only exists on the HTTPS surface was called on a client
     /// built with no REST base.
     ///
-    /// The admin verbs are gated on a bearer token *and* a per-route
-    /// `Trust-Task` header, which is a URL-shaped surface — they cannot ride a
-    /// session. Rather than fail at the transport with something obscure, say
-    /// so: pass `rest_url` to the `connect_*` constructor.
+    /// The admin verbs without a signed binding are gated on a bearer token
+    /// *and* a per-route `Trust-Task` header, which is a URL-shaped surface —
+    /// they cannot ride a session. Rather than fail at the transport with
+    /// something obscure, say so: pass `rest_url` to the `connect_*`
+    /// constructor.
     #[error("this client has no REST base — {0} needs one; pass rest_url when connecting")]
     NoRestTransport(&'static str),
     /// The VTC answered 404 with an error `code` the called task's
@@ -445,6 +462,19 @@ pub struct VtcClient {
     vtc_did: String,
     /// Bearer access token, set after [`connect`](Self::connect).
     token: Option<String>,
+    /// The operator's own key, held by a client built with
+    /// [`connect`](Self::connect).
+    ///
+    /// The admin verbs whose tasks the VTC serves as signed documents are sent
+    /// signed with it, and **only** that way: a client holding a key does not
+    /// fall back to the bearer route, even against a VTC too old to serve the
+    /// document. The VTC reads the signer's own ACL entry, so this is the
+    /// operator acting as themselves — no delegation is involved. A client
+    /// built from a token alone ([`with_token`](Self::with_token)) has no key
+    /// and keeps using the bearer routes.
+    ///
+    /// Never printed: `VtcClient`'s `Debug` reports only whether one is held.
+    signer: Option<HolderKey>,
     /// A messaging session to the VTC, when this client has one.
     ///
     /// Present only on a client built by [`connect_didcomm`](Self::connect_didcomm)
@@ -502,6 +532,11 @@ impl VtcClient {
         // has neither, so a blackholed VTC would hang an operator forever.
         let http = vta_sdk::http::rest_client();
         let base_url = base_url.trim_end_matches('/').to_string();
+        // The same key signs the admin verbs that have a signed binding. Built
+        // first, so a key that cannot sign fails here rather than on the first
+        // admin call.
+        let signer = HolderKey::from_did_key(client_did, private_key_multibase)
+            .map_err(|e| VtcError::Signing(e.to_string()))?;
         let auth = vta_sdk::auth_light::challenge_response_light(
             &http,
             &base_url,
@@ -515,6 +550,7 @@ impl VtcClient {
             base_url,
             vtc_did: vtc_did.to_string(),
             token: Some(auth.access_token),
+            signer: Some(signer),
             #[cfg(feature = "didcomm")]
             documents: None,
         })
@@ -528,6 +564,7 @@ impl VtcClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
             token: Some(token.into()),
+            signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
         }
@@ -550,6 +587,7 @@ impl VtcClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
             token: None,
+            signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
         }
@@ -564,9 +602,10 @@ impl VtcClient {
     /// `did:key` (`vtc-service/src/trust_tasks/mod.rs::resolve_holder` short-
     /// circuits on `sender_did`).
     ///
-    /// `rest_url` is the HTTPS base, and stays optional but useful: the admin
-    /// verbs are token-and-header gated on a URL surface and cannot ride a
-    /// session, so a client built with `None` here answers them with
+    /// `rest_url` is the HTTPS base, and stays optional but useful. The admin
+    /// verbs the VTC serves as signed documents ride the session like the
+    /// holder verbs do; the rest are token-and-header gated on a URL surface,
+    /// so a client built with `None` here answers those with
     /// [`VtcError::NoRestTransport`]. Passing the base gives one client that can
     /// do both.
     #[cfg(feature = "didcomm")]
@@ -633,6 +672,7 @@ impl VtcClient {
                 .to_string(),
             vtc_did: vtc_did.to_string(),
             token: None,
+            signer: None,
             documents: Some(documents),
         }
     }
@@ -669,6 +709,104 @@ impl VtcClient {
             .request(method, url)
             .header("Trust-Task", task)
             .bearer_auth(token))
+    }
+
+    /// Send an admin verb as a Trust Task document, when this client can.
+    ///
+    /// Answers `Some(payload)` — the `#response` document's payload — when the
+    /// verb went as a document, and `None` when this client holds neither a
+    /// session nor a key, so the caller uses the task's bearer route.
+    ///
+    /// - **Over a session** the document goes on it, signed by the session's
+    ///   own key, exactly as the holder verbs do.
+    /// - **With a key** ([`connect`](Self::connect)) it is signed as the
+    ///   operator and posted to `POST {base}/trust-tasks`. There is no fallback
+    ///   from here to the bearer route: a VTC that answers `unsupportedType`
+    ///   predates the task's signed binding, and that is reported as it is.
+    ///
+    /// `declared` is the task's declared error codes, so a refusal the VTC
+    /// marks as "no such resource" becomes [`VtcError::NotFound`] on this path
+    /// as it does on the bearer route. `max_bytes` bounds the reply read over
+    /// HTTPS.
+    async fn admin_document(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        declared: &[trust_tasks_rs::DeclaredErrorCode],
+        max_bytes: usize,
+    ) -> Result<Option<serde_json::Value>, VtcError> {
+        #[cfg(feature = "didcomm")]
+        if let Some(documents) = &self.documents {
+            return documents
+                .dispatch_trust_task(type_uri, payload, SESSION_TIMEOUT_SECS)
+                .await
+                .map(Some)
+                .map_err(|e| VtcError::Session(e.to_string()));
+        }
+        let Some(key) = &self.signer else {
+            return Ok(None);
+        };
+        if self.base_url.is_empty() {
+            return Err(VtcError::NoRestTransport("this verb"));
+        }
+        let doc =
+            vta_sdk::trust_task_sign::build_signed_with(type_uri, payload, key, &self.vtc_did)
+                .await
+                .map_err(|e| VtcError::Signing(e.to_string()))?;
+        self.post_document(doc, declared, max_bytes).await.map(Some)
+    }
+
+    /// POST a signed document to the VTC's document endpoint and return the
+    /// `#response` document's payload.
+    ///
+    /// The endpoint takes no `Trust-Task` header — the document's own `type` is
+    /// the identity, which is exactly why one mount serves every verb bound
+    /// there. A refusal is a `trust-task-error` document; its payload's `code`
+    /// and `message` are what the caller sees. The reply is read under
+    /// `max_bytes`, as every body this client reads is.
+    async fn post_document(
+        &self,
+        doc: String,
+        declared: &[trust_tasks_rs::DeclaredErrorCode],
+        max_bytes: usize,
+    ) -> Result<serde_json::Value, VtcError> {
+        let resp = self
+            .http
+            .post(format!("{}/trust-tasks", self.base_url))
+            .header("content-type", "application/json")
+            .body(doc)
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        let bytes = vta_sdk::http::read_body_capped(resp, max_bytes)
+            .await
+            .map_err(|e| VtcError::Http {
+                status,
+                body: e.to_string(),
+            })?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let response_doc: trust_tasks_rs::TrustTask<serde_json::Value> =
+            match serde_json::from_str(&text) {
+                Ok(d) => d,
+                Err(e) if (200..300).contains(&status) => {
+                    return Err(VtcError::Http {
+                        status,
+                        body: format!(
+                            "unexpected response (not a Trust Task document): {e}: {text}"
+                        ),
+                    });
+                }
+                Err(_) => return Err(VtcError::Http { status, body: text }),
+            };
+        if (200..300).contains(&status) {
+            return Ok(response_doc.payload);
+        }
+        Err(document_error(
+            status,
+            &response_doc.payload,
+            text,
+            declared,
+        ))
     }
 
     /// List every community member, optionally filtered by `role`, following the
@@ -783,6 +921,22 @@ impl VtcClient {
         decision: &str,
         reason: Option<&str>,
     ) -> Result<DecideResult, VtcError> {
+        let mut document = serde_json::json!({ "id": request_id, "decision": decision });
+        if let Some(reason) = reason {
+            document["reason"] = serde_json::json!(reason);
+        }
+        if let Some(payload) = self
+            .admin_document(
+                task::JOIN_REQUESTS_DECIDE,
+                document,
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?
+        {
+            return decode_payload(payload, "decide");
+        }
+
         let url = format!("{}/join-requests/{request_id}/decide", self.base_url);
         let mut body = serde_json::json!({ "decision": decision });
         if let Some(reason) = reason {
@@ -810,6 +964,22 @@ impl VtcClient {
         did: &str,
         reason: Option<&str>,
     ) -> Result<RemoveResult, VtcError> {
+        let mut document = serde_json::json!({ "did": did });
+        if let Some(reason) = reason {
+            document["reason"] = serde_json::json!(reason);
+        }
+        if let Some(payload) = self
+            .admin_document(
+                task::MEMBERS_ADMIN_REMOVE,
+                document,
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?
+        {
+            return decode_payload(payload, "admin-remove");
+        }
+
         let url = format!("{}/members/{did}", self.base_url);
         let mut req = self.tt(reqwest::Method::DELETE, url, task::MEMBERS_ADMIN_REMOVE)?;
         if let Some(reason) = reason {
@@ -833,6 +1003,19 @@ impl VtcClient {
         did: &str,
         extensions: serde_json::Value,
     ) -> Result<(), VtcError> {
+        if self
+            .admin_document(
+                task::MEMBERS_UPDATE,
+                serde_json::json!({ "did": did, "extensions": extensions }),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+
         let resp = self
             .tt(
                 reqwest::Method::PATCH,
@@ -952,33 +1135,12 @@ impl VtcClient {
         .await
         .map_err(|e| VtcError::Signing(e.to_string()))?;
 
-        // The document endpoint takes no `Trust-Task` header — the document's
-        // own `type` is the identity, which is exactly why one mount can serve
-        // every holder verb.
-        let resp = self
-            .http
-            .post(format!("{}/trust-tasks", self.base_url))
-            .header("content-type", "application/json")
-            .body(doc)
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtcError::Http { status, body });
-        }
-
         // A Trust-Task request is answered with a `#response` document whose
         // payload is the verdict.
-        let text = resp.text().await?;
-        let response_doc: trust_tasks_rs::TrustTask<serde_json::Value> =
-            serde_json::from_str(&text).map_err(|e| VtcError::Http {
-                status: 200,
-                body: format!(
-                    "unexpected submit response (not a Trust Task document): {e}: {text}"
-                ),
-            })?;
-        serde_json::from_value(response_doc.payload).map_err(|e| VtcError::Http {
+        let payload = self
+            .post_document(doc, &[], MAX_DOCUMENT_RESPONSE_BYTES)
+            .await?;
+        serde_json::from_value(payload).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("submit response payload is not a VerdictResponse: {e}"),
         })
@@ -1036,6 +1198,18 @@ impl VtcClient {
         &self,
         did: &str,
     ) -> Result<members_credentials::Response, VtcError> {
+        if let Some(payload) = self
+            .admin_document(
+                task::MEMBERS_CREDENTIALS,
+                serde_json::json!({ "did": did }),
+                members_credentials::ERROR_CODES,
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?
+        {
+            return decode_payload(payload, "members/credentials");
+        }
+
         let url = self.api_url(&["members", did, "credentials"])?;
         let resp = self
             .tt(reqwest::Method::GET, url, task::MEMBERS_CREDENTIALS)?
@@ -1342,6 +1516,24 @@ impl VtcClient {
         password: &str,
         include_audit: bool,
     ) -> Result<serde_json::Value, VtcError> {
+        if let Some(mut payload) = self
+            .admin_document(
+                task::BACKUP_EXPORT,
+                serde_json::json!({ "password": password, "includeAudit": include_audit }),
+                trust_tasks_rs::specs::vtc::backup::export::v0_1::ERROR_CODES,
+                MAX_BACKUP_RESPONSE_BYTES,
+            )
+            .await?
+        {
+            return match payload.get_mut("envelope").map(serde_json::Value::take) {
+                Some(envelope @ serde_json::Value::Object(_)) => Ok(envelope),
+                _ => Err(VtcError::Http {
+                    status: 200,
+                    body: "the export response carries no backup envelope".into(),
+                }),
+            };
+        }
+
         let url = self.api_url(&["backup", "export"])?;
         let resp = self
             .tt(reqwest::Method::POST, url, task::BACKUP_EXPORT)?
@@ -1523,6 +1715,51 @@ fn typed_error(
         return VtcError::NotFound {
             code: code.to_string(),
             message,
+        };
+    }
+    VtcError::Http { status, body }
+}
+
+/// Read a `#response` document's payload as the verb's result type.
+fn decode_payload<T: serde::de::DeserializeOwned>(
+    payload: serde_json::Value,
+    verb: &str,
+) -> Result<T, VtcError> {
+    serde_json::from_value(payload).map_err(|e| VtcError::Http {
+        status: 200,
+        body: format!("{verb} response payload has an unexpected shape: {e}"),
+    })
+}
+
+/// Classify a `trust-task-error` document from the document endpoint, the
+/// counterpart of [`typed_error`] for the bearer routes.
+///
+/// [`VtcError::NotFound`] when the refusal carries one of the task's declared
+/// codes **and** says the thing is absent — the spine marks that with
+/// `details.reason` ([`vta_sdk::protocols::trust_task_reject_reasons::NOT_FOUND`]) beside the code (#1219) — and
+/// [`VtcError::Http`] with the document's text otherwise.
+fn document_error(
+    status: u16,
+    payload: &serde_json::Value,
+    body: String,
+    declared: &[trust_tasks_rs::DeclaredErrorCode],
+) -> VtcError {
+    let code = payload.get("code").and_then(serde_json::Value::as_str);
+    let reason = payload
+        .pointer("/details/reason")
+        .and_then(serde_json::Value::as_str);
+    if let Some(code) = code
+        && declared.iter().any(|d| d.code == code)
+        && (reason == Some(vta_sdk::protocols::trust_task_reject_reasons::NOT_FOUND)
+            || status == 404)
+    {
+        return VtcError::NotFound {
+            code: code.to_string(),
+            message: payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
         };
     }
     VtcError::Http { status, body }
@@ -1713,6 +1950,57 @@ mod tests {
     /// URL surface through `tt`. Without this the request is built against an
     /// empty base and the error reads as a bug in this crate rather than as a
     /// constructor that was not given `rest_url`.
+    /// A refusal from the document endpoint that names a declared code and
+    /// carries the `not_found` marker is the typed `NotFound` — whatever HTTP
+    /// status it came with (the VTC answers a declared refusal with 422).
+    #[test]
+    fn a_declared_not_found_document_refusal_is_typed() {
+        let code = members_credentials::error_codes::NOT_FOUND.code;
+        let payload = serde_json::json!({
+            "code": code,
+            "message": "member not found",
+            "details": { "reason": vta_sdk::protocols::trust_task_reject_reasons::NOT_FOUND },
+        });
+        match document_error(
+            422,
+            &payload,
+            String::new(),
+            members_credentials::ERROR_CODES,
+        ) {
+            VtcError::NotFound { code: got, message } => {
+                assert_eq!(got, code);
+                assert_eq!(message, "member not found");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    /// Neither half alone is enough: an undeclared code stays `Http`, and so
+    /// does a declared code without the absence marker.
+    #[test]
+    fn a_document_refusal_is_not_found_only_when_both_halves_say_so() {
+        let undeclared = serde_json::json!({
+            "code": "permissionDenied",
+            "details": { "reason": vta_sdk::protocols::trust_task_reject_reasons::NOT_FOUND },
+        });
+        assert!(matches!(
+            document_error(
+                403,
+                &undeclared,
+                "b".into(),
+                members_credentials::ERROR_CODES
+            ),
+            VtcError::Http { status: 403, .. }
+        ));
+        let unmarked = serde_json::json!({
+            "code": members_credentials::error_codes::NOT_FOUND.code,
+        });
+        assert!(matches!(
+            document_error(422, &unmarked, "b".into(), members_credentials::ERROR_CODES),
+            VtcError::Http { status: 422, .. }
+        ));
+    }
+
     #[test]
     fn an_admin_verb_without_a_rest_base_says_so() {
         let client = VtcClient {
@@ -1720,6 +2008,7 @@ mod tests {
             base_url: String::new(),
             vtc_did: "did:webvh:QmScid:example.com:acme".to_string(),
             token: Some("t".to_string()),
+            signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
         };
@@ -1789,6 +2078,7 @@ mod tests {
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
             token: None,
+            signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
         };
@@ -1841,6 +2131,7 @@ mod tests {
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
             token: None,
+            signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
         };
@@ -1880,6 +2171,7 @@ mod tests {
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
             token: None,
+            signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
         };

@@ -548,3 +548,90 @@ async fn member_credentials_round_trips_and_types_not_found() {
 
     mock.shutdown().await;
 }
+
+/// A client built with the operator's key sends the admin verbs that have a
+/// signed binding as documents signed by that key — not over its bearer
+/// session (#1641).
+///
+/// Proved by ending every session after connecting: a bearer-only verb is then
+/// refused, and the signed verbs still work, because the VTC authorizes them
+/// from the signer's ACL entry and never reads a token.
+#[tokio::test]
+async fn signed_admin_verbs_do_not_ride_the_bearer_session() {
+    let mock = audited_vtc().await;
+    let client = admin_client(&mock, 0xB1).await;
+    let state = &mock.vtc.state;
+    // Removal consults the removal policy and flips a status-list bit, so it
+    // needs both seeded, as `server::run` seeds them at boot.
+    vtc_service::policy::default::install_defaults(&state.policies_ks, &state.active_policies_ks)
+        .await
+        .expect("install default policies");
+    for purpose in [
+        affinidi_status_list::StatusPurpose::Revocation,
+        affinidi_status_list::StatusPurpose::Suspension,
+    ] {
+        vtc_service::status_list::ensure_initial(
+            &state.status_lists_ks,
+            purpose,
+            format!("http://vtc.test/v1/status-lists/{purpose}"),
+        )
+        .await
+        .expect("seed the status list");
+    }
+
+    let (member_did, _) = did_key_from_seed(0xB2);
+    vtc_service::members::storage::store_member(
+        &state.members_ks,
+        &vtc_service::members::Member::fresh(&member_did),
+    )
+    .await
+    .expect("seed member");
+    store_acl_entry(
+        &state.acl_ks,
+        &VtcAclEntry {
+            role: VtcRole::Member,
+            ..admin_entry(&member_did)
+        },
+    )
+    .await
+    .expect("seed member acl row");
+
+    // End every session the client could be holding.
+    for (key, _) in state
+        .sessions_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .expect("list sessions")
+    {
+        state.sessions_ks.remove(key).await.expect("end session");
+    }
+
+    assert!(
+        client.list_members(None).await.is_err(),
+        "a bearer-only verb must be refused once the session is gone, or this \
+         test proves nothing about the signed ones"
+    );
+
+    client
+        .update_member_extensions(&member_did, serde_json::json!({ "fleet_index": 3 }))
+        .await
+        .expect("members/update goes as a signed document");
+    let stored = vtc_service::members::storage::get_member(&state.members_ks, &member_did)
+        .await
+        .expect("read member")
+        .expect("member row");
+    assert_eq!(stored.extensions, serde_json::json!({ "fleet_index": 3 }));
+
+    client
+        .member_credentials(&member_did)
+        .await
+        .expect("members/credentials goes as a signed document");
+
+    let removed = client
+        .remove_member(&member_did, Some("decommissioned"))
+        .await
+        .expect("members/admin-remove goes as a signed document");
+    assert!(removed.removed);
+
+    mock.shutdown().await;
+}
