@@ -839,46 +839,32 @@ pub(crate) async fn import_inner(
 /// field names that changed (driving the
 /// `CommunityProfileUpdated.fieldsChanged` audit payload).
 ///
-/// If no profile exists yet the incoming profile is stored as-is
-/// (and **all** populated fields are reported as changed, matching
-/// `CommunityProfileUpdate::apply`'s contract).
+/// Every import goes through `CommunityProfileUpdate::apply`, so every
+/// imported profile meets the caps an edit must: the text-length bounds, the
+/// 16 KiB `extensions` bound, the `http(s)`-only `logoUrl` and governance URL,
+/// the personhood overclaim refusal. Those caps exist because the profile is
+/// served on the unauthenticated public-profile endpoint and `logoUrl` lands
+/// in an `<img src>` there.
+///
+/// When no profile is stored yet, the patch is applied to a default profile
+/// for the incoming community DID — keeping the imported `createdAt` — and
+/// the result is stored even if nothing differs from the defaults, because
+/// the community had no profile at all. This path used to store the import
+/// verbatim, which skipped every one of those caps: an import was the one way
+/// to publish a `javascript:` logo URL.
 async fn apply_profile_import(
     state: &AppState,
     incoming: CommunityProfile,
     current: Option<&CommunityProfile>,
 ) -> Result<Vec<String>, AppError> {
-    let Some(current) = current else {
-        // Fresh install — store the import verbatim and report every
-        // non-default-shaped field as changed.
-        let mut changed = Vec::new();
-        if !incoming.name.is_empty() {
-            changed.push("name".into());
+    let (mut updated, fresh) = match current {
+        Some(current) => (current.clone(), false),
+        None => {
+            let mut base = CommunityProfile::new(incoming.community_did.clone(), "");
+            base.created_at = incoming.created_at;
+            (base, true)
         }
-        if !incoming.description.is_empty() {
-            changed.push("description".into());
-        }
-        if incoming.logo_url.is_some() {
-            changed.push("logoUrl".into());
-        }
-        if incoming.public_url.is_some() {
-            changed.push("publicUrl".into());
-        }
-        if incoming.contact_email.is_some() {
-            changed.push("contactEmail".into());
-        }
-        if incoming.language != "en" {
-            changed.push("language".into());
-        }
-        if !incoming.extensions.is_null() {
-            changed.push("extensions".into());
-        }
-        store_profile(&state.community_ks, &incoming).await?;
-        return Ok(changed);
     };
-
-    // Existing profile — build a `CommunityProfileUpdate` from the
-    // import and let it diff + apply. This reuses the existing
-    // extension-size guard.
     let patch = CommunityProfileUpdate {
         name: Some(incoming.name),
         description: Some(incoming.description),
@@ -890,9 +876,8 @@ async fn apply_profile_import(
         personhood: Some(incoming.personhood),
         extensions: Some(incoming.extensions),
     };
-    let mut updated = current.clone();
     let changed = patch.apply(&mut updated)?;
-    if !changed.is_empty() {
+    if fresh || !changed.is_empty() {
         store_profile(&state.community_ks, &updated).await?;
     }
     Ok(changed)

@@ -504,14 +504,15 @@ context-scoped admin is admitted and a member refused. What differs:
   about 44 KiB worst case. An import whose profile is over those caps would
   have been refused by `CommunityProfileUpdate::apply` anyway — with one
   exception, below.
-- **One pre-existing gap recorded, not fixed.** When no profile is stored,
-  `apply_profile_import` writes the imported one verbatim instead of through
-  `CommunityProfileUpdate::apply`, so none of that function's caps apply —
-  including the `http(s)`-only `logoUrl`. Boot heals a missing profile whenever
-  `vtc_did` is configured (`server.rs`), so the path is reachable only on a VTC
-  with no identity yet. It is a validation gap in the import rather than the
-  transport, identical before and after this batch, and belongs in a change
-  about the import.
+- **One pre-existing gap recorded here, fixed separately.** When no profile was
+  stored, `apply_profile_import` wrote the imported one verbatim instead of
+  through `CommunityProfileUpdate::apply`, so none of that function's caps
+  applied — including the `http(s)`-only `logoUrl`. Boot heals a missing
+  profile whenever `vtc_did` is configured (`server.rs`), so the path was
+  reachable only on a VTC with no identity yet. It was a validation gap in the
+  import rather than the transport, so it was fixed in its own change: every
+  import now applies the patch, to a default profile when none is stored
+  (`an_import_with_no_stored_profile_meets_the_edit_caps`).
 
 **Batch 4 — the endorsement-type writes, and the console's first signed
 calls.** `vtc/endorsement-types/register/0.1` and
