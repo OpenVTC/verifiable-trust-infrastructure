@@ -47,7 +47,7 @@ pub struct ContextSecretsResultBody {
 }
 
 /// One private key, named by the verification method it backs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextSecretEntry {
     /// The verification method this key backs, as an absolute DID URL under
@@ -60,6 +60,17 @@ pub struct ContextSecretEntry {
     pub key_type: KeyType,
     /// The private key, multibase (Base58BTC) over multicodec-prefixed bytes.
     pub private_key_multibase: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ContextSecretEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextSecretEntry")
+            .field("key_id", &self.key_id)
+            .field("key_type", &self.key_type)
+            .field("private_key_multibase", &"<redacted>")
+            .finish()
+    }
 }
 
 impl From<SecretEntry> for ContextSecretEntry {

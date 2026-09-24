@@ -26,7 +26,7 @@ use crate::keys::KeyType;
 use crate::operations;
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateKeyRequest {
     pub key_type: KeyType,
     /// Mint a non-extractable internal key. Absent or `false` is today's
@@ -39,6 +39,21 @@ pub struct CreateKeyRequest {
     pub mnemonic: Option<String>,
     pub label: Option<String>,
     pub context_id: Option<String>,
+}
+
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for CreateKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateKeyRequest")
+            .field("key_type", &self.key_type)
+            .field("internal", &self.internal)
+            .field("derivation_path", &self.derivation_path)
+            .field("key_id", &self.key_id)
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .field("label", &self.label)
+            .field("context_id", &self.context_id)
+            .finish()
+    }
 }
 
 /// POST /keys — create a new key record. Auth: Admin or Initiator. Context-scoped.
@@ -256,9 +271,18 @@ pub async fn list_seeds(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RotateSeedRequest {
     pub mnemonic: Option<String>,
+}
+
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RotateSeedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RotateSeedRequest")
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// POST /keys/seeds/rotate — rotate the active seed, optionally supplying a mnemonic. Auth: Admin or Initiator.
@@ -477,7 +501,7 @@ pub async fn get_wrapping_key(
 ///
 /// [`SealedPayloadV1::RawPrivateKey`]:
 ///     vta_sdk::sealed_transfer::SealedPayloadV1::RawPrivateKey
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 #[derive(utoipa::ToSchema)]
 pub struct ImportKeyRestRequest {
@@ -488,6 +512,25 @@ pub struct ImportKeyRestRequest {
     pub private_key_jwe: Option<String>,
     pub label: Option<String>,
     pub context_id: Option<String>,
+}
+
+/// Written by hand so the wrapped private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ImportKeyRestRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportKeyRestRequest")
+            .field("key_type", &self.key_type)
+            .field(
+                "private_key_sealed",
+                &self.private_key_sealed.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "private_key_jwe",
+                &self.private_key_jwe.as_ref().map(|_| "<redacted>"),
+            )
+            .field("label", &self.label)
+            .field("context_id", &self.context_id)
+            .finish()
+    }
 }
 
 /// POST /keys/import — import an externally-created private key. Auth: Admin only.

@@ -35,7 +35,7 @@ pub struct DidSecretsBundle {
 }
 
 /// A single secret entry within a [`DidSecretsBundle`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SecretEntry {
     /// Verification method ID (e.g. `did:webvh:...#key-0`).
     pub key_id: String,
@@ -51,6 +51,17 @@ pub struct SecretEntry {
     ///
     /// Compatible with `Secret::from_multibase()` for direct use in DIDComm.
     pub private_key_multibase: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for SecretEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretEntry")
+            .field("key_id", &self.key_id)
+            .field("key_type", &self.key_type)
+            .field("private_key_multibase", &"<redacted>")
+            .finish()
+    }
 }
 
 impl DidSecretsBundle {

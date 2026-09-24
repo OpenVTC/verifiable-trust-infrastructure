@@ -78,7 +78,7 @@ pub struct AuthChallenge {
 }
 
 /// Parsed token bundle (+ session summary) from an `authenticate` response.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct AuthTokens {
     pub access_token: String,
     /// Token presentation scheme — almost always `"Bearer"`. The native layer
@@ -91,6 +91,24 @@ pub struct AuthTokens {
     pub acr: Option<String>,
     /// Authentication methods references (e.g. `["did"]`).
     pub amr: Vec<String>,
+}
+
+/// Written by hand so the access and refresh tokens never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for AuthTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthTokens")
+            .field("access_token", &"<redacted>")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("refresh_expires_in", &self.refresh_expires_in)
+            .field("acr", &self.acr)
+            .field("amr", &self.amr)
+            .finish()
+    }
 }
 
 /// The auth service's view of the holder, from a `whoami` response — the full

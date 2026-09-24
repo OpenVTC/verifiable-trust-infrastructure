@@ -225,13 +225,28 @@ struct TokenResponseWire {
 /// / `refresh_expires_in` are optional on the canonical shape, but the VTA
 /// flow relies on rotation, so [`TokenResponseWire::into_token_data`]
 /// rejects a bundle that omits them.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TokenBundleWire {
     access_token: String,
     expires_in: u64,
     refresh_token: Option<String>,
     refresh_expires_in: Option<u64>,
+}
+
+/// Written by hand so the access and refresh tokens never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for TokenBundleWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenBundleWire")
+            .field("access_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("refresh_expires_in", &self.refresh_expires_in)
+            .finish()
+    }
 }
 
 impl TokenResponseWire {

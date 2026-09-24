@@ -104,7 +104,7 @@ pub struct RecogniseResponse {
     pub data: RecogniseData,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct RecogniseData {
@@ -118,6 +118,18 @@ pub struct RecogniseData {
     pub foreign_issuer_did: String,
     /// Local role the foreign role mapped to.
     pub mapped_role: String,
+}
+
+/// Written by hand so the access token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RecogniseData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecogniseData")
+            .field("access_token", &"<redacted>")
+            .field("access_expires_at", &self.access_expires_at)
+            .field("foreign_issuer_did", &self.foreign_issuer_did)
+            .field("mapped_role", &self.mapped_role)
+            .finish()
+    }
 }
 
 /// `POST /v1/auth/recognise/challenge` — issue a single-use, TTL'd nonce the

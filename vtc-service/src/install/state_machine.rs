@@ -60,7 +60,7 @@ fn token_key(jti: &Uuid) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// Per-token state held in the `install` keyspace.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum InstallTokenState {
     /// Issued but not yet successfully consumed. `claimed_at` is set
@@ -115,6 +115,35 @@ pub enum InstallTokenState {
     },
 }
 
+/// Written by hand so the ephemeral signing key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for InstallTokenState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Issued {
+                exp,
+                cnonce,
+                ephemeral_signing_key: _,
+                claimed_at,
+                claim_secret_hash,
+                admin_did,
+            } => f
+                .debug_struct("Issued")
+                .field("exp", exp)
+                .field("cnonce", cnonce)
+                .field("ephemeral_signing_key", &"<redacted>")
+                .field("claimed_at", claimed_at)
+                .field("claim_secret_hash", claim_secret_hash)
+                .field("admin_did", admin_did)
+                .finish(),
+            Self::Consumed { at, admin_did } => f
+                .debug_struct("Consumed")
+                .field("at", at)
+                .field("admin_did", admin_did)
+                .finish(),
+        }
+    }
+}
+
 mod raw_bytes_b64 {
     use base64::Engine;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -138,7 +167,6 @@ mod raw_bytes_b64 {
 /// caller hands `ephemeral_signing_key` + `cnonce` to the WebAuthn
 /// route handler; on ceremony success the route calls
 /// [`InstallTokenStore::finish_claim`] to consume.
-#[derive(Debug)]
 pub struct StartClaimOutcome {
     pub ephemeral_signing_key: Zeroizing<[u8; 32]>,
     pub cnonce: [u8; 32],
@@ -149,6 +177,17 @@ pub struct StartClaimOutcome {
     /// `start_claim`, so a wrong code can't stamp the ceremony lock
     /// (P0.21). Retained here for diagnostics and store-level tests.
     pub claim_secret_hash: Option<String>,
+}
+
+/// Written by hand so the ephemeral signing key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for StartClaimOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartClaimOutcome")
+            .field("ephemeral_signing_key", &"<redacted>")
+            .field("cnonce", &self.cnonce)
+            .field("claim_secret_hash", &self.claim_secret_hash)
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------

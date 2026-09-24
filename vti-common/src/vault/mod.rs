@@ -425,10 +425,11 @@ pub struct StoredVaultEntry {
 ///
 /// Sensitive fields (`password`, `private_key`, `refresh_token`,
 /// `secure_notes`, `token`, etc.) MUST be zeroised by handlers as soon as
-/// their use is complete; this enum derives `Debug` for diagnostic
-/// convenience but production logs MUST NOT format `VaultSecret` via
-/// `{:?}` — the strings would leak straight in.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// their use is complete. Its `Debug` redacts the passwords, private keys,
+/// tokens, secure notes and every custom field's value; it still prints
+/// usernames, URLs and field names, so production logs should not format a
+/// `VaultSecret` at all.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum VaultSecret {
     // `rename_all = "camelCase"` on each variant aligns Rust's
@@ -530,6 +531,116 @@ pub enum VaultSecret {
     },
 }
 
+/// Written by hand so the passwords, private keys and tokens never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for VaultSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Password {
+                username,
+                password: _,
+                totp,
+                login_config,
+                secure_notes,
+                custom_fields,
+            } => f
+                .debug_struct("Password")
+                .field("username", username)
+                .field("password", &"<redacted>")
+                .field("totp", totp)
+                .field("login_config", login_config)
+                .field("secure_notes", &secure_notes.as_ref().map(|_| "<redacted>"))
+                .field("custom_fields", custom_fields)
+                .finish(),
+            Self::Passkey {
+                credential_id,
+                private_key: _,
+                algorithm,
+                rp_id,
+                user_handle,
+                secure_notes,
+            } => f
+                .debug_struct("Passkey")
+                .field("credential_id", credential_id)
+                .field("private_key", &"<redacted>")
+                .field("algorithm", algorithm)
+                .field("rp_id", rp_id)
+                .field("user_handle", user_handle)
+                .field("secure_notes", &secure_notes.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::OauthTokens {
+                provider,
+                refresh_token: _,
+                access_token,
+                access_token_expires_at,
+                scopes,
+                secure_notes,
+            } => f
+                .debug_struct("OauthTokens")
+                .field("provider", provider)
+                .field("refresh_token", &"<redacted>")
+                .field("access_token", &access_token.as_ref().map(|_| "<redacted>"))
+                .field("access_token_expires_at", access_token_expires_at)
+                .field("scopes", scopes)
+                .field("secure_notes", &secure_notes.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::DidSelfIssued {
+                did,
+                signing_key_id,
+                secure_notes,
+            } => f
+                .debug_struct("DidSelfIssued")
+                .field("did", did)
+                .field("signing_key_id", signing_key_id)
+                .field("secure_notes", &secure_notes.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::DidcommPeer {
+                peer_did,
+                signing_key_id,
+                secure_notes,
+            } => f
+                .debug_struct("DidcommPeer")
+                .field("peer_did", peer_did)
+                .field("signing_key_id", signing_key_id)
+                .field("secure_notes", &secure_notes.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::BearerToken {
+                token: _,
+                header_name,
+                header_prefix,
+                secure_notes,
+            } => f
+                .debug_struct("BearerToken")
+                .field("token", &"<redacted>")
+                .field("header_name", header_name)
+                .field("header_prefix", header_prefix)
+                .field("secure_notes", &secure_notes.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::SshKey {
+                private_key: _,
+                public_key,
+                comment,
+                passphrase,
+                secure_notes,
+            } => f
+                .debug_struct("SshKey")
+                .field("private_key", &"<redacted>")
+                .field("public_key", public_key)
+                .field("comment", comment)
+                .field("passphrase", &passphrase.as_ref().map(|_| "<redacted>"))
+                .field("secure_notes", &secure_notes.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::Custom {
+                fields,
+                secure_notes,
+            } => f
+                .debug_struct("Custom")
+                .field("fields", fields)
+                .field("secure_notes", &secure_notes.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
+}
+
 impl VaultSecret {
     /// Returns the [`SecretKind`] that matches this variant. The metadata
     /// view's `secret_kind` field MUST equal this on every persisted
@@ -558,7 +669,7 @@ impl VaultSecret {
 }
 
 /// RFC 6238 TOTP seed for entries that pair a TOTP with a password.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TotpSeed {
     /// Base32 (RFC 4648) shared secret.
@@ -569,6 +680,18 @@ pub struct TotpSeed {
     pub digits: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period: Option<u16>,
+}
+
+/// Written by hand so the TOTP shared secret never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for TotpSeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TotpSeed")
+            .field("secret", &"<redacted>")
+            .field("algorithm", &self.algorithm)
+            .field("digits", &self.digits)
+            .field("period", &self.period)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -658,7 +781,7 @@ pub enum PasswordLoginFormat {
 }
 
 /// Free-form user-defined field on Password / Custom variants.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomField {
     pub name: String,
@@ -667,6 +790,22 @@ pub struct CustomField {
     pub hidden: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<CustomFieldKind>,
+}
+
+/// Written by hand so a custom field's value never reaches a log: a derived
+/// `Debug` would print it. The value is redacted whether or not the field is
+/// marked `hidden` — a vault's free-form field is where a secret the other
+/// variants have no slot for ends up, and `hidden` is a display hint, not a
+/// classification.
+impl std::fmt::Debug for CustomField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomField")
+            .field("name", &self.name)
+            .field("value", &"<redacted>")
+            .field("hidden", &self.hidden)
+            .field("kind", &self.kind)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

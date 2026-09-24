@@ -838,7 +838,7 @@ pub struct AuthenticateInput {
 
 /// Inputs to `/auth/refresh` after the transport layer has
 /// verified the signer.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RefreshInput {
     pub refresh_token: String,
     /// Verified signer DID (DIDComm transports). REST transports
@@ -847,6 +847,16 @@ pub struct RefreshInput {
     /// when the transport offers no signer assertion (i.e. plain
     /// REST refresh, where the token itself is the only credential).
     pub signer_did: Option<String>,
+}
+
+/// Written by hand so the refresh token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RefreshInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshInput")
+            .field("refresh_token", &"<redacted>")
+            .field("signer_did", &self.signer_did)
+            .finish()
+    }
 }
 
 #[cfg(test)]

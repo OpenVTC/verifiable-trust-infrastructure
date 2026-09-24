@@ -53,7 +53,7 @@ pub(super) struct RestAuth {
 /// what every integration this workspace provisions actually has — signs by
 /// naming its key in [`verification_method`](Self::verification_method);
 /// see [`HolderKey`](crate::trust_task_sign::HolderKey).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClientIdentity {
     /// The producer's DID. Becomes the document's `issuer`, and must match the
     /// identity the transport authenticates as — item 6 rejects a document
@@ -72,6 +72,18 @@ pub struct ClientIdentity {
     /// decides what its keys are called and no amount of string manipulation
     /// can guess it.
     pub verification_method: Option<String>,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ClientIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientIdentity")
+            .field("client_did", &self.client_did)
+            .field("private_key_multibase", &"<redacted>")
+            .field("vta_did", &self.vta_did)
+            .field("verification_method", &self.verification_method)
+            .finish()
+    }
 }
 
 impl ClientIdentity {

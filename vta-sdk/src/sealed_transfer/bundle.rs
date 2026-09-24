@@ -8,7 +8,7 @@ use crate::did_secrets::DidSecretsBundle;
 
 /// A labeled key entry, used by the `AdminKeySet` payload variant for
 /// multi-admin / future expansion.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct LabeledKey {
@@ -18,6 +18,17 @@ pub struct LabeledKey {
     /// Optional key type tag for downstream interpretation (e.g. "ed25519").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_type: Option<String>,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for LabeledKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LabeledKey")
+            .field("label", &self.label)
+            .field("key_b64", &"<redacted>")
+            .field("key_type", &self.key_type)
+            .finish()
+    }
 }
 
 /// Tagged, extensible payload sealed inside a [`SealedBundle`].
@@ -138,7 +149,7 @@ pub struct IssuedCredentialBundle {
 /// `key_type` tag travels with the bytes so the server can reject a mismatch
 /// between the outer request's declared key type and what was actually
 /// sealed — a defence against a compromised client mis-declaring its key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct RawPrivateKey {
@@ -146,6 +157,16 @@ pub struct RawPrivateKey {
     pub key_type: String,
     /// Raw private key bytes, base64url-no-pad.
     pub key_bytes_b64: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RawPrivateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawPrivateKey")
+            .field("key_type", &self.key_type)
+            .field("key_bytes_b64", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A digital signature over the producer's pubkey + the bundle digest, by a

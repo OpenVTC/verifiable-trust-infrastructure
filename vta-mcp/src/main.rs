@@ -51,7 +51,7 @@ use guard::{ConfirmLevel, Guard};
 use observability::{LogFormat, Recorder};
 use server::{BridgeIdentity, VtaMcp};
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(
     name = "vta-mcp",
     about = "MCP server exposing a VTA's agent capabilities as tools"
@@ -170,6 +170,41 @@ struct Args {
     /// outlives the process.
     #[arg(long, env = "VTA_MCP_AUDIT_LOG")]
     audit_log: Option<PathBuf>,
+}
+
+/// Written by hand so the agent and holder signing keys never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("vta", &self.vta)
+            .field("service_name", &self.service_name)
+            .field("sessions_dir", &self.sessions_dir)
+            .field("url", &self.url)
+            .field(
+                "agent_secrets",
+                &self.agent_secrets.as_ref().map(|_| "<redacted>"),
+            )
+            .field("agent_did", &self.agent_did)
+            .field("agent_key", &self.agent_key.as_ref().map(|_| "<redacted>"))
+            .field("vta_did", &self.vta_did)
+            .field("mediator_did", &self.mediator_did)
+            .field("enroll", &self.enroll)
+            .field("device_name", &self.device_name)
+            .field("holder_did", &self.holder_did)
+            .field(
+                "holder_key",
+                &self.holder_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("holder_vm_fragment", &self.holder_vm_fragment)
+            .field("read_only", &self.read_only)
+            .field("allow", &self.allow)
+            .field("deny", &self.deny)
+            .field("confirm", &self.confirm)
+            .field("log_level", &self.log_level)
+            .field("log_format", &self.log_format)
+            .field("audit_log", &self.audit_log)
+            .finish()
+    }
 }
 
 #[tokio::main]

@@ -313,7 +313,7 @@ fn clear_dir_contents(dir: &Path) -> std::io::Result<()> {
 /// load-bearing — boxing just to mollify the lint would add
 /// indirection for no operational benefit.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SecretsBackendInput {
     /// OS keyring (libsecret / Keychain / Credential Vault). The
@@ -413,6 +413,88 @@ pub enum SecretsBackendInput {
     },
     /// Plaintext file under `data_dir`. **Not recommended** — for dev only.
     Plaintext,
+}
+
+/// Written by hand so the Vault token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for SecretsBackendInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Keyring { service } => {
+                f.debug_struct("Keyring").field("service", service).finish()
+            }
+            Self::ConfigSeed => f.write_str("ConfigSeed"),
+            Self::Aws {
+                region,
+                secret_name,
+            } => f
+                .debug_struct("Aws")
+                .field("region", region)
+                .field("secret_name", secret_name)
+                .finish(),
+            Self::Gcp {
+                project,
+                secret_name,
+            } => f
+                .debug_struct("Gcp")
+                .field("project", project)
+                .field("secret_name", secret_name)
+                .finish(),
+            Self::Azure {
+                vault_url,
+                secret_name,
+            } => f
+                .debug_struct("Azure")
+                .field("vault_url", vault_url)
+                .field("secret_name", secret_name)
+                .finish(),
+            Self::Vault {
+                addr,
+                secret_path,
+                kv_mount,
+                secret_key,
+                namespace,
+                auth_method,
+                k8s_role,
+                k8s_mount,
+                k8s_jwt_path,
+                token,
+                approle_role_id,
+                approle_secret_id,
+                approle_mount,
+                skip_verify,
+            } => f
+                .debug_struct("Vault")
+                .field("addr", addr)
+                .field("secret_path", secret_path)
+                .field("kv_mount", kv_mount)
+                .field("secret_key", secret_key)
+                .field("namespace", namespace)
+                .field("auth_method", auth_method)
+                .field("k8s_role", k8s_role)
+                .field("k8s_mount", k8s_mount)
+                .field("k8s_jwt_path", k8s_jwt_path)
+                .field("token", &token.as_ref().map(|_| "<redacted>"))
+                .field("approle_role_id", approle_role_id)
+                .field(
+                    "approle_secret_id",
+                    &approle_secret_id.as_ref().map(|_| "<redacted>"),
+                )
+                .field("approle_mount", approle_mount)
+                .field("skip_verify", skip_verify)
+                .finish(),
+            Self::Kubernetes {
+                secret_name,
+                namespace,
+                secret_key,
+            } => f
+                .debug_struct("Kubernetes")
+                .field("secret_name", secret_name)
+                .field("namespace", namespace)
+                .field("secret_key", secret_key)
+                .finish(),
+            Self::Plaintext => f.write_str("Plaintext"),
+        }
+    }
 }
 
 fn default_keyring_service() -> String {

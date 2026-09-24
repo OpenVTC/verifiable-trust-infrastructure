@@ -57,12 +57,22 @@ impl GuardState {
 }
 
 /// Response from a mnemonic export request.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct MnemonicExportResponse {
     /// The BIP-39 mnemonic phrase (24 words).
     pub mnemonic: String,
     /// Seconds remaining in the export window when the export was performed.
     pub window_remaining_secs: u64,
+}
+
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for MnemonicExportResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MnemonicExportResponse")
+            .field("mnemonic", &"<redacted>")
+            .field("window_remaining_secs", &self.window_remaining_secs)
+            .finish()
+    }
 }
 
 /// Status of the mnemonic export guard.

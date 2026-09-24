@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// (random 32 bytes, base64url-encoded), one-shot for GET,
 /// short-TTL, and bound to `bundle_id` server-side. Server stores
 /// only `SHA-256(token)` so a leaked DB doesn't leak the token.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BundleDescriptor {
@@ -64,6 +64,21 @@ pub struct BundleDescriptor {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Written by hand so the bearer token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for BundleDescriptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BundleDescriptor")
+            .field("bundle_id", &self.bundle_id)
+            .field("algorithm", &self.algorithm)
+            .field("transport_url", &self.transport_url)
+            .field("transport_token", &"<redacted>")
+            .field("expected_sha256", &self.expected_sha256)
+            .field("expected_size_bytes", &self.expected_size_bytes)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 fn default_stream() -> String {
     "stream".into()
 }
@@ -76,7 +91,7 @@ fn default_true() -> bool {
 
 /// `spec/vta/backup/initiate-export/1.0` payload.
 /// Auth: super-admin.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct InitiateExportBody {
@@ -94,6 +109,17 @@ pub struct InitiateExportBody {
     /// with `MalformedRequest`.
     #[serde(default = "default_stream")]
     pub algorithm: String,
+}
+
+/// Written by hand so the backup password never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for InitiateExportBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InitiateExportBody")
+            .field("password", &"<redacted>")
+            .field("include_audit", &self.include_audit)
+            .field("algorithm", &self.algorithm)
+            .finish()
+    }
 }
 
 /// `spec/vta/backup/initiate-export/1.0` response body.
@@ -169,7 +195,7 @@ pub struct InitiateImportResultBody {
 /// uploaded bytes after the client has POSTed them to the blob
 /// endpoint. Two-phase: `confirm: false` runs validation in preview
 /// mode (no state mutation), `confirm: true` commits.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct FinalizeImportBody {
@@ -192,6 +218,18 @@ pub struct FinalizeImportBody {
     /// [`FinalizeImportBody::replace_identity`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Written by hand so the backup password never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for FinalizeImportBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FinalizeImportBody")
+            .field("bundle_id", &self.bundle_id)
+            .field("password", &"<redacted>")
+            .field("confirm", &self.confirm)
+            .field("ext", &self.ext)
+            .finish()
+    }
 }
 
 /// The extension namespace this agent's own members live under.

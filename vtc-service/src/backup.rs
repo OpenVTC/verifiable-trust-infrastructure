@@ -105,7 +105,7 @@ pub struct EncryptionParams {
 
 /// Inner (encrypted) payload. A config snapshot, the signing key bundle,
 /// and a faithful raw dump of every backed-up keyspace.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BackupPayload {
     pub config: BackupConfig,
     /// Hex of the raw secret-store bytes (the encoded `VtcKeyBundle`).
@@ -113,6 +113,20 @@ pub struct BackupPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_bundle_hex: Option<String>,
     pub keyspaces: Vec<KeyspaceDump>,
+}
+
+/// Written by hand so the signing key bundle never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for BackupPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupPayload")
+            .field("config", &self.config)
+            .field(
+                "key_bundle_hex",
+                &self.key_bundle_hex.as_ref().map(|_| "<redacted>"),
+            )
+            .field("keyspaces", &self.keyspaces)
+            .finish()
+    }
 }
 
 /// One backed-up keyspace's full contents. Both key and value are
@@ -126,7 +140,7 @@ pub struct KeyspaceDump {
 /// The slice of config that travels with a backup so a restore onto a
 /// fresh install reconstitutes the VTC's identity. The secrets *backend*
 /// is deliberately not carried — the target's own backend is used.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct BackupConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vtc_did: Option<String>,
@@ -140,6 +154,23 @@ pub struct BackupConfig {
     pub messaging: Option<MessagingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jwt_signing_key: Option<String>,
+}
+
+/// Written by hand so the JWT signing key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for BackupConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupConfig")
+            .field("vtc_did", &self.vtc_did)
+            .field("vtc_name", &self.vtc_name)
+            .field("vta_did", &self.vta_did)
+            .field("public_url", &self.public_url)
+            .field("messaging", &self.messaging)
+            .field(
+                "jwt_signing_key",
+                &self.jwt_signing_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// Result of an import (or, with `confirm = false`, a preview).
