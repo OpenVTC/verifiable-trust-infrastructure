@@ -448,9 +448,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-admin"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca2229880e3ce3b11bd42962a14f24f4192ea701187556ed3539a5060434b8db"
+checksum = "e12415090819abfe88d0612de0833da90e0a71f385f8f2a9e21bb0ae9be52ba9"
 dependencies = [
  "affinidi-messaging-didcomm",
  "affinidi-messaging-sdk",
@@ -521,9 +521,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-tui"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36b1a843cabb739d4b44347704afcdebe6d585b4e903242d4d758c2de0c60a8a"
+checksum = "7969c263644c7a4aa160837773d7b1809ea752f5f9683371fdfb490bbb6784f4"
 dependencies = [
  "affinidi-messaging-mediator-admin",
  "chrono",
