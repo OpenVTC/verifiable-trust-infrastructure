@@ -1057,6 +1057,39 @@ pub async fn run(
             warn!(error = %e, "could not record the applied restore in the audit trail yet");
         }
 
+        // Key custody scan: report every derived key record whose path its
+        // context does not own (a record planted through the pre-FTL-29904
+        // `keys/create`, or carried in by a restore). Reports only. It never
+        // revokes, and the use-time check already makes such a record
+        // unusable. Spawned so the boot never waits on a keyspace walk.
+        {
+            let keys_ks = app_state.keys_ks.clone();
+            let contexts_ks = app_state.contexts_ks.clone();
+            let audit_sink = Arc::clone(&app_state.audit_sink);
+            tokio::spawn(async move {
+                match crate::operations::key_custody::scan_key_custody(
+                    &keys_ks,
+                    &contexts_ks,
+                    &audit_sink,
+                )
+                .await
+                {
+                    Ok(r) if r.violations.is_empty() => {
+                        info!(checked = r.checked, "key custody scan: no violations")
+                    }
+                    Ok(r) => tracing::error!(
+                        security_alert = true,
+                        checked = r.checked,
+                        violations = r.violations.len(),
+                        "key custody scan found key records whose derivation path \
+                         their context does not own; see the `key.custody_violation` \
+                         audit rows. They are refused at use, but review and revoke them"
+                    ),
+                    Err(e) => warn!(error = %e, "key custody scan failed"),
+                }
+            });
+        }
+
         // The tombstone sweeper takes a namespace's lock to reap it, so it must
         // hold the *same* map the request path writes through. Cloned from the
         // built `AppState` rather than injected through `AppStateParts`: adding

@@ -5,7 +5,7 @@
 //! (Application or higher) for sign.
 
 use super::helpers::TrustTaskOutcome;
-use crate::audit;
+
 use base64::Engine as _;
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -266,6 +266,7 @@ pub(super) async fn handle_export_secret(
     match operations::keys::get_key_secret(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
         &state.seed_store,
         &state.audit_sink,
         auth,
@@ -333,7 +334,8 @@ pub(super) async fn handle_sign(
     }
 }
 
-/// Handler for `keys/derive-and-sign/0.1`. Admin only.
+/// Handler for `keys/derive-and-sign/0.1`. Super-admin, path inside `m/26'/9'`: both
+/// enforced, and the signature audited, in the operation (`vta_keys::custody`).
 ///
 /// Ephemeral: derives at the requested BIP-32 path, signs, and returns the
 /// signature + derived public key without persisting a key record.
@@ -342,9 +344,6 @@ pub(super) async fn handle_derive_and_sign(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: DeriveAndSignBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -367,6 +366,7 @@ pub(super) async fn handle_derive_and_sign(
         &state.keys_ks,
         &state.seed_store,
         auth,
+        &state.audit_sink,
         &req.key_type,
         &req.derivation_path,
         &payload_bytes,
@@ -375,33 +375,13 @@ pub(super) async fn handle_derive_and_sign(
     )
     .await
     {
-        Ok(body) => {
-            // A signature is the most consequential thing this agent does with a key,
-            // and these two are the only signing paths that persist no key record — so
-            // without a line here, a derived-key signature leaves the agent with no
-            // evidence it ever happened. The derivation path is the resource: it is
-            // what identifies *which* key signed, and it is not itself secret.
-            if let Err(e) = audit::record_with_detail(
-                &state.audit_sink,
-                "keys.derive-and-sign",
-                &auth.did,
-                Some(&req.derivation_path),
-                "success",
-                Some(TRANSPORT_TRUST_TASK),
-                None,
-                Some(&format!("keyType={} alg={}", req.key_type, req.algorithm)),
-            )
-            .await
-            {
-                tracing::warn!(error = %e, "audit record failed for keys.derive-and-sign");
-            }
-            success_response(&doc, body)
-        }
+        Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
 
-/// Handler for `keys/derive-and-sign-document/0.1`. Admin only.
+/// Handler for `keys/derive-and-sign-document/0.1`. Super-admin, path inside
+/// `m/26'/9'`: enforced, and audited, in the operation.
 ///
 /// Attaches an `eddsa-jcs-2022` Data-Integrity proof to the document, signed as
 /// the key derived at the requested path — without persisting a key record.
@@ -410,23 +390,15 @@ pub(super) async fn handle_derive_and_sign_document(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: DeriveAndSignDocumentBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let audit_path = req.derivation_path.clone();
-    let audit_detail = format!(
-        "keyType={} proofPurpose={}",
-        req.key_type,
-        req.proof_purpose.as_deref().unwrap_or("assertionMethod")
-    );
     match operations::keys::derive_and_sign_document(
         &state.keys_ks,
         &state.seed_store,
         auth,
+        &state.audit_sink,
         &req.key_type,
         &req.derivation_path,
         req.document,
@@ -435,30 +407,7 @@ pub(super) async fn handle_derive_and_sign_document(
     )
     .await
     {
-        Ok(body) => {
-            // Sibling of `derive-and-sign` above, and the same reasoning. The
-            // document itself is deliberately not recorded — it is the caller's
-            // content, may carry anything, and the trail answers "which key
-            // signed, under what purpose", not "what did it say".
-            if let Err(e) = audit::record_with_detail(
-                &state.audit_sink,
-                "keys.derive-and-sign-document",
-                &auth.did,
-                Some(&audit_path),
-                "success",
-                Some(TRANSPORT_TRUST_TASK),
-                None,
-                Some(&audit_detail),
-            )
-            .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    "audit record failed for keys.derive-and-sign-document"
-                );
-            }
-            success_response(&doc, body)
-        }
+        Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }

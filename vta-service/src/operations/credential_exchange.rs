@@ -300,7 +300,9 @@ pub async fn seal_issued_credential(
 /// key.
 pub async fn build_credential_request_for_offer(
     keys_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     offer: &affinidi_openid4vci::CredentialOffer,
     subject_did: &str,
@@ -330,7 +332,8 @@ pub async fn build_credential_request_for_offer(
         })?;
 
     // ACL-gated holder key for the subject the credential will bind to.
-    let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject_did).await?;
+    let keys =
+        resolve_holder_keys(keys_ks, contexts_ks, seed_store, audit, auth, subject_did).await?;
     let kid = keys.signer.key_id().unwrap_or(subject_did).to_string();
 
     let header = serde_json::json!({
@@ -761,7 +764,9 @@ async fn present_mdoc(
 async fn present_matched_set(
     vault: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     matches: &[HeldMatch],
     query: &QueryBody,
@@ -804,7 +809,15 @@ async fn present_matched_set(
                         stored.id
                     ))
                 })?;
-            let keys = resolve_mdoc_device_keys(keys_ks, seed_store, auth, device_key_id).await?;
+            let keys = resolve_mdoc_device_keys(
+                keys_ks,
+                contexts_ks,
+                seed_store,
+                audit,
+                auth,
+                device_key_id,
+            )
+            .await?;
 
             let consent = consent::create(
                 vault,
@@ -847,7 +860,8 @@ async fn present_matched_set(
             // ACL-gated holder key for this credential's subject — resolved per
             // match so credentials in different contexts each present under the
             // right key.
-            let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject).await?;
+            let keys =
+                resolve_holder_keys(keys_ks, contexts_ks, seed_store, audit, auth, subject).await?;
 
             let consent = consent::create(
                 vault,
@@ -977,6 +991,7 @@ pub async fn present_query(
     keys_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     query: &QueryBody,
     verifier_did: &str,
@@ -1039,7 +1054,9 @@ pub async fn present_query(
     let present = present_matched_set(
         vault,
         keys_ks,
+        contexts_ks,
         seed_store,
+        audit,
         auth,
         &matched,
         query,
@@ -1242,7 +1259,9 @@ pub async fn defer_presentation(
 pub async fn approve_pending_presentation(
     vault: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     id: &str,
     status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
@@ -1283,7 +1302,9 @@ pub async fn approve_pending_presentation(
     let present = present_matched_set(
         vault,
         keys_ks,
+        contexts_ks,
         seed_store,
+        audit,
         auth,
         &matched,
         &record.query,
@@ -1421,16 +1442,48 @@ mod tests {
         (dir, store, ks)
     }
 
-    /// An empty contexts keyspace for present_query tests whose credentials are
-    /// unscoped (context_id = None), so the context-policy guardrail is a no-op.
-    fn fresh_contexts() -> (tempfile::TempDir, Store, KeyspaceHandle) {
+    /// A contexts keyspace for present_query tests. Holds only `acme`, the
+    /// context `holder_fixture`'s holder key is recorded under, with the base
+    /// that key's path lies in. Key custody refuses to derive a key whose
+    /// context does not exist or does not contain its path. The credentials
+    /// themselves are unscoped (context_id = None), so the context-policy
+    /// guardrail is a no-op.
+    async fn fresh_contexts() -> (tempfile::TempDir, Store, KeyspaceHandle) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
         let ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+        crate::contexts::store_context(
+            &ks,
+            &crate::contexts::ContextRecord {
+                id: "acme".into(),
+                name: "Acme".into(),
+                did: None,
+                description: None,
+                parent: None,
+                base_path: "m/26'/2'/0'".into(),
+                index: 0,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                context_policy: None,
+            },
+        )
+        .await
+        .unwrap();
         (dir, store, ks)
+    }
+
+    fn fresh_audit() -> (tempfile::TempDir, Store, vta_audit::SharedAuditSink) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let sink =
+            vta_audit::shared_keyspace_sink(store.keyspace(crate::keyspaces::AUDIT).unwrap());
+        (dir, store, sink)
     }
 
     /// Resource-bound present guardrail: a credential whose owning context
@@ -1442,7 +1495,8 @@ mod tests {
         use crate::acl::Role;
 
         let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
-        let (_cd, _cs, contexts_ks) = fresh_contexts();
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+        let (_ad, _as, audit) = fresh_audit();
 
         // holder_fixture stores exactly one membership credential (unscoped).
         // Bind it to context "staff", whose policy permits only a *different*
@@ -1496,6 +1550,7 @@ mod tests {
             &keys_ks,
             &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             &query,
             "did:web:stranger.example",
@@ -1515,6 +1570,7 @@ mod tests {
             &keys_ks,
             &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             &query,
             "did:web:approved.example",
@@ -2311,12 +2367,14 @@ mod tests {
         let query = membership_query();
 
         // Trusted verifier → present, end to end (key resolved + kb-jwt signed).
-        let (_cd, _cs, contexts_ks) = fresh_contexts();
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+        let (_ad, _as, audit) = fresh_audit();
         let outcome = present_query(
             &vault,
             &keys_ks,
             &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             &query,
             verifier,
@@ -2342,12 +2400,14 @@ mod tests {
         }
 
         // Untrusted verifier → deferral.
-        let (_cd, _cs, contexts_ks) = fresh_contexts();
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+        let (_ad, _as, audit) = fresh_audit();
         let deferred = present_query(
             &vault,
             &keys_ks,
             &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             &query,
             "did:web:stranger.example",
@@ -2432,12 +2492,15 @@ mod tests {
             purpose: "join the Acme community".into(),
         };
 
-        let (_cd, _cs, contexts_ks) = fresh_contexts();
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+
+        let (_ad, _as, audit) = fresh_audit();
         let outcome = present_query(
             &vault,
             &keys_ks,
             &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             &query,
             verifier,
@@ -2565,6 +2628,8 @@ mod tests {
         use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
         let (_dir, _vault, keys_ks, seed_store, subject_did) = holder_fixture().await;
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+        let (_ad, _as, audit) = fresh_audit();
         let auth = AuthClaims {
             role: Role::Admin,
             allowed_contexts: Vec::new(),
@@ -2587,7 +2652,9 @@ mod tests {
 
         let request = build_credential_request_for_offer(
             &keys_ks,
+            &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             &offer,
             &subject_did,
@@ -2647,6 +2714,8 @@ mod tests {
         use crate::acl::Role;
 
         let (_dir, _vault, keys_ks, seed_store, subject_did) = holder_fixture().await;
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+        let (_ad, _as, audit) = fresh_audit();
         let auth = AuthClaims {
             role: Role::Admin,
             allowed_contexts: Vec::new(),
@@ -2660,7 +2729,9 @@ mod tests {
 
         let err = build_credential_request_for_offer(
             &keys_ks,
+            &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             &offer,
             &subject_did,
@@ -2689,12 +2760,14 @@ mod tests {
         let query = membership_query();
 
         // 1. Untrusted verifier defers → no presentation yet, but a pending record.
-        let (_cd, _cs, contexts_ks) = fresh_contexts();
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+        let (_ad, _as, audit) = fresh_audit();
         let outcome = present_query(
             &vault,
             &keys_ks,
             &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             &query,
             verifier,
@@ -2726,10 +2799,19 @@ mod tests {
         assert_eq!(list[0].requested, requested);
 
         // 2. Out-of-band approval mints consent + re-presents.
-        let present =
-            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", None, now)
-                .await
-                .expect("approve");
+        let present = approve_pending_presentation(
+            &vault,
+            &keys_ks,
+            &contexts_ks,
+            &seed_store,
+            &audit,
+            &auth,
+            "req-1",
+            None,
+            now,
+        )
+        .await
+        .expect("approve");
         // vp_token is the OID4VP DCQL map keyed by credential-query id.
         let token = present.vp_token["membership"]
             .as_str()
@@ -2745,10 +2827,19 @@ mod tests {
             pending::get(&vault, "req-1").await.unwrap().is_none(),
             "approved record is deleted, not left as an Approved tombstone"
         );
-        let twice =
-            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", None, now)
-                .await
-                .unwrap_err();
+        let twice = approve_pending_presentation(
+            &vault,
+            &keys_ks,
+            &contexts_ks,
+            &seed_store,
+            &audit,
+            &auth,
+            "req-1",
+            None,
+            now,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(twice, AppError::NotFound(_)), "{twice:?}");
     }
 
@@ -2757,6 +2848,8 @@ mod tests {
         use crate::acl::Role;
 
         let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+        let (_ad, _as, audit) = fresh_audit();
         let verifier = "did:web:stranger.example";
         let now = Utc::now();
         let query = membership_query();
@@ -2786,10 +2879,19 @@ mod tests {
             allowed_contexts: Vec::new(),
             ..Default::default()
         };
-        let err =
-            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-2", None, now)
-                .await
-                .unwrap_err();
+        let err = approve_pending_presentation(
+            &vault,
+            &keys_ks,
+            &contexts_ks,
+            &seed_store,
+            &audit,
+            &auth,
+            "req-2",
+            None,
+            now,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
     }
 
@@ -2858,6 +2960,8 @@ mod tests {
         use crate::acl::Role;
 
         let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
+        let (_cd, _cs, contexts_ks) = fresh_contexts().await;
+        let (_ad, _as, audit) = fresh_audit();
         let query = membership_query();
         let created = Utc::now() - chrono::Duration::hours(48);
 
@@ -2886,7 +2990,9 @@ mod tests {
         let err = approve_pending_presentation(
             &vault,
             &keys_ks,
+            &contexts_ks,
             &seed_store,
+            &audit,
             &auth,
             "req-3",
             None,

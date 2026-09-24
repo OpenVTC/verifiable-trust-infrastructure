@@ -272,6 +272,7 @@ pub async fn build_did_secrets_bundle(
             let secret = super::keys::get_key_secret(
                 deps.keys_ks,
                 deps.imported_ks,
+                deps.contexts_ks,
                 deps.seed_store,
                 deps.audit,
                 auth,
@@ -338,6 +339,7 @@ pub async fn credential_from_key_offline(
     let secret = super::keys::get_key_secret(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         auth,

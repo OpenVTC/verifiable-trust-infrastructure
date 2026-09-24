@@ -599,6 +599,7 @@ pub async fn provision_integration(
         let signing_secret_resp = super::keys::get_key_secret(
             &state.keys_ks,
             &state.imported_ks,
+            &state.contexts_ks,
             &state.seed_store,
             &state.audit,
             auth,
@@ -609,6 +610,7 @@ pub async fn provision_integration(
         let ka_secret_resp = super::keys::get_key_secret(
             &state.keys_ks,
             &state.imported_ks,
+            &state.contexts_ks,
             &state.seed_store,
             &state.audit,
             auth,
@@ -658,6 +660,7 @@ pub async fn provision_integration(
             let resp = super::keys::get_key_secret(
                 &state.keys_ks,
                 &state.imported_ks,
+                &state.contexts_ks,
                 &state.seed_store,
                 &state.audit,
                 auth,

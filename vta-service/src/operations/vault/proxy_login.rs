@@ -72,6 +72,7 @@ pub(crate) async fn proxy_login(
     vault_ks: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
     seed_store: &dyn SeedStore,
     vta_did: &str,
@@ -101,9 +102,11 @@ pub(crate) async fn proxy_login(
             let signing_key = super::load_signing_key_by_id(
                 keys_ks,
                 imported_ks,
+                contexts_ks,
                 seed_store,
                 audit,
                 signing_key_id,
+                &stored.entry.context_id,
             )
             .await?;
             let iat = chrono::Utc::now().timestamp().max(0) as u64;

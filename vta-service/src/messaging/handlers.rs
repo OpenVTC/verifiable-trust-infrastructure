@@ -448,6 +448,7 @@ didcomm_handler!(
     |s, auth, body| operations::keys::get_key_secret(
         &s.keys_ks,
         &s.imported_ks,
+        &s.contexts_ks,
         &s.seed_store,
         &s.audit_sink,
         &auth,
@@ -490,16 +491,20 @@ didcomm_handler!(
 // Seed management
 // ---------------------------------------------------------------------------
 
+// Seed state is instance-wide: both operations require a super-admin and
+// enforce it themselves, auditing a refusal (FTL-29904). `Gate::None` hands
+// them the authenticated sender. `Gate::Admin` here was the DIDComm half of
+// that defect: it checks the role, not the scope.
 didcomm_handler!(
     handle_list_seeds,
-    Gate::Admin,
+    Gate::None,
     seed_management::LIST_SEEDS_RESULT,
-    |s, _auth| operations::seeds::list_seeds(&s.keys_ks, "didcomm").await
+    |s, auth| operations::seeds::list_seeds(&s.keys_ks, &auth, &s.audit_sink, "didcomm").await
 );
 
 didcomm_handler!(
     handle_rotate_seed,
-    Gate::Admin,
+    Gate::None,
     seed_management::ROTATE_SEED_RESULT,
     seed_management::rotate::RotateSeedBody,
     |s, auth, body| operations::seeds::rotate_seed(
@@ -507,7 +512,7 @@ didcomm_handler!(
         &s.imported_ks,
         &s.seed_store,
         &s.audit_sink,
-        &auth.did,
+        &auth,
         body.mnemonic.as_deref(),
         "didcomm",
     )
@@ -1877,6 +1882,7 @@ pub async fn handle_step_up_approve(
         operations::step_up_approval::load_vta_key0_signing_key(
             &state.keys_ks,
             &state.imported_ks,
+            &state.contexts_ks,
             &*state.seed_store,
             &state.audit_sink,
             &vta_did,
@@ -1996,7 +2002,9 @@ pub async fn handle_credential_offer(
     let request = app_try!(
         operations::credential_exchange::build_credential_request_for_offer(
             &app_state.keys_ks,
+            &app_state.contexts_ks,
             &app_state.seed_store,
+            &app_state.audit_sink,
             &auth,
             &body.credential_offer,
             &subject_did,
@@ -2062,6 +2070,7 @@ pub async fn handle_credential_query(
             &app_state.keys_ks,
             &app_state.contexts_ks,
             &app_state.seed_store,
+            &app_state.audit_sink,
             &auth,
             &body,
             &verifier_did,

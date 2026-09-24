@@ -144,7 +144,9 @@ pub async fn present(
     // who the room granted to, so that is the key that may narrow it.
     let keys = crate::operations::holder_keys::resolve_holder_keys(
         &state.keys_ks,
+        &state.contexts_ks,
         &state.seed_store,
+        &state.audit_sink,
         auth,
         root.subject(),
     )

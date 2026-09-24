@@ -217,6 +217,7 @@ pub(crate) async fn load_vta_issuer_secret(
     let resp = crate::operations::keys::get_key_secret_internal(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
         &*state.seed_store,
         &state.audit_sink,
         authority,

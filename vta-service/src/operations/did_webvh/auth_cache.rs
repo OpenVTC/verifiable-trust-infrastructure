@@ -223,6 +223,7 @@ pub async fn publish_log_to_server(
     let identity = load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did,
@@ -259,6 +260,7 @@ pub async fn delete_log_on_server(
     let identity = load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did,
@@ -297,6 +299,7 @@ pub async fn register_did_atomic_on_server(
     let identity = load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did,
@@ -338,6 +341,7 @@ pub async fn agent_name_op_on_server(
     let identity = load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did,
@@ -374,6 +378,7 @@ pub async fn list_agent_names_on_server(
     let identity = load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did,
@@ -409,6 +414,7 @@ pub async fn check_agent_name_on_server(
     let identity = load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did,
@@ -447,6 +453,7 @@ pub async fn check_agent_name_on_server(
 pub async fn load_vta_webvh_signing_identity(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     audit: &vta_audit::SharedAuditSink,
     vta_did: &str,
@@ -456,6 +463,7 @@ pub async fn load_vta_webvh_signing_identity(
     let resp = crate::operations::keys::get_key_secret_internal(
         keys_ks,
         imported_ks,
+        contexts_ks,
         seed_store,
         audit,
         authority,

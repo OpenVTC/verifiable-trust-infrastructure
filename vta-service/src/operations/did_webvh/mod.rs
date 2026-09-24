@@ -79,8 +79,6 @@ use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use vta_support::version_time::next_version_time;
 use zeroize::Zeroize;
 
-use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
-
 /// Shared dependency bundle for the WebVH DID-management operations
 /// (`delete_did_webvh`, `rotate_did_webvh_keys`, `register_did_with_server`,
 /// `list_webvh_server_domains`) — P2.5.
@@ -694,7 +692,9 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
 async fn load_key_as_secret(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
+    audit: &vta_audit::SharedAuditSink,
     key_id: &str,
     expected_type: KeyType,
     auth: &AuthClaims,
@@ -769,21 +769,22 @@ async fn load_key_as_secret(
             secret_bytes.zeroize();
             priv_mb
         }
+        // Through key custody: `key_id` is caller-supplied, so a record whose
+        // path lies outside its context's base must not authorise a DID
+        // (`vta_keys::custody` rule 6).
         KeyOrigin::Derived => {
-            let seed = load_seed_bytes(keys_ks, seed_store, record.seed_id)
-                .await
-                .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-                AppError::Internal(format!("failed to create BIP-32 root key: {e}"))
-            })?;
-            let derivation_path: DerivationPath = record
-                .derivation_path
-                .parse()
-                .map_err(|e| AppError::Internal(format!("invalid derivation path: {e}")))?;
-            let derived_key = bip32
-                .derive(&derivation_path)
-                .map_err(|e| AppError::Internal(format!("key derivation failed: {e}")))?;
-            encode_private_multibase(&KeyType::Ed25519, derived_key.signing_key.as_bytes())
+            let key = crate::operations::key_custody::derive_record_key(
+                contexts_ks,
+                keys_ks,
+                seed_store,
+                audit,
+                &auth.did,
+                &record,
+                "did-webvh",
+            )
+            .await?;
+            let bytes = key.ed25519_signing_key_bytes()?;
+            encode_private_multibase(&KeyType::Ed25519, bytes.as_slice())
         }
     };
 
@@ -838,6 +839,7 @@ fn document_has_didcomm_service(doc: &serde_json::Value) -> bool {
 async fn authenticated_server_transport<'a>(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     audit: &vta_audit::SharedAuditSink,
     webvh_ks: &KeyspaceHandle,
@@ -858,6 +860,7 @@ async fn authenticated_server_transport<'a>(
     let identity = auth_cache::load_vta_webvh_signing_identity(
         keys_ks,
         imported_ks,
+        contexts_ks,
         seed_store,
         audit,
         vta_did,
@@ -1183,7 +1186,9 @@ pub async fn create_did_webvh(
         let (mut signing_secret, signing_pub, signing_record) = load_key_as_secret(
             keys_ks,
             imported_ks,
+            contexts_ks,
             seed_store,
+            audit,
             signing_key_id,
             KeyType::Ed25519,
             auth,
@@ -1201,7 +1206,9 @@ pub async fn create_did_webvh(
                 let (ka_secret, ka_pub, ka_record) = load_key_as_secret(
                     keys_ks,
                     imported_ks,
+                    contexts_ks,
                     seed_store,
+                    audit,
                     ka_key_id,
                     KeyType::X25519,
                     auth,
@@ -1357,6 +1364,7 @@ pub async fn create_did_webvh(
         let transport = authenticated_server_transport(
             keys_ks,
             imported_ks,
+            contexts_ks,
             seed_store,
             audit,
             webvh_ks,
@@ -1814,6 +1822,7 @@ pub async fn create_did_webvh(
         let transport = authenticated_server_transport(
             keys_ks,
             imported_ks,
+            contexts_ks,
             seed_store,
             audit,
             webvh_ks,

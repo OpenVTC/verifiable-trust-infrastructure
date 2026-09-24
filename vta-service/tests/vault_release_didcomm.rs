@@ -90,7 +90,13 @@ async fn seed_entry(mock: &MockVta, id: &str, context_id: &str, login_url: &str)
 /// `vault/sign-trust-task` refuses a password entry outright (`notSignable`):
 /// there is no principal to sign as. Only the DID-bearing kinds have one, so
 /// the signing path needs its own entry rather than a flag on the first.
-async fn seed_signing_entry(mock: &MockVta, id: &str, context_id: &str, did: &str) {
+async fn seed_signing_entry(
+    mock: &MockVta,
+    id: &str,
+    context_id: &str,
+    did: &str,
+    signing_key_id: &str,
+) {
     use vti_common::vault::{
         SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultSecret, VaultStatus,
         put_stored_vault_entry,
@@ -128,7 +134,7 @@ async fn seed_signing_entry(mock: &MockVta, id: &str, context_id: &str, did: &st
         },
         secret: VaultSecret::DidSelfIssued {
             did: did.to_string(),
-            signing_key_id: format!("{did}#key-0"),
+            signing_key_id: signing_key_id.to_string(),
             secure_notes: None,
         },
     };
@@ -165,9 +171,19 @@ async fn release_paths_seal_an_answer_to_the_caller() {
         &format!("{}/login", third_party.uri()),
     )
     .await;
-    // The VTA's own DID is the principal: it holds the key, so it is the only
-    // identity this fixture can actually sign as.
-    seed_signing_entry(&mock, "sign-cov-1", "ctx1", mock.vta_did()).await;
+    // The principal is a key minted *in the entry's context*. It used to be the
+    // VTA's own DID and `#key-0`, which is exactly what key custody rule 7 now
+    // refuses: a vault entry in `ctx1` must not make the VTA sign as itself.
+    let signer = client
+        .create_key(
+            vta_sdk::client::CreateKeyRequest::new(vta_sdk::keys::KeyType::Ed25519)
+                .context("ctx1")
+                .label("vault signing coverage"),
+        )
+        .await
+        .expect("mint a ctx1 signing key");
+    let principal = format!("did:key:{}", signer.public_key);
+    seed_signing_entry(&mock, "sign-cov-1", "ctx1", &principal, &signer.key_id).await;
 
     client
         .dispatch_trust_task(
@@ -201,7 +217,7 @@ async fn release_paths_seal_an_answer_to_the_caller() {
                     // Must equal the entry's `principalDid`: the VTA signs
                     // *as* that principal, so a document claiming a different
                     // issuer would carry a signature that contradicts it.
-                    "issuer": mock.vta_did(),
+                    "issuer": principal,
                     "recipient": mock.vta_did(),
                     "issuedAt": "2026-01-01T00:00:00Z",
                     "payload": {},

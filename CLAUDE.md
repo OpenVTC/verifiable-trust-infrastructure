@@ -724,7 +724,12 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **What**: Remote signing without key export.
 - **Endpoint**: `POST /keys/{key_id}/sign` — payload + algorithm
   (EdDSA or ES256). Key derived BIP-32 → signature → memory zeroized.
+  Derivation goes through `key_custody::derive_record_key`, which refuses a
+  record whose path is outside its context's base.
 - **DIDComm**: `key-management/1.0/sign-request`.
+- **Delegated identities**: `keys/derive-and-sign*` signs as a path without a
+  key record. Super-admin only, confined to `m/26'/9'`, audited with a digest
+  of what was signed.
 
 ### Approvals + task consent (DTTE)
 - **What**: The single answer to "does this operation need an additional
@@ -974,6 +979,22 @@ These are load-bearing — know they exist before adjusting nearby code.
   built on them — and match on the `ActScope`. Same shape as the
   `ApproveScope` axis beside it in `vta-sdk/src/acl.rs`: act vs confer.
   See `docs/05-design-notes/acl-scope-semantics.md`.
+- **Key custody: choosing a derivation path is holding a key.** Every key is
+  a pure function of the seed and a path, so a gate that checks the caller's
+  context but lets the caller name the path (or the key id) gates nothing.
+  FTL-29904 found four holes of this kind: role-only seed rotation,
+  caller-chosen paths in `keys/create`, `derive-and-sign` at any path, and
+  vault signing with a caller-named key. Network-reachable code reaches key
+  material **only** through `vta_service::operations::key_custody`
+  (`derive_record_key`, `authorize_explicit_key_path`,
+  `derive_delegated_identity`, `require_referenced_key_in_scope`,
+  `require_instance_authority`). Seed operations are super-admin only, gated
+  in the *operation* (not the transport) so REST, Trust Task and DIDComm share
+  one audited refusal. `derive-and-sign*` is confined to `m/26'/9'`. Every
+  refusal is audited and logged with `security_alert = true`.
+  `tests/key_custody_census.rs` pins every raw `load_seed_bytes` /
+  `from_seed` / `seed_store.get()` call site. Rules: `vta_keys::custody`
+  module docs; rationale: `docs/05-design-notes/key-custody.md`.
 - **Rate limit** on all unauth routes, per source IP
   (`vta-service/src/routes/rate_limit.rs`), in separate buckets: `auth`
   (auth/bootstrap/attestation, `[server] rate_limit_interval_secs` /
