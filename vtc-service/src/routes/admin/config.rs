@@ -68,6 +68,7 @@ pub struct PatchResponse {
 /// One rejected key + the reason. Surfaced to the caller so the
 /// admin UX can present a meaningful error inline.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = ConfigRejectedKey)]
 pub struct RejectedKey {
     pub key: String,
     pub reason: String,
@@ -484,6 +485,7 @@ pub struct ConfigExportDocument {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = ConfigExportResponse)]
 pub struct ExportResponse {
     pub document: ConfigExportDocument,
 }
@@ -531,6 +533,7 @@ pub async fn export_config(
 /// and previewed loses a round-trip, where the reverse has already
 /// overwritten a live community's configuration.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = ConfigImportRequest)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImportRequest {
     pub document: ConfigExportDocument,

@@ -168,6 +168,7 @@ async fn take_challenge(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = PersonhoodChallengeResponse)]
 pub struct ChallengeResponse {
     pub challenge_id: Uuid,
     pub expires_at: DateTime<Utc>,
@@ -582,6 +583,7 @@ pub(crate) async fn assert_inner(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = PersonhoodRevokeResponse)]
 pub struct RevokeResponse {
     pub did: String,
     pub personhood: bool,

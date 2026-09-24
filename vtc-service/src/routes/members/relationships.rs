@@ -33,6 +33,7 @@ const MAX_LIMIT: usize = 200;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema, utoipa::IntoParams)]
+#[schema(as = MemberRelationshipListQuery)]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,

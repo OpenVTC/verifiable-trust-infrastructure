@@ -300,6 +300,7 @@ pub async fn list(
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = InvitationRevokeResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeResponse {
     pub id: String,

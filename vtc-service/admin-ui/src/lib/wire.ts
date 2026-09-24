@@ -2222,6 +2222,81 @@ export interface components {
         ActiveBindingsResponse: {
             bindings: components["schemas"]["ActiveBinding"][];
         };
+        AdminBootstrapRequest: {
+            setupSessionToken: string;
+        };
+        /**
+         * @description `POST /v1/auth/passkey-login/finish`.
+         *
+         *     Verifies the WebAuthn assertion, looks up the registered
+         *     admin DID by credential ID, and mints the cookie session.
+         *     Sets the same `vtc_admin_session` + `csrf` cookies as
+         *     `admin_session` does for the bearer-token bridge. Returns the
+         *     bearer token in the body for clients that want to also use it
+         *     programmatically.
+         */
+        AdminPasskeyLoginFinishRequest: {
+            auth_id: string;
+            credential: Record<string, never>;
+        };
+        /**
+         * @description Request body for `passkey-login/start`, per
+         *     `spec/auth/passkey/login/start/0.2`.
+         *
+         *     Entirely optional — the admin SPA's login posts no body at all, which reads
+         *     as `purpose: login`, the pre-existing behaviour.
+         */
+        AdminPasskeyLoginStartRequest: {
+            /**
+             * @description Vendor-namespaced extensions per SPEC.md §4.5.1. Accepted and ignored,
+             *     which is what the framework asks of a consumer that defines no
+             *     extensions — the field exists so `deny_unknown_fields` doesn't reject a
+             *     spec-conformant producer that sends one.
+             */
+            ext?: Record<string, never>;
+            /**
+             * @description `login` (default) issues a new session; `stepUp` elevates the caller's
+             *     existing one. The two differ in more than bookkeeping: a step-up must be
+             *     authenticated, and challenges **only the caller's own** credentials, so
+             *     another admin's passkey cannot satisfy it.
+             */
+            purpose?: string;
+            /**
+             * @description The VID the producer intends to authenticate as. Optional — omit for
+             *     the usernameless / discoverable-credential flow the admin SPA uses.
+             *
+             *     When given it is **honoured, not noted**: a login challenge is narrowed
+             *     to that subject's credentials, and a step-up that names anyone other
+             *     than the authenticated session's subject is refused rather than quietly
+             *     answered for the session holder.
+             */
+            subject?: string | null;
+        };
+        /**
+         * @description `POST /v1/auth/passkey-login/start`.
+         *
+         *     Browser-friendly login: the admin SPA submits no body, the
+         *     daemon returns a WebAuthn assertion challenge across every
+         *     registered passkey (discoverable login — the user picks their
+         *     device, the browser chooses the matching credential). Modelled
+         *     on `affinidi-webvh-service::login_start`.
+         *
+         *     Unauthenticated by design: the eventual `finish` ceremony
+         *     proves possession of an enrolled credential, which is the auth.
+         *
+         *     The same canonical task also serves **AAL step-up**, selected by
+         *     [`purpose`](PasskeyLoginStartRequest::purpose) — see that field.
+         */
+        AdminPasskeyLoginStartResponse: {
+            authId: string;
+            /**
+             * @description The value for `navigator.credentials.get({ publicKey: … })` — the
+             *     inner options, not webauthn-rs's `{publicKey: …}` wrapper. See
+             *     `admin::passkeys::RegisterStartResponse::options` for why the wrapper
+             *     went.
+             */
+            options: Record<string, never>;
+        };
         /** @description Request body for [`admin_session`]. */
         AdminSessionRequest: {
             /**
@@ -2400,9 +2475,6 @@ export interface components {
              */
             revoked: number;
         };
-        BootstrapRequest: {
-            setupSessionToken: string;
-        };
         BootstrapResponse: {
             adminDid: string;
             /**
@@ -2476,19 +2548,31 @@ export interface components {
         ChallengeRequest: {
             subject: string;
         };
+        /**
+         * @description Server responds from `POST /auth/challenge`.
+         *
+         *     Canonical shape: `{ challenge, sessionId, expiresAt }`.
+         *     `teeAttestation` is a VTA-specific top-level field documented as
+         *     a vendor extension — Nitro-Enclave deployments populate it; non-
+         *     TEE deployments omit it.
+         */
         ChallengeResponse: {
-            /** Format: uuid */
-            challengeId: string;
-            /** Format: date-time */
+            /** @description base64url-encoded one-time nonce. */
+            challenge: string;
+            /** @description ISO-8601 timestamp after which the challenge MUST NOT be honored. */
             expiresAt: string;
             /**
-             * @description Vendor-namespaced extension members (SPEC §4.5.1). Carries
-             *     [`match_code::MATCH_CODE_EXT_KEY`] — the eight characters the
-             *     admin and the member read to each other to confirm they are
-             *     looking at the same ceremony. See [`crate::members::match_code`]
-             *     for why the code rides here rather than as a top-level field.
+             * @description Opaque session identifier the producer echoes into the matching
+             *     `authenticate` document.
              */
-            ext: components["schemas"]["Value"];
+            sessionId: string;
+            /**
+             * @description VTA-specific (optional): TEE attestation evidence bound to the
+             *     challenge nonce. Present when the VTA is running inside a Nitro
+             *     Enclave; proves the challenge was generated within the trusted
+             *     boundary. Absent for non-TEE deployments.
+             */
+            teeAttestation?: unknown;
         };
         ClaimFinishRequest: {
             installToken: string;
@@ -2668,6 +2752,41 @@ export interface components {
             schemaVersion: number;
         };
         /**
+         * @description `POST /v1/admin/config/export` response — canonical
+         *     `vtc/config/export/0.1#response`. The document is returned under a
+         *     named member rather than as the bare body: the registry response
+         *     convention requires `additionalProperties: false` plus an `ext`
+         *     extension point, and neither attaches to a bare `$ref`.
+         */
+        ConfigExportResponse: {
+            document: components["schemas"]["ConfigExportDocument"];
+        };
+        /**
+         * @description `POST /v1/admin/config/import` request — canonical
+         *     `vtc/config/import/0.1`.
+         *
+         *     `confirm` rides in the **payload**, not a query string: a Trust
+         *     Task is the same interface over REST, DIDComm and TSP, and only
+         *     one of those three has a query string to put it in.
+         *
+         *     It defaults to `false` because the safe direction of a default is
+         *     the one whose mistake is recoverable — a caller who meant to apply
+         *     and previewed loses a round-trip, where the reverse has already
+         *     overwritten a live community's configuration.
+         */
+        ConfigImportRequest: {
+            confirm?: boolean;
+            document: components["schemas"]["ConfigExportDocument"];
+        };
+        /**
+         * @description One rejected key + the reason. Surfaced to the caller so the
+         *     admin UX can present a meaningful error inline.
+         */
+        ConfigRejectedKey: {
+            key: string;
+            reason: string;
+        };
+        /**
          * @description Where the **prior** value came from in the four-layer overlay.
          *     Mirrors the variant on `vti_common::audit::ConfigSource` (M0.1.5).
          * @enum {string}
@@ -2703,6 +2822,26 @@ export interface components {
             lastUsedAt?: string | null;
             /** Format: date-time */
             revokedAt?: string | null;
+        };
+        ConsoleKeyListResponse: {
+            /**
+             * @description The caller's own console keys, newest first, revoked ones included so
+             *     an operator can see that a browser was disowned rather than never
+             *     enrolled.
+             */
+            consoleKeys: components["schemas"]["ConsoleKey"][];
+        };
+        ConsoleKeyRevokeResponse: {
+            consoleDid: string;
+            /**
+             * @description How many of the owning admin's console keys are still active. Zero is a
+             *     legitimate state — unlike a passkey, whose last one is protected,
+             *     because losing every console key costs an operator the *signed* door
+             *     and not the door: the bearer routes and the passkey login are untouched.
+             */
+            remainingActive: number;
+            /** Format: date-time */
+            revokedAt: string;
         };
         /**
          * @description Canonical `acl/grant` request: the entry the maintainer should hold
@@ -2822,9 +2961,6 @@ export interface components {
          * @enum {string}
          */
         Decision: "approved" | "rejected";
-        DeleteResponse: {
-            id: string;
-        };
         DetachPersonaBody: {
             pop?: null | components["schemas"]["Value"];
         };
@@ -3085,6 +3221,12 @@ export interface components {
         EndorsementEnvelope: {
             endorsement: components["schemas"]["EndorsementRow"];
         };
+        EndorsementRevokeResponse: {
+            endorsementId: string;
+            revocation: components["schemas"]["RevocationDetail"];
+            /** Format: int32 */
+            statusListIndex: number;
+        };
         /**
          * @description One endorsement as the canonical `Endorsement` component names it.
          *
@@ -3166,16 +3308,6 @@ export interface components {
              *     string is treated as absent.
              */
             label?: string | null;
-        };
-        /**
-         * @description `POST /v1/admin/config/export` response — canonical
-         *     `vtc/config/export/0.1#response`. The document is returned under a
-         *     named member rather than as the bare body: the registry response
-         *     convention requires `additionalProperties: false` plus an `ext`
-         *     extension point, and neither attaches to a bare `$ref`.
-         */
-        ExportResponse: {
-            document: components["schemas"]["ConfigExportDocument"];
         };
         /**
          * @description One terminally-failed reconciliation job, as the operator needs to see it.
@@ -3442,23 +3574,6 @@ export interface components {
             visibility: string;
         };
         /**
-         * @description `POST /v1/admin/config/import` request — canonical
-         *     `vtc/config/import/0.1`.
-         *
-         *     `confirm` rides in the **payload**, not a query string: a Trust
-         *     Task is the same interface over REST, DIDComm and TSP, and only
-         *     one of those three has a query string to put it in.
-         *
-         *     It defaults to `false` because the safe direction of a default is
-         *     the one whose mistake is recoverable — a caller who meant to apply
-         *     and previewed loses a round-trip, where the reverse has already
-         *     overwritten a live community's configuration.
-         */
-        ImportRequest: {
-            confirm?: boolean;
-            document: components["schemas"]["ConfigExportDocument"];
-        };
-        /**
          * @description `POST /v1/admin/config/import` response — canonical
          *     `vtc/config/import/0.1#response`.
          *
@@ -3492,7 +3607,7 @@ export interface components {
              *     Populated identically on preview and apply, so a preview
              *     surfaces every rejection before anything is written.
              */
-            rejected: components["schemas"]["RejectedKey"][];
+            rejected: components["schemas"]["ConfigRejectedKey"][];
             /**
              * @description `preview` when `confirm` was not set; `imported` after the
              *     document was applied.
@@ -3559,6 +3674,15 @@ export interface components {
         };
         InvitationListResponse: {
             invitations: components["schemas"]["InvitationListItem"][];
+        };
+        InvitationRevokeResponse: {
+            id: string;
+            /**
+             * @description True if this call performed the revocation; false if it was already
+             *     revoked (idempotent).
+             */
+            newlyRevoked: boolean;
+            revokedAt: string;
         };
         /** @enum {string} */
         InviteStatus: "issued" | "consumed" | "expired";
@@ -3896,14 +4020,6 @@ export interface components {
         };
         ListInvitesResponse: {
             invites: components["schemas"]["InviteSummary"][];
-        };
-        ListResponse: {
-            /**
-             * @description The caller's own console keys, newest first, revoked ones included so
-             *     an operator can see that a browser was disowned rather than never
-             *     enrolled.
-             */
-            consoleKeys: components["schemas"]["ConsoleKey"][];
         };
         /**
          * @description `{ member: … }` — the shape `vtc/members/show/0.1` publishes. The row was
@@ -4316,77 +4432,13 @@ export interface components {
             /** Format: int64 */
             totalEstimate?: number | null;
         };
-        /**
-         * @description `POST /v1/auth/passkey-login/finish`.
-         *
-         *     Verifies the WebAuthn assertion, looks up the registered
-         *     admin DID by credential ID, and mints the cookie session.
-         *     Sets the same `vtc_admin_session` + `csrf` cookies as
-         *     `admin_session` does for the bearer-token bridge. Returns the
-         *     bearer token in the body for clients that want to also use it
-         *     programmatically.
-         */
-        PasskeyLoginFinishRequest: {
-            auth_id: string;
-            credential: Record<string, never>;
-        };
-        /**
-         * @description Request body for `passkey-login/start`, per
-         *     `spec/auth/passkey/login/start/0.2`.
-         *
-         *     Entirely optional — the admin SPA's login posts no body at all, which reads
-         *     as `purpose: login`, the pre-existing behaviour.
-         */
-        PasskeyLoginStartRequest: {
+        PasskeyListResponse: {
             /**
-             * @description Vendor-namespaced extensions per SPEC.md §4.5.1. Accepted and ignored,
-             *     which is what the framework asks of a consumer that defines no
-             *     extensions — the field exists so `deny_unknown_fields` doesn't reject a
-             *     spec-conformant producer that sends one.
+             * @description `credentials`, the name `auth/passkey/list/0.1` publishes. It was
+             *     `passkeys` until #1112 — the same object under a name the schema does
+             *     not define, so no conforming client could find it.
              */
-            ext?: Record<string, never>;
-            /**
-             * @description `login` (default) issues a new session; `stepUp` elevates the caller's
-             *     existing one. The two differ in more than bookkeeping: a step-up must be
-             *     authenticated, and challenges **only the caller's own** credentials, so
-             *     another admin's passkey cannot satisfy it.
-             */
-            purpose?: string;
-            /**
-             * @description The VID the producer intends to authenticate as. Optional — omit for
-             *     the usernameless / discoverable-credential flow the admin SPA uses.
-             *
-             *     When given it is **honoured, not noted**: a login challenge is narrowed
-             *     to that subject's credentials, and a step-up that names anyone other
-             *     than the authenticated session's subject is refused rather than quietly
-             *     answered for the session holder.
-             */
-            subject?: string | null;
-        };
-        /**
-         * @description `POST /v1/auth/passkey-login/start`.
-         *
-         *     Browser-friendly login: the admin SPA submits no body, the
-         *     daemon returns a WebAuthn assertion challenge across every
-         *     registered passkey (discoverable login — the user picks their
-         *     device, the browser chooses the matching credential). Modelled
-         *     on `affinidi-webvh-service::login_start`.
-         *
-         *     Unauthenticated by design: the eventual `finish` ceremony
-         *     proves possession of an enrolled credential, which is the auth.
-         *
-         *     The same canonical task also serves **AAL step-up**, selected by
-         *     [`purpose`](PasskeyLoginStartRequest::purpose) — see that field.
-         */
-        PasskeyLoginStartResponse: {
-            authId: string;
-            /**
-             * @description The value for `navigator.credentials.get({ publicKey: … })` — the
-             *     inner options, not webauthn-rs's `{publicKey: …}` wrapper. See
-             *     `admin::passkeys::RegisterStartResponse::options` for why the wrapper
-             *     went.
-             */
-            options: Record<string, never>;
+            credentials: components["schemas"]["RegisteredCredential"][];
         };
         /**
          * @description PATCH request body: a `key → value` map under `overrides`. Keys not in
@@ -4409,7 +4461,7 @@ export interface components {
         PatchResponse: {
             applied: string[];
             pendingRestart: string[];
-            rejected: components["schemas"]["RejectedKey"][];
+            rejected: components["schemas"]["ConfigRejectedKey"][];
         };
         /**
          * @description A Verifiable Persona Credential (VPC) attached to one edge.
@@ -4446,6 +4498,20 @@ export interface components {
             id: string;
             /** @description The P-DID now on the edge, or `null` after a detach. */
             personaDid?: string | null;
+        };
+        PersonhoodChallengeResponse: {
+            /** Format: uuid */
+            challengeId: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * @description Vendor-namespaced extension members (SPEC §4.5.1). Carries
+             *     [`match_code::MATCH_CODE_EXT_KEY`] — the eight characters the
+             *     admin and the member read to each other to confirm they are
+             *     looking at the same ceremony. See [`crate::members::match_code`]
+             *     for why the code rides here rather than as a top-level field.
+             */
+            ext: components["schemas"]["Value"];
         };
         /**
          * @description What a community's governance asserts about personhood, and therefore
@@ -4523,6 +4589,12 @@ export interface components {
              *     two DIDs from two people. See `docs/03-vtc/personhood-and-graph.md`.
              */
             singleMembership?: boolean;
+        };
+        PersonhoodRevokeResponse: {
+            did: string;
+            personhood: boolean;
+            roleVec?: null | components["schemas"]["Value"];
+            vmc?: null | components["schemas"]["Value"];
         };
         /** @description Canonical `policy/get` response. */
         PolicyGetResponse: {
@@ -4925,14 +4997,6 @@ export interface components {
             url?: string | null;
         };
         /**
-         * @description One rejected key + the reason. Surfaced to the caller so the
-         *     admin UX can present a meaningful error inline.
-         */
-        RejectedKey: {
-            key: string;
-            reason: string;
-        };
-        /**
          * @description A stored, verified VRC. Field order matches the spec §5.4
          *     surface (issuer/subject DIDs + the credential body).
          */
@@ -5015,6 +5079,9 @@ export interface components {
              *     shape extensions don't require a storage migration.
              */
             vrcJsonld: components["schemas"]["Value"];
+        };
+        RelationshipRevokeResponse: {
+            id: string;
         };
         RelationshipsGraph: {
             edges: components["schemas"]["GraphEdge"][];
@@ -5164,12 +5231,6 @@ export interface components {
         RevokeInviteResponse: {
             jti: string;
         };
-        RevokeResponse: {
-            endorsementId: string;
-            revocation: components["schemas"]["RevocationDetail"];
-            /** Format: int32 */
-            statusListIndex: number;
-        };
         RevokeStartRequest: {
             credential_id: string;
         };
@@ -5180,6 +5241,30 @@ export interface components {
              *     `navigator.credentials.get({ publicKey: … })`.
              */
             uvOptions: Record<string, never>;
+        };
+        RotationChallengeResponse: {
+            /**
+             * @description New-DID placeholder — the canonical payload includes
+             *     `newDid`, so the client computes the final payload by
+             *     substituting its chosen `new_did` into the JSON and
+             *     hashing the result. Callers that prefer to assemble
+             *     the payload themselves can ignore this field.
+             */
+            canonicalTemplate: components["schemas"]["Value"];
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: uuid */
+            rotationId: string;
+            /**
+             * @description Canonical payload bytes the signers must hash over,
+             *     hex-encoded. Server-supplied so the caller can't omit
+             *     the domain tag or get the canonical JSON encoding
+             *     wrong.
+             */
+            signingPayloadHex: string;
+        };
+        SchemaDeleteResponse: {
+            id: string;
         };
         /** @description One registered credential-type schema in the community's schema store. */
         SchemaEntry: {
@@ -6499,7 +6584,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["BootstrapRequest"];
+                "application/json": components["schemas"]["AdminBootstrapRequest"];
             };
         };
         responses: {
@@ -6608,7 +6693,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExportResponse"];
+                    "application/json": components["schemas"]["ConfigExportResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -6636,7 +6721,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ImportRequest"];
+                "application/json": components["schemas"]["ConfigImportRequest"];
             };
         };
         responses: {
@@ -6762,7 +6847,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ListResponse"];
+                    "application/json": components["schemas"]["ConsoleKeyListResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -6851,7 +6936,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RevokeResponse"];
+                    "application/json": components["schemas"]["ConsoleKeyRevokeResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -7074,7 +7159,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ListResponse"];
+                    "application/json": components["schemas"]["PasskeyListResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -7464,7 +7549,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["PasskeyLoginFinishRequest"];
+                "application/json": components["schemas"]["AdminPasskeyLoginFinishRequest"];
             };
         };
         responses: {
@@ -7493,7 +7578,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": null | components["schemas"]["PasskeyLoginStartRequest"];
+                "application/json": null | components["schemas"]["AdminPasskeyLoginStartRequest"];
             };
         };
         responses: {
@@ -7503,7 +7588,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PasskeyLoginStartResponse"];
+                    "application/json": components["schemas"]["AdminPasskeyLoginStartResponse"];
                 };
             };
             /** @description WebAuthn not configured, no passkeys registered, or step-up requested without a session */
@@ -8343,7 +8428,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RevokeResponse"];
+                    "application/json": components["schemas"]["EndorsementRevokeResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -8779,7 +8864,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RevokeResponse"];
+                    "application/json": components["schemas"]["InvitationRevokeResponse"];
                 };
             };
             /** @description Caller is not Admin / Moderator / Issuer */
@@ -9252,7 +9337,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChallengeResponse"];
+                    "application/json": components["schemas"]["RotationChallengeResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -9562,7 +9647,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RevokeResponse"];
+                    "application/json": components["schemas"]["PersonhoodRevokeResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -9606,7 +9691,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChallengeResponse"];
+                    "application/json": components["schemas"]["PersonhoodChallengeResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -10341,7 +10426,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RevokeResponse"];
+                    "application/json": components["schemas"]["RelationshipRevokeResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -10815,7 +10900,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DeleteResponse"];
+                    "application/json": components["schemas"]["SchemaDeleteResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
@@ -10903,7 +10988,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DeleteResponse"];
+                    "application/json": components["schemas"]["SchemaDeleteResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */

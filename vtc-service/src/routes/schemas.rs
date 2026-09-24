@@ -150,6 +150,7 @@ pub async fn get_one(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = SchemaDeleteResponse)]
 pub struct DeleteResponse {
     pub id: String,
 }

@@ -70,6 +70,7 @@ use crate::operations::protocol::{OpContext, ServiceOpDeps};
 use crate::server::AppState;
 #[cfg(feature = "didcomm")]
 use vta_sdk::protocol::DidcommStatusResponse;
+use vta_sdk::protocol::services::RollbackResponse;
 
 /// Default trust-ping round-trip timeout for first-enable when the
 /// caller doesn't specify `handshake_timeout_secs`. Spec default 10s.
@@ -2368,43 +2369,6 @@ pub struct RollbackDidcommHttpRequest {
     pub drain_ttl_secs: Option<u64>,
 }
 
-/// Unified rollback response shape used by both REST handlers.
-/// Wider than `ServiceMutationResponse` because rollback adds two
-/// concepts: a `kind` discriminator (so the CLI can print
-/// "rolled back to enabled at https://x.example.com" vs.
-/// "rollback was a no-op") and a `draining_mediator` field
-/// for the DIDComm update / disable arms.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct RollbackResponse {
-    /// New WebVH LogEntry version-id. Empty string when the
-    /// rollback was a no-op (snapshot ≡ current state).
-    pub log_entry_version_id: String,
-    pub effective_at: String,
-    /// One of: `disabled`, `enabled`, `updated`, `no_op`.
-    pub kind: String,
-    /// `Some(rfc3339)` when the rollback scheduled a drain on
-    /// the previously-active mediator (DIDComm update / disable
-    /// arms). `None` for REST and for the DIDComm enable / no-op
-    /// arms.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub drain_until: Option<String>,
-    /// Mediator DID currently being drained by this rollback's
-    /// dispatched op. `None` for REST and DIDComm enable / no-op
-    /// arms.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub draining_mediator: Option<String>,
-    /// The VTA's own DID — subject of the LogEntry this rollback
-    /// wrote. Empty in `no_op` responses where no LogEntry was
-    /// written. Aligned with
-    /// `vta_sdk::protocol::services::RollbackResponse::vta_did`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub vta_did: String,
-    /// True when the VTA's DID is self-hosted. `false` on no-op
-    /// rollbacks (no follow-up redeploy needed).
-    #[serde(default)]
-    pub serverless: bool,
-}
-
 fn rest_kind_str(k: RestRollbackKind) -> &'static str {
     match k {
         RestRollbackKind::Disabled => "disabled",
@@ -2914,7 +2878,7 @@ pub async fn disable_webauthn_handler(
     security(("bearer_jwt" = [])),
     request_body = vta_sdk::protocol::services::RollbackWebauthnRequest,
     responses(
-        (status = 200, description = "WebAuthn mutation rolled back (fail-forward)", body = vta_sdk::protocol::services::RollbackResponse),
+        (status = 200, description = "WebAuthn mutation rolled back (fail-forward)", body = RollbackResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a super-admin"),
         (status = 409, description = "No prior mutation, or last remaining service"),
@@ -2924,7 +2888,7 @@ pub async fn rollback_webauthn_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
     Json(_req): Json<vta_sdk::protocol::services::RollbackWebauthnRequest>,
-) -> Result<Json<vta_sdk::protocol::services::RollbackResponse>, WebauthnServiceHttpError> {
+) -> Result<Json<RollbackResponse>, WebauthnServiceHttpError> {
     let did_resolver = state
         .did_resolver
         .as_ref()
@@ -2938,7 +2902,7 @@ pub async fn rollback_webauthn_handler(
         WebauthnRollbackKind::Updated => "updated",
         WebauthnRollbackKind::NoOp => "no_op",
     };
-    Ok(Json(vta_sdk::protocol::services::RollbackResponse {
+    Ok(Json(RollbackResponse {
         log_entry_version_id: result.new_version_id.unwrap_or_default(),
         effective_at: chrono::Utc::now().to_rfc3339(),
         kind: kind_str.into(),

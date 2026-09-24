@@ -580,6 +580,7 @@ pub async fn publish(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = RelationshipRevokeResponse)]
 pub struct RevokeResponse {
     pub id: String,
 }
