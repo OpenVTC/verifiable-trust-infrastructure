@@ -33,12 +33,13 @@
 //! **Administrator verbs are routed here too**, since #1641 phase 2 — the
 //! admin-facing member verbs were the first batch, `join-requests/decide` and
 //! `community/profile/update` the second, `config/{export,import}` the third —
-//! the first whose bearer routes were removed rather than kept. Their
-//! authority is not a bearer token (this endpoint reads none) but the
-//! **verified signer's ACL entry**, read at execution time; see
-//! [`admin_signer`]. The remaining operator-facing verbs (`list`, `show`, the
-//! endorsement-type and backup pairs, …) are still served only on their
-//! JWT-gated REST routes, and moving them is what the rest of phase 2 is.
+//! the first whose bearer routes were removed rather than kept — and
+//! `endorsement-types/{register,delete}` the fourth. Their authority is not a
+//! bearer token (this endpoint reads none) but the **verified signer's ACL
+//! entry**, read at execution time; see [`admin_signer`]. The remaining
+//! operator-facing verbs (`list`, `show`, the admin-invite and backup pairs,
+//! …) are still served only on their JWT-gated REST routes, and moving them is
+//! what the rest of phase 2 is.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
 //! member-facing half of a family whose `revoke` verb stays operator-side on
@@ -89,6 +90,10 @@ use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1 as join_decide;
 // Batch 3: the portable-configuration pair.
 use trust_tasks_rs::specs::vtc::config::{
     export::v0_1 as config_export, import::v0_1 as config_import,
+};
+// Batch 4: the endorsement-type registry's two writes.
+use trust_tasks_rs::specs::vtc::endorsement_types::{
+    delete::v0_1 as endorsement_type_delete, register::v0_1 as endorsement_type_register,
 };
 use trust_tasks_rs::{RejectReason, TrustTask};
 
@@ -682,6 +687,8 @@ async fn dispatch_typed(
         COMMUNITY_PROFILE_UPDATE_TYPE => handle_community_profile_update(state, ctx, doc).await,
         CONFIG_EXPORT_TYPE => handle_config_export(state, ctx, doc).await,
         CONFIG_IMPORT_TYPE => handle_config_import(state, ctx, doc).await,
+        ENDORSEMENT_TYPE_REGISTER_TYPE => handle_endorsement_type_register(state, ctx, doc).await,
+        ENDORSEMENT_TYPE_DELETE_TYPE => handle_endorsement_type_delete(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1166,11 +1173,12 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            28,
+            30,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
-             moved (`config/export`, `config/import`); got {required:?}"
+             moved (`config/export`, `config/import`) + the 2 batch 4 moved \
+             (`endorsement-types/register`, `endorsement-types/delete`); got {required:?}"
         );
     }
 }
@@ -1315,6 +1323,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // Batch 3: the portable-configuration pair, on the same terms.
     CONFIG_EXPORT_TYPE,
     CONFIG_IMPORT_TYPE,
+    // Batch 4: the endorsement-type writes. `list` declares no proof and stays
+    // on its bearer route.
+    ENDORSEMENT_TYPE_REGISTER_TYPE,
+    ENDORSEMENT_TYPE_DELETE_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -1360,6 +1372,14 @@ pub(crate) const CONFIG_EXPORT_TYPE: &str =
 /// `vtc/config/import/0.1` — preview or apply a portable configuration.
 pub(crate) const CONFIG_IMPORT_TYPE: &str =
     <config_import::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/endorsement-types/register/0.1` — register an endorsement type.
+pub(crate) const ENDORSEMENT_TYPE_REGISTER_TYPE: &str =
+    <endorsement_type_register::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/endorsement-types/delete/0.1` — delete an unreferenced endorsement type.
+pub(crate) const ENDORSEMENT_TYPE_DELETE_TYPE: &str =
+    <endorsement_type_delete::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -2661,6 +2681,86 @@ async fn handle_config_import(
     }
 }
 
+// ─── the endorsement-type writes (#1641 phase 2, batch 4) ────────────────
+
+/// `vtc/endorsement-types/register/0.1` — register an endorsement type.
+///
+/// Administrator only, from the signer's ACL entry — `AdminAuth`'s question,
+/// and the only one the REST route asks. `createdByDid` and the audit row name
+/// the signer.
+///
+/// # Why the payload is read twice
+///
+/// The generated parse runs first because it is what validates the document
+/// against its published schema. The operation then reads the payload as the
+/// route's `RegisterBody`, because the generated type folds an **absent**
+/// `claimSchema` and an empty one into the same default map, and the stored
+/// row keeps them apart. Issuance treats the two alike — `{}` admits any
+/// claim — but a listing shows which one the operator registered, and the
+/// bearer route stores what it was sent, so this door does too.
+///
+/// # Size
+///
+/// `claimSchema` is operator-authored and the task publishes no bound for it,
+/// so the operation caps it at 32 KiB serialised on both doors
+/// (`CLAIM_SCHEMA_MAX_BYTES`). With `typeUri` ≤ 512 and `description` ≤ 1024
+/// characters, every registration that passes fits this door's 64 KiB cap.
+async fn handle_endorsement_type_register(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let _checked: endorsement_type_register::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let body: crate::routes::endorsement_types::RegisterBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::endorsement_types::register_inner(state, &actor.did, body).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/endorsement-types/delete/0.1` — delete an endorsement type nothing
+/// references.
+///
+/// Administrator only, from the signer's ACL entry — `AdminAuth`'s question,
+/// and the only one the REST route asks. The REST route takes the type URI as
+/// a path segment; here it is the payload's `typeUri`, and both reach the same
+/// `delete_inner`, so the `notFound` / `inUse` refusals are the same codes on
+/// each.
+async fn handle_endorsement_type_delete(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: endorsement_type_delete::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::endorsement_types::delete_inner(
+        state,
+        &actor.did,
+        checked.type_uri.to_string(),
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
 // ─── personhood ──────────────────────────────────────────────────────────
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce the
@@ -2970,6 +3070,8 @@ mod tests {
             <community_profile_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <config_export::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <config_import::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <endorsement_type_register::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <endorsement_type_delete::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
@@ -5273,5 +5375,362 @@ mod config_pair_tests {
             String::from_utf8_lossy(&out.body)
         );
         assert_eq!(payload_of(&out)["status"], "preview");
+    }
+}
+
+/// The endorsement-type registry's two writes, served as signed Trust Task
+/// documents — **#1641 phase 2, batch 4**.
+///
+/// `vtc/endorsement-types/register/0.1` and `vtc/endorsement-types/delete/0.1`
+/// declare `proof` REQUIRED and were served only as bearer REST. The admin
+/// console calls both, so their bearer routes stay as the fallback for a
+/// browser with no console key.
+///
+/// What these tests hold beyond the earlier batches':
+///
+/// - **The size bounds both doors now share.** `claimSchema` is capped at
+///   32 KiB serialised so every registration that passes fits the signed
+///   door's 64 KiB document cap; the cap is the operation's, so the refusal is
+///   the same code on either door.
+/// - **An absent `claimSchema` stays absent.** The generated payload folds
+///   absent into an empty map; the arm reads the raw payload so the stored row
+///   records what the operator sent.
+/// - **`inUse` still reports both halves.** The refusal is the operation's,
+///   reached through the same `delete_inner`.
+#[cfg(test)]
+mod endorsement_type_tests {
+    use super::members_admin_tests::{
+        assert_conforms, dispatch, error_code, payload_of, seed_acl, signed, unsigned,
+    };
+    use super::*;
+    use crate::acl::VtcRole;
+    use crate::endorsement_types::get_type;
+    use crate::routes::endorsement_types::{
+        CLAIM_SCHEMA_MAX_BYTES, DELETE_ERR_IN_USE, DELETE_ERR_NOT_FOUND, REGISTER_ERR_EXISTS,
+        REGISTER_ERR_RESERVED,
+    };
+    use crate::test_support::TestVtc;
+    use serde_json::json;
+    use vti_rooms_dtg::test_support::Party;
+
+    const TYPE: &str = "https://example.org/endorsements/identity-vetting/0.1";
+
+    struct Fixture {
+        vtc: TestVtc,
+        admin: Party,
+        scoped_admin: Party,
+        member: Party,
+    }
+
+    async fn fixture() -> Fixture {
+        let vtc = TestVtc::builder()
+            .with_audit(true)
+            .with_signers(true)
+            .build()
+            .await;
+        let admin = Party::new();
+        let scoped_admin = Party::new();
+        let member = Party::new();
+        seed_acl(&vtc, &admin.did, VtcRole::Admin, vec![]).await;
+        seed_acl(
+            &vtc,
+            &scoped_admin.did,
+            VtcRole::Admin,
+            vec!["ctx-a".to_string()],
+        )
+        .await;
+        seed_acl(&vtc, &member.did, VtcRole::Member, vec![]).await;
+        Fixture {
+            vtc,
+            admin,
+            scoped_admin,
+            member,
+        }
+    }
+
+    async fn register(fix: &Fixture, from: &Party, payload: Value) -> TrustTaskOutcome {
+        let doc = signed(from, ENDORSEMENT_TYPE_REGISTER_TYPE, payload).await;
+        dispatch(&fix.vtc, &doc).await
+    }
+
+    async fn delete(fix: &Fixture, from: &Party, type_uri: &str) -> TrustTaskOutcome {
+        let doc = signed(
+            from,
+            ENDORSEMENT_TYPE_DELETE_TYPE,
+            json!({ "typeUri": type_uri }),
+        )
+        .await;
+        dispatch(&fix.vtc, &doc).await
+    }
+
+    async fn stored(fix: &Fixture) -> Option<crate::endorsement_types::EndorsementType> {
+        get_type(&fix.vtc.state.endorsement_types_ks, TYPE)
+            .await
+            .expect("read type")
+    }
+
+    // ─── the premise ─────────────────────────────────────────────────────
+
+    #[test]
+    fn every_moved_task_declares_the_proof_these_tests_assume() {
+        for uri in [ENDORSEMENT_TYPE_REGISTER_TYPE, ENDORSEMENT_TYPE_DELETE_TYPE] {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
+            assert!(
+                policy.is_proof_required,
+                "{uri} no longer declares proof REQUIRED — these tests now assert \
+                 nothing, and the design note should be re-read"
+            );
+        }
+    }
+
+    // ─── VTI-OPS-020: a proof by the issuer, authorized from their ACL ────
+
+    /// **VTI-OPS-020.** A signed admin document registers a type, and the row
+    /// names the signer.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_admin_document_registers_a_type() {
+        let fix = fixture().await;
+        let out = register(
+            &fix,
+            &fix.admin,
+            json!({
+                "typeUri": TYPE,
+                "description": "Peer identity vetting",
+                "claimSchema": { "type": "object" },
+            }),
+        )
+        .await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["endorsementType"]["typeUri"], TYPE);
+        assert_conforms::<endorsement_type_register::Response>(&out);
+
+        let row = stored(&fix).await.expect("the type is registered");
+        assert_eq!(row.created_by_did, fix.admin.did);
+        assert_eq!(row.claim_schema, Some(json!({ "type": "object" })));
+    }
+
+    /// **VTI-OPS-020.** A signed admin document deletes an unreferenced type.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_admin_document_deletes_a_type() {
+        let fix = fixture().await;
+        assert!(
+            register(&fix, &fix.admin, json!({ "typeUri": TYPE }))
+                .await
+                .status
+                .is_success()
+        );
+
+        let out = delete(&fix, &fix.admin, TYPE).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["typeUri"], TYPE);
+        assert_conforms::<endorsement_type_delete::Response>(&out);
+        assert!(stored(&fix).await.is_none());
+    }
+
+    /// **VTI-OPS-020.** Unsigned, both are refused with the framework's code.
+    #[tokio::test]
+    async fn vti_ops_020_an_unsigned_document_is_refused() {
+        let fix = fixture().await;
+        for (uri, payload) in [
+            (ENDORSEMENT_TYPE_REGISTER_TYPE, json!({ "typeUri": TYPE })),
+            (ENDORSEMENT_TYPE_DELETE_TYPE, json!({ "typeUri": TYPE })),
+        ] {
+            let out = dispatch(&fix.vtc, &unsigned(&fix.admin, uri, payload)).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{uri}: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+        assert!(stored(&fix).await.is_none());
+    }
+
+    /// Authorization is the signer's ACL entry: a member, and a DID with no
+    /// row, are refused both verbs — what `AdminAuth` refused on the REST
+    /// routes.
+    #[tokio::test]
+    async fn a_signer_who_is_not_an_admin_is_refused_both_verbs() {
+        let fix = fixture().await;
+        let stranger = Party::new();
+        for signer in [&fix.member, &stranger] {
+            let out = register(&fix, signer, json!({ "typeUri": TYPE })).await;
+            assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
+            let out = delete(&fix, signer, TYPE).await;
+            assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
+        }
+        assert!(stored(&fix).await.is_none());
+    }
+
+    /// Neither verb is super-admin-only or context-scoped: `AdminAuth` admits a
+    /// context-scoped admin, so this door must too.
+    #[tokio::test]
+    async fn a_context_scoped_admin_may_register_and_delete() {
+        let fix = fixture().await;
+        let out = register(&fix, &fix.scoped_admin, json!({ "typeUri": TYPE })).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let out = delete(&fix, &fix.scoped_admin, TYPE).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    // ─── the operations' own refusals ────────────────────────────────────
+
+    /// The declared `reserved` and `exists`, carried as codes.
+    #[tokio::test]
+    async fn the_declared_register_refusals_are_carried_as_codes() {
+        let fix = fixture().await;
+        let out = register(&fix, &fix.admin, json!({ "typeUri": "CommunityRole" })).await;
+        assert_eq!(error_code(&out).as_deref(), Some(REGISTER_ERR_RESERVED));
+
+        assert!(
+            register(&fix, &fix.admin, json!({ "typeUri": TYPE }))
+                .await
+                .status
+                .is_success()
+        );
+        // A fresh document — a new `id` — so this is the operation refusing a
+        // second registration, not the accepted-id record answering a replay.
+        let out = register(&fix, &fix.admin, json!({ "typeUri": TYPE })).await;
+        assert_eq!(error_code(&out).as_deref(), Some(REGISTER_ERR_EXISTS));
+    }
+
+    /// A `claimSchema` over the cap is refused, and nothing is stored. The
+    /// document itself is under 64 KiB, so this is the operation's bound
+    /// speaking, not the transport's.
+    #[tokio::test]
+    async fn a_claim_schema_over_the_cap_is_refused() {
+        let fix = fixture().await;
+        let padding = "x".repeat(CLAIM_SCHEMA_MAX_BYTES);
+        let out = register(
+            &fix,
+            &fix.admin,
+            json!({
+                "typeUri": TYPE,
+                "claimSchema": { "type": "object", "description": padding },
+            }),
+        )
+        .await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("malformedRequest"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert!(stored(&fix).await.is_none());
+    }
+
+    /// A `claimSchema` that is not a JSON Schema is refused with the framework's
+    /// `malformedRequest`, which the operation declares because the task has no
+    /// code of its own for it. Before this batch, mapping that declared code
+    /// panicked the dispatcher: it read every declared code as `<slug>:<local>`.
+    #[tokio::test]
+    async fn a_claim_schema_that_is_not_a_schema_is_malformed_not_a_panic() {
+        let fix = fixture().await;
+        let out = register(
+            &fix,
+            &fix.admin,
+            json!({ "typeUri": TYPE, "claimSchema": { "type": "not-a-type" } }),
+        )
+        .await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("malformedRequest"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert!(stored(&fix).await.is_none());
+    }
+
+    /// An omitted `claimSchema` is stored as absent, not as an empty schema —
+    /// the distinction the arm reads the raw payload for.
+    #[tokio::test]
+    async fn an_omitted_claim_schema_is_stored_as_absent() {
+        let fix = fixture().await;
+        assert!(
+            register(&fix, &fix.admin, json!({ "typeUri": TYPE }))
+                .await
+                .status
+                .is_success()
+        );
+        assert_eq!(stored(&fix).await.expect("row").claim_schema, None);
+    }
+
+    /// The declared `notFound`.
+    #[tokio::test]
+    async fn deleting_an_unknown_type_is_the_declared_not_found() {
+        let fix = fixture().await;
+        let out = delete(&fix, &fix.admin, TYPE).await;
+        assert_eq!(error_code(&out).as_deref(), Some(DELETE_ERR_NOT_FOUND));
+    }
+
+    /// The declared `inUse`, for a type an Accepts criterion still requires —
+    /// and the type is still there afterwards.
+    #[tokio::test]
+    async fn deleting_a_referenced_type_is_the_declared_in_use() {
+        let fix = fixture().await;
+        assert!(
+            register(&fix, &fix.admin, json!({ "typeUri": TYPE }))
+                .await
+                .status
+                .is_success()
+        );
+        let schemas_ks = &fix.vtc.state.schemas_ks;
+        let entry: crate::schemas::SchemaEntry = serde_json::from_value(json!({
+            "typeUri": "EndorsementCredential",
+            "dtgType": "EndorsementCredential",
+            "kind": "accepts",
+            "createdAt": "2026-09-24T00:00:00Z",
+            "createdByDid": fix.admin.did,
+        }))
+        .expect("schema entry");
+        crate::schemas::storage::store_schema(schemas_ks, &entry)
+            .await
+            .expect("store the referenced schema");
+        let criterion: crate::schemas::accepts::AcceptsCriterion = serde_json::from_value(json!({
+            "id": "vetted",
+            "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
+                       "meta": { "type_values": ["EndorsementCredential"] } } ] },
+            "vetting": {
+                "version": "0.1",
+                "statementType": TYPE,
+                "minStatements": 2,
+                "minByMethod": { "inPerson": 1 },
+                "acceptedMethods": ["inPerson", "video"],
+                "maxStatementAge": "P120D",
+                "eligibleVetters": { "role": "vetter" },
+            },
+            "createdAt": "2026-09-24T00:00:00Z",
+            "createdByDid": fix.admin.did,
+        }))
+        .expect("criterion");
+        crate::schemas::accepts::store_accepts(schemas_ks, &criterion)
+            .await
+            .expect("store the criterion");
+
+        let out = delete(&fix, &fix.admin, TYPE).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(DELETE_ERR_IN_USE),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert!(stored(&fix).await.is_some());
     }
 }

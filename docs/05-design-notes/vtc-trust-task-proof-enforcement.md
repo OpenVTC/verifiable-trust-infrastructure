@@ -113,11 +113,11 @@ Two of the 51 already verify a document proof on their REST route
 the migration follows. **That leaves 49 proof-REQUIRED tasks served on a bearer
 token** — divergence 1.
 
-Of those 49, eight now have a signed-document binding (§6b, batches 1–3). The
+Of those 49, ten now have a signed-document binding (§6b, batches 1–4). The
 divergence closes per task when the bearer route goes, not when the signed door
-opens, and for two of the eight it has: batch 3 removed the bearer routes of
+opens, and for two of the ten it has: batch 3 removed the bearer routes of
 `vtc/config/{export,import}/0.1` in the same change, because nothing called
-them. **47 remain**, six of them with a signed door beside a still-mounted
+them. **47 remain**, eight of them with a signed door beside a still-mounted
 bearer route.
 
 ### Drift against the recorded entry
@@ -160,8 +160,9 @@ are the ones the spine was lenient about.**
 
 Since then the set has grown by the tasks §6b's batches move onto this binding
 — four in batch 1, two in batch 2 (`vtc/join-requests/decide/0.1`,
-`vtc/community/profile/update/0.1`) and two in batch 3
-(`vtc/config/{export,import}/0.1`), making twenty-eight proof-REQUIRED. The
+`vtc/community/profile/update/0.1`), two in batch 3
+(`vtc/config/{export,import}/0.1`) and two in batch 4
+(`vtc/endorsement-types/{register,delete}/0.1`), making thirty proof-REQUIRED. The
 count is asserted by
 `the_dispatched_set_declares_the_proofs_the_design_note_records`, so a batch
 that lands without updating this note fails a test.
@@ -512,16 +513,40 @@ context-scoped admin is admitted and a member refused. What differs:
   transport, identical before and after this batch, and belongs in a change
   about the import.
 
+**Batch 4 — the endorsement-type writes, and the console's first signed
+calls.** `vtc/endorsement-types/register/0.1` and
+`vtc/endorsement-types/delete/0.1` are bound on the same terms; `list` declares
+no proof and stays on its bearer route. The console's statement-types card
+calls both, so here the bearer routes stay — but the card now sends each write
+through `signedOrBearer`, the first console call site to do so: a browser with
+a console key uses the signed door, and one without falls back. Findings:
+
+- **`claimSchema` had no bound at all**, in the task or the route, so a schema
+  between ~63 KiB and 1 MB registered over bearer and could not fit a signed
+  document — and `signedOrBearer` deliberately does not fall back on a
+  refusal. The operation now caps it at 32 KiB serialised on both doors
+  (`CLAIM_SCHEMA_MAX_BYTES`), refused as `malformedRequest`.
+- **`description`'s published `maxLength: 1024` was not enforced** on the
+  bearer route; the signed door's schema check already held it. Both enforce
+  it now.
+- **A declared framework code panicked the dispatcher.** `register` refuses a
+  `claimSchema` that is not a JSON Schema with `malformedRequest`, carried as a
+  `TaskError::declared` so the bearer route can put the code in its body. The
+  spine's `task_error_to_reject` read every declared code as `<slug>:<local>`
+  and panicked on it. It now parses the code as the framework does
+  (`declared_code`), so a standard code goes out as itself. Nothing had bound
+  such an operation on the signed door before, which is why it had not fired.
+- **An absent `claimSchema` stays absent.** The generated payload folds absent
+  into an empty map; the arm reads the raw payload as the route's
+  `RegisterBody` so the stored row records what was sent.
+
 **Next batch.** `vtc/admin/invites/{create,revoke}` are the same admin-from-ACL
-shape and the same console dependency, and become available once the
-`vtc/invitations/*` work owned elsewhere lands. Failing that, the
-`vtc/endorsement-types/{register,delete}` pair is the next clean one — `list`
-declares no proof and stays where it is. Check `register` against 64 KiB
-rather than assume: its `claimSchema` is an operator-authored JSON Schema with
-no size cap of its own. `vtc/backup/{export,import}` should still wait,
-because its bodies are the one place where the 64 KiB document cap is plainly
-too small and moving it needs that decision taken first. Before keeping a
-batch's bearer routes, check who calls them: batch 3 found nobody did.
+shape, and become available once the `vtc/invitations/*` work owned elsewhere
+lands. `vtc/backup/{export,import}` should still wait, because its bodies are
+the one place where the 64 KiB document cap is plainly too small and moving it
+needs that decision taken first. Before keeping a batch's bearer routes, check
+who calls them — batch 3 found nobody did — and where the console does, move
+its call sites to `signedOrBearer` in the same batch, as batch 4 did.
 
 ---
 

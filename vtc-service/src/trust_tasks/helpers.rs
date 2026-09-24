@@ -171,14 +171,27 @@ pub(crate) fn task_error_to_reject<P>(
                 AppError::Gone(_) => Some(reasons::GONE),
                 _ => None,
             };
+            let code = declared_code(code);
             match marker {
-                Some(reason) => {
-                    reject_with_code_because(doc, extended_code(code), message, None, reason)
-                }
-                None => reject_with_code(doc, extended_code(code), message, None),
+                Some(reason) => reject_with_code_because(doc, code, message, None, reason),
+                None => reject_with_code(doc, code, message, None),
             }
         }
     }
+}
+
+/// The wire code for a [`TaskError::Declared`](crate::error::TaskError).
+///
+/// Usually a task-extended `<slug>:<local>`, but not always: where a task
+/// declares no code for a refusal, an operation carries the framework's own —
+/// `vtc/endorsement-types/register`'s `malformedRequest` for a `claimSchema`
+/// that is not a schema — so its bearer route can put a code in the body.
+/// Reading that as an extended code panicked the dispatcher the first time
+/// such an operation was bound on the signed door (#1641 batch 4), so the code
+/// is parsed the way the framework parses any code.
+fn declared_code(code: &str) -> TrustTaskCode {
+    code.parse()
+        .unwrap_or_else(|e| panic!("declared code {code:?} is not a Trust Task code: {e}"))
 }
 
 /// A specification-extended error code, `<slug>:<local>`, as a framework code.

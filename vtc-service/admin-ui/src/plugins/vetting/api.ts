@@ -16,6 +16,7 @@ import {
   postJson,
   postJsonExempt,
   putJsonExempt,
+  signedOrBearer,
 } from "@/lib/api";
 import type {
   AcceptsCriterion,
@@ -259,20 +260,36 @@ export async function fetchEndorsementTypes(): Promise<EndorsementType[]> {
 /**
  * Remove a registered type. The daemon refuses while anything still references
  * it — a live endorsement of the type, or a criterion naming it as its
- * `statementType` — and names both in the 409, which is what the card renders.
+ * `statementType` — and names both in the refusal, which is what the card
+ * renders.
+ *
+ * Both endorsement-type writes go as signed documents when this browser holds
+ * a console key, and over their transitional bearer routes when it does not
+ * (#1641 batch 4). The refusal text is the same on either door — one function
+ * answers both.
  */
 export const deleteEndorsementType = (
   typeUri: string,
 ): Promise<EndorsementTypeDeleted> =>
-  deleteJson<EndorsementTypeDeleted>(
-    `/v1/endorsement-types/${encodeURIComponent(typeUri)}`,
-    { trustTask: TASK_ENDORSEMENT_TYPE_DELETE, requires: ["typeUri"] },
+  signedOrBearer<EndorsementTypeDeleted>(
+    TASK_ENDORSEMENT_TYPE_DELETE,
+    { typeUri },
+    () =>
+      deleteJson<EndorsementTypeDeleted>(
+        `/v1/endorsement-types/${encodeURIComponent(typeUri)}`,
+        { trustTask: TASK_ENDORSEMENT_TYPE_DELETE, requires: ["typeUri"] },
+      ),
   );
 
 export const registerEndorsementType = (
   body: RegisterEndorsementTypeBody,
 ): Promise<EndorsementTypeRegistered> =>
-  postJson<EndorsementTypeRegistered>("/v1/endorsement-types", body, {
-    trustTask: TASK_ENDORSEMENT_TYPE_REGISTER,
-    requires: ["endorsementType.typeUri"],
-  });
+  signedOrBearer<EndorsementTypeRegistered>(
+    TASK_ENDORSEMENT_TYPE_REGISTER,
+    body,
+    () =>
+      postJson<EndorsementTypeRegistered>("/v1/endorsement-types", body, {
+        trustTask: TASK_ENDORSEMENT_TYPE_REGISTER,
+        requires: ["endorsementType.typeUri"],
+      }),
+  );

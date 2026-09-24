@@ -850,6 +850,17 @@ export interface paths {
         };
         get: operations["endorsementTypeList"];
         put?: never;
+        /**
+         * POST /endorsement-types — register an endorsement type. Auth: Admin.
+         * @description **Transitional bearer-token path (#1641).**
+         *     `vtc/endorsement-types/register/0.1` declares `proof` REQUIRED, and the
+         *     authoritative binding is the signed Trust Task document at
+         *     `POST /v1/trust-tasks`, where the proof authenticates the administrator and
+         *     their authority is read from their ACL entry. This route authenticates by
+         *     bearer JWT and verifies no document proof; the admin console uses it only
+         *     from a browser with no console signing key enrolled, and it is removed once
+         *     every client signs.
+         */
         post: operations["endorsementTypeRegister"];
         delete?: never;
         options?: never;
@@ -887,6 +898,15 @@ export interface paths {
          *     handler's return type must name the same thing, because that annotation
          *     is what generates the console's `wire.ts` and a mismatch ships a console
          *     reading a shape the daemon never sends.
+         *
+         *     **Transitional bearer-token path (#1641).**
+         *     `vtc/endorsement-types/delete/0.1` declares `proof` REQUIRED, and the
+         *     authoritative binding is the signed Trust Task document at
+         *     `POST /v1/trust-tasks`, where the proof authenticates the administrator and
+         *     their authority is read from their ACL entry. This route authenticates by
+         *     bearer JWT and verifies no document proof; the admin console uses it only
+         *     from a browser with no console signing key enrolled, and it is removed once
+         *     every client signs.
          */
         delete: operations["endorsementTypeDelete"];
         options?: never;

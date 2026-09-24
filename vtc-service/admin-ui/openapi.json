@@ -2227,6 +2227,8 @@
         "tags": [
           "endorsement-types"
         ],
+        "summary": "POST /endorsement-types — register an endorsement type. Auth: Admin.",
+        "description": "**Transitional bearer-token path (#1641).**\n`vtc/endorsement-types/register/0.1` declares `proof` REQUIRED, and the\nauthoritative binding is the signed Trust Task document at\n`POST /v1/trust-tasks`, where the proof authenticates the administrator and\ntheir authority is read from their ACL entry. This route authenticates by\nbearer JWT and verifies no document proof; the admin console uses it only\nfrom a browser with no console signing key enrolled, and it is removed once\nevery client signs.",
         "operationId": "endorsementTypeRegister",
         "requestBody": {
           "content": {
@@ -2269,7 +2271,7 @@
           "endorsement-types"
         ],
         "summary": "The response is the **generated** `vtc/endorsement-types/delete/0.1`\ntype, not a local restatement of it.",
-        "description": "A hand-written `{ typeUri }` lived here until the census in\n`vta-sdk/tests/generated_wire_types_census.rs` named it. It had been\ninvisible to that census only because it carried no doc comment\nsaying which task it restated — giving it one, while renaming it out\nof a three-way `DeleteResponse` collision, is what surfaced a\nviolation that predated the rename.\n\n`utoipa::ToSchema` cannot be derived on a foreign type, so the handler\nreturns [`EndorsementTypeDelete01Response`] — the `spec_types!` newtype\nwhose schema is rendered from the specification's own — wrapping the\ngenerated value rather than describing the shape a second time.\n\nReturning the wrapper, not the bare generated type, is what\n`openapi_response_census` requires: the `body =` annotation and the\nhandler's return type must name the same thing, because that annotation\nis what generates the console's `wire.ts` and a mismatch ships a console\nreading a shape the daemon never sends.",
+        "description": "A hand-written `{ typeUri }` lived here until the census in\n`vta-sdk/tests/generated_wire_types_census.rs` named it. It had been\ninvisible to that census only because it carried no doc comment\nsaying which task it restated — giving it one, while renaming it out\nof a three-way `DeleteResponse` collision, is what surfaced a\nviolation that predated the rename.\n\n`utoipa::ToSchema` cannot be derived on a foreign type, so the handler\nreturns [`EndorsementTypeDelete01Response`] — the `spec_types!` newtype\nwhose schema is rendered from the specification's own — wrapping the\ngenerated value rather than describing the shape a second time.\n\nReturning the wrapper, not the bare generated type, is what\n`openapi_response_census` requires: the `body =` annotation and the\nhandler's return type must name the same thing, because that annotation\nis what generates the console's `wire.ts` and a mismatch ships a console\nreading a shape the daemon never sends.\n\n**Transitional bearer-token path (#1641).**\n`vtc/endorsement-types/delete/0.1` declares `proof` REQUIRED, and the\nauthoritative binding is the signed Trust Task document at\n`POST /v1/trust-tasks`, where the proof authenticates the administrator and\ntheir authority is read from their ACL entry. This route authenticates by\nbearer JWT and verifies no document proof; the admin console uses it only\nfrom a browser with no console signing key enrolled, and it is removed once\nevery client signs.",
         "operationId": "endorsementTypeDelete",
         "parameters": [
           {
