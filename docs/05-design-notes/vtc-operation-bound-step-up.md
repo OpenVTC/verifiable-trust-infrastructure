@@ -95,7 +95,7 @@ signer ──(5) the same document, re-sent────────────�
    `(acting admin, digest)`.
 2. **It refuses with `stepUpRequired`** and parks a pending mark: a 256-bit
    challenge, the internal digest, the acting admin's DID, the type URI and an
-   expiry — **300 s**, decided: shorter than a session elevation's 900 s, because a mark authorizes one known act and has no reason to wait. The refusal's `details` carry the challenge, the **wire
+   expiry — **300 s**, decided: shorter than a session elevation's 900 s, because a mark authorizes one known act and has no reason to wait. The refusal's `details.stepUpRequest` — an inline `approve-request/0.3` payload — carries the challenge, the **wire
    digest** (the payload digest salted with the challenge — all a client ever
    sees, since an unsalted digest over a low-entropy `acl/grant` payload is a
    confirmation oracle) and WebAuthn request options restricted to the acting
@@ -219,14 +219,25 @@ upstream spec and a `trust-tasks-rs` bump first).
    nothing and is consumed by that operation. That is strictly stronger than the
    session form, and the VTA already runs it for persona disclosures
    (`PendingStepUp.bound_to`, `approve-response/0.3`).
+   **Proposed:** trustoverip/dtgwg-vti-spec#40 amends APV-003 to admit the
+   operation-bound form and adds VTI-APV-015 with its rules.
 2. **dtgwg-trust-tasks-tf, `auth/step-up/approve-response`.** `sessionId` is
    required. Make it optional when `boundTo` is present (a 0.4 if that is not
    additive under the versioning rules), and state that a `boundTo` response
    elevates no session.
+   **Done:** trustoverip/dtgwg-trust-tasks-tf#631 — `approve-request/0.3`
+   (`sessionId` optional for a bound step-up, a new `boundTo`) and
+   `approve-response/0.4` (`sessionId` echoed exactly when the request carried
+   one). Reaches this workspace with the next `trust-tasks-rs` release.
 3. **A `stepUpRequired` refusal carrying the challenge.** The framework's
    `details` on a `permissionDenied`/`stepUpRequired` refusal needs a published
    shape — `{challenge, wireDigest, webauthn}` — so a client can answer without a
    side channel. Proposed alongside (2).
+   **Done, in #631:** `approve-request/0.3` defines *inline delivery* — the
+   refusal carries an `approve-request` payload, bound and session-less, in
+   `details.stepUpRequest`. The digest travels as its `boundTo`; the WebAuthn
+   options are its own `webauthn` member. A producer surfaces an inline request
+   only when it is the relying party's own reply to the producer's request.
 4. **VTC task-consent.** The three `task-consent/*` tasks are already published;
    the VTC needs only to dispatch them. No spec change.
 
