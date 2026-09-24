@@ -194,3 +194,31 @@ export type SyncJobsRetryResponse = Schemas["VtcRegistrySyncJobsRetryV0_1Respons
 export type SyncJobsDiscardResponse = Schemas["VtcRegistrySyncJobsDiscardV0_1Response"];
 export type RegistryRecordsResponse = Schemas["VtcRegistryRecordsListV0_1Response"];
 export type RegistryRecordRow = Schemas["VtcRegistryRecordsListV0_1Record"];
+
+// ── Git namespaces (the Repos plugin) ───────────────────────────────────
+//
+// The administrator's read surface over `git-ns/*`. Every write is a signed
+// Trust Task and has no REST shape here — see `plugins/repos/actions.ts`.
+export type GitNsNamespaceRow = Schemas["GitNsNamespaceRow"];
+export type GitNsNamespaceList = Schemas["GitNsNamespaceList"];
+export type GitNsRepoRow = Schemas["GitNsRepoRow"];
+export type GitNsRepoList = Schemas["GitNsRepoList"];
+export type GitNsBootstrapStatus = Schemas["GitNsBootstrapStatus"];
+export type GitNsRightRow = Schemas["GitNsRightRow"];
+export type GitNsRightList = Schemas["GitNsRightList"];
+export type GitNsDepartedGrants = Schemas["GitNsDepartedGrants"];
+export type GitNsDepartedGranter = Schemas["GitNsDepartedGranter"];
+export type GitNsDriftList = Schemas["GitNsDriftList"];
+export type GitNsDriftRow = Schemas["GitNsDriftRow"];
+export type GitNsDriftItem = Schemas["GitNsViewV0_1DriftItem"];
+export type GitNsJobList = Schemas["GitNsJobList"];
+export type GitNsJobRow = Schemas["GitNsJobRow"];
+export type GitNsProjection = Schemas["GitNsProjection"];
+export type GitNsPublishedRow = Schemas["GitNsPublishedRow"];
+export type GitNsRight = Schemas["GitNsViewV0_1Right"];
+export type GitNsForgeStatus = Schemas["GitNsForgeStatus"];
+export type GitNsStepOutcome = Schemas["GitNsStepOutcome"];
+export type GitNsAccountRow = Schemas["GitNsAccountRow"];
+export type GitNsAccountList = Schemas["GitNsAccountList"];
+export type GitNsActivity = Schemas["GitNsActivity"];
+export type GitNsActivityItem = Schemas["GitNsActivityItem"];
