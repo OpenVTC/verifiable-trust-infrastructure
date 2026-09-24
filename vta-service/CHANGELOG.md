@@ -2,6 +2,60 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.42.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.41.0...vta-service-v0.42.0) — 2026-09-24
+
+
+### Fixed
+
+- **vtc**: OpenAPI schema names are unique, so each endpoint documents its own shape ([#1697](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1697)) ([#1701](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1701))
+
+utoipa keys `components.schemas` by bare type name, and
+  `OpenApiRouter::routes` merges each route's schemas with a plain map
+  `extend`, so two `ToSchema` types with one name fail nothing: the last
+  registered wins and every `$ref` to the name describes that one. The VTC
+  document had 18 such names across vtc-service and vta-sdk, and six were
+  wrong in the published document — `GET /v1/admin/passkeys` was described
+  as the console-key list, `/v1/auth/challenge` as the personhood challenge,
+  and five revoke endpoints as the endorsement revoke response.
+
+  - vtc-service: the service-side types get distinct names with
+    `#[schema(as = …)]`. Rust type names are unchanged, so no handler moves
+    and `openapi_response_census` still compares like with like.
+  - vta-service: `RollbackResponse` and `EnrollPasskeyChallengeBody` were
+    field-for-field copies of vta-sdk's types registered under the same
+    names. The shapes matched, so the document happened to be right; the
+    copies are deleted in favour of the vta-sdk types.
+  - `openapi_schema_names.rs` in both services: a source-scan census that
+    fails when two `ToSchema` definitions in the crate or its path
+    dependencies share a schema name, and when the scan finds too few names
+    to prove anything.
+  - admin-ui: `openapi.json` and `wire.ts` regenerated; `PasskeyListResponse`
+    restored as a generated alias and used by `myPasskeys.tsx` in place of
+    the local interface that let the drift go unnoticed.
+
+
+
+### Chore
+
+- **deps**: Messaging-sdk 0.27.1 + trust-tasks-rs 0.22.3; answer a mutual TSP cancel the SDK could not (Keyring VTI-38) ([#1693](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1693))
+
+Raises the floors on top of #1690's 0.22.1 / 0.27.0 move: trust-tasks-rs and
+  -proof to 0.22.3 (the git-ns family, enabled by all-specs; the rest of the
+  trust-tasks-* line resolves to 0.22.3 too), affinidi-messaging-sdk to 0.27.1.
+  The graph holds exactly one copy of each.
+
+  `affinidi-messaging-sdk` becomes a workspace dependency (floor 0.27.1) in
+  place of five hand-kept per-crate literals.
+
+  SDK 0.27.1 answers a peer's §7.3 cancellation of a mutual relationship
+  itself, and `reply_expected` now means "the answer is still owed", which is
+  true only when that send failed. The VTA's and VTC's `handle_tsp_control`
+  retried with `cancel_relationship`, which refuses `SendCancel` out of `None`
+  (the relationship is already forgotten). That is the exact VTI-38 failure.
+  They now use `TspOps::answer_cancellation`.
+
+
+
 ## [0.41.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.40.0...vta-service-v0.41.0) — 2026-09-23
 
 
