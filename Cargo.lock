@@ -521,9 +521,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-tui"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4d42936ad775ec8fc2990f8ce1478ed251ce835f22e4f8db908fa6feb5f851d"
+checksum = "36b1a843cabb739d4b44347704afcdebe6d585b4e903242d4d758c2de0c60a8a"
 dependencies = [
  "affinidi-messaging-mediator-admin",
  "chrono",
@@ -536,6 +536,7 @@ dependencies = [
  "sha256",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
