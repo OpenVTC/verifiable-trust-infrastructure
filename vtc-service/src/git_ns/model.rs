@@ -674,6 +674,14 @@ pub struct LinkAttempt {
 }
 
 /// A fresh opaque identifier with a readable prefix (`ns_…`, `repo_…`).
+/// A DID as DID-core's ABNF has it, and nothing else — see
+/// [`vta_sdk::identifier::validate_did_core`], which `cnm` applies too.
+/// Stricter than the `git-ns/_shared` schema's `Did` pattern
+/// (`^did:[a-z0-9]+:\S+$`), which admits shell metacharacters.
+pub fn validate_did_core(label: &str, value: &str) -> Result<(), String> {
+    vta_sdk::identifier::validate_did_core(label, value).map_err(|e| e.0)
+}
+
 pub fn new_id(prefix: &str) -> String {
     let u = uuid::Uuid::new_v4().simple().to_string();
     format!("{prefix}_{}", &u[..20])

@@ -391,7 +391,10 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # 0.22.3 raises it again: it is the first release carrying the `git-ns` family
 # (`trust_tasks_rs::specs::git_ns`), which `all-specs` enables. 0.22 as a whole
 # moved in lockstep with `affinidi-messaging-sdk` 0.27 — see that entry.
-trust-tasks-rs = { version = "0.22.3", default-features = false, features = [
+#
+# 0.22.5 raises it for `git-ns/view` 0.2, `git-ns/drift/resolve` 0.1,
+# `git-ns/namespace/reseat` 0.1, `git-ns/bridge/job` 0.2 and `git-ns/bridge/event` 0.2.
+trust-tasks-rs = { version = "0.22.5", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

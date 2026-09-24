@@ -27,13 +27,14 @@ use crate::{HolderKey, VtcClient, VtcError};
 pub use trust_tasks_rs::specs::git_ns as specs;
 
 use specs::account::link::v0_1 as link;
-use specs::namespace::{bind::v0_1 as bind, unbind::v0_1 as unbind};
+use specs::drift::resolve::v0_1 as drift_resolve;
+use specs::namespace::{bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind};
 use specs::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
     transfer::v0_1 as transfer,
 };
 use specs::right::{grant::v0_1 as grant, revoke::v0_1 as revoke};
-use specs::view::v0_1 as view;
+use specs::view::{v0_1 as view, v0_2 as view2};
 
 /// The `Trust-Task` URL every git-namespace admin read is gated on.
 pub const GIT_NS_VIEW_TYPE: &str = <view::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -216,6 +217,61 @@ impl VtcClient {
             None => serde_json::json!({}),
         };
         self.git_ns_task(GIT_NS_VIEW_TYPE, &payload, key).await
+    }
+
+    /// `git-ns/view/0.2` — as [`Self::git_ns_view`], plus the forge accounts
+    /// linked to `key`'s own DID.
+    pub async fn git_ns_view_v2(
+        &self,
+        resource: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<view2::Response, VtcError> {
+        let payload = match resource {
+            Some(r) => serde_json::json!({ "resource": r }),
+            None => serde_json::json!({}),
+        };
+        self.git_ns_task(
+            <view2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/drift/resolve/0.1` — adopt or revert one reported drift item.
+    pub async fn git_ns_drift_resolve(
+        &self,
+        payload: &drift_resolve::Payload,
+        key: &HolderKey,
+    ) -> Result<drift_resolve::Response, VtcError> {
+        self.git_ns_task(
+            <drift_resolve::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/namespace/reseat/0.1` — a community administrator restores an
+    /// admin to a headless namespace.
+    pub async fn git_ns_reseat(
+        &self,
+        namespace: &str,
+        subject: &str,
+        statement: &str,
+        key: &HolderKey,
+    ) -> Result<reseat::Response, VtcError> {
+        let payload = serde_json::json!({
+            "namespace": namespace,
+            "subject": subject,
+            "statement": statement,
+        });
+        self.git_ns_task(
+            <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
     }
 
     /// `git-ns/account/link/0.1`.

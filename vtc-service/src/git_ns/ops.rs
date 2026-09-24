@@ -19,7 +19,9 @@ use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status,
 };
 use trust_tasks_rs::specs::git_ns::bridge::job::v0_1 as job_wire;
-use trust_tasks_rs::specs::git_ns::namespace::{bind::v0_1 as bind, unbind::v0_1 as unbind};
+use trust_tasks_rs::specs::git_ns::namespace::{
+    bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
+};
 use trust_tasks_rs::specs::git_ns::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
     transfer::v0_1 as transfer,
@@ -63,6 +65,7 @@ pub const NOT_OWNER: &str = transfer::error_codes::NOT_OWNER.code;
 pub const SELF_TRANSFER: &str = transfer::error_codes::SELF_TRANSFER.code;
 pub const UNSUPPORTED_FORGE: &str = link::error_codes::UNSUPPORTED_FORGE.code;
 pub const UNKNOWN_LINK: &str = link_status::error_codes::UNKNOWN_LINK.code;
+pub const NOT_HEADLESS: &str = reseat::error_codes::NOT_HEADLESS.code;
 
 /// Why an operation refused, as the wire will carry it.
 #[derive(Debug)]
@@ -100,7 +103,7 @@ impl std::fmt::Display for OpError {
     }
 }
 
-fn declared(code: &'static str, message: impl Into<String>) -> OpError {
+pub(super) fn declared(code: &'static str, message: impl Into<String>) -> OpError {
     OpError::Declared {
         code,
         message: message.into(),
@@ -203,7 +206,7 @@ pub fn consent_class(action: &str, right: Option<Right>) -> ConsentClass {
 /// The stand-in for the step-up this VTC cannot yet ask a member for — see
 /// [`super::GitNsConfig::elevated_requires_admin`]. It narrows, never widens:
 /// the actor must already be entitled by the rights model to reach here.
-async fn consent_gate(
+pub(super) async fn consent_gate(
     state: &AppState,
     actor: &Standing,
     action: &str,
@@ -329,14 +332,23 @@ pub async fn audit(state: &AppState, actor: &str, target: Option<&str>, a: Audit
 
 // ── lookups ─────────────────────────────────────────────────────────────────
 
-fn parse_resource(raw: &str) -> OpResult<Resource> {
+/// Refuse, as the framework's `malformedRequest`, anything that is not a
+/// DID-core DID ([`super::model::validate_did_core`]).
+pub(super) fn did_core(label: &str, value: &str) -> OpResult<()> {
+    super::model::validate_did_core(label, value).map_err(OpError::Malformed)
+}
+
+pub(super) fn parse_resource(raw: &str) -> OpResult<Resource> {
     Resource::parse(raw).map_err(OpError::Malformed)
 }
 
 /// Step "refuses a resource inside no bound namespace with
 /// `git-ns:unknownNamespace`, and one inside a pending namespace with
 /// `git-ns:namespaceNotBound`".
-fn bound_namespace_for<'a>(snap: &'a Snapshot, resource: &Resource) -> OpResult<&'a Namespace> {
+pub(super) fn bound_namespace_for<'a>(
+    snap: &'a Snapshot,
+    resource: &Resource,
+) -> OpResult<&'a Namespace> {
     let ns = snap.namespace_containing(resource).ok_or_else(|| {
         declared(
             UNKNOWN_NAMESPACE,
@@ -375,7 +387,7 @@ async fn refuse_while_withdrawing(
     Ok(())
 }
 
-fn namespace_by_id<'a>(snap: &'a Snapshot, id: &str) -> OpResult<&'a Namespace> {
+pub(super) fn namespace_by_id<'a>(snap: &'a Snapshot, id: &str) -> OpResult<&'a Namespace> {
     snap.namespace(id).ok_or_else(|| {
         declared(
             UNKNOWN_NAMESPACE,
@@ -384,7 +396,7 @@ fn namespace_by_id<'a>(snap: &'a Snapshot, id: &str) -> OpResult<&'a Namespace> 
     })
 }
 
-fn repo_at<'a>(snap: &'a Snapshot, resource: &Resource) -> OpResult<&'a Repo> {
+pub(super) fn repo_at<'a>(snap: &'a Snapshot, resource: &Resource) -> OpResult<&'a Repo> {
     lookup(snap, resource)?.ok_or_else(|| {
         declared(
             UNKNOWN_REPO,
@@ -436,7 +448,12 @@ fn to_string_json<T: serde::Serialize>(v: &T) -> String {
         .unwrap_or_default()
 }
 
-fn new_row(subject: &str, right: Right, granted_by: &str, subject_member: bool) -> RightRow {
+pub(super) fn new_row(
+    subject: &str,
+    right: Right,
+    granted_by: &str,
+    subject_member: bool,
+) -> RightRow {
     RightRow {
         subject: subject.to_string(),
         right,
@@ -779,6 +796,174 @@ pub async fn unbind(
     }))?)
 }
 
+// ── git-ns/namespace/reseat/0.1 ─────────────────────────────────────────────
+
+/// Recovery for a headless namespace: a community administrator grants
+/// `git.ns.admin` on it to a current member. The capability is worth nothing
+/// here unless the namespace is headless — no live `git.ns.admin` record whose
+/// subject is a current member — which is checked, and the right recorded,
+/// under one hold of the store lock (step 6: of two reseats, or a reseat and
+/// a lapse sweep, exactly one outcome is recorded).
+pub async fn namespace_reseat(
+    state: &AppState,
+    actor_did: &str,
+    p: reseat::Payload,
+) -> OpResult<reseat::Response> {
+    did_core("subject", &p.subject.to_string())?;
+    let actor = standing(state, actor_did).await?;
+    // Step 1.
+    if !actor.community_admin {
+        return Err(OpError::PermissionDenied(
+            "reseating a namespace needs the community-administrator capability".into(),
+        ));
+    }
+    let _guard = store::write_lock().await;
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let t = now();
+    // Step 2.
+    let ns = namespace_by_id(&snap, &p.namespace)?.clone();
+    if ns.state != NamespaceState::Bound {
+        return Err(declared(
+            NAMESPACE_NOT_BOUND,
+            format!(
+                "{} is still pending: the binding in progress records its admin",
+                ns.resource()
+            ),
+        ));
+    }
+    let resource = ns.resource();
+    let scope = Scope::Namespace(ns.id.clone());
+    // Step 3 — headless: no live record, of a current member. A record with
+    // an expiry counts while it is live (the invariant, not this, discounts
+    // it). The refusal names nobody.
+    let mut live_admin = false;
+    for row in snap
+        .rows(&scope)
+        .iter()
+        .filter(|r| r.right == Right::NsAdmin && r.is_live(t))
+    {
+        if standing(state, &row.subject).await?.member {
+            live_admin = true;
+            break;
+        }
+    }
+    if live_admin {
+        return Err(declared(
+            NOT_HEADLESS,
+            format!(
+                "{resource} has a live git.ns.admin, so it is not headless; its admins grant                  git.ns.admin with git-ns/right/grant"
+            ),
+        ));
+    }
+    // Step 4 — fixed rule 5.
+    let subject = p.subject.to_string();
+    did_core("subject", &subject)?;
+    let subject_standing = standing(state, &subject).await?;
+    if !subject_standing.member {
+        return Err(declared(
+            MEMBERS_ONLY,
+            "git.ns.admin goes only to a current member of the community",
+        ));
+    }
+    let passed =
+        rules::reseat_admitted(actor.community_admin, !live_admin, subject_standing.member)
+            .ok_or_else(|| OpError::PermissionDenied("the reseat is not admitted".into()))?;
+    // Step 5.
+    let version = check_policy(
+        state,
+        PolicyInput {
+            action: "namespace.reseat",
+            actor: &actor,
+            actor_rights: rules::effective_on(&snap, &actor.did, &resource, t)
+                .into_iter()
+                .collect(),
+            resource: &resource,
+            right: Some(Right::NsAdmin),
+            subject: Some((
+                &subject_standing,
+                rules::effective_on(&snap, &subject, &resource, t)
+                    .into_iter()
+                    .collect(),
+            )),
+            visibility: None,
+            expires_at: None,
+            namespace: Some(&ns),
+            passed,
+        },
+    )
+    .await?;
+
+    // Step 7's evidence: each admin record the namespace still holds, and how
+    // it ended. Named by when it was granted, not by whom it was held — a
+    // departed member's DID does not go into a new audit row in plaintext.
+    let statement = p.statement.to_string();
+    let mut evidence = Vec::new();
+    for row in snap
+        .rows(&scope)
+        .iter()
+        .filter(|r| r.right == Right::NsAdmin)
+    {
+        let ended = if !row.is_live(t) {
+            json!({ "ended": "lapsed", "at": row.expires_at.map(wire::timestamp) })
+        } else {
+            json!({ "ended": "departed" })
+        };
+        let mut e = json!({ "grantedAt": wire::timestamp(row.granted_at) });
+        if let (Some(o), Some(extra)) = (e.as_object_mut(), ended.as_object()) {
+            o.extend(extra.clone());
+        }
+        evidence.push(e);
+    }
+
+    // Step 6 — permanent, so the recovered namespace meets the last-admin
+    // invariant from the moment it has an admin again.
+    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut row = new_row(&subject, Right::NsAdmin, &actor.did, true);
+    row.reason = Some(statement.clone());
+    row.granter_was_member = actor.member;
+    set.rows.push(row.clone());
+    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    // Step 8 — the namespace-level forge projection, as for any ns.admin.
+    let mut updated = ns.clone();
+    updated.roles_digest = None;
+    store::put_namespace(&state.git_ns.ks, &updated).await?;
+
+    // Step 7.
+    audit(
+        state,
+        &actor.did,
+        Some(&subject),
+        Audit {
+            action: "gitNs.namespace.reseated",
+            namespace: Some(&ns.id),
+            resource: Some(resource.to_string()),
+            right: Some(Right::NsAdmin),
+            policy_version: version,
+            detail: Some(
+                json!({ "statement": statement, "headlessEvidence": evidence }).to_string(),
+            ),
+        },
+    )
+    .await;
+    audit(
+        state,
+        &actor.did,
+        Some(&subject),
+        Audit {
+            action: "gitNs.right.granted",
+            namespace: Some(&ns.id),
+            resource: Some(resource.to_string()),
+            right: Some(Right::NsAdmin),
+            policy_version: version,
+            detail: Some("reseat".into()),
+        },
+    )
+    .await;
+    Ok(wire::into(
+        json!({ "right": wire::right_record(&row, &resource, true) }),
+    )?)
+}
+
 // ── git-ns/repo/create/0.1 ──────────────────────────────────────────────────
 
 pub async fn repo_create(
@@ -991,6 +1176,9 @@ pub async fn repo_adopt(
     let owns_reservation = reservation.as_ref().is_some_and(|scope| {
         rules::explicit_admitted(&snap, &actor.did, Right::RepoOwn, scope, t).is_some()
     });
+    for o in &p.owners {
+        did_core("owners", o)?;
+    }
     if p.owners.is_empty() {
         return Err(OpError::Malformed(
             "a repository always has an owner: name at least one".into(),
@@ -1225,6 +1413,7 @@ pub async fn repo_transfer(
         ));
     };
     let to = p.to.to_string();
+    did_core("to", &to)?;
     if to == actor.did {
         return Err(declared(SELF_TRANSFER, "`to` is you"));
     }
@@ -1473,6 +1662,7 @@ pub async fn right_grant(
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
     let subject = p.subject.to_string();
+    did_core("subject", &subject)?;
 
     // Item 2.
     let ns = bound_namespace_for(&snap, &resource)?.clone();
@@ -1606,6 +1796,7 @@ pub async fn right_revoke(
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
     let subject = p.subject.to_string();
+    did_core("subject", &subject)?;
     let not_granted = || {
         declared(
             NOT_GRANTED,
@@ -1709,6 +1900,8 @@ pub async fn account_link(
     actor_did: &str,
     p: link::Payload,
 ) -> OpResult<link::Response> {
+    // The account is recorded against this DID.
+    did_core("member", actor_did)?;
     let actor = standing(state, actor_did).await?;
     // Item 1.
     if !actor.member {

