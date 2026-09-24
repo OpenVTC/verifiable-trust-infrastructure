@@ -1183,3 +1183,63 @@ async fn import_rejects_an_unknown_top_level_member() {
     .await;
     assert_eq!(tt_error_code(&body), "malformedRequest", "{body}");
 }
+
+/// An import onto a VTC with **no stored profile** meets the same caps an edit
+/// does. It used to store the imported profile verbatim, so it was the one way
+/// to publish a `javascript:` logo URL on the unauthenticated public-profile
+/// page — every other path goes through `CommunityProfileUpdate::apply`.
+#[tokio::test]
+async fn an_import_with_no_stored_profile_meets_the_edit_caps() {
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let mut document = document_with_profile(COMMUNITY_DID, "Imported", "en");
+    document["communityProfile"]["logoUrl"] = json!("javascript:alert(1)");
+
+    let (status, body) = import_signed(&fix, &admin, true, document).await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert_eq!(tt_error_code(&body), "malformedRequest", "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("logoUrl"),
+        "the refusal names the member: {body}"
+    );
+    assert!(
+        vtc_service::community::load_profile(&fix.state.community_ks)
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused import must not store a profile"
+    );
+}
+
+/// With no stored profile, an import that passes the caps is stored — keeping
+/// the imported `createdAt` — and reports the members it set.
+#[tokio::test]
+async fn an_import_with_no_stored_profile_stores_it_and_reports_the_members() {
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let document = document_with_profile(COMMUNITY_DID, "Imported", "fr");
+
+    let (status, body) = import_signed(&fix, &admin, true, document).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let applied: Vec<_> = body["profileChanges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["key"].as_str().unwrap().to_string())
+        .collect();
+    for key in ["name", "description", "language"] {
+        assert!(applied.contains(&key.to_string()), "{key}: {body}");
+    }
+
+    let stored = vtc_service::community::load_profile(&fix.state.community_ks)
+        .await
+        .unwrap()
+        .expect("the import stored a profile");
+    assert_eq!(stored.community_did, COMMUNITY_DID);
+    assert_eq!(stored.name, "Imported");
+    assert_eq!(stored.language, "fr");
+    assert_eq!(stored.created_at.to_rfc3339(), "2026-05-12T00:00:00+00:00");
+}
