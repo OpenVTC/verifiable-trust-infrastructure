@@ -78,6 +78,21 @@ export function errorStatus(err: unknown): number | undefined {
 }
 
 /**
+ * Why a read failed, for the reads a scoped administrator cannot make.
+ *
+ * Rights, drift, the registry mirror, linked accounts and the departed-grants
+ * review need a *community* administrator — an admin session whose access is
+ * not limited to some contexts — because they span every namespace. A 403
+ * there is that, and saying so is more use than the daemon's bare refusal.
+ */
+export function readErrorMessage(err: unknown): string {
+  if (errorStatus(err) === 403) {
+    return "only a community administrator (an admin not limited to some contexts) can read this";
+  }
+  return errorMessage(err);
+}
+
+/**
  * Workflow · keyring · variables · required check, as four dots.
  *
  * Colour is never the only signal: the group carries a label naming what is

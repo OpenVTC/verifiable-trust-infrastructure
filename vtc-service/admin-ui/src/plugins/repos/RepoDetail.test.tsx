@@ -295,6 +295,19 @@ describe("Repo detail", () => {
     expect(await within(act).findByText(/does\s+not hold/)).toBeTruthy();
   });
 
+  it("says a scoped admin cannot read the community-wide records", async () => {
+    mockFetch([
+      { path: "/v1/git-ns/rights", status: 403, body: { error: "super admin required" } },
+      ...gitNsRoutes(),
+    ]);
+    mount(WIDGETS.resource);
+
+    const people = await screen.findByRole("region", { name: "People and rights" });
+    expect(
+      (await within(people).findByText(/Rights could not be read/)).textContent,
+    ).toMatch(/only a community administrator/);
+  });
+
   it("says when the VTC records no such repository", async () => {
     mockFetch(gitNsRoutes());
     mount("github.com/acme/nope");

@@ -51,6 +51,7 @@ import {
 } from "./model";
 import {
   errorMessage,
+  readErrorMessage,
   errorStatus,
   formatDay,
   memberPath,
@@ -460,7 +461,7 @@ function RegistryPreview({
       </div>
       {proj.isError && (
         <p className="muted">
-          What is published could not be read ({errorMessage(proj.error)}); the list
+          What is published could not be read ({readErrorMessage(proj.error)}); the list
           below is what the records call for.
         </p>
       )}
@@ -687,7 +688,7 @@ export function RepoDetail() {
             </div>
             {rightsQ.isPending && <p>Loading rights…</p>}
             {rightsQ.isError && (
-              <p className="muted">Rights could not be read: {errorMessage(rightsQ.error)}.</p>
+              <p className="muted">Rights could not be read: {readErrorMessage(rightsQ.error)}.</p>
             )}
             {rightsQ.isSuccess && people.length === 0 && (
               <p className="muted">
@@ -749,7 +750,7 @@ export function RepoDetail() {
             <section className="card" id="drift" aria-labelledby="gitns-drift">
               <h3 id="gitns-drift">Drift</h3>
               {driftQ.isError && (
-                <p className="muted">Drift could not be read: {errorMessage(driftQ.error)}.</p>
+                <p className="muted">Drift could not be read: {readErrorMessage(driftQ.error)}.</p>
               )}
               <DriftList
                 items={drift}

@@ -93,10 +93,17 @@ describe("desiredTuples — mirrors git_ns::projection::desired", () => {
     expect(t.map((x) => x.action)).toEqual(["git.repo.own", "git.repo.maintain"]);
   });
 
-  it("publishes nothing for a pending namespace, an unmanaged repo, or a role-derived right", () => {
+  it("publishes a role-derived commit right inside a bound namespace, and none outside", () => {
+    const roleDerived = [{ ...RIGHTS[5]!, origin: "roleDerived", grantedBy: null }];
+    expect(desiredTuples(roleDerived, [ACME], [WIDGETS], []).map((t) => t.action)).toEqual([
+      "git.commit.sign",
+    ]);
+    const elsewhere = [{ ...roleDerived[0]!, resource: "github.com/other/x" }];
+    expect(desiredTuples(elsewhere, [ACME], [WIDGETS], [])).toEqual([]);
+  });
+
+  it("publishes nothing for a pending namespace or an unmanaged repo", () => {
     expect(desiredTuples(RIGHTS, [{ ...ACME, state: "pending" }], [WIDGETS], [])).toEqual([]);
-    const roleDerived = [{ ...RIGHTS[5]!, origin: "roleDerived" }];
-    expect(desiredTuples(roleDerived, [ACME], [WIDGETS], [])).toEqual([]);
     const onSandbox = [{ ...RIGHTS[3]!, resource: SANDBOX.resource }];
     expect(desiredTuples(onSandbox, [ACME], [SANDBOX], [])).toEqual([]);
   });

@@ -39,6 +39,7 @@ import {
   BootstrapDots,
   DEPARTED_PATH,
   errorMessage,
+  readErrorMessage,
   namespacePath,
   POLICY_PATH,
   repoPath,
@@ -435,7 +436,7 @@ function DepartedCard() {
       {q.isPending && <p>Reading grants…</p>}
       {q.isError && (
         <p className="muted">
-          Could not be read: {errorMessage(q.error)}. This is a failure to ask, not
+          Could not be read: {readErrorMessage(q.error)}. This is a failure to ask, not
           an empty list.
         </p>
       )}
@@ -605,7 +606,7 @@ export function Overview() {
           {rightsQ.isError ? (
             <section className="card">
               <h3>Namespace rights</h3>
-              <p className="muted">Rights could not be read: {errorMessage(rightsQ.error)}.</p>
+              <p className="muted">Rights could not be read: {readErrorMessage(rightsQ.error)}.</p>
             </section>
           ) : (
             <NamespaceRights
@@ -629,7 +630,8 @@ export function Overview() {
         <p className="muted gitns-small">
           {roleDerived} commit {roleDerived === 1 ? "right comes" : "rights come"} from{" "}
           <code>[hooks.git-trust] grant_on_role</code>. They are role-derived and
-          managed only through configuration.
+          managed only through configuration; inside a bound namespace the git
+          namespace projection publishes them.
         </p>
       )}
 

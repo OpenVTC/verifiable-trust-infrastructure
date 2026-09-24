@@ -6,9 +6,10 @@
 // operator a confident answer to a question the daemon answers differently.
 //
 //   - `consentClass` mirrors `git_ns::ops::consent_class`.
-//   - `desiredTuples` mirrors `git_ns::projection::desired`, including the
-//     implied `git.commit.sign` the projector writes explicitly because
-//     verify-trust asks about that action and no other.
+//   - `desiredTuples` mirrors `git_ns::projection::desired_all`, including
+//     the implied `git.commit.sign` the projector writes explicitly because
+//     verify-trust asks about that action and no other, and the role-derived
+//     commit rights inside bound namespaces, which the projector now owns.
 //   - `contains` mirrors `Resource::contains` — whole-segment containment, so
 //     `github.com/acme` holds `github.com/acme/widgets` and not
 //     `github.com/acme-labs/x`.
@@ -449,12 +450,13 @@ const tupleKey = (t: { entity: string; action: string; resource: string }) =>
   `${t.entity}\u0000${t.action}\u0000${t.resource}`;
 
 /**
- * What the projector should publish. Mirrors `git_ns::projection::desired`:
+ * What the projector should publish. Mirrors `git_ns::projection::desired_all`:
  * only bound namespaces; only repositories whose state publishes (active,
  * orphaned, archived); an archived repository's commit rights withdrawn,
- * records and implications alike; and the implied `git.commit.sign` of every
- * `own`, `maintain` and `ns.admin` written explicitly. Role-derived rights are
- * published by the hook relay, not the projector, and are left out.
+ * records and implications alike; the implied `git.commit.sign` of every
+ * `own`, `maintain` and `ns.admin` written explicitly; and a role-derived
+ * (`grant_on_role`) commit right on any resource inside a bound namespace —
+ * the projection publishes those there, and the hook relay only outside one.
  */
 export function desiredTuples(
   rights: GitNsRightRow[],
@@ -473,6 +475,11 @@ export function desiredTuples(
     out.set(key, { entity, action, resource, impliedBy, published: have.has(key) });
   };
   for (const r of rights) {
+    if (r.origin === "roleDerived") {
+      const bound = namespaces.some((n) => n.state === "bound" && contains(n.resource, r.resource));
+      if (bound) add(r.subject, "git.commit.sign", r.resource);
+      continue;
+    }
     if (r.origin !== "recorded") continue;
     const ns = namespaces.find((n) => contains(n.resource, r.resource));
     if (!ns || ns.state !== "bound") continue;

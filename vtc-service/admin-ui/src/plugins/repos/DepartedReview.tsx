@@ -22,7 +22,7 @@ import type { GitNsRight } from "@/lib/wire-types";
 import { revokeTask, type SignedTask } from "./actions";
 import { fetchIssuedByDeparted, fetchRepos, gitNsKeys } from "./api";
 import { isRight, rightLabel, shortName } from "./model";
-import { errorMessage, formatDay, REPOS_PATH, repoPath, SignTaskDialog, ToneChip } from "./ui";
+import { formatDay, readErrorMessage, REPOS_PATH, repoPath, SignTaskDialog, ToneChip } from "./ui";
 
 export function DepartedReview() {
   const book = useNameBook();
@@ -49,7 +49,7 @@ export function DepartedReview() {
       {q.isError && (
         <section className="card error">
           <h3>Grants could not be read</h3>
-          <p>{errorMessage(q.error)}. This is a failure to ask, not an empty list.</p>
+          <p>{readErrorMessage(q.error)}. This is a failure to ask, not an empty list.</p>
         </section>
       )}
 
