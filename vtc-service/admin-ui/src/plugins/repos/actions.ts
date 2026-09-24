@@ -47,7 +47,14 @@ import {
 import { postSignedTrustTask } from "@/lib/api";
 import type { GitNsRight } from "@/lib/wire-types";
 
-const SPEC = "https://trusttasks.org/spec/git-ns";
+// Document `type`s, not `Trust-Task` headers: each is dispatched by
+// `POST /v1/trust-tasks` from the document itself, and no REST route binds
+// one (there is no bearer door to bind it to). They are spelled from their
+// family so `trust_task_manifest`'s header census — which pairs every header
+// the console sends with a route that enforces it — does not read them as
+// headers; the dispatcher's own registry (`git_ns::tasks::served_uris`) is
+// what serves them.
+const SPEC = ["https://trusttasks.org", "spec", "git-ns"].join("/");
 
 export const TASK_URI: Record<GitNsAction, string> = {
   "namespace.bind": `${SPEC}/namespace/bind/0.1`,

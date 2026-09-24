@@ -1,8 +1,9 @@
 // Repos admin API — the reads the Repos plugin renders.
 //
-// Only one of these is a specification's read: `GET /v1/git-ns/view` answers
-// `git-ns/view/0.1#response`, and the daemon gates it on that task's URI. The
-// rest are console projections no specification defines — namespaces with
+// None of these is a specification's read. The one that is —
+// `GET /v1/git-ns/view`, gated on `git-ns/view/0.1` — is not used here: the
+// screens need the admin columns (admins, bootstrap, forge status) that only
+// the console projections carry. Those are projections no specification defines — namespaces with
 // their admins and forge status, repositories with bootstrap and guard,
 // rights, drift, jobs, the registry mirror, linked accounts, activity — so the
 // daemon mounts them behind the admin session with **no** Trust-Task binding
@@ -28,8 +29,6 @@ import type {
   MembersPage,
 } from "@/lib/wire-types";
 
-/** `git-ns/view/0.1` — the one specification read in the family. */
-export const TASK_GIT_NS_VIEW = "https://trusttasks.org/spec/git-ns/view/0.1";
 const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
 
 /** Query keys. Everything under `["git-ns"]` is refreshed together. */
