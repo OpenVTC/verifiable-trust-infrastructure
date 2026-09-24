@@ -1,7 +1,7 @@
-// The forms that build a change: grant a right, adopt, create or transfer a
-// repository. Each ends by handing its `SignedTask` to the caller, which shows
-// it in `SignTaskDialog` to sign and send — the forms themselves send nothing
-// (see `actions.ts`).
+// The forms that build a change: grant or revoke a right, adopt, create or
+// transfer a repository. Each ends by handing its `SignedTask` to the caller,
+// which shows it in `SignTaskDialog` to sign and send — the forms themselves
+// send nothing (see `actions.ts`).
 //
 // The person picker lists current members and also takes a pasted DID,
 // because whether a non-member may hold a repository right is the
@@ -9,9 +9,14 @@
 // floor the daemon enforces regardless — namespace rights go to current
 // members only — is enforced here too, so the form never builds a grant the
 // fixed rules will refuse.
+//
+// Members are read a page at a time (the listing clamps a page to 200), with
+// a filter over what has been read and a button for the next page: a
+// community with more members than one page must still be able to find the
+// one it means, and a silently truncated list would not say it was.
 
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { useNameBook } from "@/lib/names";
 import { shortenDid } from "@/lib/format";
@@ -21,17 +26,22 @@ import {
   adoptTask,
   createTask,
   didError,
+  expiryDaysError,
   grantTask,
+  MAX_REASON,
+  reasonError,
+  revokeTask,
   segmentError,
   type SignedTask,
   transferTask,
 } from "./actions";
-import { fetchMembers, gitNsKeys } from "./api";
-import { consentClass, RIGHT_LABEL, shortName } from "./model";
+import { fetchMembersPage, gitNsKeys } from "./api";
+import { consentClass, RIGHT_LABEL, rightLabel, shortName } from "./model";
+import { useModal } from "./ui";
 
 const OTHER = "__other__";
 
-/** A modal form with the confirmation dialog's keyboard contract. */
+/** A modal form, with the Repos dialogs' keyboard contract (`useModal`). */
 function FormDialog({
   title,
   onClose,
@@ -47,26 +57,13 @@ function FormDialog({
 }) {
   const titleId = useId();
   const surfaceRef = useRef<HTMLFormElement>(null);
-
-  useEffect(() => {
-    surfaceRef.current
-      ?.querySelector<HTMLElement>("select, input, textarea, button")
-      ?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const dismiss = useModal(surfaceRef, onClose);
 
   return (
     <div
       className="confirm-scrim"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) dismiss();
       }}
     >
       <form
@@ -105,6 +102,55 @@ function FieldError({ id, error }: { id: string; error: string | null }) {
   );
 }
 
+/** A labelled text input whose error, when there is one, describes it. */
+function TextField({
+  label,
+  value,
+  onChange,
+  error,
+  hint,
+  placeholder,
+  inputMode,
+  maxLength,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  error?: string | null;
+  hint?: string;
+  placeholder?: string;
+  inputMode?: "numeric";
+  maxLength?: number;
+}) {
+  const id = useId();
+  const errId = `${id}-err`;
+  const hintId = `${id}-hint`;
+  const describedBy = [error ? errId : null, hint ? hintId : null].filter(Boolean).join(" ");
+  return (
+    <div className="field">
+      <label className="field-label" htmlFor={id}>
+        {label}
+      </label>
+      <input
+        id={id}
+        value={value}
+        placeholder={placeholder}
+        inputMode={inputMode}
+        maxLength={maxLength}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy || undefined}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {hint && (
+        <span id={hintId} className="field-hint">
+          {hint}
+        </span>
+      )}
+      <FieldError id={errId} error={error ?? null} />
+    </div>
+  );
+}
+
 /**
  * Pick a member, or paste a DID. `membersOnly` hides the paste option — for
  * namespace rights, which the fixed rules give to current members only.
@@ -125,21 +171,46 @@ function PersonField({
   exclude?: string[];
 }) {
   const id = useId();
-  const errId = useId();
+  const errId = `${id}-err`;
   const book = useNameBook();
-  const facts = useQuery({ queryKey: gitNsKeys.members, queryFn: fetchMembers });
+  const pages = useInfiniteQuery({
+    queryKey: gitNsKeys.members,
+    queryFn: ({ pageParam }) => fetchMembersPage(pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor ?? null,
+  });
   const [mode, setMode] = useState<"member" | "other">("member");
-  const members = (facts.data ?? []).filter((m) => !exclude.includes(m.did));
+  const [filter, setFilter] = useState("");
+  const members = useMemo(() => {
+    const all = (pages.data?.pages ?? []).flatMap((p) => p.members);
+    const f = filter.trim().toLowerCase();
+    return all
+      .filter((m) => !exclude.includes(m.did))
+      .filter(
+        (m) =>
+          !f ||
+          m.did.toLowerCase().includes(f) ||
+          (book.nameOf(m.did) ?? m.label ?? "").toLowerCase().includes(f),
+      );
+  }, [pages.data, filter, exclude, book]);
 
   return (
     <div className="field">
       <label className="field-label" htmlFor={id}>
         {label}
       </label>
+      <input
+        type="search"
+        aria-label={`Filter members for ${label}`}
+        placeholder="Filter by name or DID"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+      />
       <select
         id={id}
         value={mode === "other" ? OTHER : value}
-        aria-describedby={error ? errId : undefined}
+        aria-invalid={error && mode === "member" ? true : undefined}
+        aria-describedby={error && mode === "member" ? errId : undefined}
         onChange={(e) => {
           if (e.target.value === OTHER) {
             setMode("other");
@@ -151,33 +222,46 @@ function PersonField({
         }}
       >
         <option value="">
-          {facts.isPending ? "Loading members…" : "Choose a member"}
+          {pages.isPending ? "Loading members…" : "Choose a member"}
         </option>
         {members.map((m) => (
           <option key={m.did} value={m.did}>
-            {book.nameOf(m.did) ?? m.label ?? shortenDid(m.did)} — {shortenDid(m.did)}
+            {book.nameOf(m.did) ?? m.label ?? shortenDid(m.did)} — {m.did}
           </option>
         ))}
         {!membersOnly && <option value={OTHER}>Someone else — paste a DID</option>}
       </select>
-      {facts.isError && (
+      {pages.hasNextPage && (
+        <button
+          type="button"
+          className="link"
+          disabled={pages.isFetchingNextPage}
+          onClick={() => void pages.fetchNextPage()}
+        >
+          {pages.isFetchingNextPage ? "Loading more members…" : "Load more members"}
+        </button>
+      )}
+      {pages.isError && (
         <span className="field-hint">
-          The member list could not be read; paste the DID instead.
+          The member list could not be read
+          {membersOnly ? "." : "; paste the DID instead."}
         </span>
       )}
       {mode === "other" && (
-        <input
-          aria-label={`${label} DID`}
-          placeholder="did:webvh:…"
-          value={value}
-          onChange={(e) => onChange(e.target.value.trim())}
-        />
-      )}
-      {mode === "other" && (
-        <span className="field-hint">
-          A non-member holds a repository right only if the community's git
-          namespace policy allows external signers.
-        </span>
+        <>
+          <input
+            aria-label={`${label} DID`}
+            placeholder="did:webvh:…"
+            value={value}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? errId : undefined}
+            onChange={(e) => onChange(e.target.value.trim())}
+          />
+          <span className="field-hint">
+            A non-member holds a repository right only if the community's git
+            namespace policy allows external signers.
+          </span>
+        </>
       )}
       <FieldError id={errId} error={error} />
     </div>
@@ -201,31 +285,35 @@ export function GrantDialog({
   onBuilt: (task: SignedTask) => void;
 }) {
   const rightId = useId();
-  const expiryId = useId();
-  const reasonId = useId();
   const [subject, setSubject] = useState("");
   const [right, setRight] = useState<GitNsRight>(initialRight ?? rights[0]!);
   const [days, setDays] = useState("");
   const [reason, setReason] = useState("");
-  const [errors, setErrors] = useState<{ subject: string | null; days: string | null }>({
-    subject: null,
-    days: null,
-  });
+  const [errors, setErrors] = useState<{
+    subject: string | null;
+    days: string | null;
+    reason: string | null;
+  }>({ subject: null, days: null, reason: null });
   const namespaceRight = right === "git.ns.admin" || right === "git.repo.create";
   const consent = consentClass("right.grant", right);
 
   const submit = () => {
-    const n = days.trim() ? Number(days) : undefined;
     const next = {
       subject: didError(subject),
-      days:
-        n !== undefined && (!Number.isInteger(n) || n < 1)
-          ? "Whole days, 1 or more — or leave it empty for no expiry."
-          : null,
+      days: expiryDaysError(days),
+      reason: reasonError(reason),
     };
     setErrors(next);
-    if (next.subject || next.days) return;
-    onBuilt(grantTask({ subject, right, resource, expiresInDays: n, reason }));
+    if (next.subject || next.days || next.reason) return;
+    onBuilt(
+      grantTask({
+        subject: subject.trim(),
+        right,
+        resource,
+        expiresInDays: days.trim() ? Number(days) : undefined,
+        reason,
+      }),
+    );
   };
 
   return (
@@ -271,34 +359,68 @@ export function GrantDialog({
           needs a step-up (design §6).
         </p>
       )}
-      <div className="field">
-        <label className="field-label" htmlFor={expiryId}>
-          Expires after (days)
-        </label>
-        <input
-          id={expiryId}
-          inputMode="numeric"
-          placeholder="No expiry"
-          value={days}
-          aria-describedby={errors.days ? `${expiryId}-err` : undefined}
-          onChange={(e) => setDays(e.target.value)}
-        />
-        <FieldError id={`${expiryId}-err`} error={errors.days} />
-      </div>
-      <div className="field">
-        <label className="field-label" htmlFor={reasonId}>
-          Reason
-        </label>
-        <input
-          id={reasonId}
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder="Optional"
-        />
-        <span className="field-hint">
-          Shown to the resource's owners and admins. Never published.
-        </span>
-      </div>
+      <TextField
+        label="Expires after (days)"
+        value={days}
+        onChange={setDays}
+        inputMode="numeric"
+        placeholder="No expiry"
+        error={errors.days}
+      />
+      <TextField
+        label="Reason"
+        value={reason}
+        onChange={setReason}
+        placeholder="Optional"
+        hint={`Shown to the resource's owners and admins. Never published. At most ${MAX_REASON} characters.`}
+        error={errors.reason}
+      />
+    </FormDialog>
+  );
+}
+
+export function RevokeDialog({
+  subject,
+  subjectName,
+  right,
+  resource,
+  initialReason = "",
+  onClose,
+  onBuilt,
+}: {
+  subject: string;
+  subjectName?: string;
+  right: GitNsRight;
+  resource: string;
+  initialReason?: string;
+  onClose: () => void;
+  onBuilt: (task: SignedTask) => void;
+}) {
+  const [reason, setReason] = useState(initialReason);
+  const [error, setError] = useState<string | null>(null);
+  const submit = () => {
+    const e = reasonError(reason);
+    setError(e);
+    if (!e) onBuilt(revokeTask(subject, right, resource, reason));
+  };
+  return (
+    <FormDialog
+      title={`Revoke ${rightLabel(right).toLowerCase()} on ${shortName(resource)}`}
+      onClose={onClose}
+      onSubmit={submit}
+      submitLabel="Build the revocation"
+    >
+      <p>
+        From <b>{subjectName ?? shortenDid(subject)}</b> <code className="gitns-party-did">{subject}</code>
+      </p>
+      <TextField
+        label="Reason"
+        value={reason}
+        onChange={setReason}
+        placeholder="Optional"
+        hint={`Recorded with the revocation for the resource's owners and admins. Never published. At most ${MAX_REASON} characters.`}
+        error={error}
+      />
     </FormDialog>
   );
 }
@@ -316,7 +438,6 @@ export function AdoptDialog({
   onClose: () => void;
   onBuilt: (task: SignedTask) => void;
 }) {
-  const nameId = useId();
   const [name, setName] = useState("");
   const [owner, setOwner] = useState("");
   const [errors, setErrors] = useState<{ name: string | null; owner: string | null }>({
@@ -325,17 +446,12 @@ export function AdoptDialog({
   });
 
   const submit = () => {
-    const resource = fixed ?? (namespaceResource ? `${namespaceResource}/${name}` : name);
-    const next = {
-      name:
-        fixed || /^[a-z0-9.-]+\/[a-z0-9._-]+\/[a-z0-9._-]+$/.test(resource)
-          ? null
-          : "A lowercase repository name in this namespace.",
-      owner: didError(owner),
-    };
+    const nameErr = fixed ? null : segmentError(name.trim(), "repository");
+    const resource = fixed ?? `${namespaceResource}/${name.trim()}`;
+    const next = { name: nameErr, owner: didError(owner) };
     setErrors(next);
     if (next.name || next.owner) return;
-    onBuilt(adoptTask(resource, [owner]));
+    onBuilt(adoptTask(resource, [owner.trim()]));
   };
 
   return (
@@ -351,18 +467,13 @@ export function AdoptDialog({
         on it.
       </p>
       {!fixed && (
-        <div className="field">
-          <label className="field-label" htmlFor={nameId}>
-            Repository {namespaceResource ? `in ${namespaceResource}` : ""}
-          </label>
-          <input
-            id={nameId}
-            value={name}
-            placeholder={namespaceResource ? "widgets" : "github.com/acme/widgets"}
-            onChange={(e) => setName(e.target.value.trim())}
-          />
-          <FieldError id={`${nameId}-err`} error={errors.name} />
-        </div>
+        <TextField
+          label={`Repository in ${namespaceResource}`}
+          value={name}
+          onChange={(v) => setName(v.trim())}
+          placeholder="widgets"
+          error={errors.name}
+        />
       )}
       <PersonField
         label="First owner"
@@ -388,9 +499,9 @@ export function TransferDialog({
   const [to, setTo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const submit = () => {
-    const e = didError(to) ?? (owners.includes(to) ? "Already an owner." : null);
+    const e = didError(to) ?? (owners.includes(to.trim()) ? "Already an owner." : null);
     setError(e);
-    if (!e) onBuilt(transferTask(resource, to));
+    if (!e) onBuilt(transferTask(resource, to.trim()));
   };
   return (
     <FormDialog
@@ -428,8 +539,6 @@ export function CreateDialog({
   onClose: () => void;
   onBuilt: (task: SignedTask) => void;
 }) {
-  const nameId = useId();
-  const descId = useId();
   const [name, setName] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [description, setDescription] = useState("");
@@ -457,19 +566,13 @@ export function CreateDialog({
           ? "On a personal account no bot can create a repository: the VTC reserves the name and answers with the commands the account holder runs."
           : "The bridge creates it and bootstraps commit trust. Whoever signs becomes its owner, and needs git.repo.create here."}
       </p>
-      <div className="field">
-        <label className="field-label" htmlFor={nameId}>
-          Name
-        </label>
-        <input
-          id={nameId}
-          value={name}
-          placeholder="widgets"
-          aria-describedby={error ? `${nameId}-err` : undefined}
-          onChange={(e) => setName(e.target.value.trim())}
-        />
-        <FieldError id={`${nameId}-err`} error={error} />
-      </div>
+      <TextField
+        label="Name"
+        value={name}
+        onChange={(v) => setName(v.trim())}
+        placeholder="widgets"
+        error={error}
+      />
       <fieldset className="gitns-fieldset">
         <legend>Visibility</legend>
         {(["public", "private"] as const).map((v) => (
@@ -487,18 +590,13 @@ export function CreateDialog({
           Either way, who owns it and who may commit is published to the Trust Registry.
         </span>
       </fieldset>
-      <div className="field">
-        <label className="field-label" htmlFor={descId}>
-          Description
-        </label>
-        <input
-          id={descId}
-          value={description}
-          placeholder="Optional"
-          onChange={(e) => setDescription(e.target.value)}
-        />
-        <span className="field-hint">Shown by the forge. Nothing you would not publish.</span>
-      </div>
+      <TextField
+        label="Description"
+        value={description}
+        onChange={setDescription}
+        placeholder="Optional"
+        hint="Shown by the forge. Nothing you would not publish."
+      />
     </FormDialog>
   );
 }

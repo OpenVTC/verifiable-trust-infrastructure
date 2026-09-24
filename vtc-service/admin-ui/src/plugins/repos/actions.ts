@@ -49,25 +49,29 @@ import type { GitNsRight } from "@/lib/wire-types";
 
 // Document `type`s, not `Trust-Task` headers: each is dispatched by
 // `POST /v1/trust-tasks` from the document itself, and no REST route binds
-// one (there is no bearer door to bind it to). They are spelled from their
-// family so `trust_task_manifest`'s header census — which pairs every header
-// the console sends with a route that enforces it — does not read them as
-// headers; the dispatcher's own registry (`git_ns::tasks::served_uris`) is
-// what serves them.
-const SPEC = ["https://trusttasks.org", "spec", "git-ns"].join("/");
-
+// one — there is no bearer door to bind it to. `trust_task_manifest` pairs
+// every header the console sends with a route that enforces it, and checks
+// these against the dispatcher's own registry (`git_ns::tasks::served_uris`)
+// instead, from its document-type allowlist.
 export const TASK_URI: Record<GitNsAction, string> = {
-  "namespace.bind": `${SPEC}/namespace/bind/0.1`,
-  "namespace.unbind": `${SPEC}/namespace/unbind/0.1`,
-  "right.grant": `${SPEC}/right/grant/0.1`,
-  "right.revoke": `${SPEC}/right/revoke/0.1`,
-  "repo.adopt": `${SPEC}/repo/adopt/0.1`,
-  "repo.transfer": `${SPEC}/repo/transfer/0.1`,
-  "repo.archive": `${SPEC}/repo/archive/0.1`,
-  "repo.create": `${SPEC}/repo/create/0.1`,
+  "namespace.bind": "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
+  "namespace.unbind": "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
+  "right.grant": "https://trusttasks.org/spec/git-ns/right/grant/0.1",
+  "right.revoke": "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
+  "repo.adopt": "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
+  "repo.transfer": "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
+  "repo.archive": "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
+  "repo.create": "https://trusttasks.org/spec/git-ns/repo/create/0.1",
 };
 
-/** A change, ready for the administrator to sign. */
+/** Someone a change is about, named in the dialog before it is signed. */
+export interface Party {
+  /** `Recipient`, `New owner`, `Revoked from`, … */
+  role: string;
+  did: string;
+}
+
+/** A change, ready to sign. */
 export interface SignedTask {
   action: GitNsAction;
   /** What the dialog is titled — the change in the operator's words. */
@@ -77,18 +81,54 @@ export interface SignedTask {
   taskUri: string;
   payload: Record<string, unknown>;
   consent: ConsentClass;
+  /** The resource it acts on, shown in full in the dialog. */
+  resource: string;
+  /** Who it is about, shown with name and full DID in the dialog. */
+  parties: Party[];
   /** The `cnm git …` command that signs and sends it. */
   command: string;
 }
 
-/** POSIX-shell quoting, only where a value needs it. DIDs and resources pass
- *  through unquoted; a free-text reason does not. */
+/**
+ * POSIX-shell quoting for one argument.
+ *
+ * Every argument of every command goes through this — DIDs, resources, ids,
+ * names, free text alike — because the command is meant to be pasted into a
+ * shell, and a value that validated as a DID is not thereby safe to run: a
+ * DID's method-specific id is not a shell word. A value is left bare only when
+ * it is made of characters no shell treats specially and cannot be read as an
+ * option; everything else is single-quoted, with embedded quotes closed and
+ * escaped, which leaves nothing inside for the shell to expand.
+ */
 export function shellQuote(value: string): string {
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+  if (value !== "" && /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) && !value.startsWith("-")) {
+    return value;
+  }
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-const cnm = (...args: string[]) => ["cnm", "git", ...args].join(" ");
+/** A subcommand word or an option, spelled by this module — never a value. */
+type Word = { word: string };
+const w = (word: string): Word => ({ word });
+/** `--flag=value`: the value is quoted and bound to its flag, so even a value
+ *  that begins with `-` cannot be read as another option. */
+const opt = (flag: string, value: string): string => `--${flag}=${shellQuote(value)}`;
+
+/**
+ * `cnm git …`. Words are this module's own literals; every other argument is
+ * a value and is quoted — positionals through `shellQuote`, options through
+ * `opt`, which binds the value to its flag.
+ */
+function cnm(...parts: (Word | string | { opt: string })[]): string {
+  const out = ["cnm", "git"];
+  for (const p of parts) {
+    if (typeof p === "string") out.push(shellQuote(p));
+    else if ("word" in p) out.push(p.word);
+    else out.push(p.opt);
+  }
+  return out.join(" ");
+}
+const o = (flag: string, value: string) => ({ opt: opt(flag, value) });
 
 // ── validation, as the specs state it ───────────────────────────────────
 
@@ -113,9 +153,44 @@ export function segmentError(value: string, what = "owner"): string | null {
   return null;
 }
 
+// DID Core §3.1: `did:` method-name `:` method-specific-id, where
+// method-name = 1*method-char (a-z, 0-9) and method-specific-id =
+// *( *idchar ":" ) 1*idchar, idchar = ALPHA / DIGIT / "." / "-" / "_" /
+// pct-encoded. A DID URL's fragment is accepted over the same characters.
+const IDCHAR = "(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})";
+const DID_RE = new RegExp(
+  `^did:[a-z0-9]+:(?:${IDCHAR}*:)*${IDCHAR}+(?:#${IDCHAR}+)?$`,
+);
+
 export function didError(value: string): string | null {
-  if (!value.trim()) return "Name the DID.";
-  if (!/^did:[a-z0-9]+:\S+$/.test(value.trim())) return "Not a DID (did:method:…).";
+  const v = value.trim();
+  if (!v) return "Name the DID.";
+  if (!DID_RE.test(v)) return "Not a DID (did:method:id, DID Core syntax).";
+  return null;
+}
+
+/** The longest reason the specs accept (`git-ns/right/{grant,revoke}`). */
+export const MAX_REASON = 1024;
+
+export function reasonError(value: string): string | null {
+  return value.trim().length > MAX_REASON
+    ? `At most ${MAX_REASON} characters — it is ${value.trim().length}.`
+    : null;
+}
+
+/** The longest expiry the form offers: ten years. A right meant to outlive
+ *  that is one meant to have no expiry. */
+export const MAX_EXPIRY_DAYS = 3650;
+
+export function expiryDaysError(value: string): string | null {
+  if (!value.trim()) return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) {
+    return "Whole days, 1 or more — or leave it empty for no expiry.";
+  }
+  if (n > MAX_EXPIRY_DAYS) {
+    return `At most ${MAX_EXPIRY_DAYS} days — leave it empty for no expiry.`;
+  }
   return null;
 }
 
@@ -132,7 +207,9 @@ export function bindTask(forge: string, owner: string, mode: "bridge" | "manual"
     taskUri: TASK_URI["namespace.bind"],
     payload: { forge, owner, mode },
     consent: consentClass("namespace.bind"),
-    command: cnm("namespace", "bind", "--forge", forge, "--owner", owner, "--mode", mode),
+    resource: `${forge}/${owner}`,
+    parties: [],
+    command: cnm(w("namespace"), w("bind"), o("forge", forge), o("owner", owner), o("mode", mode)),
   };
 }
 
@@ -145,7 +222,9 @@ export function unbindTask(namespaceId: string, resource: string): SignedTask {
     taskUri: TASK_URI["namespace.unbind"],
     payload: { namespace: namespaceId },
     consent: consentClass("namespace.unbind"),
-    command: cnm("namespace", "unbind", namespaceId),
+    resource,
+    parties: [],
+    command: cnm(w("namespace"), w("unbind"), namespaceId),
   };
 }
 
@@ -164,26 +243,18 @@ export function grantTask(g: GrantInput, now = new Date()): SignedTask {
     right: g.right,
     resource: g.resource,
   };
-  const args = [
-    "grant",
-    "--subject",
-    g.subject,
-    "--right",
-    g.right,
-    "--resource",
-    g.resource,
-  ];
+  const args = [w("grant"), o("subject", g.subject), o("right", g.right), o("resource", g.resource)];
   if (g.expiresInDays) {
     // `cnm` computes the instant when it signs; the preview uses now, so the
     // two differ by however long the operator takes to run it.
     const at = new Date(now.getTime() + g.expiresInDays * 86_400_000);
     payload.expiresAt = at.toISOString().replace(/\.\d{3}Z$/, "Z");
-    args.push("--expires-in", `${g.expiresInDays}d`);
+    args.push(o("expires-in", `${g.expiresInDays}d`));
   }
   const reason = g.reason?.trim();
   if (reason) {
     payload.reason = reason;
-    args.push("--reason", shellQuote(reason));
+    args.push(o("reason", reason));
   }
   return {
     action: "right.grant",
@@ -193,6 +264,8 @@ export function grantTask(g: GrantInput, now = new Date()): SignedTask {
     taskUri: TASK_URI["right.grant"],
     payload,
     consent: consentClass("right.grant", g.right),
+    resource: g.resource,
+    parties: [{ role: "Receives the right", did: g.subject }],
     command: cnm(...args),
   };
 }
@@ -204,11 +277,11 @@ export function revokeTask(
   reason?: string,
 ): SignedTask {
   const payload: Record<string, unknown> = { subject, right, resource };
-  const args = ["revoke", "--subject", subject, "--right", right, "--resource", resource];
+  const args = [w("revoke"), o("subject", subject), o("right", right), o("resource", resource)];
   const r = reason?.trim();
   if (r) {
     payload.reason = r;
-    args.push("--reason", shellQuote(r));
+    args.push(o("reason", r));
   }
   return {
     action: "right.revoke",
@@ -218,6 +291,8 @@ export function revokeTask(
     taskUri: TASK_URI["right.revoke"],
     payload,
     consent: consentClass("right.revoke", right),
+    resource,
+    parties: [{ role: "Loses the right", did: subject }],
     command: cnm(...args),
   };
 }
@@ -231,7 +306,9 @@ export function adoptTask(resource: string, owners: string[]): SignedTask {
     taskUri: TASK_URI["repo.adopt"],
     payload: { resource, owners },
     consent: consentClass("repo.adopt"),
-    command: cnm("adopt", resource, ...owners.flatMap((o) => ["--owner", o])),
+    resource,
+    parties: owners.map((did) => ({ role: "First owner", did })),
+    command: cnm(w("adopt"), resource, ...owners.map((did) => o("owner", did))),
   };
 }
 
@@ -244,7 +321,9 @@ export function transferTask(resource: string, to: string): SignedTask {
     taskUri: TASK_URI["repo.transfer"],
     payload: { resource, to },
     consent: consentClass("repo.transfer"),
-    command: cnm("transfer", resource, "--to", to),
+    resource,
+    parties: [{ role: "New owner", did: to }],
+    command: cnm(w("transfer"), resource, o("to", to)),
   };
 }
 
@@ -257,7 +336,9 @@ export function archiveTask(resource: string): SignedTask {
     taskUri: TASK_URI["repo.archive"],
     payload: { resource },
     consent: consentClass("repo.archive"),
-    command: cnm("archive", resource),
+    resource,
+    parties: [],
+    command: cnm(w("archive"), resource),
   };
 }
 
@@ -279,11 +360,11 @@ export function createTask(c: CreateInput): SignedTask {
     name: c.name,
     visibility: c.visibility,
   };
-  const args = ["create", "--namespace", c.namespaceId, c.name, "--visibility", c.visibility];
+  const args = [w("create"), o("namespace", c.namespaceId), c.name, o("visibility", c.visibility)];
   const d = c.description?.trim();
   if (d) {
     payload.description = d;
-    args.push("--description", shellQuote(d));
+    args.push(o("description", d));
   }
   return {
     action: "repo.create",
@@ -294,6 +375,8 @@ export function createTask(c: CreateInput): SignedTask {
     taskUri: TASK_URI["repo.create"],
     payload,
     consent: consentClass("repo.create"),
+    resource: `${c.namespaceResource}/${c.name}`,
+    parties: [],
     command: cnm(...args),
   };
 }
@@ -315,10 +398,21 @@ export function documentPreview(task: SignedTask): string {
   return JSON.stringify({ type: task.taskUri, payload: task.payload }, null, 2);
 }
 
-/** The URL a bridge-mode bind answers with (`next.url`), if any. */
+/** The URL a bridge-mode bind answers with (`next.url`), if it is https. */
 export function nextUrlOf(response: unknown): string | null {
   const url = (response as { next?: { url?: unknown } } | null)?.next?.url;
   return typeof url === "string" && /^https:\/\//.test(url) ? url : null;
+}
+
+/** Whether `url` is on `forge` — the only case the page may call it
+ *  "continue on {forge}". A bridge that answered with somewhere else is shown
+ *  as that, not as the forge. */
+export function urlIsOnForge(url: string, forge: string): boolean {
+  try {
+    return new URL(url).hostname === forge;
+  } catch {
+    return false;
+  }
 }
 
 export const CONSENT_LABEL: Record<ConsentClass, string> = {

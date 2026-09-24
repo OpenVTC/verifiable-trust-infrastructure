@@ -2,13 +2,14 @@
 // four-dot bootstrap indicator, and the dialog that signs and sends a change —
 // or hands it to the administrator where this browser cannot sign.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, ShieldAlert, SquareTerminal } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
-import { signingAvailable } from "@/lib/api";
+import { signingAvailable, SigningUnavailableError } from "@/lib/api";
+import { useNameBook } from "@/lib/names";
 import { useToast } from "@/lib/toast";
 import type { GitNsBootstrapStatus } from "@/lib/wire-types";
 
@@ -125,17 +126,75 @@ const CONSENT_MEANS: Record<SignedTask["consent"], string> = {
 export const CONSOLE_KEYS_PATH = "/console-keys";
 
 /**
+ * The modal contract every Repos dialog keeps, as the confirmation dialog
+ * does: focus moves in on open (the first field or button), Tab and Shift-Tab
+ * stay inside, Escape closes — unless `locked`, while something is in flight —
+ * and focus goes back to whatever opened the dialog when it closes.
+ */
+export function useModal(
+  surfaceRef: RefObject<HTMLElement | null>,
+  onClose: () => void,
+  locked = false,
+) {
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    surfaceRef.current
+      ?.querySelector<HTMLElement>("select, input, textarea, button")
+      ?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (!lockedRef.current) closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const tabbable = surfaceRef.current?.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary, [tabindex]:not([tabindex='-1'])",
+      );
+      if (!tabbable || tabbable.length === 0) return;
+      const first = tabbable[0]!;
+      const last = tabbable[tabbable.length - 1]!;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (opener && opener.isConnected) opener.focus();
+    };
+  }, [surfaceRef]);
+
+  /** For the scrim: a click on it closes, unless locked. */
+  return () => {
+    if (!lockedRef.current) closeRef.current();
+  };
+}
+
+/**
  * A change the console has built, to sign and send from this browser — or,
  * where it cannot sign, to hand to the administrator. See `actions.ts`.
  *
- * Modal, with the confirmation dialog's contract: Escape and the scrim close
- * it, focus starts on the first control, and Tab stays inside while it is
- * open. A destructive task needs its confirmation box ticked before it sends.
+ * Who the change is about and what it acts on are in the body, named and in
+ * full, before anything can be signed: the collapsed command is not where an
+ * operator should discover whose DID they are about to grant ownership to.
+ * A destructive task needs its confirmation box ticked before it sends, and
+ * the dialog cannot be dismissed while a send is in flight.
  */
 export function SignTaskDialog({
   task,
   onClose,
   onSent,
+  onHandedOff,
   children,
 }: {
   task: SignedTask;
@@ -143,12 +202,16 @@ export function SignTaskDialog({
   /** Called with the task's `#response` payload after the VTC accepts it.
    *  Without it, the dialog closes and the screen refreshes. */
   onSent?: (response: Record<string, unknown>) => void;
+  /** Called when the operator says they sent it from a terminal. Without it,
+   *  the dialog closes and the screen refreshes. */
+  onHandedOff?: () => void;
   /** Anything the flow adds under the hand-over — the bind flow's next step. */
   children?: ReactNode;
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const toast = useToast();
+  const book = useNameBook();
   const [confirmed, setConfirmed] = useState(false);
   // A create on a personal account answers with the steps only the account
   // holder can take; those stay on screen rather than vanish with the dialog.
@@ -165,44 +228,27 @@ export function SignTaskDialog({
         setManualSteps(steps.filter((x): x is string => typeof x === "string"));
       } else onClose();
     },
+    onError: (e) => {
+      // The key went away between opening and sending (forgotten in another
+      // tab, storage cleared). Not a refusal: say so, and fall back to the
+      // hand-over, which is below.
+      if (e instanceof SigningUnavailableError) {
+        void queryClient.invalidateQueries({ queryKey: ["console-signing"] });
+      }
+    },
   });
-
-  useEffect(() => {
-    surfaceRef.current?.querySelector<HTMLElement>("button, input")?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const tabbable = surfaceRef.current?.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), input:not([disabled]), a[href], summary, [tabindex]:not([tabindex='-1'])",
-      );
-      if (!tabbable || tabbable.length === 0) return;
-      const first = tabbable[0]!;
-      const last = tabbable[tabbable.length - 1]!;
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const dismiss = useModal(surfaceRef, onClose, send.isPending);
 
   const doc = documentPreview(task);
   const signing = canSign.data === true;
   const destructive = task.consent === "destructive";
+  const unavailable = send.error instanceof SigningUnavailableError;
 
   return (
     <div
       className="confirm-scrim"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) dismiss();
       }}
     >
       <div
@@ -210,10 +256,27 @@ export function SignTaskDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="gitns-sign-title"
+        aria-busy={send.isPending || undefined}
         className="confirm-dialog gitns-sign"
       >
         <h3 id="gitns-sign-title">{task.title}</h3>
         <p>{task.effect}</p>
+
+        <dl className="gitns-parties">
+          <dt>Resource</dt>
+          <dd>
+            <code>{task.resource}</code>
+          </dd>
+          {task.parties.map((p, i) => (
+            <Fragment key={`${p.role}-${i}`}>
+              <dt>{p.role}</dt>
+              <dd>
+                {book.nameOf(p.did) && <span className="gitns-party-name">{book.nameOf(p.did)}</span>}
+                <code className="gitns-party-did">{p.did}</code>
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
 
         <div className={`finding ${task.consent === "normal" ? "" : "warn"}`}>
           <strong>
@@ -237,17 +300,19 @@ export function SignTaskDialog({
           <p>
             This is a signed <code>git-ns</code> Trust Task, authorized by the
             signer's own git rights.{" "}
-            {canSign.isPending
-              ? "Checking whether this browser can sign…"
-              : <>
-                  This browser cannot sign one, so sign it as the community profile
-                  that holds the right — or{" "}
-                  <Link to={CONSOLE_KEYS_PATH}>enable signing in this browser</Link>.
-                </>}
+            {canSign.isPending ? (
+              "Checking whether this browser can sign…"
+            ) : (
+              <>
+                This browser cannot sign one, so sign it as the community profile
+                that holds the right — or{" "}
+                <Link to={CONSOLE_KEYS_PATH}>enable signing in this browser</Link>.
+              </>
+            )}
           </p>
         )}
 
-        {signing && destructive && (
+        {signing && destructive && !unavailable && (
           <label className="gitns-radio">
             <input
               type="checkbox"
@@ -258,14 +323,23 @@ export function SignTaskDialog({
           </label>
         )}
 
-        {send.isError && (
-          <div className="finding error" role="alert">
-            <strong>The VTC refused it</strong>
-            <span>{errorMessage(send.error)}</span>
-          </div>
-        )}
+        {send.isError &&
+          (unavailable ? (
+            <div className="finding warn" role="alert">
+              <strong>This browser can no longer sign</strong>
+              <span>
+                {errorMessage(send.error)}. Nothing was sent. Sign it from a terminal
+                instead, below.
+              </span>
+            </div>
+          ) : (
+            <div className="finding error" role="alert">
+              <strong>The VTC refused it</strong>
+              <span>{errorMessage(send.error)}</span>
+            </div>
+          ))}
 
-        <details className="gitns-doc" open={!signing && !canSign.isPending}>
+        <details className="gitns-doc" open={(!signing && !canSign.isPending) || unavailable}>
           <summary>{signing ? "Or sign it from a terminal" : "Sign it from a terminal"}</summary>
           <div className="gitns-command">
             <span className="field-label">
@@ -299,10 +373,10 @@ export function SignTaskDialog({
         )}
 
         <div className="form-actions">
-          <button type="button" className="secondary" onClick={onClose}>
+          <button type="button" className="secondary" onClick={onClose} disabled={send.isPending}>
             Close
           </button>
-          {manualSteps ? null : signing ? (
+          {manualSteps ? null : signing && !unavailable ? (
             <button
               type="button"
               className={destructive ? "secondary destructive" : "primary"}
@@ -317,7 +391,8 @@ export function SignTaskDialog({
               className="primary"
               onClick={() => {
                 void queryClient.invalidateQueries({ queryKey: gitNsKeys.all });
-                onClose();
+                if (onHandedOff) onHandedOff();
+                else onClose();
               }}
             >
               I have sent it — refresh

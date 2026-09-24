@@ -183,7 +183,7 @@ export function namespaceFindings(ns: GitNsNamespaceRow): Finding[] {
       tone: "danger",
       title: "No namespace admin",
       detail:
-        "Its last admin left or lapsed, so nobody can grant here. Recovery is to unbind and bind again, which starts from no rights.",
+        "Its last admin left or lapsed, so nobody can grant here. A community administrator will be able to seat a new admin with git-ns/namespace/reseat (cnm git reseat) once this VTC serves it; until then the only recovery is to unbind and bind again, which starts from no rights.",
     });
   }
   return out;
@@ -329,6 +329,7 @@ export function bootstrapSummary(b: GitNsBootstrapStatus): string {
 // ── the guard (design §9) ───────────────────────────────────────────────
 
 export type GuardMode =
+  | "unknown"
   | "requiredWorkflow"
   | "bridgePostedCheck"
   | "codeOwnerReview"
@@ -346,7 +347,7 @@ export interface Guard {
   tone: Tone;
 }
 
-const GUARD: Record<GuardMode, Omit<Guard, "mode" | "source">> = {
+const GUARD: Record<Exclude<GuardMode, "unknown">, Omit<Guard, "mode" | "source">> = {
   requiredWorkflow: {
     label: "Required workflow",
     detail:
@@ -385,7 +386,7 @@ const GUARD: Record<GuardMode, Omit<Guard, "mode" | "source">> = {
   },
 };
 
-const REPORTED: Record<string, GuardMode> = {
+const REPORTED: Record<string, Exclude<GuardMode, "unknown" | "soloUnreviewed">> = {
   requiredWorkflow: "requiredWorkflow",
   bridgePostedCheck: "bridgePostedCheck",
   codeOwnerReview: "codeOwnerReview",
@@ -398,17 +399,36 @@ const REPORTED: Record<string, GuardMode> = {
  *
  * The bridge's report (`repo.guard`) when there is one. Code-owner review
  * with a single owner is reported as what it is in practice — nobody reviews.
- * With no report, the guard §9 assigns for this namespace, marked `expected`.
+ * A report this console does not know is shown verbatim, as reported, and
+ * never replaced by a guess. With no report, the guard §9 assigns for this
+ * namespace, marked `expected` — and the org-wide required workflow is only
+ * expected where the bridge has not said it is unavailable.
  */
 export function guardFor(ns: GitNsNamespaceRow, repo: GitNsRepoRow): Guard {
   const solo = repo.owners.length <= 1;
-  const reported = repo.guard ? REPORTED[repo.guard] : undefined;
-  if (reported) {
-    const mode = reported === "codeOwnerReview" && solo ? "soloUnreviewed" : reported;
+  if (repo.guard) {
+    const known = REPORTED[repo.guard];
+    if (!known) {
+      return {
+        mode: "unknown",
+        source: "reported",
+        label: repo.guard,
+        detail:
+          "The bridge reported a guard this console does not recognise. It is shown as reported; check the bridge's documentation for what it means.",
+        tone: "neutral",
+      };
+    }
+    const mode = known === "codeOwnerReview" && solo ? "soloUnreviewed" : known;
     return { mode, source: "reported", ...GUARD[mode] };
   }
-  let mode: GuardMode;
-  if (ns.mode === "bridge" && ns.kind === "organization" && ns.forgeStatus?.orgRulesets !== false) {
+  const fs = ns.forgeStatus;
+  const orgWorkflow =
+    ns.mode === "bridge" &&
+    ns.kind === "organization" &&
+    fs?.orgRulesets !== false &&
+    fs?.requiredWorkflow !== false;
+  let mode: Exclude<GuardMode, "unknown">;
+  if (orgWorkflow) {
     mode = "requiredWorkflow";
   } else if (solo) {
     mode = "soloUnreviewed";

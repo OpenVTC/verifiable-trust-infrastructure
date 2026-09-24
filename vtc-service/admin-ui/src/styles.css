@@ -3570,3 +3570,22 @@ a.button.primary:hover {
   gap: var(--space-1);
   font-size: var(--text-sm);
 }
+.gitns-parties {
+  grid-template-columns: minmax(7rem, max-content) 1fr;
+}
+.gitns-parties dd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.gitns-party-name {
+  font-weight: 600;
+}
+.gitns-party-did {
+  word-break: break-all;
+  font-size: var(--text-sm);
+}
+.gitns-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}

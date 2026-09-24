@@ -17,7 +17,7 @@ import type {
   GitNsRightRow,
 } from "@/lib/wire-types";
 
-import { archiveTask, grantTask, revokeTask, type SignedTask } from "./actions";
+import { archiveTask, grantTask, type SignedTask } from "./actions";
 import {
   fetchAccounts,
   fetchActivity,
@@ -31,7 +31,7 @@ import {
   indexAccounts,
   memberForAccount,
 } from "./api";
-import { AdoptDialog, GrantDialog, TransferDialog } from "./dialogs";
+import { AdoptDialog, GrantDialog, RevokeDialog, TransferDialog } from "./dialogs";
 import {
   activityVerb,
   bootstrapSteps,
@@ -64,6 +64,7 @@ import {
 type Dialog =
   | { kind: "grant"; initialRight?: "git.repo.own"; title?: string }
   | { kind: "transfer" }
+  | { kind: "revoke"; row: GitNsRightRow }
   | { kind: "adopt" }
   | { kind: "sign"; task: SignedTask };
 
@@ -247,12 +248,14 @@ function DriftList({
               {d.account && (
                 <>
                   @{d.account.login}
-                  {member && (
+                  {member ? (
                     <>
-                      {" ("}
-                      <NamedDid did={member} book={book} nameOnly={!!book.nameOf(member)} />
-                      {")"}
+                      {" — linked by "}
+                      {book.nameOf(member) && <b>{book.nameOf(member)} </b>}
+                      <code className="gitns-party-did">{member}</code>
                     </>
+                  ) : (
+                    " — linked by no member"
                   )}
                   {" · "}
                 </>
@@ -435,18 +438,22 @@ function RegistryPreview({
   repos,
   namespaces,
   rights,
+  rightsError,
 }: {
   resource: string;
   ns: GitNsNamespaceRow;
   repos: GitNsRepoRow[];
   namespaces: GitNsNamespaceRow[];
-  rights: GitNsRightRow[];
+  /** `null` until the rights are read; the preview is built from them, so
+   *  without them it says nothing about what is or is not published. */
+  rights: GitNsRightRow[] | null;
+  rightsError: unknown;
 }) {
   const book = useNameBook();
   const proj = useQuery({ queryKey: gitNsKeys.projection, queryFn: fetchProjection });
   const tuples = useMemo(
     () =>
-      desiredTuples(rights, namespaces, repos, proj.data?.published ?? []).filter(
+      desiredTuples(rights ?? [], namespaces, repos, proj.data?.published ?? []).filter(
         (t) => t.resource === resource || (t.resource === ns.resource && t.action === "git.commit.sign"),
       ),
     [rights, namespaces, repos, proj.data, resource, ns.resource],
@@ -471,7 +478,16 @@ function RegistryPreview({
           records that would be.
         </p>
       )}
-      {tuples.length === 0 ? (
+      {rights === null ? (
+        rightsError ? (
+          <p className="muted">
+            The rights could not be read ({readErrorMessage(rightsError)}), so what they
+            publish cannot be shown.
+          </p>
+        ) : (
+          <p>Loading…</p>
+        )
+      ) : tuples.length === 0 ? (
         <p className="muted">Nothing on this repository is published.</p>
       ) : (
         <table className="data-table gitns-tuples">
@@ -527,6 +543,7 @@ export function RepoDetail() {
   const params = useParams();
   const resource = decodeURIComponent(params.resource ?? "");
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const book = useNameBook();
 
   const nsQ = useQuery({ queryKey: gitNsKeys.namespaces, queryFn: fetchNamespaces });
   const reposQ = useQuery({ queryKey: gitNsKeys.repos, queryFn: fetchRepos });
@@ -572,7 +589,7 @@ export function RepoDetail() {
       </>
     );
   }
-  if (!repo || !ns) {
+  if (!repo) {
     return (
       <>
         {breadcrumb}
@@ -580,6 +597,35 @@ export function RepoDetail() {
           <p className="muted">
             The VTC records no repository at <code>{resource}</code>. It may have been
             renamed, or never adopted.
+          </p>
+        </section>
+      </>
+    );
+  }
+  if (!ns || repo.state === "detached") {
+    // Detached: its namespace was unbound (and may be gone from the list), or
+    // it moved outside it. The record stays, for history; nothing is governed
+    // or published, so none of the governed panels apply.
+    return (
+      <>
+        {breadcrumb}
+        <header className="gitns-head">
+          <div>
+            <h2 className="gitns-mono">{repo.resource}</h2>
+            <div className="gitns-chips">
+              <ToneChip tone="neutral">Detached</ToneChip>
+              <span className="muted gitns-small">
+                {repo.forgeId && `forge id ${repo.forgeId} · `}recorded {formatDay(repo.createdAt)}
+              </span>
+            </div>
+          </div>
+        </header>
+        <section className="card">
+          <p>
+            No longer governed: {ns ? "it moved outside its namespace" : "its namespace was unbound"}.
+            Its rights were revoked and withdrawn from the Trust Registry, and nothing
+            about it is published. To govern it again, bind the namespace it is in now
+            and adopt it there.
           </p>
         </section>
       </>
@@ -710,12 +756,7 @@ export function RepoDetail() {
                       ? "Unknown right"
                       : lastOwner(r)
                 }
-                onRevoke={(r) =>
-                  setDialog({
-                    kind: "sign",
-                    task: revokeTask(r.subject, r.right as GitNsRight, r.resource),
-                  })
-                }
+                onRevoke={(r) => setDialog({ kind: "revoke", row: r })}
               />
             )}
             <p className="muted gitns-small">
@@ -779,7 +820,8 @@ export function RepoDetail() {
             ns={ns}
             repos={repos}
             namespaces={namespaces}
-            rights={allRights}
+            rights={rightsQ.isSuccess ? allRights : null}
+            rightsError={rightsQ.error}
           />
           <Activity ns={ns} resource={repo.resource} />
         </div>
@@ -791,6 +833,16 @@ export function RepoDetail() {
           rights={dialog.initialRight ? [dialog.initialRight] : REPO_RIGHTS}
           initialRight={dialog.initialRight}
           title={dialog.title}
+          onClose={() => setDialog(null)}
+          onBuilt={(task) => setDialog({ kind: "sign", task })}
+        />
+      )}
+      {dialog?.kind === "revoke" && (
+        <RevokeDialog
+          subject={dialog.row.subject}
+          subjectName={book.nameOf(dialog.row.subject) ?? undefined}
+          right={dialog.row.right as GitNsRight}
+          resource={dialog.row.resource}
           onClose={() => setDialog(null)}
           onBuilt={(task) => setDialog({ kind: "sign", task })}
         />

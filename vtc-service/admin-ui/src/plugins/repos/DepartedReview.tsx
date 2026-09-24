@@ -17,9 +17,10 @@ import { UserX } from "lucide-react";
 
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
-import type { GitNsRight } from "@/lib/wire-types";
+import type { GitNsRight, GitNsRightRow } from "@/lib/wire-types";
 
-import { revokeTask, type SignedTask } from "./actions";
+import type { SignedTask } from "./actions";
+import { RevokeDialog } from "./dialogs";
 import { fetchIssuedByDeparted, fetchRepos, gitNsKeys } from "./api";
 import { isRight, rightLabel, shortName } from "./model";
 import { formatDay, readErrorMessage, REPOS_PATH, repoPath, SignTaskDialog, ToneChip } from "./ui";
@@ -29,6 +30,7 @@ export function DepartedReview() {
   const q = useQuery({ queryKey: gitNsKeys.departed, queryFn: fetchIssuedByDeparted });
   const reposQ = useQuery({ queryKey: gitNsKeys.repos, queryFn: fetchRepos });
   const [task, setTask] = useState<SignedTask | null>(null);
+  const [revoking, setRevoking] = useState<GitNsRightRow | null>(null);
   const isRepo = (resource: string) =>
     (reposQ.data?.repos ?? []).some((r) => r.resource === resource);
 
@@ -130,16 +132,7 @@ export function DepartedReview() {
                           type="button"
                           className="secondary sm destructive"
                           aria-label={`Revoke ${rightLabel(r.right)} on ${shortName(r.resource)} from ${book.nameOf(r.subject) ?? r.subject}`}
-                          onClick={() =>
-                            setTask(
-                              revokeTask(
-                                r.subject,
-                                r.right as GitNsRight,
-                                r.resource,
-                                "Issued by a departed member",
-                              ),
-                            )
-                          }
+                          onClick={() => setRevoking(r)}
                         >
                           Revoke
                         </button>
@@ -153,6 +146,20 @@ export function DepartedReview() {
         </section>
       ))}
 
+      {revoking && (
+        <RevokeDialog
+          subject={revoking.subject}
+          subjectName={book.nameOf(revoking.subject) ?? undefined}
+          right={revoking.right as GitNsRight}
+          resource={revoking.resource}
+          initialReason="Issued by a departed member"
+          onClose={() => setRevoking(null)}
+          onBuilt={(t) => {
+            setRevoking(null);
+            setTask(t);
+          }}
+        />
+      )}
       {task && <SignTaskDialog task={task} onClose={() => setTask(null)} />}
     </>
   );

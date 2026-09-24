@@ -32,7 +32,14 @@ import { NamedDid } from "@/components/NamedDid";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useNameBook } from "@/lib/names";
 
-import { bindTask, forgeHostError, nextUrlOf, segmentError, type SignedTask } from "./actions";
+import {
+  bindTask,
+  forgeHostError,
+  nextUrlOf,
+  segmentError,
+  type SignedTask,
+  urlIsOnForge,
+} from "./actions";
 import { fetchNamespaces, fetchRepos, fetchRights, gitNsKeys } from "./api";
 import { AdoptDialog } from "./dialogs";
 import { isServiceGrant, kindLabel, shortName } from "./model";
@@ -298,6 +305,25 @@ export function BindFlow() {
         </form>
       )}
 
+      {sent && !bound && (
+        <p>
+          <button
+            type="button"
+            className="link"
+            onClick={() => {
+              setNextUrl(null);
+              setParams({});
+            }}
+          >
+            Back to the form
+          </button>{" "}
+          <span className="muted gitns-small">
+            — to change what you bind. A bind already sent stays pending until it
+            completes or expires.
+          </span>
+        </p>
+      )}
+
       {sent && nsQ.isError && (
         <p className="muted">
           The namespace list could not be read: {errorMessage(nsQ.error)}. Retrying.
@@ -327,12 +353,18 @@ export function BindFlow() {
         <div className="finding" role="status">
           <strong>Pending: install the App on {owner}</strong>
           <span>
-            {nextUrl ? (
+            {nextUrl && urlIsOnForge(nextUrl, forge) ? (
               <>
                 <a href={nextUrl} target="_blank" rel="noopener noreferrer">
                   Continue on {forge}
                 </a>
                 .
+              </>
+            ) : nextUrl ? (
+              <>
+                The bridge answered with a URL that is not on {forge}:{" "}
+                <code className="gitns-party-did">{nextUrl}</code>. Check it is your
+                bridge's before opening it.
               </>
             ) : (
               <>
@@ -440,11 +472,12 @@ export function BindFlow() {
       {task && (
         <SignTaskDialog
           task={task}
-          onClose={startWatching}
+          onClose={() => setTask(null)}
           onSent={(response) => {
             setNextUrl(nextUrlOf(response));
             startWatching();
           }}
+          onHandedOff={startWatching}
         >
           {task.payload.mode === "bridge" && (
             <p className="muted">

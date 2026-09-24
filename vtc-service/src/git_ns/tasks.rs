@@ -50,9 +50,10 @@ pub(crate) fn serves(type_uri: &str) -> bool {
     GIT_NS.registered_uris().contains(&type_uri)
 }
 
-/// Every URI this family serves.
+/// Every URI this family serves. Public so `tests/trust_task_manifest.rs`
+/// can check the admin console's signed-document types against it.
 #[must_use]
-pub(crate) fn served_uris() -> Vec<&'static str> {
+pub fn served_uris() -> Vec<&'static str> {
     GIT_NS.registered_uris()
 }
 

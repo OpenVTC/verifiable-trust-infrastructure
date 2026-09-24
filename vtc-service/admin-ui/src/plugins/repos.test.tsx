@@ -8,7 +8,6 @@ import {
   ACME,
   BOB,
   gitNsRoutes,
-  GUS,
   PRIYA,
   SANDBOX,
   WIDGETS,
@@ -129,6 +128,56 @@ describe("Repos plugin — overview", () => {
     expect(acme.textContent).toMatch(/roles\s*report/);
   });
 
+  it("claims nothing that rests on the rights while they cannot be read", async () => {
+    mockFetch([
+      { path: "/v1/git-ns/rights", status: 403, body: { error: "super admin required" } },
+      ...gitNsRoutes(),
+    ]);
+    mount();
+
+    const acme = await screen.findByRole("article", { name: "github.com/acme" });
+    await waitFor(() => expect(acme.textContent).toMatch(/Repo creators: not readable/));
+    expect(acme.textContent).not.toMatch(/\d+\s*repo creators?/);
+    expect(acme.textContent).not.toMatch(/holds no service grant/);
+    expect(acme.textContent).not.toMatch(/holds git\.commit\.sign/);
+    expect(acme.textContent).toMatch(/only a community administrator/);
+    expect(
+      (await screen.findByText(/Rights could not be read/)).textContent,
+    ).toMatch(/only a community administrator/);
+  });
+
+  it("lists detached repositories of an unbound namespace, not as never adopted", async () => {
+    const orphanRecord = {
+      ...WIDGETS,
+      id: "repo_old",
+      namespace: "ns_gone",
+      resource: "github.com/oldorg/tool",
+      state: "detached",
+    };
+    mockFetch(gitNsRoutes({ repos: [WIDGETS, orphanRecord] }));
+    mount();
+
+    const section = await screen.findByRole("region", { name: "Detached repositories" });
+    expect(
+      within(section).getByRole("link", { name: "github.com/oldorg/tool" }).getAttribute("href"),
+    ).toBe(`/repos/repo/${encodeURIComponent("github.com/oldorg/tool")}`);
+    const table = screen.getByRole("table");
+    expect(within(table).queryByText("oldorg/tool")).toBeNull();
+  });
+
+  it("unbinds a namespace as a destructive task", async () => {
+    mockFetch(gitNsRoutes());
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Unbind github.com/acme" }));
+    const sign = await screen.findByRole("dialog", { name: "Unbind github.com/acme" });
+    expect(sign.textContent).toMatch(/Destructive — step-up and confirmation/);
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      "cnm git namespace unbind ns_acme",
+    );
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+
   it("lists repositories with their bootstrap dots, sync state and the action each needs", async () => {
     mockFetch(gitNsRoutes());
     mount();
@@ -169,9 +218,14 @@ describe("Repos plugin — overview", () => {
     const sign = await screen.findByRole("dialog", { name: "Adopt acme/sandbox" });
     expect(within(sign).getByText(/Elevated — step-up/)).toBeTruthy();
     expect(within(sign).getByLabelText("Command").textContent).toBe(
-      `cnm git adopt ${SANDBOX.resource} --owner ${BOB}`,
+      `cnm git adopt ${SANDBOX.resource} --owner=${BOB}`,
+    );
+    // Who and what, in the body, named and in full — not only in the command.
+    expect(sign.querySelector(".gitns-parties")!.textContent).toMatch(
+      new RegExp(`Resource${SANDBOX.resource.replace(/\./g, "\\.")}First ownerBob Mensah${BOB}`),
     );
     expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 
   it("signs and sends from this browser when it holds a console key", async () => {
@@ -217,6 +271,9 @@ describe("Repos plugin — overview", () => {
     expect((await within(sign).findByRole("alert")).textContent).toMatch(
       /refused it.*git-ns:escalation/,
     );
+    // Refused is final: never retried, from here or over any other door.
+    expect(postSignedTrustTask).toHaveBeenCalledTimes(1);
+    expect(within(sign).getByRole("button", { name: "Sign and send" })).toBeTruthy();
   });
 
   it("makes a destructive task be confirmed before it is signed", async () => {
@@ -263,7 +320,7 @@ describe("Repos plugin — overview", () => {
 
     const sign = await screen.findByRole("dialog", { name: "Create glenn-g/tool" });
     expect(within(sign).getByLabelText("Command").textContent).toBe(
-      "cnm git create --namespace ns_glenn tool --visibility private",
+      "cnm git create --namespace=ns_glenn tool --visibility=private",
     );
     fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
     expect(await within(sign).findByText("gh repo create glenn-g/tool --public")).toBeTruthy();
@@ -302,7 +359,7 @@ describe("Repos plugin — overview", () => {
 
     const sign = await screen.findByRole("dialog", { name: /Grant owner on acme\/legacy-cli/ });
     expect(within(sign).getByLabelText("Command").textContent).toContain(
-      "--right git.repo.own --resource github.com/acme/legacy-cli",
+      "--right=git.repo.own --resource=github.com/acme/legacy-cli",
     );
   });
 
@@ -363,12 +420,16 @@ describe("Repos plugin — issued by departed members", () => {
       `/repos/repo/${encodeURIComponent(WIDGETS.resource)}`,
     );
     fireEvent.click(within(section).getByRole("button", { name: /^Revoke Committer on acme\/widgets/ }));
+    const form = await screen.findByRole("dialog", { name: /Revoke committer on acme\/widgets/ });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the revocation" }));
 
     const sign = await screen.findByRole("dialog", { name: /Revoke committer on acme\/widgets/ });
     expect(within(sign).getByLabelText("Command").textContent).toBe(
-      `cnm git revoke --subject ${PRIYA} --right git.commit.sign --resource ${WIDGETS.resource} --reason 'Issued by a departed member'`,
+      `cnm git revoke --subject=${PRIYA} --right=git.commit.sign --resource=${WIDGETS.resource} --reason='Issued by a departed member'`,
     );
     expect(sign.textContent).toMatch(/Consent class: Normal/);
-    await waitFor(() => expect(requests.some((r) => r.url.includes(GUS))).toBe(false));
+    expect(sign.querySelector(".gitns-parties")!.textContent).toContain(PRIYA);
+    expect(requests.every((r) => r.method === "GET")).toBe(true);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 });

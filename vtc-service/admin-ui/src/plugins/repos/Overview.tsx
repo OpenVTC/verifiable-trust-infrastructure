@@ -16,7 +16,7 @@ import type {
   GitNsRightRow,
 } from "@/lib/wire-types";
 
-import type { SignedTask } from "./actions";
+import { type SignedTask, unbindTask } from "./actions";
 import {
   fetchIssuedByDeparted,
   fetchNamespaces,
@@ -107,22 +107,28 @@ function NamespaceCard({
   ns,
   repos,
   rights,
+  rightsError,
   selected,
   policyVersion,
+  onUnbind,
 }: {
   ns: GitNsNamespaceRow;
   repos: GitNsRepoRow[];
-  rights: GitNsRightRow[];
+  /** `null` while the rights are loading or could not be read: then nothing
+   *  that depends on them — creators, the service grant — is claimed. */
+  rights: GitNsRightRow[] | null;
+  rightsError: unknown;
   selected: boolean;
   policyVersion: number | null | undefined;
+  onUnbind: () => void;
 }) {
   const book = useNameBook();
-  const managed = repos.filter((r) => r.state !== "unmanaged").length;
-  const unmanaged = repos.length - managed;
-  const creators = rights.filter(
+  const managed = repos.filter((r) => r.state !== "unmanaged" && r.state !== "detached").length;
+  const unmanaged = repos.filter((r) => r.state === "unmanaged").length;
+  const creators = rights?.filter(
     (r) => r.resource === ns.resource && r.right === "git.repo.create",
   ).length;
-  const service = rights.find((r) => isServiceGrant(r, ns));
+  const service = rights?.find((r) => isServiceGrant(r, ns));
   const findings = namespaceFindings(ns);
   const headingId = `gitns-ns-${ns.id}`;
 
@@ -162,6 +168,8 @@ function NamespaceCard({
           <span>
             Repo creation: <b>account holder only</b>
           </span>
+        ) : creators === undefined ? (
+          <span className="muted">Repo creators: {rightsError ? "not readable" : "…"}</span>
         ) : (
           <span>
             <b>{creators}</b> repo {creators === 1 ? "creator" : "creators"}
@@ -191,7 +199,11 @@ function NamespaceCard({
       {ns.bridgeDid && (
         <p className="muted gitns-small">
           Bridge <NamedDid did={ns.bridgeDid} book={book} />
-          {service ? (
+          {rights === null ? (
+            rightsError ? (
+              <> — whether it holds its service grant could not be read ({readErrorMessage(rightsError)}).</>
+            ) : null
+          ) : service ? (
             <>
               {" "}
               holds <code>git.commit.sign</code> on {ns.resource} as a service grant
@@ -217,6 +229,16 @@ function NamespaceCard({
         </div>
       ))}
       {isPersonal(ns) && <PersonalAccountHint ns={ns} />}
+      <div className="gitns-card-actions">
+        <button
+          type="button"
+          className="secondary sm destructive"
+          onClick={onUnbind}
+          aria-label={`Unbind ${ns.resource}`}
+        >
+          Unbind
+        </button>
+      </div>
     </article>
   );
 }
@@ -482,8 +504,20 @@ export function Overview() {
   const selected =
     namespaces.find((n) => n.id === params.get("namespace")) ?? namespaces[0];
   const selectedRepos = useMemo(
-    () => (selected ? repos.filter((r) => r.namespace === selected.id) : []),
+    () =>
+      selected
+        ? repos.filter((r) => r.namespace === selected.id && r.state !== "detached")
+        : [],
     [repos, selected],
+  );
+  // Detached rows, and any row whose namespace is no longer listed (an
+  // unbound namespace's repositories outlive it as records).
+  const detached = useMemo(
+    () =>
+      repos.filter(
+        (r) => r.state === "detached" || !namespaces.some((n) => n.id === r.namespace),
+      ),
+    [repos, namespaces],
   );
   const roleDerived = rights.filter((r) => r.origin === "roleDerived").length;
   const policyVersion = policyQ.isSuccess ? (policyQ.data?.version ?? null) : undefined;
@@ -563,9 +597,13 @@ export function Overview() {
               key={ns.id}
               ns={ns}
               repos={repos.filter((r) => r.namespace === ns.id)}
-              rights={rights}
+              rights={rightsQ.isSuccess ? rights : null}
+              rightsError={rightsQ.error}
               selected={ns.id === selected?.id}
               policyVersion={policyVersion}
+              onUnbind={() =>
+                setDialog({ kind: "sign", task: unbindTask(ns.id, ns.resource) })
+              }
             />
           ))}
         </section>
@@ -603,7 +641,12 @@ export function Overview() {
 
       {selected && (
         <div className="gitns-two">
-          {rightsQ.isError ? (
+          {rightsQ.isPending ? (
+            <section className="card">
+              <h3>Namespace rights</h3>
+              <p>Loading rights…</p>
+            </section>
+          ) : rightsQ.isError ? (
             <section className="card">
               <h3>Namespace rights</h3>
               <p className="muted">Rights could not be read: {readErrorMessage(rightsQ.error)}.</p>
@@ -624,6 +667,29 @@ export function Overview() {
           )}
           <DepartedCard />
         </div>
+      )}
+
+      {detached.length > 0 && (
+        <section className="card" aria-labelledby="gitns-detached-title">
+          <h3 id="gitns-detached-title">Detached repositories</h3>
+          <p className="muted gitns-small">
+            No longer governed: their namespace was unbound, or they moved outside it.
+            Nothing about them is published, and the VTC keeps their records for
+            history. Adopt one again by binding its namespace and adopting it there.
+          </p>
+          <ul className="gitns-adopt-list">
+            {detached.map((r) => (
+              <li key={r.id}>
+                <Link to={repoPath(r.resource)} className="gitns-mono">
+                  {r.resource}
+                </Link>
+                <span className="muted gitns-small">
+                  {r.state === "detached" ? "detached" : `${r.state}, namespace unbound`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {roleDerived > 0 && (

@@ -684,8 +684,24 @@ fn collect_prefixed_in_file(path: &Path, prefix: &str, out: &mut BTreeSet<String
 /// as `header?: never` — so the URI is hand-copied on both sides, in two
 /// languages, and only this assertion pairs them.
 ///
-/// There is no exception table. A header the router does not enforce is not a
-/// case to document; it is a dead page.
+/// There is no exception table for headers. A header the router does not
+/// enforce is not a case to document; it is a dead page. Signed-document types
+/// are not headers, and are checked against the dispatcher instead
+/// ([`SIGNED_DOCUMENT_TYPES`]).
+/// The signed-document types the admin console sends — the Repos plugin's
+/// `git-ns/*` changes (`plugins/repos/actions.ts`). Checked against
+/// `git_ns::tasks::served_uris` in the test below; not headers.
+const SIGNED_DOCUMENT_TYPES: &[&str] = &[
+    "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
+    "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
+    "https://trusttasks.org/spec/git-ns/right/grant/0.1",
+    "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/create/0.1",
+];
+
 #[test]
 fn every_admin_ui_task_is_enforced_by_a_route() {
     const SPEC_PREFIX: &str = "https://trusttasks.org/spec/";
@@ -723,7 +739,36 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
         enforced.len()
     );
 
-    let orphans: Vec<&String> = sent.difference(&enforced).collect();
+    // Document types the console signs and posts to `/v1/trust-tasks`, where
+    // the dispatcher routes on the document's own `type` — no REST route binds
+    // them, because they have no bearer door. They are not headers, so they
+    // are paired with the dispatcher's registry instead of the router: each
+    // must be served there, and a URI listed here stops counting as a header
+    // only because it is.
+    let served: BTreeSet<&str> = vtc_service::git_ns::tasks::served_uris()
+        .into_iter()
+        .collect();
+    for uri in SIGNED_DOCUMENT_TYPES {
+        assert!(
+            served.contains(uri),
+            "the admin console signs `{uri}` as a document type, but the git-ns dispatcher does \
+             not serve it — the console would send a document nobody dispatches"
+        );
+        assert!(
+            sent.contains(*uri),
+            "`{uri}` is allowlisted as a console document type but the console no longer sends \
+             it — remove it from SIGNED_DOCUMENT_TYPES"
+        );
+    }
+    let documents: BTreeSet<String> = SIGNED_DOCUMENT_TYPES
+        .iter()
+        .map(|u| u.to_string())
+        .collect();
+
+    let orphans: Vec<&String> = sent
+        .difference(&enforced)
+        .filter(|u| !documents.contains(*u))
+        .collect();
     assert!(
         orphans.is_empty(),
         "the admin UI sends {} Trust-Task header(s) no route enforces — each is \

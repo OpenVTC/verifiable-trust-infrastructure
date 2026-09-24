@@ -90,12 +90,20 @@ export const fetchActivity = (namespace: string, limit = 100): Promise<GitNsActi
     `/v1/git-ns/activity?namespace=${encodeURIComponent(namespace)}&limit=${limit}`,
   );
 
-/** Current members, for the person picker. */
-export async function fetchMembers(): Promise<{ did: string; label?: string | null }[]> {
-  const page = await getJson<MembersPage>("/v1/members?limit=500", {
-    trustTask: TASK_MEMBERS_LIST,
-  });
-  return (page.items ?? []).map((m) => ({ did: m.did, label: m.label }));
+/** The listing clamps a page to 200; asking for more returns 200 silently. */
+const MEMBERS_PAGE = 200;
+
+/** One page of current members, for the person picker. */
+export async function fetchMembersPage(
+  cursor: string | null,
+): Promise<{ members: { did: string; label?: string | null }[]; nextCursor: string | null }> {
+  const q = new URLSearchParams({ limit: String(MEMBERS_PAGE) });
+  if (cursor) q.set("cursor", cursor);
+  const page = await getJson<MembersPage>(`/v1/members?${q}`, { trustTask: TASK_MEMBERS_LIST });
+  return {
+    members: (page.items ?? []).map((m) => ({ did: m.did, label: m.label })),
+    nextCursor: page.nextCursor ?? null,
+  };
 }
 
 /** DID → forge host → linked account. */

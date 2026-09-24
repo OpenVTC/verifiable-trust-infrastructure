@@ -137,6 +137,12 @@ describe("guardFor — the guard design §9 assigns", () => {
     ).toBe("bridgePostedCheck");
   });
 
+  it("does not expect the required workflow the bridge says is not in force", () => {
+    const ns = { ...ACME, forgeStatus: { missingPermissions: [], requiredWorkflow: false } };
+    expect(guardFor(ns, { ...WIDGETS, owners: [ALICE, HANA] }).mode).toBe("bridgePostedCheck");
+    expect(guardFor(ns, WIDGETS).mode).toBe("soloUnreviewed");
+  });
+
   it("falls back when the owner's plan has no org rulesets", () => {
     const ns = { ...ACME, forgeStatus: { missingPermissions: [], orgRulesets: false } };
     expect(guardFor(ns, { ...WIDGETS, owners: [ALICE, HANA] }).mode).toBe("bridgePostedCheck");
@@ -147,8 +153,14 @@ describe("guardFor — the guard design §9 assigns", () => {
     expect(g).toMatchObject({ mode: "protectedFiles", source: "reported" });
     expect(guardFor(ACME, WIDGETS).source).toBe("expected");
     expect(guardFor(ACME, { ...WIDGETS, guard: "none" }).tone).toBe("danger");
-    // An unknown report is not guessed at.
-    expect(guardFor(ACME, { ...WIDGETS, guard: "somethingNew" }).source).toBe("expected");
+    // An unknown report is shown verbatim, as reported — never replaced by
+    // the expected (and green) guess.
+    expect(guardFor(ACME, { ...WIDGETS, guard: "somethingNew" })).toMatchObject({
+      mode: "unknown",
+      source: "reported",
+      label: "somethingNew",
+      tone: "neutral",
+    });
   });
 });
 
@@ -177,6 +189,9 @@ describe("namespace facts", () => {
       (f) => f.title,
     );
     expect(titles).toEqual(["The App lost access", "No namespace admin"]);
+    const headless = namespaceFindings({ ...ACME, headless: true })[0]!;
+    expect(headless.detail).toMatch(/git-ns\/namespace\/reseat \(cnm git reseat\)/);
+    expect(headless.detail).toMatch(/until then the only recovery is to unbind and bind again/);
     expect(namespaceFindings(ACME)).toEqual([]);
   });
 

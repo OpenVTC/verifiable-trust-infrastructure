@@ -84,10 +84,12 @@ describe("Repo detail", () => {
     mount(WIDGETS.resource);
 
     fireEvent.click(await screen.findByRole("button", { name: "Revoke Maintainer from Hana Sato" }));
+    const form = await screen.findByRole("dialog", { name: /Revoke maintainer on acme\/widgets/ });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the revocation" }));
     const sign = await screen.findByRole("dialog", { name: /Revoke maintainer on acme\/widgets/ });
     expect(sign.textContent).toMatch(/Consent class: Normal/);
     expect(within(sign).getByLabelText("Command").textContent).toBe(
-      `cnm git revoke --subject ${HANA} --right git.repo.maintain --resource ${WIDGETS.resource}`,
+      `cnm git revoke --subject=${HANA} --right=git.repo.maintain --resource=${WIDGETS.resource}`,
     );
     const doc = JSON.parse(within(sign).getByLabelText("Document").textContent!);
     expect(doc).toEqual({
@@ -96,6 +98,7 @@ describe("Repo detail", () => {
     });
     fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
     expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 
   it("adds a person, and an owner grant carries the step-up class", async () => {
@@ -120,7 +123,7 @@ describe("Repo detail", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Build the grant" }));
     const sign = await screen.findByRole("dialog", { name: "Grant owner on acme/widgets" });
     expect(sign.textContent).toMatch(/Elevated — step-up/);
-    expect(within(sign).getByLabelText("Command").textContent).toContain("--expires-in 30d");
+    expect(within(sign).getByLabelText("Command").textContent).toContain("--expires-in=30d");
   });
 
   it("offers a pasted DID for an external signer on a repository right", async () => {
@@ -138,7 +141,7 @@ describe("Repo detail", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Build the grant" }));
     const sign = await screen.findByRole("dialog", { name: /Grant owner|Grant committer/ });
     expect(within(sign).getByLabelText("Command").textContent).toContain(
-      "--subject did:key:z6MkOutsider",
+      "--subject=did:key:z6MkOutsider",
     );
   });
 
@@ -188,10 +191,12 @@ describe("Repo detail", () => {
 
     const drift = await screen.findByRole("region", { name: "Drift" });
     expect(within(drift).getByText("Role added on the forge")).toBeTruthy();
+    // The member the account resolves to, by full DID beside the login.
+    await waitFor(() => expect(drift.textContent).toContain(`@hsato — linked by Hana Sato ${HANA}`));
     fireEvent.click(await within(drift).findByRole("button", { name: "Adopt into VTC as maintainer" }));
     const sign = await screen.findByRole("dialog", { name: "Grant maintainer on acme/docs" });
     expect(within(sign).getByLabelText("Command").textContent).toContain(
-      `--subject ${HANA} --right git.repo.maintain --resource ${DOCS.resource}`,
+      `--subject=${HANA} --right=git.repo.maintain --resource=${DOCS.resource}`,
     );
   });
 
@@ -208,7 +213,7 @@ describe("Repo detail", () => {
 
     const sign = await screen.findByRole("dialog", { name: "Transfer ownership of acme/widgets" });
     expect(within(sign).getByLabelText("Command").textContent).toBe(
-      `cnm git transfer ${WIDGETS.resource} --to ${BOB}`,
+      `cnm git transfer ${WIDGETS.resource} --to=${BOB}`,
     );
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent!).payload).toEqual({
       resource: WIDGETS.resource,
@@ -306,6 +311,52 @@ describe("Repo detail", () => {
     expect(
       (await within(people).findByText(/Rights could not be read/)).textContent,
     ).toMatch(/only a community administrator/);
+  });
+
+  it("shows a detached repository of an unbound namespace as detached", async () => {
+    const detached = {
+      ...WIDGETS,
+      id: "repo_old",
+      namespace: "ns_gone",
+      resource: "github.com/oldorg/tool",
+      state: "detached",
+    };
+    mockFetch(gitNsRoutes({ repos: [detached] }));
+    mount(detached.resource);
+
+    expect(await screen.findByText("Detached")).toBeTruthy();
+    expect(screen.getByText(/its namespace was unbound/)).toBeTruthy();
+    expect(screen.queryByText(/records no repository/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+  });
+
+  it("does not say nothing is published while the rights are unreadable", async () => {
+    mockFetch([
+      { path: "/v1/git-ns/rights", status: 403, body: { error: "super admin required" } },
+      ...gitNsRoutes(),
+    ]);
+    mount(WIDGETS.resource);
+
+    const reg = await screen.findByRole("region", { name: "Published to the Trust Registry" });
+    await within(reg).findByText(/could not be read/);
+    expect(reg.textContent).not.toMatch(/Nothing on this repository is published/);
+    expect(reg.textContent).toMatch(/only a community administrator/);
+  });
+
+  it("revokes with an optional reason, bounded like a grant's", async () => {
+    mockFetch(gitNsRoutes());
+    mount(WIDGETS.resource);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke Maintainer from Hana Sato" }));
+    const form = await screen.findByRole("dialog", { name: /Revoke maintainer on acme\/widgets/ });
+    expect(form.textContent).toContain(HANA);
+    fireEvent.change(within(form).getByLabelText("Reason"), { target: { value: "x".repeat(1025) } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the revocation" }));
+    expect(within(form).getByRole("alert").textContent).toMatch(/At most 1024/);
+    fireEvent.change(within(form).getByLabelText("Reason"), { target: { value: "left the team" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the revocation" }));
+    const sign = await screen.findByRole("dialog", { name: /Revoke maintainer on acme\/widgets/ });
+    expect(within(sign).getByLabelText("Command").textContent).toContain("--reason='left the team'");
   });
 
   it("says when the VTC records no such repository", async () => {

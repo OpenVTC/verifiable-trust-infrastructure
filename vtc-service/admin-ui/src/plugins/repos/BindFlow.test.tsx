@@ -73,14 +73,15 @@ describe("Bind namespace", () => {
     const sign = await screen.findByRole("dialog", { name: "Bind github.com/acme" });
     expect(sign.textContent).toMatch(/Destructive — step-up and confirmation/);
     expect(within(sign).getByLabelText("Command").textContent).toBe(
-      "cnm git namespace bind --forge github.com --owner acme --mode bridge",
+      "cnm git namespace bind --forge=github.com --owner=acme --mode=bridge",
     );
     expect(sign.textContent).toMatch(/the bind answers with where to go on the forge/);
-    fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
+    fireEvent.click(within(sign).getByRole("button", { name: "I have sent it — refresh" }));
 
     expect(await screen.findByText("Waiting for the VTC to record github.com/acme")).toBeTruthy();
     expect(stepState(/Install on acme/)).toBe("current");
     expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 
   it("signed from this browser, links the forge URL the bind answered with", async () => {
@@ -116,6 +117,79 @@ describe("Bind namespace", () => {
     expect(stepState(/Install on acme/)).toBe("current");
   });
 
+  it("closing or escaping the dialog returns to the form without watching", async () => {
+    mockFetch(gitNsRoutes({ namespaces: [] }));
+    mount();
+
+    fireEvent.change(await screen.findByLabelText("Organisation or account"), {
+      target: { value: "acme" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build the binding" }));
+    await screen.findByRole("dialog", { name: "Bind github.com/acme" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByText(/Waiting for the VTC/)).toBeNull();
+    expect((screen.getByLabelText("Organisation or account") as HTMLInputElement).value).toBe("acme");
+
+    fireEvent.click(screen.getByRole("button", { name: "Build the binding" }));
+    const sign = await screen.findByRole("dialog", { name: "Bind github.com/acme" });
+    fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
+    expect(screen.queryByText(/Waiting for the VTC/)).toBeNull();
+    expect(stepState(/Register your GitHub App/)).toBe("current");
+  });
+
+  it("a refused signed bind stays on the dialog and does not start watching", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockRejectedValue({ status: 409, message: "alreadyBound" });
+    mockFetch(gitNsRoutes({ namespaces: [] }));
+    mount();
+
+    fireEvent.change(await screen.findByLabelText("Organisation or account"), {
+      target: { value: "acme" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build the binding" }));
+    const sign = await screen.findByRole("dialog", { name: "Bind github.com/acme" });
+    fireEvent.click(await within(sign).findByLabelText(/destructive and want to sign it/));
+    fireEvent.click(within(sign).getByRole("button", { name: "Sign and send" }));
+    await within(sign).findByText(/alreadyBound/);
+    expect(postSignedTrustTask).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
+    expect(screen.queryByText(/Waiting for the VTC/)).toBeNull();
+  });
+
+  it("goes back to the form from the waiting step", async () => {
+    mockFetch(gitNsRoutes({ namespaces: [] }));
+    mount("/repos/bind?forge=github.com&owner=acme&mode=bridge&sent=1");
+
+    await screen.findByText("Waiting for the VTC to record github.com/acme");
+    fireEvent.click(screen.getByRole("button", { name: "Back to the form" }));
+    expect(await screen.findByLabelText("Organisation or account")).toBeTruthy();
+    expect(stepState(/Register your GitHub App/)).toBe("current");
+  });
+
+  it("does not call a URL off the forge a way to continue on it", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockResolvedValue({
+      namespace: {},
+      next: { url: "https://github.com.evil.example/install" },
+    });
+    mockFetch(
+      gitNsRoutes({ namespaces: [{ ...ACME, state: "pending", kind: null, boundAt: null }] }),
+    );
+    mount();
+
+    fireEvent.change(await screen.findByLabelText("Organisation or account"), {
+      target: { value: "acme" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build the binding" }));
+    const sign = await screen.findByRole("dialog", { name: "Bind github.com/acme" });
+    fireEvent.click(await within(sign).findByLabelText(/destructive and want to sign it/));
+    fireEvent.click(within(sign).getByRole("button", { name: "Sign and send" }));
+
+    expect(await screen.findByText(/is not on github.com/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Continue on/ })).toBeNull();
+  });
+
   it("a manual bind skips the App steps", async () => {
     mockFetch(gitNsRoutes({ namespaces: [] }));
     mount();
@@ -126,8 +200,8 @@ describe("Bind namespace", () => {
     fireEvent.click(screen.getByLabelText(/Manually/));
     fireEvent.click(screen.getByRole("button", { name: "Build the binding" }));
     const sign = await screen.findByRole("dialog", { name: "Bind github.com/acme" });
-    expect(within(sign).getByLabelText("Command").textContent).toContain("--mode manual");
-    fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
+    expect(within(sign).getByLabelText("Command").textContent).toContain("--mode=manual");
+    fireEvent.click(within(sign).getByRole("button", { name: "I have sent it — refresh" }));
 
     await screen.findByText("Waiting for the VTC to record github.com/acme");
     expect(stepState(/Register your GitHub App/)).toBe("skipped");
