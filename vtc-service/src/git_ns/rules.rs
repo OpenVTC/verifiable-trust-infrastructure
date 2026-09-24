@@ -482,6 +482,35 @@ pub fn service_grant_admitted(
     ))
 }
 
+/// `git-ns/drift/resolve` revert: `git.repo.own` on the repository, explicit
+/// or implied. (Adopt is admitted as the grant it is, by [`grant_admitted`].)
+pub fn drift_revert_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    repo: &Resource,
+    now: DateTime<Utc>,
+) -> Result<RulesPassed, Refusal> {
+    if effective_on(snap, actor, repo, now).contains(&Right::RepoOwn) {
+        Ok(RulesPassed::new())
+    } else {
+        Err(Refusal::PermissionDenied(format!(
+            "resolving drift on {repo} needs git.repo.own there"
+        )))
+    }
+}
+
+/// `git-ns/namespace/reseat`: the community-administrator capability,
+/// **together with** the namespace being headless, and a current member to
+/// receive the right (fixed rule 5). The caller establishes `headless`
+/// against current membership, under the store lock.
+pub fn reseat_admitted(
+    actor_community_admin: bool,
+    headless: bool,
+    subject_member: bool,
+) -> Option<RulesPassed> {
+    (actor_community_admin && headless && subject_member).then(RulesPassed::new)
+}
+
 /// The explicit owners of a repository, in grant order.
 pub fn owners(snap: &Snapshot, repo_id: &str, now: DateTime<Utc>) -> Vec<String> {
     live_holders(snap, &Scope::Repo(repo_id.to_string()), Right::RepoOwn, now)

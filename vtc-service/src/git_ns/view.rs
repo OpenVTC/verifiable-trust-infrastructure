@@ -118,6 +118,50 @@ pub fn for_member(
     wire::into(build(snap, Viewer::Member(did), filter))
 }
 
+/// `git-ns/view/0.2`'s `accounts`: the forge accounts linked to the caller's
+/// own DID, from their member row — never another member's, whoever is
+/// asking — narrowed to `filter`'s forge. Empty when there are none.
+pub fn linked_accounts_of(
+    member: Option<&crate::members::Member>,
+    filter: Option<&Resource>,
+) -> Vec<Value> {
+    let Some(forges) = member
+        .filter(|m| m.removed_at.is_none())
+        .and_then(|m| m.extensions.get("forges"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (host, acct) in forges {
+        if filter.is_some_and(|f| f.forge != *host) {
+            continue;
+        }
+        let s = |k: &str| acct.get(k).and_then(Value::as_str);
+        let (Some(id), Some(login), Some(at)) = (s("id"), s("login"), s("linkedAt")) else {
+            continue;
+        };
+        out.push(json!({
+            "account": { "forge": host, "id": id, "login": login },
+            "linkedAt": at,
+        }));
+    }
+    out
+}
+
+/// The member's view as `git-ns/view/0.2`: 0.1's answer and their own
+/// linked accounts.
+pub fn for_member_v2(
+    snap: &Snapshot,
+    did: &str,
+    filter: Option<&Resource>,
+    member: Option<&crate::members::Member>,
+) -> Result<trust_tasks_rs::specs::git_ns::view::v0_2::Response, AppError> {
+    let mut v = build(snap, Viewer::Member(did), filter);
+    v["accounts"] = Value::Array(linked_accounts_of(member, filter));
+    wire::into(v)
+}
+
 /// The administrator's view, as the generated response type.
 pub fn for_administrator(
     snap: &Snapshot,

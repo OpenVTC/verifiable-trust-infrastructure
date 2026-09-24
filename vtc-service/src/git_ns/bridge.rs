@@ -62,6 +62,19 @@ use super::wire;
 
 /// `git-ns/bridge/job/0.1`.
 pub const JOB_TYPE: &str = <job_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `git-ns/bridge/job/0.2` — sent only for a job that needs what 0.2 adds.
+pub const JOB_TYPE_V0_2: &str = <trust_tasks_rs::specs::git_ns::bridge::job::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The version a job payload is sent as. `git-ns/bridge/job` 0.2 adds only
+/// `removeAccounts`; every job without it is a 0.1 job and is sent as one, so
+/// a bridge that implements only 0.1 keeps working for everything else.
+pub fn job_type_for(payload: &Value) -> &'static str {
+    if payload.get("removeAccounts").is_some() {
+        JOB_TYPE_V0_2
+    } else {
+        JOB_TYPE
+    }
+}
 
 /// How long an in-line `begin*` job waits for the bridge's acknowledgement.
 const INLINE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -373,6 +386,20 @@ pub async fn send_inline(
     }
 }
 
+/// Send a job in-line and return the bridge's own answer, refusal included —
+/// for a caller that must tell a refusal from a timeout.
+pub async fn send_job_inline(
+    state: &AppState,
+    bridge_did: &str,
+    payload: &Value,
+) -> Result<job_wire::Response, BridgeSendError> {
+    state
+        .git_ns
+        .bridge
+        .send_job(bridge_did, payload, INLINE_TIMEOUT)
+        .await
+}
+
 /// The production [`BridgeClient`]: resolves the bridge's DID, picks the
 /// transport both parties advertise, signs the job with the community's key,
 /// and awaits the acknowledgement by `threadId`.
@@ -455,7 +482,7 @@ impl BridgeClient for MessagingBridgeClient {
         let doc = vti_common::capability_client::build_document(
             &messaging.vtc_did,
             bridge_did,
-            JOB_TYPE,
+            job_type_for(payload),
             payload.clone(),
         );
         let mut value = serde_json::to_value(&doc)
@@ -751,6 +778,28 @@ pub async fn desired_roles_for_repo(
         &repo_res,
         &owner_rows,
         t,
+    );
+    Ok(render_roles(&rights, &ns.forge, &accounts))
+}
+
+/// The complete desired forge roles for a recorded repository, as the
+/// projector would send them now.
+pub async fn desired_roles_now(
+    state: &AppState,
+    snap: &Snapshot,
+    ns: &Namespace,
+    repo: &Repo,
+) -> Result<Vec<Value>, AppError> {
+    let accounts = linked_accounts(state).await?;
+    let Some(repo_res) = repo.resource() else {
+        return Ok(Vec::new());
+    };
+    let rights = highest_repo_rights(
+        &ns.resource(),
+        snap.rows(&Scope::Namespace(ns.id.clone())),
+        &repo_res,
+        snap.rows(&Scope::Repo(repo.id.clone())),
+        now(),
     );
     Ok(render_roles(&rights, &ns.forge, &accounts))
 }
@@ -1333,34 +1382,35 @@ pub async fn handle_event(
             .cloned()
     };
 
+    // `git-ns/bridge/event` 0.2, step 2: nothing of an event is applied when
+    // any resource it names lies outside its namespace — the drift items'
+    // included, checked before anything is written.
+    for item in &drift {
+        if let Some(r) = item.get("resource").and_then(Value::as_str) {
+            inside(r)?;
+        }
+    }
+
     match kind.as_str() {
-        "repoRenamed" | "repoTransferred" => {
+        "repoRenamed" => {
             let forge_id = s(&event, "forgeId");
             let from = s(&event, "from").unwrap_or_default();
             let to = s(&event, "to").unwrap_or_default();
             inside(&from)?;
-            let to_res = Resource::parse(&to).map_err(OpError::Malformed)?;
             // A rename stays under the owner; a rename that lands elsewhere is
             // not a rename, and is refused rather than guessed at.
-            if kind == "repoRenamed" {
-                inside(&to)?;
-            }
-            // Matched by forge id alone. A rename or transfer names the
-            // repository by the identity that survives it; a row whose forge
-            // id is not yet known (adopted, awaiting its inspection) may be a
-            // different repository that took the name, so it is never moved
-            // on a name — the next inspection reconciles it.
+            inside(&to)?;
+            // Matched by forge id alone. A rename names the repository by the
+            // identity that survives it; a row whose forge id is not yet known
+            // (adopted, awaiting its inspection) may be a different repository
+            // that took the name, so it is never moved on a name — the next
+            // inspection reconciles it.
             let by_id = forge_id
                 .as_deref()
                 .and_then(|f| snap.repo_by_forge_id(&ns.id, f))
                 .cloned();
             if let Some(mut repo) = by_id {
-                // A repository keeps its rights only while it stays inside
-                // this namespace. Out of it — to another owner, another
-                // forge, or another namespace of this VTC, which another
-                // bridge may serve and whose admins granted none of these
-                // rights — it is detached, and its rights withdrawn.
-                if ns_res.contains(&to_res) && !to_res.is_namespace() {
+                {
                     // Stale records at the new name — an unmanaged row in this
                     // namespace, or a detached row left in any namespace by a
                     // deletion, a transfer or an unbind — are folded away, so
@@ -1398,11 +1448,7 @@ pub async fn handle_event(
                         issuer,
                         None,
                         Audit {
-                            action: if kind == "repoRenamed" {
-                                "gitNs.repo.renamed"
-                            } else {
-                                "gitNs.repo.transferred"
-                            },
+                            action: "gitNs.repo.renamed",
                             namespace: Some(&ns.id),
                             resource: Some(to.clone()),
                             right: None,
@@ -1411,9 +1457,30 @@ pub async fn handle_event(
                         },
                     )
                     .await;
-                } else {
-                    detach(state, issuer, &mut repo, "transferredOut").await?;
                 }
+                store::put_repo(&state.git_ns.ks, &repo).await?;
+                concerned.push(repo.resource.clone());
+            }
+        }
+        "repoTransferred" => {
+            // A namespace is one owner on one forge, so every transfer leaves
+            // it: the repository is detached and its rights withdrawn,
+            // **wherever `to` is** — another owner, another forge, or another
+            // namespace this VTC governs, whose admins granted none of these
+            // rights (`git-ns/bridge/event` 0.2, trust-tasks #627). `to` is
+            // exempt from containment: it says where the repository went, is
+            // recorded, and nothing there is acted on.
+            let forge_id = s(&event, "forgeId");
+            let from = s(&event, "from").unwrap_or_default();
+            let to = s(&event, "to").unwrap_or_default();
+            inside(&from)?;
+            // By forge id alone, as for a rename.
+            let by_id = forge_id
+                .as_deref()
+                .and_then(|f| snap.repo_by_forge_id(&ns.id, f))
+                .cloned();
+            if let Some(mut repo) = by_id {
+                detach(state, issuer, &mut repo, &format!("transferredTo {to}")).await?;
                 store::put_repo(&state.git_ns.ks, &repo).await?;
                 concerned.push(repo.resource.clone());
             }
@@ -1685,7 +1752,6 @@ pub async fn handle_event(
     // The drift for each repository the event concerns replaces what was held.
     for item in &drift {
         if let Some(r) = item.get("resource").and_then(Value::as_str)
-            && inside(r).is_ok()
             && !concerned.iter().any(|c| c == r)
         {
             concerned.push(r.to_string());

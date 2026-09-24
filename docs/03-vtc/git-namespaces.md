@@ -157,15 +157,67 @@ matched by forge id before name. A repository renamed within the namespace
 keeps its rights. A repository **transferred** out of it — to another owner,
 another forge, or even another namespace this VTC has bound — is detached and
 its rights withdrawn; rights never move with it, because the destination's
-admins granted none of them. This departs from `git-ns/bridge/event/0.1`,
-whose `repoTransferred` treats a transfer into any bound namespace as a
-rename. The specification is being changed to match:
-`git-ns/bridge/event/0.2`, in
-[trust-tasks #627](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/627)
-(pending).
+admins granted none of them. A new repository reported at a name the VTC
+records under another forge id detaches the old one first. An event any of
+whose resources — its drift items' included — lies outside the namespace is
+refused whole, before anything is applied; a transfer's `to` alone is exempt,
+recorded as where the repository went. This is `git-ns/bridge/event/0.2`
+([trust-tasks #627](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/627)).
+The VTC serves 0.1 and 0.2 — the payloads are wire-identical — and applies
+0.2's rules to both.
+
+Jobs go out as `git-ns/bridge/job/0.1`, except the one job 0.1 cannot express:
+taking off a repository a role the bridge does not manage (`projectRoles` with
+`removeAccounts`, reverting a `roleAdded` drift item), sent as 0.2.
 
 Jobs are queued in `git_ns_jobs`; role projection retries
 forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
+
+## Drift
+
+In bridge mode the bridge compares each repository with the projection and
+reports every difference as a drift item, which members see in `git-ns/view`
+and administrators in `GET /v1/git-ns/drift`. An owner of the repository (or
+a namespace admin over it) answers an item with `git-ns/drift/resolve`:
+
+- **adopt** records the forge-side role as a right — evaluated exactly as a
+  `git-ns/right/grant` from the resolver, so the same fixed rules, policy and
+  consent class apply. Only a role item (`roleAdded`, or a `roleChanged` that
+  raises the member above what they hold) held by a forge account linked to a
+  current member, at a role a right projects to, can be adopted. The inverse
+  of the bridge's default role map is used: `admin` is `git.repo.own`,
+  `maintain` is `git.repo.maintain`, and on a personal account collaborator
+  `write` is `git.repo.maintain`; `write` on an organisation, `triage` and
+  `read` project nothing here (the VTC is not told whether committers get
+  `write`).
+- **revert** changes no right and has the bridge undo the change: a
+  `roleAdded` role is removed with `git-ns/bridge/job/0.2`'s
+  `removeAccounts`, sent in-line so that a bridge implementing only 0.1 is
+  answered `notRevertible` instead of a revert that does nothing; a
+  `roleChanged` or `roleRemoved` role re-sends the complete `desiredRoles`;
+  protection items re-run the `requiredCheck` bootstrap step, and
+  `bootstrapMissing` the whole plan. Reverting an `admin` role has the impact
+  of revoking `own`, and is elevated.
+
+The item is selected by type, account (role items) and — required to adopt —
+the `observed` value the owner read, and a resolution is followed by an
+`inspect` job so it is confirmed rather than assumed.
+
+```sh
+cnm git drift resolve github.com/acme/widgets revert --type roleAdded \
+  --account-id 5550123 --account-login eve-dev --observed write
+```
+
+## Reseating a headless namespace
+
+A namespace whose every `git.ns.admin` has left the community or lapsed is
+*headless*. A community administrator restores one with
+`git-ns/namespace/reseat` — `cnm git reseat <namespace> --subject <did>
+--statement "…"` — which grants a current member a permanent `git.ns.admin`,
+with the statement as its reason. It is refused (`notHeadless`) while any
+live admin record of a current member remains, so it cannot be used to go
+around an admin; the audit record keeps the statement and how each earlier
+admin record ended.
 
 ## Administrator surface
 
@@ -202,6 +254,9 @@ DID it stands for on every member-facing `git-ns/*` task.
 
 Every change is a signed `git-ns/*` Trust Task on `POST /v1/trust-tasks` (or
 DIDComm/TSP). `cnm git …` signs them with the community profile's key.
+`git-ns/view` is served as 0.1 and 0.2; 0.2 adds the caller's own linked forge
+accounts (`accounts`, narrowed to a `resource`'s forge), never another
+member's. `cnm git view` asks for 0.2.
 
 The admin console's **Repos** plugin (`/admin/repos`) renders these routes:
 namespace cards (kind, mode, what the bridge reported of its App — missing
@@ -221,12 +276,9 @@ command that signs it, with the document itself.
 
 - **No member step-up** — see *Consent classes* above.
 - **A namespace with no admin.** The last-admin and last-owner invariants count
-  only records with no expiry, so an expiring `ns.admin` or `own` cannot be the
-  one that keeps them — lapse alone never leaves a namespace headless or a
-  repository ownerless. A departure still can: if the last permanent
-  `git.ns.admin` leaves the community, the namespace is *headless* and nobody
-  can grant in it. The only recovery today is to unbind and bind again, which
-  starts from no rights; a task to re-seat an admin is a specification gap.
+  only records with no expiry (`git-ns/namespace/reseat/0.1`), so an expiring
+  `ns.admin` or `own` cannot be the one that keeps them. A departure can still
+  leave a namespace headless; it is recovered with a reseat (above).
 - **No binding credential.** `git-ns/account/link` says the VTC SHOULD issue a
   credential attesting a member's forge account; this VTC records the link on
   the member and issues none yet.

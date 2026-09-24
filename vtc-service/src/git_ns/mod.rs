@@ -27,6 +27,7 @@
 //!   moves them; a new repository at the old name inherits nothing.
 
 pub mod bridge;
+pub mod drift;
 pub mod lifecycle;
 pub mod model;
 pub mod ops;

@@ -22,6 +22,10 @@
 #   now           RFC 3339 evaluation time
 #   action        namespace.bind | namespace.unbind | repo.create | repo.adopt |
 #                 repo.transfer | repo.archive | right.grant | right.revoke |
+#                 namespace.reseat (a community administrator restoring an
+#                 admin to a headless namespace) | drift.revert (an owner
+#                 having the bridge undo a forge-side change; an adopted drift
+#                 item is evaluated as the right.grant it is) |
 #                 bridge.serviceGrant (the community granting its bridge
 #                 `git.commit.sign` on a namespace it has just bound)
 #   actor         { did, member, role?, rights[] }  — rights on `resource`
@@ -60,7 +64,7 @@ default decision := {"effect": "deny", "with": {
 }}
 
 # Receiving a right, or ownership, is for members unless the community opts in.
-receives := {"right.grant", "repo.transfer", "repo.adopt", "bridge.serviceGrant"}
+receives := {"right.grant", "repo.transfer", "repo.adopt", "namespace.reseat", "bridge.serviceGrant"}
 
 # The one exception, and it is exact: the namespace's own bridge receives
 # `git.commit.sign` on the namespace, granted by the community itself when the
