@@ -78,38 +78,6 @@ export interface paths {
         patch: operations["patch_config"];
         trace?: never;
     };
-    "/v1/admin/config/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["export_config"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/config/import": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["import_config"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/admin/config/reload": {
         parameters: {
             query?: never;
@@ -2725,60 +2693,6 @@ export interface components {
             relationshipIdentifierDefault?: string | null;
         };
         /**
-         * @description The portable configuration document — canonical
-         *     `vtc/_shared/0.1/config-portability#ConfigExportDocument`.
-         *
-         *     `community_profile` is `None` when the community hasn't been
-         *     initialised yet (pre-bootstrap); the member is omitted rather
-         *     than emitted as `null`, because an import cannot distinguish a
-         *     synthesised empty profile from a real blank one.
-         *     `config_overrides` carries *only* the db-layer keys — env-layer
-         *     and toml-layer values stay per-host and aren't portable.
-         *
-         *     `schema_version` is not redundant with the `0.1` in the Trust
-         *     Task URI. The URI versions the *envelope*; the moment an operator
-         *     writes this document to a file the envelope is gone and it is
-         *     bare JSON, so `schemaVersion` is the only thing a later reader has
-         *     to check it against.
-         */
-        ConfigExportDocument: {
-            communityProfile?: null | components["schemas"]["CommunityProfile"];
-            configOverrides: {
-                [key: string]: unknown;
-            };
-            /** Format: date-time */
-            exportedAt: string;
-            /** Format: int32 */
-            schemaVersion: number;
-        };
-        /**
-         * @description `POST /v1/admin/config/export` response — canonical
-         *     `vtc/config/export/0.1#response`. The document is returned under a
-         *     named member rather than as the bare body: the registry response
-         *     convention requires `additionalProperties: false` plus an `ext`
-         *     extension point, and neither attaches to a bare `$ref`.
-         */
-        ConfigExportResponse: {
-            document: components["schemas"]["ConfigExportDocument"];
-        };
-        /**
-         * @description `POST /v1/admin/config/import` request — canonical
-         *     `vtc/config/import/0.1`.
-         *
-         *     `confirm` rides in the **payload**, not a query string: a Trust
-         *     Task is the same interface over REST, DIDComm and TSP, and only
-         *     one of those three has a query string to put it in.
-         *
-         *     It defaults to `false` because the safe direction of a default is
-         *     the one whose mistake is recoverable — a caller who meant to apply
-         *     and previewed loses a round-trip, where the reverse has already
-         *     overwritten a live community's configuration.
-         */
-        ConfigImportRequest: {
-            confirm?: boolean;
-            document: components["schemas"]["ConfigExportDocument"];
-        };
-        /**
          * @description One rejected key + the reason. Surfaced to the caller so the
          *     admin UX can present a meaningful error inline.
          */
@@ -3366,22 +3280,6 @@ export interface components {
             showWhen?: null | components["schemas"]["ShowWhen"];
             type: string;
         };
-        /**
-         * @description A single field an import would change, or did — canonical
-         *     `vtc/_shared/0.1/config-portability#ConfigFieldChange`.
-         *
-         *     `oldValue` is omitted when the key isn't currently set (no profile
-         *     yet, or no db-layer override). `newValue` is omitted when the
-         *     document leaves the field out, which means "leave the live value
-         *     alone" — distinct from an explicit `null`, which means "clear it".
-         *     Both are serialised as *absent* rather than `null` so that
-         *     distinction survives on the wire.
-         */
-        FieldDiff: {
-            key: string;
-            newValue?: unknown;
-            oldValue?: unknown;
-        };
         FieldOption: {
             label: string;
             value: string;
@@ -3573,52 +3471,6 @@ export interface components {
             updatedAt: number;
             visibility: string;
         };
-        /**
-         * @description `POST /v1/admin/config/import` response — canonical
-         *     `vtc/config/import/0.1#response`.
-         *
-         *     One shape for both paths. On a preview the change arrays are what
-         *     *would* be written; on an apply they are what *was*. That is why
-         *     there are no separate `*Applied` lists: a caller reads `status` to
-         *     know which it is holding.
-         */
-        ImportResponse: {
-            /**
-             * @description Configuration-override keys that differ from what is in force.
-             *     Rejected keys are not listed here — they appear under
-             *     `rejected`.
-             */
-            overrideChanges: components["schemas"]["FieldDiff"][];
-            /**
-             * @description Applied keys whose new value takes effect only after a
-             *     restart. Reported on a preview too, so an operator learns that
-             *     the import implies downtime *before* confirming it.
-             */
-            pendingRestart: string[];
-            /**
-             * @description Community-profile members that differ from what is in force.
-             *     Empty when the document omits `communityProfile`, or when
-             *     nothing differs.
-             */
-            profileChanges: components["schemas"]["FieldDiff"][];
-            /**
-             * @description Keys rejected by validation (unknown registry key, type
-             *     mismatch, value-out-of-range, oversized extensions blob).
-             *     Populated identically on preview and apply, so a preview
-             *     surfaces every rejection before anything is written.
-             */
-            rejected: components["schemas"]["ConfigRejectedKey"][];
-            /**
-             * @description `preview` when `confirm` was not set; `imported` after the
-             *     document was applied.
-             */
-            status: components["schemas"]["ImportStatus"];
-        };
-        /**
-         * @description Whether an import response describes a dry run or a completed apply.
-         * @enum {string}
-         */
-        ImportStatus: "preview" | "imported";
         /**
          * @description Whether an artifact is currently in force, and if not, why not.
          *
@@ -6671,92 +6523,6 @@ export interface operations {
             };
             /** @description Caller is not an admin */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    export_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Portable config + community-profile export */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigExportResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    import_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConfigImportRequest"];
-            };
-        };
-        responses: {
-            /** @description Import diff (preview) or applied changes */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImportResponse"];
-                };
-            };
-            /** @description Document carries an unsupported schemaVersion */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Document was taken from a different community */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

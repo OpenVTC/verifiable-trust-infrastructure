@@ -113,9 +113,12 @@ Two of the 51 already verify a document proof on their REST route
 the migration follows. **That leaves 49 proof-REQUIRED tasks served on a bearer
 token** — divergence 1.
 
-Of those 49, six now also have a signed-document binding (§6b, batches 1 and
-2). Their bearer routes remain mounted, so the divergence is not yet 43: it
-closes per task when the bearer route goes, not when the signed door opens.
+Of those 49, eight now have a signed-document binding (§6b, batches 1–3). The
+divergence closes per task when the bearer route goes, not when the signed door
+opens, and for two of the eight it has: batch 3 removed the bearer routes of
+`vtc/config/{export,import}/0.1` in the same change, because nothing called
+them. **47 remain**, six of them with a signed door beside a still-mounted
+bearer route.
 
 ### Drift against the recorded entry
 
@@ -156,8 +159,9 @@ itself before the spine took over verification. **The nine `vtc/*` rows above
 are the ones the spine was lenient about.**
 
 Since then the set has grown by the tasks §6b's batches move onto this binding
-— four in batch 1 and two in batch 2 (`vtc/join-requests/decide/0.1`,
-`vtc/community/profile/update/0.1`), making twenty-six proof-REQUIRED. The
+— four in batch 1, two in batch 2 (`vtc/join-requests/decide/0.1`,
+`vtc/community/profile/update/0.1`) and two in batch 3
+(`vtc/config/{export,import}/0.1`), making twenty-eight proof-REQUIRED. The
 count is asserted by
 `the_dispatched_set_declares_the_proofs_the_design_note_records`, so a batch
 that lands without updating this note fails a test.
@@ -470,14 +474,54 @@ unauthenticated public-profile endpoint, which is the same stored-payload
 argument the existing caps were added for, and capping them belongs in a change
 about that rather than in a transport migration.
 
+**Batch 3 — the portable-configuration pair, and the first bearer routes
+removed.** `vtc/config/export/0.1` and `vtc/config/import/0.1` are bound in
+`DISPATCHED_URIS` / `dispatch_typed` on batch 2's terms: authority from
+`admin_signer`, and the bearer routes applied exactly `AdminAuth`, so a
+context-scoped admin is admitted and a member refused. What differs:
+
+- **The bearer routes are gone, not transitional.** Batches 1 and 2 kept theirs
+  because the admin console reaches them. It does not reach this pair — there
+  is no screen for either (`vtc-console-signing.md` §7) — and neither
+  `vtc-client`, `cnm` nor openvtc calls them. A route with no client has no
+  removal point to wait for, so `POST /v1/admin/config/{export,import}` were
+  deleted in the same change and the divergence is closed for both tasks. The
+  REST integration suite (`tests/admin_config.rs`) was ported to signed
+  documents rather than dropped; the one test not ported held that a stale
+  `?confirm=true` query parameter does not apply, and a document has no query
+  string.
+- **`ext` was refused on both levels.** The route's hand-written
+  `ImportRequest` and `ConfigExportDocument` were `deny_unknown_fields`
+  without the `ext` members the published schema gives the payload and the
+  document, so a schema-valid import carrying either was refused as malformed.
+  Both now accept and ignore it. The bearer route also accepted documents the
+  schema refuses (`"communityProfile": null`, `"extensions": null`); the signed
+  door validates the payload against the schema first, so those are refused
+  now, as the specification says they should be.
+- **64 KiB is enough.** The payload is a community profile and at most five
+  small config overrides, and the profile is batch 2's, measured above at
+  about 44 KiB worst case. An import whose profile is over those caps would
+  have been refused by `CommunityProfileUpdate::apply` anyway — with one
+  exception, below.
+- **One pre-existing gap recorded, not fixed.** When no profile is stored,
+  `apply_profile_import` writes the imported one verbatim instead of through
+  `CommunityProfileUpdate::apply`, so none of that function's caps apply —
+  including the `http(s)`-only `logoUrl`. Boot heals a missing profile whenever
+  `vtc_did` is configured (`server.rs`), so the path is reachable only on a VTC
+  with no identity yet. It is a validation gap in the import rather than the
+  transport, identical before and after this batch, and belongs in a change
+  about the import.
+
 **Next batch.** `vtc/admin/invites/{create,revoke}` are the same admin-from-ACL
 shape and the same console dependency, and become available once the
-`vtc/invitations/*` work owned elsewhere lands. Failing that, the paired
-operator verbs `vtc/config/{export,import}` or the
-`vtc/endorsement-types` pair are the next clean ones;
-`vtc/backup/{export,import}` should wait,
+`vtc/invitations/*` work owned elsewhere lands. Failing that, the
+`vtc/endorsement-types/{register,delete}` pair is the next clean one — `list`
+declares no proof and stays where it is. Check `register` against 64 KiB
+rather than assume: its `claimSchema` is an operator-authored JSON Schema with
+no size cap of its own. `vtc/backup/{export,import}` should still wait,
 because its bodies are the one place where the 64 KiB document cap is plainly
-too small and moving it needs that decision taken first.
+too small and moving it needs that decision taken first. Before keeping a
+batch's bearer routes, check who calls them: batch 3 found nobody did.
 
 ---
 
