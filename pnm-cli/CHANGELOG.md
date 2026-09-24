@@ -2,6 +2,51 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.23.0...pnm-cli-v0.23.1) — 2026-09-24
+
+
+### Added
+
+- **pnm**: Show the VTA's DID as a QR code with `pnm vta qr` ([#1700](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1700))
+
+`pnm vta qr` prints the active VTA's DID as a terminal QR code, for a
+  phone (Keyring) to scan instead of retyping it. It runs offline: the DID
+  comes from this machine's config, `--vta` picks which VTA, `--did <DID>`
+  draws any other DID, and `--out <file.svg>` also writes the code as an SVG.
+
+  The code carries the bare DID and nothing else, the same choice as the VTC
+  landing page's `/v1/community/did-qr.svg` ([#1698](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1698)). A DID is already a URI
+  (scheme `did`), so no `did://` or app-specific wrapper is added.
+
+  The terminal code is drawn with half blocks and paints its own colours,
+  black modules on a white ground, on every line. The terminal's default
+  colours would draw it inverted on a dark theme, and many phone cameras
+  refuse an inverted code. The four-module quiet zone is part of the output.
+
+  The renderer lives in `vta_cli_common::qr` (`terminal_lines`, `svg`) so
+  `cnm` can use it too. A test unpacks the half blocks back into a module
+  grid and checks it against the encoder's, module by module. `qrcode` is
+  added with the `svg` feature only.
+
+
+
+### Fixed
+
+- **pnm**: Log output no longer draws over `pnm messaging console` ([#1707](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1707))
+
+* fix(pnm): log output no longer draws over `pnm messaging console`
+
+  pnm's tracing subscriber wrote to stderr, which is the terminal the console
+  draws on. Anything logged while it ran, such as the SDK's repeated errors
+  while a mediator is unreachable, landed on top of the screen and stayed
+  there. The subscriber now writes through the console's `LogCapture`, which
+  is stderr as before except while the console runs. Then the lines are kept
+  for its log view (`l`).
+
+  Needs affinidi-messaging-mediator-tui 0.2.1.
+
+
+
 ## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.22.0...pnm-cli-v0.23.0) — 2026-09-23
 
 

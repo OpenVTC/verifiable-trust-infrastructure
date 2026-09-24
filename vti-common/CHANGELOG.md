@@ -2,6 +2,30 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.24.0...vti-common-v0.25.0) — 2026-09-24
+
+
+### Chore
+
+- **deps**: Messaging-sdk 0.27.1 + trust-tasks-rs 0.22.3; answer a mutual TSP cancel the SDK could not (Keyring VTI-38) ([#1693](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1693))
+
+Raises the floors on top of #1690's 0.22.1 / 0.27.0 move: trust-tasks-rs and
+  -proof to 0.22.3 (the git-ns family, enabled by all-specs; the rest of the
+  trust-tasks-* line resolves to 0.22.3 too), affinidi-messaging-sdk to 0.27.1.
+  The graph holds exactly one copy of each.
+
+  `affinidi-messaging-sdk` becomes a workspace dependency (floor 0.27.1) in
+  place of five hand-kept per-crate literals.
+
+  SDK 0.27.1 answers a peer's §7.3 cancellation of a mutual relationship
+  itself, and `reply_expected` now means "the answer is still owed", which is
+  true only when that send failed. The VTA's and VTC's `handle_tsp_control`
+  retried with `cancel_relationship`, which refuses `SendCancel` out of `None`
+  (the relationship is already forgotten). That is the exact VTI-38 failure.
+  They now use `TspOps::answer_cancellation`.
+
+
+
 ## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.23.1...vti-common-v0.24.0) — 2026-09-23
 
 
