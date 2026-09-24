@@ -254,6 +254,15 @@ pub(crate) async fn check_policy(
     state: &AppState,
     input: PolicyInput<'_>,
 ) -> OpResult<Option<u32>> {
+    check_policy_via(state, input, None).await
+}
+
+/// [`check_policy`], saying how the request arose (`input.via`).
+pub(crate) async fn check_policy_via(
+    state: &AppState,
+    input: PolicyInput<'_>,
+    via: Option<&str>,
+) -> OpResult<Option<u32>> {
     let active = policy::load(state).await.map_err(|e| {
         declared(
             POLICY_DENIED,
@@ -280,6 +289,7 @@ pub(crate) async fn check_policy(
         visibility: input.visibility.map(|v| v.as_str().to_string()),
         expires_at: input.expires_at,
         capabilities: caps,
+        via: via.map(str::to_string),
     };
     let verified = VerifiedGitNsFacts::after_fixed_rules(facts, input.passed)?;
     policy::decide(&verified, &active.compiled).map_err(|d| declared(POLICY_DENIED, d.message))?;
@@ -851,7 +861,8 @@ pub async fn namespace_reseat(
         return Err(declared(
             NOT_HEADLESS,
             format!(
-                "{resource} has a live git.ns.admin, so it is not headless; its admins grant                  git.ns.admin with git-ns/right/grant"
+                "{resource} has a live git.ns.admin, so it is not headless; its admins grant \
+                 git.ns.admin with git-ns/right/grant"
             ),
         ));
     }
@@ -893,11 +904,14 @@ pub async fn namespace_reseat(
     )
     .await?;
 
-    // Step 7's evidence: each admin record the namespace still holds, and how
-    // it ended. Named by when it was granted, not by whom it was held — a
-    // departed member's DID does not go into a new audit row in plaintext.
+    // Step 7's evidence: how each admin record the namespace held ended —
+    // from the audit log for those already gone (revoked, and by whom and
+    // why; lapsed, and when; removed on departure), and from the rights set
+    // for those not yet swept. Records are named by when they ended or were
+    // granted, not by whom they were held: a departed member's DID does not
+    // go into a new audit row in plaintext.
     let statement = p.statement.to_string();
-    let mut evidence = Vec::new();
+    let mut evidence = admin_record_history(state, &ns.id).await?;
     for row in snap
         .rows(&scope)
         .iter()
@@ -918,6 +932,10 @@ pub async fn namespace_reseat(
     // Step 6 — permanent, so the recovered namespace meets the last-admin
     // invariant from the moment it has an admin again.
     let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    // The subject's own lapsed admin record goes, as a grant replaces one
+    // (`git-ns/right/grant`, item 7): one record per subject and right.
+    set.rows
+        .retain(|r| !(r.subject == subject && r.right == Right::NsAdmin && !r.is_live(t)));
     let mut row = new_row(&subject, Right::NsAdmin, &actor.did, true);
     row.reason = Some(statement.clone());
     row.granter_was_member = actor.member;
@@ -962,6 +980,44 @@ pub async fn namespace_reseat(
     Ok(wire::into(
         json!({ "right": wire::right_record(&row, &resource, true) }),
     )?)
+}
+
+/// How each `git.ns.admin` record of a namespace ended, from the audit log:
+/// revoked (by whom, why), lapsed (when), or removed on its holder's
+/// departure (when). The holders are not named.
+async fn admin_record_history(
+    state: &AppState,
+    ns_id: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let mut out = Vec::new();
+    for (_, v) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
+        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
+            continue;
+        };
+        let AuditEvent::GitNsOperation(d) = env.event else {
+            continue;
+        };
+        if d.namespace.as_deref() != Some(ns_id) || d.right.as_deref() != Some("git.ns.admin") {
+            continue;
+        }
+        let at = wire::timestamp(env.timestamp);
+        let entry = match (d.action.as_str(), d.detail.as_deref()) {
+            ("gitNs.right.lapsed", _) => json!({ "ended": "lapsed", "at": at }),
+            ("gitNs.right.revoked", Some("departed" | "granterDeparted")) => {
+                json!({ "ended": "departed", "at": at })
+            }
+            ("gitNs.right.revoked", why) => {
+                let mut e = json!({ "ended": "revoked", "at": at, "by": env.actor_did_plain });
+                if let Some(w) = why {
+                    e["why"] = json!(w);
+                }
+                e
+            }
+            _ => continue,
+        };
+        out.push(entry);
+    }
+    Ok(out)
 }
 
 // ── git-ns/repo/create/0.1 ──────────────────────────────────────────────────
@@ -1655,9 +1711,31 @@ pub async fn right_grant(
     actor_did: &str,
     p: grant::Payload,
 ) -> OpResult<grant::Response> {
+    right_grant_via(state, actor_did, p, None).await
+}
+
+/// Why a grant is being made other than by a direct request, and what must
+/// still hold, checked under the same store lock as the write.
+pub(crate) struct GrantVia<'a> {
+    /// The policy input's `via` (`drift.adopt`).
+    pub via: &'a str,
+    /// Re-checked against the snapshot the grant is decided on; a refusal
+    /// here is the grant's refusal, and nothing is written.
+    pub still_holds: &'a (dyn Fn(&Snapshot) -> OpResult<()> + Send + Sync),
+}
+
+pub(crate) async fn right_grant_via(
+    state: &AppState,
+    actor_did: &str,
+    p: grant::Payload,
+    via: Option<GrantVia<'_>>,
+) -> OpResult<grant::Response> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
     let snap = Snapshot::load(&state.git_ns.ks).await?;
+    if let Some(v) = &via {
+        (v.still_holds)(&snap)?;
+    }
     let t = now();
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
@@ -1705,7 +1783,7 @@ pub async fn right_grant(
     )?;
     consent_gate(state, &actor, "right.grant", Some(right)).await?;
     let expires_at = p.expires_at;
-    let version = check_policy(
+    let version = check_policy_via(
         state,
         PolicyInput {
             action: "right.grant",
@@ -1726,6 +1804,7 @@ pub async fn right_grant(
             namespace: Some(&ns),
             passed,
         },
+        via.as_ref().map(|v| v.via),
     )
     .await?;
     // Item 5.
@@ -1796,7 +1875,19 @@ pub async fn right_revoke(
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
     let subject = p.subject.to_string();
-    did_core("subject", &subject)?;
+    // A subject recorded before DID-core was enforced can still be revoked:
+    // refusing it would leave a right nobody can take away. Anything else
+    // must be a DID-core DID, as for a grant.
+    if did_core("subject", &subject).is_err() {
+        let recorded = Snapshot::load(&state.git_ns.ks)
+            .await?
+            .rights
+            .values()
+            .any(|set| set.rows.iter().any(|r| r.subject == subject));
+        if !recorded {
+            did_core("subject", &subject)?;
+        }
+    }
     let not_granted = || {
         declared(
             NOT_GRANTED,
@@ -1884,7 +1975,14 @@ pub async fn right_revoke(
             resource: Some(resource.to_string()),
             right: Some(right),
             policy_version: version,
-            detail: (actor.did == subject).then(|| "resigned".to_string()),
+            // Why, for the record's history (a reseat reports how each admin
+            // record ended): a resignation, and the revoker's reason.
+            detail: match (actor.did == subject, p.reason.as_ref()) {
+                (true, Some(r)) => Some(format!("resigned: {}", **r)),
+                (true, None) => Some("resigned".to_string()),
+                (false, Some(r)) => Some(r.to_string()),
+                (false, None) => None,
+            },
         },
     )
     .await;

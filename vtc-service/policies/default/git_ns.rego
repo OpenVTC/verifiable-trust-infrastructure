@@ -37,6 +37,11 @@
 #   visibility    public | private, for repo.create
 #   expiresAt     the grant's expiry, if any
 #   capabilities  { bridge, botCanCreateRepos, kind?, bridgeDid? }
+#   via           how the request arose, where that differs from `action`:
+#                 "drift.adopt" on the `right.grant` an adopted drift item is
+#                 evaluated as. Absent for a direct request. A community that
+#                 never adopts forge-side changes denies
+#                 `input.action == "right.grant"; input.via == "drift.adopt"`.
 #
 # Output: `decision` — {"effect": "allow"} or {"effect": "deny", "with": {code,
 # reason}} — and `settings`, the community's choices the rights model names.

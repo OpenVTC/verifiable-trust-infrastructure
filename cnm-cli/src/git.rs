@@ -241,8 +241,11 @@ fn drift_payload(
     if let Some(o) = observed {
         drift["observed"] = json!(o);
     } else if action == "adopt" {
-        return Err("adopting records a right derived from the observed role: pass --observed                     with the value `git view` showed"
-            .into());
+        return Err(
+            "adopting records a right derived from the observed role: pass --observed \
+                    with the value `git view` showed"
+                .into(),
+        );
     }
     let mut payload = json!({ "resource": resource, "drift": drift, "action": action });
     if let Some(r) = reason {
@@ -367,8 +370,12 @@ fn terminal_safe(s: &str) -> String {
 
 fn guidance(code: &str, message: &str, did: &str) -> String {
     let bin = shell_word(bin_name());
-    let (message, did) = (terminal_safe(message), terminal_safe(did));
-    let hint = match code {
+    let (code, message, did) = (
+        terminal_safe(code),
+        terminal_safe(message),
+        terminal_safe(did),
+    );
+    let hint = match code.as_str() {
         "git-ns:lastOwner" => format!(
             "\nA repository always keeps an owner. Name another first:\n  {bin} git grant \
              --subject <did> --right git.repo.own --resource <repository>\nthen revoke this one."
@@ -417,11 +424,27 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nNo outstanding item matches — resolved already, or the forge changed since you \
              read it. Read it again:\n  {bin} git view --resource <repository>"
         ),
+        // A forge-side lowering is accepted by revoking, not adopting.
+        "git-ns/drift/resolve:notAdoptable" if message.contains("no higher") => format!(
+            "\nThe forge shows a lower role than the member holds. To accept the lowering, \
+             revoke the right:\n  {bin} git revoke --subject <did> --right <right> --resource \
+             <repository>\nor revert the item to restore the projected role."
+        ),
         "git-ns/drift/resolve:notAdoptable"
         | "git-ns/drift/resolve:accountNotLinked"
         | "git-ns/drift/resolve:noMatchingRight" => format!(
             "\nThis item records no right. Revert it instead:\n  {bin} git drift resolve \
              <repository> revert --type <type> [--account-id <id>]"
+        ),
+        "git-ns/drift/resolve:notRevertible" if message.contains("manual mode") => {
+            "\nThe namespace is governed in manual mode: no bridge can change the forge. Undo \
+             the change on the forge yourself."
+                .to_string()
+        }
+        "git-ns/drift/resolve:notRevertible" if message.contains("projection") => format!(
+            "\nThe account is a member's, and the projection gives it a role here: reverting \
+             would not remove it. Adopt the forge-side role, or revoke the member's right:\n  \
+             {bin} git revoke --subject <did> --right <right> --resource <repository>"
         ),
         "git-ns/drift/resolve:notRevertible" => "\nThe bridge cannot undo this change: one \
              that implements only git-ns/bridge/job 0.1 cannot take a role it does not manage \
@@ -890,6 +913,37 @@ mod tests {
         // A refusal's text reaches the terminal without its control bytes.
         let g = guidance("git-ns:lastOwner", "evil\u{1b}[2Jmsg", "did:key:z\u{7}");
         assert!(!g.chars().any(|c| c.is_control() && c != '\n'), "{g:?}");
+        // The code too: it is the VTC's text as much as the message is.
+        let g = guidance("x\u{1b}]0;pwned\u{7}", "m", "did:key:z");
+        assert!(!g.chars().any(|c| c.is_control() && c != '\n'), "{g:?}");
+    }
+
+    #[test]
+    fn drift_refusals_name_the_remedy_that_applies() {
+        let g = guidance(
+            "git-ns/drift/resolve:notAdoptable",
+            "`maintain` is no higher than what the member already holds",
+            "did:key:z",
+        );
+        assert!(g.contains("git revoke"), "{g}");
+        let g = guidance(
+            "git-ns/drift/resolve:notAdoptable",
+            "a `requiredCheckMissing` item records no right",
+            "did:key:z",
+        );
+        assert!(g.contains("revert --type"), "{g}");
+        let g = guidance(
+            "git-ns/drift/resolve:notRevertible",
+            "github.com/acme is governed in manual mode",
+            "did:key:z",
+        );
+        assert!(g.contains("on the forge yourself"), "{g}");
+        let g = guidance(
+            "git-ns/drift/resolve:notRevertible",
+            "that account belongs to a member the projection gives a role here",
+            "did:key:z",
+        );
+        assert!(g.contains("git revoke"), "{g}");
     }
 
     #[test]
