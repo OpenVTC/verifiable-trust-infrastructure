@@ -97,6 +97,11 @@ use trust_tasks_rs::specs::vtc::endorsement_types::{
 };
 // Batch 5: the backup export. Its `import` partner waits — see the design note.
 use trust_tasks_rs::specs::vtc::backup::export::v0_1 as backup_export;
+// The first verb that confers administrative authority on this door, and the
+// answer to the operation-bound step-up it asks for (#1641; design note
+// `vtc-operation-bound-step-up.md`).
+use trust_tasks_rs::specs::acl::grant::v0_1 as acl_grant;
+use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as step_up_approve_response;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -709,6 +714,8 @@ async fn dispatch_typed(
         ENDORSEMENT_TYPE_REGISTER_TYPE => handle_endorsement_type_register(state, ctx, doc).await,
         ENDORSEMENT_TYPE_DELETE_TYPE => handle_endorsement_type_delete(state, ctx, doc).await,
         BACKUP_EXPORT_TYPE => handle_backup_export(state, ctx, doc).await,
+        ACL_GRANT_TYPE => handle_acl_grant(state, ctx, doc).await,
+        STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, doc).await,
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1193,13 +1200,15 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            31,
+            32,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
              moved (`config/export`, `config/import`) + the 2 batch 4 moved \
              (`endorsement-types/register`, `endorsement-types/delete`) + batch \
-             5's `backup/export`; got {required:?}"
+             5's `backup/export` + `acl/grant`. `auth/step-up/approve-response/0.4` \
+             is dispatched and declares no proof: its gate is the WebAuthn \
+             assertion it carries; got {required:?}"
         );
     }
 }
@@ -1352,6 +1361,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // Batch 5: the backup export. `import` carries the whole envelope and
     // cannot fit a 64 KiB document; it waits for a chunked transfer.
     BACKUP_EXPORT_TYPE,
+    // The first verb here that confers administrative authority. Its passkey
+    // gesture is bound to the one grant rather than read from a session, which
+    // a signed document does not have; the bearer route stays mounted and
+    // keeps its session gate.
+    ACL_GRANT_TYPE,
+    // The gesture that operation-bound step-up asks for.
+    STEP_UP_APPROVE_RESPONSE_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -1409,6 +1425,14 @@ pub(crate) const ENDORSEMENT_TYPE_DELETE_TYPE: &str =
 /// `vtc/backup/export/0.1` — an encrypted full-state backup.
 pub(crate) const BACKUP_EXPORT_TYPE: &str =
     <backup_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/grant/0.1` — the entry the maintainer should hold for a subject.
+pub(crate) const ACL_GRANT_TYPE: &str = <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `auth/step-up/approve-response/0.4` — the passkey gesture an
+/// operation-bound step-up asks for.
+pub(crate) const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
+    <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -2230,14 +2254,14 @@ async fn handle_self_remove(
 ///   row, never is. A console key therefore cannot authenticate at all, let
 ///   alone reach the enrolment door. `tests/admin_console_keys.rs::
 ///   a_console_key_gains_no_bearer_authority` pins that.
-/// - **It cannot spend a step-up.** These claims carry `session_id: ""` (the
-///   `Default`), so `AuthClaims::require_fresh_step_up` finds no session and
-///   refuses. That is already true of every signed document — the six verbs
-///   dispatched here confer no administrative authority, so none asks — but
-///   when `acl/grant` or `acl/change-role` move onto this door (design note
-///   §6f) the gate they need reads a *live session*, which a signed document
-///   does not have. It fails closed, which is right; making it pass will take
-///   a deliberate design, not a convenience.
+/// - **It cannot spend a session's step-up, or make a gesture.** These claims
+///   carry `session_id: ""` (the `Default`), so
+///   `AuthClaims::require_fresh_step_up` finds no session and refuses. A verb
+///   on this door that confers administrative authority (`acl/grant`) asks
+///   [`crate::acl::bound_step_up`] instead, for a gesture bound to that one
+///   operation. A delegated key can *redeem* such a gesture — it acts as its
+///   admin — but only the admin's own user-verified passkey can *record* one
+///   (`vtc-operation-bound-step-up.md`).
 async fn admin_signer(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -2848,6 +2872,161 @@ async fn handle_backup_export(
     }
 }
 
+// ─── acl/grant and its operation-bound step-up (#1641) ───────────────────
+
+/// `acl/grant/0.1` — write the entry the maintainer should hold for a subject.
+///
+/// Authority is the signer's ACL row, read now ([`admin_signer`]), and every
+/// check the bearer route makes is the same function here
+/// ([`crate::routes::acl::plan_grant`]). The one difference is the step-up. A
+/// grant that confers admin authority needs a passkey gesture, and the bearer
+/// route reads it from the session's live elevation; a document has no
+/// session, so here the gesture is **bound to this grant** — by a digest of its
+/// type and payload — and spent by it. See [`crate::acl::bound_step_up`].
+///
+/// Without a recorded gesture the grant is refused `permissionDenied`, with the
+/// ceremony inline in `details.stepUpRequest`. The spine releases the refused
+/// document's `id`, so once the admin has answered, the *same* document is
+/// sent again and succeeds. A changed payload finds no gesture.
+async fn handle_acl_grant(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::acl::bound_step_up::{self, Gate};
+    use trust_tasks_rs::{StandardCode, TrustTaskCode};
+
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let _checked: acl_grant::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    // The generated entry also carries the VTA's `approve`, `stepUp` and
+    // `allowedKeys`, which a VTC entry has no field for. The bearer route's
+    // body refuses them rather than dropping them, and so does this door.
+    let body: crate::routes::acl::CreateAclRequest = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let plan = match crate::routes::acl::plan_grant(state, &actor, body).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    // After every check, before any write: a gesture must never be asked for
+    // an act that would be refused anyway, and one that has been spent must
+    // not be spent on a write that then fails a check.
+    if plan.confers_admin {
+        let reason = match plan.entry.allowed_contexts.as_slice() {
+            [] => format!(
+                "Grant community-wide administrator authority to {}",
+                plan.entry.did
+            ),
+            scopes => format!(
+                "Grant administrator authority over {} to {}",
+                scopes.join(", "),
+                plan.entry.did
+            ),
+        };
+        match bound_step_up::redeem_or_request(
+            state,
+            &actor.did,
+            ACL_GRANT_TYPE,
+            &doc.payload,
+            &reason,
+        )
+        .await
+        {
+            Ok(Gate::Satisfied) => {}
+            Ok(Gate::Required(request)) => {
+                return reject_with_code(
+                    &doc,
+                    TrustTaskCode::Standard(StandardCode::PermissionDenied),
+                    "a passkey gesture bound to this grant is required",
+                    Some(bound_step_up::refusal_details(&request)),
+                );
+            }
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+    }
+
+    match crate::routes::acl::commit_grant(state, &actor, plan).await {
+        Ok((_status, envelope)) => success_response(&doc, envelope),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `auth/step-up/approve-response/0.4` — the passkey gesture an
+/// operation-bound step-up asked for.
+///
+/// No ACL row is consulted and no signer is required to be anyone in
+/// particular: the gate is the WebAuthn assertion, which only the acting
+/// admin's own authenticator can produce over this service's challenge. What
+/// the gesture authorizes is read from this service's record of the refusal,
+/// never from this document. See [`crate::acl::bound_step_up::approve`].
+///
+/// This service only issues bound step-ups on this door, so the answer is
+/// `recorded` or `rejected` — never `elevated`.
+async fn handle_step_up_approve_response(
+    state: &AppState,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::acl::bound_step_up::{self, ApproveError, Approved};
+    use step_up_approve_response::error_codes as codes;
+
+    let payload: step_up_approve_response::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let refuse = |code: trust_tasks_rs::DeclaredErrorCode, message: &str, hint: Option<&str>| {
+        reject_with_code(
+            &doc,
+            extended_code(code.code),
+            message,
+            hint.map(|h| serde_json::json!({ "reason": h })),
+        )
+    };
+    match bound_step_up::approve(state, &payload).await {
+        Ok(Approved::Recorded { bound_to }) => success_response(
+            &doc,
+            serde_json::json!({ "status": "recorded", "boundTo": bound_to }),
+        ),
+        Ok(Approved::Declined { reason }) => success_response(
+            &doc,
+            serde_json::json!({ "status": "rejected", "reason": reason }),
+        ),
+        Err(ApproveError::ChallengeUnknown) => refuse(
+            codes::CHALLENGE_UNKNOWN,
+            "no pending step-up matches this challenge",
+            None,
+        ),
+        Err(ApproveError::ChallengeExpired) => refuse(
+            codes::CHALLENGE_EXPIRED,
+            "the step-up this challenge belonged to has expired; send the operation again",
+            None,
+        ),
+        Err(ApproveError::SubjectMismatch) => refuse(
+            codes::SUBJECT_MISMATCH,
+            "the subject or session does not match the pending step-up",
+            None,
+        ),
+        Err(ApproveError::NoGate) => refuse(
+            codes::NO_GATE,
+            "this step-up accepts only a passkey assertion (evidence.kind = webauthn)",
+            None,
+        ),
+        Err(ApproveError::AssertionInvalid(hint)) => refuse(
+            codes::ASSERTION_INVALID,
+            "the passkey assertion did not verify",
+            Some(hint),
+        ),
+        Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
+    }
+}
+
 // ─── personhood ──────────────────────────────────────────────────────────
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce the
@@ -3160,6 +3339,8 @@ mod tests {
             <endorsement_type_register::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <endorsement_type_delete::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <backup_export::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.

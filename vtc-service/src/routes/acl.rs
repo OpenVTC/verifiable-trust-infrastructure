@@ -286,13 +286,75 @@ pub async fn create_acl(
     State(state): State<AppState>,
     Json(req): Json<CreateAclRequest>,
 ) -> Result<(StatusCode, Json<AclEntryEnvelope>), AppError> {
+    let plan = plan_grant(&state, &auth.0, req).await?;
+
+    // Conferring `admin` demands a live step-up here too (VTI-OPS-051).
+    //
+    // `acl/change-role` gets this from the role-change ceremony's host
+    // invariant, which is where a transition belongs. A grant is not a
+    // transition — it writes an entry where there was none, or rewrites one at
+    // the role it already holds — so there is no ceremony to hang an invariant
+    // on and the predicate is checked here, one layer further out. It is the
+    // same predicate: `elevation::verified` is the single definition of "this
+    // caller is elevated right now", so the two gates cannot drift.
+    //
+    // A rewrite is gated too when it *widens* — a context admin becoming
+    // community-wide is an elevation that never changes the role name — but
+    // not when it does not, because that is how the console edits an admin's
+    // label. `elevation::widens_admin_authority` draws that line;
+    // `validate_acl_modification` bounds *which* scopes a caller may confer and
+    // has nothing to say about how recently they authenticated.
+    //
+    // Checked *after* `plan_grant`'s wrong-role conflict on purpose: a caller
+    // who meant `acl/change-role` should be told so, not sent off to run a
+    // passkey ceremony that would only earn them the same 409. Nothing is
+    // written either way.
+    //
+    // The signed door asks the same question of an operation-bound mark
+    // instead of the session — `trust_tasks::handle_acl_grant`.
+    if plan.confers_admin && !crate::acl::elevation::verified(&auth.0, &state.sessions_ks).await {
+        return Err(crate::acl::elevation::required(&format!(
+            "granting the admin role to {}",
+            plan.entry.did
+        )));
+    }
+
+    let (status, envelope) = commit_grant(&state, &auth.0, plan).await?;
+    Ok((status, Json(envelope)))
+}
+
+/// An `acl/grant` that has passed every check deciding whether it may happen,
+/// and has not yet been written.
+///
+/// The split exists for the step-up. Both doors run [`plan_grant`], settle the
+/// step-up their own way — the bearer route from the session's live
+/// elevation, the signed door from an operation-bound mark — then
+/// [`commit_grant`]. Where the gesture is read from is all that differs;
+/// everything that decides the operation is one function.
+#[derive(Debug)]
+pub(crate) struct GrantPlan {
+    pub(crate) entry: VtcAclEntry,
+    status: StatusCode,
+    /// Whether this write gives away admin authority the subject did not
+    /// already hold — what needs the gesture. See
+    /// [`crate::acl::elevation::widens_admin_authority`].
+    pub(crate) confers_admin: bool,
+    reason: Option<String>,
+}
+
+/// Every check `acl/grant` makes before it would write, and the entry it would
+/// write. Writes nothing.
+pub(crate) async fn plan_grant(
+    state: &AppState,
+    actor: &AuthClaims,
+    req: CreateAclRequest,
+) -> Result<GrantPlan, AppError> {
     let req_entry = req.entry;
     // Block non-admin callers from granting Admin — role + context
     // bound checks must run before we touch storage.
-    validate_vtc_role_assignment(&auth.0, &req_entry.role)?;
-    validate_acl_modification(&auth.0, &as_vti_role(&req_entry.role), &req_entry.scopes)?;
+    validate_vtc_role_assignment(actor, &req_entry.role)?;
+    validate_acl_modification(actor, &as_vti_role(&req_entry.role), &req_entry.scopes)?;
 
-    let acl = state.acl_ks.clone();
     let granting_admin = matches!(req_entry.role, VtcRole::Admin);
     let expires_at = req_entry.expires_at.map(|t| t.timestamp() as u64);
 
@@ -301,14 +363,14 @@ pub async fn create_acl(
     // but a role change is `acl/change-role`'s job and is refused here
     // — that task carries the `fromRole` compare-and-swap this one has
     // no way to express.
-    let existing = get_acl_entry(&acl, &req_entry.subject).await?;
+    let existing = get_acl_entry(&state.acl_ks, &req_entry.subject).await?;
     // Decided before the match consumes `existing`: does this write give away
     // more than the subject already holds?
     let confers_admin = granting_admin
         && crate::acl::elevation::widens_admin_authority(existing.as_ref(), &req_entry.scopes);
     let (created_at, created_by, status) = match existing {
         Some(prev) => {
-            if !is_acl_entry_visible(&auth.0, &as_vti_acl_entry(&prev)) {
+            if !is_acl_entry_visible(actor, &as_vti_acl_entry(&prev)) {
                 return Err(AppError::NotFound(format!(
                     "ACL entry not found for DID: {}",
                     req_entry.subject
@@ -329,58 +391,49 @@ pub async fn create_acl(
             // *rewrite* of an entry that already says admin is not covered:
             // that is how a super-admin corrects their own label, and it
             // confers nothing they do not already hold.
-            if granting_admin && req_entry.subject == auth.0.did {
+            if granting_admin && req_entry.subject == actor.did {
                 return Err(AppError::Forbidden(
                     "you cannot grant yourself the admin role; admin elevation requires a \
                      separate admin caller"
                         .into(),
                 ));
             }
-            (now_epoch(), auth.0.did.clone(), StatusCode::CREATED)
+            (now_epoch(), actor.did.clone(), StatusCode::CREATED)
         }
     };
 
-    // Conferring `admin` demands a live step-up here too (VTI-OPS-051).
-    //
-    // `acl/change-role` gets this from the role-change ceremony's host
-    // invariant, which is where a transition belongs. A grant is not a
-    // transition — it writes an entry where there was none, or rewrites one at
-    // the role it already holds — so there is no ceremony to hang an invariant
-    // on and the predicate is checked here, one layer further out. It is the
-    // same predicate: `elevation::verified` is the single definition of "this
-    // caller is elevated right now", so the two gates cannot drift.
-    //
-    // A rewrite is gated too when it *widens* — a context admin becoming
-    // community-wide is an elevation that never changes the role name — but
-    // not when it does not, because that is how the console edits an admin's
-    // label. `elevation::widens_admin_authority` draws that line;
-    // `validate_acl_modification` bounds *which* scopes a caller may confer and
-    // has nothing to say about how recently they authenticated.
-    //
-    // Checked *after* the wrong-role conflict above on purpose: a caller who
-    // meant `acl/change-role` should be told so, not sent off to run a passkey
-    // ceremony that would only earn them the same 409. Nothing is written
-    // either way.
-    if confers_admin && !crate::acl::elevation::verified(&auth.0, &state.sessions_ks).await {
-        return Err(crate::acl::elevation::required(&format!(
-            "granting the admin role to {}",
-            req_entry.subject
-        )));
-    }
+    Ok(GrantPlan {
+        entry: VtcAclEntry {
+            did: req_entry.subject,
+            role: req_entry.role,
+            label: req_entry.label,
+            allowed_contexts: req_entry.scopes,
+            created_at,
+            created_by,
+            updated_at: (status == StatusCode::OK).then(now_epoch),
+            updated_by: (status == StatusCode::OK).then(|| actor.did.clone()),
+            expires_at,
+        },
+        status,
+        confers_admin,
+        reason: req.reason,
+    })
+}
 
-    let entry = VtcAclEntry {
-        did: req_entry.subject,
-        role: req_entry.role,
-        label: req_entry.label,
-        allowed_contexts: req_entry.scopes,
-        created_at,
-        created_by,
-        updated_at: (status == StatusCode::OK).then(now_epoch),
-        updated_by: (status == StatusCode::OK).then(|| auth.0.did.clone()),
-        expires_at,
-    };
-
-    store_acl_entry(&acl, &entry).await?;
+/// Write a planned grant and audit it. Settling the step-up, where the plan
+/// needs one, is the caller's job and must happen first.
+pub(crate) async fn commit_grant(
+    state: &AppState,
+    actor: &AuthClaims,
+    plan: GrantPlan,
+) -> Result<(StatusCode, AclEntryEnvelope), AppError> {
+    let GrantPlan {
+        entry,
+        status,
+        reason,
+        ..
+    } = plan;
+    store_acl_entry(&state.acl_ks, &entry).await?;
 
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
@@ -398,18 +451,18 @@ pub async fn create_acl(
     }
 
     info!(
-        caller = %auth.0.did,
+        caller = %actor.did,
         did = %entry.did,
         role = %entry.role,
-        reason = req.reason.as_deref().unwrap_or(""),
+        reason = reason.as_deref().unwrap_or(""),
         created = status == StatusCode::CREATED,
         "ACL entry granted",
     );
     Ok((
         status,
-        Json(AclEntryEnvelope {
+        AclEntryEnvelope {
             entry: AclEntryResponse::from(entry),
-        }),
+        },
     ))
 }
 

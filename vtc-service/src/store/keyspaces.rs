@@ -114,6 +114,12 @@ pub const GIT_NS_PROJECTION: &str = "git_ns_projection";
 /// never appears in `acl list`. See `crate::acl::console_key`.
 pub const CONSOLE_KEYS: &str = "console_keys";
 
+/// Operation-bound step-up marks (#1641): a pending mark per outstanding
+/// WebAuthn challenge (`pending:<challenge>`) and a redeemable one per
+/// recorded gesture (`mark:<adminDid>:<digest>`), each living 300 s. See
+/// `crate::acl::bound_step_up`.
+pub const STEP_UP_MARKS: &str = "step_up_marks";
+
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
 /// exactly this set.
@@ -151,6 +157,7 @@ pub const ALL: &[&str] = &[
     VETTER_PROFILES,
     ACCEPTED_IDS,
     CONSOLE_KEYS,
+    STEP_UP_MARKS,
     GIT_NS,
     GIT_NS_JOBS,
     GIT_NS_PROJECTION,
@@ -243,6 +250,11 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // gesture. Nothing else goes with it: the ACL rows, the passkeys and the
     // bearer login all come back with the backup.
     CONSOLE_KEYS,
+    // Operation-bound step-up marks. Each authorizes one operation for five
+    // minutes and is spent by it; a restored mark would at best be expired and
+    // at worst let a passkey gesture made on one host authorize an act on
+    // another.
+    STEP_UP_MARKS,
     // Bridge jobs are convergent and re-derived: the projector sends the
     // desired roles again, and an unfinished create shows as `pendingCreate`.
     GIT_NS_JOBS,
@@ -260,8 +272,8 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 33 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
-        assert_eq!(ALL.len(), 36, "ALL must list every AppState keyspace");
+        // 34 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
+        assert_eq!(ALL.len(), 37, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

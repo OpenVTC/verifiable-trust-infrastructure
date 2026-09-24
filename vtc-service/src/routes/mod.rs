@@ -1,4 +1,4 @@
-mod acl;
+pub(crate) mod acl;
 pub(crate) mod admin;
 #[cfg(feature = "admin-ui")]
 mod admin_ui;
