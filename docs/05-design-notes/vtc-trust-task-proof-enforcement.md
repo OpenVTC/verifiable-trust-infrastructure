@@ -613,6 +613,18 @@ console's fallback for a browser with no enrolled key.
 client's session and showing the signed verbs still work while a bearer-only
 verb does not.
 
+**The first blocker — step-up on a signed document — has a design.** The verbs
+gated on a live passkey gesture (`acl/grant` and `acl/change-role` to admin,
+console-key enrolment) take a step-up **bound to the one operation** by payload
+digest: the gate parks the document and answers with a challenge, the admin
+answers with a user-verified passkey assertion
+(`auth/step-up/approve-response`, `boundTo`), and the re-sent document redeems
+that single-use mark. Nothing is elevated. It needs upstream changes first —
+VTI-APV-003 to admit operation-bound re-authentication, and `approve-response`
+without a `sessionId` — and it also carries the second-party consent VTI-APV-014
+requires for unrestricted admin, which the VTC lacks on both doors. See
+[`vtc-operation-bound-step-up.md`](vtc-operation-bound-step-up.md).
+
 ---
 
 ## 7. Requirement → where it is held
