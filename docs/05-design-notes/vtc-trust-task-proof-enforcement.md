@@ -594,9 +594,24 @@ published.
 shape, and become available once the `vtc/invitations/*` work owned elsewhere
 lands. Before keeping a batch's bearer routes, check who calls them — batch 3
 found nobody did — and where the console does, move its call sites to
-`signedOrBearer` in the same batch, as batch 4 did. The bearer routes kept for
-`vtc-client` (batch 5's `backup/export`, and the members verbs it reaches) go
-once that client signs.
+`signedOrBearer` in the same batch, as batch 4 did.
+
+**`vtc-client` signs.** The second blocker §6b named is closed for every verb
+the client reaches that has a signed binding: a join decision,
+`members/{update,admin-remove,credentials}` and `backup/export`. A client
+built with `VtcClient::connect` holds the operator's own `did:key`, and since
+`admin_signer` reads the signer's ACL entry directly, it signs as the operator
+— no console-style delegation is needed. It sends those verbs **only** as
+documents, with no fallback to the bearer route even against a VTC that
+predates their binding: a fallback would keep the bearer routes load-bearing
+for exactly the clients that could sign. Over a DIDComm or TSP session the same
+verbs ride the session, which lifts `NoRestTransport` for them. A client built
+from a token alone (`with_token`) holds no key and still uses the bearer
+routes; that is the one remaining in-repo caller of them, alongside the
+console's fallback for a browser with no enrolled key.
+`signed_admin_verbs_do_not_ride_the_bearer_session` holds it by ending the
+client's session and showing the signed verbs still work while a bearer-only
+verb does not.
 
 ---
 
