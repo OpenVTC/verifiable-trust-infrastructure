@@ -385,7 +385,7 @@ fn namespace_by_id<'a>(snap: &'a Snapshot, id: &str) -> OpResult<&'a Namespace> 
 }
 
 fn repo_at<'a>(snap: &'a Snapshot, resource: &Resource) -> OpResult<&'a Repo> {
-    snap.repo_at(&resource.to_string()).ok_or_else(|| {
+    lookup(snap, resource)?.ok_or_else(|| {
         declared(
             UNKNOWN_REPO,
             format!("this VTC records no repository at {resource}"),
@@ -393,16 +393,23 @@ fn repo_at<'a>(snap: &'a Snapshot, resource: &Resource) -> OpResult<&'a Repo> {
     })
 }
 
+/// The repository recorded at `resource`; an ambiguous name is refused
+/// rather than guessed at.
+pub(super) fn lookup<'a>(snap: &'a Snapshot, resource: &Resource) -> OpResult<Option<&'a Repo>> {
+    snap.lookup_repo(&resource.to_string())
+        .map_err(OpError::Unavailable)
+}
+
 /// The scope a resource's rights hang on, if it is recorded.
-fn scope_for(snap: &Snapshot, resource: &Resource) -> Option<Scope> {
+fn scope_for(snap: &Snapshot, resource: &Resource) -> OpResult<Option<Scope>> {
     if resource.is_namespace() {
-        snap.namespaces
+        Ok(snap
+            .namespaces
             .iter()
             .find(|n| n.resource() == *resource)
-            .map(|n| Scope::Namespace(n.id.clone()))
+            .map(|n| Scope::Namespace(n.id.clone())))
     } else {
-        snap.repo_at(&resource.to_string())
-            .map(|r| Scope::Repo(r.id.clone()))
+        Ok(lookup(snap, resource)?.map(|r| Scope::Repo(r.id.clone())))
     }
 }
 
@@ -819,7 +826,7 @@ pub async fn repo_create(
     )
     .await?;
     // Item 3.
-    if snap.repo_at(&resource.to_string()).is_some() {
+    if lookup(&snap, &resource)?.is_some() {
         return Err(declared(
             NAME_TAKEN,
             format!("this VTC already records a repository at {resource}"),
@@ -963,7 +970,7 @@ pub async fn repo_adopt(
     // Item 1.
     let ns = bound_namespace_for(&snap, &resource)?.clone();
     // Item 2.
-    let existing = snap.repo_at(&resource.to_string()).cloned();
+    let existing = lookup(&snap, &resource)?.cloned();
     if let Some(r) = &existing
         && matches!(
             r.state,
@@ -1609,7 +1616,7 @@ pub async fn right_revoke(
         )
     };
     // Item 1.
-    let scope = scope_for(&snap, &resource).ok_or_else(not_granted)?;
+    let scope = scope_for(&snap, &resource)?.ok_or_else(not_granted)?;
     let row = snap
         .rows(&scope)
         .iter()

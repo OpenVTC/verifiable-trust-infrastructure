@@ -966,9 +966,30 @@ pub async fn handle_result(
                 && let Some(mut repo) = store::get_repo(&state.git_ns.ks, &repo_id).await?
             {
                 // Item 4 — `repo.resource` is never taken as a rename; the id
-                // is recorded where it was unknown.
-                if repo.forge_id.is_none() {
-                    repo.forge_id = forge_id.clone();
+                // is recorded where it was unknown — unless another live
+                // repository already holds it, which would put two rows on one
+                // forge repository. That is left unrecorded, and said.
+                if repo.forge_id.is_none()
+                    && let Some(fid) = forge_id.clone()
+                {
+                    let snap = Snapshot::load(&state.git_ns.ks).await?;
+                    match snap.forge_id_held_elsewhere(&fid, &repo.id) {
+                        Some(other) => {
+                            warn!(
+                                forge_id = %fid,
+                                resource = %repo.resource,
+                                other = %other.resource,
+                                "an inspection reported a forge id another governed repository \
+                                 holds; not recorded"
+                            );
+                            repo.last_error = Some(format!(
+                                "the forge reports this repository as {fid}, which the VTC \
+                                 records for {}; an administrator must resolve it",
+                                other.resource
+                            ));
+                        }
+                        None => repo.forge_id = Some(fid),
+                    }
                 }
                 let failed_step = apply_steps(&mut repo, &steps);
                 let t = now();
@@ -1318,7 +1339,16 @@ pub async fn handle_event(
             if kind == "repoRenamed" {
                 inside(&to)?;
             }
-            if let Some(mut repo) = find(forge_id.as_deref(), Some(&from)) {
+            // Matched by forge id alone. A rename or transfer names the
+            // repository by the identity that survives it; a row whose forge
+            // id is not yet known (adopted, awaiting its inspection) may be a
+            // different repository that took the name, so it is never moved
+            // on a name — the next inspection reconciles it.
+            let by_id = forge_id
+                .as_deref()
+                .and_then(|f| snap.repo_by_forge_id(&ns.id, f))
+                .cloned();
+            if let Some(mut repo) = by_id {
                 // A repository keeps its rights only while it stays inside
                 // this namespace. Out of it — to another owner, another
                 // forge, or another namespace of this VTC, which another
@@ -1397,39 +1427,54 @@ pub async fn handle_event(
             // The repository this is, if the VTC knows it under its forge id —
             // perhaps at another name, the rename having gone unreported.
             let by_id = fid.and_then(|f| snap.repo_by_forge_id(&ns.id, f)).cloned();
-            // A reservation still being created holds the name; its
-            // `createRepo` job will report the name taken (bridge/event 0.2,
-            // step 3). Nothing is recorded over it.
-            if by_id.is_none()
-                && snap.repos.iter().any(|r| {
-                    r.namespace_id == ns.id
-                        && r.resource == resource
-                        && r.state == RepoState::PendingCreate
-                })
-            {
+            // A reservation still being created holds the name, whether or
+            // not the forge id is known elsewhere; its `createRepo` job will
+            // report the name taken (bridge/event 0.2, step 3). Nothing is
+            // recorded over it.
+            if snap.repos.iter().any(|r| {
+                r.namespace_id == ns.id
+                    && r.resource == resource
+                    && r.state == RepoState::PendingCreate
+            }) {
                 info!(%resource, "a repository appeared at a name reserved for creation");
                 return Ok(ack);
             }
             let by_id_id = by_id.as_ref().map(|r| r.id.clone());
             let mut target = by_id;
+            // Decide everything first, write only if nothing conflicts: a
+            // conflict leaves the records exactly as they were.
+            let mut displaced: Vec<Repo> = Vec::new();
+            let mut folded: Vec<String> = Vec::new();
+            let conflict = |why: &str| {
+                warn!(
+                    %resource,
+                    "{why}; the event is not applied, left for an administrator to resolve"
+                );
+            };
             for r in snap
                 .repos
                 .iter()
                 .filter(|r| r.resource == resource && Some(&r.id) != by_id_id.as_ref())
             {
                 let live_here = r.namespace_id == ns.id && r.state != RepoState::Detached;
-                if live_here && !differs(r) && target.is_none() {
-                    // The row already recorded for this very repository.
-                    target = Some(r.clone());
-                } else if live_here && differs(r) {
+                if live_here && differs(r) {
                     // A governed repository recorded at this name under a
                     // different forge id has left the name — renamed or
                     // deleted, the event saying so lost. Its rights must not
                     // stay published over someone else's repository: detached,
                     // then folded away.
-                    let mut old = r.clone();
-                    detach(state, issuer, &mut old, "nameReused").await?;
-                    fold_away(state, &old.id).await?;
+                    displaced.push(r.clone());
+                } else if live_here {
+                    if target.is_some() {
+                        // A governed row at this name whose forge id is not
+                        // known (or is this one), while the repository is
+                        // already recorded elsewhere: two live rows would
+                        // follow whichever way it went.
+                        conflict("a governed repository without a known forge id holds this name");
+                        return Ok(ack);
+                    }
+                    // The row already recorded for this very repository.
+                    target = Some(r.clone());
                 } else if r.state == RepoState::Detached {
                     // Left at this name by a deletion, a transfer or an
                     // unbind, in any namespace: taken up again if it is this
@@ -1437,15 +1482,36 @@ pub async fn handle_event(
                     if target.is_none() && !differs(r) {
                         target = Some(r.clone());
                     } else {
-                        fold_away(state, &r.id).await?;
+                        folded.push(r.id.clone());
                     }
-                } else if !live_here {
+                } else {
                     // Governed elsewhere at the same name cannot happen — the
                     // name is inside exactly one namespace — but never record
                     // a second row over it.
-                    warn!(%resource, "a repository name is recorded in another namespace");
+                    conflict("a repository name is recorded in another namespace");
                     return Ok(ack);
                 }
+            }
+            // The forge id goes on one live row only.
+            if let (Some(f), Some(t)) = (fid, target.as_ref())
+                && t.forge_id.is_none()
+                && snap.forge_id_held_elsewhere(f, &t.id).is_some()
+            {
+                conflict("the reported forge id is already recorded for another repository");
+                return Ok(ack);
+            }
+            if let (Some(f), None) = (fid, target.as_ref())
+                && snap.forge_id_held_elsewhere(f, "").is_some()
+            {
+                conflict("the reported forge id is already recorded for another repository");
+                return Ok(ack);
+            }
+            for mut old in displaced {
+                detach(state, issuer, &mut old, "nameReused").await?;
+                fold_away(state, &old.id).await?;
+            }
+            for id in folded {
+                fold_away(state, &id).await?;
             }
             match target {
                 Some(mut repo) => {

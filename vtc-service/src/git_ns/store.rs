@@ -194,39 +194,56 @@ impl Snapshot {
             .find(|n| n.resource().contains(resource))
     }
 
-    /// The repository recorded at `resource`.
+    /// The repository recorded at `resource`, or why there is no one answer.
     ///
     /// A name is held by at most one repository that is not `detached` — the
-    /// bridge's events and adoption fold any other row away — and that one is
-    /// the answer. Failing it, the most recently created `detached` row: what
-    /// the name last was, for adoption to take up again. Never the order rows
-    /// happen to be stored in, which is random.
-    pub fn repo_at(&self, resource: &str) -> Option<&Repo> {
-        let mut at: Vec<&Repo> = self
+    /// bridge's events and adoption keep it so — and that one is the answer.
+    /// Two such rows are an inconsistency nothing may act on: `Err`, for an
+    /// administrator to resolve, never a guess. With no live row, the most
+    /// recently created `detached` one — what the name last was, which
+    /// adoption takes up with its rights and forge id cleared, so which of two
+    /// equally old detached rows it takes changes nothing.
+    pub fn lookup_repo(&self, resource: &str) -> Result<Option<&Repo>, String> {
+        let detached = |r: &&Repo| r.state == super::model::RepoState::Detached;
+        let at: Vec<&Repo> = self
             .repos
             .iter()
             .filter(|r| r.resource == resource)
             .collect();
-        at.sort_by(|a, b| {
-            let live = |r: &Repo| r.state != super::model::RepoState::Detached;
-            live(b)
-                .cmp(&live(a))
-                .then(b.created_at.cmp(&a.created_at))
-                .then(a.id.cmp(&b.id))
-        });
-        if at
-            .iter()
-            .filter(|r| r.state != super::model::RepoState::Detached)
-            .count()
-            > 1
-        {
-            tracing::warn!(
-                %resource,
-                "more than one governed repository is recorded at one name; \
-                 an administrator must resolve it"
-            );
+        let live: Vec<&Repo> = at.iter().copied().filter(|r| !detached(r)).collect();
+        match live.len() {
+            0 => Ok(at
+                .into_iter()
+                .filter(detached)
+                .max_by(|a, b| a.created_at.cmp(&b.created_at).then(b.id.cmp(&a.id)))),
+            1 => Ok(Some(live[0])),
+            n => Err(format!(
+                "{n} governed repositories are recorded at {resource}; an administrator must \
+                 resolve which one it is before anything is done there"
+            )),
         }
-        at.first().copied()
+    }
+
+    /// [`Self::lookup_repo`] for reads: an ambiguous name is logged and reads
+    /// as unrecorded. Anything that writes uses `lookup_repo` and refuses.
+    pub fn repo_at(&self, resource: &str) -> Option<&Repo> {
+        match self.lookup_repo(resource) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("{e}");
+                None
+            }
+        }
+    }
+
+    /// Whether a live repository other than `except` already holds `forge_id`
+    /// — forge ids are the forge's, so in any namespace.
+    pub fn forge_id_held_elsewhere(&self, forge_id: &str, except: &str) -> Option<&Repo> {
+        self.repos.iter().find(|r| {
+            r.id != except
+                && r.state != super::model::RepoState::Detached
+                && r.forge_id.as_deref() == Some(forge_id)
+        })
     }
 
     pub fn repo_by_forge_id(&self, namespace_id: &str, forge_id: &str) -> Option<&Repo> {
