@@ -194,9 +194,39 @@ impl Snapshot {
             .find(|n| n.resource().contains(resource))
     }
 
-    /// The repository currently recorded at `resource`, in any state.
+    /// The repository recorded at `resource`.
+    ///
+    /// A name is held by at most one repository that is not `detached` — the
+    /// bridge's events and adoption fold any other row away — and that one is
+    /// the answer. Failing it, the most recently created `detached` row: what
+    /// the name last was, for adoption to take up again. Never the order rows
+    /// happen to be stored in, which is random.
     pub fn repo_at(&self, resource: &str) -> Option<&Repo> {
-        self.repos.iter().find(|r| r.resource == resource)
+        let mut at: Vec<&Repo> = self
+            .repos
+            .iter()
+            .filter(|r| r.resource == resource)
+            .collect();
+        at.sort_by(|a, b| {
+            let live = |r: &Repo| r.state != super::model::RepoState::Detached;
+            live(b)
+                .cmp(&live(a))
+                .then(b.created_at.cmp(&a.created_at))
+                .then(a.id.cmp(&b.id))
+        });
+        if at
+            .iter()
+            .filter(|r| r.state != super::model::RepoState::Detached)
+            .count()
+            > 1
+        {
+            tracing::warn!(
+                %resource,
+                "more than one governed repository is recorded at one name; \
+                 an administrator must resolve it"
+            );
+        }
+        at.first().copied()
     }
 
     pub fn repo_by_forge_id(&self, namespace_id: &str, forge_id: &str) -> Option<&Repo> {

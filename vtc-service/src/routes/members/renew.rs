@@ -43,7 +43,7 @@ use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
 use crate::error::TaskError;
-use crate::members::{get_member, store_member};
+use crate::members::get_member;
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
     get_policy,
@@ -110,7 +110,7 @@ pub async fn renew(
 
     // 2. Recover the prior Member row for the status-list slot
     // + the prior VMC's personhood flag (audit context).
-    let mut member = get_member(&state.members_ks, &caller_did)
+    let member = get_member(&state.members_ks, &caller_did)
         .await?
         .ok_or_else(|| {
             TaskError::declared(
@@ -212,8 +212,8 @@ pub async fn renew(
     )
     .await?;
 
-    // 5. Update the Member row.
-    member.status_list_index = Some(slot);
+    // 5. Update the Member row — re-read under the members edit lock, so a
+    // field another writer changed meanwhile (a forge-account link) is kept.
     // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
     // A renewed grant carries different claims and therefore a different digest, so
     // any acknowledgement bound to the previous one no longer matches it and is
@@ -224,15 +224,20 @@ pub async fn renew(
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
     let role_vec_value = serde_json::to_value(&role_vec)
         .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
-    member.record_issued_credentials(vmc_value, role_vec_value);
-    if downgrade_audit {
-        // Renewal-policy downgrade clears the asserted-at
-        // timestamp alongside the flag. The member must
-        // re-assert (M4.3) to reinstate.
-        member.personhood = false;
-        member.personhood_asserted_at = None;
-    }
-    store_member(&state.members_ks, &member).await?;
+    crate::members::storage::edit_member(&state.members_ks, &caller_did, |m| {
+        m.status_list_index = Some(slot);
+        m.record_issued_credentials(vmc_value, role_vec_value);
+        if downgrade_audit {
+            // Renewal-policy downgrade clears the asserted-at
+            // timestamp alongside the flag. The member must
+            // re-assert (M4.3) to reinstate.
+            m.personhood = false;
+            m.personhood_asserted_at = None;
+        }
+        true
+    })
+    .await?
+    .ok_or_else(|| AppError::Conflict("the member left while this was in progress".into()))?;
 
     // 6. Audit. `MembershipRenewed` always fires; paired
     //    `PersonhoodRevoked { reason: "renewal-policy" }` only

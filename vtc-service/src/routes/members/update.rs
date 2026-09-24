@@ -110,6 +110,9 @@ pub async fn update_member(
 /// unreachable, because `role: admin` is refused below before any of this runs,
 /// and it fails closed (a session-less claim has no elevation) if that ever
 /// changes.
+/// The member extension `git-ns/account/link` owns.
+const FORGES_EXTENSION: &str = "forges";
+
 pub(crate) async fn update_member_inner(
     state: &AppState,
     auth: &vti_common::auth::extractor::AuthClaims,
@@ -184,7 +187,40 @@ pub(crate) async fn update_member_inner(
         member.departure_preference = pref;
         fields_changed.push("departurePreference".into());
     }
-    if let Some(extensions) = req.extensions
+    // `extensions.forges` is the record of the forge accounts a member linked
+    // with `git-ns/account/link`, and only that task (and a departure) writes
+    // it: an administrator who could set it could hand a member any forge
+    // account — past the one-account-per-member rule and every check the
+    // bridge's `accountLinked` passes — and the bridge would then give that
+    // account the member's forge role. A replacement keeps whatever is linked.
+    let extensions = match req.extensions {
+        Some(ext) if ext.get(FORGES_EXTENSION).is_some() => {
+            return Err(AppError::Validation(format!(
+                "`extensions.{FORGES_EXTENSION}` holds the member's linked forge accounts and is \
+                 written only by git-ns/account/link; leave it out"
+            ))
+            .into());
+        }
+        Some(mut ext) => {
+            if let Some(forges) = member.extensions.get(FORGES_EXTENSION).cloned() {
+                if ext.is_null() {
+                    ext = serde_json::json!({});
+                }
+                let Some(o) = ext.as_object_mut() else {
+                    return Err(AppError::Validation(
+                        "`extensions` must be an object while the member has linked forge \
+                         accounts, which it keeps"
+                            .into(),
+                    )
+                    .into());
+                };
+                o.insert(FORGES_EXTENSION.into(), forges);
+            }
+            Some(ext)
+        }
+        None => None,
+    };
+    if let Some(extensions) = extensions
         && extensions != member.extensions
     {
         changes.push(FieldChange {

@@ -467,16 +467,18 @@ pub fn explicit_admitted(
 /// The bridge's service grant: `git.commit.sign`, on the namespace, to the
 /// namespace's own bridge DID — nothing else.
 pub fn service_grant_admitted(
-    bridge_did: &str,
+    ns: &super::model::Namespace,
     subject: &str,
     right: Right,
     target: &Resource,
 ) -> Result<RulesPassed, Refusal> {
-    if subject == bridge_did && right == Right::CommitSign && target.is_namespace() {
+    let own_bridge = ns.bridge_did.as_deref() == Some(subject);
+    let bound = ns.state == super::model::NamespaceState::Bound;
+    if own_bridge && bound && right == Right::CommitSign && *target == ns.resource() {
         return Ok(RulesPassed::new());
     }
     Err(Refusal::Escalation(
-        "a service grant is git.commit.sign on the namespace, to its own bridge".into(),
+        "a service grant is git.commit.sign on a bound namespace, to the bridge it records".into(),
     ))
 }
 
@@ -786,5 +788,26 @@ mod tests {
         assert!(members_only(Right::RepoCreate, false).is_err());
         assert!(members_only(Right::CommitSign, false).is_ok());
         assert!(members_only(Right::RepoOwn, false).is_ok());
+    }
+
+    /// A service grant is admitted for exactly one shape: `commit.sign`, on a
+    /// bound namespace's own resource, to the bridge that namespace records.
+    #[test]
+    fn a_service_grant_is_admitted_only_to_the_recorded_bridge_of_a_bound_namespace() {
+        let mut ns = snap().namespaces[0].clone();
+        ns.bridge_did = Some(DAN.into());
+        let own = ns.resource();
+        let repo = Resource::parse("github.com/acme/widgets").unwrap();
+        assert!(service_grant_admitted(&ns, DAN, Right::CommitSign, &own).is_ok());
+        assert!(service_grant_admitted(&ns, BOB, Right::CommitSign, &own).is_err());
+        assert!(service_grant_admitted(&ns, DAN, Right::RepoOwn, &own).is_err());
+        assert!(service_grant_admitted(&ns, DAN, Right::CommitSign, &repo).is_err());
+        let other = Resource::parse("github.com/beta").unwrap();
+        assert!(service_grant_admitted(&ns, DAN, Right::CommitSign, &other).is_err());
+        ns.state = NamespaceState::Pending;
+        assert!(service_grant_admitted(&ns, DAN, Right::CommitSign, &own).is_err());
+        ns.state = NamespaceState::Bound;
+        ns.bridge_did = None;
+        assert!(service_grant_admitted(&ns, DAN, Right::CommitSign, &own).is_err());
     }
 }

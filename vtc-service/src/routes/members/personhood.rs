@@ -84,7 +84,7 @@ use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
 use crate::error::TaskError;
-use crate::members::{get_member, match_code, store_member};
+use crate::members::{get_member, match_code};
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy,
     extract::extract_vp_claims, get_active_policy_id, get_policy,
@@ -326,7 +326,7 @@ pub(crate) async fn assert_inner(
     vti_common::identifier::validate_did("did", member_did)?;
     // Load Member row first — `404` for an unknown subject
     // is the most actionable failure mode.
-    let mut member = get_member(&state.members_ks, member_did)
+    let member = get_member(&state.members_ks, member_did)
         .await?
         .ok_or_else(|| {
             TaskError::declared(
@@ -535,10 +535,7 @@ pub(crate) async fn assert_inner(
     )
     .await?;
 
-    // 8. Update Member row.
-    member.personhood = true;
-    member.personhood_asserted_at = Some(now);
-    member.status_list_index = Some(slot);
+    // 8. Update Member row, re-read under the members edit lock.
     // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
     // Asserting or revoking personhood re-mints the grant (the flag is a claim on
     // it), so the digest changes and the acknowledgement bound to the previous
@@ -548,8 +545,15 @@ pub(crate) async fn assert_inner(
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
     let role_vec_value = serde_json::to_value(&role_vec)
         .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
-    member.record_issued_credentials(vmc_value, role_vec_value);
-    store_member(&state.members_ks, &member).await?;
+    crate::members::storage::edit_member(&state.members_ks, member_did, |m| {
+        m.personhood = true;
+        m.personhood_asserted_at = Some(now);
+        m.status_list_index = Some(slot);
+        m.record_issued_credentials(vmc_value, role_vec_value);
+        true
+    })
+    .await?
+    .ok_or_else(|| AppError::Conflict("the member left while this was in progress".into()))?;
 
     // 9. Audit.
     audit_writer
@@ -630,7 +634,7 @@ pub async fn revoke(
         .as_ref()
         .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
 
-    let mut member = get_member(&state.members_ks, &member_did)
+    let member = get_member(&state.members_ks, &member_did)
         .await?
         .ok_or_else(|| {
             TaskError::declared(
@@ -683,8 +687,6 @@ pub async fn revoke(
     )
     .await?;
 
-    member.personhood = false;
-    member.personhood_asserted_at = None;
     // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
     // Asserting or revoking personhood re-mints the grant (the flag is a claim on
     // it), so the digest changes and the acknowledgement bound to the previous
@@ -694,8 +696,14 @@ pub async fn revoke(
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
     let role_vec_value = serde_json::to_value(&role_vec)
         .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
-    member.record_issued_credentials(vmc_value, role_vec_value);
-    store_member(&state.members_ks, &member).await?;
+    crate::members::storage::edit_member(&state.members_ks, &member_did, |m| {
+        m.personhood = false;
+        m.personhood_asserted_at = None;
+        m.record_issued_credentials(vmc_value, role_vec_value);
+        true
+    })
+    .await?
+    .ok_or_else(|| AppError::Conflict("the member left while this was in progress".into()))?;
 
     audit_writer
         .write(

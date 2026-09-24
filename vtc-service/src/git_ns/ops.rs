@@ -548,6 +548,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
                 },
             )
             .await;
+            super::projection::warn_hook_overlaps_for(state, &ns).await;
             return Ok(wire::into(json!({ "namespace": wire::namespace(&ns) }))?);
         }
 
@@ -727,6 +728,29 @@ pub async fn unbind(
     bridge::cancel_namespace_jobs(state, &ns.id).await?;
     // Item 5.
     store::delete_namespace(&state.git_ns.ks, &ns.id).await?;
+    // The v0.1 role-derived grants this namespace's projection published go
+    // back to the hook relay, which would otherwise not grant them again
+    // until each member's next membership event. Queued now, so the relay
+    // re-asserts them on its next tick; the projector hands the same keys
+    // back rather than withdrawing them.
+    let after = Snapshot::load(&state.git_ns.ks).await?;
+    let handed: Vec<(String, String)> = super::projection::role_mapped(state)
+        .await?
+        .into_iter()
+        .filter(|(_, r)| {
+            Resource::parse(r).is_ok_and(|r| resource.contains(&r))
+                && !super::projection::in_bound_namespace(&after, &r.to_string())
+        })
+        .collect();
+    if !handed.is_empty() {
+        crate::hooks::enqueue_grants(
+            &state.hooks_queue_ks,
+            &format!("git-ns-unbind:{}:{}", ns.id, t.to_rfc3339()),
+            &handed,
+            t,
+        )
+        .await?;
+    }
     audit(
         state,
         &actor.did,
@@ -1043,6 +1067,14 @@ pub async fn repo_adopt(
                 )
                 .await?;
             }
+            // Nor its forge id: whatever is at this name on the forge now may
+            // not be the repository that was detached. The inspection this
+            // adoption queues reports the real one.
+            if r.state == RepoState::Detached {
+                r.forge_id = None;
+                r.forge_report = Default::default();
+                r.sync = SyncStatus::new(SyncState::Unchecked);
+            }
             r.namespace_id = ns.id.clone();
             r
         }
@@ -1216,16 +1248,41 @@ pub async fn repo_transfer(
     .await?;
     // Item 3 — one write: the grant and the revoke land together or not at
     // all, so the repository never has fewer owners than before.
+    //
+    // What is handed over is what the caller holds, expiry included: the
+    // recipient ends with ownership at least as durable as the caller's and
+    // never more. An expiring record does not count toward the last-owner
+    // invariant (as `git-ns/namespace/reseat/0.1` states it for the last
+    // admin, and this VTC applies to owners alike), so a permanent owner who
+    // hands over to someone holding only an expiring record must leave them a
+    // permanent one — or the repository is ownerless when it lapses.
     let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
-    let to_already = set
-        .rows
-        .iter()
-        .any(|r| r.subject == to && r.right == Right::RepoOwn && r.is_live(t));
+    let live_own =
+        |r: &RightRow, who: &str| r.subject == who && r.right == Right::RepoOwn && r.is_live(t);
+    // `None` is permanent; otherwise the latest expiry among live records.
+    let durability = |who: &str| -> Option<Option<chrono::DateTime<chrono::Utc>>> {
+        let rows: Vec<&RightRow> = set.rows.iter().filter(|r| live_own(r, who)).collect();
+        if rows.is_empty() {
+            None
+        } else if rows.iter().any(|r| r.expires_at.is_none()) {
+            Some(None)
+        } else {
+            Some(rows.iter().filter_map(|r| r.expires_at).max())
+        }
+    };
+    let handed = durability(&actor.did).unwrap_or(None);
+    let to_already = match (durability(&to), handed) {
+        (None, _) => false,
+        (Some(None), _) => true,
+        (Some(Some(_)), None) => false,
+        (Some(Some(has)), Some(gets)) => has >= gets,
+    };
     if !to_already {
         set.rows
             .retain(|r| !(r.subject == to && r.right == Right::RepoOwn));
-        set.rows
-            .push(new_row(&to, Right::RepoOwn, &actor.did, to_standing.member));
+        let mut row = new_row(&to, Right::RepoOwn, &actor.did, to_standing.member);
+        row.expires_at = handed;
+        set.rows.push(row);
     }
     set.rows
         .retain(|r| !(r.subject == actor.did && r.right == Right::RepoOwn));

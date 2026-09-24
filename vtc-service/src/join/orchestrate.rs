@@ -536,19 +536,17 @@ async fn apply_verdict_to_request(
                     // Flag the freshly-admitted member as invitation-joined so
                     // the admin UI can badge them. Best-effort metadata patch —
                     // the member + credentials already exist.
-                    match crate::members::get_member(&state.members_ks, applicant_did).await {
-                        Ok(Some(mut m)) => {
+                    match crate::members::storage::edit_member(
+                        &state.members_ks,
+                        applicant_did,
+                        |m| {
                             m.joined_via_invitation = true;
-                            if let Err(e) =
-                                crate::members::store_member(&state.members_ks, &m).await
-                            {
-                                warn!(
-                                    applicant = %applicant_did,
-                                    error = %e,
-                                    "failed to flag member joined_via_invitation",
-                                );
-                            }
-                        }
+                            true
+                        },
+                    )
+                    .await
+                    {
+                        Ok(Some(_)) => {}
                         Ok(None) => warn!(
                             applicant = %applicant_did,
                             "admitted member row missing when flagging joined_via_invitation",
@@ -556,7 +554,7 @@ async fn apply_verdict_to_request(
                         Err(e) => warn!(
                             applicant = %applicant_did,
                             error = %e,
-                            "failed to load member to flag joined_via_invitation",
+                            "failed to flag member joined_via_invitation",
                         ),
                     }
                 }

@@ -1174,6 +1174,19 @@ fn merge_repo_report(repo: &mut Repo, r: RepoForgeReport) {
     }
 }
 
+/// Remove a repository row and whatever rights it still records. Its
+/// published tuples, keyed to it in the mirror, are withdrawn by the projector
+/// as wanted by no source.
+async fn fold_away(state: &AppState, repo_id: &str) -> Result<(), AppError> {
+    store::delete_repo(&state.git_ns.ks, repo_id).await?;
+    store::put_rights(
+        &state.git_ns.ks,
+        &Scope::Repo(repo_id.to_string()),
+        &Default::default(),
+    )
+    .await
+}
+
 /// Set a repository detached and withdraw its rights — a repository deleted
 /// on the forge, moved out of every bound namespace, or not found when
 /// adopted.
@@ -1312,30 +1325,32 @@ pub async fn handle_event(
                 // bridge may serve and whose admins granted none of these
                 // rights — it is detached, and its rights withdrawn.
                 if ns_res.contains(&to_res) && !to_res.is_namespace() {
-                    // A stale record at the new name in this namespace — an
-                    // unmanaged or detached row for what is now this
-                    // repository — is folded away rather than left to shadow it.
-                    if let Some(stale) = snap
+                    // Stale records at the new name — an unmanaged row in this
+                    // namespace, or a detached row left in any namespace by a
+                    // deletion, a transfer or an unbind — are folded away, so
+                    // the name is never recorded twice.
+                    let stale: Vec<&Repo> = snap
                         .repos
                         .iter()
-                        .find(|r| r.namespace_id == ns.id && r.resource == to && r.id != repo.id)
+                        .filter(|r| {
+                            r.resource == to
+                                && r.id != repo.id
+                                && (r.namespace_id == ns.id || r.state == RepoState::Detached)
+                        })
+                        .collect();
+                    if stale
+                        .iter()
+                        .any(|r| !matches!(r.state, RepoState::Unmanaged | RepoState::Detached))
                     {
-                        if matches!(stale.state, RepoState::Unmanaged | RepoState::Detached) {
-                            store::delete_repo(&state.git_ns.ks, &stale.id).await?;
-                            store::put_rights(
-                                &state.git_ns.ks,
-                                &Scope::Repo(stale.id.clone()),
-                                &Default::default(),
-                            )
-                            .await?;
-                        } else {
-                            warn!(
-                                %to,
-                                "a repository was renamed onto a name another governed \
-                                 repository holds; left for an admin to resolve"
-                            );
-                            return Ok(ack);
-                        }
+                        warn!(
+                            %to,
+                            "a repository was renamed onto a name another governed \
+                             repository holds; left for an admin to resolve"
+                        );
+                        return Ok(ack);
+                    }
+                    for r in stale {
+                        fold_away(state, &r.id).await?;
                     }
                     repo.resource = to.clone();
                     if repo.forge_id.is_none() {
@@ -1376,25 +1391,68 @@ pub async fn handle_event(
             // saying so was lost). The name now belongs to someone else, so the
             // old repository's rights must not stay published there: it is
             // detached, and the new repository starts unmanaged with nothing.
-            if let Some(fid) = forge_id.as_deref() {
-                let displaced: Vec<Repo> = snap
-                    .repos
-                    .iter()
-                    .filter(|r| {
-                        r.namespace_id == ns.id
-                            && r.resource == resource
-                            && r.forge_id.as_deref().is_some_and(|f| f != fid)
-                            && r.state != RepoState::Detached
-                    })
-                    .cloned()
-                    .collect();
-                for mut old in displaced {
+            let fid = forge_id.as_deref();
+            let differs =
+                |r: &Repo| fid.is_some() && r.forge_id.is_some() && r.forge_id.as_deref() != fid;
+            // The repository this is, if the VTC knows it under its forge id —
+            // perhaps at another name, the rename having gone unreported.
+            let by_id = fid.and_then(|f| snap.repo_by_forge_id(&ns.id, f)).cloned();
+            // A reservation still being created holds the name; its
+            // `createRepo` job will report the name taken (bridge/event 0.2,
+            // step 3). Nothing is recorded over it.
+            if by_id.is_none()
+                && snap.repos.iter().any(|r| {
+                    r.namespace_id == ns.id
+                        && r.resource == resource
+                        && r.state == RepoState::PendingCreate
+                })
+            {
+                info!(%resource, "a repository appeared at a name reserved for creation");
+                return Ok(ack);
+            }
+            let by_id_id = by_id.as_ref().map(|r| r.id.clone());
+            let mut target = by_id;
+            for r in snap
+                .repos
+                .iter()
+                .filter(|r| r.resource == resource && Some(&r.id) != by_id_id.as_ref())
+            {
+                let live_here = r.namespace_id == ns.id && r.state != RepoState::Detached;
+                if live_here && !differs(r) && target.is_none() {
+                    // The row already recorded for this very repository.
+                    target = Some(r.clone());
+                } else if live_here && differs(r) {
+                    // A governed repository recorded at this name under a
+                    // different forge id has left the name — renamed or
+                    // deleted, the event saying so lost. Its rights must not
+                    // stay published over someone else's repository: detached,
+                    // then folded away.
+                    let mut old = r.clone();
                     detach(state, issuer, &mut old, "nameReused").await?;
-                    store::put_repo(&state.git_ns.ks, &old).await?;
+                    fold_away(state, &old.id).await?;
+                } else if r.state == RepoState::Detached {
+                    // Left at this name by a deletion, a transfer or an
+                    // unbind, in any namespace: taken up again if it is this
+                    // repository, folded away if not.
+                    if target.is_none() && !differs(r) {
+                        target = Some(r.clone());
+                    } else {
+                        fold_away(state, &r.id).await?;
+                    }
+                } else if !live_here {
+                    // Governed elsewhere at the same name cannot happen — the
+                    // name is inside exactly one namespace — but never record
+                    // a second row over it.
+                    warn!(%resource, "a repository name is recorded in another namespace");
+                    return Ok(ack);
                 }
             }
-            match find(forge_id.as_deref(), Some(&resource)) {
+            match target {
                 Some(mut repo) => {
+                    if repo.resource != resource {
+                        repo.resource = resource.clone();
+                        repo.roles_digest = None;
+                    }
                     if repo.forge_id.is_none() {
                         repo.forge_id = forge_id;
                     }
@@ -1713,6 +1771,7 @@ async fn complete_binding(
         );
     }
     service_grant(state, &bound).await?;
+    super::projection::warn_hook_overlaps_for(state, &bound).await;
     Ok(())
 }
 
@@ -1751,9 +1810,8 @@ pub async fn service_grant(state: &AppState, ns: &Namespace) -> OpResult<()> {
     let resource = ns.resource();
     let vtc = ops::standing(state, &vtc_did).await?;
     let bridge = ops::standing(state, &bridge_did).await?;
-    let passed =
-        rules::service_grant_admitted(&bridge_did, &bridge_did, Right::CommitSign, &resource)
-            .map_err(OpError::from)?;
+    let passed = rules::service_grant_admitted(ns, &bridge_did, Right::CommitSign, &resource)
+        .map_err(OpError::from)?;
     let version = match ops::check_policy(
         state,
         ops::PolicyInput {

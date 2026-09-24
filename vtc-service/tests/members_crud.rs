@@ -832,6 +832,54 @@ async fn patch_member_profile_only_emits_member_updated() {
     assert_eq!(body["role"], "member");
 }
 
+/// Re-review R2: a member's linked forge accounts are written only by
+/// `git-ns/account/link`. An admin PATCH may neither set them — which would
+/// hand the member any forge account, and the bridge that account's forge
+/// role — nor wipe them by replacing `extensions`.
+#[tokio::test]
+async fn patch_member_extensions_cannot_write_or_wipe_linked_forge_accounts() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+    let mut m = vtc_service::members::get_member(&fix.members_ks, "did:key:zM1")
+        .await
+        .unwrap()
+        .unwrap();
+    let linked = json!({ "github.com": { "id": "9120045", "login": "bob-builds", "linkedAt": "2026-09-23T10:02:14Z" } });
+    m.extensions = json!({ "forges": linked.clone(), "org": "acme" });
+    store_member(&fix.members_ks, &m).await.unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "PATCH",
+        "/v1/members/did:key:zM1",
+        UPDATE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "extensions": { "forges": { "github.com": { "id": "1", "login": "mallory" } } } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
+
+    let (status, body) = send(
+        &fix.router,
+        "PATCH",
+        "/v1/members/did:key:zM1",
+        UPDATE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "extensions": { "org": "beta" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    let m = vtc_service::members::get_member(&fix.members_ks, "did:key:zM1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(m.extensions["org"], "beta");
+    assert_eq!(
+        m.extensions["forges"], linked,
+        "the link survives a replace"
+    );
+}
+
 #[tokio::test]
 async fn patch_member_404_for_unknown_did() {
     let fix = build_fixture().await;

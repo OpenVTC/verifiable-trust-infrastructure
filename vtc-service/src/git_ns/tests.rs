@@ -1549,7 +1549,17 @@ async fn bind_bridge(f: &Fixture) -> String {
     )
     .await);
     let ns = body["namespace"]["id"].as_str().unwrap().to_string();
-    let job = f.bridge.jobs.lock().unwrap()[0].1["jobId"].clone();
+    let job = f
+        .bridge
+        .jobs
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(_, p)| p["kind"] == "beginBind")
+        .unwrap()
+        .1["jobId"]
+        .clone();
     ok(&send(
         &f.vtc.state,
         &f.bridge_party,
@@ -1675,13 +1685,12 @@ async fn finding_1_a_repository_created_at_a_governed_name_detaches_the_old_one(
     )
     .await);
     let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
-    let a = snap
-        .repos
-        .iter()
-        .find(|r| r.forge_id.as_deref() == Some("100"))
-        .unwrap();
-    assert_eq!(a.state, RepoState::Detached);
-    assert!(snap.rows(&Scope::Repo(a.id.clone())).is_empty());
+    assert!(
+        snap.repos
+            .iter()
+            .all(|r| r.forge_id.as_deref() != Some("100")),
+        "the displaced repository is detached and folded away"
+    );
     let b = snap.repo_at("github.com/acme/gadgets").unwrap();
     assert_eq!(b.state, RepoState::Unmanaged);
     assert!(snap.rows(&Scope::Repo(b.id.clone())).is_empty());
@@ -1925,6 +1934,7 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
         "/git-ns/accounts",
         "/git-ns/rights/issued-by-departed",
         "/git-ns/projection",
+        "/git-ns/drift",
     ] {
         let (status, body) = get(&f, &f.admin.did, vec!["ops".into()], path).await;
         assert_eq!(status, 403, "{path}: {body}");
@@ -1935,6 +1945,7 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
         "/git-ns/accounts",
         "/git-ns/rights/issued-by-departed",
         "/git-ns/projection",
+        "/git-ns/drift",
     ] {
         let (status, body) = get(&f, &f.admin.did, vec![], path).await;
         assert_eq!(status, 200, "{path}: {body}");
@@ -2285,4 +2296,328 @@ async fn finding_9g_an_external_signer_resigns_under_the_default_policy() {
     )
     .await);
     assert_eq!(body["revoked"]["subject"], json!(f.stranger.did));
+}
+
+/// Closing the unbind gap: the role-derived grants a namespace's projection
+/// published go back to the hook relay at unbind — queued for it at once,
+/// and handed back (not withdrawn) by the projector — so a member keeps the
+/// v0.1 right without waiting for their next membership event.
+#[tokio::test]
+async fn unbind_hands_role_derived_grants_back_to_the_hook_relay_at_once() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    map_members_to(&f, &res).await;
+    let registry = MockRegistryClient::new();
+    reconcile(&f, &registry).await;
+    let carol = projection::tuple_key(&f.carol.did, "git.commit.sign", &res);
+    let bob_own = projection::tuple_key(&f.bob.did, "git.repo.own", &res);
+    assert!(registry.trust_records().await.contains_key(&carol));
+
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let ns = snap.repo_at(&res).unwrap().namespace_id.clone();
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/unbind",
+        json!({ "namespace": ns }),
+    )
+    .await);
+
+    // Queued for the relay now, one grant per mapped member.
+    let mut queued: Vec<(String, String)> = crate::hooks::list_jobs(&f.vtc.state.hooks_queue_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.op == crate::hooks::HookOp::Grant)
+        .map(|j| (j.subject_did, j.resource))
+        .collect();
+    queued.sort();
+    let mut expected = vec![
+        (f.bob.did.clone(), res.clone()),
+        (f.carol.did.clone(), res.clone()),
+    ];
+    expected.sort();
+    assert_eq!(queued, expected);
+
+    // The projector withdraws the namespace's own records, but hands the
+    // role-derived ones back instead of deleting what the relay now owns.
+    let report = reconcile(&f, &registry).await;
+    assert_eq!(report.handed_back, 2, "bob's and carol's commit rights");
+    let records = registry.trust_records().await;
+    assert!(records.contains_key(&carol));
+    assert!(!records.contains_key(&bob_own));
+    assert!(
+        !projection::published(&f.vtc.state)
+            .await
+            .unwrap()
+            .contains_key(&carol),
+        "no longer the projection's"
+    );
+    // A later pass leaves it alone.
+    let again = reconcile(&f, &registry).await;
+    assert_eq!((again.deleted, again.handed_back), (0, 0));
+    assert!(registry.trust_records().await.contains_key(&carol));
+}
+
+// ── re-review R1: one row per name ──────────────────────────────────────────
+
+fn rows_at(snap: &Snapshot, resource: &str) -> Vec<super::model::Repo> {
+    snap.repos
+        .iter()
+        .filter(|r| r.resource == resource)
+        .cloned()
+        .collect()
+}
+
+/// R1 (a): deleted on the forge, then a new repository at the same name. The
+/// old row must not linger for `repo_at` to pick at random — the reviewer saw
+/// adoption resurrect it in 4 of 12 runs, so this runs repeatedly.
+#[tokio::test]
+async fn r1_a_name_reused_after_a_delete_is_recorded_once_and_adopted_as_the_new_repository() {
+    for run in 0..8 {
+        let f = fixture().await;
+        let ns = bind_bridge(&f).await;
+        adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+        ok(&event(
+            &f,
+            &ns,
+            json!({ "type": "repoDeleted", "forgeId": "100", "resource": "github.com/acme/widgets" }),
+        )
+        .await);
+        ok(&event(
+            &f,
+            &ns,
+            json!({ "type": "repoCreatedUnmanaged", "forgeId": "200", "resource": "github.com/acme/widgets" }),
+        )
+        .await);
+        let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+        let at = rows_at(&snap, "github.com/acme/widgets");
+        assert_eq!(at.len(), 1, "run {run}: {at:?}");
+        assert_eq!(at[0].forge_id.as_deref(), Some("200"), "run {run}");
+
+        ok(&send(
+            &f.vtc.state,
+            &f.admin,
+            "repo/adopt",
+            json!({ "resource": "github.com/acme/widgets", "owners": [f.carol.did] }),
+        )
+        .await);
+        let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+        let repo = snap.repo_at("github.com/acme/widgets").unwrap().clone();
+        assert_eq!(repo.state, RepoState::Active, "run {run}");
+        assert_eq!(repo.forge_id.as_deref(), Some("200"), "run {run}");
+
+        // The deleted repository's id, renamed: nothing of the new one moves.
+        ok(&event(
+            &f,
+            &ns,
+            json!({ "type": "repoRenamed", "forgeId": "100", "from": "github.com/acme/widgets", "to": "github.com/acme/widgets-old" }),
+        )
+        .await);
+        let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+        assert!(
+            snap.repo_at("github.com/acme/widgets-old").is_none(),
+            "run {run}"
+        );
+        assert!(
+            snap.rows(&Scope::Repo(repo.id.clone()))
+                .iter()
+                .any(|r| r.subject == f.carol.did),
+            "run {run}"
+        );
+    }
+}
+
+/// R1 (b): unbound and bound again, then the bridge reports what is on the
+/// forge. The row the unbind detached is taken up again when it is the same
+/// repository, and folded away when it is not — never left beside a new one.
+#[tokio::test]
+async fn r1_b_after_unbind_and_rebind_a_name_is_recorded_once() {
+    for (run, fid) in ["100", "200", "100", "200", "100", "200"]
+        .into_iter()
+        .enumerate()
+    {
+        let f = fixture().await;
+        let ns = bind_bridge(&f).await;
+        adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+        ok(&send(
+            &f.vtc.state,
+            &f.admin,
+            "namespace/unbind",
+            json!({ "namespace": ns }),
+        )
+        .await);
+        let ns = bind_bridge(&f).await;
+        ok(&event(
+            &f,
+            &ns,
+            json!({ "type": "repoCreatedUnmanaged", "forgeId": fid, "resource": "github.com/acme/widgets" }),
+        )
+        .await);
+        let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+        let at = rows_at(&snap, "github.com/acme/widgets");
+        assert_eq!(at.len(), 1, "run {run}: {at:?}");
+        assert_eq!(at[0].forge_id.as_deref(), Some(fid), "run {run}");
+        assert_eq!(at[0].state, RepoState::Unmanaged, "run {run}");
+        assert_eq!(at[0].namespace_id, ns, "run {run}");
+        assert!(
+            snap.rows(&Scope::Repo(at[0].id.clone())).is_empty(),
+            "run {run}"
+        );
+    }
+}
+
+/// R1: adopting a detached row with no event in between forgets its forge id,
+/// so the inspection names whatever is at the name now.
+#[tokio::test]
+async fn r1_adopting_a_detached_repository_forgets_its_old_forge_id() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/unbind",
+        json!({ "namespace": ns }),
+    )
+    .await);
+    bind_bridge(&f).await;
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/adopt",
+        json!({ "resource": "github.com/acme/widgets", "owners": [f.carol.did] }),
+    )
+    .await);
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let at = rows_at(&snap, "github.com/acme/widgets");
+    assert_eq!(at.len(), 1);
+    assert_eq!(at[0].state, RepoState::Active);
+    assert_eq!(at[0].forge_id, None);
+}
+
+// ── re-review R3: every member-row writer takes the edit lock ───────────────
+
+/// The removal ceremony writes the member row under the members edit lock,
+/// so it cannot interleave with an `accountLinked` (which reads and writes
+/// the row under it): a link that lands after the removal finds the member
+/// gone and records nothing, and never writes back a pre-removal copy.
+#[tokio::test]
+async fn r3_a_removal_and_an_account_link_are_serialised_on_the_member_row() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    let _ = link(&f, &f.bob).await;
+    let job = f.bridge.jobs.lock().unwrap().last().unwrap().1["jobId"].clone();
+
+    let held = crate::members::storage::edit_lock().await;
+    let state = f.vtc.state.clone();
+    let bob = f.bob.did.clone();
+    let removal = tokio::spawn(async move {
+        crate::ceremony::apply(
+            &state,
+            crate::ceremony::EffectPlan::Depart {
+                subject: bob,
+                disposition: Some("tombstone".into()),
+            },
+            TEST_VTC_DID,
+        )
+        .await
+        .map(|_| ())
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let m = crate::members::get_member(&f.vtc.state.members_ks, &f.bob.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        m.removed_at.is_none(),
+        "the removal waits for the edit lock rather than writing past it"
+    );
+    drop(held);
+    removal.await.unwrap().unwrap();
+
+    let _ = event(
+        &f,
+        &ns,
+        json!({ "type": "accountLinked", "jobId": job, "account": { "forge": "github.com", "id": "9", "login": "bob" } }),
+    )
+    .await;
+    let m = crate::members::get_member(&f.vtc.state.members_ks, &f.bob.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        m.removed_at.is_some(),
+        "the link did not resurrect the member"
+    );
+    assert!(m.extensions.get("forges").is_none());
+}
+
+// ── re-review R4: a transfer hands over ownership as durable as the caller's ─
+
+async fn own_rows(f: &Fixture, res: &str) -> Vec<super::model::RightRow> {
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    snap.rows(&Scope::Repo(snap.repo_at(res).unwrap().id.clone()))
+        .iter()
+        .filter(|r| r.right == super::model::Right::RepoOwn)
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn r4_a_transfer_leaves_the_recipient_as_permanent_an_owner_as_the_caller_was() {
+    let f = fixture_with(GitNsConfig {
+        elevated_requires_admin: false,
+        ..GitNsConfig::default()
+    })
+    .await;
+    let res = active_repo(&f).await;
+    let later = "2099-01-01T00:00:00Z";
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "right/grant",
+        json!({ "subject": f.carol.did, "right": "git.repo.own", "resource": res, "expiresAt": later }),
+    )
+    .await);
+
+    // Bob, a permanent owner, hands over to Carol, who holds an expiring one:
+    // she must end with a permanent record, or the repository is ownerless
+    // when hers lapses.
+    ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "repo/transfer",
+        json!({ "resource": res, "to": f.carol.did }),
+    )
+    .await);
+    let rows = own_rows(&f, &res).await;
+    assert!(rows.iter().all(|r| r.subject != f.bob.did));
+    let carol: Vec<_> = rows.iter().filter(|r| r.subject == f.carol.did).collect();
+    assert_eq!(carol.len(), 1);
+    assert_eq!(carol[0].expires_at, None);
+
+    // An owner whose record expires hands over no more than that.
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "right/grant",
+        json!({ "subject": f.bob.did, "right": "git.repo.own", "resource": res, "expiresAt": later }),
+    )
+    .await);
+    ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "repo/transfer",
+        json!({ "resource": res, "to": f.admin.did }),
+    )
+    .await);
+    let rows = own_rows(&f, &res).await;
+    let admin: Vec<_> = rows.iter().filter(|r| r.subject == f.admin.did).collect();
+    assert_eq!(admin.len(), 1);
+    assert_eq!(
+        admin[0].expires_at,
+        Some(later.parse().unwrap()),
+        "the recipient inherits the caller's expiry"
+    );
 }

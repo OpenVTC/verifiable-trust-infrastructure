@@ -125,7 +125,10 @@ namespace: those are published by this projection as a second source (origin
 `roleDerived`), the relay leaves them alone, and the boot log warns of each
 such overlap. A key is withdrawn only when no source wants it. The admin
 surface lists them as `roleDerived`; they are managed only through
-configuration.
+configuration. When the namespace is unbound they go back to the relay at
+once: the unbind queues a relay grant for each, and the projector drops them
+from its mirror without withdrawing them, so no member loses a v0.1 right
+while waiting for their next membership event.
 
 ## Membership
 
@@ -146,14 +149,30 @@ grants that bridge `git.commit.sign` on the namespace — a *service grant*,
 `grantedBy` the VTC's own DID — because the bridge re-signs Dependabot pull
 requests with its own DID. The shipped policy admits exactly this grant
 (`bridge.serviceGrant`) and nothing else for a non-member; unbinding revokes
-it with everything else. Jobs are queued in `git_ns_jobs`; role projection retries
+it with everything else.
+
+A bridge speaks only for the namespace it serves: every resource an event
+names must be a repository inside that namespace, and repositories are
+matched by forge id before name. A repository renamed within the namespace
+keeps its rights. A repository **transferred** out of it — to another owner,
+another forge, or even another namespace this VTC has bound — is detached and
+its rights withdrawn; rights never move with it, because the destination's
+admins granted none of them. This departs from `git-ns/bridge/event/0.1`,
+whose `repoTransferred` treats a transfer into any bound namespace as a
+rename. The specification is being changed to match:
+`git-ns/bridge/event/0.2`, in
+[trust-tasks #627](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/627)
+(pending).
+
+Jobs are queued in `git_ns_jobs`; role projection retries
 forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
 
 ## Administrator surface
 
 Read-only, admin session. `view`, `rights`, `rights/issued-by-departed`,
-`projection` and `accounts` show every member's rights, grant reasons and
-forge identities, so they need a community-wide administrator (an admin
+`projection`, `accounts` and `drift` show every member's rights, grant
+reasons and forge identities — and, in drift, the forge accounts of people
+outside the community — so they need a community-wide administrator (an admin
 session not narrowed to a context); `activity` is for any session and shows
 only the namespaces the caller administers. `view` also takes
 `Trust-Task: https://trusttasks.org/spec/git-ns/view/0.1`, because its body is

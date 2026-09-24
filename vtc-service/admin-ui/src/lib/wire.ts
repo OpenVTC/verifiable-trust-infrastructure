@@ -9067,7 +9067,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not a community administrator */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9140,7 +9140,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not a community administrator */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9242,7 +9242,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not a community administrator */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9325,7 +9325,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not a community administrator */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9359,7 +9359,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not a community administrator */
             403: {
                 headers: {
                     [name: string]: unknown;

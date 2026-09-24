@@ -2385,7 +2385,7 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not a community administrator"
           }
         },
         "security": [
@@ -2468,7 +2468,7 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not a community administrator"
           }
         },
         "security": [
@@ -2561,7 +2561,7 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not a community administrator"
           }
         },
         "security": [
@@ -2657,7 +2657,7 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not a community administrator"
           }
         },
         "security": [
@@ -2688,7 +2688,7 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not a community administrator"
           }
         },
         "security": [

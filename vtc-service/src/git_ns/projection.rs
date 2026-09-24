@@ -260,8 +260,18 @@ pub async fn desired_all(
     snap: &Snapshot,
     t: DateTime<Utc>,
 ) -> Result<BTreeMap<String, Tuple>, AppError> {
+    let mapped = role_mapped(state).await?;
+    Ok(desired_with(snap, t, &mapped))
+}
+
+/// [`desired_all`] over a role mapping already read — one read per pass.
+fn desired_with(
+    snap: &Snapshot,
+    t: DateTime<Utc>,
+    mapped: &[(String, String)],
+) -> BTreeMap<String, Tuple> {
     let mut out = desired(snap, t);
-    for tuple in role_derived(state, snap).await? {
+    for tuple in role_derived(snap, mapped) {
         let key = tuple.key();
         match out.get_mut(&key) {
             Some(existing) => merge(existing, tuple),
@@ -270,7 +280,7 @@ pub async fn desired_all(
             }
         }
     }
-    Ok(out)
+    out
 }
 
 /// Whether a resource belongs to this projection: inside a bound namespace.
@@ -296,14 +306,14 @@ pub fn hook_overlaps(snap: &Snapshot, cfg: &crate::hooks::GitTrustHooksConfig) -
     out
 }
 
-/// The v0.1 role-derived `git.commit.sign` tuples this projection owns: one
-/// per current member whose role `grant_on_role` maps to a resource inside a
-/// bound namespace.
-async fn role_derived(state: &AppState, snap: &Snapshot) -> Result<Vec<Tuple>, AppError> {
+/// Every `(member DID, resource)` the v0.1 `[hooks.git-trust] grant_on_role`
+/// maps today: current members, unexpired ACL rows. Empty with no hook
+/// configuration.
+pub async fn role_mapped(state: &AppState) -> Result<Vec<(String, String)>, AppError> {
     let Some(cfg) = state.config.read().await.hooks.git_trust.clone() else {
         return Ok(Vec::new());
     };
-    if hook_overlaps(snap, &cfg).is_empty() {
+    if cfg.grant_on_role.is_empty() {
         return Ok(Vec::new());
     }
     let now_epoch = crate::auth::session::now_epoch();
@@ -315,22 +325,63 @@ async fn role_derived(state: &AppState, snap: &Snapshot) -> Result<Vec<Tuple>, A
         let Some(resource) = cfg.grant_on_role.get(&entry.role.to_string()) else {
             continue;
         };
-        if !in_bound_namespace(snap, resource) {
-            continue;
-        }
         let member = crate::members::get_member(&state.members_ks, &entry.did).await?;
         if !member.is_some_and(|m| m.removed_at.is_none()) {
             continue;
         }
-        out.push(Tuple {
-            entity: entry.did.clone(),
-            action: Right::CommitSign.as_str().to_string(),
-            resource: resource.clone(),
-            context: json!({ "framework": ROLE_DERIVED_FRAMEWORK, "origin": "roleDerived" }),
-            repo_id: snap.repo_at(resource).map(|r| r.id.clone()),
-        });
+        out.push((entry.did.clone(), resource.clone()));
     }
     Ok(out)
+}
+
+/// The v0.1 role-derived `git.commit.sign` tuples this projection owns: one
+/// per current member whose role `grant_on_role` maps to a resource inside a
+/// bound namespace.
+fn role_derived(snap: &Snapshot, mapped: &[(String, String)]) -> Vec<Tuple> {
+    mapped
+        .iter()
+        .filter(|(_, resource)| in_bound_namespace(snap, resource))
+        .map(|(did, resource)| Tuple {
+            entity: did.clone(),
+            action: Right::CommitSign.as_str().to_string(),
+            repo_id: snap.repo_at(resource).map(|r| r.id.clone()),
+            resource: resource.clone(),
+            context: json!({ "framework": ROLE_DERIVED_FRAMEWORK, "origin": "roleDerived" }),
+        })
+        .collect()
+}
+
+/// Keys the hook relay owns and wants: role-derived grants whose resource is
+/// in no bound namespace. A tuple this projection published that is now one
+/// of these (its namespace was unbound) is handed back, not withdrawn — the
+/// relay's grant for it may already be in the registry, and deleting it
+/// would take away a right the member still holds.
+fn relay_wants(snap: &Snapshot, mapped: &[(String, String)]) -> std::collections::BTreeSet<String> {
+    mapped
+        .iter()
+        .filter(|(_, resource)| !in_bound_namespace(snap, resource))
+        .map(|(did, resource)| tuple_key(did, Right::CommitSign.as_str(), resource))
+        .collect()
+}
+
+/// Warn, as the boot check does, of every `grant_on_role` resource `ns`
+/// contains — for a namespace bound while the VTC runs.
+pub async fn warn_hook_overlaps_for(state: &AppState, ns: &super::model::Namespace) {
+    let Some(cfg) = state.config.read().await.hooks.git_trust.clone() else {
+        return;
+    };
+    let ns_res = ns.resource();
+    for resource in cfg.grant_on_role.values() {
+        if Resource::parse(resource).is_ok_and(|r| ns_res.contains(&r)) {
+            warn!(
+                %resource,
+                namespace = %ns_res,
+                "[hooks.git-trust] grant_on_role names a resource inside a namespace just bound; \
+                 its role-derived grants are now published by the git-ns projection, and the \
+                 hook relay leaves them alone"
+            );
+        }
+    }
 }
 
 /// Whether a tuple published at `resource` for some other repository (or
@@ -342,10 +393,13 @@ pub async fn withdrawal_pending(
     resource: &str,
     except: Option<&str>,
 ) -> Result<bool, AppError> {
-    let want = desired_all(state, snap, now()).await?;
+    let mapped = role_mapped(state).await?;
+    let want = desired_with(snap, now(), &mapped);
+    let relay = relay_wants(snap, &mapped);
     Ok(published(state).await?.iter().any(|(key, p)| {
         p.tuple.resource == resource
             && !want.contains_key(key)
+            && !relay.contains(key)
             && (except.is_none() || p.tuple.repo_id.as_deref() != except)
     }))
 }
@@ -402,6 +456,9 @@ pub struct PassReport {
     pub deleted: usize,
     pub failed: usize,
     pub held_back: usize,
+    /// Tuples no longer this projection's that the hook relay wants: dropped
+    /// from the mirror, left in the registry.
+    pub handed_back: usize,
 }
 
 /// Per-tuple retry schedule, in memory: a restart retries everything at once,
@@ -437,7 +494,9 @@ pub async fn reconcile(
 ) -> Result<PassReport, AppError> {
     let t = now();
     let snap = Snapshot::load(&state.git_ns.ks).await?;
-    let want = desired_all(state, &snap, t).await?;
+    let mapped = role_mapped(state).await?;
+    let want = desired_with(&snap, t, &mapped);
+    let relay = relay_wants(&snap, &mapped);
     let have = published(state).await?;
     let mut report = PassReport::default();
 
@@ -445,6 +504,12 @@ pub async fn reconcile(
     let mut held: std::collections::BTreeSet<String> = Default::default();
     for (key, p) in &have {
         if want.contains_key(key) {
+            continue;
+        }
+        if relay.contains(key) {
+            mirror_remove(state, key).await?;
+            report.handed_back += 1;
+            debug!(%key, "git-ns tuple handed back to the hook relay");
             continue;
         }
         if !backoff.due(key, t) {
@@ -546,7 +611,17 @@ pub async fn verify(
         match client.list_trust_records(right.as_str()).await {
             Ok(records) => listed.extend(records),
             Err(e) if e.is_retriable() => {
-                debug!(error = %e, "git-ns verify could not read the registry; will retry");
+                // Running out of pages is reported as retriable, and never
+                // resolves by itself: say so where an operator will see it.
+                if e.to_string().contains("still paginating") {
+                    warn!(
+                        error = %e,
+                        "git-ns verify is skipped: the registry holds more records for one \
+                         action than it will enumerate"
+                    );
+                } else {
+                    debug!(error = %e, "git-ns verify could not read the registry; will retry");
+                }
                 return Ok(None);
             }
             Err(e) => {

@@ -250,6 +250,30 @@ fn job_key(job: &HookJob) -> String {
     )
 }
 
+/// Queue grants that did not come from a membership event: the role-derived
+/// grants a git namespace hands back to the relay when it is unbound. `seq`
+/// stands in for the audit row as the batch's idempotency root.
+pub async fn enqueue_grants(
+    ks: &KeyspaceHandle,
+    seq: &str,
+    grants: &[(String, String)],
+    at: DateTime<Utc>,
+) -> Result<(), AppError> {
+    for (i, (did, resource)) in grants.iter().enumerate() {
+        let mut job = HookJob::new(
+            seq.to_string(),
+            HookOp::Grant,
+            did.clone(),
+            resource.clone(),
+            None,
+            at,
+        );
+        job.order = i as u32;
+        store_job(ks, &job).await?;
+    }
+    Ok(())
+}
+
 pub async fn store_job(ks: &KeyspaceHandle, job: &HookJob) -> Result<(), AppError> {
     ks.insert(job_key(job), job).await
 }

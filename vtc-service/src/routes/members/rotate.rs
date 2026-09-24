@@ -98,7 +98,7 @@ use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
 use crate::error::TaskError;
-use crate::members::{get_member, store_member};
+use crate::members::get_member;
 use crate::server::AppState;
 use crate::status_list;
 
@@ -698,8 +698,7 @@ async fn reissue_credentials(
     )
     .await?;
 
-    // Update Member row pointers.
-    let mut member_mut = member;
+    // Update Member row pointers, re-read under the members edit lock.
     let vmc_value = serde_json::to_value(&vmc)
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
     let role_vec_value = serde_json::to_value(&role_vec)
@@ -707,8 +706,12 @@ async fn reissue_credentials(
     // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
     // Rotation mints a grant naming the new DID, so the acknowledgement the member
     // sent under the old one no longer matches and is dropped.
-    member_mut.record_issued_credentials(vmc_value.clone(), role_vec_value);
-    store_member(&state.members_ks, &member_mut).await?;
+    crate::members::storage::edit_member(&state.members_ks, new_did, |m| {
+        m.record_issued_credentials(vmc_value.clone(), role_vec_value);
+        true
+    })
+    .await?
+    .ok_or_else(|| AppError::Conflict("the member left while this was in progress".into()))?;
     let vec_value = serde_json::to_value(&role_vec)
         .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?;
 

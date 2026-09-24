@@ -66,6 +66,12 @@ static EDIT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// member's forge-account link written by `git-ns` and an administrator's
 /// `PATCH /v1/members/{did}` are the case that prompted this. One VTC is one
 /// process, so a process-wide async mutex is enough.
+///
+/// Every writer of an existing row goes through [`edit_member`] or holds this
+/// across its read and write, and a delete holds it too. Lock order: the
+/// `git_ns` store lock, when held, is taken **before** this one, never after.
+/// A closure passed to [`edit_member`] is synchronous, so nothing can take
+/// another lock while this one is held.
 pub async fn edit_lock() -> tokio::sync::MutexGuard<'static, ()> {
     EDIT_LOCK.lock().await
 }

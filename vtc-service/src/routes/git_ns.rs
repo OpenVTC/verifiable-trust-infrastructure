@@ -579,7 +579,7 @@ async fn right_row(
         (status = 200, description = "Recorded and role-derived git rights", body = GitNsRightList),
         (status = 400, description = "The resource is not a forge-qualified resource"),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a community administrator"),
     ),
 )]
 pub async fn rights_list(
@@ -648,7 +648,7 @@ pub async fn rights_list(
     responses(
         (status = 200, description = "Grants whose granter has left the community", body = GitNsDepartedGrants),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a community administrator"),
     ),
 )]
 pub async fn issued_by_departed(
@@ -684,11 +684,11 @@ pub async fn issued_by_departed(
     responses(
         (status = 200, description = "Repositories whose forge differs from the projection", body = GitNsDriftList),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a community administrator"),
     ),
 )]
 pub async fn drift_list(
-    _auth: AdminAuth,
+    _auth: SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<GitNsDriftList>, AppError> {
     let snap = Snapshot::load(&state.git_ns.ks).await?;
@@ -755,7 +755,7 @@ pub async fn jobs_list(
     responses(
         (status = 200, description = "What is published to the Trust Registry", body = GitNsProjection),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a community administrator"),
     ),
 )]
 pub async fn projection_show(
@@ -817,7 +817,7 @@ pub struct GitNsAccountList {
     responses(
         (status = 200, description = "Members' linked forge accounts", body = GitNsAccountList),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a community administrator"),
     ),
 )]
 pub async fn accounts_list(
