@@ -537,6 +537,13 @@ still consult `elevation::verified` on the delegating admin's live session. That
 is the one place a signed document legitimately reads a session — not for
 authority, but for the freshness of a human gesture.
 
+> **Superseded (2026-09-24)** by
+> [`vtc-operation-bound-step-up.md`](vtc-operation-bound-step-up.md). Reading
+> the admin's live session cannot say *which* session, and it hands §6g's script
+> a 15-minute window to spend. The signed door instead takes a step-up bound to
+> the one operation by payload digest, which elevates nothing. The rule above —
+> the console key is not a second factor — stands unchanged.
+
 ### 6g. What an attacker with script execution in the console origin gets
 
 Honestly: **they can sign anything the operator could, for as long as they run.**
