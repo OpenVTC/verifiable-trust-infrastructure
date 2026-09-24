@@ -220,6 +220,7 @@ pub struct RegisterResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema, utoipa::IntoParams)]
+#[schema(as = EndorsementTypeListQuery)]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,

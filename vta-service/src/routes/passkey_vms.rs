@@ -15,8 +15,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use vta_sdk::protocols::did_management::passkey_vms::{
-    EnrollPasskeyChallengeResponse, EnrollPasskeySubmitBody, EnrollPasskeySubmitResponse,
-    ListPasskeyVmsResponse,
+    EnrollPasskeyChallengeBody, EnrollPasskeyChallengeResponse, EnrollPasskeySubmitBody,
+    EnrollPasskeySubmitResponse, ListPasskeyVmsResponse,
 };
 
 use crate::auth::AdminAuth;
@@ -46,13 +46,6 @@ async fn ensure_webauthn_enabled(state: &AppState) -> Result<(), AppError> {
 #[into_params(parameter_in = Query)]
 pub struct PasskeyVmDidQuery {
     pub did: String,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct EnrollPasskeyChallengeBody {
-    pub did: String,
-    #[serde(default)]
-    pub label: Option<String>,
 }
 
 /// POST /did/verification-methods/passkey/challenge — begin passkey-VM enrolment. Auth: admin.

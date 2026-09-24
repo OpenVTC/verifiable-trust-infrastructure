@@ -573,6 +573,7 @@ pub async fn admin_session(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = AdminPasskeyLoginStartResponse)]
 pub struct PasskeyLoginStartResponse {
     pub auth_id: String,
     #[schema(value_type = Object)]
@@ -589,6 +590,7 @@ pub struct PasskeyLoginStartResponse {
 /// Entirely optional — the admin SPA's login posts no body at all, which reads
 /// as `purpose: login`, the pre-existing behaviour.
 #[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[schema(as = AdminPasskeyLoginStartRequest)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PasskeyLoginStartRequest {
     /// `login` (default) issues a new session; `stepUp` elevates the caller's
@@ -727,6 +729,7 @@ pub async fn passkey_login_start(
 /// bearer token in the body for clients that want to also use it
 /// programmatically.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = AdminPasskeyLoginFinishRequest)]
 pub struct PasskeyLoginFinishRequest {
     pub auth_id: String,
     #[schema(value_type = Object)]

@@ -418,6 +418,7 @@ pub async fn issue(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema, utoipa::IntoParams)]
+#[schema(as = EndorsementListQuery)]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
@@ -518,6 +519,7 @@ pub async fn show(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = EndorsementRevokeResponse)]
 pub struct RevokeResponse {
     pub endorsement_id: String,
     pub revocation: RevocationDetail,

@@ -392,6 +392,7 @@ pub async fn delete(
 /// values it had in hand. `deleted` is always true here: the remove is
 /// propagated as an error above if it fails.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = WebsiteFileDeleteResponse)]
 pub struct DeleteResponse {
     pub path: String,
     pub deleted: bool,

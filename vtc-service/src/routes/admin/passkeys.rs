@@ -65,6 +65,7 @@ static ADMIN_PASSKEY_LOCK: Mutex<()> = Mutex::const_new(());
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = PasskeyListResponse)]
 pub struct ListResponse {
     /// `credentials`, the name `auth/passkey/list/0.1` publishes. It was
     /// `passkeys` until #1112 — the same object under a name the schema does

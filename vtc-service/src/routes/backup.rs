@@ -20,6 +20,7 @@ use vti_common::audit::{AuditEvent, BackupData};
 
 /// `POST /v1/backup/export` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = BackupExportRequest)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportRequest {
     /// Encryption password (Argon2id). Minimum 15 characters.
@@ -36,12 +37,14 @@ pub struct ExportRequest {
 /// beside its own schema. The inner object always conformed member for member;
 /// only the wrapper was missing.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = BackupExportResponse)]
 pub struct ExportResponse {
     pub envelope: BackupEnvelope,
 }
 
 /// `POST /v1/backup/import` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = BackupImportRequest)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRequest {
     /// The encrypted backup envelope produced by `export`.

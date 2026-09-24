@@ -34,25 +34,17 @@ export type Schemas = components["schemas"];
 export type SessionView = Schemas["SessionView"];
 export type WhoamiResponse = Schemas["WhoamiResponse"];
 export type SessionSummary = Schemas["SessionSummary"];
-export type PasskeyLoginStartResponse = Schemas["PasskeyLoginStartResponse"];
+export type PasskeyLoginStartResponse =
+  Schemas["AdminPasskeyLoginStartResponse"];
 export type RegisteredCredential = Schemas["RegisteredCredential"];
-// `PasskeyListResponse` used to be aliased here as `Schemas["ListResponse"]`
-// and is gone rather than fixed, because there is nothing to fix it to.
-// #1692 added a second `ListResponse` — the console-key listing — and utoipa
-// keys `components.schemas` by the Rust type's bare name, so the two collided
-// and the console-key shape won. `GET /v1/admin/passkeys` in the published
-// document now `$ref`s a schema describing `{consoleKeys}`, which is wrong
-// about the API rather than wrong about this console, and no alias here can
-// be right while it stands. `myPasskeys.tsx` carries its own local interface,
-// which is why nothing noticed.
-//
-// The fix is server-side (`#[schema(as = …)]` on the console-key types, then
-// regenerate) and belongs to whoever owns that document; it is deliberately
-// not smuggled into a console PR. Four routes collide on `RevokeResponse` the
-// same way, and that one predates #1692.
+export type PasskeyListResponse = Schemas["PasskeyListResponse"];
+// Schema names are unique across the document — `openapi_schema_names.rs`
+// holds that (#1697). Before it, `PasskeyListResponse` and
+// `ConsoleKeyListResponse` were both published as `ListResponse` and the
+// passkey endpoint was documented with the console-key shape.
 export type ConsoleKey = Schemas["ConsoleKey"];
-/** `{consoleKeys}` — see the note above on why this schema is named so badly. */
-export type ConsoleKeyListResponse = Schemas["ListResponse"];
+export type ConsoleKeyListResponse = Schemas["ConsoleKeyListResponse"];
+export type ConsoleKeyRevokeResponse = Schemas["ConsoleKeyRevokeResponse"];
 export type PasskeyRegisterStartResponse = Schemas["RegisterStartResponse"];
 export type PasskeyRevokeStartResponse = Schemas["RevokeStartResponse"];
 

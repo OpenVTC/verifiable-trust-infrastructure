@@ -64,13 +64,9 @@ export async function enrolThisBrowser(label?: string): Promise<ConsoleKey> {
  * Keeping it would leave a key that signs documents the daemon refuses, which
  * presents to the operator as a console that has quietly stopped working.
  *
- * The response body is deliberately not read. `DELETE /v1/admin/console-keys/
- * {consoleDid}` answers `{consoleDid, revokedAt, remainingActive}`, but the
- * OpenAPI document names that schema `RevokeResponse` — a name four other
- * routes in this service already use for four different shapes, so the
- * generated `Schemas["RevokeResponse"]` is the *endorsement* revoke response
- * and reading this body through it would be reading the wrong type. Refetching
- * the list is both correct and what the caller wants anyway.
+ * The response body (`ConsoleKeyRevokeResponse`: `{consoleDid, revokedAt,
+ * remainingActive}`) is not read: the caller refetches the list, which is
+ * what it wants to render anyway.
  */
 export async function revokeConsoleKey(consoleDid: string): Promise<void> {
   await deleteJsonExempt<unknown>(

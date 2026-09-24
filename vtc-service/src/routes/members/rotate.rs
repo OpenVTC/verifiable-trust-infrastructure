@@ -179,6 +179,7 @@ async fn take_challenge(state: &AppState, id: Uuid) -> Result<Option<RotationCha
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = RotationChallengeResponse)]
 pub struct ChallengeResponse {
     pub rotation_id: Uuid,
     pub expires_at: DateTime<Utc>,
