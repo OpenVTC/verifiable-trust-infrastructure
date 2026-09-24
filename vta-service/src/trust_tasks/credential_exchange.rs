@@ -122,7 +122,9 @@ pub(super) async fn handle_pending_approve(
     let present = match approve_pending_presentation(
         &state.vault_ks,
         &state.keys_ks,
+        &state.contexts_ks,
         &state.seed_store,
+        &state.audit_sink,
         auth,
         &body.id,
         state.status_list_resolver.as_deref(),

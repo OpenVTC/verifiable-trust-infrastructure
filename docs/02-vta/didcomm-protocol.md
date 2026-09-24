@@ -256,8 +256,8 @@ Response body:
 
 | Request Type | Response Type | Auth | Description |
 |---|---|---|---|
-| `.../list-seeds` | `.../list-seeds-result` | Admin | List seed generations |
-| `.../rotate-seed` | `.../rotate-seed-result` | Admin | Rotate to a new seed |
+| `.../list-seeds` | `.../list-seeds-result` | Super-admin | List seed generations (instance-wide; a context-scoped admin is refused, FTL-29904) |
+| `.../rotate-seed` | `.../rotate-seed-result` | Super-admin | Rotate to a new seed (instance-wide; see [key custody](../05-design-notes/key-custody.md)) |
 
 #### list-seeds
 
@@ -689,7 +689,7 @@ the same error messages returned by the REST API (e.g. "admin role required",
 |---|---|---|
 | **Auth** | Any role | DID must be in the ACL |
 | **Manage** | Admin or Initiator | Can manage ACL entries and credentials |
-| **Admin** | Admin | Can create/modify keys and seeds |
+| **Admin** | Admin | Can create/modify keys in its contexts; seed operations and caller-chosen derivation paths need a super-admin (unrestricted scope) |
 | **Super Admin** | Admin with empty `allowed_contexts` | Can manage contexts and global config |
 
 ## Protocol Type URIs

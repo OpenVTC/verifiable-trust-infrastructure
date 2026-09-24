@@ -1013,6 +1013,26 @@ pub(super) async fn handle_upsert(
         }
     };
 
+    // Key custody rule 7, at write time: a DID-anchored entry's `signingKeyId`
+    // must be a key in this entry's context subtree. The signing path checks it
+    // again at use (which also covers entries written before this check); this
+    // refuses the entry up front, with a reason the writer can act on, rather
+    // than storing one that can never sign.
+    if let VaultSecret::DidSelfIssued { signing_key_id, .. }
+    | VaultSecret::DidcommPeer { signing_key_id, .. } = &secret
+        && let Err(e) = crate::operations::key_custody::require_referenced_key_in_scope(
+            &state.keys_ks,
+            signing_key_id,
+            &req.context_id,
+            &state.audit_sink,
+            &auth.did,
+            super::helpers::TRANSPORT_TRUST_TASK,
+        )
+        .await
+    {
+        return app_error_to_reject(&doc, e);
+    }
+
     if !secret.matches_kind(req.secret_kind) {
         return reject_with(
             &doc,
@@ -1623,6 +1643,7 @@ pub(super) async fn handle_proxy_login(
         &state.vault_ks,
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
         &state.audit_sink,
         &*state.seed_store,
         &vta_did,
@@ -1789,8 +1810,10 @@ pub(super) async fn handle_sign_trust_task(
     let signed = match crate::operations::vault::sign_trust_task::sign_envelope(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
         &state.audit_sink,
         &*state.seed_store,
+        &stored.entry.context_id,
         &stored.secret,
         &req.unsigned_envelope,
     )

@@ -197,7 +197,8 @@ impl VtaClient {
     }
 
     /// Ephemerally derive a key at `derivation_path` and sign `payload` —
-    /// **without persisting a key record**. Admin-only on the VTA. Returns the
+    /// **without persisting a key record**. Super-admin only, and the path must
+    /// lie inside `m/26'/9'` (the VTA's delegated-identity subtree). Returns the
     /// derived public key + signature.
     ///
     /// This is how a client (e.g. a fleet manager whose fleet seed *is* this
@@ -226,8 +227,8 @@ impl VtaClient {
 
     /// Derive a key at `derivation_path` and attach an `eddsa-jcs-2022`
     /// Data-Integrity proof to `document`, signed **as the derived key** —
-    /// persisting no key record. Admin-only. Returns the signer `did:key` + the
-    /// signed document. This is how a fleet manager has its fleet VTA sign an
+    /// persisting no key record. Super-admin only, inside `m/26'/9'`. Returns
+    /// the signer `did:key` + the signed document. This is how a fleet manager has its fleet VTA sign an
     /// auth document as a per-VTA super-admin without the seed leaving the VTA.
     pub async fn derive_and_sign_document(
         &self,

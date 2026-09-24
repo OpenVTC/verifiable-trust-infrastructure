@@ -296,9 +296,14 @@ pub(super) async fn handle_receive(
             // Context gate on the *key*, not just the credential: binding an
             // mdoc to a key in a context the caller cannot act in would let one
             // tenant park a credential on another tenant's key.
-            if let Some(ctx) = device_key.context_id.as_deref()
-                && let Err(e) = auth.require_context(ctx)
-            {
+            // A context-less key is instance-level: only a super-admin may bind
+            // to it, the same rule every key loader applies ("only super admin
+            // can use keys without a context").
+            let key_gate = match device_key.context_id.as_deref() {
+                Some(ctx) => auth.require_context(ctx),
+                None => auth.require_super_admin(),
+            };
+            if let Err(e) = key_gate {
                 return app_error_to_reject(&doc, e);
             }
 

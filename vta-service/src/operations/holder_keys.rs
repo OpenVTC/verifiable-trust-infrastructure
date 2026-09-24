@@ -20,12 +20,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde_json::Value;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
-use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::auth::AuthClaims;
 use crate::keys::seed_store::SeedStore;
-use crate::keys::seeds::load_seed_bytes;
 use crate::store::KeyspaceHandle;
 use vti_common::error::AppError;
 
@@ -86,7 +84,9 @@ pub struct HolderKeys {
 ///   derives it.
 pub async fn resolve_holder_keys(
     keys_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     subject_did: &str,
 ) -> Result<HolderKeys, AppError> {
@@ -127,28 +127,20 @@ pub async fn resolve_holder_keys(
         None => auth.require_super_admin()?,
     }
 
-    // Derive the raw signing key from the master seed (same path the oracle uses).
-    let mut seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
-        .await
-        .map_err(|e| AppError::Internal(format!("seed load: {e}")))?;
-    let bip32 = ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| AppError::Internal(format!("BIP-32 root key: {e}")))?;
-    seed.zeroize();
-
-    let path: DerivationPath = record.derivation_path.parse().map_err(|e| {
-        AppError::Internal(format!(
-            "invalid derivation path `{}`: {e}",
-            record.derivation_path
-        ))
-    })?;
-    let derived = bip32
-        .derive(&path)
-        .map_err(|e| AppError::Internal(format!("derive: {e}")))?;
-    // `ed25519-dalek-bip32` is pinned to ed25519-dalek 2 upstream, so its
-    // `SigningKey` is a *different type* from the workspace's ed25519-dalek 3
-    // one. Cross the boundary as raw bytes, the same way every other
-    // derivation site here does.
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
+    // Derive through key custody (same door as the signing oracle): the
+    // record's path must lie in its context's base (`vta_keys::custody` rule 6).
+    let key = crate::operations::key_custody::derive_record_key(
+        contexts_ks,
+        keys_ks,
+        &**seed_store,
+        audit,
+        &auth.did,
+        &record,
+        "holder-keys",
+    )
+    .await?;
+    let derived_bytes = key.ed25519_signing_key_bytes()?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&derived_bytes);
 
     let signer = HolderSdJwtSigner {
         key: signing_key.clone(),
@@ -170,6 +162,7 @@ mod tests {
     use affinidi_sd_jwt::signer::JwtSigner;
     use chrono::Utc;
     use vti_common::config::StoreConfig;
+    use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
     use vti_common::store::Store;
 
     fn admin_of(ctx: &str) -> AuthClaims {
@@ -190,21 +183,38 @@ mod tests {
     /// Open a keys keyspace + seed store, derive an Ed25519 key at
     /// `m/26'/2'/0'/0'` in `context`, store its `KeyRecord`, and return the
     /// pieces plus the derived subject `did:key`.
-    async fn setup(
-        context: Option<&str>,
-    ) -> (
-        tempfile::TempDir,
-        Store,
-        KeyspaceHandle,
-        Arc<dyn SeedStore>,
-        String,
-    ) {
+    ///
+    /// The key's context is created with base `context_base`. Pass a base that
+    /// does not contain the key's path to model a planted record.
+    async fn setup_with_base(context: Option<&str>, context_base: &str) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
         let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+        let audit =
+            vta_audit::shared_keyspace_sink(store.keyspace(crate::keyspaces::AUDIT).unwrap());
+        if let Some(ctx) = context {
+            crate::contexts::store_context(
+                &contexts_ks,
+                &crate::contexts::ContextRecord {
+                    id: ctx.into(),
+                    name: ctx.into(),
+                    did: None,
+                    description: None,
+                    parent: None,
+                    base_path: context_base.into(),
+                    index: 0,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    context_policy: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
 
         let seed = vec![42u8; 64];
         let seed_store: Arc<dyn SeedStore> =
@@ -240,13 +250,52 @@ mod tests {
             .await
             .unwrap();
 
-        (dir, store, keys_ks, seed_store, subject_did)
+        Fixture {
+            _dir: dir,
+            _store: store,
+            keys_ks,
+            contexts_ks,
+            audit,
+            seed_store,
+            subject_did,
+        }
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        _store: Store,
+        keys_ks: KeyspaceHandle,
+        contexts_ks: KeyspaceHandle,
+        audit: vta_audit::SharedAuditSink,
+        seed_store: Arc<dyn SeedStore>,
+        subject_did: String,
+    }
+
+    async fn setup(context: Option<&str>) -> Fixture {
+        setup_with_base(context, "m/26'/2'/0'").await
+    }
+
+    async fn resolve(
+        f: &Fixture,
+        auth: &AuthClaims,
+        subject: &str,
+    ) -> Result<HolderKeys, AppError> {
+        resolve_holder_keys(
+            &f.keys_ks,
+            &f.contexts_ks,
+            &f.seed_store,
+            &f.audit,
+            auth,
+            subject,
+        )
+        .await
     }
 
     #[tokio::test]
     async fn resolves_within_an_authorised_context() {
-        let (_d, _s, keys_ks, seed_store, subject_did) = setup(Some("acme")).await;
-        let keys = resolve_holder_keys(&keys_ks, &seed_store, &admin_of("acme"), &subject_did)
+        let f = setup(Some("acme")).await;
+        let subject_did = f.subject_did.clone();
+        let keys = resolve(&f, &admin_of("acme"), &subject_did)
             .await
             .expect("resolve");
         let multibase = subject_did.strip_prefix("did:key:").unwrap();
@@ -257,38 +306,40 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_a_key_outside_the_callers_context() {
-        let (_d, _s, keys_ks, seed_store, subject_did) = setup(Some("acme")).await;
+        let f = setup(Some("acme")).await;
         // The privilege boundary: an admin of `other` must NOT sign with `acme`'s key.
-        let err = resolve_holder_keys(&keys_ks, &seed_store, &admin_of("other"), &subject_did)
-            .await
-            .unwrap_err();
+        let Err(err) = resolve(&f, &admin_of("other"), &f.subject_did).await else {
+            panic!("expected a refusal");
+        };
         assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
     }
 
     #[tokio::test]
     async fn parent_admin_resolves_a_descendant_context_key() {
-        let (_d, _s, keys_ks, seed_store, subject_did) = setup(Some("acme/eng")).await;
+        let f = setup(Some("acme/eng")).await;
         // Folder authority (ties to hierarchical contexts): an admin of `acme`
         // reaches a key whose context is `acme/eng`.
-        assert!(
-            resolve_holder_keys(&keys_ks, &seed_store, &admin_of("acme"), &subject_did)
-                .await
-                .is_ok()
-        );
+        assert!(resolve(&f, &admin_of("acme"), &f.subject_did).await.is_ok());
     }
 
     #[tokio::test]
     async fn unknown_subject_is_not_found() {
-        let (_d, _s, keys_ks, seed_store, _subject) = setup(Some("acme")).await;
-        let err = resolve_holder_keys(
-            &keys_ks,
-            &seed_store,
-            &super_admin(),
-            "did:key:zUnknownHolder",
-        )
-        .await
-        .unwrap_err();
+        let f = setup(Some("acme")).await;
+        let Err(err) = resolve(&f, &super_admin(), "did:key:zUnknownHolder").await else {
+            panic!("expected a refusal");
+        };
         assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    /// Key custody rule 6: a record in `acme` whose path is not under
+    /// `acme`'s base (a planted record) is refused even to `acme`'s own admin.
+    #[tokio::test]
+    async fn a_record_outside_its_contexts_base_cannot_sign() {
+        let f = setup_with_base(Some("acme"), "m/26'/2'/5'").await;
+        let Err(err) = resolve(&f, &admin_of("acme"), &f.subject_did).await else {
+            panic!("expected a refusal");
+        };
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
     }
 }
 
@@ -320,7 +371,9 @@ pub struct MdocHolderKeys {
 /// stored one always resolves here.
 pub async fn resolve_mdoc_device_keys(
     keys_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     key_id: &str,
 ) -> Result<MdocHolderKeys, AppError> {
@@ -358,15 +411,17 @@ pub async fn resolve_mdoc_device_keys(
         None => auth.require_super_admin()?,
     }
 
-    let mut seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
-        .await
-        .map_err(|e| AppError::Internal(format!("seed load: {e}")))?;
-    let bip32 = ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| AppError::Internal(format!("BIP-32 root key: {e}")))?;
-    seed.zeroize();
-
-    let p256_secret =
-        vta_keys::derivation::Bip32Extension::derive_p256(&bip32, &record.derivation_path)?;
+    let p256_secret = crate::operations::key_custody::derive_record_key(
+        contexts_ks,
+        keys_ks,
+        &**seed_store,
+        audit,
+        &auth.did,
+        &record,
+        "holder-keys",
+    )
+    .await?
+    .p256_secret()?;
     let device_private = Zeroizing::new(p256_secret.secret_key.to_bytes().to_vec());
 
     // The device key's canonical `did:key`, so the receipt has a subject that

@@ -190,9 +190,27 @@ pub async fn create_key(
         .await;
     }
 
-    // Resolve derivation path: use explicit value, or auto-derive from context
+    // Resolve derivation path: use explicit value, or auto-derive from context.
+    //
+    // An explicit path is key custody's rule 4: super-admin only, and it must
+    // belong to the context the record will carry. Without this check a
+    // context-scoped admin could derive any key the VTA holds (another tenant's,
+    // the VTA's own) and record it under its own context, where
+    // `get_key_secret`'s scope check reads the record's context and releases
+    // it. See `vta_keys::custody`.
     let derivation_path = match params.derivation_path {
-        Some(path) if !path.is_empty() => path,
+        Some(path) if !path.is_empty() => {
+            super::key_custody::authorize_explicit_key_path(
+                contexts_ks,
+                auth,
+                &path,
+                context_id.as_deref(),
+                audit,
+                channel,
+            )
+            .await?;
+            path
+        }
         _ => {
             let ctx_id = context_id.as_ref().ok_or_else(|| {
                 AppError::Validation(
@@ -743,6 +761,7 @@ pub async fn revoke_key(
 pub async fn get_key_secret(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
@@ -818,65 +837,22 @@ pub async fn get_key_secret(
             secret_bytes.zeroize();
             (record.public_key.clone(), priv_mb)
         }
+        // Through key custody: the record's path must lie in its context's base,
+        // so a record carrying a foreign path is refused here rather than
+        // exported (VTI-KEY-032, `vta_keys::custody` rule 6).
         KeyOrigin::Derived => {
-            let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
-                .await
-                .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
-            })?;
-
-            match record.key_type {
-                KeyType::Ed25519 => {
-                    let secret = bip32.derive_ed25519(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::X25519 => {
-                    let secret = bip32.derive_x25519(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::P256 => {
-                    let p256_secret = bip32.derive_p256(&record.derivation_path)?;
-                    let public_key = p256_secret.secret_key.public_key();
-                    let encoded = public_key.to_sec1_point(true);
-                    let pub_mb = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
-                    let priv_mb = encode_private_multibase(
-                        &KeyType::P256,
-                        &p256_secret.secret_key.to_bytes(),
-                    );
-                    (pub_mb, priv_mb)
-                }
-                KeyType::MlDsa44 => {
-                    let secret = bip32.derive_ml_dsa_44(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::MlDsa65 => {
-                    let secret = bip32.derive_ml_dsa_65(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                // `KeyType` is `#[non_exhaustive]`, so this arm is required. It
-                // refuses rather than falling back: every branch above derives
-                // through a scheme-specific SLIP-0010 path and there is no
-                // generic one, so a wildcard could only return a key of some
-                // other algorithm under this label.
-                other => {
-                    return Err(AppError::Validation(format!(
-                        "key derivation does not support {other} yet"
-                    )));
-                }
-            }
+            let key = super::key_custody::derive_record_key(
+                contexts_ks,
+                keys_ks,
+                &**seed_store,
+                audit,
+                &auth.did,
+                &record,
+                channel,
+            )
+            .await?;
+            let (public, private) = key.multibase_pair()?;
+            (public, (*private).clone())
         }
     };
 
@@ -1028,6 +1004,7 @@ pub async fn set_key_exportability(
 pub async fn get_key_secret_internal(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     audit: &vta_audit::SharedAuditSink,
     authority: super::internal_authority::InternalAuthority,
@@ -1067,65 +1044,22 @@ pub async fn get_key_secret_internal(
             secret_bytes.zeroize();
             (record.public_key.clone(), priv_mb)
         }
+        // Through key custody even under internal authority: `InternalAuthority`
+        // bypasses the ACL, not the rule that a record's path belongs to its
+        // context.
         KeyOrigin::Derived => {
-            let seed = load_seed_bytes(keys_ks, seed_store, record.seed_id)
-                .await
-                .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
-            })?;
-
-            match record.key_type {
-                KeyType::Ed25519 => {
-                    let secret = bip32.derive_ed25519(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::X25519 => {
-                    let secret = bip32.derive_x25519(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::P256 => {
-                    let p256_secret = bip32.derive_p256(&record.derivation_path)?;
-                    let public_key = p256_secret.secret_key.public_key();
-                    let encoded = public_key.to_sec1_point(true);
-                    let pub_mb = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
-                    let priv_mb = encode_private_multibase(
-                        &KeyType::P256,
-                        &p256_secret.secret_key.to_bytes(),
-                    );
-                    (pub_mb, priv_mb)
-                }
-                KeyType::MlDsa44 => {
-                    let secret = bip32.derive_ml_dsa_44(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::MlDsa65 => {
-                    let secret = bip32.derive_ml_dsa_65(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                // `KeyType` is `#[non_exhaustive]`, so this arm is required. It
-                // refuses rather than falling back: every branch above derives
-                // through a scheme-specific SLIP-0010 path and there is no
-                // generic one, so a wildcard could only return a key of some
-                // other algorithm under this label.
-                other => {
-                    return Err(AppError::Validation(format!(
-                        "key derivation does not support {other} yet"
-                    )));
-                }
-            }
+            let key = super::key_custody::derive_record_key(
+                contexts_ks,
+                keys_ks,
+                seed_store,
+                audit,
+                &authority.audit_actor(),
+                &record,
+                channel,
+            )
+            .await?;
+            let (public, private) = key.multibase_pair()?;
+            (public, (*private).clone())
         }
     };
 
@@ -1341,40 +1275,41 @@ pub async fn sign_payload(
             secret_bytes.zeroize();
             sig
         }
+        // Through key custody: a record whose path lies outside its context's
+        // base is refused before anything is signed (`vta_keys::custody` rule 6).
         KeyOrigin::Derived => {
-            let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
-                .await
-                .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
-            })?;
-
-            match (algorithm, &record.key_type) {
-                (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
-                    let derivation_path: vti_common::slip10::DerivationPath =
-                        record.derivation_path.parse().map_err(|e| {
-                            key_derivation_error(format!("invalid derivation path: {e}"))
-                        })?;
-                    let derived = bip32
-                        .derive(&derivation_path)
-                        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
-                    let signing_key =
-                        ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
-                    use ed25519_dalek::Signer;
-                    signing_key.sign(payload).to_bytes().to_vec()
-                }
-                (SignAlgorithm::ES256, KeyType::P256) => {
-                    let p256_secret = bip32.derive_p256(&record.derivation_path)?;
+            if !matches!(
+                (algorithm, &record.key_type),
+                (SignAlgorithm::EdDSA, KeyType::Ed25519) | (SignAlgorithm::ES256, KeyType::P256)
+            ) {
+                return Err(AppError::Validation(format!(
+                    "algorithm {} incompatible with key type {}",
+                    algorithm, record.key_type
+                )));
+            }
+            let key = super::key_custody::derive_record_key(
+                contexts_ks,
+                keys_ks,
+                &**seed_store,
+                audit,
+                &auth.did,
+                &record,
+                channel,
+            )
+            .await?;
+            match record.key_type {
+                KeyType::P256 => {
+                    let p256_secret = key.p256_secret()?;
                     let signing_key = p256::ecdsa::SigningKey::from(&p256_secret.secret_key);
                     use p256::ecdsa::signature::Signer;
                     let sig: p256::ecdsa::Signature = signing_key.sign(payload);
                     sig.to_bytes().to_vec()
                 }
                 _ => {
-                    return Err(AppError::Validation(format!(
-                        "algorithm {} incompatible with key type {}",
-                        algorithm, record.key_type
-                    )));
+                    let bytes = key.ed25519_signing_key_bytes()?;
+                    let signing_key = ed25519_dalek::SigningKey::from_bytes(&bytes);
+                    use ed25519_dalek::Signer;
+                    signing_key.sign(payload).to_bytes().to_vec()
                 }
             }
         }
@@ -1434,19 +1369,37 @@ pub async fn sign_payload(
 /// This is the signing oracle that lets a fleet manager (whose fleet seed *is*
 /// this VTA's seed, ideally TEE-sealed) act as any derived child identity — e.g.
 /// a per-VTA super-admin at `m/26'/9'/<idx>'` — so the seed never leaves the
-/// VTA. **Admin-gated** (the strictest gate, like `create_key`): the caller can
-/// derive + sign as *any* path, so it must be a fully-trusted admin.
+/// VTA.
+///
+/// **Super-admin only, and only inside `m/26'/9'`**
+/// ([`vta_keys::custody::DELEGATED_IDENTITY_ROOT`]). The caller picks the
+/// identity it signs as, so a role-only gate let a context-scoped admin sign as
+/// any key the VTA holds, including its own `did:webvh` update key. The subtree
+/// confinement holds even for a super-admin: this oracle never signs as a key
+/// a record exists for. Every signature is audited with the path and a digest
+/// of what was signed (VTI-VTA-006).
+#[allow(clippy::too_many_arguments)]
 pub async fn derive_and_sign(
     keys_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
+    audit: &vta_audit::SharedAuditSink,
     key_type: &KeyType,
     derivation_path: &str,
     payload: &[u8],
     algorithm: &SignAlgorithm,
     channel: &str,
 ) -> Result<DeriveAndSignResultBody, AppError> {
-    auth.require_admin()?;
+    let signing_bytes = super::key_custody::derive_delegated_identity(
+        keys_ks,
+        &**seed_store,
+        auth,
+        derivation_path,
+        "keys.derive-and-sign",
+        audit,
+        channel,
+    )
+    .await?;
 
     if !matches!(
         (algorithm, key_type),
@@ -1457,18 +1410,7 @@ pub async fn derive_and_sign(
         )));
     }
 
-    let seed = load_seed_bytes(keys_ks, &**seed_store, None)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
-    let path: vti_common::slip10::DerivationPath = derivation_path
-        .parse()
-        .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
-    let derived = bip32
-        .derive(&path)
-        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_bytes);
     let public_key =
         encode_public_multibase(&KeyType::Ed25519, signing_key.verifying_key().as_bytes());
 
@@ -1481,6 +1423,16 @@ pub async fn derive_and_sign(
         derivation_path = %derivation_path,
         "ephemeral derive-and-sign (no key record persisted)"
     );
+    record_delegated_signature(
+        audit,
+        auth,
+        "keys.derive-and-sign",
+        derivation_path,
+        &format!("keyType={key_type} alg={algorithm}"),
+        payload,
+        channel,
+    )
+    .await;
 
     Ok(DeriveAndSignResultBody {
         public_key,
@@ -1497,18 +1449,30 @@ pub async fn derive_and_sign(
 /// proof is correct-by-construction for any `affinidi-data-integrity` verifier.
 /// This is how a fleet manager has its fleet VTA sign an `auth/authenticate/0.1`
 /// document as a per-VTA super-admin (`m/26'/9'/<idx>'`) — the seed never leaves
-/// the VTA. **Admin-gated.**
+/// the VTA. **Super-admin only, inside `m/26'/9'`**, for the reasons given on
+/// [`derive_and_sign`]. Audited with a digest of the signed document.
+#[allow(clippy::too_many_arguments)]
 pub async fn derive_and_sign_document(
     keys_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
+    audit: &vta_audit::SharedAuditSink,
     key_type: &KeyType,
     derivation_path: &str,
     mut document: serde_json::Value,
     proof_purpose: Option<&str>,
     channel: &str,
 ) -> Result<DeriveAndSignDocumentResultBody, AppError> {
-    auth.require_admin()?;
+    let signing_bytes = super::key_custody::derive_delegated_identity(
+        keys_ks,
+        &**seed_store,
+        auth,
+        derivation_path,
+        "keys.derive-and-sign-document",
+        audit,
+        channel,
+    )
+    .await?;
 
     if !matches!(key_type, KeyType::Ed25519) {
         return Err(AppError::Validation(format!(
@@ -1521,18 +1485,7 @@ pub async fn derive_and_sign_document(
         ));
     }
 
-    let seed = load_seed_bytes(keys_ks, &**seed_store, None)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
-    let path: vti_common::slip10::DerivationPath = derivation_path
-        .parse()
-        .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
-    let derived = bip32
-        .derive(&path)
-        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_bytes);
 
     // The derived identity's did:key + its verification method (did:key:zX#zX),
     // and a Secret built from the derived private key — identical to how the VTA
@@ -1573,10 +1526,53 @@ pub async fn derive_and_sign_document(
         derivation_path = %derivation_path,
         "derive-and-sign-document (DI proof, no key record persisted)"
     );
+    let signed_bytes = serde_json::to_vec(&document)
+        .map_err(|e| AppError::Internal(format!("serialize signed document: {e}")))?;
+    record_delegated_signature(
+        audit,
+        auth,
+        "keys.derive-and-sign-document",
+        derivation_path,
+        &format!(
+            "keyType={key_type} proofPurpose={}",
+            proof_purpose.unwrap_or("assertionMethod")
+        ),
+        &signed_bytes,
+        channel,
+    )
+    .await;
     Ok(DeriveAndSignDocumentResultBody {
         signer_did,
         document,
     })
+}
+
+/// Audit a delegated-identity signature: who, as which path, and a SHA-256 of
+/// what was signed (VTI-VTA-006: record what was signed, for which caller). A
+/// digest, not the payload, because the payload may carry personal data an
+/// audit row must not embed (VTI-AUD-005).
+async fn record_delegated_signature(
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    action: &str,
+    derivation_path: &str,
+    detail: &str,
+    signed: &[u8],
+    channel: &str,
+) {
+    use sha2::Digest;
+    let digest = hex::encode(sha2::Sha256::digest(signed));
+    audit::record_with_detail_best_effort(
+        audit,
+        action,
+        &auth.did,
+        Some(derivation_path),
+        "success",
+        Some(channel),
+        None,
+        Some(&format!("{detail} sha256:{digest}")),
+    )
+    .await;
 }
 
 /// Find a VTA key by its multibase public key.
@@ -1739,6 +1735,157 @@ mod tests {
                 acr: String::new(),
             }
         }
+    }
+
+    /// VTI-KEY-032 (found alongside FTL-29904): a context-scoped admin must not
+    /// make the VTA derive a key outside its own context's subtree. The target
+    /// here is the VTA's own `did:webvh` update-key path. Before the fix
+    /// `create_key` accepted it, recorded the key under the caller's context,
+    /// and `get_key_secret`'s scope check, which reads that context, then
+    /// released the VTA's private key.
+    #[tokio::test]
+    async fn vti_key_032_context_admin_cannot_derive_outside_its_context() {
+        let h = TestHarness::new().await;
+        let super_admin = h.super_admin_auth();
+        let tenant = h.context_admin_auth();
+
+        let victim = create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &super_admin,
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: Some("m/26'/0'/0'/0'".into()),
+                key_id: Some("vta-update-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: None,
+            },
+            "test",
+        )
+        .await
+        .expect("super-admin creates the VTA's own key");
+
+        let attempt = create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &tenant,
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: Some("m/26'/0'/0'/0'".into()),
+                key_id: Some("innocuous".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(attempt, Err(AppError::Forbidden(_))),
+            "a context admin must not choose a derivation path, got {:?}",
+            attempt.map(|c| c.public_key == victim.public_key)
+        );
+
+        // Defence in depth (custody rule 6): a record already planted this way,
+        // by a build before the fix or through a restore, is inert. It can be
+        // neither exported nor used to sign, even by its own context's admin.
+        let now = chrono::Utc::now();
+        let planted = KeyRecord {
+            key_id: "planted".into(),
+            derivation_path: "m/26'/0'/0'/0'".into(),
+            key_type: KeyType::Ed25519,
+            status: KeyStatus::Active,
+            public_key: victim.public_key.clone(),
+            label: None,
+            context_id: Some("test-ctx".into()),
+            exportable: None,
+            seed_id: None,
+            origin: KeyOrigin::Derived,
+            created_at: now,
+            updated_at: now,
+        };
+        h.keys_ks
+            .insert(keys::store_key("planted"), &planted)
+            .await
+            .unwrap();
+        let export = get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &tenant,
+            "planted",
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(export, Err(AppError::Forbidden(_))),
+            "export: {export:?}"
+        );
+        let sign = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            &tenant,
+            "planted",
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(sign, Err(AppError::Forbidden(_))),
+            "sign: {sign:?}"
+        );
+    }
+
+    /// `keys/derive-and-sign` lets the caller pick the identity it signs as, so
+    /// it is super-admin only and confined to the delegated subtree: a tenant
+    /// admin cannot sign as the VTA (or anyone else) through it.
+    #[tokio::test]
+    async fn derive_and_sign_refuses_a_context_admin_and_foreign_paths() {
+        let h = TestHarness::new().await;
+        let sign = async |auth: &AuthClaims, path: &str| {
+            derive_and_sign(
+                &h.keys_ks,
+                &h.seed_store,
+                auth,
+                &h.audit,
+                &KeyType::Ed25519,
+                path,
+                b"x",
+                &SignAlgorithm::EdDSA,
+                "test",
+            )
+            .await
+        };
+        let tenant = h.context_admin_auth();
+        let admin = h.super_admin_auth();
+        assert!(matches!(
+            sign(&tenant, "m/26'/9'/0'").await,
+            Err(AppError::Forbidden(_))
+        ));
+        // The VTA's did:webvh update-key path: refused even for a super-admin.
+        assert!(matches!(
+            sign(&admin, "m/26'/0'/0'/0'").await,
+            Err(AppError::Forbidden(_))
+        ));
+        assert!(sign(&admin, "m/26'/9'/0'").await.is_ok());
     }
 
     #[tokio::test]
@@ -2105,6 +2252,7 @@ mod tests {
             &h.keys_ks,
             &h.seed_store,
             &auth,
+            &h.audit,
             &KeyType::Ed25519,
             "m/26'/9'/0'",
             payload,
@@ -2153,6 +2301,7 @@ mod tests {
                 &h.keys_ks,
                 &h.seed_store,
                 &non_admin,
+                &h.audit,
                 &KeyType::Ed25519,
                 "m/26'/9'/0'",
                 payload,
@@ -2178,6 +2327,7 @@ mod tests {
             &h.keys_ks,
             &h.seed_store,
             &auth,
+            &h.audit,
             &KeyType::Ed25519,
             "m/26'/9'/0'",
             doc.clone(),
@@ -2214,6 +2364,7 @@ mod tests {
             &h.keys_ks,
             &h.seed_store,
             &auth,
+            &h.audit,
             &KeyType::Ed25519,
             "m/26'/9'/0'",
             doc,
@@ -2234,6 +2385,7 @@ mod tests {
                 &h.keys_ks,
                 &h.seed_store,
                 &non_admin,
+                &h.audit,
                 &KeyType::Ed25519,
                 "m/26'/9'/0'",
                 serde_json::json!({"x": 1}),
@@ -3040,6 +3192,7 @@ mod tests {
         let err = get_key_secret(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
@@ -3075,6 +3228,7 @@ mod tests {
         get_key_secret(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
@@ -3106,6 +3260,7 @@ mod tests {
         let err = get_key_secret(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
@@ -3196,6 +3351,7 @@ mod tests {
         get_key_secret(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
@@ -3314,6 +3470,7 @@ mod tests {
         let err = get_key_secret_internal(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
             &*h.seed_store,
             &h.audit,
             crate::operations::internal_authority::InternalAuthority::new("test"),

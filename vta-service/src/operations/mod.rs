@@ -38,6 +38,7 @@ pub mod export;
 /// outside the caller's authorised context.
 pub mod holder_keys;
 pub mod internal_authority;
+pub mod key_custody;
 pub mod keys;
 /// Per-context key/value store for AI-agent memory. Backs the
 /// `vta/memory/{put,list,delete}/0.1` Trust Tasks. Entries are keyed

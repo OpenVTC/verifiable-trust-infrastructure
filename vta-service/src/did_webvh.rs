@@ -280,6 +280,7 @@ pub async fn run_create_did_webvh(
         let signing_secret = crate::operations::keys::get_key_secret(
             &keys_ks,
             &imported_ks,
+            &contexts_ks,
             &Arc::from(seed_store),
             &audit,
             &auth,
@@ -299,6 +300,7 @@ pub async fn run_create_did_webvh(
             let ka_secret = crate::operations::keys::get_key_secret(
                 &keys_ks,
                 &imported_ks,
+                &contexts_ks,
                 &Arc::from(create_seed_store(&config)?),
                 &audit,
                 &auth,
@@ -771,6 +773,7 @@ mod tests {
         let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
         let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
         let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
         let seed_store = Arc::from(create_seed_store(&config).unwrap());
         let auth = cli_super_admin();
@@ -785,6 +788,7 @@ mod tests {
         let secret = crate::operations::keys::get_key_secret(
             &keys_ks,
             &imported_ks,
+            &contexts_ks,
             &seed_store,
             &audit,
             &auth,
@@ -954,6 +958,7 @@ mod tests {
         let secret = crate::operations::keys::get_key_secret(
             &keys_ks,
             &imported_ks,
+            &contexts_ks,
             &Arc::from(create_seed_store(&config).unwrap()),
             &audit,
             &cli_super_admin(),

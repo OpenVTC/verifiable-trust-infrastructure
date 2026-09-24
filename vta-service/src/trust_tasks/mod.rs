@@ -3997,13 +3997,15 @@ mod response_coverage {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"coverage");
 
         // Derive-and-sign never stores the key: it derives, signs and discards,
-        // so there is no `keys/create` to pair it with.
+        // so there is no `keys/create` to pair it with. The path is in the
+        // delegated-identity subtree `m/26'/9'`, the only place this oracle
+        // signs (key custody rule 5).
         ok(
             &state,
             t::TASK_KEYS_DERIVE_AND_SIGN_0_1,
             json!({
                 "keyType": "ed25519",
-                "derivationPath": "m/26'/2'/0'/7'",
+                "derivationPath": "m/26'/9'/7'",
                 "payload": payload,
                 "algorithm": "EdDSA",
             }),
@@ -4237,6 +4239,43 @@ mod response_coverage {
             json!({ "deviceId": device_id, "reason": "coverage" }),
         )
         .await;
+    }
+
+    /// FTL-29904, on the Trust Task transport: a context-scoped admin is
+    /// refused every instance-wide seed task and every delegated-identity
+    /// signature by authorization (`permissionDenied`), not by a storage guard.
+    #[tokio::test]
+    async fn ftl_29904_context_scoped_admin_is_refused_seed_and_delegated_signing_tasks() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let tenant = crate::test_support::admin_claims_for_context("tenant-a");
+        for (uri, payload) in [
+            (t::TASK_SEEDS_LIST_1_0, json!({})),
+            (t::TASK_SEEDS_ROTATE_1_0, json!({})),
+            (
+                t::TASK_KEYS_DERIVE_AND_SIGN_0_1,
+                json!({
+                    "keyType": "ed25519",
+                    "derivationPath": "m/26'/9'/0'",
+                    "payload": "eA",
+                    "algorithm": "EdDSA",
+                }),
+            ),
+        ] {
+            let body = signed_body(uri, &vta_did, payload);
+            let outcome = super::dispatch_trust_task_core(
+                &state,
+                &tenant,
+                &body,
+                transport::TransportConfidentiality::HopByHop,
+            )
+            .await;
+            let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+            assert_eq!(
+                doc["payload"]["code"], "permissionDenied",
+                "{uri} must refuse a context-scoped admin, got: {doc}"
+            );
+        }
     }
 
     /// `keys/import` and `keys/derive-and-sign-document`.

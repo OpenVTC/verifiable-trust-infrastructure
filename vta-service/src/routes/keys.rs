@@ -117,6 +117,7 @@ pub async fn get_key_secret(
     let result = operations::keys::get_key_secret(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
         &state.seed_store,
         &state.audit_sink,
         &auth.0,
@@ -253,21 +254,25 @@ pub async fn list_keys(
 
 // ── Seed endpoints ────────────────────────────────────────────────
 
-/// GET /keys/seeds — list all seed records. Auth: Admin or Initiator.
+/// GET /keys/seeds — list seed generations (metadata only). Auth: super-admin.
+///
+/// The gate is in the operation, which audits a refusal; see
+/// `operations::key_custody::require_instance_authority`.
 #[utoipa::path(
     get, path = "/keys/seeds", tag = "keys",
     security(("bearer_jwt" = [])),
     responses(
         (status = 200, description = "Seed records", body = ListSeedsResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
+        (status = 403, description = "Caller is not a super-admin"),
     ),
 )]
 pub async fn list_seeds(
-    _auth: AdminAuth,
+    auth: AuthClaims,
     State(state): State<AppState>,
 ) -> Result<Json<ListSeedsResultBody>, AppError> {
-    let result = operations::seeds::list_seeds(&state.keys_ks, "rest").await?;
+    let result =
+        operations::seeds::list_seeds(&state.keys_ks, &auth, &state.audit_sink, "rest").await?;
     Ok(Json(result))
 }
 
@@ -285,7 +290,8 @@ impl std::fmt::Debug for RotateSeedRequest {
     }
 }
 
-/// POST /keys/seeds/rotate — rotate the active seed, optionally supplying a mnemonic. Auth: Admin or Initiator.
+/// POST /keys/seeds/rotate — rotate the instance-wide seed, optionally supplying
+/// a mnemonic. Auth: super-admin, gated and audited in the operation.
 #[utoipa::path(
     post, path = "/keys/seeds/rotate", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -293,11 +299,11 @@ impl std::fmt::Debug for RotateSeedRequest {
     responses(
         (status = 200, description = "Seed rotated", body = RotateSeedResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
+        (status = 403, description = "Caller is not a super-admin"),
     ),
 )]
 pub async fn rotate_seed(
-    _auth: AdminAuth,
+    auth: AuthClaims,
     State(state): State<AppState>,
     Json(req): Json<RotateSeedRequest>,
 ) -> Result<Json<RotateSeedResultBody>, AppError> {
@@ -306,7 +312,7 @@ pub async fn rotate_seed(
         &state.imported_ks,
         &state.seed_store,
         &state.audit_sink,
-        &_auth.0.did,
+        &auth,
         req.mnemonic.as_deref(),
         "rest",
     )
@@ -368,7 +374,8 @@ pub async fn sign_with_key(
 
 /// POST /keys/derive-and-sign — ephemerally derive a key at a BIP-32 path, sign a
 /// base64url payload, and return `{ public_key, signature }` without persisting a
-/// key record. Auth: admin.
+/// key record. Auth: super-admin, path inside `m/26'/9'` (enforced and audited in the
+/// operation; see `vta_keys::custody`).
 #[utoipa::path(
     post, path = "/keys/derive-and-sign", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -376,7 +383,7 @@ pub async fn sign_with_key(
     responses(
         (status = 200, description = "Derived public key + signature", body = DeriveAndSignResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a super-admin, or the path is outside m/26'/9'"),
     ),
 )]
 pub async fn derive_and_sign_key(
@@ -384,7 +391,6 @@ pub async fn derive_and_sign_key(
     State(state): State<AppState>,
     Json(req): Json<DeriveAndSignBody>,
 ) -> Result<Json<DeriveAndSignResultBody>, AppError> {
-    auth.require_admin()?;
     use base64::Engine;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&req.payload)
@@ -394,6 +400,7 @@ pub async fn derive_and_sign_key(
         &state.keys_ks,
         &state.seed_store,
         &auth,
+        &state.audit_sink,
         &req.key_type,
         &req.derivation_path,
         &payload,
@@ -406,7 +413,8 @@ pub async fn derive_and_sign_key(
 
 /// POST /keys/derive-and-sign-document — derive a key at a BIP-32 path and
 /// attach an `eddsa-jcs-2022` Data-Integrity proof to the document, signed as
-/// the derived key, without persisting a key record. Auth: admin.
+/// the derived key, without persisting a key record. Auth: super-admin, path
+/// inside `m/26'/9'` (enforced and audited in the operation).
 #[utoipa::path(
     post, path = "/keys/derive-and-sign-document", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -414,7 +422,7 @@ pub async fn derive_and_sign_key(
     responses(
         (status = 200, description = "Signer DID + DI-signed document", body = DeriveAndSignDocumentResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a super-admin, or the path is outside m/26'/9'"),
     ),
 )]
 pub async fn derive_and_sign_document_key(
@@ -422,11 +430,11 @@ pub async fn derive_and_sign_document_key(
     State(state): State<AppState>,
     Json(req): Json<DeriveAndSignDocumentBody>,
 ) -> Result<Json<DeriveAndSignDocumentResultBody>, AppError> {
-    auth.require_admin()?;
     let result = operations::keys::derive_and_sign_document(
         &state.keys_ks,
         &state.seed_store,
         &auth,
+        &state.audit_sink,
         &req.key_type,
         &req.derivation_path,
         req.document,

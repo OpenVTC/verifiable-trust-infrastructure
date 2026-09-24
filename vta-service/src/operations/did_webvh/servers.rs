@@ -143,6 +143,7 @@ pub async fn list_webvh_server_domains(
     let identity = crate::operations::did_webvh::auth_cache::load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did_value,
@@ -258,6 +259,7 @@ pub async fn reconcile_webvh_server_dids(
     let identity = crate::operations::did_webvh::auth_cache::load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did_value,
@@ -729,6 +731,7 @@ pub async fn retire_orphan_slot(
     let identity = crate::operations::did_webvh::auth_cache::load_vta_webvh_signing_identity(
         deps.keys_ks,
         deps.imported_ks,
+        deps.contexts_ks,
         deps.seed_store,
         deps.audit,
         vta_did_value,

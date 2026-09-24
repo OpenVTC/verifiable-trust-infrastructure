@@ -103,6 +103,7 @@ pub fn build_vta_approval_token(
 pub async fn load_vta_key0_signing_key(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     audit: &vta_audit::SharedAuditSink,
     vta_did: &str,
@@ -112,6 +113,7 @@ pub async fn load_vta_key0_signing_key(
     let resp = crate::operations::keys::get_key_secret_internal(
         keys_ks,
         imported_ks,
+        contexts_ks,
         seed_store,
         audit,
         authority,
