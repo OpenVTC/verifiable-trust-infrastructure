@@ -468,61 +468,56 @@ pub const EXPORT_SCHEMA_VERSION: u32 = 1;
 /// to check it against.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[derive(utoipa::ToSchema)]
 pub struct ConfigExportDocument {
     pub schema_version: u32,
     pub exported_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub community_profile: Option<CommunityProfile>,
     pub config_overrides: HashMap<String, Value>,
+    /// The published shape's extension point. Accepted and not
+    /// interpreted: `deny_unknown_fields` refused it until #1641 batch 3,
+    /// so a schema-valid document carrying `ext` was refused as malformed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
-/// `POST /v1/admin/config/export` response — canonical
 /// `vtc/config/export/0.1#response`. The document is returned under a
 /// named member rather than as the bare body: the registry response
 /// convention requires `additionalProperties: false` plus an `ext`
 /// extension point, and neither attaches to a bare `$ref`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-#[schema(as = ConfigExportResponse)]
 pub struct ExportResponse {
     pub document: ConfigExportDocument,
 }
 
-#[utoipa::path(
-    post, path = "/admin/config/export", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Portable config + community-profile export", body = ExportResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn export_config(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<ExportResponse>, AppError> {
+/// The export, as the signed `vtc/config/export/0.1` document
+/// (`trust_tasks::handle_config_export`) answers it.
+///
+/// There is no bearer route for this task. It declares `proof` REQUIRED, so
+/// the signed document is its only binding (#1641 phase 2, batch 3); the
+/// `POST /v1/admin/config/export` route it replaced had no client.
+pub(crate) async fn export_inner(state: &AppState) -> Result<ExportResponse, AppError> {
     let community_profile = load_profile(&state.community_ks).await?;
     let store = ConfigStore::new(state.config_ks.clone());
     let config_overrides = store.snapshot().await?;
 
-    Ok(Json(ExportResponse {
+    Ok(ExportResponse {
         document: ConfigExportDocument {
             schema_version: EXPORT_SCHEMA_VERSION,
             exported_at: Utc::now(),
             community_profile,
             config_overrides,
+            ext: None,
         },
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Import (diff-and-confirm)
 // ---------------------------------------------------------------------------
 
-/// `POST /v1/admin/config/import` request — canonical
-/// `vtc/config/import/0.1`.
+/// The `vtc/config/import/0.1` payload, as the import reads it.
 ///
 /// `confirm` rides in the **payload**, not a query string: a Trust
 /// Task is the same interface over REST, DIDComm and TSP, and only
@@ -532,13 +527,18 @@ pub async fn export_config(
 /// the one whose mistake is recoverable — a caller who meant to apply
 /// and previewed loses a round-trip, where the reverse has already
 /// overwritten a live community's configuration.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[schema(as = ConfigImportRequest)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImportRequest {
     pub document: ConfigExportDocument,
     #[serde(default)]
     pub confirm: bool,
+    /// The task's extension point — accepted and not interpreted, for the
+    /// reason given on [`ConfigExportDocument::ext`]. Declared so that
+    /// `deny_unknown_fields` admits it, and never read.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub ext: Option<Value>,
 }
 
 /// A single field an import would change, or did — canonical
@@ -552,7 +552,6 @@ pub struct ImportRequest {
 /// distinction survives on the wire.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
 pub struct FieldDiff {
     pub key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -561,8 +560,7 @@ pub struct FieldDiff {
     pub new_value: Option<Value>,
 }
 
-/// `POST /v1/admin/config/import` response — canonical
-/// `vtc/config/import/0.1#response`.
+/// The import's response — canonical `vtc/config/import/0.1#response`.
 ///
 /// One shape for both paths. On a preview the change arrays are what
 /// *would* be written; on an apply they are what *was*. That is why
@@ -570,7 +568,6 @@ pub struct FieldDiff {
 /// know which it is holding.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
 pub struct ImportResponse {
     /// `preview` when `confirm` was not set; `imported` after the
     /// document was applied.
@@ -597,7 +594,6 @@ pub struct ImportResponse {
 /// Whether an import response describes a dry run or a completed apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
 pub enum ImportStatus {
     Preview,
     Imported,
@@ -610,25 +606,21 @@ pub const IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION: &str =
 pub const IMPORT_ERR_COMMUNITY_DID_MISMATCH: &str =
     trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH.code;
 
-#[utoipa::path(
-    post, path = "/admin/config/import", tag = "admin",
-    security(("bearer_jwt" = [])),
-    request_body = ImportRequest,
-    responses(
-        (status = 200, description = "Import diff (preview) or applied changes", body = ImportResponse),
-        (status = 400, description = "Document carries an unsupported schemaVersion"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 409, description = "Document was taken from a different community"),
-    ),
-)]
-pub async fn import_config(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<ImportRequest>,
-) -> Result<(StatusCode, Json<ImportResponse>), crate::error::TaskError> {
+/// The import — preview or apply — as the signed `vtc/config/import/0.1`
+/// document (`trust_tasks::handle_config_import`) runs it. `actor_did` is the
+/// document's verified signer, and it is what the audit rows name.
+///
+/// There is no bearer route for this task, for the reason given on
+/// [`export_inner`].
+pub(crate) async fn import_inner(
+    state: &AppState,
+    actor_did: &str,
+    body: ImportRequest,
+) -> Result<ImportResponse, crate::error::TaskError> {
     use crate::error::TaskError;
-    let ImportRequest { document, confirm } = body;
+    let ImportRequest {
+        document, confirm, ..
+    } = body;
     let req = document;
 
     // Version first: a document whose shape we cannot vouch for must not be
@@ -716,16 +708,13 @@ pub async fn import_config(
             .filter(|d| matches!(lookup(&d.key), Some(def) if def.requires_restart))
             .map(|d| d.key.clone())
             .collect();
-        return Ok((
-            StatusCode::OK,
-            Json(ImportResponse {
-                status: ImportStatus::Preview,
-                profile_changes: profile_diff,
-                override_changes: overrides_diff,
-                pending_restart,
-                rejected,
-            }),
-        ));
+        return Ok(ImportResponse {
+            status: ImportStatus::Preview,
+            profile_changes: profile_diff,
+            override_changes: overrides_diff,
+            pending_restart,
+            rejected,
+        });
     }
 
     // --- apply --------------------------------------------------------
@@ -733,10 +722,10 @@ pub async fn import_config(
     // half a profile applied. Overrides are persisted one key at a
     // time, so a fjall-side error mid-loop reports back via
     // `rejected` rather than aborting.
-    let audit_writer = require_audit_writer(&state)?;
+    let audit_writer = require_audit_writer(state)?;
 
     let community_profile_applied = if let Some(incoming) = req.community_profile.clone() {
-        apply_profile_import(&state, incoming, current_profile.as_ref()).await?
+        apply_profile_import(state, incoming, current_profile.as_ref()).await?
     } else {
         Vec::new()
     };
@@ -785,7 +774,7 @@ pub async fn import_config(
     if !audit_changes.is_empty() {
         audit_writer
             .write(
-                &admin.0.did,
+                actor_did,
                 None,
                 AuditEvent::ConfigChanged(ConfigChangedData {
                     changes: audit_changes,
@@ -797,7 +786,7 @@ pub async fn import_config(
     if !community_profile_applied.is_empty() {
         audit_writer
             .write(
-                &admin.0.did,
+                actor_did,
                 None,
                 AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
                     fields_changed: community_profile_applied.clone(),
@@ -837,16 +826,13 @@ pub async fn import_config(
         .filter(|d| config_overrides_applied.contains(&d.key))
         .collect();
 
-    Ok((
-        StatusCode::OK,
-        Json(ImportResponse {
-            status: ImportStatus::Imported,
-            profile_changes,
-            override_changes,
-            pending_restart,
-            rejected,
-        }),
-    ))
+    Ok(ImportResponse {
+        status: ImportStatus::Imported,
+        profile_changes,
+        override_changes,
+        pending_restart,
+        rejected,
+    })
 }
 
 /// Apply the incoming profile to `community_ks`. Returns the list of

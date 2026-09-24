@@ -457,13 +457,13 @@ fn witnesses() -> Vec<Witness> {
             s::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH,
             crate::routes::admin::config::IMPORT_ERR_COMMUNITY_DID_MISMATCH,
             "admin_config.rs",
-            "import_refuses_mismatched_community_did_with_409"
+            "import_refuses_mismatched_community_did"
         ),
         witness!(
             s::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION,
             crate::routes::admin::config::IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION,
             "admin_config.rs",
-            "import_wrong_schema_version_returns_400"
+            "import_wrong_schema_version_is_refused"
         ),
         witness!(
             s::directory::query::v0_1::error_codes::NOT_FOUND,

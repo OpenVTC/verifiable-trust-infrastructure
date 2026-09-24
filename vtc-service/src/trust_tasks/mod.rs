@@ -32,12 +32,13 @@
 //!
 //! **Administrator verbs are routed here too**, since #1641 phase 2 — the
 //! admin-facing member verbs were the first batch, `join-requests/decide` and
-//! `community/profile/update` the second. Their authority is not a bearer
-//! token (this endpoint reads none) but the **verified signer's ACL entry**,
-//! read at execution time; see [`admin_signer`]. The remaining operator-facing
-//! verbs (`list`, `show`, the config and backup pairs, …) are still served
-//! only on their JWT-gated REST routes, and moving them is what the rest of
-//! phase 2 is.
+//! `community/profile/update` the second, `config/{export,import}` the third —
+//! the first whose bearer routes were removed rather than kept. Their
+//! authority is not a bearer token (this endpoint reads none) but the
+//! **verified signer's ACL entry**, read at execution time; see
+//! [`admin_signer`]. The remaining operator-facing verbs (`list`, `show`, the
+//! endorsement-type and backup pairs, …) are still served only on their
+//! JWT-gated REST routes, and moving them is what the rest of phase 2 is.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
 //! member-facing half of a family whose `revoke` verb stays operator-side on
@@ -85,6 +86,10 @@ use trust_tasks_rs::specs::vtc::members::{
 // off the payload types.
 use trust_tasks_rs::specs::vtc::community::profile::update::v0_1 as community_profile_update;
 use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1 as join_decide;
+// Batch 3: the portable-configuration pair.
+use trust_tasks_rs::specs::vtc::config::{
+    export::v0_1 as config_export, import::v0_1 as config_import,
+};
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -675,6 +680,8 @@ async fn dispatch_typed(
         MEMBER_PURGE_TYPE => handle_member_purge(state, ctx, doc).await,
         JOIN_DECIDE_TYPE => handle_join_decide(state, ctx, doc).await,
         COMMUNITY_PROFILE_UPDATE_TYPE => handle_community_profile_update(state, ctx, doc).await,
+        CONFIG_EXPORT_TYPE => handle_config_export(state, ctx, doc).await,
+        CONFIG_IMPORT_TYPE => handle_config_import(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1159,10 +1166,11 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            26,
+            28,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
-             (`join-requests/decide`, `community/profile/update`); got {required:?}"
+             (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
+             moved (`config/export`, `config/import`); got {required:?}"
         );
     }
 }
@@ -1304,6 +1312,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // terms — the bearer routes stay mounted as documented transitional paths.
     JOIN_DECIDE_TYPE,
     COMMUNITY_PROFILE_UPDATE_TYPE,
+    // Batch 3: the portable-configuration pair, on the same terms.
+    CONFIG_EXPORT_TYPE,
+    CONFIG_IMPORT_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -1341,6 +1352,14 @@ pub(crate) const JOIN_DECIDE_TYPE: &str =
 /// `vtc/community/profile/update/0.1` — edit the community's public profile.
 pub(crate) const COMMUNITY_PROFILE_UPDATE_TYPE: &str =
     <community_profile_update::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/config/export/0.1` — the community's portable configuration.
+pub(crate) const CONFIG_EXPORT_TYPE: &str =
+    <config_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/config/import/0.1` — preview or apply a portable configuration.
+pub(crate) const CONFIG_IMPORT_TYPE: &str =
+    <config_import::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -2560,6 +2579,88 @@ async fn handle_community_profile_update(
     }
 }
 
+// ─── the portable-configuration pair (#1641 phase 2, batch 3) ────────────
+
+/// `vtc/config/export/0.1` — the community's portable configuration.
+///
+/// Administrator only, from the signer's ACL entry — the `AdminAuth` question
+/// the removed bearer route asked, and the only one. A read, but not a
+/// harmless one: the document carries every db-layer config override and the
+/// full community profile, which is why the task declares a proof. As on the
+/// removed route, it writes no audit row.
+///
+/// # This is the task's only binding
+///
+/// Unlike batches 1 and 2, the pair's bearer routes were removed in the same
+/// change rather than kept as transitional paths. Nothing called them: the
+/// admin console has no screen for either (`vtc-console-signing.md` §7), and
+/// neither `vtc-client`, `cnm` nor openvtc reaches them.
+async fn handle_config_export(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = admin_signer(state, ctx, &doc).await {
+        return reject;
+    }
+    let _checked: config_export::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::admin::config::export_inner(state).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/config/import/0.1` — preview (`confirm: false`, the default) or apply
+/// a portable configuration.
+///
+/// Administrator only, from the signer's ACL entry — the `AdminAuth` question
+/// the removed bearer route asked. The audit rows name the signer. This is the
+/// task's only binding; see [`handle_config_export`].
+///
+/// # Why the payload is read twice
+///
+/// The generated parse runs first because it is what validates the document
+/// against its published schema. The operation then reads the payload as
+/// `ImportRequest`, the type the import has always diffed from, rather than
+/// mapping the generated `CommunityProfileSnapshot` across member by member:
+/// the diff compares the incoming profile with the stored `CommunityProfile`,
+/// and building that from the JSON with the stored type's own deserializer is
+/// what keeps an unchanged profile reading as unchanged.
+///
+/// # Size
+///
+/// This door caps a document at 64 KiB where the removed route allowed 1 MB.
+/// The payload is a community profile plus at most five small config
+/// overrides, and the profile is the one §6b of the design note measured for
+/// `community/profile/update`, at about 44 KiB at the worst encoding. So any
+/// import whose profile is within those caps fits, and the cap refuses with
+/// 413 rather than truncating.
+async fn handle_config_import(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let _checked: config_import::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let request: crate::routes::admin::config::ImportRequest = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::admin::config::import_inner(state, &actor.did, request).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
 // ─── personhood ──────────────────────────────────────────────────────────
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce the
@@ -2867,6 +2968,8 @@ mod tests {
             <member_purge::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <join_decide::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <community_profile_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <config_export::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <config_import::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
@@ -4760,5 +4863,415 @@ mod join_decide_profile_tests {
             "First Name",
             "the conflicting document must not have executed"
         );
+    }
+}
+
+/// The portable-configuration pair, served as signed Trust Task documents —
+/// **#1641 phase 2, batch 3**.
+///
+/// `vtc/config/export/0.1` and `vtc/config/import/0.1` both declare `proof`
+/// REQUIRED and were served only as flat-payload REST behind a bearer JWT.
+/// They are now bound here as well, on batches 1 and 2's terms.
+///
+/// What these tests hold, and why:
+///
+/// - **The gate each bearer route applied must still refuse what it refused.**
+///   Both routes apply exactly `AdminAuth` — no super-admin bar, no context
+///   scoping — so a member is refused and a context-scoped admin is not.
+/// - **A preview writes nothing.** `confirm` defaults to `false`, and the safe
+///   direction of that default is the whole point of it; a door that applied
+///   on a preview would overwrite a live community's configuration.
+/// - **An exported document imports as a no-op.** The pair exists to move a
+///   configuration between hosts, so what one verb emits the other must read
+///   back unchanged.
+/// - **The published `ext` members are accepted.** The route's hand-written
+///   types refused them under `deny_unknown_fields`, which the generated
+///   schema permits; a schema-valid document refused as malformed is the
+///   divergence this batch closed on both doors.
+#[cfg(test)]
+mod config_pair_tests {
+    use super::members_admin_tests::{
+        assert_conforms, dispatch, error_code, payload_of, seed_acl, signed, unsigned,
+    };
+    use super::*;
+    use crate::acl::VtcRole;
+    use crate::community::{CommunityProfile, load_profile, store_profile};
+    use crate::config_store::ConfigStore;
+    use crate::routes::admin::config::{
+        IMPORT_ERR_COMMUNITY_DID_MISMATCH, IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION, export_inner,
+    };
+    use crate::test_support::{TEST_VTC_DID, TestVtc};
+    use serde_json::json;
+    use vti_rooms_dtg::test_support::Party;
+
+    struct Fixture {
+        vtc: TestVtc,
+        /// `VtcRole::Admin`, unrestricted.
+        admin: Party,
+        /// `VtcRole::Admin` scoped to one context — still an administrator,
+        /// and neither verb asks the super-admin question.
+        scoped_admin: Party,
+        /// `VtcRole::Member` — authenticated, authorized for none of this.
+        member: Party,
+    }
+
+    async fn fixture() -> Fixture {
+        // `with_audit` because an applied import refuses rather than acts when
+        // it cannot record what it changed; `with_signers` because the spine
+        // signs its replies.
+        let vtc = TestVtc::builder()
+            .with_audit(true)
+            .with_signers(true)
+            .build()
+            .await;
+        store_profile(
+            &vtc.state.community_ks,
+            &CommunityProfile::new(TEST_VTC_DID, "Example Community"),
+        )
+        .await
+        .expect("seed the community profile");
+
+        let admin = Party::new();
+        let scoped_admin = Party::new();
+        let member = Party::new();
+        seed_acl(&vtc, &admin.did, VtcRole::Admin, vec![]).await;
+        seed_acl(
+            &vtc,
+            &scoped_admin.did,
+            VtcRole::Admin,
+            vec!["ctx-a".to_string()],
+        )
+        .await;
+        seed_acl(&vtc, &member.did, VtcRole::Member, vec![]).await;
+
+        Fixture {
+            vtc,
+            admin,
+            scoped_admin,
+            member,
+        }
+    }
+
+    /// This community's own export, renamed and carrying one override — a
+    /// document that differs from what is stored in exactly two places.
+    async fn changed_document(vtc: &TestVtc) -> Value {
+        let mut document = serde_json::to_value(
+            export_inner(&vtc.state)
+                .await
+                .expect("export the seeded community")
+                .document,
+        )
+        .expect("the document serialises");
+        document["communityProfile"]["name"] = json!("Imported Community");
+        document["configOverrides"] = json!({ "log.level": "debug" });
+        document
+    }
+
+    async fn stored_name(vtc: &TestVtc) -> String {
+        load_profile(&vtc.state.community_ks)
+            .await
+            .expect("read profile")
+            .expect("row")
+            .name
+    }
+
+    async fn stored_log_level(vtc: &TestVtc) -> Option<Value> {
+        ConfigStore::new(vtc.state.config_ks.clone())
+            .get("log.level")
+            .await
+            .expect("read override")
+    }
+
+    // ─── the premise ─────────────────────────────────────────────────────
+
+    /// If the registry ever relaxed one of these declarations, every test
+    /// below would be asserting nothing. This one says so first.
+    #[test]
+    fn every_moved_task_declares_the_proof_these_tests_assume() {
+        for uri in [CONFIG_EXPORT_TYPE, CONFIG_IMPORT_TYPE] {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
+            assert!(
+                policy.is_proof_required,
+                "{uri} no longer declares proof REQUIRED — these tests now assert \
+                 nothing, and the design note should be re-read"
+            );
+        }
+    }
+
+    // ─── VTI-OPS-020: a proof by the issuer, authorized from their ACL ────
+
+    /// **VTI-OPS-020.** A signed admin document exports the configuration,
+    /// and the reply conforms to the published `#response`.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_admin_document_exports_the_configuration() {
+        let fix = fixture().await;
+        ConfigStore::new(fix.vtc.state.config_ks.clone())
+            .put("log.level", &json!("warn"))
+            .await
+            .expect("seed an override");
+
+        let doc = signed(&fix.admin, CONFIG_EXPORT_TYPE, json!({})).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "a signed admin document must be accepted: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let document = &payload_of(&out)["document"];
+        assert_eq!(document["communityProfile"]["name"], "Example Community");
+        assert_eq!(document["configOverrides"]["log.level"], "warn");
+        assert_conforms::<config_export::Response>(&out);
+    }
+
+    /// **VTI-OPS-020.** A signed import without `confirm` is a preview: it
+    /// reports the change and writes nothing.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_import_previews_by_default_and_writes_nothing() {
+        let fix = fixture().await;
+        let document = changed_document(&fix.vtc).await;
+
+        let doc = signed(
+            &fix.admin,
+            CONFIG_IMPORT_TYPE,
+            json!({ "document": document }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let payload = payload_of(&out);
+        assert_eq!(payload["status"], "preview");
+        assert_eq!(payload["profileChanges"][0]["key"], "name");
+        assert_eq!(payload["overrideChanges"][0]["key"], "log.level");
+        assert_conforms::<config_import::Response>(&out);
+
+        assert_eq!(stored_name(&fix.vtc).await, "Example Community");
+        assert_eq!(stored_log_level(&fix.vtc).await, None);
+    }
+
+    /// **VTI-OPS-020.** With `confirm: true` the same document is applied.
+    #[tokio::test]
+    async fn vti_ops_020_a_confirmed_signed_import_applies_the_document() {
+        let fix = fixture().await;
+        let document = changed_document(&fix.vtc).await;
+
+        let doc = signed(
+            &fix.admin,
+            CONFIG_IMPORT_TYPE,
+            json!({ "document": document, "confirm": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["status"], "imported");
+        assert_conforms::<config_import::Response>(&out);
+
+        assert_eq!(stored_name(&fix.vtc).await, "Imported Community");
+        assert_eq!(stored_log_level(&fix.vtc).await, Some(json!("debug")));
+    }
+
+    /// The pair's purpose: what `export` emits, `import` reads back as no
+    /// change at all. Both halves go through this door.
+    #[tokio::test]
+    async fn an_exported_document_imports_as_no_change() {
+        let fix = fixture().await;
+        let export = signed(&fix.admin, CONFIG_EXPORT_TYPE, json!({})).await;
+        let out = dispatch(&fix.vtc, &export).await;
+        assert!(out.status.is_success());
+        let document = payload_of(&out)["document"].clone();
+
+        let import = signed(
+            &fix.admin,
+            CONFIG_IMPORT_TYPE,
+            json!({ "document": document, "confirm": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &import).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let payload = payload_of(&out);
+        assert_eq!(payload["profileChanges"], json!([]), "{payload}");
+        assert_eq!(payload["overrideChanges"], json!([]), "{payload}");
+        assert_eq!(payload["rejected"], json!([]), "{payload}");
+    }
+
+    /// **VTI-OPS-020.** The same documents unsigned are refused with the
+    /// framework's own code, and nothing is written.
+    #[tokio::test]
+    async fn vti_ops_020_an_unsigned_config_document_is_refused() {
+        let fix = fixture().await;
+        let document = changed_document(&fix.vtc).await;
+
+        for (uri, payload) in [
+            (CONFIG_EXPORT_TYPE, json!({})),
+            (
+                CONFIG_IMPORT_TYPE,
+                json!({ "document": document, "confirm": true }),
+            ),
+        ] {
+            let doc = unsigned(&fix.admin, uri, payload);
+            let out = dispatch(&fix.vtc, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{uri}: SPEC §7.2 item 7 names the code: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+        assert_eq!(stored_name(&fix.vtc).await, "Example Community");
+    }
+
+    /// Authorization is the **signer's ACL entry**: a correctly signed
+    /// document from a member, or from a DID with no row at all, is refused —
+    /// what `AdminAuth` refused on both REST routes.
+    #[tokio::test]
+    async fn a_signer_who_is_not_an_admin_is_refused_both_verbs() {
+        let fix = fixture().await;
+        let stranger = Party::new();
+        let document = changed_document(&fix.vtc).await;
+
+        for signer in [&fix.member, &stranger] {
+            for (uri, payload) in [
+                (CONFIG_EXPORT_TYPE, json!({})),
+                (
+                    CONFIG_IMPORT_TYPE,
+                    json!({ "document": document, "confirm": true }),
+                ),
+            ] {
+                let doc = signed(signer, uri, payload).await;
+                let out = dispatch(&fix.vtc, &doc).await;
+                assert_eq!(
+                    error_code(&out).as_deref(),
+                    Some("permissionDenied"),
+                    "{uri}: {}",
+                    String::from_utf8_lossy(&out.body)
+                );
+            }
+        }
+        assert_eq!(stored_name(&fix.vtc).await, "Example Community");
+        assert_eq!(stored_log_level(&fix.vtc).await, None);
+    }
+
+    /// **Neither verb is super-admin-only, and neither is context-scoped.**
+    /// Both bearer routes take `AdminAuth`, which a context-scoped admin
+    /// satisfies, so this door must admit them too.
+    #[tokio::test]
+    async fn a_context_scoped_admin_may_export_and_import() {
+        let fix = fixture().await;
+        let document = changed_document(&fix.vtc).await;
+
+        let doc = signed(&fix.scoped_admin, CONFIG_EXPORT_TYPE, json!({})).await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "a context-scoped admin passes AdminAuth and must pass here: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+
+        let doc = signed(
+            &fix.scoped_admin,
+            CONFIG_IMPORT_TYPE,
+            json!({ "document": document, "confirm": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(stored_name(&fix.vtc).await, "Imported Community");
+    }
+
+    // ─── the operation's own refusals ────────────────────────────────────
+
+    /// A document taken from another community is the declared
+    /// `communityDidMismatch`, carried as a code rather than flattened.
+    #[tokio::test]
+    async fn another_communitys_document_is_the_declared_mismatch() {
+        let fix = fixture().await;
+        let mut document = changed_document(&fix.vtc).await;
+        document["communityProfile"]["communityDid"] = json!("did:web:elsewhere.example");
+
+        let doc = signed(
+            &fix.admin,
+            CONFIG_IMPORT_TYPE,
+            json!({ "document": document, "confirm": true }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(IMPORT_ERR_COMMUNITY_DID_MISMATCH),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(stored_name(&fix.vtc).await, "Example Community");
+    }
+
+    /// A `schemaVersion` this build does not read is the declared
+    /// `unsupportedSchemaVersion` — valid against the schema, refused by the
+    /// operation before it diffs anything.
+    #[tokio::test]
+    async fn an_unknown_schema_version_is_the_declared_refusal() {
+        let fix = fixture().await;
+        let mut document = changed_document(&fix.vtc).await;
+        document["schemaVersion"] = json!(2);
+
+        let doc = signed(
+            &fix.admin,
+            CONFIG_IMPORT_TYPE,
+            json!({ "document": document }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// The published `ext` extension points — on the payload and on the
+    /// document — are accepted. The route's types refused both under
+    /// `deny_unknown_fields` until this batch, so a schema-valid document was
+    /// answered as malformed.
+    #[tokio::test]
+    async fn the_published_ext_members_are_accepted() {
+        let fix = fixture().await;
+        let mut document = changed_document(&fix.vtc).await;
+        document["ext"] = json!({ "org.example": { "note": "from staging" } });
+
+        let doc = signed(
+            &fix.admin,
+            CONFIG_IMPORT_TYPE,
+            json!({
+                "document": document,
+                "ext": { "org.example": { "ticket": "OPS-1" } },
+            }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "a schema-valid document must not be refused as malformed: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert_eq!(payload_of(&out)["status"], "preview");
     }
 }

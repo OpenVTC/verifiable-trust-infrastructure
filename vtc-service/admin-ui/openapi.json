@@ -382,84 +382,6 @@
         ]
       }
     },
-    "/v1/admin/config/export": {
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "export_config",
-        "responses": {
-          "200": {
-            "description": "Portable config + community-profile export",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConfigExportResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/admin/config/import": {
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "import_config",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConfigImportRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Import diff (preview) or applied changes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ImportResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Document carries an unsupported schemaVersion"
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "409": {
-            "description": "Document was taken from a different community"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/admin/config/reload": {
       "post": {
         "tags": [
@@ -6467,72 +6389,6 @@
           }
         }
       },
-      "ConfigExportDocument": {
-        "type": "object",
-        "description": "The portable configuration document — canonical\n`vtc/_shared/0.1/config-portability#ConfigExportDocument`.\n\n`community_profile` is `None` when the community hasn't been\ninitialised yet (pre-bootstrap); the member is omitted rather\nthan emitted as `null`, because an import cannot distinguish a\nsynthesised empty profile from a real blank one.\n`config_overrides` carries *only* the db-layer keys — env-layer\nand toml-layer values stay per-host and aren't portable.\n\n`schema_version` is not redundant with the `0.1` in the Trust\nTask URI. The URI versions the *envelope*; the moment an operator\nwrites this document to a file the envelope is gone and it is\nbare JSON, so `schemaVersion` is the only thing a later reader has\nto check it against.",
-        "required": [
-          "schemaVersion",
-          "exportedAt",
-          "configOverrides"
-        ],
-        "properties": {
-          "communityProfile": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/CommunityProfile"
-              }
-            ]
-          },
-          "configOverrides": {
-            "type": "object",
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "exportedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "schemaVersion": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          }
-        },
-        "additionalProperties": false
-      },
-      "ConfigExportResponse": {
-        "type": "object",
-        "description": "`POST /v1/admin/config/export` response — canonical\n`vtc/config/export/0.1#response`. The document is returned under a\nnamed member rather than as the bare body: the registry response\nconvention requires `additionalProperties: false` plus an `ext`\nextension point, and neither attaches to a bare `$ref`.",
-        "required": [
-          "document"
-        ],
-        "properties": {
-          "document": {
-            "$ref": "#/components/schemas/ConfigExportDocument"
-          }
-        }
-      },
-      "ConfigImportRequest": {
-        "type": "object",
-        "description": "`POST /v1/admin/config/import` request — canonical\n`vtc/config/import/0.1`.\n\n`confirm` rides in the **payload**, not a query string: a Trust\nTask is the same interface over REST, DIDComm and TSP, and only\none of those three has a query string to put it in.\n\nIt defaults to `false` because the safe direction of a default is\nthe one whose mistake is recoverable — a caller who meant to apply\nand previewed loses a round-trip, where the reverse has already\noverwritten a live community's configuration.",
-        "required": [
-          "document"
-        ],
-        "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
-          "document": {
-            "$ref": "#/components/schemas/ConfigExportDocument"
-          }
-        },
-        "additionalProperties": false
-      },
       "ConfigRejectedKey": {
         "type": "object",
         "description": "One rejected key + the reason. Surfaced to the caller so the\nadmin UX can present a meaningful error inline.",
@@ -7563,20 +7419,6 @@
           }
         }
       },
-      "FieldDiff": {
-        "type": "object",
-        "description": "A single field an import would change, or did — canonical\n`vtc/_shared/0.1/config-portability#ConfigFieldChange`.\n\n`oldValue` is omitted when the key isn't currently set (no profile\nyet, or no db-layer override). `newValue` is omitted when the\ndocument leaves the field out, which means \"leave the live value\nalone\" — distinct from an explicit `null`, which means \"clear it\".\nBoth are serialised as *absent* rather than `null` so that\ndistinction survives on the wire.",
-        "required": [
-          "key"
-        ],
-        "properties": {
-          "key": {
-            "type": "string"
-          },
-          "newValue": {},
-          "oldValue": {}
-        }
-      },
       "FieldOption": {
         "type": "object",
         "required": [
@@ -7884,59 +7726,6 @@
             "type": "string"
           }
         }
-      },
-      "ImportResponse": {
-        "type": "object",
-        "description": "`POST /v1/admin/config/import` response — canonical\n`vtc/config/import/0.1#response`.\n\nOne shape for both paths. On a preview the change arrays are what\n*would* be written; on an apply they are what *was*. That is why\nthere are no separate `*Applied` lists: a caller reads `status` to\nknow which it is holding.",
-        "required": [
-          "status",
-          "profileChanges",
-          "overrideChanges",
-          "pendingRestart",
-          "rejected"
-        ],
-        "properties": {
-          "overrideChanges": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/FieldDiff"
-            },
-            "description": "Configuration-override keys that differ from what is in force.\nRejected keys are not listed here — they appear under\n`rejected`."
-          },
-          "pendingRestart": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Applied keys whose new value takes effect only after a\nrestart. Reported on a preview too, so an operator learns that\nthe import implies downtime *before* confirming it."
-          },
-          "profileChanges": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/FieldDiff"
-            },
-            "description": "Community-profile members that differ from what is in force.\nEmpty when the document omits `communityProfile`, or when\nnothing differs."
-          },
-          "rejected": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ConfigRejectedKey"
-            },
-            "description": "Keys rejected by validation (unknown registry key, type\nmismatch, value-out-of-range, oversized extensions blob).\nPopulated identically on preview and apply, so a preview\nsurfaces every rejection before anything is written."
-          },
-          "status": {
-            "$ref": "#/components/schemas/ImportStatus",
-            "description": "`preview` when `confirm` was not set; `imported` after the\ndocument was applied."
-          }
-        }
-      },
-      "ImportStatus": {
-        "type": "string",
-        "description": "Whether an import response describes a dry run or a completed apply.",
-        "enum": [
-          "preview",
-          "imported"
-        ]
       },
       "InForce": {
         "oneOf": [

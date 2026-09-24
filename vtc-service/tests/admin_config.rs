@@ -12,6 +12,7 @@ use tower::ServiceExt;
 
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
+use vti_rooms_dtg::test_support::Party;
 
 const SHOW_TASK: &str = "https://trusttasks.org/spec/config/show/0.1";
 const PATCH_TASK: &str = "https://trusttasks.org/spec/config/patch/0.1";
@@ -671,8 +672,21 @@ async fn restart_wrong_trust_task_returns_415() {
 }
 
 // ──────────────────────── Export / Import ────────────────────────
+//
+// `vtc/config/{export,import}/0.1` declare `proof` REQUIRED, and since #1641
+// phase 2 batch 3 they are served **only** as signed Trust Task documents at
+// `POST /v1/trust-tasks`. The bearer routes `POST /v1/admin/config/{export,
+// import}` were removed rather than kept as transitional paths: no client —
+// the admin console, `vtc-client`, `cnm`, openvtc — called either. These tests
+// drive the full router with signed documents, and authority is the signer's
+// ACL row, read when the document is executed.
+//
+// Two tests went with the routes rather than being ported, because what they
+// held no longer exists: `import_ignores_the_pre_migration_confirm_query_param`
+// (a document has no query string) and the header-shaped Trust-Task gate.
 
 const EXPORT_TASK: &str = "https://trusttasks.org/spec/vtc/config/export/0.1";
+const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
 
 // #1600 — the codes `vtc/config/import/0.1` declares, from the generated
 // bindings.
@@ -681,56 +695,111 @@ const IMPORT_ERR_COMMUNITY_DID_MISMATCH: &str =
 const IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION: &str =
     trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION.code;
 
-/// The extended error code carried by a REST error body (`{"error", "code"}`).
-fn rest_error_code(body: &Value) -> &str {
-    body["code"].as_str().unwrap_or_default()
-}
-const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
+/// The community DID every fixture profile carries — the test VTC's own.
+const COMMUNITY_DID: &str = vtc_service::test_support::TEST_VTC_DID;
 
-async fn export_post(fix: &Fixture, token: &str) -> (StatusCode, Value) {
+/// A fixture able to answer signed documents: the spine signs its replies, so
+/// it needs the VTC's signers, which the bearer-route suites above do not.
+async fn build_signed(with_audit: bool) -> Fixture {
+    let vtc = TestVtc::builder()
+        .with_audit(with_audit)
+        .with_signers(true)
+        .build()
+        .await;
+    Fixture {
+        router: vtc.router.clone(),
+        state: vtc.state.clone(),
+        vtc,
+    }
+}
+
+/// A signing identity with an ACL row of `role`.
+async fn signer(fix: &Fixture, role: vtc_service::acl::VtcRole) -> Party {
+    let party = Party::new();
+    vtc_service::acl::store_acl_entry(
+        &fix.state.acl_ks,
+        &vtc_service::acl::VtcAclEntry {
+            did: party.did.clone(),
+            role,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: 0,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .expect("seed ACL row");
+    party
+}
+
+async fn admin(fix: &Fixture) -> Party {
+    signer(fix, vtc_service::acl::VtcRole::Admin).await
+}
+
+/// POST `payload` as a `type_uri` document signed by `from`. Returns the HTTP
+/// status and the reply document's `payload` — the response on success, the
+/// `trust-task-error` body (with its `code`) on a refusal.
+async fn post_signed(
+    fix: &Fixture,
+    from: &Party,
+    type_uri: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let mut doc =
+        vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &from.did, COMMUNITY_DID)
+            .expect("build the document");
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .expect("a did:key names its own verification method");
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .expect("sign the document");
+
     let req = Request::builder()
         .method("POST")
-        .uri("/v1/admin/config/export")
-        .header("Trust-Task", EXPORT_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
+        .uri("/v1/trust-tasks")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, body) = body_value(resp).await;
-    // Canonical `vtc/config/export/0.1#response` wraps the portable document
-    // under `document`; these tests assert on the document itself.
-    let doc = if body.get("document").is_some() {
-        body["document"].clone()
-    } else {
-        body
-    };
-    (status, doc)
+    (status, body["payload"].clone())
 }
 
-/// `confirm` rides in the payload, not the query string — one interface over
-/// every transport, and only REST has a query string to carry a flag in.
-async fn import_post(
+async fn export_signed(fix: &Fixture, from: &Party) -> (StatusCode, Value) {
+    let (status, payload) = post_signed(fix, from, EXPORT_TASK, json!({})).await;
+    // `vtc/config/export/0.1#response` wraps the portable document under
+    // `document`; these tests assert on the document itself.
+    let document = payload.get("document").cloned().unwrap_or(payload);
+    (status, document)
+}
+
+/// `confirm` rides in the payload — one interface over every transport.
+async fn import_signed(
     fix: &Fixture,
-    token: &str,
+    from: &Party,
     confirm: bool,
     document: Value,
 ) -> (StatusCode, Value) {
-    let body = json!({ "document": document, "confirm": confirm });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/admin/config/import")
-        .header("Trust-Task", IMPORT_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    body_value(resp).await
+    post_signed(
+        fix,
+        from,
+        IMPORT_TASK,
+        json!({ "document": document, "confirm": confirm }),
+    )
+    .await
+}
+
+/// The `code` of a `trust-task-error` reply payload — empty on a success.
+fn tt_error_code(payload: &Value) -> &str {
+    payload["code"].as_str().unwrap_or_default()
 }
 
 async fn seed_profile(fix: &Fixture) -> vtc_service::community::CommunityProfile {
     use vtc_service::community::CommunityProfile;
-    let mut p = CommunityProfile::new("did:webvh:vtc.example.com:abc", "Example");
+    let mut p = CommunityProfile::new(COMMUNITY_DID, "Example");
     p.description = "the original".to_string();
     vtc_service::community::store_profile(&fix.state.community_ks, &p)
         .await
@@ -738,12 +807,37 @@ async fn seed_profile(fix: &Fixture) -> vtc_service::community::CommunityProfile
     p
 }
 
+/// A schema-valid document carrying a profile named `name` in `language`.
+fn document_with_profile(community_did: &str, name: &str, language: &str) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "exportedAt": "2026-05-12T03:42:00Z",
+        "communityProfile": {
+            "communityDid": community_did,
+            "name": name,
+            "description": "the original",
+            "language": language,
+            "createdAt": "2026-05-12T00:00:00Z"
+        },
+        "configOverrides": { "log.level": "debug" }
+    })
+}
+
+/// A schema-valid document carrying only `overrides`.
+fn document_with_overrides(overrides: Value) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "exportedAt": "2026-05-12T03:42:00Z",
+        "configOverrides": overrides
+    })
+}
+
 #[tokio::test]
 async fn export_empty_fresh_install_returns_v1_schema_no_profile_no_overrides() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let (status, body) = export_post(&fix, &token).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let (status, body) = export_signed(&fix, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["schemaVersion"], 1);
     assert!(body["communityProfile"].is_null());
     assert_eq!(body["configOverrides"], json!({}));
@@ -752,24 +846,16 @@ async fn export_empty_fresh_install_returns_v1_schema_no_profile_no_overrides() 
 
 #[tokio::test]
 async fn export_includes_profile_and_db_overrides() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
     seed_profile(&fix).await;
-
-    // Seed a db-layer override via PATCH so the export reflects it.
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
+    vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone())
+        .put("log.level", &json!("debug"))
+        .await
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
 
-    let (status, body) = export_post(&fix, &token).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, body) = export_signed(&fix, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["communityProfile"]["name"], "Example");
     assert_eq!(body["communityProfile"]["description"], "the original");
     assert_eq!(body["configOverrides"]["log.level"], "debug");
@@ -777,36 +863,51 @@ async fn export_includes_profile_and_db_overrides() {
 
 #[tokio::test]
 async fn export_requires_admin_role() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "reader").await;
-    let (status, _) = export_post(&fix, &token).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let fix = build_signed(true).await;
+    let member = signer(&fix, vtc_service::acl::VtcRole::Member).await;
+    let (_, body) = export_signed(&fix, &member).await;
+    assert_eq!(tt_error_code(&body), "permissionDenied", "{body}");
+}
+
+/// The signed door is the only one: the bearer route is gone, not merely
+/// undocumented, so a bearer-token call finds nothing to answer it.
+#[tokio::test]
+async fn the_bearer_routes_are_gone() {
+    let fix = build_signed(true).await;
+    let token = token_for(&fix, "admin").await;
+    for (uri, task) in [
+        ("/v1/admin/config/export", EXPORT_TASK),
+        ("/v1/admin/config/import", IMPORT_TASK),
+    ] {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("Trust-Task", task)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let resp = fix.router.clone().oneshot(req).await.unwrap();
+        assert!(
+            matches!(
+                resp.status(),
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            ),
+            "{uri} must no longer be served; got {}",
+            resp.status()
+        );
+    }
 }
 
 #[tokio::test]
 async fn import_dry_run_returns_diff_without_persisting() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
     seed_profile(&fix).await;
 
-    let payload = json!({
-        "schemaVersion": 1,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "communityProfile": {
-            "communityDid": "did:webvh:vtc.example.com:abc",
-            "name": "Renamed",
-            "description": "the original",
-            "logoUrl": null,
-            "publicUrl": null,
-            "contactEmail": null,
-            "language": "en",
-            "createdAt": "2026-05-12T00:00:00Z",
-            "extensions": null
-        },
-        "configOverrides": { "log.level": "debug" }
-    });
-    let (status, body) = import_post(&fix, &token, false, payload).await;
-    assert_eq!(status, StatusCode::OK);
+    let document = document_with_profile(COMMUNITY_DID, "Renamed", "en");
+    let (status, body) = import_signed(&fix, &admin, false, document).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "preview");
 
     // Diff lists the changed name + the new db-layer override.
@@ -838,27 +939,12 @@ async fn import_dry_run_returns_diff_without_persisting() {
 
 #[tokio::test]
 async fn import_confirm_applies_profile_and_overrides() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
     seed_profile(&fix).await;
 
-    let payload = json!({
-        "schemaVersion": 1,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "communityProfile": {
-            "communityDid": "did:webvh:vtc.example.com:abc",
-            "name": "Renamed",
-            "description": "the original",
-            "logoUrl": null,
-            "publicUrl": null,
-            "contactEmail": null,
-            "language": "fr",
-            "createdAt": "2026-05-12T00:00:00Z",
-            "extensions": null
-        },
-        "configOverrides": { "log.level": "debug" }
-    });
-    let (status, body) = import_post(&fix, &token, true, payload).await;
+    let document = document_with_profile(COMMUNITY_DID, "Renamed", "fr");
+    let (status, body) = import_signed(&fix, &admin, true, document).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "imported");
 
@@ -888,7 +974,8 @@ async fn import_confirm_applies_profile_and_overrides() {
     assert_eq!(live.name, "Renamed");
     assert_eq!(live.language, "fr");
 
-    // Both audit events landed.
+    // Both audit events landed, and both name the signer — the key that
+    // authored the document, not a session.
     let raw = fix
         .state
         .audit_ks
@@ -905,12 +992,11 @@ async fn import_confirm_applies_profile_and_overrides() {
         match &env.event {
             vti_common::audit::AuditEvent::CommunityProfileUpdated(_) => {
                 saw_profile = true;
-                // Actor is the importing admin's real DID, not the sentinel.
-                assert_eq!(env.actor_did_plain.as_deref(), Some("did:key:z6MkAdmin"));
+                assert_eq!(env.actor_did_plain.as_deref(), Some(admin.did.as_str()));
             }
             vti_common::audit::AuditEvent::ConfigChanged(_) => {
                 saw_config = true;
-                assert_eq!(env.actor_did_plain.as_deref(), Some("did:key:z6MkAdmin"));
+                assert_eq!(env.actor_did_plain.as_deref(), Some(admin.did.as_str()));
             }
             _ => {}
         }
@@ -920,33 +1006,23 @@ async fn import_confirm_applies_profile_and_overrides() {
 }
 
 #[tokio::test]
-async fn import_refuses_mismatched_community_did_with_409() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
+async fn import_refuses_mismatched_community_did() {
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
     seed_profile(&fix).await;
 
-    let payload = json!({
-        "schemaVersion": 1,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "communityProfile": {
-            "communityDid": "did:webvh:OTHER.example.com:xyz",
-            "name": "Foreign",
-            "description": "",
-            "logoUrl": null,
-            "publicUrl": null,
-            "contactEmail": null,
-            "language": "en",
-            "createdAt": "2026-05-12T00:00:00Z",
-            "extensions": null
-        },
-        "configOverrides": {}
-    });
-    let (status, body) = import_post(&fix, &token, true, payload).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(body["error"].as_str().unwrap().contains("communityDid"));
+    let document = document_with_profile("did:webvh:OTHER.example.com:xyz", "Foreign", "en");
+    let (_, body) = import_signed(&fix, &admin, true, document).await;
     assert_eq!(
-        rest_error_code(&body),
+        tt_error_code(&body),
         IMPORT_ERR_COMMUNITY_DID_MISMATCH,
+        "{body}"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("communityDid"),
         "{body}"
     );
 }
@@ -954,30 +1030,23 @@ async fn import_refuses_mismatched_community_did_with_409() {
 #[tokio::test]
 async fn import_round_trip_export_then_import_equivalence() {
     // Set up source VTC with profile + override, export.
-    let src = build_with(true, None).await;
-    let token = token_for(&src, "admin").await;
+    let src = build_signed(true).await;
+    let src_admin = admin(&src).await;
     seed_profile(&src).await;
-
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
+    vtc_service::config_store::ConfigStore::new(src.state.config_ks.clone())
+        .put("log.level", &json!("debug"))
+        .await
         .unwrap();
-    let _ = src.router.clone().oneshot(req).await.unwrap();
-
-    let (_, exported) = export_post(&src, &token).await;
+    let (_, exported) = export_signed(&src, &src_admin).await;
 
     // Fresh VTC: import the export, confirm.
-    let dst = build_with(true, None).await;
-    let dst_token = token_for(&dst, "admin").await;
-    let (status, body) = import_post(&dst, &dst_token, true, exported.clone()).await;
+    let dst = build_signed(true).await;
+    let dst_admin = admin(&dst).await;
+    let (status, body) = import_signed(&dst, &dst_admin, true, exported.clone()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     // Export the destination and confirm it round-trips.
-    let (_, dst_exported) = export_post(&dst, &dst_token).await;
+    let (_, dst_exported) = export_signed(&dst, &dst_admin).await;
 
     // Compare semantically — `exportedAt` differs, but
     // `communityProfile` (minus `createdAt`, which we accept varying
@@ -996,16 +1065,11 @@ async fn import_round_trip_export_then_import_equivalence() {
 
 #[tokio::test]
 async fn import_rejects_unknown_config_key() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let payload = json!({
-        "schemaVersion": 1,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "communityProfile": null,
-        "configOverrides": { "godmode.enable": true }
-    });
-    let (status, body) = import_post(&fix, &token, true, payload).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let document = document_with_overrides(json!({ "godmode.enable": true }));
+    let (status, body) = import_signed(&fix, &admin, true, document).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let rejected = body["rejected"].as_array().unwrap();
     assert_eq!(rejected.len(), 1);
     assert_eq!(rejected[0]["key"], "godmode.enable");
@@ -1013,16 +1077,11 @@ async fn import_rejects_unknown_config_key() {
 
 #[tokio::test]
 async fn import_rejects_invalid_value_with_reason() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let payload = json!({
-        "schemaVersion": 1,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "communityProfile": null,
-        "configOverrides": { "log.level": "shouting" }
-    });
-    let (status, body) = import_post(&fix, &token, true, payload).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let document = document_with_overrides(json!({ "log.level": "shouting" }));
+    let (status, body) = import_signed(&fix, &admin, true, document).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let rejected = body["rejected"].as_array().unwrap();
     assert_eq!(rejected.len(), 1);
     assert_eq!(rejected[0]["key"], "log.level");
@@ -1037,52 +1096,45 @@ async fn import_rejects_invalid_value_with_reason() {
 }
 
 #[tokio::test]
-async fn import_wrong_schema_version_returns_400() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let payload = json!({
-        "schemaVersion": 99,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "communityProfile": null,
-        "configOverrides": {}
-    });
-    let (status, body) = import_post(&fix, &token, false, payload).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+async fn import_wrong_schema_version_is_refused() {
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let mut document = document_with_overrides(json!({}));
+    document["schemaVersion"] = json!(99);
+    let (_, body) = import_signed(&fix, &admin, false, document).await;
     assert_eq!(
-        rest_error_code(&body),
+        tt_error_code(&body),
         IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION,
         "{body}"
     );
 }
 
+/// Applying is fail-closed on audit: a change that cannot be recorded is not
+/// made.
 #[tokio::test]
-async fn import_apply_503_when_audit_writer_missing() {
-    let fix = build_with(false, None).await;
-    let token = token_for(&fix, "admin").await;
-    let payload = json!({
-        "schemaVersion": 1,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "communityProfile": null,
-        "configOverrides": { "log.level": "debug" }
-    });
-    let (status, _) = import_post(&fix, &token, true, payload).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+async fn import_apply_is_refused_when_audit_writer_missing() {
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let document = document_with_overrides(json!({ "log.level": "debug" }));
+    let (status, body) = import_signed(&fix, &admin, true, document).await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert!(
+        !tt_error_code(&body).is_empty(),
+        "a refusal carries a code: {body}"
+    );
+    let store = vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone());
+    assert_eq!(store.get("log.level").await.unwrap(), None);
 }
 
 #[tokio::test]
 async fn import_dry_run_works_without_audit_writer() {
-    // Pure dry-run never emits an audit event, so 503 is the wrong
-    // answer — we should return 200 with the diff.
-    let fix = build_with(false, None).await;
-    let token = token_for(&fix, "admin").await;
-    let payload = json!({
-        "schemaVersion": 1,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "communityProfile": null,
-        "configOverrides": { "log.level": "debug" }
-    });
-    let (status, body) = import_post(&fix, &token, false, payload).await;
-    assert_eq!(status, StatusCode::OK);
+    // Pure dry-run never emits an audit event, so refusing it for want of an
+    // audit writer would be the wrong answer — the diff comes back.
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let document = document_with_overrides(json!({ "log.level": "debug" }));
+    let (status, body) = import_signed(&fix, &admin, false, document).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "preview");
 }
 
@@ -1091,15 +1143,11 @@ async fn import_dry_run_works_without_audit_writer() {
 /// downtime while they are still deciding whether to confirm.
 #[tokio::test]
 async fn import_preview_reports_pending_restart_before_confirming() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let payload = json!({
-        "schemaVersion": 1,
-        "exportedAt": "2026-05-12T03:42:00Z",
-        "configOverrides": { "server.port": 9100 }
-    });
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let document = document_with_overrides(json!({ "server.port": 9100 }));
 
-    let (status, body) = import_post(&fix, &token, false, payload.clone()).await;
+    let (status, body) = import_signed(&fix, &admin, false, document.clone()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "preview");
     assert_eq!(body["pendingRestart"], json!(["server.port"]), "{body}");
@@ -1109,75 +1157,29 @@ async fn import_preview_reports_pending_restart_before_confirming() {
     assert_eq!(store.get("server.port").await.unwrap(), None);
 
     // …and confirming reports the same key, now actually applied.
-    let (status, body) = import_post(&fix, &token, true, payload).await;
+    let (status, body) = import_signed(&fix, &admin, true, document).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "imported");
     assert_eq!(body["pendingRestart"], json!(["server.port"]), "{body}");
     assert_eq!(store.get("server.port").await.unwrap(), Some(json!(9100)));
 }
 
-/// `confirm` moved from the query string into the payload. A stale client
-/// still sending `?confirm=true` must not apply — and does not, because
-/// nothing reads the query string any more. The failure direction matters:
-/// the stale call previews instead of writing, which is the recoverable one.
-#[tokio::test]
-async fn import_ignores_the_pre_migration_confirm_query_param() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/admin/config/import?confirm=true")
-        .header("Trust-Task", IMPORT_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            json!({
-                "document": {
-                    "schemaVersion": 1,
-                    "exportedAt": "2026-05-12T03:42:00Z",
-                    "configOverrides": { "log.level": "debug" }
-                }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        body["status"], "preview",
-        "a query-string confirm must not apply: {body}"
-    );
-    let store = vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone());
-    assert_eq!(store.get("log.level").await.unwrap(), None);
-}
-
-/// The document is the request's own member, so an unknown top-level member is
-/// rejected rather than silently dropped — the canonical payload is
+/// The document is the payload's own member, so an unknown top-level member is
+/// refused rather than silently dropped — the canonical payload is
 /// `additionalProperties: false`.
 #[tokio::test]
 async fn import_rejects_an_unknown_top_level_member() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/admin/config/import")
-        .header("Trust-Task", IMPORT_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            json!({
-                "document": {
-                    "schemaVersion": 1,
-                    "exportedAt": "2026-05-12T03:42:00Z",
-                    "configOverrides": {}
-                },
-                "__notARealMember__": true
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let (_, body) = post_signed(
+        &fix,
+        &admin,
+        IMPORT_TASK,
+        json!({
+            "document": document_with_overrides(json!({})),
+            "__notARealMember__": true
+        }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&body), "malformedRequest", "{body}");
 }

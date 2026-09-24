@@ -516,20 +516,11 @@ fn build_api_chain(
             routes!(admin::config::restart_config),
             "https://trusttasks.org/spec/config/restart/0.1",
         ))
-        // Export / import (M0.8.4), on the canonical `vtc/config/*` tasks
-        // (trust-tasks-tf#147). Export returns the portable document
-        // (db-layer overrides + community profile); import runs
-        // diff-and-confirm via `confirm` **in the payload** — a Trust Task
-        // is one interface over REST, DIDComm and TSP, and only REST has a
-        // query string to carry a flag in.
-        .routes(tt(
-            routes!(admin::config::export_config),
-            "https://trusttasks.org/spec/vtc/config/export/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::config::import_config),
-            "https://trusttasks.org/spec/vtc/config/import/0.1",
-        ))
+        // Export / import (`vtc/config/{export,import}/0.1`) have no route
+        // here: both declare `proof` REQUIRED and are served only as signed
+        // documents at `POST /v1/trust-tasks` (#1641 phase 2, batch 3). Their
+        // bearer routes were removed rather than kept transitional, because no
+        // client called them.
         // Install claim endpoints (`/install/claim/start` and
         // `/install/claim/finish`) are unauthenticated and live in
         // `build_unauth_routes` so the tower-governor + tighter
