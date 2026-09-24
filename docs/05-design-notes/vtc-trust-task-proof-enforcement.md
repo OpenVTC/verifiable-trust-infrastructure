@@ -566,29 +566,28 @@ has no backup screen. Findings:
 Its request carries the whole envelope inline, which a 64 KiB document cannot
 hold for any real community, and raising the cap is not the answer: the signed
 door is the unauthenticated chain until the proof is checked, so a large cap
-there is a lever for anyone. The shape that fits the binding is a transfer
-session of several documents, each small, each signed and replay-recorded:
+there is a lever for anyone. The shape that fits the binding is a transfer of
+several documents, each small, each signed and replay-recorded.
 
-1. `…/import/begin` — the envelope's metadata (`version`, `format`,
-   `sourceDid`, KDF and cipher parameters), the ciphertext's total length, the
-   chunk count and its SHA-256. Answers a session id; stages nothing yet.
-2. `…/import/chunk` × *n* — session id, index and a slice of the ciphertext,
-   each document well under 64 KiB after encoding (≈ 40 KiB of ciphertext per
-   chunk leaves room for base64 and the envelope). Staged server-side under a
-   TTL; a chunk out of range, repeated with different bytes, or for an
-   expired session is refused.
-3. `…/import/commit` — session id, password and `confirm`. Reassembles,
-   checks the digest named at `begin`, then runs today's preview-or-apply
-   unchanged.
+**That transfer already exists, for the agent.** `vta/backup/*` opens a slot
+with the bundle's digest, size and every chunk's digest pre-committed, carries
+the bundle as an HTTPS stream or chunk by chunk over Trust Task documents
+(`put-chunk` / `get-chunk`), and previews before it replaces
+(`finalize-import`), with an `abort`. A VTC-only begin/chunk/commit family was
+drafted and dropped in favour of generalising that one: nothing in the
+transfer is specific to an agent, and two chunked-restore protocols for one job
+would drift. Proposed upstream as the node-neutral `backup/*` family
+(trustoverip/dtgwg-trust-tasks-tf#633) — derived from `vta/backup/*`, with
+`finalize-import` answering a `counts` map keyed by each node's own record
+kinds, and the transfer shapes referenced from `vta/_shared` rather than
+copied, so no generated library renames a published type.
 
-Every document in the session must come from the same signer, and the
-super-admin bar is checked at `begin` and again at `commit`, where the effect
-happens. `export` has the mirror problem on the messaging transports, where a
-reply the size of the backup may exceed what a mediator carries; a chunked
-export is the same design read backwards. This is a new task family, so it is
-proposed in dtgwg-trust-tasks-tf first and reaches this workspace through a
-`trust-tasks-rs` bump — the dispatcher cannot bind a family whose schema is not
-published.
+It covers export as well, which has the mirror problem on the messaging
+transports: a reply the size of the backup may exceed what a mediator carries.
+The dispatcher cannot bind a family whose schema is not published, so the VTC
+side waits for that PR and the `trust-tasks-rs` release that carries it;
+`vtc/backup/import/0.1` stays on its bearer route until then, and remains for a
+community small enough to fit one document afterwards.
 
 **Next batch.** `vtc/admin/invites/{create,revoke}` are the same admin-from-ACL
 shape, and become available once the `vtc/invitations/*` work owned elsewhere
