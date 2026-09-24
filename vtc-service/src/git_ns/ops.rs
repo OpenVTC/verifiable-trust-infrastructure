@@ -332,6 +332,12 @@ pub async fn audit(state: &AppState, actor: &str, target: Option<&str>, a: Audit
 
 // ── lookups ─────────────────────────────────────────────────────────────────
 
+/// Refuse, as the framework's `malformedRequest`, anything that is not a
+/// DID-core DID ([`super::model::validate_did_core`]).
+pub(super) fn did_core(label: &str, value: &str) -> OpResult<()> {
+    super::model::validate_did_core(label, value).map_err(OpError::Malformed)
+}
+
 pub(super) fn parse_resource(raw: &str) -> OpResult<Resource> {
     Resource::parse(raw).map_err(OpError::Malformed)
 }
@@ -803,6 +809,7 @@ pub async fn namespace_reseat(
     actor_did: &str,
     p: reseat::Payload,
 ) -> OpResult<reseat::Response> {
+    did_core("subject", &p.subject.to_string())?;
     let actor = standing(state, actor_did).await?;
     // Step 1.
     if !actor.community_admin {
@@ -850,6 +857,7 @@ pub async fn namespace_reseat(
     }
     // Step 4 — fixed rule 5.
     let subject = p.subject.to_string();
+    did_core("subject", &subject)?;
     let subject_standing = standing(state, &subject).await?;
     if !subject_standing.member {
         return Err(declared(
@@ -1168,6 +1176,9 @@ pub async fn repo_adopt(
     let owns_reservation = reservation.as_ref().is_some_and(|scope| {
         rules::explicit_admitted(&snap, &actor.did, Right::RepoOwn, scope, t).is_some()
     });
+    for o in &p.owners {
+        did_core("owners", o)?;
+    }
     if p.owners.is_empty() {
         return Err(OpError::Malformed(
             "a repository always has an owner: name at least one".into(),
@@ -1402,6 +1413,7 @@ pub async fn repo_transfer(
         ));
     };
     let to = p.to.to_string();
+    did_core("to", &to)?;
     if to == actor.did {
         return Err(declared(SELF_TRANSFER, "`to` is you"));
     }
@@ -1650,6 +1662,7 @@ pub async fn right_grant(
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
     let subject = p.subject.to_string();
+    did_core("subject", &subject)?;
 
     // Item 2.
     let ns = bound_namespace_for(&snap, &resource)?.clone();
@@ -1783,6 +1796,7 @@ pub async fn right_revoke(
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
     let subject = p.subject.to_string();
+    did_core("subject", &subject)?;
     let not_granted = || {
         declared(
             NOT_GRANTED,
@@ -1886,6 +1900,8 @@ pub async fn account_link(
     actor_did: &str,
     p: link::Payload,
 ) -> OpResult<link::Response> {
+    // The account is recorded against this DID.
+    did_core("member", actor_did)?;
     let actor = standing(state, actor_did).await?;
     // Item 1.
     if !actor.member {

@@ -249,6 +249,16 @@ installation, missing permissions, the owner's plan, the guard in force on a
 repository, the last check — in the `ext` member of its results and events,
 under `org.openvtc.git-ns`: `{"namespace": {...}, "repo": {...}}`.
 
+Every DID a `git-ns/*` task names — a grant's or revoke's subject, a
+transfer's `to`, an adoption's owners, a reseat's subject, the member linking
+an account — must be a DID by DID-core's syntax (`did:<method>:<id>`, the id
+only letters, digits, `.`, `-`, `_`, `:` and percent-encoded octets), or the
+task is refused `malformedRequest`. That is stricter than the specification's
+`Did` pattern, which admits shell metacharacters (`did:web:x$(…|sh)`); a DID
+that reaches the console or a `cnm` hint can be pasted into a shell safely.
+`cnm` applies the same check before it signs, and quotes anything it prints
+in a command.
+
 A console signing key (a delegation enrolled under #1692) acts as the admin
 DID it stands for on every member-facing `git-ns/*` task.
 

