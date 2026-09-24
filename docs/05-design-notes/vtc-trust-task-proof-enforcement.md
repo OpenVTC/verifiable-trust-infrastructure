@@ -113,11 +113,11 @@ Two of the 51 already verify a document proof on their REST route
 the migration follows. **That leaves 49 proof-REQUIRED tasks served on a bearer
 token** — divergence 1.
 
-Of those 49, ten now have a signed-document binding (§6b, batches 1–4). The
+Of those 49, eleven now have a signed-document binding (§6b, batches 1–5). The
 divergence closes per task when the bearer route goes, not when the signed door
-opens, and for two of the ten it has: batch 3 removed the bearer routes of
+opens, and for two of the eleven it has: batch 3 removed the bearer routes of
 `vtc/config/{export,import}/0.1` in the same change, because nothing called
-them. **47 remain**, eight of them with a signed door beside a still-mounted
+them. **47 remain**, nine of them with a signed door beside a still-mounted
 bearer route.
 
 ### Drift against the recorded entry
@@ -161,8 +161,9 @@ are the ones the spine was lenient about.**
 Since then the set has grown by the tasks §6b's batches move onto this binding
 — four in batch 1, two in batch 2 (`vtc/join-requests/decide/0.1`,
 `vtc/community/profile/update/0.1`), two in batch 3
-(`vtc/config/{export,import}/0.1`) and two in batch 4
-(`vtc/endorsement-types/{register,delete}/0.1`), making thirty proof-REQUIRED. The
+(`vtc/config/{export,import}/0.1`), two in batch 4
+(`vtc/endorsement-types/{register,delete}/0.1`) and one in batch 5
+(`vtc/backup/export/0.1`), making thirty-one proof-REQUIRED. The
 count is asserted by
 `the_dispatched_set_declares_the_proofs_the_design_note_records`, so a batch
 that lands without updating this note fails a test.
@@ -541,13 +542,61 @@ a console key uses the signed door, and one without falls back. Findings:
   into an empty map; the arm reads the raw payload as the route's
   `RegisterBody` so the stored row records what was sent.
 
+**Batch 5 — the backup export, without its import.** `vtc/backup/export/0.1`
+is bound on the same terms, with the one gate batch 1 introduced for `purge`:
+the bearer route took `SuperAdminAuth`, so the signer's entry must be an
+unrestricted admin (`require_super_admin`) and a context-scoped admin is
+refused. Its bearer route stays, because `vtc-client` calls it; the console
+has no backup screen. Findings:
+
+- **The request fits; the reply is recorded.** The payload is a password and a
+  flag. The reply is the whole encrypted envelope, and the spine records a
+  successful reply against the document's `id` — so a redelivery is answered
+  with the same envelope rather than a second export under a fresh salt and
+  nonce (`vti_ops_025_a_redelivered_export_answers_with_the_same_envelope`), at
+  the cost of a second, password-encrypted copy of the backup in
+  `accepted_ids` for the acceptance window. That keyspace is excluded from
+  backup, so a copy cannot end up inside a later export.
+- **The password is in a signed, unencrypted document**, which is no worse
+  than the bearer route's body: REST is TLS, DIDComm and TSP encrypt end to
+  end, and the spine records a document's identifier and digest, never its
+  payload.
+
+**`vtc/backup/import/0.1` stays on bearer, and the fix is a chunked transfer.**
+Its request carries the whole envelope inline, which a 64 KiB document cannot
+hold for any real community, and raising the cap is not the answer: the signed
+door is the unauthenticated chain until the proof is checked, so a large cap
+there is a lever for anyone. The shape that fits the binding is a transfer
+session of several documents, each small, each signed and replay-recorded:
+
+1. `…/import/begin` — the envelope's metadata (`version`, `format`,
+   `sourceDid`, KDF and cipher parameters), the ciphertext's total length, the
+   chunk count and its SHA-256. Answers a session id; stages nothing yet.
+2. `…/import/chunk` × *n* — session id, index and a slice of the ciphertext,
+   each document well under 64 KiB after encoding (≈ 40 KiB of ciphertext per
+   chunk leaves room for base64 and the envelope). Staged server-side under a
+   TTL; a chunk out of range, repeated with different bytes, or for an
+   expired session is refused.
+3. `…/import/commit` — session id, password and `confirm`. Reassembles,
+   checks the digest named at `begin`, then runs today's preview-or-apply
+   unchanged.
+
+Every document in the session must come from the same signer, and the
+super-admin bar is checked at `begin` and again at `commit`, where the effect
+happens. `export` has the mirror problem on the messaging transports, where a
+reply the size of the backup may exceed what a mediator carries; a chunked
+export is the same design read backwards. This is a new task family, so it is
+proposed in dtgwg-trust-tasks-tf first and reaches this workspace through a
+`trust-tasks-rs` bump — the dispatcher cannot bind a family whose schema is not
+published.
+
 **Next batch.** `vtc/admin/invites/{create,revoke}` are the same admin-from-ACL
 shape, and become available once the `vtc/invitations/*` work owned elsewhere
-lands. `vtc/backup/{export,import}` should still wait, because its bodies are
-the one place where the 64 KiB document cap is plainly too small and moving it
-needs that decision taken first. Before keeping a batch's bearer routes, check
-who calls them — batch 3 found nobody did — and where the console does, move
-its call sites to `signedOrBearer` in the same batch, as batch 4 did.
+lands. Before keeping a batch's bearer routes, check who calls them — batch 3
+found nobody did — and where the console does, move its call sites to
+`signedOrBearer` in the same batch, as batch 4 did. The bearer routes kept for
+`vtc-client` (batch 5's `backup/export`, and the members verbs it reaches) go
+once that client signs.
 
 ---
 

@@ -34,12 +34,12 @@
 //! admin-facing member verbs were the first batch, `join-requests/decide` and
 //! `community/profile/update` the second, `config/{export,import}` the third —
 //! the first whose bearer routes were removed rather than kept — and
-//! `endorsement-types/{register,delete}` the fourth. Their authority is not a
-//! bearer token (this endpoint reads none) but the **verified signer's ACL
-//! entry**, read at execution time; see [`admin_signer`]. The remaining
-//! operator-facing verbs (`list`, `show`, the admin-invite and backup pairs,
-//! …) are still served only on their JWT-gated REST routes, and moving them is
-//! what the rest of phase 2 is.
+//! `endorsement-types/{register,delete}` the fourth and `backup/export` the
+//! fifth. Their authority is not a bearer token (this endpoint reads none) but
+//! the **verified signer's ACL entry**, read at execution time; see
+//! [`admin_signer`]. The remaining operator-facing verbs (`list`, `show`, the
+//! admin-invite pair, `backup/import`, …) are still served only on their
+//! JWT-gated REST routes, and moving them is what the rest of phase 2 is.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
 //! member-facing half of a family whose `revoke` verb stays operator-side on
@@ -95,6 +95,8 @@ use trust_tasks_rs::specs::vtc::config::{
 use trust_tasks_rs::specs::vtc::endorsement_types::{
     delete::v0_1 as endorsement_type_delete, register::v0_1 as endorsement_type_register,
 };
+// Batch 5: the backup export. Its `import` partner waits — see the design note.
+use trust_tasks_rs::specs::vtc::backup::export::v0_1 as backup_export;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -689,6 +691,7 @@ async fn dispatch_typed(
         CONFIG_IMPORT_TYPE => handle_config_import(state, ctx, doc).await,
         ENDORSEMENT_TYPE_REGISTER_TYPE => handle_endorsement_type_register(state, ctx, doc).await,
         ENDORSEMENT_TYPE_DELETE_TYPE => handle_endorsement_type_delete(state, ctx, doc).await,
+        BACKUP_EXPORT_TYPE => handle_backup_export(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1173,12 +1176,13 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            30,
+            31,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
              moved (`config/export`, `config/import`) + the 2 batch 4 moved \
-             (`endorsement-types/register`, `endorsement-types/delete`); got {required:?}"
+             (`endorsement-types/register`, `endorsement-types/delete`) + batch \
+             5's `backup/export`; got {required:?}"
         );
     }
 }
@@ -1327,6 +1331,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // on its bearer route.
     ENDORSEMENT_TYPE_REGISTER_TYPE,
     ENDORSEMENT_TYPE_DELETE_TYPE,
+    // Batch 5: the backup export. `import` carries the whole envelope and
+    // cannot fit a 64 KiB document; it waits for a chunked transfer.
+    BACKUP_EXPORT_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -1380,6 +1387,10 @@ pub(crate) const ENDORSEMENT_TYPE_REGISTER_TYPE: &str =
 /// `vtc/endorsement-types/delete/0.1` — delete an unreferenced endorsement type.
 pub(crate) const ENDORSEMENT_TYPE_DELETE_TYPE: &str =
     <endorsement_type_delete::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/backup/export/0.1` — an encrypted full-state backup.
+pub(crate) const BACKUP_EXPORT_TYPE: &str =
+    <backup_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -2761,6 +2772,64 @@ async fn handle_endorsement_type_delete(
     }
 }
 
+// ─── the backup export (#1641 phase 2, batch 5) ──────────────────────────
+
+/// `vtc/backup/export/0.1` — an encrypted full-state backup.
+///
+/// **Super-admin only**, like `members/purge`: the bearer route demanded
+/// `SuperAdminAuth`, so the signer's ACL entry must be an unrestricted admin
+/// (`require_super_admin`), not merely an admin — a context-scoped admin is
+/// refused here exactly as there. The audit row names the signer.
+///
+/// # The password in the document
+///
+/// The export password rides in the payload, so it is in a document that is
+/// signed but not encrypted. That is no worse than the bearer route's body:
+/// the REST binding is TLS, DIDComm and TSP encrypt end to end, and the spine
+/// records a document's identifier and digest — never its payload. The digest
+/// is over a document carrying a fresh `id` and `issuedAt`, so it is no oracle
+/// for the password.
+///
+/// # The reply is recorded in full
+///
+/// The spine records a successful reply against the document's `id`, so a
+/// redelivery is answered with the same envelope rather than a second export
+/// under a fresh salt and nonce. That keeps a second, password-encrypted copy
+/// of the backup in `accepted_ids` for the acceptance window. The keyspace is
+/// excluded from backup, so a copy never ends up inside a later export.
+///
+/// Only the export moves. `vtc/backup/import/0.1` carries the whole envelope in
+/// its request, which a 64 KiB document cannot hold — see §6b of the design
+/// note for the chunked transfer that would.
+async fn handle_backup_export(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    if let Err(e) = actor.require_super_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
+    let checked: backup_export::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::routes::backup::export_inner(
+        state,
+        &actor.did,
+        checked.password.as_str(),
+        checked.include_audit,
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
 // ─── personhood ──────────────────────────────────────────────────────────
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce the
@@ -3072,6 +3141,7 @@ mod tests {
             <config_import::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <endorsement_type_register::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <endorsement_type_delete::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <backup_export::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
@@ -5732,5 +5802,191 @@ mod endorsement_type_tests {
             String::from_utf8_lossy(&out.body)
         );
         assert!(stored(&fix).await.is_some());
+    }
+}
+
+/// The backup export, served as a signed Trust Task document — **#1641
+/// phase 2, batch 5**.
+///
+/// What these tests hold beyond the earlier batches':
+///
+/// - **The super-admin bar.** The bearer route took `SuperAdminAuth`, so a
+///   context-scoped admin — admitted by every earlier batch's verbs — is
+///   refused here, as `members/purge` refuses one.
+/// - **A redelivery answers with the same envelope.** The spine records the
+///   reply, so the second delivery of one document gets the first export back
+///   rather than a second one under a fresh salt and nonce.
+#[cfg(test)]
+mod backup_export_tests {
+    use super::members_admin_tests::{
+        assert_conforms, dispatch, error_code, payload_of, seed_acl, signed, unsigned,
+    };
+    use super::*;
+    use crate::acl::VtcRole;
+    use crate::test_support::{TEST_VTC_DID, TestVtc};
+    use serde_json::json;
+    use vti_rooms_dtg::test_support::Party;
+
+    const PASSWORD: &str = "a-long-enough-backup-password";
+
+    struct Fixture {
+        vtc: TestVtc,
+        super_admin: Party,
+        scoped_admin: Party,
+        member: Party,
+    }
+
+    async fn fixture() -> Fixture {
+        let vtc = TestVtc::builder()
+            .vtc_did(TEST_VTC_DID)
+            .with_audit(true)
+            .with_signers(true)
+            .build()
+            .await;
+        // The export reads the signing bundle from the configured secret
+        // store. The default build compiles `keyring`, which a test cannot
+        // reach, so name the plaintext backend and seed the store through the
+        // same factory the route calls.
+        let store = {
+            let mut config = vtc.state.config.write().await;
+            config.secrets.backend = Some(crate::config::SecretBackend::Plaintext);
+            crate::keys::seed_store::create_secret_store(&config).expect("plaintext store")
+        };
+        store
+            .set(b"signing-bundle")
+            .await
+            .expect("seed the secret store");
+
+        let super_admin = Party::new();
+        let scoped_admin = Party::new();
+        let member = Party::new();
+        seed_acl(&vtc, &super_admin.did, VtcRole::Admin, vec![]).await;
+        seed_acl(
+            &vtc,
+            &scoped_admin.did,
+            VtcRole::Admin,
+            vec!["ctx-a".to_string()],
+        )
+        .await;
+        seed_acl(&vtc, &member.did, VtcRole::Member, vec![]).await;
+        Fixture {
+            vtc,
+            super_admin,
+            scoped_admin,
+            member,
+        }
+    }
+
+    #[test]
+    fn the_moved_task_declares_the_proof_these_tests_assume() {
+        let policy = trust_tasks_rs::schema_index::spec_policy_for(BACKUP_EXPORT_TYPE)
+            .expect("backup/export has a published spec policy");
+        assert!(
+            policy.is_proof_required,
+            "backup/export no longer declares proof REQUIRED — these tests now \
+             assert nothing, and the design note should be re-read"
+        );
+    }
+
+    /// **VTI-OPS-020.** A signed super-admin document exports the community,
+    /// and the reply conforms to the published `#response`.
+    #[tokio::test]
+    async fn vti_ops_020_a_signed_super_admin_document_exports() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.super_admin,
+            BACKUP_EXPORT_TYPE,
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let envelope = &payload_of(&out)["envelope"];
+        assert_eq!(envelope["sourceDid"], TEST_VTC_DID);
+        assert!(
+            envelope["ciphertext"]
+                .as_str()
+                .is_some_and(|c| !c.is_empty())
+        );
+        assert_conforms::<backup_export::Response>(&out);
+    }
+
+    /// The super-admin bar holds: a context-scoped admin is refused, as
+    /// `SuperAdminAuth` refused them on the bearer route, and so is a member.
+    #[tokio::test]
+    async fn only_a_super_admin_may_export() {
+        let fix = fixture().await;
+        for signer in [&fix.scoped_admin, &fix.member] {
+            let doc = signed(signer, BACKUP_EXPORT_TYPE, json!({ "password": PASSWORD })).await;
+            let out = dispatch(&fix.vtc, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("permissionDenied"),
+                "{}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+    }
+
+    /// **VTI-OPS-020.** Unsigned, it is refused with the framework's code.
+    #[tokio::test]
+    async fn vti_ops_020_an_unsigned_export_is_refused() {
+        let fix = fixture().await;
+        let doc = unsigned(
+            &fix.super_admin,
+            BACKUP_EXPORT_TYPE,
+            json!({ "password": PASSWORD }),
+        );
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(error_code(&out).as_deref(), Some("proofRequired"));
+    }
+
+    /// A password under the minimum is the declared `passwordTooShort`.
+    #[tokio::test]
+    async fn a_short_password_is_the_declared_refusal() {
+        let fix = fixture().await;
+        let short = "x".repeat(vta_sdk::protocols::backup_management::MIN_BACKUP_PASSWORD_LEN - 1);
+        let doc = signed(
+            &fix.super_admin,
+            BACKUP_EXPORT_TYPE,
+            json!({ "password": short }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some(
+                trust_tasks_rs::specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT
+                    .code
+            ),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// **VTI-OPS-025.** The same document delivered twice is answered with the
+    /// same envelope: the spine recorded the first reply, so the second
+    /// delivery does not run a second export under a fresh salt and nonce.
+    #[tokio::test]
+    async fn vti_ops_025_a_redelivered_export_answers_with_the_same_envelope() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.super_admin,
+            BACKUP_EXPORT_TYPE,
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+        let first = dispatch(&fix.vtc, &doc).await;
+        let second = dispatch(&fix.vtc, &doc).await;
+        assert!(first.status.is_success() && second.status.is_success());
+        assert_eq!(
+            payload_of(&first)["envelope"],
+            payload_of(&second)["envelope"],
+            "a redelivery must be answered with the recorded export"
+        );
     }
 }
