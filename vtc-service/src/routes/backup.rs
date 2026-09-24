@@ -57,6 +57,15 @@ pub struct ImportRequest {
     pub confirm: bool,
 }
 
+/// POST /backup/export — encrypted full-state backup. Auth: super-admin.
+///
+/// **Transitional bearer-token path (#1641).**
+/// `vtc/backup/export/0.1` declares `proof` REQUIRED, and the authoritative
+/// binding is the signed Trust Task document at `POST /v1/trust-tasks`, where
+/// the proof authenticates the super-administrator and their authority is
+/// read from their ACL entry. This route authenticates by bearer JWT and
+/// verifies no document proof; it is kept because `vtc-client` calls it, and
+/// it is removed once that client signs.
 #[utoipa::path(
     post, path = "/backup/export", tag = "backup",
     security(("bearer_jwt" = [])),
@@ -73,13 +82,27 @@ pub async fn export(
     State(state): State<AppState>,
     Json(req): Json<ExportRequest>,
 ) -> Result<Json<ExportResponse>, TaskError> {
+    export_inner(&state, &auth.did, &req.password, req.include_audit)
+        .await
+        .map(Json)
+}
+
+/// The export, independent of the door it was asked through — the bearer
+/// route above and the signed `vtc/backup/export/0.1` document
+/// (`trust_tasks::handle_backup_export`) both call this. `actor_did` is whoever
+/// the door authenticated as a super-admin, and it is what the audit row names.
+pub(crate) async fn export_inner(
+    state: &AppState,
+    actor_did: &str,
+    password: &str,
+    include_audit: bool,
+) -> Result<ExportResponse, TaskError> {
     let store = create_secret_store(&*state.config.read().await)?;
-    let envelope =
-        backup::export_backup(&state, store.as_ref(), &req.password, req.include_audit).await?;
+    let envelope = backup::export_backup(state, store.as_ref(), password, include_audit).await?;
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &auth.did,
+                actor_did,
                 None,
                 AuditEvent::BackupExported(BackupData {
                     keyspace_count: keyspaces::BACKED_UP.len() as u32,
@@ -88,7 +111,7 @@ pub async fn export(
             )
             .await?;
     }
-    Ok(Json(ExportResponse { envelope }))
+    Ok(ExportResponse { envelope })
 }
 
 #[utoipa::path(

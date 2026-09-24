@@ -4,7 +4,7 @@ pub(crate) mod admin;
 mod admin_ui;
 mod audit;
 pub mod auth;
-mod backup;
+pub(crate) mod backup;
 mod ceremonies;
 pub(crate) mod community;
 pub(crate) mod credential_exchange;
