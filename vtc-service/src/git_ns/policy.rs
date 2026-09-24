@@ -101,6 +101,12 @@ pub struct GitNsFacts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
     pub capabilities: Capabilities,
+    /// How the request arose, where that differs from the action: `drift.adopt`
+    /// on the `right.grant` an adopted drift item is evaluated as
+    /// (`git-ns/drift/resolve`, step 6), so a community can refuse to adopt
+    /// forge-side changes while still granting. Absent for a direct request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 /// Facts that passed the fixed rules.
@@ -345,6 +351,7 @@ mod tests {
                 visibility: None,
                 expires_at: None,
                 capabilities: Capabilities::default(),
+                via: None,
             },
             RulesPassed::for_test(),
         )
@@ -400,6 +407,7 @@ mod tests {
                     bridge_did: Some(bridge.into()),
                     ..Capabilities::default()
                 },
+                via: None,
             },
             RulesPassed::for_test(),
         )

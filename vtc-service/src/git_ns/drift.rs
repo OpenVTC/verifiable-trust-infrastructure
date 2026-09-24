@@ -349,7 +349,35 @@ async fn adopt(
     }
     let grant: grant::Payload = serde_json::from_value(payload)
         .map_err(|e| OpError::Malformed(format!("the adopted right does not fit a grant: {e}")))?;
-    let granted = ops::right_grant(state, &actor.did, grant).await?;
+    // Exactly as the resolver's grant — but said to the policy as an adoption
+    // (`via: drift.adopt`), and only while the item is still outstanding as
+    // it was selected, checked under the lock the grant is written under: a
+    // forge that changed since the item was read adopts nothing.
+    let repo_id = d.repo.id.clone();
+    let selector = d.selector.clone();
+    let still_holds = move |snap: &Snapshot| -> OpResult<()> {
+        let outstanding = snap
+            .repo(&repo_id)
+            .is_some_and(|r| r.sync.drift.iter().any(|i| selector.matches(i)));
+        if outstanding {
+            Ok(())
+        } else {
+            Err(declared(
+                DRIFT_NOT_FOUND,
+                "the drift item changed while it was being adopted; read it again",
+            ))
+        }
+    };
+    let granted = ops::right_grant_via(
+        state,
+        &actor.did,
+        grant,
+        Some(ops::GrantVia {
+            via: "drift.adopt",
+            still_holds: &still_holds,
+        }),
+    )
+    .await?;
     // Step 6 — the complete desired roles, now with the member at the right.
     force_role_projection(state, &d.repo.id).await?;
     Ok(serde_json::to_value(granted.right).map_err(vti_common::error::AppError::from)?)

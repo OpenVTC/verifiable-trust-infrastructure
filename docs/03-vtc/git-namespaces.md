@@ -182,7 +182,10 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
 
 - **adopt** records the forge-side role as a right — evaluated exactly as a
   `git-ns/right/grant` from the resolver, so the same fixed rules, policy and
-  consent class apply. Only a role item (`roleAdded`, or a `roleChanged` that
+  consent class apply. The policy sees it as `right.grant` with
+  `via: "drift.adopt"`, so a community can refuse every adoption and still
+  grant. The item must still be outstanding as it was selected when the right
+  is written; a forge that changed meanwhile adopts nothing. Only a role item (`roleAdded`, or a `roleChanged` that
   raises the member above what they hold) held by a forge account linked to a
   current member, at a role a right projects to, can be adopted. The inverse
   of the bridge's default role map is used: `admin` is `git.repo.own`,

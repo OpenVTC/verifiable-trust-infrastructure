@@ -4193,3 +4193,265 @@ async fn every_git_ns_task_that_takes_a_did_refuses_one_that_is_not_did_core() {
     // A DID-core DID is still accepted.
     ok(&grant(&f, &f.bob, &f.carol.did, "git.commit.sign", &res).await);
 }
+
+// ── review of #1703: follow-ups ─────────────────────────────────────────────
+
+/// Adopting an `admin` role records `git.repo.own`, an elevated grant: under
+/// the default consent gate an owner is refused and a community
+/// administrator is not.
+#[tokio::test]
+async fn adopting_an_admin_role_is_elevated_and_needs_a_community_administrator() {
+    let (f, _ns) = drift_fixture(json!([
+        { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "admin" }
+    ]))
+    .await;
+    let sel = json!({ "type": "roleAdded", "account": carol_acct(), "observed": "admin" });
+    let out = resolve(&f, &f.bob, sel.clone(), "adopt").await;
+    assert_eq!(code(&out), "permissionDenied");
+    let body = ok(&resolve(&f, &f.admin, sel, "adopt").await);
+    assert_eq!(body["right"]["right"], "git.repo.own");
+    assert_eq!(body["right"]["subject"], json!(f.carol.did));
+}
+
+/// Reverting a `roleAdded` held by an account the projection itself gives a
+/// role (a member's, holding a right here) would not remove it: refused.
+#[tokio::test]
+async fn reverting_a_role_the_projection_holds_is_not_revertible() {
+    let (f, _ns) = drift_fixture(json!([
+        { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "write" }
+    ]))
+    .await;
+    ok(&grant(&f, &f.bob, &f.carol.did, "git.repo.maintain", RES).await);
+    let out = resolve(
+        &f,
+        &f.bob,
+        json!({ "type": "roleAdded", "account": carol_acct(), "observed": "write" }),
+        "revert",
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns/drift/resolve:notRevertible");
+    assert!(
+        f.bridge
+            .jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, p)| p.get("removeAccounts").is_none()),
+        "no job was sent"
+    );
+}
+
+/// The policy sees an adoption as `right.grant` with `via: drift.adopt`, so
+/// "never adopt forge-side changes" is expressible while grants still work.
+#[tokio::test]
+async fn a_policy_can_refuse_adoptions_and_still_allow_grants() {
+    let (f, _ns) = drift_fixture(json!([
+        { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "maintain" }
+    ]))
+    .await;
+    activate_git_policy(
+        &f,
+        r#"package vtc.git_namespace
+
+import rego.v1
+
+settings := {"maintainer_grants_commit": false, "cascade_on_departure": false, "role_drift": "report"}
+
+default decision := {"effect": "allow"}
+
+decision := {"effect": "deny", "with": {"code": "no-adoptions", "reason": "forge-side changes are reverted here"}} if {
+	input.action == "right.grant"
+	input.via == "drift.adopt"
+}
+"#,
+    )
+    .await;
+    let out = resolve(
+        &f,
+        &f.bob,
+        json!({ "type": "roleAdded", "account": carol_acct(), "observed": "maintain" }),
+        "adopt",
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:policyDenied");
+    // The item is still outstanding; the same right granted directly is fine.
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert_eq!(snap.repo_at(RES).unwrap().sync.drift.len(), 1);
+    ok(&grant(&f, &f.bob, &f.carol.did, "git.repo.maintain", RES).await);
+}
+
+/// An adoption re-checks its item under the lock the right is written under:
+/// if the item is no longer outstanding as selected, nothing is granted.
+#[tokio::test]
+async fn an_adoption_whose_item_changed_grants_nothing() {
+    let (f, _ns) = drift_fixture(json!([
+        { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "maintain" }
+    ]))
+    .await;
+    let still_holds = |_: &Snapshot| -> super::ops::OpResult<()> {
+        Err(super::ops::OpError::Declared {
+            code: super::drift::DRIFT_NOT_FOUND,
+            message: "changed".into(),
+        })
+    };
+    let payload: trust_tasks_rs::specs::git_ns::right::grant::v0_1::Payload =
+        serde_json::from_value(
+            json!({ "subject": f.carol.did, "right": "git.repo.maintain", "resource": RES }),
+        )
+        .unwrap();
+    let r = super::ops::right_grant_via(
+        &f.vtc.state,
+        &f.bob.did,
+        payload,
+        Some(super::ops::GrantVia {
+            via: "drift.adopt",
+            still_holds: &still_holds,
+        }),
+    )
+    .await;
+    assert!(matches!(
+        r,
+        Err(super::ops::OpError::Declared { code, .. }) if code == super::drift::DRIFT_NOT_FOUND
+    ));
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap();
+    assert!(
+        snap.rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .all(|r| r.subject != f.carol.did)
+    );
+}
+
+/// A subject recorded before DID-core was enforced can still be revoked; a
+/// non-DID-core subject nobody holds is still refused.
+#[tokio::test]
+async fn a_legacy_subject_can_still_be_revoked() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    let legacy = "did:web:legacy.example#k";
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let scope = Scope::Repo(snap.repo_at(&res).unwrap().id.clone());
+    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+        .await
+        .unwrap();
+    let mut row = set.rows[0].clone();
+    row.subject = legacy.into();
+    row.right = super::model::Right::CommitSign;
+    set.rows.push(row);
+    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+        .await
+        .unwrap();
+    let revoke =
+        |subject: &str| json!({ "subject": subject, "right": "git.commit.sign", "resource": res });
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "right/revoke",
+        revoke("did:web:other.example#k"),
+    )
+    .await;
+    assert_eq!(code(&out), "malformedRequest");
+    ok(&send(&f.vtc.state, &f.bob, "right/revoke", revoke(legacy)).await);
+    // Still refused for a grant.
+    let out = grant(&f, &f.bob, legacy, "git.commit.sign", &res).await;
+    assert_eq!(code(&out), "malformedRequest");
+}
+
+/// A reseat's audit evidence says how each earlier admin record ended —
+/// revoked and by whom and why, or on departure — and the subject's own
+/// lapsed record is replaced, not kept beside the new one.
+#[tokio::test]
+async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
+    let f = fixture().await;
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, crate::acl::VtcRole::Admin).await;
+    let ns = bind_manual(&f).await;
+    // Carol is a co-admin, then revoked by the admin with a reason.
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.ns.admin",
+        "github.com/acme",
+    )
+    .await);
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "right/revoke",
+        json!({ "subject": f.carol.did, "right": "git.ns.admin", "resource": "github.com/acme", "reason": "stepped down" }),
+    )
+    .await);
+    // Bob holds an admin record that has lapsed, unswept.
+    let scope = Scope::Namespace(ns.clone());
+    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+        .await
+        .unwrap();
+    let mut lapsed = set.rows[0].clone();
+    lapsed.subject = f.bob.did.clone();
+    lapsed.expires_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
+    set.rows.push(lapsed);
+    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+        .await
+        .unwrap();
+    // The last admin leaves.
+    crate::acl::delete_acl_entry(&f.vtc.state.acl_ks, &f.admin.did)
+        .await
+        .unwrap();
+    super::lifecycle::sweep_departures(&f.vtc.state)
+        .await
+        .unwrap();
+
+    ok(&send(
+        &f.vtc.state,
+        &dana,
+        "namespace/reseat",
+        json!({ "namespace": ns, "subject": f.bob.did, "statement": "the only admin left" }),
+    )
+    .await);
+
+    let rows = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+        .await
+        .unwrap()
+        .rows;
+    let bobs: Vec<_> = rows
+        .iter()
+        .filter(|r| r.subject == f.bob.did && r.right == super::model::Right::NsAdmin)
+        .collect();
+    assert_eq!(bobs.len(), 1, "{bobs:?}");
+    assert_eq!(bobs[0].expires_at, None);
+
+    let mut detail = None;
+    for (_, v) in f
+        .vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+    {
+        let env: vti_common::audit::AuditEnvelope = serde_json::from_slice(&v).unwrap();
+        if let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event
+            && d.action == "gitNs.namespace.reseated"
+        {
+            detail = d.detail;
+        }
+    }
+    let detail: Value = serde_json::from_str(&detail.expect("a reseat audit row")).unwrap();
+    let evidence = detail["headlessEvidence"].as_array().unwrap();
+    assert!(
+        evidence.iter().any(|e| e["ended"] == "revoked"
+            && e["by"] == json!(f.admin.did)
+            && e["why"] == "stepped down"),
+        "{evidence:?}"
+    );
+    assert!(
+        evidence.iter().any(|e| e["ended"] == "departed"),
+        "{evidence:?}"
+    );
+    assert!(
+        evidence.iter().any(|e| e["ended"] == "lapsed"),
+        "{evidence:?}"
+    );
+    assert!(!detail.to_string().contains(&f.carol.did));
+}
