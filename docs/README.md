@@ -95,6 +95,9 @@ How to operate, deploy, and integrate against a VTA.
 - **[Hardened configuration](02-vta/non-interactive-setup.md#hardened-configuration)** —
   enable storage encryption and sealed JWT key management for
   self-hosted (non-TEE) deployments (`[hardened] enabled = true`).
+- **[Running under launchd (macOS)](02-vta/macos-launchd.md)** — run a
+  VTA as a LaunchAgent that starts at login and restarts after a crash;
+  why not a LaunchDaemon (Keychain), absolute paths, logs, upgrades.
 - **[Rate limiting](02-vta/rate-limiting.md)** — the per-IP limits on
   unauthenticated routes (auth vs `did.jsonl`), `trust_xff_cidrs` and the
   proxy trap, tuning at runtime with `pnm config update`, and telling a
