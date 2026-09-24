@@ -31,6 +31,10 @@ use crate::cli::{
 };
 use clap::Parser;
 
+/// This process's log output; see the `tracing_subscriber` setup in `main`.
+pub(crate) static LOGS: std::sync::LazyLock<affinidi_messaging_mediator_tui::LogCapture> =
+    std::sync::LazyLock::new(affinidi_messaging_mediator_tui::LogCapture::new);
+
 #[tokio::main]
 async fn main() {
     // Pin rustls to the aws-lc-rs backend before any TLS object is built;
@@ -77,11 +81,14 @@ async fn main() {
     } else {
         tracing_subscriber::EnvFilter::from_default_env()
     };
+    // Through the console's capture: stderr as before, except while
+    // `pnm messaging console` has the terminal, when log lines would draw
+    // over its screen and are kept for its log view instead.
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
-        .with_writer(std::io::stderr)
+        .with_writer(LOGS.make_writer())
         .init();
 
     // PNM's session — the admin DID and its private key — lives in the OS
