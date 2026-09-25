@@ -2307,8 +2307,10 @@ pub(crate) enum AclCommands {
     /// Create an ACL entry.
     ///
     /// Not idempotent — errors with 409 Conflict if an entry already exists
-    /// for the given DID. To change a role or context list on an existing
-    /// entry use `pnm acl update`. To revoke access use `pnm acl delete`.
+    /// for the given DID. To change an existing entry's role use `pnm acl
+    /// change-role`, which carries the compare-and-swap `pnm acl update`
+    /// refuses to do without. For its context list and everything else, use
+    /// `pnm acl update`. To revoke access use `pnm acl delete`.
     Create {
         /// DID to grant access to
         #[arg(long)]
@@ -2379,7 +2381,6 @@ pub(crate) enum AclCommands {
         #[arg(long, value_delimiter = ',')]
         capabilities: Option<Vec<String>>,
     },
-    /// Update an ACL entry
     /// Change a subject's role, guarded by a compare-and-swap.
     ///
     /// `--from` is the role you believe they hold. If another admin has
@@ -2399,6 +2400,11 @@ pub(crate) enum AclCommands {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Change an ACL entry's label, contexts, expiry or approve-authority.
+    ///
+    /// Not the role — that needs `pnm acl change-role` and its
+    /// compare-and-swap. Passing `--role` here is refused rather than
+    /// silently ignored.
     Update {
         /// DID of the entry to update
         did: String,
