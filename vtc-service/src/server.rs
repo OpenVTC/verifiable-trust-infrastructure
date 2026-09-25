@@ -128,6 +128,9 @@ pub struct AppState {
     /// refused signed document, and the one-shot authorization a verified
     /// gesture leaves for its re-send. See [`crate::acl::bound_step_up`].
     pub step_up_marks_ks: KeyspaceHandle,
+    /// Members' step-up passkeys — see `crate::step_up_passkey`. Never read
+    /// by login or session step-up.
+    pub step_up_passkeys_ks: KeyspaceHandle,
     /// Unrestricted-admin consent requests and grants (VTI-APV-014). See
     /// `crate::acl::admin_consent`.
     pub task_consent_ks: KeyspaceHandle,
@@ -511,6 +514,7 @@ pub async fn run(
     let accepted_ids_ks = store.keyspace(keyspaces::ACCEPTED_IDS)?;
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
     let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
+    let step_up_passkeys_ks = store.keyspace(keyspaces::STEP_UP_PASSKEYS)?;
     let task_consent_ks = store.keyspace(keyspaces::TASK_CONSENT)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
@@ -821,6 +825,7 @@ pub async fn run(
         accepted_ids_ks: accepted_ids_ks.clone(),
         console_keys_ks,
         step_up_marks_ks,
+        step_up_passkeys_ks,
         task_consent_ks,
         backup_bundles_ks,
         schemas_ks,

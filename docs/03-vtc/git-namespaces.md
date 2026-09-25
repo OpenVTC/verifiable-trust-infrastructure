@@ -281,7 +281,8 @@ cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
   `<vtc>/admin/step-up#request=…` link) and the identical document is sent
   again. Because a real step-up applies, `[git_ns] elevated_requires_admin`
   does not gate it: a namespace admin who is not a community administrator
-  can break the glass, provided they have a passkey registered.
+  can break the glass, provided they have a passkey this community knows — a
+  console passkey, or a **step-up passkey** (below).
 - **Immediate, no expiry**: the right takes effect at once and lasts until
   another administrator acts on it.
 - **Flagged**: the record carries `breakGlass {by, at, justification,
@@ -313,6 +314,56 @@ it: `break_glass` (`"enabled"` by default, or `"disabled"`),
 revocable meanwhile), `break_glass_min_justification_chars`, and any deny
 decision on `input.action == "right.breakGlass"` (or `"right.ratify"`).
 
+
+### Step-up passkeys for members
+
+A member who is no console user acts only through signed documents and has no
+passkey, so without one they could never answer a break-glass step-up. They
+enrol a **step-up passkey** (`auth/passkey/enroll/invite/0.2`, `purpose:
+stepUp`; `vtc-service/src/step_up_passkey.rs`):
+
+1. A community administrator opens the member's page (Members → the member →
+   *Step-up passkeys*) and clicks *Invite…*. That steps the administrator's
+   own session up first (`POST /v1/admin/step-up-passkeys/invites`). The console
+   shows a link and, separately, a **claim code**. It shows the code once, and
+   the code is never part of the link.
+2. The administrator sends the link over one channel and the code over
+   another.
+3. The member opens `<vtc>/admin/enrol-step-up#token=…` (no sign-in), types the
+   code, checks the DID shown is theirs, and creates the passkey
+   (`/v1/step-up-passkeys/redeem/{start,finish}`,
+   `auth/passkey/enroll/redeem/*/0.1`).
+4. When `cnm` later prints a `<vtc>/admin/step-up#request=…` link, the member
+   answers it with that passkey. Without a session the page opens standalone
+   and sends the answer unsigned: the WebAuthn assertion is the gate.
+
+The rules:
+
+- **Step-up only, by construction.** The credentials live in their own
+  keyspace (`step_up_passkeys`), which login and session step-up never read.
+  The only place they count is `acl::bound_step_up`, for a step-up issued to
+  their own member. They confer no role and no scope.
+- **Anchored outside the member's key.** A stolen signing key alone cannot
+  enrol one; that takes the administrator's invite and its claim code.
+- **Single use.** An invite redeems once and lasts one hour by default (at most
+  24 h).
+- **Five wrong codes and the invite is void.** A wrong token and a wrong code
+  get the same refusal. The redemption routes sit on the rate-limited
+  unauthenticated chain.
+- **A second one needs the first.** Once a member holds a step-up passkey, a
+  further one also needs a user-verified gesture from it.
+- **No self-invites.** An administrator does not invite themselves: they enrol
+  their own passkeys under Settings → Passkeys.
+- **Revocation.** A community administrator revokes one from the member's
+  page, verifying with their own passkey
+  (`/v1/admin/step-up-passkeys/revoke/{start,finish}`,
+  `auth/passkey/revoke/*/0.2`). A member may be left with none. A revoked
+  passkey cannot answer a step-up that was already pending.
+- **Audit.** Every step is an `AuditEvent::StepUpPasskeyChanged` row (`invited`,
+  `registered`, `inviteInvalidated`, `revoked`). The token and code are never
+  recorded.
+- **Backup.** Like `passkey`, `step_up_passkeys` is excluded: after a restore,
+  members enrol again through a fresh invite.
 ## Administrator surface
 
 Read-only, admin session. `view`, `rights`, `rights/issued-by-departed`,

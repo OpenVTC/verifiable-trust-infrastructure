@@ -380,6 +380,7 @@ import {
   loadConsoleKey,
   signTrustTaskDocument,
   type SignedTrustTaskDocument,
+  type UnsignedTrustTaskDocument,
 } from "./console-key";
 
 /**
@@ -505,6 +506,31 @@ async function signTrustTask(
  * `trust-task-error`'s `code` and `details`.
  */
 export async function postSignedDocument<T>(signed: SignedTrustTaskDocument): Promise<T> {
+  return postDocument<T>(signed);
+}
+
+/**
+ * Post `payload` as an **unsigned** Trust Task document issued as `issuer`.
+ *
+ * For exactly one case: answering an operation-bound step-up with a passkey
+ * (`auth/step-up/approve-response` with `evidence.kind = webauthn`) from a
+ * browser that holds no key this community knows — a member who is no console
+ * user, answering with a step-up passkey. The WebAuthn assertion is the gate;
+ * the VTC reads nothing from the document's issuer (approve-response 0.4 makes
+ * the proof optional for webauthn evidence).
+ */
+export async function postUnsignedTrustTask<T>(
+  typeUri: string,
+  payload: unknown,
+  issuer: string,
+): Promise<T> {
+  const recipient = await communityDid();
+  return postDocument<T>(buildTrustTaskDocument({ typeUri, payload, issuer, recipient }));
+}
+
+async function postDocument<T>(
+  signed: UnsignedTrustTaskDocument | SignedTrustTaskDocument,
+): Promise<T> {
   const headers = new Headers({ "Content-Type": "application/json" });
   const csrf = csrfTokenFromCookie();
   if (csrf) headers.set("X-CSRF-Token", csrf);
@@ -531,7 +557,8 @@ export async function postSignedDocument<T>(signed: SignedTrustTaskDocument): Pr
     };
     if (typeof err.code === "string") apiError.code = err.code;
     if (err.details && typeof err.details === "object") apiError.details = err.details;
-    apiError.document = signed;
+    // Only a signed document is worth re-sending unchanged.
+    if ("proof" in signed) apiError.document = signed as SignedTrustTaskDocument;
     throw apiError;
   }
 

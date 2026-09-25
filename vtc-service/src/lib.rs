@@ -54,6 +54,7 @@ pub mod server;
 pub mod setup;
 pub mod status;
 pub mod status_list;
+pub mod step_up_passkey;
 pub mod store;
 pub mod supervisor;
 pub mod sync_jobs_cli;

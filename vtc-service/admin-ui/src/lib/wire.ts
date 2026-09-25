@@ -300,6 +300,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/step-up-passkeys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["stepUpPasskeyList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/step-up-passkeys/invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stepUpPasskeyInvite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/step-up-passkeys/revoke/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stepUpPasskeyRevokeFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/step-up-passkeys/revoke/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stepUpPasskeyRevokeStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/audit": {
         parameters: {
             query?: never;
@@ -2131,6 +2195,38 @@ export interface paths {
         get: operations["statusListShow"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/step-up-passkeys/redeem/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stepUpPasskeyRedeemFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/step-up-passkeys/redeem/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stepUpPasskeyRedeemStart"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5871,6 +5967,118 @@ export interface components {
             field: string;
             truthy?: boolean | null;
         };
+        /** @description What the console lists about a step-up passkey. */
+        StepUpPasskeyCredential: {
+            /** @description Credential id, hex. */
+            credentialId: string;
+            deviceLabel?: string | null;
+            /** @description The administrator whose invite it came from. */
+            invitedBy: string;
+            /**
+             * Format: date-time
+             * @description The last step-up it answered.
+             */
+            lastUsedAt?: string | null;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The member it answers step-ups for. */
+            subject: string;
+        };
+        /**
+         * @description An issued invite, returned once. The token rides in `url`; the claim code
+         *     is returned only here and is never in `url`.
+         */
+        StepUpPasskeyInvite: {
+            claimCode: string;
+            /** Format: date-time */
+            expiresAt: string;
+            invite: components["schemas"]["StepUpPasskeyInviteLink"];
+            /** @description Always `stepUp`: this VTC issues no session credential by invite. */
+            purpose: string;
+            subject: string;
+        };
+        StepUpPasskeyInviteLink: {
+            token: string;
+            url: string;
+        };
+        StepUpPasskeyInviteRequest: {
+            deviceLabel?: string | null;
+            /**
+             * @description `stepUp` — the only purpose this VTC issues by invite. Absent means
+             *     `session` in the specification, which this VTC refuses.
+             */
+            purpose: string;
+            /** @description The member invited to enrol a step-up passkey. */
+            subject: string;
+            /**
+             * Format: int64
+             * @description Seconds the invite stays redeemable (default 3600, at most 86400).
+             */
+            ttl?: number | null;
+        };
+        StepUpPasskeyList: {
+            credentials: components["schemas"]["StepUpPasskeyCredential"][];
+        };
+        StepUpPasskeyRedeemFinishRequest: {
+            credential: Record<string, never>;
+            deviceLabel?: string | null;
+            enrollmentId: string;
+            /** @description Required exactly when the start returned `uvOptions`. */
+            uvCredential?: Record<string, never> | null;
+        };
+        StepUpPasskeyRedeemStartRequest: {
+            claimCode: string;
+            token: string;
+        };
+        StepUpPasskeyRedeemStarted: {
+            deviceLabel?: string | null;
+            enrollmentId: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** @description For `navigator.credentials.create({ publicKey })`. */
+            options: Record<string, never>;
+            purpose: string;
+            subject: string;
+            /**
+             * @description For `navigator.credentials.get({ publicKey })`, over the member's
+             *     existing step-up passkeys — present exactly when they hold one.
+             */
+            uvOptions?: Record<string, never> | null;
+        };
+        StepUpPasskeyRedeemed: {
+            credentialId: string;
+            deviceLabel?: string | null;
+            purpose: string;
+            /** Format: date-time */
+            registeredAt: string;
+            subject: string;
+        };
+        StepUpPasskeyRevokeFinishRequest: {
+            revocationId: string;
+            uvCredential: Record<string, never>;
+        };
+        StepUpPasskeyRevokeStartRequest: {
+            credentialId: string;
+            /** @description The member whose step-up passkey it is. */
+            subject: string;
+        };
+        StepUpPasskeyRevokeStarted: {
+            revocationId: string;
+            /** @description Over the **administrator's own** passkeys: the person acting verifies. */
+            uvOptions: Record<string, never>;
+        };
+        StepUpPasskeyRevoked: {
+            credentialId: string;
+            purpose: string;
+            /**
+             * @description The member's step-up passkeys left. May be zero: losing one costs a
+             *     gesture, not an account.
+             */
+            remaining: number;
+            /** Format: date-time */
+            revokedAt: string;
+            subject: string;
+        };
         /**
          * @description One answer an applicant gave to the manifest's `requestedAttributes`: a
          *     claim type and its value, as they sent it.
@@ -7734,6 +7942,157 @@ export interface operations {
                 content?: never;
             };
             /** @description credential_id not registered for this admin */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stepUpPasskeyList: {
+        parameters: {
+            query?: {
+                /** @description Only this member's step-up passkeys. */
+                subject?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Members' step-up passkeys */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepUpPasskeyList"];
+                };
+            };
+            /** @description Not a community administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stepUpPasskeyInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepUpPasskeyInviteRequest"];
+            };
+        };
+        responses: {
+            /** @description The invite: the URL and, separately, the claim code — returned only here */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepUpPasskeyInvite"];
+                };
+            };
+            /** @description Not a community administrator, a self-invite, or the session is not stepped up */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The subject is not a current member */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stepUpPasskeyRevokeFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepUpPasskeyRevokeFinishRequest"];
+            };
+        };
+        responses: {
+            /** @description Revoked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepUpPasskeyRevoked"];
+                };
+            };
+            /** @description Your passkey did not verify */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No revocation in progress with this id */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The revocation lapsed */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stepUpPasskeyRevokeStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepUpPasskeyRevokeStartRequest"];
+            };
+        };
+        responses: {
+            /** @description A user-verification ceremony over your own passkeys */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepUpPasskeyRevokeStarted"];
+                };
+            };
+            /** @description Not a community administrator, or no passkey of your own */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such step-up passkey for that member */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -11842,6 +12201,89 @@ export interface operations {
             };
             /** @description Credential signer or state not ready */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stepUpPasskeyRedeemFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepUpPasskeyRedeemFinishRequest"];
+            };
+        };
+        responses: {
+            /** @description The step-up passkey is registered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepUpPasskeyRedeemed"];
+                };
+            };
+            /** @description An assertion or the attestation did not verify */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No redemption in progress, or its invite is gone */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The redemption lapsed */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stepUpPasskeyRedeemStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepUpPasskeyRedeemStartRequest"];
+            };
+        };
+        responses: {
+            /** @description The registration the invite authorises */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepUpPasskeyRedeemStarted"];
+                };
+            };
+            /** @description The invite cannot be redeemed with that code */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many wrong codes: the invite is invalidated */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -28,7 +28,7 @@
 // step 2 here, and `cnm` then re-sends its document. The request travels in
 // the fragment, which browsers never send to a server.
 
-import { postSignedTrustTask } from "./api";
+import { postSignedTrustTask, postUnsignedTrustTask, SigningUnavailableError } from "./api";
 import {
   base64urlToBuffer,
   bufferToBase64url,
@@ -154,7 +154,16 @@ export async function answerStepUp(
     evidence: { kind: "webauthn", assertion: serializeAssertion(credential) },
   };
   if (req.sessionId) payload.sessionId = req.sessionId;
-  const ack = await postSignedTrustTask<ApproveAck>(APPROVE_RESPONSE_URI, payload);
+  // A console user's browser signs with its console key. A member who is no
+  // console user answers with a step-up passkey and has no key here: the
+  // assertion is the gate, so the answer goes unsigned.
+  let ack: ApproveAck;
+  try {
+    ack = await postSignedTrustTask<ApproveAck>(APPROVE_RESPONSE_URI, payload);
+  } catch (e) {
+    if (!(e instanceof SigningUnavailableError)) throw e;
+    ack = await postUnsignedTrustTask<ApproveAck>(APPROVE_RESPONSE_URI, payload, req.subject);
+  }
   if (ack.status !== "recorded") {
     throw new Error(
       ack.reason

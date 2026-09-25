@@ -934,9 +934,10 @@ async fn send_with_step_up(
                 let bound = terminal_safe(req["boundTo"].as_str().unwrap_or_default());
                 eprintln!(
                     "{BOLD}This needs a passkey gesture bound to this one request.{RESET}\n  \
-                     {reason}\n  bound to: {bound}\nOpen this in the admin console, where your \
-                     passkey is registered, and confirm:\n  {}\nThen press Enter to send the \
-                     same request again (within five minutes).",
+                     {reason}\n  bound to: {bound}\nOpen this in a browser and confirm with \
+                     your passkey — a console passkey, or the step-up passkey a community \
+                     administrator invited you to enrol (no sign-in needed):\n  {}\nThen press \
+                     Enter to send the same request again (within five minutes).",
                     step_up_url(base, &req)
                 );
                 let mut line = String::new();

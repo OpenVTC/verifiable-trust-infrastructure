@@ -207,6 +207,18 @@ pub enum AuditEvent {
     /// row follows under the same actor when the document is re-sent.
     OperationStepUpRecorded(OperationStepUpData),
 
+    /// A step in the life of a member's **step-up passkey**
+    /// (`auth/passkey/enroll/invite/0.2`, `purpose: stepUp`): an administrator
+    /// invited the member to enrol one, the member redeemed the invite, an
+    /// invite was invalidated after too many wrong claim codes, or the
+    /// credential was revoked. A step-up passkey never opens a session; it
+    /// only answers operation-bound step-ups of its own subject.
+    ///
+    /// The actor is the administrator for `invited` and `revoked`, the member
+    /// for `registered`, and the member the invite named for
+    /// `inviteInvalidated`. The invite token and claim code are never recorded.
+    StepUpPasskeyChanged(StepUpPasskeyData),
+
     /// A step of the second-party consent that unrestricted admin authority
     /// needs (VTI-APV-014): asked for, approved or declined by another admin,
     /// granted once enough have approved, or spent by the operation it names.
@@ -683,6 +695,7 @@ impl AuditEvent {
             Self::AdminPromoted(..) => "AdminPromoted",
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
+            Self::StepUpPasskeyChanged(..) => "StepUpPasskeyChanged",
             Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
@@ -1307,6 +1320,25 @@ pub struct OperationStepUpData {
     pub credential_id: String,
     /// When the unspent authorization lapses.
     pub expires_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::StepUpPasskeyChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUpPasskeyData {
+    /// `invited`, `registered`, `inviteInvalidated` or `revoked`.
+    pub stage: String,
+    /// The member whose step-up passkey it is.
+    pub subject: String,
+    /// The administrator who issued the invite the credential came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invited_by: Option<String>,
+    /// Credential id (hex), once there is a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+    /// When an issued invite lapses unredeemed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// Payload for [`AuditEvent::TaskConsentRecorded`].
