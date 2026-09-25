@@ -186,8 +186,16 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   `via: "drift.adopt"`, so a community can refuse every adoption and still
   grant. The item must still be outstanding as it was selected when the right
   is written; a forge that changed meanwhile adopts nothing. Only a role item (`roleAdded`, or a `roleChanged` that
-  raises the member above what they hold) held by a forge account linked to a
-  current member, at a role a right projects to, can be adopted. The inverse
+  raises the member above their *projected* right — the highest right in their
+  own name that reaches the repository; `git.ns.admin` projects to no forge
+  role, so a namespace admin holding `maintain` there can have a forge `admin`
+  adopted as `own`) held by a forge account linked to a current member, at a
+  role a right projects to, can be adopted. Nobody adopts an elevated right
+  (`git.repo.own`) for themselves — the member the item names is compared with
+  the resolver after console-key delegation, and a match is refused
+  `git-ns:selfGrantNotAllowed`: another owner adopts it, or the resolver uses
+  `git-ns/right/break-glass`. Adopting `maintain` or `commit.sign` for oneself
+  is allowed. The inverse
   of the bridge's default role map is used: `admin` is `git.repo.own`,
   `maintain` is `git.repo.maintain`, and on a personal account collaborator
   `write` is `git.repo.maintain`; `write` on an organisation, `triage` and

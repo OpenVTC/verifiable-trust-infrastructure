@@ -89,6 +89,14 @@ impl Right {
     pub fn is_namespace_right(self) -> bool {
         matches!(self, Right::NsAdmin | Right::RepoCreate)
     }
+
+    /// An *elevated* right (`git-ns/_shared/0.4` `ElevatedRight`): one that
+    /// carries authority over other people's rights. Separation of duties
+    /// (fixed rule 7 of `git-ns/right/grant/0.3`) forbids granting one to
+    /// oneself; the explicit self-grant is `git-ns/right/break-glass/0.1`.
+    pub fn is_elevated(self) -> bool {
+        matches!(self, Right::NsAdmin | Right::RepoCreate | Right::RepoOwn)
+    }
 }
 
 impl std::fmt::Display for Right {

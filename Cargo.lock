@@ -10323,7 +10323,7 @@ dependencies = [
 [[package]]
 name = "trust-tasks-rs"
 version = "0.22.7"
-source = "git+https://github.com/trustoverip/dtgwg-trust-tasks-tf?branch=feat%2Fgit-ns-drift-resolve-recipient#a59f183dfd6ee38e156e5dda56f4ed87f59a1ea4"
+source = "git+https://github.com/trustoverip/dtgwg-trust-tasks-tf?branch=feat%2Fgit-ns-drift-resolve-recipient#1d31cd707aaba63f729e9dbaed8c847ab4f69fcb"
 dependencies = [
  "async-trait",
  "chrono",

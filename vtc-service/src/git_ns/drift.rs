@@ -50,6 +50,7 @@ pub const ACCOUNT_NOT_LINKED: &str = resolve::error_codes::ACCOUNT_NOT_LINKED.co
 pub const NO_MATCHING_RIGHT: &str = resolve::error_codes::NO_MATCHING_RIGHT.code;
 pub const NOT_REVERTIBLE: &str = resolve::error_codes::NOT_REVERTIBLE.code;
 pub const SUBJECT_CHANGED: &str = resolve::error_codes::SUBJECT_CHANGED.code;
+pub const SELF_GRANT_NOT_ALLOWED: &str = resolve::error_codes::SELF_GRANT_NOT_ALLOWED.code;
 
 const ROLE_TYPES: [&str; 3] = ["roleAdded", "roleRemoved", "roleChanged"];
 
@@ -368,7 +369,7 @@ async fn adopt(
             format!("{forge} account {id} is not linked to a current member"),
         ));
     }
-    // Step 3.
+    // Step 4.
     let observed = item.get("observed").and_then(Value::as_str).unwrap_or("");
     let Some(right) = projected_right(d.ns.kind, observed) else {
         return Err(declared(
@@ -380,27 +381,46 @@ async fn adopt(
             ),
         ));
     };
-    // Step 4 — a forge-side lowering is accepted by revoking, not adopting.
+    // Step 5 (0.3) — a forge-side lowering is accepted by revoking, not
+    // adopting. Compared with the member's *projected* right — what the
+    // forge is meant to show for them, from rights in their own name — not
+    // their effective rights: a namespace admin projects to no forge role, so
+    // one who holds `maintain` here can adopt a forge `admin` as `own`.
     if d.selector.kind == "roleChanged" {
         let snap = Snapshot::load(&state.git_ns.ks).await?;
-        let held = rules::effective_on(&snap, &member, &d.resource, now())
-            .into_iter()
-            .filter(|r| matches!(r, Right::RepoOwn | Right::RepoMaintain | Right::CommitSign))
+        let held = bridge::projected_repo_right(&snap, &d.ns, &d.repo, &member, now())
             .map(Right::rank)
-            .max()
             .unwrap_or(0);
         if right.rank() <= held {
             return Err(declared(
                 NOT_ADOPTABLE,
                 format!(
-                    "`{observed}` is no higher than what the member already holds on {}; accept \
-                     a lowering with git-ns/right/revoke",
+                    "`{observed}` projects no higher than the member is already projected at on \
+                     {}; accept a lowering with git-ns/right/revoke",
                     d.resource
                 ),
             ));
         }
     }
-    // Step 5 — exactly as the resolver's own grant.
+    // Step 6 (0.3) — separation of duties: nobody adopts an elevated right
+    // for themselves. `actor.did` is the DID the signer was resolved to,
+    // after any console-key delegation (`tasks::acting_as`), so a
+    // console key cannot adopt for its admin what the admin could not adopt
+    // themselves. Fixed: it runs before policy, which cannot waive it.
+    if member == actor.did && right.is_elevated() {
+        return Err(declared(
+            SELF_GRANT_NOT_ALLOWED,
+            format!(
+                "adopting this role would record {right} on {} for you, and {right} is an \
+                 elevated right you cannot grant yourself: ask another owner or namespace admin \
+                 to adopt it, or, if nobody else can, break the glass with \
+                 git-ns/right/break-glass, which is audited and shown to every administrator \
+                 until another one ratifies or revokes it",
+                d.resource
+            ),
+        ));
+    }
+    // Step 7 — exactly as the resolver's own grant.
     let mut payload = json!({
         "subject": member,
         "right": right.as_str(),
@@ -446,7 +466,7 @@ async fn adopt(
         }),
     )
     .await?;
-    // Step 6 — the complete desired roles, now with the member at the right.
+    // Step 8 — the complete desired roles, now with the member at the right.
     force_role_projection(state, &d.repo.id).await?;
     Ok(serde_json::to_value(granted.right).map_err(vti_common::error::AppError::from)?)
 }

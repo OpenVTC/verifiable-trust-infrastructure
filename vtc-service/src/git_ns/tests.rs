@@ -3833,6 +3833,142 @@ async fn drift_resolve_adopts_only_for_the_member_it_names() {
     assert_eq!(body["right"]["subject"], json!(f.bob.did));
 }
 
+/// drift/resolve 0.3, adopt step 5: a `roleChanged` adoption is compared
+/// with the member's *projected* right (their own-name rights, as the
+/// projector lists them), not their effective one. A namespace admin
+/// projects to no forge role, so one who holds `maintain` on a repository can
+/// have the forge `admin` role they were given there adopted — by someone
+/// else (step 6: nobody adopts `own` for themselves).
+#[tokio::test]
+async fn a_namespace_admin_adopts_a_raise_over_their_own_name_right() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    // The binder is the namespace's admin; give them `maintain` in their own
+    // name, and a linked account.
+    ok(&grant(&f, &f.bob, &f.admin.did, "git.repo.maintain", RES).await);
+    link_account(&f, &ns, &f.admin, "5550077", "admin-a").await;
+    let admin_acct = json!({ "forge": "github.com", "id": "5550077", "login": "admin-a" });
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleChanged", "resource": RES, "account": admin_acct.clone(),
+                 "expected": "maintain", "observed": "admin" }]),
+    )
+    .await;
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap().clone();
+    let ns_rec = snap.namespace(&ns).unwrap().clone();
+    // Effective: own (implied by ns.admin). Projected: maintain.
+    assert!(
+        super::rules::effective_on(
+            &snap,
+            &f.admin.did,
+            &repo.resource().unwrap(),
+            super::ops::now()
+        )
+        .contains(&super::model::Right::RepoOwn)
+    );
+    assert_eq!(
+        super::bridge::projected_repo_right(&snap, &ns_rec, &repo, &f.admin.did, super::ops::now()),
+        Some(super::model::Right::RepoMaintain)
+    );
+    let sel = json!({ "type": "roleChanged", "account": admin_acct, "observed": "admin" });
+    // Another community administrator who is a namespace admin adopts it.
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    ok(&grant(&f, &f.admin, &dana.did, "git.ns.admin", "github.com/acme").await);
+    let body = ok(&resolve_naming(&f, &dana, sel, "adopt", Some(&f.admin.did)).await);
+    assert_eq!(body["right"]["right"], "git.repo.own");
+    assert_eq!(body["right"]["subject"], json!(f.admin.did));
+    assert_eq!(body["right"]["grantedBy"], json!(dana.did));
+}
+
+/// drift/resolve 0.3, adopt step 6 — separation of duties: an adoption that
+/// would record `git.repo.own` for the resolver themselves is refused
+/// `git-ns:selfGrantNotAllowed`, pointing at break-glass, and records
+/// nothing — whether they sign themselves or through a console key acting
+/// for them. Adopting a lower right for oneself stays allowed.
+#[tokio::test]
+async fn an_adoption_never_grants_the_resolver_an_elevated_right() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&grant(&f, &f.bob, &f.admin.did, "git.repo.maintain", RES).await);
+    link_account(&f, &ns, &f.admin, "5550077", "admin-a").await;
+    let admin_acct = json!({ "forge": "github.com", "id": "5550077", "login": "admin-a" });
+    link_account(&f, &ns, &f.bob, "5550088", "bob-b").await;
+    let bob_acct = json!({ "forge": "github.com", "id": "5550088", "login": "bob-b" });
+    report_drift(
+        &f,
+        &ns,
+        json!([
+            { "type": "roleChanged", "resource": RES, "account": admin_acct.clone(),
+              "expected": "maintain", "observed": "admin" },
+            { "type": "roleAdded", "resource": RES, "account": bob_acct.clone(), "observed": "maintain" }
+        ]),
+    )
+    .await;
+    let sel = json!({ "type": "roleChanged", "account": admin_acct, "observed": "admin" });
+    let own_rows = |snap: &Snapshot| {
+        let repo = snap.repo_at(RES).unwrap();
+        snap.rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .filter(|r| r.subject == f.admin.did && r.right == super::model::Right::RepoOwn)
+            .count()
+    };
+
+    // The admin, for themselves: refused, before policy, naming break-glass.
+    let out = resolve_naming(&f, &f.admin, sel.clone(), "adopt", Some(&f.admin.did)).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(String::from_utf8_lossy(&out.body).contains("git-ns/right/break-glass"));
+
+    // A console key acting for the admin is the admin: refused the same.
+    let console = Party::new();
+    crate::acl::console_key::enrol_delegation(
+        &f.vtc.state.console_keys_ks,
+        &f.vtc.state.acl_ks,
+        &console.did,
+        &f.admin.did,
+        Some("browser".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    let out = resolve_naming(&f, &console, sel, "adopt", Some(&f.admin.did)).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert_eq!(own_rows(&snap), 0);
+    assert_eq!(snap.repo_at(RES).unwrap().sync.drift.len(), 2);
+
+    // `maintain` is not elevated: Bob, an owner, adopts it for himself.
+    let body = ok(&resolve_naming(
+        &f,
+        &f.bob,
+        json!({ "type": "roleAdded", "account": bob_acct, "observed": "maintain" }),
+        "adopt",
+        Some(&f.bob.did),
+    )
+    .await);
+    assert_eq!(body["right"]["right"], "git.repo.maintain");
+    assert_eq!(body["right"]["subject"], json!(f.bob.did));
+}
+
+/// A namespace admin with nothing in their own name has no projected right.
+#[tokio::test]
+async fn a_namespace_admin_alone_has_no_projected_right() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap().clone();
+    let ns_rec = snap.namespace(&ns).unwrap().clone();
+    assert_eq!(
+        super::bridge::projected_repo_right(&snap, &ns_rec, &repo, &f.admin.did, super::ops::now()),
+        None
+    );
+    // The repository's explicit owner is projected at own.
+    assert_eq!(
+        super::bridge::projected_repo_right(&snap, &ns_rec, &repo, &f.bob.did, super::ops::now()),
+        Some(super::model::Right::RepoOwn)
+    );
+}
+
 /// The link check is repeated under the lock the grant is written under.
 #[tokio::test]
 async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
