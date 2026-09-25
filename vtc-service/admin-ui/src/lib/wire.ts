@@ -7425,7 +7425,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not an unrestricted (community-wide) admin */
             403: {
                 headers: {
                     [name: string]: unknown;
