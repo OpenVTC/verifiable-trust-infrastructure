@@ -226,39 +226,22 @@ pub(super) async fn handle_set_exportability(
 
 /// Handler for `keys/export-secret/0.1`.
 ///
-/// `KeyExport` **in the key's own scope**: the capability is the gate and
-/// `get_key_secret`'s own `require_context` is the scope, so a holder in one
-/// context reaches no other context's keys. The URI this replaces
+/// `KeyExport` **in the key's own scope** — both checked, with the internal-key
+/// and non-exportable refusals and the durable audit row, inside
+/// `operations::keys::get_key_secret`. The URI this replaces
 /// (`vta/seeds/export-mnemonic/1.0`) demanded global Admin for the same act,
 /// which handed a caller wanting one key authority over everything else.
 ///
-/// The two refusals the spec makes consumer requirements — an internal key is
-/// never released, and a non-exportable key is refused about the key rather
-/// than the asker — are both enforced inside `get_key_secret`, which is the one
-/// place a private key leaves. Re-checking them here would be a second set of
-/// rules to keep in step.
+/// Nothing is checked here. `GET /keys/{id}/secret` and DIDComm
+/// `get-key-secret` reach the same operation, and the capability gate used to
+/// live in this handler alone — so the other two transports released keys to
+/// an admin narrowed without `key-export`. A check that lives in one handler is
+/// a check the next transport forgets.
 pub(super) async fn handle_export_secret(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // `KeyExport`, not the admin role — VTI-VTA-003: an export "MUST be gated
-    // by a capability distinct from the capability to use the key". Only
-    // `admin` derives it, so no current admin loses anything; what changes is
-    // that an operator can now narrow it away from a particular admin, which a
-    // role floor could not express. Scope is still enforced inside
-    // `get_key_secret`, and the export is still audited there.
-    if let Err(reject) = super::helpers::require_capability(
-        state,
-        auth,
-        &doc,
-        vti_common::acl::Capability::KeyExport,
-        "keys/export-secret",
-    )
-    .await
-    {
-        return reject;
-    }
     let req: GetKeySecretBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -267,16 +250,33 @@ pub(super) async fn handle_export_secret(
         &state.keys_ks,
         &state.imported_ks,
         &state.contexts_ks,
+        &state.acl_ks,
         &state.seed_store,
         &state.audit_sink,
         auth,
         &req.key_id,
-        TRANSPORT_TRUST_TASK,
+        export_channel(),
     )
     .await
     {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// The [`operations::keys::ExportChannel`] for a key leaving over the Trust-Task
+/// spine: end-to-end over DIDComm and TSP, hop-by-hop (and so refused) over
+/// HTTPS. The channel names the binding, so each `key.secret_export` row says
+/// which transport the key left over.
+pub(super) fn export_channel() -> operations::keys::ExportChannel<'static> {
+    let channel = super::transport::audit_channel();
+    match super::transport::current() {
+        super::transport::TransportConfidentiality::EndToEnd => {
+            operations::keys::ExportChannel::EndToEnd(channel)
+        }
+        super::transport::TransportConfidentiality::HopByHop => {
+            operations::keys::ExportChannel::HopByHop(channel)
+        }
     }
 }
 
@@ -364,6 +364,7 @@ pub(super) async fn handle_derive_and_sign(
     };
     match operations::keys::derive_and_sign(
         &state.keys_ks,
+        &state.acl_ks,
         &state.seed_store,
         auth,
         &state.audit_sink,
@@ -396,6 +397,7 @@ pub(super) async fn handle_derive_and_sign_document(
     };
     match operations::keys::derive_and_sign_document(
         &state.keys_ks,
+        &state.acl_ks,
         &state.seed_store,
         auth,
         &state.audit_sink,
@@ -599,22 +601,48 @@ mod key_export_tests {
         );
     }
 
-    /// An admin passes the gate — it derives `KeyExport` — and reaches the
-    /// lookup, which is what proves the refusal above was the capability and
-    /// not some other check.
+    /// An admin passes the gate — it derives `KeyExport` — and, over an
+    /// end-to-end transport, reaches the lookup, which is what proves the
+    /// refusal above was the capability and not some other check.
     #[tokio::test]
     async fn an_admin_passes_the_key_export_gate() {
         let (state, _dir) = build_signing_test_app_state().await;
-        let out = handle_export_secret(
-            &state,
-            &claims("did:key:zOperator", Role::Admin),
-            export_doc(),
+        let out = super::super::transport::with_confidentiality(
+            super::super::transport::TransportConfidentiality::EndToEnd,
+            handle_export_secret(
+                &state,
+                &claims("did:key:zOperator", Role::Admin),
+                export_doc(),
+            ),
         )
         .await;
         assert!(
             !refused_by_the_gate(&out),
             "an admin derives KeyExport and must reach the key lookup"
         );
+    }
+
+    /// `keys/export-secret/0.1` over the HTTPS binding is refused even for an
+    /// entitled caller: TLS terminates wherever the operator terminates it, so
+    /// the key would exist in plaintext there. The refusal names the fix.
+    #[tokio::test]
+    async fn an_export_over_https_is_refused_and_says_which_transports_work() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = super::super::transport::with_binding(
+            "https",
+            super::super::transport::with_confidentiality(
+                super::super::transport::TransportConfidentiality::HopByHop,
+                handle_export_secret(
+                    &state,
+                    &claims("did:key:zOperator", Role::Admin),
+                    export_doc(),
+                ),
+            ),
+        )
+        .await;
+        assert!(refused_by_the_gate(&out));
+        let body = String::from_utf8_lossy(&out.body);
+        assert!(body.contains("DIDComm or TSP"), "{body}");
     }
 
     /// What the role floor could not express: export narrowed away from one

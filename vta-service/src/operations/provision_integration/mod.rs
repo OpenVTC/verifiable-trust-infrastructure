@@ -586,7 +586,9 @@ pub async fn provision_integration(
     // at mint time (X25519 KA isn't BIP-32 derived at its own path, so
     // `get_key_secret` can't recompute it). Skip the readback in that
     // case; the webvh branch still goes through `get_key_secret` so it
-    // exercises the same authz surface as any admin-triggered read.
+    // exercises the same authz surface as any export — `key-export`, scope,
+    // the exportability refusals and the durable `key.secret_export` row —
+    // sealed to the holder (VTI-VTA-030).
     let mut secrets = BTreeMap::new();
     // Extra signing keys, and the slot-tagged view of the pair they sit beside.
     // Both stay empty on the did:key / did:peer branches and for every v1
@@ -600,22 +602,24 @@ pub async fn provision_integration(
             &state.keys_ks,
             &state.imported_ks,
             &state.contexts_ks,
+            &state.acl_ks,
             &state.seed_store,
             &state.audit,
             auth,
             &signing_key_id,
-            "provision-integration",
+            super::keys::ExportChannel::Sealed("provision-integration"),
         )
         .await?;
         let ka_secret_resp = super::keys::get_key_secret(
             &state.keys_ks,
             &state.imported_ks,
             &state.contexts_ks,
+            &state.acl_ks,
             &state.seed_store,
             &state.audit,
             auth,
             &ka_key_id,
-            "provision-integration",
+            super::keys::ExportChannel::Sealed("provision-integration"),
         )
         .await?;
 
@@ -661,11 +665,12 @@ pub async fn provision_integration(
                 &state.keys_ks,
                 &state.imported_ks,
                 &state.contexts_ks,
+                &state.acl_ks,
                 &state.seed_store,
                 &state.audit,
                 auth,
                 key_id,
-                "provision-integration",
+                super::keys::ExportChannel::Sealed("provision-integration"),
             )
             .await?;
             additional_material.push(SlotKeyPair {

@@ -347,10 +347,16 @@ pub async fn dispatch(
         return finish(handlers::handle_revoke_key(ctx, msg, Extension(vta_state)).await);
     }
     if t == key_management::GET_KEY_SECRET {
-        return finish(handlers::handle_get_key_secret(ctx, msg, Extension(vta_state)).await);
+        return finish(
+            handlers::handle_get_key_secret(ctx, msg, Extension(vta_state), Extension(app_state))
+                .await,
+        );
     }
     if t == key_management::SIGN_REQUEST {
-        return finish(handlers::handle_sign_request(ctx, msg, Extension(vta_state)).await);
+        return finish(
+            handlers::handle_sign_request(ctx, msg, Extension(vta_state), Extension(app_state))
+                .await,
+        );
     }
 
     // ── Seed management ──────────────────────────────────────────────
