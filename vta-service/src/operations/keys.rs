@@ -1592,6 +1592,31 @@ async fn record_delegated_signature(
     .await;
 }
 
+/// Find an **active** key of context `context_id` by its multibase public key.
+///
+/// For a caller that acts on the record it finds (realign-keys rewrites and
+/// deletes it). A record of another context, an unscoped record, or a revoked
+/// one is never returned, so a public key someone copied into their own
+/// document cannot reach a record they do not own.
+pub async fn find_key_by_public_multibase_in_context(
+    keys_ks: &KeyspaceHandle,
+    public_key: &str,
+    context_id: &str,
+) -> Result<Option<KeyRecord>, AppError> {
+    for (_, value) in keys_ks.prefix_iter_raw("key:").await? {
+        let Ok(record) = serde_json::from_slice::<KeyRecord>(&value) else {
+            continue;
+        };
+        if record.public_key == public_key
+            && record.status == KeyStatus::Active
+            && record.context_id.as_deref() == Some(context_id)
+        {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
 /// Find a VTA key by its multibase public key.
 ///
 /// Used by the mdoc receive path to answer "do we hold the private half of this
