@@ -120,6 +120,11 @@ pub const CONSOLE_KEYS: &str = "console_keys";
 /// `crate::acl::bound_step_up`.
 pub const STEP_UP_MARKS: &str = "step_up_marks";
 
+/// In-flight backup bundles (#1641): `bundle:<id>` records and `chunks:<id>`
+/// manifests for the chunked `backup/*` transfer, whose bytes are staged under
+/// `<data_dir>/backups`. See `vti_common::backup_transfer`.
+pub const BACKUP_BUNDLES: &str = "backup_bundles";
+
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
 /// exactly this set.
@@ -158,6 +163,7 @@ pub const ALL: &[&str] = &[
     ACCEPTED_IDS,
     CONSOLE_KEYS,
     STEP_UP_MARKS,
+    BACKUP_BUNDLES,
     GIT_NS,
     GIT_NS_JOBS,
     GIT_NS_PROJECTION,
@@ -255,6 +261,11 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // at worst let a passkey gesture made on one host authorize an act on
     // another.
     STEP_UP_MARKS,
+    // In-flight backup transfers. A bundle is a five-minute conversation with
+    // one operator about one set of staged bytes, which a restore elsewhere
+    // does not have — and a backup that contained its own transfer state would
+    // be a backup of itself.
+    BACKUP_BUNDLES,
     // Bridge jobs are convergent and re-derived: the projector sends the
     // desired roles again, and an unfinished create shows as `pendingCreate`.
     GIT_NS_JOBS,
@@ -272,8 +283,8 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 34 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
-        assert_eq!(ALL.len(), 37, "ALL must list every AppState keyspace");
+        // 35 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
+        assert_eq!(ALL.len(), 38, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

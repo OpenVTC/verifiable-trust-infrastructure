@@ -584,10 +584,16 @@ copied, so no generated library renames a published type.
 
 It covers export as well, which has the mirror problem on the messaging
 transports: a reply the size of the backup may exceed what a mediator carries.
-The dispatcher cannot bind a family whose schema is not published, so the VTC
-side waits for that PR and the `trust-tasks-rs` release that carries it;
-`vtc/backup/import/0.1` stays on its bearer route until then, and remains for a
-community small enough to fit one document afterwards.
+
+**Done.** #633 merged and shipped in `trust-tasks-rs` 0.22.7; the transfer core
+moved into `vti_common::backup_transfer` (#1721) so both nodes run one
+implementation of the manifest and chunk checks; and the VTC dispatches all seven
+`backup/*` tasks on the signed door (`trust_tasks::backup_tasks`). Only
+`chunkedTrustTask` is served — this node publishes no blob endpoint, so
+`stream` is refused `transportUnavailable` — at chunks of at most 32 KiB, the
+largest whose `put-chunk` document fits the 64 KiB this door accepts before
+checking a proof. `vtc/backup/import/0.1` stays on its bearer route for a
+community small enough to fit one request.
 
 **Next batch.** `vtc/admin/invites/{create,revoke}` are the same admin-from-ACL
 shape, and become available once the `vtc/invitations/*` work owned elsewhere

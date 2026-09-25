@@ -59,6 +59,11 @@ pub(crate) mod helpers;
 // is its first caller, a bearer REST route is its second (#1641 phase 2).
 pub(crate) mod accepted_ids;
 
+// The node-neutral `backup/*` family (#1641): a backup too large for one
+// document moves as a chunked bundle. `pub(crate)` for `blob_dir`, which the
+// retention sweeper needs.
+pub(crate) mod backup_tasks;
+
 // The schema-conformance sweep (#1059): every bound, published `spec/vtc/*`
 // URI must speak that URI's wire shape. Lives in `src` rather than `tests`
 // because its census is derived from `DISPATCHED_URIS` below, which no
@@ -690,6 +695,13 @@ async fn dispatch_typed(
         // transport's authenticated sender is passed for them to fall back
         // on; every other task requires the proof, which the spine has
         // already enforced.
+        uri if backup_tasks::URIS.contains(&uri) => {
+            match backup_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("backup_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
         uri if crate::git_ns::tasks::serves(uri) => {
             crate::git_ns::tasks::dispatch(
                 state,
@@ -1202,13 +1214,14 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            33,
+            40,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
              moved (`config/export`, `config/import`) + the 2 batch 4 moved \
              (`endorsement-types/register`, `endorsement-types/delete`) + batch \
-             5's `backup/export` + `acl/grant` + `acl/change-role`. \
+             5's `backup/export` + `acl/grant` + `acl/change-role` + the 7 \
+             `backup/*` chunked-transfer tasks. \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries; got {required:?}"
@@ -1373,6 +1386,15 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_CHANGE_ROLE_TYPE,
     // The gesture that operation-bound step-up asks for.
     STEP_UP_APPROVE_RESPONSE_TYPE,
+    // backup/* — the chunked transfer `vtc/backup/import` could never be,
+    // because its envelope does not fit one document.
+    backup_tasks::INITIATE_EXPORT_TYPE,
+    backup_tasks::GET_CHUNK_TYPE,
+    backup_tasks::COMPLETE_EXPORT_TYPE,
+    backup_tasks::INITIATE_IMPORT_TYPE,
+    backup_tasks::PUT_CHUNK_TYPE,
+    backup_tasks::FINALIZE_IMPORT_TYPE,
+    backup_tasks::ABORT_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -3433,6 +3455,13 @@ mod tests {
             <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            backup_tasks::INITIATE_EXPORT_TYPE,
+            backup_tasks::GET_CHUNK_TYPE,
+            backup_tasks::COMPLETE_EXPORT_TYPE,
+            backup_tasks::INITIATE_IMPORT_TYPE,
+            backup_tasks::PUT_CHUNK_TYPE,
+            backup_tasks::FINALIZE_IMPORT_TYPE,
+            backup_tasks::ABORT_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
