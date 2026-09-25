@@ -25,7 +25,9 @@ use trust_tasks_rs::specs::git_ns::account::{
 use trust_tasks_rs::specs::git_ns::bridge::{
     event::v0_1 as event, event::v0_2 as event2, result::v0_1 as result,
 };
-use trust_tasks_rs::specs::git_ns::drift::resolve::v0_1 as drift_resolve;
+use trust_tasks_rs::specs::git_ns::drift::resolve::{
+    v0_1 as drift_resolve, v0_3 as drift_resolve3,
+};
 use trust_tasks_rs::specs::git_ns::namespace::{
     bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
 };
@@ -106,6 +108,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_view)
         .on_async(handle_view_v2)
         .on_async(handle_drift_resolve)
+        .on_async(handle_drift_resolve_v3)
         .on_async(handle_reseat)
         .on_async(handle_link)
         .on_async(handle_link_status)
@@ -130,6 +133,12 @@ fn respond<P, R: serde::Serialize>(doc: &TrustTask<P>, r: Result<R, OpError>) ->
         Err(OpError::Unavailable(message)) => reject_with_code(
             doc,
             TrustTaskCode::Standard(StandardCode::Unavailable),
+            message,
+            None,
+        ),
+        Err(OpError::UnsupportedVersion(message)) => reject_with_code(
+            doc,
+            TrustTaskCode::Standard(StandardCode::UnsupportedVersion),
             message,
             None,
         ),
@@ -247,6 +256,11 @@ bridge_handler!(handle_event, event::Payload, super::bridge::handle_event);
 signed_handler!(
     handle_drift_resolve,
     drift_resolve::Payload,
+    super::drift::drift_resolve_v1
+);
+signed_handler!(
+    handle_drift_resolve_v3,
+    drift_resolve3::Payload,
     super::drift::drift_resolve
 );
 signed_handler!(handle_reseat, reseat::Payload, ops::namespace_reseat);

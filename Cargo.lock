@@ -10323,8 +10323,7 @@ dependencies = [
 [[package]]
 name = "trust-tasks-rs"
 version = "0.22.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d7ba07576152893f350eec73a5421c2b89a3248536e78eae8987bb1070e1921"
+source = "git+https://github.com/trustoverip/dtgwg-trust-tasks-tf?branch=feat%2Fgit-ns-drift-resolve-recipient#a59f183dfd6ee38e156e5dda56f4ed87f59a1ea4"
 dependencies = [
  "async-trait",
  "chrono",

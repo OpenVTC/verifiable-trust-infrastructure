@@ -1257,6 +1257,10 @@ fn every_git_ns_task_is_served() {
     ] {
         assert!(served.contains(&uri(task).as_str()), "{task} is not served");
     }
+    assert!(
+        served.contains(&uri3("drift/resolve").as_str()),
+        "drift/resolve 0.3 is not served"
+    );
     for task in ["view", "bridge/event"] {
         assert!(
             served.contains(&format!("{URI}/{task}/0.2").as_str()),
@@ -3718,14 +3722,29 @@ fn eve_acct() -> Value {
     json!({ "forge": "github.com", "id": "5550123", "login": "eve-dev" })
 }
 
+fn uri3(task: &str) -> String {
+    format!("{URI}/{task}/0.3")
+}
+
+/// `git-ns/drift/resolve` 0.3. An adopt names Carol — the one member whose
+/// account the fixture links — as the recipient.
 async fn resolve(f: &Fixture, who: &Party, drift: Value, action: &str) -> TrustTaskOutcome {
-    send(
-        &f.vtc.state,
-        who,
-        "drift/resolve",
-        json!({ "resource": RES, "drift": drift, "action": action, "reason": "decided" }),
-    )
-    .await
+    let subject = (action == "adopt").then(|| f.carol.did.clone());
+    resolve_naming(f, who, drift, action, subject.as_deref()).await
+}
+
+async fn resolve_naming(
+    f: &Fixture,
+    who: &Party,
+    drift: Value,
+    action: &str,
+    subject: Option<&str>,
+) -> TrustTaskOutcome {
+    let mut p = json!({ "resource": RES, "drift": drift, "action": action, "reason": "decided" });
+    if let Some(s) = subject {
+        p["subject"] = json!(s);
+    }
+    send_v(&f.vtc.state, who, &uri3("drift/resolve"), p).await
 }
 
 #[tokio::test]
@@ -3766,6 +3785,162 @@ async fn drift_resolve_adopts_a_members_forge_role_as_the_grant_it_is() {
     )
     .await;
     assert_eq!(code(&out), "git-ns/drift/resolve:driftNotFound");
+}
+
+/// drift/resolve 0.3, "Binding the recipient": an adoption grants to the
+/// member the resolver named, or to nobody.
+#[tokio::test]
+async fn drift_resolve_adopts_only_for_the_member_it_names() {
+    let (f, ns) = drift_fixture(json!([
+        { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "maintain" }
+    ]))
+    .await;
+    let sel = json!({ "type": "roleAdded", "account": carol_acct(), "observed": "maintain" });
+    let rows_for = |did: String| {
+        let ks = f.vtc.state.git_ns.ks.clone();
+        async move {
+            let snap = Snapshot::load(&ks).await.unwrap();
+            let repo = snap.repo_at(RES).unwrap();
+            snap.rows(&Scope::Repo(repo.id.clone()))
+                .iter()
+                .filter(|r| r.subject == did)
+                .count()
+        }
+    };
+
+    // Naming someone else than the account's member adopts nothing.
+    let out = resolve_naming(&f, &f.bob, sel.clone(), "adopt", Some(&f.stranger.did)).await;
+    assert_eq!(code(&out), "git-ns/drift/resolve:subjectChanged");
+    assert_eq!(rows_for(f.carol.did.clone()).await, 0);
+    assert_eq!(rows_for(f.stranger.did.clone()).await, 0);
+
+    // The account relinked after Bob read it — to Bob himself here — and
+    // Bob's adoption still names Carol: refused, and nobody gains a right.
+    crate::members::storage::edit_member(&f.vtc.state.members_ks, &f.carol.did, |m| {
+        m.extensions
+            .as_object_mut()
+            .is_some_and(|o| o.remove("forges").is_some())
+    })
+    .await
+    .unwrap();
+    link_account(&f, &ns, &f.bob, "5550001", "carol-c").await;
+    let out = resolve(&f, &f.bob, sel.clone(), "adopt").await;
+    assert_eq!(code(&out), "git-ns/drift/resolve:subjectChanged");
+    assert_eq!(rows_for(f.carol.did.clone()).await, 0);
+
+    // Named as the account's member now, it adopts.
+    let body = ok(&resolve_naming(&f, &f.bob, sel, "adopt", Some(&f.bob.did)).await);
+    assert_eq!(body["right"]["subject"], json!(f.bob.did));
+}
+
+/// The link check is repeated under the lock the grant is written under.
+#[tokio::test]
+async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
+    let (f, _ns) = drift_fixture(json!([])).await;
+    let holds = |_: &Snapshot| -> super::ops::OpResult<()> { Ok(()) };
+    let grant_to = |subject: String| -> trust_tasks_rs::specs::git_ns::right::grant::v0_1::Payload {
+        serde_json::from_value(
+            json!({ "subject": subject, "right": "git.repo.maintain", "resource": RES }),
+        )
+        .unwrap()
+    };
+    // Carol's account, expected to be Bob's: refused.
+    let wrong = super::ops::LinkedTo {
+        forge: "github.com".into(),
+        id: "5550001".into(),
+        member: f.bob.did.clone(),
+    };
+    let r = super::ops::right_grant_via(
+        &f.vtc.state,
+        &f.bob.did,
+        grant_to(f.bob.did.clone()),
+        Some(super::ops::GrantVia {
+            via: "drift.adopt",
+            still_holds: &holds,
+            linked_to: Some(&wrong),
+        }),
+    )
+    .await;
+    assert!(matches!(
+        r,
+        Err(super::ops::OpError::Declared { code, .. }) if code == super::drift::SUBJECT_CHANGED
+    ));
+    // An account linked to nobody: accountNotLinked.
+    let gone = super::ops::LinkedTo {
+        forge: "github.com".into(),
+        id: "9999999".into(),
+        member: f.carol.did.clone(),
+    };
+    let r = super::ops::right_grant_via(
+        &f.vtc.state,
+        &f.bob.did,
+        grant_to(f.carol.did.clone()),
+        Some(super::ops::GrantVia {
+            via: "drift.adopt",
+            still_holds: &holds,
+            linked_to: Some(&gone),
+        }),
+    )
+    .await;
+    assert!(matches!(
+        r,
+        Err(super::ops::OpError::Declared { code, .. }) if code == super::drift::ACCOUNT_NOT_LINKED
+    ));
+    // Linked as expected: granted.
+    let right = super::ops::LinkedTo {
+        forge: "github.com".into(),
+        id: "5550001".into(),
+        member: f.carol.did.clone(),
+    };
+    assert!(
+        super::ops::right_grant_via(
+            &f.vtc.state,
+            &f.bob.did,
+            grant_to(f.carol.did.clone()),
+            Some(super::ops::GrantVia {
+                via: "drift.adopt",
+                still_holds: &holds,
+                linked_to: Some(&right),
+            }),
+        )
+        .await
+        .is_ok()
+    );
+}
+
+/// 0.1 names no recipient: it still reverts, and no longer adopts.
+#[tokio::test]
+async fn drift_resolve_0_1_reverts_but_does_not_adopt() {
+    let (f, _ns) = drift_fixture(json!([
+        { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "maintain" },
+        { "type": "requiredCheckMissing", "resource": RES }
+    ]))
+    .await;
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "drift/resolve",
+        json!({ "resource": RES, "action": "adopt",
+                "drift": { "type": "roleAdded", "account": carol_acct(), "observed": "maintain" } }),
+    )
+    .await;
+    assert_eq!(code(&out), "unsupportedVersion");
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap();
+    assert!(
+        !snap
+            .rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .any(|r| r.subject == f.carol.did)
+    );
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "drift/resolve",
+        json!({ "resource": RES, "action": "revert", "drift": { "type": "requiredCheckMissing" } }),
+    )
+    .await);
+    assert_eq!(body["action"], "revert");
 }
 
 #[tokio::test]
@@ -3875,6 +4050,12 @@ async fn drift_resolve_checks_the_resource_the_caller_and_the_selector() {
         let out = resolve(&f, &f.bob, drift.clone(), action).await;
         assert_eq!(code(&out), "malformedRequest", "{drift}");
     }
+    // 0.3: an adopt must name its recipient, and a revert has none.
+    let adopt_sel = json!({ "type": "roleAdded", "account": eve_acct(), "observed": "write" });
+    let out = resolve_naming(&f, &f.bob, adopt_sel, "adopt", None).await;
+    assert_eq!(code(&out), "malformedRequest");
+    let out = resolve_naming(&f, &f.bob, sel.clone(), "revert", Some(&f.carol.did)).await;
+    assert_eq!(code(&out), "malformedRequest");
     // policyDenied.
     activate_git_policy(&f, &policy_denying("drift.revert")).await;
     let out = resolve(&f, &f.bob, sel.clone(), "revert").await;
@@ -4306,6 +4487,7 @@ async fn an_adoption_whose_item_changed_grants_nothing() {
         Some(super::ops::GrantVia {
             via: "drift.adopt",
             still_holds: &still_holds,
+            linked_to: None,
         }),
     )
     .await;

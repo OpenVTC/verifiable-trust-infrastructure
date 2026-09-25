@@ -27,7 +27,7 @@ use crate::{HolderKey, VtcClient, VtcError};
 pub use trust_tasks_rs::specs::git_ns as specs;
 
 use specs::account::{link::v0_1 as link, link_status::v0_1 as link_status};
-use specs::drift::resolve::v0_1 as drift_resolve;
+use specs::drift::resolve::{v0_1 as drift_resolve, v0_3 as drift_resolve3};
 use specs::namespace::{bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind};
 use specs::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
@@ -238,7 +238,28 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/drift/resolve/0.1` — adopt or revert one reported drift item.
+    /// `git-ns/drift/resolve/0.3` — adopt or revert one reported drift item.
+    /// An adopt names the member who receives the right (`subject`); the VTC
+    /// adopts nothing unless the account is still linked to exactly them.
+    pub async fn git_ns_drift_resolve_v3(
+        &self,
+        payload: &drift_resolve3::Payload,
+        key: &HolderKey,
+    ) -> Result<drift_resolve3::Response, VtcError> {
+        self.git_ns_task(
+            <drift_resolve3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/drift/resolve/0.1` — revert one reported drift item. A 0.1
+    /// adopt names no recipient, and a VTC that serves 0.3 refuses it
+    /// (`unsupportedVersion`); adopt with [`Self::git_ns_drift_resolve_v3`].
+    #[deprecated(
+        note = "a drift/resolve 0.1 adopt names no recipient and is refused; use git_ns_drift_resolve_v3"
+    )]
     pub async fn git_ns_drift_resolve(
         &self,
         payload: &drift_resolve::Payload,

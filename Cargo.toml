@@ -660,3 +660,9 @@ type_complexity = "allow"
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
 
+
+# TEMPORARY, draft only: git-ns/drift/resolve 0.3 (trustoverip/dtgwg-trust-tasks-tf#640)
+# is not released yet. Replace with the trust-tasks-rs release that carries it,
+# and delete this section, before this PR leaves draft.
+[patch.crates-io]
+trust-tasks-rs = { git = "https://github.com/trustoverip/dtgwg-trust-tasks-tf", branch = "feat/git-ns-drift-resolve-recipient" }

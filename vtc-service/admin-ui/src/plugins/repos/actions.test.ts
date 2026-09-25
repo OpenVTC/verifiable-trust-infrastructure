@@ -163,7 +163,7 @@ describe("signed git-ns tasks", () => {
 
   it("builds a drift revert selecting the item by type, account and observed value", () => {
     const t = driftRevertTask("github.com/acme/widgets", ORG_NS, ROLE_ADDED, " not ours ");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.3");
     expect(t.payload).toEqual({
       resource: "github.com/acme/widgets",
       action: "revert",
@@ -197,10 +197,11 @@ describe("signed git-ns tasks", () => {
 
   it("builds a drift adopt carrying the selector and the member who receives the right", () => {
     const t = driftAdoptTask("github.com/acme/widgets", ROLE_ADDED, BOB, "git.repo.maintain", "on the team");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.3");
     expect(t.payload).toEqual({
       resource: "github.com/acme/widgets",
       action: "adopt",
+      subject: BOB,
       drift: {
         type: "roleAdded",
         account: { forge: "github.com", id: "1003", login: "hsato" },
@@ -211,7 +212,7 @@ describe("signed git-ns tasks", () => {
     expect(t.consent).toBe("normal");
     expect(t.parties).toEqual([{ role: "Receives the right", did: BOB }]);
     expect(t.command).toBe(
-      "cnm git drift resolve github.com/acme/widgets adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --reason='on the team'",
+      `cnm git drift resolve github.com/acme/widgets adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --subject=${BOB} --reason='on the team'`,
     );
     // Adopting ownership is gated as the elevated grant it records.
     expect(
@@ -316,6 +317,7 @@ describe("every command is safe to paste into a shell", () => {
     ],
     ["drift adopt observed", (v) => driftAdoptTask(REPO, { ...ROLE_ADDED, observed: v }, BOB, "git.repo.maintain")],
     ["drift adopt reason", (v) => driftAdoptTask(REPO, ROLE_ADDED, BOB, "git.repo.maintain", v)],
+    ["drift adopt subject", (v) => driftAdoptTask(REPO, ROLE_ADDED, v, "git.repo.maintain")],
     [
       "create namespace",
       (v) => createTask({ namespaceId: v, namespaceResource: NS, name: "x", visibility: "public", personal: false }),

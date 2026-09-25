@@ -1,7 +1,20 @@
-//! `git-ns/drift/resolve/0.1` — an owner answers one drift item the bridge
-//! reported: **adopt** records the forge-side role as a right, exactly as a
-//! `git-ns/right/grant` from the resolver would; **revert** has the bridge
-//! undo the forge-side change and changes no right.
+//! `git-ns/drift/resolve` — an owner answers one drift item the bridge
+//! reported: **adopt** records the forge-side role as a right for the member
+//! the resolver names, exactly as a `git-ns/right/grant` from the resolver
+//! would; **revert** has the bridge undo the forge-side change and changes no
+//! right.
+//!
+//! Served at 0.3, and at 0.1 for `revert` only. A 0.3 adopt carries
+//! `subject`, the member the resolver read as linked to the item's account,
+//! and adopts only while the account is still linked to exactly that member
+//! (`subjectChanged` otherwise), checked again under the store lock the right
+//! is written under — the same lock every link and unlink is written under
+//! (`bridge::handle_event`, `lifecycle::sweep_departures`), so no relink can
+//! fall between the check and the write. A 0.1 adopt names no recipient, and
+//! the VTC would have to pick one from the link as it stands when the task
+//! runs, which may not be the member the resolver saw; it is refused
+//! (`unsupportedVersion`) rather than granted to someone nobody named
+//! (drift/resolve 0.3, *Security & Privacy*, "Binding the recipient").
 //!
 //! Drift items have no identifier. They are selected by `type`, by the
 //! account for the three role types (at most one role item per account), and
@@ -15,10 +28,11 @@
 //! than reported as done. Every other revert reuses a 0.1 job and is queued.
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::git_ns::drift::resolve::v0_1 as resolve;
+use trust_tasks_rs::specs::git_ns::drift::resolve::{v0_1 as resolve1, v0_3 as resolve};
 use trust_tasks_rs::specs::git_ns::right::grant::v0_1 as grant;
 
 use crate::server::AppState;
+use vti_common::error::AppError;
 
 use super::bridge::{self, BridgeSendError, JobKind, NewJob};
 use super::model::{Mode, Namespace, OwnerKind, Repo, RepoState, Resource, Right, SyncState};
@@ -35,6 +49,7 @@ pub const NOT_ADOPTABLE: &str = resolve::error_codes::NOT_ADOPTABLE.code;
 pub const ACCOUNT_NOT_LINKED: &str = resolve::error_codes::ACCOUNT_NOT_LINKED.code;
 pub const NO_MATCHING_RIGHT: &str = resolve::error_codes::NO_MATCHING_RIGHT.code;
 pub const NOT_REVERTIBLE: &str = resolve::error_codes::NOT_REVERTIBLE.code;
+pub const SUBJECT_CHANGED: &str = resolve::error_codes::SUBJECT_CHANGED.code;
 
 const ROLE_TYPES: [&str; 3] = ["roleAdded", "roleRemoved", "roleChanged"];
 
@@ -103,6 +118,32 @@ struct Decided {
     resource: Resource,
     selector: Selector,
     items: Vec<Value>,
+    /// For `adopt`: the member the resolver named.
+    subject: Option<String>,
+}
+
+/// `git-ns/drift/resolve/0.1`: `revert` only. A 0.1 document is a 0.3 one
+/// without `subject`, answered in 0.1's own response shape (identical to
+/// 0.3's).
+pub async fn drift_resolve_v1(
+    state: &AppState,
+    actor_did: &str,
+    p: resolve1::Payload,
+) -> OpResult<resolve1::Response> {
+    if matches!(p.action, resolve1::PayloadAction::Adopt) {
+        return Err(OpError::UnsupportedVersion(
+            "an adoption over git-ns/drift/resolve 0.1 names no recipient, so this VTC would \
+             grant the right to whoever the account is linked to now, who may not be the member \
+             you saw. Adopt with git-ns/drift/resolve 0.3, which names the member (`subject`); \
+             0.1 still reverts"
+                .into(),
+        ));
+    }
+    let p3: resolve::Payload = wire::into(serde_json::to_value(&p).map_err(AppError::from)?)?;
+    let r = drift_resolve(state, actor_did, p3).await?;
+    Ok(wire::into(
+        serde_json::to_value(&r).map_err(AppError::from)?,
+    )?)
 }
 
 pub async fn drift_resolve(
@@ -168,6 +209,21 @@ pub async fn drift_resolve(
                     .into(),
             ));
         }
+        match (action.as_str(), &p.subject) {
+            ("adopt", None) => {
+                return Err(OpError::Malformed(
+                    "`adopt` records a right for the member you read as linked to the account, \
+                     so `subject` — that member's DID — is required"
+                        .into(),
+                ));
+            }
+            ("revert", Some(_)) => {
+                return Err(OpError::Malformed(
+                    "a `revert` changes no right and has no recipient; leave `subject` out".into(),
+                ));
+            }
+            _ => {}
+        }
         let selector = Selector {
             kind,
             account: p
@@ -201,6 +257,7 @@ pub async fn drift_resolve(
             resource,
             selector,
             items,
+            subject: p.subject.as_ref().map(|s| s.to_string()),
         }
     };
 
@@ -300,6 +357,11 @@ async fn adopt(
             format!("{forge} account {id} is not linked to a member; it can only be reverted"),
         ));
     };
+    // Step 3 (0.3) — the member the resolver named, and nobody else.
+    let named = d.subject.clone().unwrap_or_default();
+    if member != named {
+        return Err(subject_changed(&forge, &id));
+    }
     if !standing(state, &member).await?.member {
         return Err(declared(
             ACCOUNT_NOT_LINKED,
@@ -355,6 +417,11 @@ async fn adopt(
     // forge that changed since the item was read adopts nothing.
     let repo_id = d.repo.id.clone();
     let selector = d.selector.clone();
+    let link = ops::LinkedTo {
+        forge: forge.clone(),
+        id: id.clone(),
+        member: named.clone(),
+    };
     let still_holds = move |snap: &Snapshot| -> OpResult<()> {
         let outstanding = snap
             .repo(&repo_id)
@@ -375,12 +442,24 @@ async fn adopt(
         Some(ops::GrantVia {
             via: "drift.adopt",
             still_holds: &still_holds,
+            linked_to: Some(&link),
         }),
     )
     .await?;
     // Step 6 — the complete desired roles, now with the member at the right.
     force_role_projection(state, &d.repo.id).await?;
     Ok(serde_json::to_value(granted.right).map_err(vti_common::error::AppError::from)?)
+}
+
+/// The account's link no longer resolves to the member the adoption names.
+pub(super) fn subject_changed(forge: &str, id: &str) -> OpError {
+    declared(
+        SUBJECT_CHANGED,
+        format!(
+            "{forge} account {id} is linked to another member than the one this adoption names; \
+             read the drift item again and decide about the member it now names"
+        ),
+    )
 }
 
 /// Make the projector send the repository's complete `desiredRoles` again.
