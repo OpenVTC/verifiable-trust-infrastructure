@@ -3218,7 +3218,7 @@ mod payload_validation_tests {
         serde_json::from_value(json!({
             "id": "urn:uuid:00000000-0000-0000-0000-000000000042",
             "type": WEBVH_UPDATE,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "recipient": "did:example:vta",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
@@ -3442,7 +3442,7 @@ mod superseded_task_dispatch_tests {
         let body = serde_json::to_vec(&json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
             "type": type_uri,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
@@ -3550,7 +3550,7 @@ mod freshness_bounds {
         let mut v = json!({
             "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
             "type": vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "payload": {},
         });
         // Previously always seeded a fresh default `issuedAt` here regardless
@@ -3707,7 +3707,7 @@ mod record_retention {
             "id": "urn:uuid:22222222-2222-2222-2222-222222222222",
             "type": vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
             "issuedAt": issued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "payload": {},
         });
         if let Some(e) = expires_at {
@@ -3787,7 +3787,7 @@ mod replay_guard {
         let body = serde_json::to_vec(&json!({
             "id": "urn:uuid:5eaf00d0-0000-4000-8000-00000000dead",
             "type": type_uri,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
@@ -3898,7 +3898,7 @@ mod replay_guard {
                 "id": "urn:uuid:5eaf00d0-0000-4000-8000-0000000c0nf1",
                 "type": vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0,
                 "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                "issuer": "did:key:zTestAdmin",
+                "issuer": crate::test_support::test_admin_did().0,
                 "recipient": vta_did,
                 // Differing only here is deliberate and is exactly §8.4's
                 // example: "a producer that 'retries' by re-signing,

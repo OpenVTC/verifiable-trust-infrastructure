@@ -103,8 +103,6 @@ enum Refusal {
     ApuMismatch,
     /// `AuthcryptError::InvalidSenderKeyId`
     InvalidSenderKeyId,
-    /// `AuthcryptError::Mismatch`
-    FromMismatch,
     /// `AuthcryptError::NotAuthcrypt`
     NotAuthcrypt,
     /// The messaging library refused the envelope during unpack, before the
@@ -117,7 +115,6 @@ impl Refusal {
         match self {
             Refusal::ApuMismatch => "does not encode skid",
             Refusal::InvalidSenderKeyId => "has no usable sender key id",
-            Refusal::FromMismatch => "sender mismatch: plaintext from",
             Refusal::NotAuthcrypt => "must be an authenticated (authcrypt) DIDComm envelope",
             Refusal::Unpack => "failed to unpack message",
         }
@@ -263,7 +260,9 @@ async fn consistent_attacker_key_with_victim_from_is_refused() {
         &session_id,
         jwe,
         "attacker key with victim from",
-        Refusal::FromMismatch,
+        // The messaging library's own addressing check refuses a consistent
+        // key whose DID is not `from`, before the guard runs.
+        Refusal::Unpack,
     )
     .await;
 }

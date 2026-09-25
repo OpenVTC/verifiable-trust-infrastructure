@@ -103,8 +103,6 @@ enum Refusal {
     ApuMismatch,
     /// `AuthcryptError::InvalidSenderKeyId`
     InvalidSenderKeyId,
-    /// `AuthcryptError::Mismatch`
-    FromMismatch,
     /// `AuthcryptError::NotAuthcrypt`
     NotAuthcrypt,
     /// The messaging library refused the envelope during unpack, before the
@@ -117,7 +115,6 @@ impl Refusal {
         match self {
             Refusal::ApuMismatch => "does not encode skid",
             Refusal::InvalidSenderKeyId => "has no usable sender key id",
-            Refusal::FromMismatch => "sender mismatch: plaintext from",
             Refusal::NotAuthcrypt => "must be an authenticated (authcrypt) DIDComm envelope",
             Refusal::Unpack => "failed to unpack message",
         }
@@ -196,11 +193,13 @@ async fn forged_apu_sender_is_refused() {
 /// key claiming the victim's `from` are all refused.
 #[tokio::test]
 async fn inconsistent_sender_key_headers_are_refused() {
-    let f = fixture().await;
-    let vtc_pub = f.vtc.public();
-    let attacker_private = f.attacker.private();
-    let victim_private = f.victim.private();
     for prefix in PREFIXES {
+        // A fresh VTC per route: eight unauthenticated requests per route fit
+        // the per-IP burst, sixteen on one instance do not.
+        let f = fixture().await;
+        let vtc_pub = f.vtc.public();
+        let attacker_private = f.attacker.private();
+        let victim_private = f.victim.private();
         let recipient = (f.vtc.kid.as_str(), &vtc_pub);
         for case in 0..4 {
             let (session_id, challenge) = challenge(&f, prefix).await;
@@ -243,13 +242,15 @@ async fn inconsistent_sender_key_headers_are_refused() {
                 _ => (
                     "attacker key with victim from",
                     genuine_authcrypt(&plaintext, &f.attacker, recipient),
-                    Refusal::FromMismatch,
+                    // The messaging library's own addressing check refuses a
+                    // consistent key whose DID is not `from`, first.
+                    Refusal::Unpack,
                 ),
             };
             assert_refused(&f, prefix, &session_id, jwe, what, expected).await;
         }
+        f.mock.shutdown().await;
     }
-    f.mock.shutdown().await;
 }
 
 /// Authcrypt hidden inside anoncrypt is refused on the direct-unpack routes.
