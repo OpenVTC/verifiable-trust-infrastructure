@@ -74,7 +74,7 @@ pub(crate) async fn run_offline(
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                std::process::exit(1);
+                std::process::exit(crate::exit::NOT_FOUND);
             }
             pnm_config.default_vta = Some(slug.clone());
             if let Err(e) = config::save_config(pnm_config) {
@@ -87,7 +87,7 @@ pub(crate) async fn run_offline(
         VtaCommands::Delete { slug, yes } => {
             let Some(vta) = pnm_config.vtas.get(slug) else {
                 eprintln!("Error: VTA '{slug}' not found.");
-                std::process::exit(1);
+                std::process::exit(crate::exit::NOT_FOUND);
             };
             let key = config::vta_keyring_key(slug);
             // Read before the keyring entry goes: the notice names the DID
@@ -121,6 +121,13 @@ pub(crate) async fn run_offline(
                 }
             }
 
+            // Before the mutation, not after: once `auth::logout` has run the
+            // credential is gone, and a notice about what was just destroyed
+            // is of no use to someone who would have stopped.
+            if *yes {
+                print_local_only_notice(slug, client_did.as_deref());
+            }
+
             pnm_config.vtas.remove(slug);
             // Clear default if it was the deleted VTA
             if pnm_config.default_vta.as_deref() == Some(slug.as_str()) {
@@ -133,9 +140,6 @@ pub(crate) async fn run_offline(
                 std::process::exit(1);
             }
             println!("{GREEN}✓{RESET} VTA connection '{slug}' deleted.");
-            if *yes {
-                print_local_only_notice(slug, client_did.as_deref());
-            }
             true
         }
         VtaCommands::Info => {
