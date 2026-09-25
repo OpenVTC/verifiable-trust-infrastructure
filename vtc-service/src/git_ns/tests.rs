@@ -4688,12 +4688,33 @@ async fn reproject_queues_every_repository_for_a_namespace_admin_or_community_ad
 }
 
 #[tokio::test]
-async fn reproject_is_refused_to_an_owner_in_manual_mode_and_without_forge_access() {
+async fn reproject_is_an_owners_for_their_repository_only_and_refused_without_a_bridge() {
     let (f, ns) = drift_fixture(json!([])).await;
-    // Bob owns widgets — implied or explicit ownership is not enough.
-    let out = send(
+    // Bob owns widgets: he may re-project it…
+    let body = ok(&send(
         &f.vtc.state,
         &f.bob,
+        "roles/reproject",
+        json!({ "resource": RES }),
+    )
+    .await);
+    assert_eq!(body["repos"], json!([RES]));
+    // …but not the namespace, nor a repository he does not own, and a
+    // caller entitled to nothing is not told whether a name is recorded.
+    for resource in ["github.com/acme", "github.com/acme/nothing-here"] {
+        let out = send(
+            &f.vtc.state,
+            &f.bob,
+            "roles/reproject",
+            json!({ "resource": resource }),
+        )
+        .await;
+        assert_eq!(code(&out), "permissionDenied", "{resource}");
+    }
+    // Carol holds nothing here.
+    let out = send(
+        &f.vtc.state,
+        &f.carol,
         "roles/reproject",
         json!({ "resource": RES }),
     )

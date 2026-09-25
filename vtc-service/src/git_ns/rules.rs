@@ -513,14 +513,17 @@ pub fn reseat_admitted(
 
 /// `git-ns/roles/reproject`: the community-administrator capability, or
 /// `git.ns.admin` on the namespace by explicit, live record of a current
-/// member. Nothing implied suffices — a re-projection acts on everyone with a
-/// role in what it covers, which is a namespace-level act.
+/// member — or, for a single repository, `git.repo.own` on it, explicit or
+/// implied (`repo_owner`, which the caller computes only for a repository
+/// resource). Owning some repositories never admits a whole namespace.
 pub fn reproject_admitted(
     actor_community_admin: bool,
     actor_member: bool,
     explicit_ns_admin: bool,
+    repo_owner: bool,
 ) -> Option<RulesPassed> {
-    (actor_community_admin || (actor_member && explicit_ns_admin)).then(RulesPassed::new)
+    (actor_community_admin || (actor_member && (explicit_ns_admin || repo_owner)))
+        .then(RulesPassed::new)
 }
 
 /// The explicit owners of a repository, in grant order.

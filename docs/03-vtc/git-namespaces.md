@@ -172,13 +172,16 @@ Which forge role `own`, `maintain` and `commit.sign` get is the bridge's
 **role map**, configurable per bridge, forge, namespace and repository; a
 namespace admin gets no forge role under any map. The bridge reports the map
 it applies — as the forge applies it, rounded onto the forge's ladder — with
-`git-ns/bridge/event/0.3` `roleMapReported`, at start-up, when the map
-changes and after a binding completes: the namespace's map, each repository
+`git-ns/bridge/event/0.3` `roleMapReported`, whenever it starts serving a
+namespace, whenever it (re)establishes its link to the VTC, and whenever the
+map changes: the namespace's map, each repository
 whose own map differs, and each repository whose roles it last projected
 under a different map (`stale`). The VTC refuses an unordered map
 (`own ≥ maintain ≥ commit`, `commit ≤ write`) and any resource outside the
 namespace, keeps the report on the namespace (only while the same bridge
-serves it), and uses it for the console's effective forge role of each right,
+serves it — if another bridge DID comes to serve the namespace, the map is
+*unknown*, derived as the default and flagged on the namespace card, until
+that bridge reports), and uses it for the console's effective forge role of each right,
 for the right a drift adoption records, and for the weight of a drift revert.
 Until a bridge reports, the default map is assumed (`admin` / `maintain` /
 none; `write` / `write` / none on a personal account).
@@ -191,8 +194,9 @@ projector sends the complete `desiredRoles` again — and a repository leaves
 Re-projecting changes no right: the bridge would apply the map at the next
 projection anyway. To re-project on demand — a bridge too old to report, a
 forge suspected of drifting — a community administrator or a namespace admin
-(by explicit record; owning a repository is not enough) sends
-`git-ns/roles/reproject/0.1` for a namespace or one repository:
+(by explicit record) sends `git-ns/roles/reproject/0.1` for a namespace or
+one repository, and a repository's owner (`git.repo.own`, explicit or
+implied) for that repository:
 
 ```sh
 cnm git reproject github.com/acme --reason "maintainers now get admin"

@@ -142,8 +142,10 @@ pub struct GitNsNamespaceRow {
     /// of its own: the bridge's report (`git-ns/bridge/event/0.3`
     /// `roleMapReported`), or the default map while it has not reported.
     pub role_map: GitNsRoleMap,
-    /// `reported` — the bridge serving the namespace said so; `default` — it
-    /// has not, and the default map is assumed.
+    /// `reported` — the bridge serving the namespace said so; `default` — no
+    /// bridge has reported, and the default map is assumed; `unknown` — the
+    /// report held is from a bridge that no longer serves the namespace, so
+    /// the default map is derived with until the serving one reports.
     pub role_map_source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role_map_reported_at: Option<String>,

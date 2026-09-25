@@ -104,6 +104,17 @@ describe("Repos plugin — overview", () => {
     expect(screen.getByText("App uninstalled")).toBeTruthy();
   });
 
+  it("shows the bridge's role map, flags an unknown one, and offers a namespace re-projection", async () => {
+    mockFetch(gitNsRoutes({ namespaces: [{ ...ACME, roleMapSource: "unknown" }, PERSONAL] }));
+    mount();
+
+    expect(await screen.findByText("Role map unknown")).toBeTruthy();
+    expect(screen.getByLabelText("Forge role map").textContent).toMatch(/namespace admin no role/);
+    fireEvent.click(screen.getByRole("button", { name: "Re-project roles on github.com/acme" }));
+    const sign = await screen.findByRole("dialog", { name: /Re-project roles on github\.com\/acme/ });
+    expect(sign.textContent).toMatch(/owning some of its repositories is not enough/);
+  });
+
   it("warns on missing App permissions and a pending upgrade, and shows the drift settings", async () => {
     mockFetch(
       gitNsRoutes({

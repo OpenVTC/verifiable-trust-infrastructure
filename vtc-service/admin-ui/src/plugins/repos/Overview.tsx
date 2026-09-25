@@ -213,8 +213,20 @@ function NamespaceCard({
           {" — "}
           {ns.roleMapSource === "reported"
             ? `as the bridge reported it${ns.roleMapReportedAt ? ` on ${new Date(ns.roleMapReportedAt).toLocaleDateString()}` : ""}; a repository may have its own.`
-            : "the default, assumed: the bridge has not reported its role map."}
+            : ns.roleMapSource === "unknown"
+              ? "unknown: shown and derived with the default map until the bridge now serving this namespace reports its own."
+              : "the default, assumed: the bridge has not reported its role map."}
         </p>
+      )}
+      {bridgeBound && ns.roleMapSource === "unknown" && (
+        <div className="finding warn">
+          <strong>Role map unknown</strong>
+          <span>
+            A different bridge now serves this namespace and has not reported its role map yet.
+            Forge roles, drift adoption and revert weights use the default map until it does; it
+            reports when it next connects to the VTC.
+          </span>
+        </div>
       )}
       {stale > 0 && (
         <div className="finding warn">

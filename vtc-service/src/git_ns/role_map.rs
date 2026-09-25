@@ -210,9 +210,12 @@ pub struct RoleMapReport {
 pub enum Source {
     /// The bridge's last report.
     Reported,
-    /// No report (or one from a bridge that no longer serves the namespace):
-    /// the default, assumed.
+    /// No report has arrived: the default, assumed.
     Default,
+    /// The report held is from a bridge that no longer serves the namespace,
+    /// and the one that does has not reported yet: the default is derived
+    /// with, and shown as unknown.
+    Unknown,
 }
 
 impl Source {
@@ -220,6 +223,7 @@ impl Source {
         match self {
             Source::Reported => "reported",
             Source::Default => "default",
+            Source::Unknown => "unknown",
         }
     }
 }
@@ -242,7 +246,19 @@ pub fn for_repo(ns: &Namespace, repo: &str) -> (RoleMap, Source) {
                 .unwrap_or(r.role_map),
             Source::Reported,
         ),
-        None => (RoleMap::default_for(ns.kind), Source::Default),
+        None => (RoleMap::default_for(ns.kind), absent(ns)),
+    }
+}
+
+/// Why there is no current report: none ever arrived (`Default`), or the one
+/// held is from a bridge that no longer serves the namespace (`Unknown`,
+/// `git-ns/bridge/event/0.3` request step 5.5). Either way the default map is
+/// what the VTC derives with until the serving bridge reports.
+fn absent(ns: &Namespace) -> Source {
+    if ns.role_map.is_some() {
+        Source::Unknown
+    } else {
+        Source::Default
     }
 }
 
@@ -250,7 +266,7 @@ pub fn for_repo(ns: &Namespace, repo: &str) -> (RoleMap, Source) {
 pub fn for_namespace(ns: &Namespace) -> (RoleMap, Source) {
     match current_report(ns) {
         Some(r) => (r.role_map, Source::Reported),
-        None => (RoleMap::default_for(ns.kind), Source::Default),
+        None => (RoleMap::default_for(ns.kind), absent(ns)),
     }
 }
 
@@ -396,5 +412,55 @@ mod tests {
         assert!(m.revert_takes_ownership("admin"));
         assert!(!m.revert_takes_ownership("write"));
         assert!(!map(None, None, None).revert_takes_ownership("read"));
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use crate::git_ns::model::{Mode, NamespaceState};
+
+    fn ns(bridge: &str, report_from: Option<&str>) -> Namespace {
+        Namespace {
+            id: "ns_1".into(),
+            forge: "github.com".into(),
+            owner: "acme".into(),
+            mode: Mode::Bridge,
+            state: NamespaceState::Bound,
+            owner_id: None,
+            kind: Some(OwnerKind::Organization),
+            bridge_did: Some(bridge.into()),
+            bind_job_id: None,
+            bound_by: "did:key:z6Mk".into(),
+            requested_at: Utc::now(),
+            bound_at: None,
+            roles_digest: None,
+            installation_removed: false,
+            forge_status: None,
+            role_map: report_from.map(|b| RoleMapReport {
+                role_map: RoleMap::new(ForgeLevel::Admin, ForgeLevel::Admin, ForgeLevel::None)
+                    .unwrap(),
+                repos: vec![],
+                stale: vec!["github.com/acme/widgets".into()],
+                bridge_did: b.into(),
+                reported_at: Utc::now(),
+            }),
+        }
+    }
+
+    #[test]
+    fn another_bridges_report_is_unknown_and_derives_with_the_default() {
+        let (m, src) = for_namespace(&ns("did:key:new", Some("did:key:old")));
+        assert_eq!(src, Source::Unknown);
+        assert_eq!(m, RoleMap::default_for(Some(OwnerKind::Organization)));
+        assert!(!is_stale(
+            &ns("did:key:new", Some("did:key:old")),
+            "github.com/acme/widgets"
+        ));
+        assert_eq!(for_namespace(&ns("did:key:new", None)).1, Source::Default);
+        assert_eq!(
+            for_namespace(&ns("did:key:old", Some("did:key:old"))).1,
+            Source::Reported
+        );
     }
 }

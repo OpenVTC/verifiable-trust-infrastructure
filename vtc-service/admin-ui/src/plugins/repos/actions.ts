@@ -547,7 +547,8 @@ export const CONSENT_LABEL: Record<ConsentClass, string> = {
  * `git-ns/roles/reproject/0.1` — have the bridge re-apply the forge roles of
  * every active or orphaned repository in a namespace, or of one repository,
  * from the VTC's rights under the bridge's current role map. No right
- * changes. Signed by a community administrator or a namespace admin.
+ * changes. Signed by a community administrator or a namespace admin, or —
+ * for one repository — its owner.
  */
 export function reprojectTask(resource: string, reason?: string): SignedTask {
   const payload: Record<string, unknown> = { resource };
@@ -566,7 +567,9 @@ export function reprojectTask(resource: string, reason?: string): SignedTask {
     payload,
     consent: consentClass("roles.reproject"),
     consentNote:
-      "Authorized by the community-administrator capability, or by git.ns.admin on the namespace by explicit record; owning a repository is not enough.",
+      whole
+        ? "Authorized by the community-administrator capability, or by git.ns.admin on the namespace by explicit record; owning some of its repositories is not enough."
+        : "Authorized by git.repo.own on the repository (explicit, or implied by git.ns.admin), git.ns.admin on its namespace, or the community-administrator capability.",
     resource,
     parties: [],
     command: cnm(...args),

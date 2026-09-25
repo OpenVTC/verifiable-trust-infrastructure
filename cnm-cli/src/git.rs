@@ -127,7 +127,8 @@ pub enum GitCommands {
     /// Have the bridge re-apply the forge roles of every repository in a
     /// namespace, or of one repository, from the VTC's rights under the
     /// bridge's current role map (`git-ns/roles/reproject`). No right changes.
-    /// Community administrators and the namespace's admins.
+    /// Community administrators and the namespace's admins; a repository's
+    /// owner, for that repository.
     Reproject {
         /// `github.com/acme` (every active or orphaned repository in it) or
         /// `github.com/acme/widgets`.

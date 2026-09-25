@@ -1,5 +1,5 @@
-//! `git-ns/roles/reproject/0.1` — a community administrator, or a namespace
-//! admin, has the VTC send its bridge the complete forge roles of one
+//! `git-ns/roles/reproject/0.1` — a community administrator, a namespace
+//! admin, or (for one repository) its owner has the VTC send its bridge the complete forge roles of one
 //! repository, or of every active or orphaned repository in a namespace,
 //! again.
 //!
@@ -18,7 +18,7 @@ use trust_tasks_rs::specs::git_ns::roles::reproject::v0_1 as reproject;
 use crate::server::AppState;
 
 use super::bridge;
-use super::model::{Mode, RepoState};
+use super::model::{Mode, RepoState, Right};
 use super::ops::{
     self, Audit, OpError, OpResult, PolicyInput, audit, check_policy, consent_gate, declared, now,
     standing,
@@ -44,15 +44,30 @@ pub async fn roles_reproject(
         let resource = ops::parse_resource(&p.resource)?;
         // Step 1.
         let ns = ops::bound_namespace_for(&snap, &resource)?.clone();
-        // Step 2 — the capability, or `git.ns.admin` by explicit record.
+        // Step 2 — for a namespace, the capability or `git.ns.admin` by
+        // explicit record; for a repository, either of those or
+        // `git.repo.own` on it, explicit or implied. Checked before the
+        // repository is looked up, so a caller entitled to nothing learns
+        // nothing about which names are recorded.
         let explicit_admin = rules::admins(&snap, &ns.id, t).contains(&actor.did);
-        let passed = rules::reproject_admitted(actor.community_admin, actor.member, explicit_admin)
-            .ok_or_else(|| {
-                OpError::PermissionDenied(format!(
-                    "re-projecting roles in {} needs the community-administrator capability \
-                         or git.ns.admin on it by explicit record",
-                    ns.resource()
-                ))
+        let owner = !resource.is_namespace()
+            && rules::effective_on(&snap, &actor.did, &resource, t).contains(&Right::RepoOwn);
+        let passed =
+            rules::reproject_admitted(actor.community_admin, actor.member, explicit_admin, owner)
+                .ok_or_else(|| {
+                OpError::PermissionDenied(if resource.is_namespace() {
+                    format!(
+                        "re-projecting every repository in {} needs the community-administrator \
+                     capability or git.ns.admin on it by explicit record",
+                        ns.resource()
+                    )
+                } else {
+                    format!(
+                        "re-projecting {resource} needs git.repo.own on it, git.ns.admin on {} by \
+                     explicit record, or the community-administrator capability",
+                        ns.resource()
+                    )
+                })
             })?;
         // Step 3.
         if ns.mode != Mode::Bridge || ns.bridge_did.is_none() {

@@ -8422,7 +8422,7 @@
           },
           "roleMapSource": {
             "type": "string",
-            "description": "`reported` — the bridge serving the namespace said so; `default` — it\nhas not, and the default map is assumed."
+            "description": "`reported` — the bridge serving the namespace said so; `default` — no\nbridge has reported, and the default map is assumed; `unknown` — the\nreport held is from a bridge that no longer serves the namespace, so\nthe default map is derived with until the serving one reports."
           },
           "state": {
             "type": "string",

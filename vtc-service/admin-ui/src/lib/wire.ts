@@ -3687,8 +3687,10 @@ export interface components {
             roleMap: components["schemas"]["GitNsRoleMap"];
             roleMapReportedAt?: string | null;
             /**
-             * @description `reported` — the bridge serving the namespace said so; `default` — it
-             *     has not, and the default map is assumed.
+             * @description `reported` — the bridge serving the namespace said so; `default` — no
+             *     bridge has reported, and the default map is assumed; `unknown` — the
+             *     report held is from a bridge that no longer serves the namespace, so
+             *     the default map is derived with until the serving one reports.
              */
             roleMapSource: string;
             /** @description `pending` | `bound`. */
