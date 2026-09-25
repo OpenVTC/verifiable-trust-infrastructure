@@ -226,28 +226,40 @@ jobs:
     needs: affects
     if: needs.affects.outputs.vtc_tests != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Measured over the 34 runs before this change: 11-16 min end to end
+    # (disk freeing 0.6-2.5 min, `cargo test` 8-12 min, the no-op guard ~2 min).
+    # The one timeout (#1725) was a slow runner, not a hang — every step ran
+    # at 2-3x, disk freeing alone 7.4 min — on top of a 30-minute ceiling
+    # that left ~2x headroom over a typical run. Freeing is now conditional
+    # and the guard costs seconds, so a typical run is ~11-13 min and 40
+    # leaves room for a runner at 3x. A real hang still ends here.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # `cargo test --workspace` builds a test binary for every crate with
-      # full debuginfo, and the total (target/ plus the linker's scratch)
-      # runs the ubuntu-latest runner's ~14 GB of free root disk right to the
-      # edge. It began failing intermittently with "No space left on device"
-      # while linking the largest binary (libvta_service). The preinstalled
-      # Android SDK, .NET and GHC toolchains are ~20 GB we never use, so
-      # reclaiming them buys comfortable headroom. Test-only: no other job
-      # links the whole workspace at once, so none needs this.
+      # Only when it is needed. This job links two crates, not the workspace,
+      # and the ubuntu-latest image now reports ~100 GB free after the removal,
+      # so ~80 GB before it; the unconditional `rm -rf` of Android + .NET + GHC walks
+      # millions of small files and took 0.6-2.5 min on a normal runner and
+      # 7.4 min on the one that timed out. Kept as a fallback so an image
+      # that ships a smaller disk again degrades to the old behaviour instead
+      # of dying mid-link with "No space left on device".
       # NB: do NOT remove $AGENT_TOOLSDIRECTORY (/opt/hostedtoolcache) — it
       # holds the runner's node, and vtc-service's build.rs shells out to
-      # `npm run build` for the admin UI. Android + .NET + GHC are ~13 GB we
-      # never touch and are safe to reclaim.
-      - name: Free disk space
+      # `npm run build` for the admin UI.
+      - name: Free disk space (only if short)
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           df -h /
+          avail_gb=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          if [ "$avail_gb" -lt 30 ]; then
+            echo "::warning::only ${avail_gb} GB free; reclaiming Android, .NET and GHC"
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+            df -h /
+          else
+            echo "${avail_gb} GB free; nothing to reclaim"
+          fi
 
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh
@@ -268,13 +280,20 @@ jobs:
           # clean-room checkout of the same commit compiled fine.
           #
           # The registry and git caches stay: content-addressed by package
-          # version, so a stale entry is impossible by construction.
+          # version, so a stale entry is impossible by construction. So is
+          # `~/.npm`, the tarball cache build.rs's `npm install` reads from.
+          #
+          # Its own prefix: this used to share `cargo-test-` with Test
+          # (workspace), so whichever job saved first decided what the other
+          # restored — the VTC subset of the registry for the whole workspace,
+          # or the whole registry for two crates.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+            ~/.npm
+          key: ${{ runner.os }}-cargo-test-vtc-${{ hashFiles('**/Cargo.lock', 'vtc-service/admin-ui/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-
+            ${{ runner.os }}-cargo-test-vtc-
 
       # The failure this guards against reports as `No space left on device`
       # from the runner's own log writer — no failing step, no job log, just a
@@ -285,7 +304,6 @@ jobs:
 
       - run: cargo test -p vtc-service -p vtc-client
 
-
       # #1243: `vtc-service`'s build.rs used to write into the source tree —
       # `npm install` refreshed `admin-ui/package-lock.json` (a
       # `rerun-if-changed` input of that same script) and `npm run build`
@@ -295,15 +313,20 @@ jobs:
       # check-on-save paid for it. Cold-cache CI never builds the same tree
       # twice, which is exactly why this went unnoticed.
       #
-      # The first build is allowed to do work — npm may normalise the lockfile
-      # once against whatever npm the runner ships, which legitimately changes
-      # its content. From there the tree has settled, so the last build must do
-      # nothing at all.
+      # The test step above is the first build, and it is allowed to do work —
+      # npm may normalise the lockfile once against whatever npm the runner
+      # ships, which legitimately changes its content. The next build settles
+      # that; the one after must do nothing at all.
+      #
+      # It re-runs the SAME command the test step built with (`--no-run`), so
+      # it reuses those artifacts. It used to run `cargo build -p vtc-service`,
+      # a different profile and feature set, which compiled vtc-service and
+      # its bin afresh before it could check anything: ~2 min per run, and the
+      # step that pushed #1725 over the job's ceiling.
       - name: vtc-service rebuild is a no-op
         run: |
-          cargo build -p vtc-service
-          cargo build -p vtc-service
-          out=$(cargo build -p vtc-service 2>&1)
+          cargo test -p vtc-service -p vtc-client --no-run
+          out=$(cargo test -p vtc-service -p vtc-client --no-run 2>&1)
           echo "$out"
           if echo "$out" | grep -q 'Compiling vtc-service'; then
             echo "::error::vtc-service recompiled with nothing changed (#1243). Something in \
@@ -315,7 +338,7 @@ jobs:
           echo "third build did no work"
           # Informational: npm normalising the lockfile against the runner's
           # own npm is a content change, which is legitimately allowed to
-          # rebuild once and is absorbed by the settle builds above. Worth
+          # rebuild once and is absorbed by the settle build above. Worth
           # surfacing — a lockfile that npm rewrites on every clean checkout
           # should be regenerated and committed — but it is not this guard's
           # failure condition, so it must not block unrelated PRs.
@@ -324,6 +347,61 @@ jobs:
             git status --porcelain
             git diff --stat
           fi
+          df -h /
+
+  test-vtc-admin-ui:
+    # The admin console's own checks. `cargo build -p vtc-service` runs
+    # `npm run build` (`tsc -b && vite build`), which proves the console
+    # compiles and nothing more: its vitest suite, and the drift check between
+    # `openapi.json` and the generated `src/lib/wire.ts`, only ever ran on a
+    # developer's machine. This is the only JS/TS package in the repository
+    # with tests (`examples/vta-auth-demo` and `vtc-service/website-default`
+    # are static files; `vti-rooms-wasm` is Rust and built by Mobile build).
+    #
+    # No Rust, no system packages, no secrets: node, the lockfile, and the
+    # console's own scripts. Gated on the VTC closure, which is where
+    # `vtc-service/admin-ui/` belongs.
+    name: Test (VTC admin UI)
+    needs: affects
+    if: needs.affects.outputs.vtc_tests != 'false'
+    runs-on: ubuntu-latest
+    # ~2 min in practice (`npm ci` plus a ~20 s suite); a vitest run that
+    # waits on a promise that never settles is what this bounds.
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: vtc-service/admin-ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The version comes from the console's `.nvmrc`, the same file a
+      # developer's `nvm use` reads, so CI and local agree on the node major.
+      # `cache: npm` caches `~/.npm` keyed on the lockfile.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: vtc-service/admin-ui/.nvmrc
+          cache: npm
+          cache-dependency-path: vtc-service/admin-ui/package-lock.json
+
+      # `npm ci`, not `npm install`: it installs exactly the lockfile and fails
+      # if `package.json` and `package-lock.json` disagree, instead of quietly
+      # re-resolving.
+      - name: Install dependencies (lockfile)
+        run: npm ci --no-audit --no-fund
+
+      # `openapi.json` → `src/lib/wire.ts` must be regenerated when the spec
+      # changes; this fails when the committed `wire.ts` is stale.
+      - name: Lint (wire types match openapi.json)
+        run: npm run wire:check
+
+      - name: Typecheck
+        run: npx tsc -b --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
