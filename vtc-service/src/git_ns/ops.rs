@@ -16,7 +16,7 @@
 use chrono::{DateTime, Timelike, Utc};
 use serde_json::json;
 use trust_tasks_rs::specs::git_ns::account::{
-    link::v0_1 as link, link_status::v0_1 as link_status,
+    link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
 use trust_tasks_rs::specs::git_ns::bridge::job::v0_1 as job_wire;
 use trust_tasks_rs::specs::git_ns::namespace::{
@@ -65,6 +65,7 @@ pub const NOT_OWNER: &str = transfer::error_codes::NOT_OWNER.code;
 pub const SELF_TRANSFER: &str = transfer::error_codes::SELF_TRANSFER.code;
 pub const UNSUPPORTED_FORGE: &str = link::error_codes::UNSUPPORTED_FORGE.code;
 pub const UNKNOWN_LINK: &str = link_status::error_codes::UNKNOWN_LINK.code;
+pub const NOT_LINKED: &str = unlink::error_codes::NOT_LINKED.code;
 pub const NOT_HEADLESS: &str = reseat::error_codes::NOT_HEADLESS.code;
 
 /// Why an operation refused, as the wire will carry it.
@@ -2115,6 +2116,127 @@ pub async fn account_link_status(
         out["account"] = json!({ "forge": a.forge, "id": a.id, "login": a.login });
     }
     Ok(wire::into(out)?)
+}
+
+// ── git-ns/account/unlink/0.1 ───────────────────────────────────────────────
+
+/// Delete the binding of the caller's DID to their account on one forge, and
+/// re-project so the bridge withdraws the roles it gave that account.
+///
+/// Numbered items are the specification's *Request*.
+pub async fn account_unlink(
+    state: &AppState,
+    actor_did: &str,
+    p: unlink::Payload,
+) -> OpResult<unlink::Response> {
+    did_core("member", actor_did)?;
+    let actor = standing(state, actor_did).await?;
+    // Item 1: the entitlement is being the DID the account is linked to. A
+    // member whose access lapsed still holds their link and may remove it;
+    // anyone with no link — a non-member included — is answered `notLinked`,
+    // so the answer says nothing about who is a member.
+    consent_gate(state, &actor, "account.unlink", None).await?;
+    let forge = p.forge.to_string();
+    let guard = p.account_id.as_ref().map(|id| id.to_string());
+
+    // Items 2 and 3, in one edit of the member row, under the git-ns store
+    // lock that serialises every link completion, so a link completing at
+    // the same moment is either before (and unlinked, if it is the account
+    // named) or after (and kept).
+    let mut outcome: Result<super::model::ForgeAccount, String> =
+        Err(format!("no account is linked to you on {forge}"));
+    let write = store::write_lock().await;
+    crate::members::storage::edit_member(&state.members_ks, &actor.did, |m| {
+        if m.removed_at.is_some() {
+            return false;
+        }
+        let Some(forges) = m
+            .extensions
+            .get_mut("forges")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return false;
+        };
+        let Some(acct) = forges.get(&forge) else {
+            return false;
+        };
+        let text = |k: &str| {
+            acct.get(k)
+                .and_then(serde_json::Value::as_str)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        // An entry without an id and a login is not a link: the projection
+        // never reads one (`bridge::linked_accounts`).
+        let (Some(id), Some(login)) = (text("id"), text("login")) else {
+            return false;
+        };
+        if guard.as_deref().is_some_and(|g| g != id) {
+            outcome = Err(format!(
+                "the account linked on {forge} is not {}",
+                guard.as_deref().unwrap_or_default()
+            ));
+            return false;
+        }
+        forges.remove(&forge);
+        let now_empty = forges.is_empty();
+        if now_empty && let Some(o) = m.extensions.as_object_mut() {
+            o.remove("forges");
+        }
+        outcome = Ok(super::model::ForgeAccount {
+            forge: forge.clone(),
+            id,
+            login,
+        });
+        true
+    })
+    .await?;
+    drop(write);
+    let unlinked = outcome.map_err(|why| declared(NOT_LINKED, why))?;
+    let t = now();
+
+    // Item 4 — the next desired roles are computed from the records, which
+    // no longer hold the binding, so every target it reached changes digest
+    // and is queued now; the projector sends them on its next tick. No
+    // `removeAccounts` (item 5): only the roles the bridge gave go.
+    let affected: Vec<String> = Snapshot::load(&state.git_ns.ks)
+        .await?
+        .namespaces
+        .iter()
+        .filter(|n| n.forge == forge && n.mode == Mode::Bridge && n.state == NamespaceState::Bound)
+        .map(|n| n.id.clone())
+        .collect();
+    bridge::project_roles(state, false).await?;
+
+    // Item 6 — the member and the forge, never the account. One row per
+    // namespace whose roles change, so its admins see why in its activity;
+    // one with no namespace where none does.
+    let rows: Vec<Option<&str>> = if affected.is_empty() {
+        vec![None]
+    } else {
+        affected.iter().map(|id| Some(id.as_str())).collect()
+    };
+    for ns in rows {
+        audit(
+            state,
+            &actor.did,
+            Some(&actor.did),
+            Audit {
+                action: "gitNs.account.unlinked",
+                namespace: ns,
+                resource: None,
+                right: None,
+                policy_version: None,
+                detail: Some(forge.clone()),
+            },
+        )
+        .await;
+    }
+
+    Ok(wire::into(json!({
+        "unlinked": { "forge": unlinked.forge, "id": unlinked.id, "login": unlinked.login },
+        "unlinkedAt": wire::timestamp(t),
+    }))?)
 }
 
 /// Build the `beginBind` / `beginAccountLink` acknowledgement type's `next`,

@@ -1233,6 +1233,186 @@ async fn account_link_needs_a_bridge_namespace_and_status_answers_only_its_owner
     assert_eq!(accounts[&f.bob.did]["github.com"].login, "bob-builds");
 }
 
+// ── git-ns/account/unlink ───────────────────────────────────────────────────
+
+/// The `projectRoles` jobs queued for `repo` since `before`.
+async fn new_role_jobs(
+    f: &Fixture,
+    before: &std::collections::BTreeSet<String>,
+    repo: &str,
+) -> Vec<super::bridge::BridgeJob> {
+    super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|j| {
+            !before.contains(&j.job_id)
+                && j.kind == super::bridge::JobKind::ProjectRoles
+                && j.payload["repo"] == repo
+        })
+        .collect()
+}
+
+async fn job_ids(f: &Fixture) -> std::collections::BTreeSet<String> {
+    super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|j| j.job_id)
+        .collect()
+}
+
+/// git-ns/account/unlink/0.1 *Request*: the binding goes, the next
+/// projection no longer lists the account — so the bridge withdraws the
+/// roles it gave — and `removeAccounts` is never used for it.
+#[tokio::test]
+async fn unlinking_drops_the_account_from_the_projection_and_only_that() {
+    const WIDGETS: &str = "github.com/acme/widgets";
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    adopt_with_forge_id(&f, WIDGETS, "812").await;
+    ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "right/grant",
+        json!({ "subject": f.carol.did, "right": "git.repo.maintain", "resource": WIDGETS }),
+    )
+    .await);
+    let before = job_ids(&f).await;
+    link_account(&f, &ns, &f.bob, "9120045", "bob-builds").await;
+    link_account(&f, &ns, &f.carol, "5550001", "carol-c").await;
+    super::bridge::project_roles(&f.vtc.state, false)
+        .await
+        .unwrap();
+    let linked = new_role_jobs(&f, &before, WIDGETS).await;
+    assert!(
+        linked
+            .iter()
+            .any(|j| j.payload["desiredRoles"].to_string().contains("9120045")),
+        "{linked:?}"
+    );
+
+    // The guard: an account id that is not the one linked refuses, and
+    // changes nothing.
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "account/unlink",
+        json!({ "forge": "github.com", "accountId": "1" }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns/account/unlink:notLinked");
+    let accounts = super::bridge::linked_accounts(&f.vtc.state).await.unwrap();
+    assert_eq!(accounts[&f.bob.did]["github.com"].id, "9120045");
+
+    let before = job_ids(&f).await;
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "account/unlink",
+        json!({ "forge": "github.com", "accountId": "9120045" }),
+    )
+    .await);
+    assert_eq!(
+        body["unlinked"],
+        json!({ "forge": "github.com", "id": "9120045", "login": "bob-builds" })
+    );
+    assert!(body["unlinkedAt"].is_string());
+    let accounts = super::bridge::linked_accounts(&f.vtc.state).await.unwrap();
+    assert!(!accounts.contains_key(&f.bob.did), "{accounts:?}");
+    assert_eq!(accounts[&f.carol.did]["github.com"].login, "carol-c");
+    let bob = crate::members::get_member(&f.vtc.state.members_ks, &f.bob.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        bob.extensions.get("forges").is_none(),
+        "{:?}",
+        bob.extensions
+    );
+
+    // Queued at once, not at the next pass: the repository's complete
+    // desired roles, Carol still in them, Bob not, and no removeAccounts.
+    let after = new_role_jobs(&f, &before, WIDGETS).await;
+    assert_eq!(after.len(), 1, "{after:?}");
+    let roles = after[0].payload["desiredRoles"].to_string();
+    assert!(
+        !roles.contains("9120045") && roles.contains("5550001"),
+        "{roles}"
+    );
+    assert!(after[0].payload.get("removeAccounts").is_none());
+    // Bob's rights are untouched.
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(WIDGETS).unwrap();
+    assert!(
+        snap.rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .any(|r| r.subject == f.bob.did)
+    );
+
+    // Nothing left to unlink; others' accounts are not the caller's.
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "account/unlink",
+        json!({ "forge": "github.com" }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns/account/unlink:notLinked");
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "account/unlink",
+        json!({ "forge": "github.com", "accountId": "5550001" }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns/account/unlink:notLinked");
+    assert!(
+        super::bridge::linked_accounts(&f.vtc.state)
+            .await
+            .unwrap()
+            .contains_key(&f.carol.did)
+    );
+    // Someone with no link — a non-member here — learns only that.
+    let out = send(
+        &f.vtc.state,
+        &f.stranger,
+        "account/unlink",
+        json!({ "forge": "github.com" }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns/account/unlink:notLinked");
+}
+
+/// A binding on a forge with no bridge-mode namespace any more — unbound
+/// since it was linked — is still the member's to remove.
+#[tokio::test]
+async fn an_account_on_a_forge_with_no_bridge_can_still_be_unlinked() {
+    let f = fixture().await;
+    crate::members::storage::edit_member(&f.vtc.state.members_ks, &f.bob.did, |m| {
+        m.extensions = json!({
+            "org": "acme",
+            "forges": { "codeberg.org": { "id": "77", "login": "bob-cb", "linkedAt": "2026-09-23T10:00:00Z" } },
+        });
+        true
+    })
+    .await
+    .unwrap();
+    ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "account/unlink",
+        json!({ "forge": "codeberg.org" }),
+    )
+    .await);
+    let bob = crate::members::get_member(&f.vtc.state.members_ks, &f.bob.did)
+        .await
+        .unwrap()
+        .unwrap();
+    // Only the binding goes; the rest of the member's extensions stay.
+    assert_eq!(bob.extensions, json!({ "org": "acme" }));
+}
+
 // ── one account, one member ────────────────────────────────────────────────
 
 /// git-ns/account/link *Request* item 4: an account already linked to a
@@ -1295,6 +1475,15 @@ async fn a_forge_account_already_linked_to_a_member_cannot_be_linked_to_another(
         .find(|a| a.member == f.bob.did)
         .unwrap();
     assert!(!row.member_current);
+
+    // And Bob may still unlink it himself.
+    ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "account/unlink",
+        json!({ "forge": "github.com", "accountId": "9120045" }),
+    )
+    .await);
 }
 
 /// A member who held no right still loses their linked accounts when they
@@ -1339,6 +1528,7 @@ fn every_git_ns_task_is_served() {
         "view",
         "account/link",
         "account/link-status",
+        "account/unlink",
         "bridge/result",
         "bridge/event",
         "drift/resolve",

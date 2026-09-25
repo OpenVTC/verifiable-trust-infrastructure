@@ -234,8 +234,29 @@ the account is already linked to another member. The authorisation URL is
 printed only if it is an `https://` URL, in its parsed form, and nothing the
 VTC or bridge returns reaches the terminal with control or format (bidi,
 zero-width) characters in it. Linking again
-replaces the account linked on that forge. There is no unlink task: an
-account is unlinked when its member leaves.
+replaces the account linked on that forge.
+
+`cnm git unlink --forge <host>` removes it (`git-ns/account/unlink`). It reads
+the account linked there first and sends its id as the task's guard, so a
+re-link in between is never removed (`--account-id` names it instead). The
+VTC deletes the binding and queues the complete `desiredRoles` of every
+bridge-mode namespace on that forge at once; the account is in none of them,
+so the bridge withdraws the roles it gave it on its next dispatch. It never
+sends `removeAccounts` for this: a role the bridge did not give stays and is
+reported as drift, for the owners to revert. The member's rights are
+unchanged, and the audit record (`gitNs.account.unlinked`, one per affected
+namespace) names the member and the forge, not the account. A caller with
+nothing linked — a non-member included — is answered `notLinked`, so the
+answer says nothing about membership; a member whose access lapsed can still
+unlink (with `--account-id`, since `git view` answers current members only).
+
+One forge account links to one member. Link completion checks and records it
+in one step under the member-row lock, inside the git-ns store lock that
+serialises every link and unlink, so two members can never both hold it. A
+member whose access lapsed keeps the account — nobody else may link it — but
+it projects no role and cannot be adopted; `GET /v1/git-ns/accounts` says so
+with `memberCurrent`. A departed member's links are deleted by the departure
+sweep whether or not they held a right.
 
 ## Reseating a headless namespace
 
