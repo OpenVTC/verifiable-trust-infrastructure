@@ -85,7 +85,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     (
         "vta-service/src/operations/did_webvh/update/rotate.rs",
         2,
-        "rotate-keys: replacement method keys at paths allocated under the DID's own context base; no caller-chosen path or key id",
+        "rotate-keys: replacement keys at paths allocated under the DID's own context base; only methods under the DID whose records are in its context are rotated (validate_document_for_update refuses foreign method ids)",
     ),
     (
         "vta-service/src/operations/provision_integration/mint.rs",

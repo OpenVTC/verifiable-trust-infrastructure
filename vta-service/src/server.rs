@@ -2332,6 +2332,7 @@ async fn find_vta_key_paths(
         .get(crate::keys::store_key(&signing_key_id))
         .await?
         .ok_or_else(|| AppError::NotFound("VTA signing key not found".into()))?;
+    require_active(&signing)?;
 
     let ka_path = if vta_did.starts_with("did:key:") {
         None
@@ -2341,11 +2342,25 @@ async fn find_vta_key_paths(
             .get(crate::keys::store_key(&ka_key_id))
             .await?
             .ok_or_else(|| AppError::NotFound("VTA key-agreement key not found".into()))?;
+        require_active(&ka)?;
         Some(ka.derivation_path)
     };
 
     debug!(signing_path = %signing.derivation_path, ka_path = ?ka_path, "VTA key paths resolved");
     Ok((signing.derivation_path, ka_path, signing.seed_id))
+}
+
+/// The VTA loads only active records as its own identity: a revoked record
+/// (retired by a rotation, or revoked outright) or a rotation's inert staging
+/// record must never become the key it signs or decrypts with.
+fn require_active(record: &KeyRecord) -> Result<(), AppError> {
+    if record.status != vta_sdk::keys::KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "VTA key `{}` is not active; refusing to load it",
+            record.key_id
+        )));
+    }
+    Ok(())
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.

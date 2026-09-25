@@ -2827,11 +2827,12 @@ mod pre_rotation_e2e_tests {
             assert_eq!(retired.status, KeyStatus::Revoked);
             assert_eq!(retired.public_key, old_pub);
             assert!(
-                ts.keys_ks
-                    .get::<KeyRecord>(crate::keys::store_key(&format!("{id}@rotating")))
+                !ts.keys_ks
+                    .prefix_iter_raw("key:")
                     .await
                     .unwrap()
-                    .is_none(),
+                    .iter()
+                    .any(|(k, _)| String::from_utf8_lossy(k).contains("@rotating")),
                 "no staging record is left behind"
             );
         }
@@ -2970,6 +2971,371 @@ mod pre_rotation_e2e_tests {
                 "{id}: the live secret is the rotated key"
             );
         }
+    }
+
+    /// The probe from review: an admin of ctx-a must not be able to pull
+    /// ctx-b's key record into its own DID. Defining another DID's method id
+    /// is refused at update, and a record of another context under this DID's
+    /// own method id is refused at rotation — ctx-b's record is untouched.
+    #[tokio::test]
+    async fn rotation_cannot_take_over_another_contexts_key_record() {
+        use vta_sdk::keys::KeyRecord;
+        let (ts, seed_store) = setup("ctx-a").await;
+        crate::contexts::create_context(&ts.contexts_ks, "ctx-b", "b")
+            .await
+            .unwrap();
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did_a, scid_a) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-a",
+            0,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+        let (did_b, _) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-b",
+            0,
+        )
+        .await;
+        let victim_id = format!("{did_b}#key-0");
+        let victim: KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&victim_id))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let current = |did: String| {
+            let ts = &ts;
+            async move {
+                let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let st = state_from_jsonl(&log).unwrap();
+                didwebvh_rs::log_entry::LogEntryMethods::get_did_document(
+                    &st.log_entries().last().unwrap().log_entry,
+                )
+                .unwrap()
+            }
+        };
+
+        // 1. Defining ctx-b's method in ctx-a's document is refused.
+        let mut doc = current(did_a.clone()).await;
+        doc["verificationMethod"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": victim_id,
+                "type": "Multikey",
+                "controller": did_b,
+                "publicKeyMultibase": victim.public_key,
+            }));
+        sleep(VERSION_TIME_GAP).await;
+        let err = update_did_webvh(
+            &deps,
+            &auth,
+            &scid_a,
+            UpdateDidWebvhOptions {
+                document: Some(doc),
+                ..Default::default()
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect_err("a foreign method id is refused");
+        assert!(err.to_string().contains("not a method of"), "{err}");
+
+        // 2. A record of ctx-b planted under one of ctx-a's own method ids is
+        //    refused at rotation.
+        let planted_id = format!("{did_a}#key-planted");
+        let mut planted = victim.clone();
+        planted.key_id = planted_id.clone();
+        ts.keys_ks
+            .insert(crate::keys::store_key(&planted_id), &planted)
+            .await
+            .unwrap();
+        let mut doc = current(did_a.clone()).await;
+        doc["verificationMethod"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": planted_id,
+                "type": "Multikey",
+                "controller": did_a,
+                "publicKeyMultibase": victim.public_key,
+            }));
+        update_did_webvh(
+            &deps,
+            &auth,
+            &scid_a,
+            UpdateDidWebvhOptions {
+                document: Some(doc),
+                ..Default::default()
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect("a method under ctx-a's own DID is accepted");
+        sleep(VERSION_TIME_GAP).await;
+        let err = rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid_a,
+            RotateDidWebvhKeysOptions::default(),
+            None,
+            None,
+            "test",
+        )
+        .await
+        .expect_err("a record of another context is refused");
+        assert!(err.to_string().contains("context"), "{err}");
+
+        let after: KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&victim_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.public_key, victim.public_key);
+        assert_eq!(after.context_id.as_deref(), Some("ctx-b"));
+        assert_eq!(after.status, vta_sdk::keys::KeyStatus::Active);
+    }
+
+    /// A rotation whose entry is committed locally but whose publish then fails
+    /// promotes its key records rather than unstaging them: the log publishes
+    /// the new keys, so the VTA must hold records for them.
+    #[tokio::test]
+    async fn rotation_committed_before_a_failed_publish_promotes_its_records() {
+        use vta_sdk::keys::{KeyRecord, KeyStatus};
+        let (ts, seed_store) = setup("ctx-pubfail").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-pubfail",
+            0,
+        )
+        .await;
+        let id = format!("{did}#key-0");
+        let before: KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&id))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Point the DID at a server that does not exist, with the current head
+        // already confirmed so the reconcile step does not fail first: the
+        // update commits, then its publish fails.
+        let mut record = crate::webvh_store::get_did(&ts.webvh_ks, &did)
+            .await
+            .unwrap()
+            .unwrap();
+        record.server_id = "missing-server".into();
+        crate::webvh_store::store_did(&ts.webvh_ks, &record)
+            .await
+            .unwrap();
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .unwrap()
+            .unwrap();
+        let head = state_from_jsonl(&log)
+            .unwrap()
+            .log_entries()
+            .last()
+            .unwrap()
+            .get_version_id()
+            .to_string();
+        crate::webvh_store::set_published_version(&ts.webvh_ks, &did, &head)
+            .await
+            .unwrap();
+
+        sleep(VERSION_TIME_GAP).await;
+        let err = rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions::default(),
+            Some("did:key:z6MkVtaForTest"),
+            None,
+            "test",
+        )
+        .await
+        .expect_err("the publish fails");
+        assert!(
+            matches!(err, super::UpdateDidWebvhError::Publish(_)),
+            "fails at publish, after the commit: {err}"
+        );
+
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .unwrap()
+            .unwrap();
+        let after: KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            after.public_key, before.public_key,
+            "the record was promoted"
+        );
+        assert_eq!(after.status, KeyStatus::Active);
+        assert!(
+            log.contains(&after.public_key),
+            "the promoted record holds the key the committed log publishes"
+        );
+        let retired: KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&format!("{id}@{head}")))
+            .await
+            .unwrap()
+            .expect("the replaced record is retired");
+        assert_eq!(retired.status, KeyStatus::Revoked);
+        assert_eq!(retired.public_key, before.public_key);
+        assert!(
+            !ts.keys_ks
+                .prefix_iter_raw("key:")
+                .await
+                .unwrap()
+                .iter()
+                .any(|(k, _)| String::from_utf8_lossy(k).contains("@rotating")),
+            "no staging record is left behind"
+        );
+    }
+
+    /// A method the VTA holds no record for is left exactly as published; a
+    /// record that no longer holds the published key refuses the rotation.
+    #[tokio::test]
+    async fn rotation_skips_external_keys_and_refuses_stale_records() {
+        use vta_sdk::keys::KeyRecord;
+        let (ts, seed_store) = setup("ctx-ext").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-ext",
+            0,
+        )
+        .await;
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .unwrap()
+            .unwrap();
+        let st = state_from_jsonl(&log).unwrap();
+        let mut doc = didwebvh_rs::log_entry::LogEntryMethods::get_did_document(
+            &st.log_entries().last().unwrap().log_entry,
+        )
+        .unwrap();
+        let external = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        doc["verificationMethod"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": format!("{did}#external"),
+                "type": "Multikey",
+                "controller": did,
+                "publicKeyMultibase": external,
+            }));
+        sleep(VERSION_TIME_GAP).await;
+        update_did_webvh(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc),
+                ..Default::default()
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect("publish an external key");
+        sleep(VERSION_TIME_GAP).await;
+        rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions::default(),
+            None,
+            None,
+            "test",
+        )
+        .await
+        .expect("rotate");
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            log.contains(external),
+            "the external key is left as published"
+        );
+
+        // Make #key-0's record stale, then rotate again.
+        let id = format!("{did}#key-0");
+        let mut rec: KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&id))
+            .await
+            .unwrap()
+            .unwrap();
+        rec.public_key = "z6MkStale".into();
+        ts.keys_ks
+            .insert(crate::keys::store_key(&id), &rec)
+            .await
+            .unwrap();
+        sleep(VERSION_TIME_GAP).await;
+        let err = rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions::default(),
+            None,
+            None,
+            "test",
+        )
+        .await
+        .expect_err("stale record");
+        assert!(err.to_string().contains("realign"), "{err}");
     }
 
     /// `preRotationCount: 0` is an instruction to stop committing successors,

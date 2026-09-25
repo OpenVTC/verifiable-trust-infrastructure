@@ -58,6 +58,7 @@ pub async fn plan_did_webvh_update(
         "plan",
         Mode::Plan,
         PublishTarget::DidLog,
+        &mut Commit::NotCommitted,
     )
     .await?
     {
@@ -90,6 +91,7 @@ pub async fn update_did_webvh(
         channel,
         Mode::Execute,
         PublishTarget::DidLog,
+        &mut Commit::NotCommitted,
     )
     .await?
     {
@@ -97,6 +99,53 @@ pub async fn update_did_webvh(
         Outcome::Planned(_) => Err(UpdateDidWebvhError::Library(
             "execute mode returned a plan".into(),
         )),
+    }
+}
+
+/// Whether an update reached its commit point — the local log write — before
+/// it returned. Everything before that point is read-only; everything after it
+/// (handle installs, the record, the publish) can fail with the new entry
+/// already the DID's local head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Commit {
+    /// Nothing was written: the DID's log is as it was.
+    NotCommitted,
+    /// The new log entry is the DID's local head, whatever failed after it.
+    Committed,
+}
+
+/// [`update_did_webvh`], reporting on failure whether the new entry was
+/// committed. A caller that staged state for the update (rotate-keys' key
+/// records) must promote it after the commit point and may discard it only
+/// before — an error alone does not say which.
+pub(super) async fn update_did_webvh_tracked(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    scid: &str,
+    opts: UpdateDidWebvhOptions,
+    vta_did: Option<&str>,
+    channel: &str,
+) -> Result<UpdateDidWebvhResult, (UpdateDidWebvhError, Commit)> {
+    let mut commit = Commit::NotCommitted;
+    match run_update(
+        deps,
+        auth,
+        scid,
+        opts,
+        vta_did,
+        channel,
+        Mode::Execute,
+        PublishTarget::DidLog,
+        &mut commit,
+    )
+    .await
+    {
+        Ok(Outcome::Executed(result)) => Ok(result),
+        Ok(Outcome::Planned(_)) => Err((
+            UpdateDidWebvhError::Library("execute mode returned a plan".into()),
+            commit,
+        )),
+        Err(e) => Err((e, commit)),
     }
 }
 
@@ -363,6 +412,7 @@ pub async fn agent_name_op(
             name: name.to_string(),
             verb,
         },
+        &mut Commit::NotCommitted,
     )
     .await?
     {
@@ -494,6 +544,7 @@ async fn run_update(
     channel: &str,
     mode: Mode,
     publish: PublishTarget,
+    commit: &mut Commit,
 ) -> Result<Outcome, UpdateDidWebvhError> {
     // Re-bind the bundled deps to the historical local names so the (large) body
     // below is unchanged. All fields are `Copy` references — this copies the
@@ -1161,6 +1212,9 @@ async fn run_update(
     webvh_store::store_did_log(webvh_ks, &record.did, &new_log_jsonl)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did_log: {e}")))?;
+    // The commit point: from here the new entry is the DID's local head, and
+    // an error below no longer means nothing happened.
+    *commit = Commit::Committed;
     // Single source of truth for the post-mutation self-DID resolver refresh:
     // reseed the in-process cache straight from the log we just built, before it
     // leaves this function. Every runtime DID-log mutation (did-webvh update and

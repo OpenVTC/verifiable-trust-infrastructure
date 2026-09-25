@@ -781,6 +781,14 @@ pub async fn get_key_secret(
         ));
     }
 
+    // A revoked key — including a record a rotation retired or is staging —
+    // is kept for history, not so its private half can still leave.
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is not active and its private half is not released"
+        )));
+    }
+
     // Internal keys are refused here too. `InternalAuthority` bypasses the ACL,
     // not the non-extractability guarantee — an internal key has no export
     // surface at all, and an internal caller wanting a signature must go
@@ -1018,6 +1026,15 @@ pub async fn get_key_secret_internal(
 
     // Deliberately no `auth.require_context` / `is_super_admin` gate —
     // possessing an `InternalAuthority` IS the gate.
+
+    // Internal authority skips the ACL, not the key's lifecycle: a revoked key
+    // (retired by a rotation, or revoked outright) must not keep signing or
+    // decrypting for the VTA.
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is not active and is not loaded for use"
+        )));
+    }
 
     let (public_key_multibase, private_key_multibase) = match record.origin {
         // Unreachable: the early return above refuses internal keys. Kept as a
@@ -3482,6 +3499,60 @@ mod tests {
 
         assert!(
             matches!(&err, AppError::Forbidden(m) if m.contains("internal key")),
+            "{err:?}"
+        );
+    }
+
+    /// A revoked record — a key a rotation retired, or a rotation's inert
+    /// staging record — is kept for history only: neither the export surface
+    /// nor the VTA's own loads release its private half.
+    #[tokio::test]
+    async fn a_revoked_key_is_neither_exported_nor_loaded() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-retired").await;
+        let mut record: KeyRecord = h
+            .keys_ks
+            .get(keys::store_key("k-retired"))
+            .await
+            .unwrap()
+            .unwrap();
+        record.status = KeyStatus::Revoked;
+        h.keys_ks
+            .insert(keys::store_key("k-retired"), &record)
+            .await
+            .unwrap();
+
+        let err = get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-retired",
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
+            "{err:?}"
+        );
+
+        let err = get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &*h.seed_store,
+            &h.audit,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-retired",
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
             "{err:?}"
         );
     }
