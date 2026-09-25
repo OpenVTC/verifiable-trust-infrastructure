@@ -75,6 +75,14 @@ pub struct ConsentGrant {
     pub expires_at: Option<u64>,
     /// How the decision was authorized, e.g. `"did-signed"` | `"bridge-attested"`.
     pub evidence: String,
+    /// The VTA context the grant was decided in: the context of the pending
+    /// request it answers. Every stored datum belongs to a context
+    /// (VTI-CTX-001), and this is what lets withdrawal be scoped to it
+    /// (VTI-CTX-002). `None` for an operator pre-authorization or a grant
+    /// written before this member existed; only a super-admin may withdraw
+    /// either.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub context: Option<String>,
 }
 
 impl ConsentGrant {
@@ -315,6 +323,7 @@ mod tests {
             granted_at: 1_000,
             expires_at: None,
             evidence: "bridge-attested".into(),
+            context: None,
         }
     }
 
@@ -399,6 +408,7 @@ mod tests {
             granted_at: 1_000,
             expires_at: Some(2_000),
             evidence: "bridge-attested".into(),
+            context: None,
         };
         assert!(g.allows(1_500));
         assert!(!g.allows(2_000)); // expired
@@ -433,6 +443,7 @@ mod tests {
             granted_at: 42,
             expires_at: None,
             evidence: "did-signed".into(),
+            context: None,
         };
         let s = serde_json::to_string(&g).unwrap();
         assert_eq!(serde_json::from_str::<ConsentGrant>(&s).unwrap(), g);

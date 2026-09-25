@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse, epoch_to_rfc3339};
 
-use crate::acl::{Role, check_acl_entry, effective_capabilities};
+use crate::acl::{check_acl_entry, effective_capabilities};
 use crate::audit::audit;
 use crate::auth::AuthClaims;
 use crate::auth::session::{SessionState, delete_session, get_session, list_sessions, now_epoch};
@@ -107,14 +107,23 @@ pub(super) async fn handle_revoke_session(
         }
     };
 
-    // 3. Authorise: caller owns the session OR has Role::Admin. Same rule as
-    //    the legacy REST handler. A session that is not the caller's and a
-    //    session that does not exist take the same arm, so the caller cannot
-    //    tell them apart — see this function's doc comment.
-    if session
-        .filter(|s| s.did == auth.did || auth.role == Role::Admin)
-        .is_none()
-    {
+    // 3. Authorise: the caller owns the session or may manage its subject
+    //    (`operations::acl::may_manage_subject`, the rule `acl/delete` applies
+    //    to the subject's entry). Same rule as the legacy REST handler. The
+    //    admin role alone was the old rule, and let any context's admin end
+    //    anyone's session, a super-admin's included. A session that is not the
+    //    caller's to end and one that does not exist take the same arm, so
+    //    the caller cannot tell them apart — see this function's doc comment.
+    let permitted = match &session {
+        Some(s) => {
+            match crate::operations::acl::may_manage_subject(&state.acl_ks, auth, &s.did).await {
+                Ok(p) => p,
+                Err(e) => return app_error_to_reject(&doc, e),
+            }
+        }
+        None => false,
+    };
+    if !permitted {
         // Warn, not reject. The operator reading logs is entitled to know a
         // caller reached for a session; the caller is not entitled to know
         // whether it was there.
@@ -129,6 +138,22 @@ pub(super) async fn handle_revoke_session(
             resource = &session_id,
             outcome = "no-op"
         );
+        // A real session outside the caller's authority is a refusal, and
+        // refusals are recorded durably (VTI-AUD-003). The trail is not the
+        // caller's to read, so this discloses nothing to it.
+        if session.is_some() {
+            crate::audit::record_with_detail_best_effort(
+                &state.audit_sink,
+                "session.revoke",
+                &auth.did,
+                Some(&session_id),
+                "denied",
+                Some(super::helpers::TRANSPORT_TRUST_TASK),
+                None,
+                Some("session belongs to a subject outside the caller's authority"),
+            )
+            .await;
+        }
         return success_response(&doc, RevokeSessionResponse { revoked_count: 0 });
     }
 

@@ -10,8 +10,15 @@
 //! Auth: the approver is the operator **bound for the (platform, context)** in
 //! the approver registry (`consent/approver-set`), or the **enrolled bridge**
 //! relaying the operator's out-of-band choice (bridge-attested). With no binding
-//! configured, `consent/request` is default-denied (`noApprover`) and a context
-//! admin is the fallback decider.
+//! configured, `consent/request` is default-denied (`noApprover`) and an admin
+//! of the request's context is the fallback decider.
+//!
+//! **Scope.** A grant records the context of the request it answers
+//! (VTI-CTX-001), and writing or withdrawing one needs authority over that
+//! context (VTI-CTX-002). A grant with no context is written only by a
+//! super-admin's pre-authorization and withdrawn only by a super-admin.
+//! `consent/request`'s `contextHint` must be a context the caller may act in.
+//! Every refusal is audited.
 
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
 use serde::{Deserialize, Serialize};
@@ -42,6 +49,43 @@ use crate::server::AppState;
 
 /// How long a pending consent stays answerable.
 const PENDING_TTL_SECS: u64 = 600;
+
+/// Audit a refused consent operation and pass the refusal through.
+///
+/// VTI-AUD-003: refusals are audited as well as successes. A refusal here is a
+/// caller reaching for a grant outside its authority, which an honest bridge or
+/// operator does not do, so it is also logged at `warn!` with
+/// `security_alert = true`.
+async fn audit_refusal(
+    state: &AppState,
+    auth: &AuthClaims,
+    action: &str,
+    context: Option<&str>,
+    gate: Result<(), AppError>,
+) -> Result<(), AppError> {
+    let Err(e) = gate else { return Ok(()) };
+    tracing::warn!(
+        audit = true,
+        security_alert = true,
+        did = %auth.did,
+        action,
+        context = context.unwrap_or("-"),
+        reason = %e,
+        "consent operation refused",
+    );
+    audit::record_with_detail_best_effort(
+        &state.audit_sink,
+        action,
+        &auth.did,
+        None,
+        "denied",
+        Some(TRANSPORT_TRUST_TASK),
+        context,
+        Some(&e.to_string()),
+    )
+    .await;
+    Err(e)
+}
 
 // ── Wire shapes (camelCase) ──────────────────────────────────────────────────
 
@@ -281,6 +325,22 @@ pub(super) async fn handle_request(
         Err(e) => return app_error_to_reject(&doc, e),
     }
 
+    // A caller-supplied hint must be a context the caller may act in. The hint
+    // picks the approver the request is routed to and becomes the grant's
+    // context, so an unchecked hint let a bridge scoped to one context raise
+    // requests (and so grants) in another (VTI-CTX-002).
+    if let Some(hint) = payload.context_hint.as_deref()
+        && let Err(e) = audit_refusal(
+            state,
+            auth,
+            "consent.request",
+            Some(hint),
+            auth.require_context(hint),
+        )
+        .await
+    {
+        return app_error_to_reject(&doc, e);
+    }
     let context = payload
         .context_hint
         .or_else(|| auth.default_context().map(str::to_string));
@@ -552,8 +612,11 @@ async fn maybe_wake_consent_approver(
 }
 
 /// `consent/decision/1.0` — an approver allows/denies; records a grant.
-/// Auth: the enrolled bridge that requested (bridge-attested), or a context
-/// admin (operator, did-signed).
+/// Auth: the enrolled bridge that requested (bridge-attested), the approver
+/// bound for the request's (platform, context), or, with none bound, an admin
+/// of the request's context (did-signed). A decision with no challenge (an
+/// operator pre-authorization) writes a grant with no context, which only a
+/// super-admin may do.
 pub(super) async fn handle_decision(
     state: &AppState,
     auth: &AuthClaims,
@@ -595,11 +658,25 @@ pub(super) async fn handle_decision(
                             );
                         }
                         Ok(None) => {
-                            if let Err(e) = auth.require_admin() {
-                                return app_error_to_reject(&doc, e);
-                            }
-                            if !ctx.is_empty()
-                                && let Err(e) = auth.require_context(&ctx)
+                            // No bound approver: an admin *of the request's
+                            // context* decides. A request with no context
+                            // belongs to none, so only a super-admin may
+                            // decide it. Skipping the context check for an
+                            // empty context let any admin decide it.
+                            let gate = if ctx.is_empty() {
+                                auth.require_super_admin()
+                            } else {
+                                auth.require_admin()
+                                    .and_then(|()| auth.require_context(&ctx))
+                            };
+                            if let Err(e) = audit_refusal(
+                                state,
+                                auth,
+                                "consent.decision",
+                                (!ctx.is_empty()).then_some(ctx.as_str()),
+                                gate,
+                            )
+                            .await
                             {
                                 return app_error_to_reject(&doc, e);
                             }
@@ -625,13 +702,23 @@ pub(super) async fn handle_decision(
             Err(e) => return app_error_to_reject(&doc, e),
         }
     } else {
-        // Operator pre-authorization (no challenge): admins only.
-        if let Err(e) = auth.require_admin() {
+        // Operator pre-authorization (no challenge). The payload names no
+        // context, so the grant belongs to none, and a grant decides what an
+        // agent may do on the principal's behalf across the whole VTA. Only a
+        // super-admin may write one (VTI-ACL-022). Any admin could, before.
+        if let Err(e) = audit_refusal(
+            state,
+            auth,
+            "consent.decision",
+            None,
+            auth.require_super_admin(),
+        )
+        .await
+        {
             return app_error_to_reject(&doc, e);
         }
         ("did-signed", None, None)
     };
-    let _ = context;
 
     let scope = match payload.effect {
         ConsentEffect::Allow => Some(
@@ -650,6 +737,9 @@ pub(super) async fn handle_decision(
         granted_at: now,
         expires_at: payload.expires_at.as_deref().and_then(rfc3339_to_epoch),
         evidence: evidence.to_string(),
+        // The context of the request this answers, so withdrawal can be scoped
+        // to it (VTI-CTX-001/002).
+        context,
     };
     if let Err(e) = store_consent_grant(&state.consent_ks, &grant).await {
         return app_error_to_reject(&doc, e);
@@ -664,7 +754,8 @@ pub(super) async fn handle_decision(
     )
 }
 
-/// `consent/revoke/1.0` — an operator withdraws a standing grant. Auth: admin.
+/// `consent/revoke/1.0` — an operator withdraws a standing grant. Auth: admin of
+/// the grant's context; super-admin for a grant with no context.
 pub(super) async fn handle_revoke(
     state: &AppState,
     auth: &AuthClaims,
@@ -692,8 +783,8 @@ pub(super) async fn handle_revoke(
     // an error for the outcome they asked for. The `consent/revoke:notFound`
     // error code stays declared upstream for a consumer that cannot answer at
     // all; it is not this case.
-    match get_consent_grant(&state.consent_ks, &subject).await {
-        Ok(Some(_)) => {}
+    let grant = match get_consent_grant(&state.consent_ks, &subject).await {
+        Ok(Some(g)) => g,
         Ok(None) => {
             return success_response(
                 &doc,
@@ -705,6 +796,25 @@ pub(super) async fn handle_revoke(
             );
         }
         Err(e) => return app_error_to_reject(&doc, e),
+    };
+    // Withdrawal is scoped to the grant's context: an admin of that context,
+    // or a super-admin for a grant that has none (an operator
+    // pre-authorization, or one written before grants recorded a context).
+    // Admin role alone let any context's admin withdraw every grant on the VTA.
+    let gate = match grant.context.as_deref() {
+        Some(ctx) => auth.require_context(ctx),
+        None => auth.require_super_admin(),
+    };
+    if let Err(e) = audit_refusal(
+        state,
+        auth,
+        "consent.revoke",
+        grant.context.as_deref(),
+        gate,
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, e);
     }
     if let Err(e) = delete_consent_grant(&state.consent_ks, &subject).await {
         return app_error_to_reject(&doc, e);
@@ -903,6 +1013,7 @@ mod tests {
             granted_at: 1_700_000_000, // 2023-11-14
             expires_at: None,
             evidence: "did-signed".into(),
+            context: Some("ctx".into()),
         };
         let v = serde_json::to_value(WireGrant::from(g)).unwrap();
         assert_eq!(v["subject"]["conversationRef"], "sig-1");
