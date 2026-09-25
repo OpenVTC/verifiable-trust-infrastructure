@@ -104,7 +104,7 @@ vsock-store = ["vti-common/vsock-store"]
 # `tests/` can build complete VTA state the same way the lib unit tests
 # do. Enable via a `[dev-dependencies]` `features = ["test-support"]`
 # entry in the downstream crate. Not meant for production builds.
-test-support = ["webvh", "dep:tempfile"]
+test-support = ["webvh", "dep:tempfile", "vti-common/test-support"]
 # Mediator-backed transports for `MockVta`: an embedded
 # `affinidi-messaging-test-mediator`, a `did:peer:2` VTA identity advertising
 # `DIDCommMessaging` + `TSPTransport` at it, and the **production** inbound

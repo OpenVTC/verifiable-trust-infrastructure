@@ -24,6 +24,11 @@ tsp = ["dep:affinidi-messaging-sdk"]
 # for the local/dev `vta` binary's CLI, where the trust boundary is the
 # OS process (not the network). NEVER enable in enclave builds.
 cli-synthesis = []
+# Test-only builders for authcrypt envelopes with a caller-chosen protected
+# header (`auth::authcrypt_test_support`), so the services' route tests can
+# drive the sender-binding guard with envelopes a conforming packer would never
+# emit. NEVER enable in a production build.
+test-support = []
 # Shared WebAuthn / passkey infrastructure (types + storage). Services
 # (VTA, VTC) implement the `auth::passkey::PasskeyState` trait on their
 # `AppState` and gain reusable enrolment + login storage primitives. The
