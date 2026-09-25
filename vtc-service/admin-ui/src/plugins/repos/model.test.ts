@@ -9,12 +9,15 @@ import {
   guardFor,
   isServiceGrant,
   namespaceFindings,
+  projectedRight,
   repoStatus,
+  revertStanding,
   rightForForgeRole,
 } from "./model";
 import {
   ACME,
   ALICE,
+  BOB,
   BRIDGE,
   DOCS,
   HANA,
@@ -40,6 +43,11 @@ describe("consentClass — mirrors git_ns::ops::consent_class", () => {
     expect(consentClass("repo.transfer")).toBe("elevated");
     expect(consentClass("repo.archive")).toBe("elevated");
     expect(consentClass("repo.adopt")).toBe("elevated");
+  });
+
+  it("classes a drift revert as the revocation it weighs as", () => {
+    expect(consentClass("drift.resolve", "git.repo.own")).toBe("elevated");
+    expect(consentClass("drift.resolve", "git.repo.maintain")).toBe("normal");
   });
 
   it("leaves commit and maintain grants normal", () => {
@@ -214,5 +222,50 @@ describe("namespace facts", () => {
     expect(rightForForgeRole("maintain")).toBe("git.repo.maintain");
     expect(rightForForgeRole("write")).toBe("git.commit.sign");
     expect(rightForForgeRole("triage")).toBeNull();
+  });
+});
+
+describe("revertStanding — what git-ns/drift/resolve accepts", () => {
+  const maintain = {
+    type: "roleAdded" as const,
+    resource: DOCS.resource,
+    observed: "maintain",
+    account: { forge: "github.com", id: "1003", login: "hsato" },
+  };
+  const admin = { ...maintain, observed: "admin" };
+
+  it("mirrors projected_right, org and personal", () => {
+    expect(projectedRight("organization", "admin")).toBe("git.repo.own");
+    expect(projectedRight("organization", "maintain")).toBe("git.repo.maintain");
+    expect(projectedRight("organization", "write")).toBeNull();
+    expect(projectedRight("user", "write")).toBe("git.repo.maintain");
+    expect(projectedRight("user", "admin")).toBeNull();
+  });
+
+  it("lets an owner or a namespace admin revert", () => {
+    // DOCS is owned by Bob; Alice is ACME's admin.
+    expect(revertStanding(BOB, false, ACME, DOCS, maintain).may).toBe(true);
+    expect(revertStanding(ALICE, false, ACME, DOCS, maintain).may).toBe(true);
+  });
+
+  it("refuses anyone else, and an unknown viewer", () => {
+    const r = revertStanding(HANA, true, ACME, DOCS, maintain);
+    expect(r.may).toBe(false);
+    expect(!r.may && r.why).toMatch(/git\.repo\.own/);
+    expect(revertStanding(null, true, ACME, DOCS, maintain).may).toBe(false);
+  });
+
+  it("wants a community administrator when the revert weighs as revoking own", () => {
+    expect(revertStanding(BOB, false, ACME, DOCS, admin).may).toBe(false);
+    expect(revertStanding(BOB, true, ACME, DOCS, admin).may).toBe(true);
+    // Re-projecting a removed admin role is not a revocation of own.
+    expect(revertStanding(BOB, false, ACME, DOCS, { ...admin, type: "roleRemoved" }).may).toBe(true);
+  });
+
+  it("offers nothing in manual mode, or on a repository that is not active", () => {
+    const r = revertStanding(ALICE, true, PERSONAL, { ...DOCS, namespace: PERSONAL.id }, maintain);
+    expect(!r.may && r.why).toMatch(/manual mode/);
+    expect(revertStanding(ALICE, true, ACME, { ...DOCS, state: "archived" }, maintain).may).toBe(false);
+    expect(revertStanding(ALICE, true, ACME, LEGACY, maintain).may).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { postSignedTrustTask, signingAvailable } from "@/lib/api";
+import { postSignedTrustTask, signingAvailable, type WhoamiResponse } from "@/lib/api";
 
 import { Repos } from "@/plugins/repos";
 import { mockFetch, renderWithProviders } from "@/test/render";
@@ -29,11 +29,23 @@ beforeEach(() => {
   vi.mocked(postSignedTrustTask).mockReset();
 });
 
-const mount = (resource: string) =>
+const mount = (resource: string, whoami?: WhoamiResponse) =>
   renderWithProviders(<Repos />, {
     route: `/repos/repo/${encodeURIComponent(resource)}`,
     path: "/repos/*",
+    whoami,
   });
+
+const signedInAs = (subject: string, roles: string[] = ["initiator"]): WhoamiResponse => ({
+  session: {
+    id: "sess_1",
+    subject,
+    issuedAt: "2026-09-01T00:00:00Z",
+    expiresAt: "2026-09-01T00:05:00Z",
+  },
+  roles,
+  scopes: [],
+});
 
 describe("Repo detail", () => {
   it("shows people × rights with forge account, granter, expiry and departed flags", async () => {
@@ -198,6 +210,106 @@ describe("Repo detail", () => {
     expect(within(sign).getByLabelText("Command").textContent).toContain(
       `--subject=${HANA} --right=git.repo.maintain --resource=${DOCS.resource}`,
     );
+  });
+
+  it("reverts drift for the repository's owner as git-ns/drift/resolve", async () => {
+    const requests = mockFetch(gitNsRoutes());
+    // Bob owns acme/docs; he is not a community administrator.
+    mount(DOCS.resource, signedInAs(BOB));
+
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    fireEvent.click(
+      await within(drift).findByRole("button", { name: "Revert: Role added on the forge @hsato" }),
+    );
+    const form = await screen.findByRole("dialog", { name: "Revert drift on acme/docs" });
+    expect(form.textContent).toMatch(/takes the forge role off the account/);
+    fireEvent.change(within(form).getByLabelText("Reason"), { target: { value: "Not granted here" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the revert" }));
+
+    const sign = await screen.findByRole("dialog", { name: "Revert drift on acme/docs" });
+    expect(sign.textContent).toMatch(/Consent class: Normal/);
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      `cnm git drift resolve ${DOCS.resource} revert --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --reason='Not granted here'`,
+    );
+    const doc = JSON.parse(within(sign).getByLabelText("Document").textContent!);
+    expect(doc).toEqual({
+      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+      payload: {
+        resource: DOCS.resource,
+        action: "revert",
+        drift: {
+          type: "roleAdded",
+          account: { forge: "github.com", id: "1003", login: "hsato" },
+          observed: "maintain",
+        },
+        reason: "Not granted here",
+      },
+    });
+    fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
+    expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a DID that holds no right there", signedInAs(HANA, ["admin"])],
+    ["a viewer without a session probe", undefined],
+  ])("does not offer revert to %s, and hands over the command", async (_, whoami) => {
+    mockFetch(gitNsRoutes());
+    mount(DOCS.resource, whoami);
+
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    await within(drift).findByText("Role added on the forge");
+    expect(within(drift).queryByRole("button", { name: /^Revert/ })).toBeNull();
+    expect(drift.textContent).toMatch(/an owner's decision/);
+    expect(within(drift).getByLabelText("Revert command").textContent).toBe(
+      `cnm git drift resolve ${DOCS.resource} revert --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain`,
+    );
+  });
+
+  it("offers an elevated revert only to a community administrator who owns the repository", async () => {
+    const routes = gitNsRoutes().map((r) =>
+      r.path === "/v1/git-ns/drift"
+        ? {
+            ...r,
+            body: {
+              repos: [
+                {
+                  resource: DOCS.resource,
+                  state: "drift",
+                  drift: [
+                    {
+                      type: "roleAdded",
+                      resource: DOCS.resource,
+                      observed: "admin",
+                      account: { forge: "github.com", id: "1003", login: "hsato" },
+                    },
+                  ],
+                },
+              ],
+            },
+          }
+        : r,
+    );
+    mockFetch(routes);
+    const view = mount(DOCS.resource, signedInAs(BOB));
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    await within(drift).findByText("Role added on the forge");
+    expect(within(drift).queryByRole("button", { name: /^Revert/ })).toBeNull();
+    expect(drift.textContent).toMatch(/only from a community administrator/);
+    view.unmount();
+
+    mockFetch(routes);
+    mount(DOCS.resource, signedInAs(BOB, ["admin"]));
+    const again = await screen.findByRole("region", { name: "Drift" });
+    fireEvent.click(await within(again).findByRole("button", { name: /^Revert/ }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: "Revert drift on acme/docs" })).getByRole(
+        "button",
+        { name: "Build the revert" },
+      ),
+    );
+    const sign = await screen.findByRole("dialog", { name: "Revert drift on acme/docs" });
+    expect(sign.textContent).toMatch(/Consent class: Elevated/);
   });
 
   it("transfers ownership with cnm git transfer, excluding current owners", async () => {

@@ -1,5 +1,5 @@
 // The forms that build a change: grant or revoke a right, adopt, create or
-// transfer a repository. Each ends by handing its `SignedTask` to the caller,
+// transfer a repository, revert drift. Each ends by handing its `SignedTask` to the caller,
 // which shows it in `SignTaskDialog` to sign and send — the forms themselves
 // send nothing (see `actions.ts`).
 //
@@ -20,12 +20,13 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { useNameBook } from "@/lib/names";
 import { shortenDid } from "@/lib/format";
-import type { GitNsRight } from "@/lib/wire-types";
+import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
 
 import {
   adoptTask,
   createTask,
   didError,
+  driftRevertTask,
   expiryDaysError,
   grantTask,
   MAX_REASON,
@@ -38,7 +39,7 @@ import {
   transferTask,
 } from "./actions";
 import { fetchMembersPage, gitNsKeys } from "./api";
-import { consentClass, RIGHT_LABEL, rightLabel, shortName } from "./model";
+import { consentClass, driftRevertEffect, RIGHT_LABEL, rightLabel, shortName } from "./model";
 import { useModal } from "./ui";
 
 const OTHER = "__other__";
@@ -663,6 +664,63 @@ export function ReseatDialog({
         placeholder="Why the namespace is headless, and why this member"
         hint={`Required. Recorded as the right's reason, kept in the audit record, and shown to the namespace's repository owners. Never published. At most ${MAX_REASON} characters.`}
         error={errors.statement}
+      />
+    </FormDialog>
+  );
+}
+
+/**
+ * Revert one drift item (`git-ns/drift/resolve` 0.1, `revert`): the bridge
+ * re-applies the VTC-authoritative state. Offered only where the console
+ * reads the signer as able to (`revertStanding`); the VTC checks again. The
+ * reason is optional and kept in the audit record.
+ */
+export function RevertDriftDialog({
+  resource,
+  ns,
+  item,
+  label,
+  onClose,
+  onBuilt,
+}: {
+  resource: string;
+  ns: GitNsNamespaceRow;
+  item: GitNsDriftItem;
+  /** The item as the drift list names it. */
+  label: string;
+  onClose: () => void;
+  onBuilt: (task: SignedTask) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const submit = () => {
+    const e = reasonError(reason);
+    setError(e);
+    if (!e) onBuilt(driftRevertTask(resource, ns, item, reason));
+  };
+  return (
+    <FormDialog
+      title={`Revert drift on ${shortName(resource)}`}
+      onClose={onClose}
+      onSubmit={submit}
+      submitLabel="Build the revert"
+    >
+      <p>
+        <b>{label}</b>
+        {item.account && <> · @{item.account.login}</>}
+        {" · "}
+        {item.observed ? `forge shows ${item.observed}` : "forge shows nothing"}
+        {" · "}
+        {item.expected ? `projection calls for ${item.expected}` : "projection calls for nothing"}
+      </p>
+      <p className="muted">{driftRevertEffect(item)}</p>
+      <TextField
+        label="Reason"
+        value={reason}
+        onChange={setReason}
+        placeholder="Optional"
+        hint={`Kept in the audit record for the repository's owners and the namespace's admins. Never published. At most ${MAX_REASON} characters.`}
+        error={error}
       />
     </FormDialog>
   );
