@@ -190,7 +190,7 @@ export function namespaceFindings(ns: GitNsNamespaceRow): Finding[] {
       tone: "danger",
       title: "No namespace admin",
       detail:
-        "Its last admin left or lapsed, so nobody can grant here. A community administrator can reseat it with git-ns/namespace/reseat (cnm git reseat): namespace admin goes to a current member of the community, with a statement of why that is kept in the audit record and shown to the namespace's repository owners. It is refused while the namespace has any live git.ns.admin, so it never goes around an admin.",
+        "Its last admin left or lapsed, so nobody can grant here. A community administrator can reseat it with git-ns/namespace/reseat (cnm git reseat): namespace admin goes to a current member of the community, with a statement of why that is kept in the audit record and shown to the namespace's repository owners. It is refused while a current member holds a live git.ns.admin there, so it never goes around a sitting admin.",
     });
   }
   return out;

@@ -644,8 +644,9 @@ export function ReseatDialog({
     >
       <p className="muted">
         Seats a new namespace admin where none is left. Only a community administrator
-        (an admin not limited to some contexts) can do this, and only while the
-        namespace has no live <code>git.ns.admin</code>: the VTC refuses it otherwise.
+        (an admin not limited to some contexts) can do this, and only while no
+        current member holds a live <code>git.ns.admin</code> there: the VTC refuses it
+        otherwise.
         The admin it seats has no expiry.
       </p>
       <PersonField

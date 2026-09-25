@@ -7,6 +7,7 @@ import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api"
 import { PluginHost } from "@/components/PluginHost";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { probeSession, signOut, WhoamiResponse } from "@/lib/api";
+import { isSuperAdmin } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
@@ -169,11 +170,10 @@ export default function App() {
   // A "super admin" is Admin role with no context restrictions.
   // Scope-filtered plugins surface server errors as 403s anyway, but
   // hiding them from the nav keeps the UX coherent.
-  const isSuperAdmin =
-    probe.data.roles.includes("admin") && probe.data.scopes.length === 0;
+  const superAdmin = isSuperAdmin(probe.data);
   const plugins = allPlugins.filter((p) => {
     if (!p.scopes || p.scopes.length === 0) return true;
-    if (p.scopes.includes("super-admin")) return isSuperAdmin;
+    if (p.scopes.includes("super-admin")) return superAdmin;
     return true;
   });
 
