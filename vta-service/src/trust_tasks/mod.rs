@@ -4372,6 +4372,21 @@ mod response_coverage {
     /// `consent/request`'s `contextHint` routes the request and becomes the
     /// grant's context, so it must be a context the caller may act in.
     #[tokio::test]
+    async fn audit_verify_is_super_admin_only() {
+        // Verifying reads the whole log, which `audit/list` already reserves
+        // for a super-admin; the admin role alone used to suffice here.
+        let (state, _dir) = build_signing_test_app_state().await;
+        let a = crate::test_support::admin_claims_for_context("ctx-a");
+        let sup = crate::test_support::super_admin_claims();
+        let t = t::TASK_AUDIT_VERIFY_0_1;
+        assert_eq!(
+            outcome_as(&state, &a, t, json!({})).await,
+            "permissionDenied"
+        );
+        assert_eq!(outcome_as(&state, &sup, t, json!({})).await, "ok");
+    }
+
+    #[tokio::test]
     async fn consent_request_hint_must_be_in_the_callers_scope() {
         let (state, _dir) = build_signing_test_app_state().await;
         let a = crate::test_support::admin_claims_for_context("ctx-a");

@@ -1829,13 +1829,7 @@ pub async fn handle_step_up_approve(
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
     // The holder is the authcrypt-authenticated sender DID (the transport
-    // only surfaces sender-authenticated authcrypt frames). We do NOT
-    // require VTA-side ACL membership: the VTA vouches for the sender's
-    // OWN DID (`sub` == sender), and that approval is only useful to a
-    // caller who *also* holds an aal1 session as that DID at the RP (which
-    // checks `sub` == its session DID). So getting an approval requires
-    // possessing the holder key either way — the `step_up_policy_approve`
-    // gate below is the authorization control, not an ACL lookup.
+    // only surfaces sender-authenticated authcrypt frames).
     let holder_did = match message.from.as_deref() {
         Some(d) => d.split('#').next().unwrap_or(d).to_string(),
         None => {
@@ -1844,6 +1838,20 @@ pub async fn handle_step_up_approve(
             ))));
         }
     };
+
+    // The holder must be a principal of this VTA; the VTA signs this approval
+    // with its own `#key-0` and vouches only for subjects it serves. See
+    // `authorize_holder`. The refusal is audited there.
+    if let Err(e) = operations::step_up_approval::authorize_holder(
+        &state.acl_ks,
+        &state.audit_sink,
+        &holder_did,
+        "didcomm",
+    )
+    .await
+    {
+        return Ok(Some(app_err_to_response(e)));
+    }
 
     // Echo the version family (and minor) of the inbound request so a
     // canonical (`spec/auth/step-up/…`) caller gets the matching canonical
@@ -1909,6 +1917,18 @@ pub async fn handle_step_up_approve(
         rp = %body.rp_did,
         "issued VTA step-up approval token via DIDComm"
     );
+    // VTI-VTA-006: record what the VTA signed, and for whom.
+    crate::audit::record_with_detail_best_effort(
+        &state.audit_sink,
+        "step_up.approve",
+        &holder_did,
+        Some(&body.rp_did),
+        "success",
+        Some("didcomm"),
+        None,
+        None,
+    )
+    .await;
 
     response(response_type, &StepUpApproveResponseBody { approval_token })
 }
