@@ -298,36 +298,41 @@ impl MessagingRegistryClient {
         }
     }
 
-    /// Build, optionally sign, send, and await the reply for one task.
-    ///
-    /// `sign` is the spec's `IS_PROOF_REQUIRED` for the type: writes
-    /// (`record/put`, `record/delete`) carry the VTC's Data-Integrity proof;
-    /// reads (`record/query`, `recognition`) do not.
+    /// Build and sign one task: issued by this VTC's authority, addressed to
+    /// the registry, stamped with `issuedAt` and a fresh `id`, and signed with
+    /// the operational key (`proofPurpose: authentication`). Every registry
+    /// task is signed — the registry gates reads (`record/query`,
+    /// `recognition`) as it gates writes.
+    async fn signed_document(
+        &self,
+        type_uri: &str,
+        payload: Value,
+    ) -> Result<TrustTask<Value>, RegistryError> {
+        let issuer = self.authority()?.to_string();
+        let doc = build_document(&issuer, &self.registry_did, type_uri, payload);
+        let mut as_value = serde_json::to_value(&doc)
+            .map_err(|e| RegistryError::Transient(format!("serialise document: {e}")))?;
+        self.signer
+            .sign_operational_doc(&mut as_value)
+            .await
+            .map_err(|e| RegistryError::Transient(format!("sign document: {e}")))?;
+        serde_json::from_value(as_value)
+            .map_err(|e| RegistryError::Transient(format!("reparse signed document: {e}")))
+    }
+
+    /// Build, sign, send, and await the reply for one task.
     async fn round_trip(
         &self,
         type_uri: &str,
         payload: Value,
-        sign: bool,
         protocol: Protocol,
     ) -> Result<TrustTask<Value>, RegistryError> {
-        let issuer = self.authority()?.to_string();
+        self.authority()?;
         let messaging = self.didcomm.get().ok_or_else(|| {
             RegistryError::Transient("VTC messaging is not running yet".to_string())
         })?;
 
-        let mut doc = build_document(&issuer, &self.registry_did, type_uri, payload);
-        if sign {
-            let mut as_value = serde_json::to_value(&doc)
-                .map_err(|e| RegistryError::Transient(format!("serialise document: {e}")))?;
-            // A request, so `proofPurpose: authentication` — the registry
-            // checks the key is listed under `authentication`.
-            self.signer
-                .sign_operational_doc(&mut as_value)
-                .await
-                .map_err(|e| RegistryError::Transient(format!("sign document: {e}")))?;
-            doc = serde_json::from_value(as_value)
-                .map_err(|e| RegistryError::Transient(format!("reparse signed document: {e}")))?;
-        }
+        let doc = self.signed_document(type_uri, payload).await?;
 
         // Register before sending: a reply can land while the send is still
         // returning.
@@ -626,7 +631,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
             Protocol::Rest => self.rest()?.publish_member(record).await,
             protocol => {
                 let payload = json!({ "record": trust_record(&authority, record) });
-                let reply = self.round_trip(RECORD_PUT, payload, true, protocol).await?;
+                let reply = self.round_trip(RECORD_PUT, payload, protocol).await?;
                 classify(&reply, "registry/record/put")
             }
         }
@@ -643,9 +648,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     "action": RECOGNISE_ACTION,
                     "resource": TRUST_GRAPH_RESOURCE,
                 });
-                let reply = self
-                    .round_trip(RECORD_DELETE, payload, true, protocol)
-                    .await?;
+                let reply = self.round_trip(RECORD_DELETE, payload, protocol).await?;
                 classify(&reply, "registry/record/delete")
             }
         }
@@ -667,9 +670,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     "action": RECOGNISE_ACTION,
                     "limit": 50,
                 });
-                let reply = self
-                    .round_trip(RECORD_QUERY, payload, false, protocol)
-                    .await?;
+                let reply = self.round_trip(RECORD_QUERY, payload, protocol).await?;
                 classify(&reply, "registry/record/query")?;
                 let found = reply
                     .payload
@@ -710,9 +711,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     if let Some(c) = &cursor {
                         payload["cursor"] = json!(c);
                     }
-                    let reply = self
-                        .round_trip(RECORD_QUERY, payload, false, protocol)
-                        .await?;
+                    let reply = self.round_trip(RECORD_QUERY, payload, protocol).await?;
                     classify(&reply, "registry/record/query")?;
 
                     out.extend(
@@ -761,9 +760,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     "action": RECOGNISE_ACTION,
                     "resource": TRUST_GRAPH_RESOURCE,
                 });
-                let reply = self
-                    .round_trip(RECOGNITION, payload, false, protocol)
-                    .await?;
+                let reply = self.round_trip(RECOGNITION, payload, protocol).await?;
                 classify(&reply, "registry/recognition")?;
                 // Absence is "not recognised", never "recognised" — the
                 // restrictive reading a missing scope field always gets
@@ -799,7 +796,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
             )),
             protocol => {
                 let payload = json!({ "record": record });
-                let reply = self.round_trip(RECORD_PUT, payload, true, protocol).await?;
+                let reply = self.round_trip(RECORD_PUT, payload, protocol).await?;
                 classify(&reply, "registry/record/put")
             }
         }
@@ -826,9 +823,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     if let Some(c) = &cursor {
                         payload["cursor"] = json!(c);
                     }
-                    let reply = self
-                        .round_trip(RECORD_QUERY, payload, false, protocol)
-                        .await?;
+                    let reply = self.round_trip(RECORD_QUERY, payload, protocol).await?;
                     classify(&reply, "registry/record/query")?;
                     out.extend(
                         reply
@@ -879,9 +874,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     "action": action,
                     "resource": resource,
                 });
-                let reply = self
-                    .round_trip(RECORD_DELETE, payload, true, protocol)
-                    .await?;
+                let reply = self.round_trip(RECORD_DELETE, payload, protocol).await?;
                 match classify(&reply, "registry/record/delete") {
                     // Already absent is the effect a delete wants.
                     Err(RegistryError::Permanent(m))
@@ -936,10 +929,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
                 // Still re-falsifiable: upgrade the registry and the next tick
                 // flips back to active on its own.
                 let payload = json!({ "limit": 1 });
-                match self
-                    .round_trip(RECORD_QUERY, payload, false, protocol)
-                    .await
-                {
+                match self.round_trip(RECORD_QUERY, payload, protocol).await {
                     Ok(_) => Ok(()),
                     Err(RegistryError::Permanent(e)) => {
                         // A rejection still proves the registry is answering.
@@ -1234,6 +1224,28 @@ mod tests {
         assert!(err.to_string().contains("vtc_did"));
     }
 
+    /// Reads are signed like writes: operational key, `authentication`,
+    /// addressed to the registry, issued by this VTC's authority.
+    #[tokio::test]
+    async fn a_record_query_is_signed_for_authentication() {
+        let client = client_with(Some("did:webvh:vtc"));
+        let doc = client
+            .signed_document(RECORD_QUERY, json!({ "limit": 1 }))
+            .await
+            .expect("signs");
+        let doc = serde_json::to_value(&doc).unwrap();
+        assert_eq!(doc["type"], RECORD_QUERY);
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
+        assert_eq!(doc["issuer"], "did:webvh:vtc");
+        assert_eq!(doc["recipient"], client.registry_did.as_str());
+        assert!(doc.get("issuedAt").is_some(), "{doc}");
+        let other = client
+            .signed_document(RECORD_QUERY, json!({ "limit": 1 }))
+            .await
+            .unwrap();
+        assert_ne!(doc["id"], serde_json::to_value(&other).unwrap()["id"]);
+    }
+
     #[tokio::test]
     async fn a_write_is_transient_while_messaging_is_down() {
         // Messaging comes up after the client is built; a call in that window
@@ -1241,12 +1253,7 @@ mod tests {
         let client =
             client_with(Some("did:webvh:vtc")).with_reply_timeout(Duration::from_millis(50));
         let err = client
-            .round_trip(
-                RECORD_QUERY,
-                json!({ "limit": 1 }),
-                false,
-                Protocol::Didcomm,
-            )
+            .round_trip(RECORD_QUERY, json!({ "limit": 1 }), Protocol::Didcomm)
             .await
             .expect_err("messaging is not running");
         assert!(err.is_retriable(), "got {err:?}");
