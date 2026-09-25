@@ -56,6 +56,7 @@ import type { GitNsRight } from "@/lib/wire-types";
 export const TASK_URI: Record<GitNsAction, string> = {
   "namespace.bind": "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
   "namespace.unbind": "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
+  "namespace.reseat": "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
   "right.grant": "https://trusttasks.org/spec/git-ns/right/grant/0.1",
   "right.revoke": "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
   "repo.adopt": "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
@@ -81,6 +82,10 @@ export interface SignedTask {
   taskUri: string;
   payload: Record<string, unknown>;
   consent: ConsentClass;
+  /** What authorizes it, where that is not the class's usual account (the
+   *  signer's own git rights) — a reseat is authorized by the
+   *  community-administrator capability instead. */
+  consentNote?: string;
   /** The resource it acts on, shown in full in the dialog. */
   resource: string;
   /** Who it is about, shown with name and full DID in the dialog. */
@@ -178,6 +183,14 @@ export function reasonError(value: string): string | null {
     : null;
 }
 
+/** A reseat's statement: REQUIRED, 1–1024 characters
+ *  (`git-ns/namespace/reseat/0.1`). */
+export function statementError(value: string): string | null {
+  const v = value.trim();
+  if (!v) return "Say why the namespace is headless and why this member.";
+  return v.length > MAX_REASON ? `At most ${MAX_REASON} characters — it is ${v.length}.` : null;
+}
+
 /** The longest expiry the form offers: ten years. A right meant to outlive
  *  that is one meant to have no expiry. */
 export const MAX_EXPIRY_DAYS = 3650;
@@ -225,6 +238,33 @@ export function unbindTask(namespaceId: string, resource: string): SignedTask {
     resource,
     parties: [],
     command: cnm(w("namespace"), w("unbind"), namespaceId),
+  };
+}
+
+/**
+ * `git-ns/namespace/reseat` 0.1: a community administrator seats `subject` —
+ * a current member — as the permanent `git.ns.admin` of a headless namespace.
+ */
+export function reseatTask(
+  namespaceId: string,
+  resource: string,
+  subject: string,
+  statement: string,
+): SignedTask {
+  const s = statement.trim();
+  return {
+    action: "namespace.reseat",
+    title: `Reseat ${resource}`,
+    effect:
+      "The member receives namespace admin (git.ns.admin) with no expiry, published to the Trust Registry and projected onto the forge by the bridge. The statement becomes the right's reason, is kept in the audit record with how each earlier admin record ended, and is shown to the namespace's repository owners. Refused unless the namespace has no live git.ns.admin.",
+    taskUri: TASK_URI["namespace.reseat"],
+    payload: { namespace: namespaceId, subject, statement: s },
+    consent: consentClass("namespace.reseat"),
+    consentNote:
+      "Authorized by the community-administrator capability, not by a git right: a headless namespace has nobody holding one. Only a community administrator (an admin not limited to some contexts) can sign it, and only while the namespace is headless.",
+    resource,
+    parties: [{ role: "Becomes namespace admin", did: subject }],
+    command: cnm(w("reseat"), namespaceId, o("subject", subject), o("statement", s)),
   };
 }
 

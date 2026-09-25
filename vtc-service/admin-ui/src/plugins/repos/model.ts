@@ -98,6 +98,7 @@ export type ConsentClass = "normal" | "elevated" | "destructive";
 export type GitNsAction =
   | "namespace.bind"
   | "namespace.unbind"
+  | "namespace.reseat"
   | "right.grant"
   | "right.revoke"
   | "repo.adopt"
@@ -107,7 +108,13 @@ export type GitNsAction =
 
 /** Mirrors `git_ns::ops::consent_class`. */
 export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentClass {
-  if (action === "namespace.bind" || action === "namespace.unbind") return "destructive";
+  if (
+    action === "namespace.bind" ||
+    action === "namespace.unbind" ||
+    action === "namespace.reseat"
+  ) {
+    return "destructive";
+  }
   if (action === "right.grant" || action === "right.revoke") {
     if (right === "git.ns.admin") return "destructive";
     if (right === "git.repo.own" || right === "git.repo.create") return "elevated";
@@ -183,7 +190,7 @@ export function namespaceFindings(ns: GitNsNamespaceRow): Finding[] {
       tone: "danger",
       title: "No namespace admin",
       detail:
-        "Its last admin left or lapsed, so nobody can grant here. A community administrator will be able to seat a new admin with git-ns/namespace/reseat (cnm git reseat) once this VTC serves it; until then the only recovery is to unbind and bind again, which starts from no rights.",
+        "Its last admin left or lapsed, so nobody can grant here. A community administrator can reseat it with git-ns/namespace/reseat (cnm git reseat): namespace admin goes to a current member of the community, with a statement of why that is kept in the audit record and shown to the namespace's repository owners. It is refused while the namespace has any live git.ns.admin, so it never goes around an admin.",
     });
   }
   return out;
