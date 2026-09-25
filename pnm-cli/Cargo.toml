@@ -51,6 +51,8 @@ ratatui = { workspace = true }
 dirs = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = "0.4"
+# Control-master socket: SCM_RIGHTS fd passing and peer-uid checks.
+libc = { workspace = true }
 multibase = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }

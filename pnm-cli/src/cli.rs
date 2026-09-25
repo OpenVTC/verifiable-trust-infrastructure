@@ -96,12 +96,49 @@ pub(crate) struct Cli {
     )]
     pub(crate) allow_private_endpoints: bool,
 
+    /// Reuse one authenticated session across invocations, like ssh's
+    /// ControlMaster.
+    ///
+    /// `auto` uses a master if one is listening and starts one otherwise,
+    /// falling back to an ordinary session if that fails; `yes` requires one;
+    /// `ask` confirms first; `no` disables multiplexing.
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        env = "PNM_CONTROL_MASTER",
+        default_value = "auto"
+    )]
+    pub(crate) control_master: crate::control::ControlMaster,
+
+    /// Path of the control socket. Defaults to a per-VTA socket in a private,
+    /// 0700 directory under the runtime (or config) directory.
+    #[arg(long, global = true, env = "PNM_CONTROL_PATH")]
+    pub(crate) control_path: Option<std::path::PathBuf>,
+
+    /// How long an idle control master stays alive: `no`, `yes`, or a duration
+    /// such as `600`, `10m`, `2h`.
+    ///
+    /// This bounds how long the operator's admin key stays resident in the
+    /// master's memory, so it is a security setting as much as a performance
+    /// one.
+    #[arg(long, global = true, env = "PNM_CONTROL_PERSIST", default_value = crate::control::ControlPersist::DEFAULT_STR)]
+    pub(crate) control_persist: crate::control::ControlPersist,
+
     #[command(subcommand)]
     pub(crate) command: Commands,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// PROOF OF CONCEPT — long-running client that holds one authenticated
+    /// session (DIDComm + mediator socket + warm DID resolver) and executes
+    /// commands sent to a unix socket, so they pay no per-invocation setup.
+    Sidecar {
+        #[command(subcommand)]
+        command: SidecarCommands,
+    },
+
     /// Configure VTA URL and credentials.
     ///
     /// Bare `pnm setup` runs the interactive wizard. Non-interactive
@@ -3090,7 +3127,23 @@ pub(crate) enum KeyCommands {
 }
 
 /// Returns true if this command requires authentication.
+#[derive(Subcommand)]
+pub(crate) enum SidecarCommands {
+    /// Run the control master in the foreground.
+    ///
+    /// Rarely typed: `--control-master auto` (the default) starts one on demand,
+    /// the way `ssh` never needs an explicit `-M`.
+    Serve,
+    /// Report whether a control master is running — like `ssh -O check`.
+    Status,
+    /// Ask the control master to exit — like `ssh -O exit`.
+    Stop,
+}
+
 pub(crate) fn requires_auth(cmd: &Commands) -> bool {
+    if let Commands::Sidecar { command } = cmd {
+        return matches!(command, SidecarCommands::Serve);
+    }
     // VTA restart requires auth; other VTA subcommands don't
     if matches!(
         cmd,

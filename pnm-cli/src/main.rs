@@ -19,6 +19,7 @@ mod bootstrap;
 mod cli;
 mod commands;
 mod config;
+mod control;
 mod setup;
 
 use vta_sdk::client::VtaClient;
@@ -134,6 +135,11 @@ async fn main() {
     // Save overrides + move the parsed command into a local so the
     // pre-auth dispatch can consume the inner enums by value (no
     // borrow-vs-move dance against `cli.command`).
+    // Verbatim argv (minus argv[0]) for handing to a control master.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let control_master = cli.control_master;
+    let control_persist = cli.control_persist;
+    let control_path_override = cli.control_path;
     let url_override = cli.url;
     let vta_override = cli.vta;
     let transport_override = cli.transport;
@@ -234,6 +240,58 @@ async fn main() {
     }
     eprintln!();
 
+    // ── Control master (ssh ControlMaster / ControlPersist) ───────
+    let control_path = match control_path_override {
+        Some(p) => p,
+        None => match control::default_control_path(&slug) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
+    let control_config = control::ControlConfig {
+        mode: control_master,
+        persist: control_persist,
+        path: control_path,
+    };
+
+    // `status`/`stop` are pure socket operations — no VTA, no session.
+    match command {
+        Commands::Sidecar {
+            command: cli::SidecarCommands::Status,
+        } => {
+            if let Err(e) = control::client::status(&control_config.path) {
+                vta_cli_common::render::print_cli_error(e.as_ref());
+                std::process::exit(1);
+            }
+            return;
+        }
+        Commands::Sidecar {
+            command: cli::SidecarCommands::Stop,
+        } => {
+            if let Err(e) = control::client::stop(&control_config.path) {
+                vta_cli_common::render::print_cli_error(e.as_ref());
+                std::process::exit(1);
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    // Hand the command to a master when one is running, or can be started.
+    // Anything that goes wrong here falls back to the ordinary path below, so
+    // multiplexing can never turn a working command into a failing one.
+    if needs_auth && !matches!(command, Commands::Sidecar { .. }) {
+        match control::client::try_delegate(&control_config, &raw_args) {
+            control::client::Attempt::Ran(code) => std::process::exit(code),
+            control::client::Attempt::Fallback(why) => {
+                tracing::debug!("control master unavailable ({why}); running direct");
+            }
+        }
+    }
+
     // Build client
     // For did:key VTAs, use the persisted URL as fallback (DID has no service endpoint).
     let effective_url_override = url_override.as_deref().or(vta_config.url.as_deref());
@@ -275,49 +333,16 @@ async fn main() {
     let mediator_hint_update = pending_mediator_hint(&command, &vta_config);
 
     // ── Post-auth dispatch ────────────────────────────────────────
-    let result = match command {
-        Commands::Setup { .. } => unreachable!("Setup handled in pre-auth dispatch"),
-        Commands::Bootstrap { command } => commands::bootstrap::run_authed(&client, command).await,
-        Commands::DidTemplates { command } => {
-            commands::did_templates::run_online(&client, command).await
-        }
-        Commands::Vta {
-            command: VtaCommands::Restart,
-        } => commands::vta::run_restart(&client).await,
-        Commands::Vta { .. } => unreachable!("VTA non-restart handled in pre-auth dispatch"),
-        Commands::Health { fresh } => {
-            commands::health::run(effective_url_override, &keyring_key, fresh).await
-        }
-        Commands::Auth { command } => commands::auth::run(&keyring_key, command).await,
-        Commands::Config { command } => commands::config::run(&client, command).await,
-        Commands::Services { command } => commands::services::run(&client, command).await,
-        Commands::Contexts { command } => commands::contexts::run(&client, command).await,
-        Commands::Acl { command } => commands::acl::run(&client, command).await,
-        Commands::Approvals { command } => commands::approvals::run(&client, command).await,
-        Commands::Policy { command } => commands::policy::run(&client, command).await,
-        Commands::Device { command } => commands::device::run(&client, command).await,
-        Commands::Vault { command } => commands::vault::run(&client, command).await,
-        Commands::CredVault { command } => commands::cred_vault::run(&client, command).await,
-        Commands::Persona { command } => commands::persona::run(&client, command).await,
-        Commands::AuthCredential { command } => {
-            commands::auth_credential::run(&client, command).await
-        }
-        // `agent-names` is intercepted here rather than routed through the
-        // legacy `WebvhCommands` bridge below — that enum is slated for
-        // removal, so new surfaces should not grow it.
-        Commands::DidMgmt {
-            command: cli::DidMgmtCommands::AgentNames { command },
-        } => commands::agent_names::run(&client, command).await,
-        Commands::DidMgmt { command } => commands::webvh::run(&client, command.into()).await,
-        Commands::Audit { command } => commands::audit::run(&client, command).await,
-        Commands::Backup { command } => commands::backup::run(&client, command).await,
-        Commands::Keys { command } => commands::keys::run(&client, command).await,
-        Commands::Memory { command } => commands::memory::run(&client, command).await,
-        Commands::Rooms { command } => commands::rooms::run(&client, &keyring_key, command).await,
-        Commands::Messaging { command } => {
-            commands::messaging::run(&client, &keyring_key, mediator_did_hint, command).await
-        }
-    };
+    let result = dispatch_with(
+        &client,
+        &keyring_key,
+        effective_url_override,
+        mediator_did_hint,
+        command,
+        &slug,
+        Some(control_config),
+    )
+    .await;
 
     client.shutdown().await;
 
@@ -388,6 +413,102 @@ fn apply_mediator_hint(pnm_config: &mut config::PnmConfig, slug: &str, new_hint:
         None => eprintln!(
             "  {DIM}Cleared the pinned mediator DID for '{slug}' (DIDComm is no longer advertised){RESET}"
         ),
+    }
+}
+
+/// The post-auth dispatch table, shared by the one-shot binary and the
+/// `sidecar` PoC so both execute commands through an identical path.
+pub(crate) async fn dispatch(
+    client: &VtaClient,
+    keyring_key: &str,
+    effective_url_override: Option<&str>,
+    mediator_did_hint: Option<&str>,
+    command: Commands,
+) -> Result<(), Box<dyn std::error::Error>> {
+    dispatch_with(
+        client,
+        keyring_key,
+        effective_url_override,
+        mediator_did_hint,
+        command,
+        "",
+        None,
+    )
+    .await
+}
+
+/// [`dispatch`] plus the two things only `sidecar serve` needs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn dispatch_with(
+    client: &VtaClient,
+    keyring_key: &str,
+    effective_url_override: Option<&str>,
+    mediator_did_hint: Option<&str>,
+    command: Commands,
+    slug: &str,
+    control_config: Option<control::ControlConfig>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        Commands::Setup { .. } => unreachable!("Setup handled in pre-auth dispatch"),
+        Commands::Sidecar {
+            command: cli::SidecarCommands::Serve,
+        } => {
+            let cfg = control_config.ok_or("control master configuration missing")?;
+            control::master::serve(
+                client,
+                keyring_key,
+                effective_url_override,
+                mediator_did_hint,
+                slug,
+                &cfg.path,
+                cfg.persist,
+            )
+            .await
+        }
+        // A master must never delegate to itself.
+        Commands::Sidecar { .. } => {
+            Err("sidecar control commands are handled before dispatch".into())
+        }
+        Commands::Bootstrap { command } => commands::bootstrap::run_authed(client, command).await,
+        Commands::DidTemplates { command } => {
+            commands::did_templates::run_online(client, command).await
+        }
+        Commands::Vta {
+            command: VtaCommands::Restart,
+        } => commands::vta::run_restart(client).await,
+        Commands::Vta { .. } => unreachable!("VTA non-restart handled in pre-auth dispatch"),
+        Commands::Health { fresh } => {
+            commands::health::run(effective_url_override, keyring_key, fresh).await
+        }
+        Commands::Auth { command } => commands::auth::run(keyring_key, command).await,
+        Commands::Config { command } => commands::config::run(client, command).await,
+        Commands::Services { command } => commands::services::run(client, command).await,
+        Commands::Contexts { command } => commands::contexts::run(client, command).await,
+        Commands::Acl { command } => commands::acl::run(client, command).await,
+        Commands::Approvals { command } => commands::approvals::run(client, command).await,
+        Commands::Policy { command } => commands::policy::run(client, command).await,
+        Commands::Device { command } => commands::device::run(client, command).await,
+        Commands::Vault { command } => commands::vault::run(client, command).await,
+        Commands::CredVault { command } => commands::cred_vault::run(client, command).await,
+        Commands::Persona { command } => commands::persona::run(client, command).await,
+        Commands::AuthCredential { command } => {
+            commands::auth_credential::run(client, command).await
+        }
+        // `agent-names` is intercepted here rather than routed through the
+        // legacy `WebvhCommands` bridge below — that enum is slated for
+        // removal, so new surfaces should not grow it.
+        Commands::DidMgmt {
+            command: cli::DidMgmtCommands::AgentNames { command },
+        } => commands::agent_names::run(client, command).await,
+        Commands::DidMgmt { command } => commands::webvh::run(client, command.into()).await,
+        Commands::Audit { command } => commands::audit::run(client, command).await,
+        Commands::Backup { command } => commands::backup::run(client, command).await,
+        Commands::Keys { command } => commands::keys::run(client, command).await,
+        Commands::Memory { command } => commands::memory::run(client, command).await,
+        Commands::Rooms { command } => commands::rooms::run(client, keyring_key, command).await,
+        Commands::Messaging { command } => {
+            commands::messaging::run(client, keyring_key, mediator_did_hint, command).await
+        }
     }
 }
 
