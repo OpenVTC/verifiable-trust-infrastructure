@@ -27,7 +27,11 @@
 #                 having the bridge undo a forge-side change; an adopted drift
 #                 item is evaluated as the right.grant it is) |
 #                 bridge.serviceGrant (the community granting its bridge
-#                 `git.commit.sign` on a namespace it has just bound)
+#                 `git.commit.sign` on a namespace it has just bound) |
+#                 right.breakGlass (a member recording an elevated right for
+#                 themselves with git-ns/right/break-glass — `subject` is the
+#                 actor) | right.ratify (another administrator ratifying one
+#                 with git-ns/right/ratify — `subject` is the one who broke it)
 #   actor         { did, member, role?, rights[] }  — rights on `resource`
 #   subject       { did, member, role?, rights[] }  — whoever receives or loses
 #                 the right (grant, revoke, transfer, each adopted owner)
@@ -57,10 +61,31 @@ import rego.v1
 #                             with them, instead of listed for review
 #   role_drift                "report" (default) or "enforce": whether a forge
 #                             role changed outside the VTC is put back
+#
+# Break-glass (git-ns/right/break-glass/0.1). Separation of duties stops anyone
+# granting themselves git.ns.admin, git.repo.create or git.repo.own; break-glass
+# is the explicit, passkey-gated, justified, loudly announced way to do it when
+# nobody else can. A community may DISABLE or TIGHTEN it here. It cannot quieten
+# it: the critical audit row, the notice to every other administrator and the
+# console banner are applied in code whatever this policy says.
+#   break_glass                          "enabled" (default) or "disabled"
+#   break_glass_delay_seconds            the right takes effect this long after
+#                                        it is recorded (at most a day); other
+#                                        administrators can revoke it meanwhile.
+#                                        0 (default): at once
+#   break_glass_min_justification_chars  a shorter justification (counting
+#                                        non-whitespace) is refused. 0 (default):
+#                                        any non-blank justification
+# A policy can also refuse `input.action == "right.breakGlass"` outright for any
+# condition — some rights, some namespaces, anyone who is not a community
+# administrator — with a deny decision.
 settings := {
 	"maintainer_grants_commit": false,
 	"cascade_on_departure": false,
 	"role_drift": "report",
+	"break_glass": "enabled",
+	"break_glass_delay_seconds": 0,
+	"break_glass_min_justification_chars": 0,
 }
 
 default decision := {"effect": "deny", "with": {

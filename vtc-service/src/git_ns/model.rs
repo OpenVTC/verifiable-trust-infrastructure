@@ -89,6 +89,14 @@ impl Right {
     pub fn is_namespace_right(self) -> bool {
         matches!(self, Right::NsAdmin | Right::RepoCreate)
     }
+
+    /// An *elevated* right (`git-ns/_shared/0.4` `ElevatedRight`): one that
+    /// carries authority over other people's rights. Separation of duties
+    /// (fixed rule 7 of `git-ns/right/grant/0.3`) forbids granting one to
+    /// oneself; the explicit self-grant is `git-ns/right/break-glass/0.1`.
+    pub fn is_elevated(self) -> bool {
+        matches!(self, Right::NsAdmin | Right::RepoCreate | Right::RepoOwn)
+    }
 }
 
 impl std::fmt::Display for Right {
@@ -591,11 +599,71 @@ pub struct RightRow {
     /// what `cascade_on_departure` revokes (design §5.4).
     #[serde(default)]
     pub granter_was_member: bool,
+    /// Present exactly when the subject gave themselves this right through
+    /// `git-ns/right/break-glass/0.1` (`git-ns/_shared/0.4` `BreakGlass`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub break_glass: Option<BreakGlassMark>,
+}
+
+/// How a self-granted right came to be, and whether another administrator has
+/// since ratified it (`git-ns/right/break-glass/0.1`, `git-ns/right/ratify/0.1`).
+///
+/// Kept on the row as its history after ratification. Never published to the
+/// Trust Registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BreakGlassMark {
+    /// Always the row's subject.
+    pub by: String,
+    pub at: DateTime<Utc>,
+    pub justification: String,
+    /// When the right takes effect, where the community's policy deferred it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratified_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratified_at: Option<DateTime<Utc>>,
 }
 
 impl RightRow {
+    /// The row has passed its `expiresAt`. A lapsed row is swept.
+    pub fn is_lapsed(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at.is_some_and(|e| e <= now)
+    }
+
+    /// The row is still on record: not lapsed. A break-glass row still waiting
+    /// for its `effectiveAt` is recorded — revocable and ratifiable — while
+    /// conferring nothing.
+    pub fn is_recorded(&self, now: DateTime<Utc>) -> bool {
+        !self.is_lapsed(now)
+    }
+
+    /// A break-glass row whose policy-imposed delay has not yet run out.
+    pub fn is_pending(&self, now: DateTime<Utc>) -> bool {
+        self.break_glass
+            .as_ref()
+            .and_then(|b| b.effective_at)
+            .is_some_and(|e| e > now)
+    }
+
+    /// The row confers its right now: recorded, and in effect.
     pub fn is_live(&self, now: DateTime<Utc>) -> bool {
-        self.expires_at.is_none_or(|e| e > now)
+        self.is_recorded(now) && !self.is_pending(now)
+    }
+
+    /// A break-glass row no other administrator has ratified yet.
+    pub fn is_unratified_break_glass(&self) -> bool {
+        self.break_glass
+            .as_ref()
+            .is_some_and(|b| b.ratified_by.is_none())
+    }
+
+    /// Whether the row counts toward the last-owner and last-admin invariants
+    /// (fixed rules 3 and 4 of `git-ns/right/grant/0.3`): no `expiresAt`, and
+    /// not an unratified break-glass record.
+    pub fn counts_for_invariants(&self, now: DateTime<Utc>) -> bool {
+        self.is_live(now) && self.expires_at.is_none() && !self.is_unratified_break_glass()
     }
 }
 

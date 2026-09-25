@@ -248,6 +248,70 @@ live admin record of a current member remains, so it cannot be used to go
 around an admin; the audit record keeps the statement and how each earlier
 admin record ended.
 
+## Separation of duties and break-glass
+
+Nobody grants themselves an **elevated** right — `git.ns.admin`,
+`git.repo.create` or `git.repo.own` — even when their own rights carry the
+authority to grant it to anyone else (`git-ns/right/grant/0.3`, fixed rule
+7). It is refused with `git-ns:selfGrantNotAllowed`, and the same rule binds
+every task that records a right on the actor's own authority: an adopted
+drift item whose linked member is the resolver, `repo/adopt` naming oneself
+an owner, and `namespace/reseat` to oneself. Self-grants of
+`git.repo.maintain` and `git.commit.sign` stay allowed. `namespace/bind`
+(the binder's first `git.ns.admin`) and `repo/create` (the creator's first
+`own`) are not self-grants. The rule is applied to the 0.1 grant and revoke
+this VTC still serves, as 0.3 requires.
+
+When nobody else can grant it, the actor **breaks the glass**
+(`git-ns/right/break-glass/0.1`):
+
+```sh
+cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
+  --justification='Both owners unreachable; CVE fix must ship tonight'
+```
+
+- **Entitlement**: authority the actor already has — grant authority over the
+  right on the resource, or, for `git.ns.admin` on a *headless* namespace, the
+  community-administrator capability (`notHeadless` otherwise).
+- **Step-up, always**: an operation-bound passkey gesture (user-verified,
+  aal2) bound to this one document by digest (`acl::bound_step_up`). The first
+  send is refused `permissionDenied` with `details.stepUpRequest`; the
+  operator answers it in the admin console (`cnm` prints the
+  `<vtc>/admin/step-up#request=…` link) and the identical document is sent
+  again. Because a real step-up applies, `[git_ns] elevated_requires_admin`
+  does not gate it: a namespace admin who is not a community administrator
+  can break the glass, provided they have a passkey registered.
+- **Immediate, no expiry**: the right takes effect at once and lasts until
+  another administrator acts on it.
+- **Flagged**: the record carries `breakGlass {by, at, justification,
+  effectiveAt?, ratifiedBy?, ratifiedAt?}`. An *unratified* record is a real,
+  published right — the registry projection is unchanged — but it does not
+  count toward the last-owner or last-admin invariants.
+- **Visible**: an `AuditEvent::GitNsBreakGlass` row at
+  `AuditSeverity::Critical` with the justification, the entitlement, the
+  step-up evidence (credential id, bound digest), the policy version and who
+  could not be told; a `gitNs.right.breakGlass` activity item; a signed
+  `git-ns/right/break-glass-notice/0.1` to every community administrator and
+  every live namespace admin except the actor, over the VTC's mediator
+  connection; the flag in `git-ns/view/0.4` to every administrator it
+  concerns; and the console's banner and *Break-glass grants* list
+  (`GET /v1/git-ns/break-glass`). If the audit row cannot be written, the
+  break-glass is undone.
+- **Ratify or revoke**: another administrator — a community administrator, or
+  someone whose *confirmed* rights carry grant authority over it — ratifies
+  it with `cnm git ratify --subject=<did> --right=<right> --resource=<res>
+  --break-glass-at=<rfc3339>` (`git-ns/right/ratify/0.1`; bound to the
+  `breakGlass.at` they read). Any community administrator may revoke an
+  unratified one with the ordinary `git-ns/right/revoke`, and no policy can
+  refuse that. Both are audited and announced like the break-glass.
+  `cnm git break-glass-list` shows them all.
+
+**Policy** (`git_ns.rego` `settings`) may disable or tighten it, never quieten
+it: `break_glass` (`"enabled"` by default, or `"disabled"`),
+`break_glass_delay_seconds` (the right takes effect later; at most a day;
+revocable meanwhile), `break_glass_min_justification_chars`, and any deny
+decision on `input.action == "right.breakGlass"` (or `"right.ratify"`).
+
 ## Administrator surface
 
 Read-only, admin session. `view`, `rights`, `rights/issued-by-departed`,

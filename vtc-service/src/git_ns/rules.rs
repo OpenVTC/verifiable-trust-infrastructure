@@ -16,6 +16,7 @@
 //! | 4. Last admin | [`is_last_admin`] |
 //! | 5. Members-only floor | [`members_only`] |
 //! | 6. Policy may only narrow | the decision can only deny — [`super::policy`] |
+//! | 7. Separation of duties (`grant/0.3`) | [`separation_of_duties`] |
 
 use std::collections::BTreeSet;
 
@@ -36,6 +37,8 @@ pub enum Refusal {
     Escalation(String),
     /// `git-ns:membersOnly`.
     MembersOnly(String),
+    /// `git-ns:selfGrantNotAllowed` — fixed rule 7 of `git-ns/right/grant/0.3`.
+    SelfGrant(String),
 }
 
 impl std::fmt::Display for Refusal {
@@ -44,7 +47,8 @@ impl std::fmt::Display for Refusal {
             Refusal::PermissionDenied(m)
             | Refusal::ScopeViolation(m)
             | Refusal::Escalation(m)
-            | Refusal::MembersOnly(m) => f.write_str(m),
+            | Refusal::MembersOnly(m)
+            | Refusal::SelfGrant(m) => f.write_str(m),
         }
     }
 }
@@ -287,6 +291,31 @@ pub fn members_only(right: Right, subject_is_member: bool) -> Result<(), Refusal
     Ok(())
 }
 
+/// Fixed rule 7 of `git-ns/right/grant/0.3`, *Separation of duties*: an actor
+/// never grants an elevated right (`git.ns.admin`, `git.repo.create`,
+/// `git.repo.own`) to themselves. `actor` is the DID the VTC resolved the
+/// signer to — after any console-key delegation — so a delegated key cannot
+/// grant its principal what the principal may not grant themselves.
+///
+/// The refusal names the one way to do it: `git-ns/right/break-glass/0.1`.
+pub fn separation_of_duties(
+    actor: &str,
+    subject: &str,
+    right: Right,
+    target: &Resource,
+) -> Result<(), Refusal> {
+    if actor == subject && right.is_elevated() {
+        return Err(Refusal::SelfGrant(format!(
+            "{right} is an elevated right, and you cannot grant it to yourself: ask another \
+             administrator to grant it, or, if nobody else can, break the glass with \
+             git-ns/right/break-glass — `cnm git break-glass --right={right} \
+             --resource={target} --justification='…'` — which is audited, announced to every administrator, and \
+             flagged until another administrator ratifies or revokes it"
+        )));
+    }
+    Ok(())
+}
+
 fn live_holders<'a>(
     snap: &'a Snapshot,
     scope: &Scope,
@@ -300,8 +329,10 @@ fn live_holders<'a>(
         .collect()
 }
 
-/// The holders of `right` whose record does not expire — the ones fixed rules
-/// 3 and 4 count.
+/// The holders of `right` whose record *counts* — no `expiresAt`, and not an
+/// unratified break-glass record (fixed rules 3 and 4 of
+/// `git-ns/right/grant/0.3`). An unratified break-glass record is provisional:
+/// any other administrator may revoke it, and the invariants must not stop them.
 ///
 /// A record with an `expiresAt` lapses on its own, with nobody asked. If it
 /// counted, a namespace could reach "one admin, expiring Friday" by an
@@ -317,7 +348,7 @@ fn permanent_holders<'a>(
 ) -> Vec<&'a str> {
     snap.rows(scope)
         .iter()
-        .filter(|r| r.right == right && r.is_live(now) && r.expires_at.is_none())
+        .filter(|r| r.right == right && r.counts_for_invariants(now))
         .map(|r| r.subject.as_str())
         .collect()
 }
@@ -375,10 +406,13 @@ impl RulesPassed {
     }
 }
 
-/// Grant: fixed rules 1, 2 and 5 together.
+/// Grant: fixed rules 1, 2, 7 and 5, in that order (`git-ns/right/grant/0.3`,
+/// *Request* item 4: "rule 7 before rule 5").
+#[allow(clippy::too_many_arguments)]
 pub fn grant_admitted(
     snap: &Snapshot,
     actor: &str,
+    subject: &str,
     right: Right,
     target: &Resource,
     subject_is_member: bool,
@@ -386,8 +420,145 @@ pub fn grant_admitted(
     now: DateTime<Utc>,
 ) -> Result<RulesPassed, Refusal> {
     authority_to_grant(snap, actor, right, target, settings, now)?;
+    separation_of_duties(actor, subject, right, target)?;
     members_only(right, subject_is_member)?;
     Ok(RulesPassed::new())
+}
+
+/// Which entitlement a break-glass relied on (`git-ns/right/break-glass/0.1`,
+/// *Authorization*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BreakGlassEntitlement {
+    /// Grant authority over the right on the resource, per the grant authority
+    /// table.
+    GrantAuthority,
+    /// The community-administrator capability, for `git.ns.admin` on a
+    /// headless namespace — `git-ns/namespace/reseat`'s entitlement.
+    CommunityAdminHeadless,
+}
+
+impl BreakGlassEntitlement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GrantAuthority => "grantAuthority",
+            Self::CommunityAdminHeadless => "communityAdministratorHeadless",
+        }
+    }
+}
+
+/// Why a break-glass was refused by the rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BreakGlassRefusal {
+    Rule(Refusal),
+    /// `git-ns/right/break-glass:notHeadless`.
+    NotHeadless(String),
+}
+
+impl From<Refusal> for BreakGlassRefusal {
+    fn from(r: Refusal) -> Self {
+        BreakGlassRefusal::Rule(r)
+    }
+}
+
+/// `git-ns/right/break-glass/0.1` steps 3–5: the right's level (rule 1), one
+/// of the two entitlements, and the members-only floor (rule 5). Separation of
+/// duties is the one rule this task lifts, for this one grant, to the actor.
+///
+/// `headless` is established by the caller against current membership, under
+/// the store lock.
+#[allow(clippy::too_many_arguments)]
+pub fn break_glass_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    right: Right,
+    target: &Resource,
+    actor_is_member: bool,
+    actor_community_admin: bool,
+    headless: bool,
+    settings: RuleSettings,
+    now: DateTime<Utc>,
+) -> Result<(RulesPassed, BreakGlassEntitlement), BreakGlassRefusal> {
+    if !right.is_elevated() {
+        return Err(Refusal::ScopeViolation(format!(
+            "{right} is not elevated; grant it with git-ns/right/grant"
+        ))
+        .into());
+    }
+    // Rule 1's level half first, so a wrong-level request is a scope
+    // violation whichever entitlement the actor might have.
+    if matches!(
+        (right.level(), target.is_namespace()),
+        (Level::Namespace, false) | (Level::Repository, true)
+    ) {
+        return Err(Refusal::ScopeViolation(format!(
+            "{right} does not apply to a resource at the level of {target}"
+        ))
+        .into());
+    }
+    let entitlement = match authority_to_grant(snap, actor, right, target, settings, now) {
+        Ok(()) => BreakGlassEntitlement::GrantAuthority,
+        Err(refusal) => {
+            if right == Right::NsAdmin && target.is_namespace() && actor_community_admin {
+                if !headless {
+                    return Err(BreakGlassRefusal::NotHeadless(format!(
+                        "{target} has a live git.ns.admin, so it is not headless; its admins \
+                         grant git.ns.admin with git-ns/right/grant"
+                    )));
+                }
+                BreakGlassEntitlement::CommunityAdminHeadless
+            } else {
+                return Err(refusal.into());
+            }
+        }
+    };
+    members_only(right, actor_is_member)?;
+    Ok((RulesPassed::new(), entitlement))
+}
+
+/// `git-ns/right/ratify/0.1`, *Authorization*: never the record's subject;
+/// otherwise a community administrator, or a holder of grant authority over
+/// the right on the resource through a right that is **not itself** held by an
+/// unratified break-glass record. The caller has already refused the subject
+/// with `selfRatification`.
+pub fn ratify_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    row: &RightRow,
+    target: &Resource,
+    actor_community_admin: bool,
+    settings: RuleSettings,
+    now: DateTime<Utc>,
+) -> Result<RulesPassed, Refusal> {
+    if row.subject == actor {
+        return Err(Refusal::PermissionDenied(
+            "a break-glass is ratified by someone other than its subject".into(),
+        ));
+    }
+    if actor_community_admin {
+        return Ok(RulesPassed::new());
+    }
+    // Grant authority, counted only through rights that are not themselves an
+    // unratified break-glass: a second person whose own authority nobody has
+    // confirmed is not a second person.
+    let confirmed = snap.without_unratified_break_glass();
+    match authority_to_grant(&confirmed, actor, row.right, target, settings, now) {
+        Ok(()) => Ok(RulesPassed::new()),
+        Err(Refusal::Escalation(m)) => Err(Refusal::Escalation(m)),
+        Err(_) => Err(Refusal::PermissionDenied(format!(
+            "ratifying {} on {target} needs the community-administrator capability, or a \
+             confirmed right on {target} that carries the authority to grant it",
+            row.right
+        ))),
+    }
+}
+
+/// Revoking an unratified break-glass record: any community administrator,
+/// in addition to everyone `git-ns/right/revoke/0.3` otherwise admits.
+pub fn revoke_break_glass_admitted(
+    actor_community_admin: bool,
+    row: &RightRow,
+) -> Option<RulesPassed> {
+    (actor_community_admin && row.is_unratified_break_glass()).then(RulesPassed::new)
 }
 
 /// Revoke: the revocation authority of `git-ns/right/revoke`.
@@ -571,6 +742,7 @@ mod tests {
             reason: None,
             subject_was_member: true,
             granter_was_member: true,
+            break_glass: None,
         }
     }
 

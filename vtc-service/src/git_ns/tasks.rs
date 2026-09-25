@@ -33,8 +33,11 @@ use trust_tasks_rs::specs::git_ns::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
     transfer::v0_1 as transfer,
 };
-use trust_tasks_rs::specs::git_ns::right::{grant::v0_1 as grant, revoke::v0_1 as revoke};
-use trust_tasks_rs::specs::git_ns::view::{v0_1 as view, v0_2 as view2};
+use trust_tasks_rs::specs::git_ns::right::{
+    break_glass::v0_1 as break_glass, grant::v0_1 as grant, grant::v0_3 as grant3,
+    ratify::v0_1 as ratify, revoke::v0_1 as revoke, revoke::v0_3 as revoke3,
+};
+use trust_tasks_rs::specs::git_ns::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
 use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 
 use crate::server::AppState;
@@ -102,9 +105,14 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_transfer)
         .on_async(handle_archive)
         .on_async(handle_grant)
+        .on_async(handle_grant_v3)
         .on_async(handle_revoke)
+        .on_async(handle_revoke_v3)
+        .on_async(handle_break_glass)
+        .on_async(handle_ratify)
         .on_async(handle_view)
         .on_async(handle_view_v2)
+        .on_async(handle_view_v4)
         .on_async(handle_drift_resolve)
         .on_async(handle_reseat)
         .on_async(handle_link)
@@ -127,6 +135,12 @@ fn respond<P, R: serde::Serialize>(doc: &TrustTask<P>, r: Result<R, OpError>) ->
         Err(OpError::Malformed(reason)) => {
             reject_with(doc, RejectReason::MalformedRequest { reason })
         }
+        Err(OpError::StepUpRequired { message, request }) => reject_with_code(
+            doc,
+            TrustTaskCode::Standard(StandardCode::PermissionDenied),
+            message,
+            Some(crate::acl::bound_step_up::refusal_details(&request)),
+        ),
         Err(OpError::Unavailable(message)) => reject_with_code(
             doc,
             TrustTaskCode::Standard(StandardCode::Unavailable),
@@ -241,6 +255,18 @@ signed_handler!(handle_transfer, transfer::Payload, ops::repo_transfer);
 signed_handler!(handle_archive, archive::Payload, ops::repo_archive);
 signed_handler!(handle_grant, grant::Payload, ops::right_grant);
 signed_handler!(handle_revoke, revoke::Payload, ops::right_revoke);
+signed_handler!(handle_grant_v3, grant3::Payload, ops::right_grant_v3);
+signed_handler!(handle_revoke_v3, revoke3::Payload, ops::right_revoke_v3);
+signed_handler!(
+    handle_break_glass,
+    break_glass::Payload,
+    super::break_glass::right_break_glass
+);
+signed_handler!(
+    handle_ratify,
+    ratify::Payload,
+    super::break_glass::right_ratify
+);
 signed_handler!(handle_link, link::Payload, ops::account_link);
 bridge_handler!(handle_result, result::Payload, super::bridge::handle_result);
 bridge_handler!(handle_event, event::Payload, super::bridge::handle_event);
@@ -324,6 +350,42 @@ pub(crate) async fn handle_view_v2(
         Ok(super::view::for_member_v2(
             &snap,
             &who,
+            filter.as_ref(),
+            member.as_ref(),
+        )?)
+    }
+    .await;
+    respond(&doc, r)
+}
+
+/// `git-ns/view/0.4` — 0.2's answer, with every record's `breakGlass`, and
+/// every unratified break-glass record to every administrator it concerns.
+pub(crate) async fn handle_view_v4(
+    doc: TrustTask<view4::Payload>,
+    ctx: GitNsCtx,
+) -> TrustTaskOutcome {
+    let who = match caller(&doc, &ctx) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let r = async {
+        let who = acting_as(&ctx.state, &who).await?;
+        let standing = ops::standing(&ctx.state, &who).await?;
+        if !standing.member {
+            return Err(OpError::PermissionDenied(
+                "git-ns/view answers members of this community".into(),
+            ));
+        }
+        let filter = match &doc.payload.resource {
+            Some(r) => Some(super::model::Resource::parse(r).map_err(OpError::Malformed)?),
+            None => None,
+        };
+        let snap = Snapshot::load(&ctx.state.git_ns.ks).await?;
+        let member = crate::members::get_member(&ctx.state.members_ks, &who).await?;
+        Ok(super::view::for_member_v4(
+            &snap,
+            &who,
+            standing.community_admin,
             filter.as_ref(),
             member.as_ref(),
         )?)

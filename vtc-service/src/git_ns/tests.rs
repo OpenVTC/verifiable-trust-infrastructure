@@ -4455,3 +4455,542 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
     );
     assert!(!detail.to_string().contains(&f.carol.did));
 }
+
+// ── separation of duties and break-glass (git-ns/right/grant/0.3 rule 7,
+//    git-ns/right/break-glass/0.1, git-ns/right/ratify/0.1) ─────────────────
+
+async fn send_ver(
+    state: &AppState,
+    who: &Party,
+    task: &str,
+    version: &str,
+    payload: Value,
+) -> TrustTaskOutcome {
+    let type_uri = format!("{URI}/{task}/{version}");
+    let mut doc: TrustTask<Value> =
+        vta_sdk::trust_task_sign::build_unsigned(&type_uri, payload, &who.did, TEST_VTC_DID)
+            .unwrap();
+    let key =
+        vta_sdk::trust_task_sign::HolderKey::from_did_key(&who.did, &who.secret_multibase).unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    let body = serde_json::to_vec(&doc).unwrap();
+    dispatch_trust_task_core(state, &JoinAuthCtx::rest(), &body).await
+}
+
+fn bg_payload(right: &str, resource: &str) -> Value {
+    json!({
+        "right": right,
+        "resource": resource,
+        "justification": "Both owners unreachable; CVE fix must ship tonight",
+    })
+}
+
+/// Record the passkey gesture a break-glass needs, as if `who` had answered
+/// the ceremony, then send it.
+async fn break_glass(f: &Fixture, who: &Party, right: &str, resource: &str) -> TrustTaskOutcome {
+    let p = bg_payload(right, resource);
+    crate::acl::bound_step_up::record_mark_for_test(
+        &f.vtc.state,
+        &who.did,
+        super::break_glass::break_glass_type(),
+        &p,
+    )
+    .await
+    .unwrap();
+    send_ver(&f.vtc.state, who, "right/break-glass", "0.1", p).await
+}
+
+async fn bg_audit_rows(f: &Fixture) -> Vec<vti_common::audit::GitNsBreakGlassData> {
+    let mut out = Vec::new();
+    for (_, v) in f
+        .vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+    {
+        if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v)
+            && let vti_common::audit::AuditEvent::GitNsBreakGlass(d) = env.event
+        {
+            out.push(d);
+        }
+    }
+    out
+}
+
+/// Carol is a namespace admin of `acme` (granted by the binder), not a
+/// community administrator; Bob owns `widgets`.
+async fn carol_admin_fixture() -> Fixture {
+    let f = fixture().await;
+    active_repo(&f).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.ns.admin",
+        "github.com/acme",
+    )
+    .await);
+    f
+}
+
+#[tokio::test]
+async fn grant_rule_7_refuses_an_elevated_self_grant_and_names_break_glass() {
+    let f = carol_admin_fixture().await;
+    for (right, res) in [
+        ("git.repo.own", "github.com/acme/widgets"),
+        ("git.repo.create", "github.com/acme"),
+        ("git.ns.admin", "github.com/acme"),
+    ] {
+        let out = send_ver(
+            &f.vtc.state,
+            &f.carol,
+            "right/grant",
+            "0.3",
+            json!({ "subject": f.carol.did, "right": right, "resource": res }),
+        )
+        .await;
+        assert_eq!(code(&out), "git-ns:selfGrantNotAllowed", "{right}");
+        assert!(
+            payload(&out)["message"]
+                .as_str()
+                .unwrap()
+                .contains("break-glass")
+        );
+        // 0.1 is still served, under the same rule (grant 0.3, *Changes*).
+        let out = grant(&f, &f.carol, &f.carol.did, right, res).await;
+        assert_eq!(code(&out), "git-ns:selfGrantNotAllowed", "0.1 {right}");
+    }
+}
+
+#[tokio::test]
+async fn grant_rule_7_leaves_normal_self_grants_alone() {
+    let f = carol_admin_fixture().await;
+    // Bob, owner of widgets, grants himself maintain and commit.sign.
+    ok(&grant(
+        &f,
+        &f.bob,
+        &f.bob.did,
+        "git.repo.maintain",
+        "github.com/acme/widgets",
+    )
+    .await);
+    ok(&grant(
+        &f,
+        &f.bob,
+        &f.bob.did,
+        "git.commit.sign",
+        "github.com/acme/widgets",
+    )
+    .await);
+    // Someone else grants the elevated right: fine.
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.bob.did,
+        "git.repo.create",
+        "github.com/acme",
+    )
+    .await);
+}
+
+#[tokio::test]
+async fn repo_adopt_naming_oneself_owner_is_a_self_grant() {
+    let f = fixture().await;
+    bind_manual(&f).await;
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/adopt",
+        json!({ "resource": "github.com/acme/gadgets", "owners": [f.admin.did] }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+}
+
+#[tokio::test]
+async fn reseat_to_oneself_is_a_self_grant() {
+    let f = fixture().await;
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    let ns = bind_manual(&f).await;
+    crate::acl::delete_acl_entry(&f.vtc.state.acl_ks, &f.admin.did)
+        .await
+        .unwrap();
+    let out = reseat(&f, &dana, &ns, &dana.did).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+}
+
+#[tokio::test]
+async fn break_glass_needs_the_bound_step_up_and_then_records_a_flagged_right() {
+    let f = carol_admin_fixture().await;
+    // No gesture recorded: refused, nothing written.
+    let out = send_ver(
+        &f.vtc.state,
+        &f.carol,
+        "right/break-glass",
+        "0.1",
+        bg_payload("git.repo.own", "github.com/acme/widgets"),
+    )
+    .await;
+    assert!(
+        !out.status.is_success(),
+        "{}",
+        String::from_utf8_lossy(&out.body)
+    );
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert!(
+        !super::rules::owners(
+            &snap,
+            &repo_id(&snap, "github.com/acme/widgets"),
+            super::ops::now()
+        )
+        .contains(&f.carol.did)
+    );
+
+    // With the gesture: recorded at once, flagged, bypassing the
+    // elevated_requires_admin stand-in (Carol is no community administrator).
+    let body = ok(&break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await);
+    let bg = &body["right"]["breakGlass"];
+    assert_eq!(bg["by"], json!(f.carol.did));
+    assert!(bg["ratifiedBy"].is_null());
+    assert!(bg["effectiveAt"].is_null());
+    assert!(
+        body["right"].get("expiresAt").is_none(),
+        "a break-glass never lapses"
+    );
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert!(
+        super::rules::owners(
+            &snap,
+            &repo_id(&snap, "github.com/acme/widgets"),
+            super::ops::now()
+        )
+        .contains(&f.carol.did)
+    );
+
+    // The critical audit row carries the justification and the evidence; the
+    // notice to the other administrator (the binder) could not be queued in
+    // this fixture, and says so.
+    let rows = bg_audit_rows(&f).await;
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r.event, "breakGlass");
+    assert!(r.justification.contains("CVE"));
+    assert_eq!(r.step_up.as_ref().unwrap().credential_id, "c0ffee");
+    assert_eq!(r.entitlement.as_deref(), Some("grantAuthority"));
+    assert_eq!(r.undeliverable, vec![f.admin.did.clone()]);
+    assert_eq!(
+        vti_common::audit::AuditEvent::GitNsBreakGlass(r.clone()).severity(),
+        vti_common::audit::AuditSeverity::Critical
+    );
+
+    // The mark is spent: the same document again finds a record, not a gesture.
+    let again = ok(&send_ver(
+        &f.vtc.state,
+        &f.carol,
+        "right/break-glass",
+        "0.1",
+        bg_payload("git.repo.own", "github.com/acme/widgets"),
+    )
+    .await);
+    assert_eq!(again["right"]["breakGlass"]["at"], bg["at"]);
+    assert_eq!(
+        bg_audit_rows(&f).await.len(),
+        1,
+        "a repeat announces nothing"
+    );
+}
+
+async fn ratify_as(f: &Fixture, who: &Party, subject: &str, at: Value) -> TrustTaskOutcome {
+    send_ver(
+        &f.vtc.state,
+        who,
+        "right/ratify",
+        "0.1",
+        json!({
+            "subject": subject,
+            "right": "git.repo.own",
+            "resource": "github.com/acme/widgets",
+            "breakGlassAt": at,
+        }),
+    )
+    .await
+}
+
+fn repo_id(snap: &Snapshot, resource: &str) -> String {
+    snap.repo_at(resource).unwrap().id.clone()
+}
+
+#[tokio::test]
+async fn break_glass_refuses_what_the_actor_could_not_grant_anyone() {
+    let f = carol_admin_fixture().await;
+    // Bob owns widgets but holds nothing over the namespace.
+    let out = break_glass(&f, &f.bob, "git.ns.admin", "github.com/acme").await;
+    assert!(
+        matches!(
+            code(&out).as_str(),
+            "git-ns:escalation" | "permissionDenied" | "git-ns:scopeViolation"
+        ),
+        "{}",
+        code(&out)
+    );
+    // Wrong level.
+    let out = break_glass(&f, &f.carol, "git.repo.own", "github.com/acme").await;
+    assert_eq!(code(&out), "git-ns:scopeViolation");
+}
+
+#[tokio::test]
+async fn break_glass_policy_can_disable_or_delay_it() {
+    let f = carol_admin_fixture().await;
+    let with = |extra: &str| {
+        format!(
+            r#"package vtc.git_namespace
+
+import rego.v1
+
+settings := {{"maintainer_grants_commit": false, "cascade_on_departure": false, "role_drift": "report", {extra}}}
+
+default decision := {{"effect": "allow"}}
+"#
+        )
+    };
+    activate_git_policy(&f, &with(r#""break_glass": "disabled""#)).await;
+    let out = break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await;
+    assert_eq!(code(&out), "git-ns/right/break-glass:disabled");
+
+    activate_git_policy(&f, &with(r#""break_glass_min_justification_chars": 500"#)).await;
+    let out = break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await;
+    assert_eq!(code(&out), "git-ns:policyDenied");
+
+    activate_git_policy(&f, &with(r#""break_glass_delay_seconds": 3600"#)).await;
+    let body = ok(&break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await);
+    assert!(body["right"]["breakGlass"]["effectiveAt"].is_string());
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let id = repo_id(&snap, "github.com/acme/widgets");
+    assert!(
+        !super::rules::owners(&snap, &id, super::ops::now()).contains(&f.carol.did),
+        "a delayed break-glass confers nothing yet"
+    );
+    // …and is revocable while it waits, by a community administrator.
+    ok(&send_ver(
+        &f.vtc.state,
+        &f.admin,
+        "right/revoke",
+        "0.3",
+        json!({ "subject": f.carol.did, "right": "git.repo.own", "resource": "github.com/acme/widgets" }),
+    )
+    .await);
+    // A policy that denies the action outright is a policy refusal.
+    activate_git_policy(&f, &policy_denying("right.breakGlass")).await;
+    let out = break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await;
+    assert_eq!(code(&out), "git-ns:policyDenied");
+}
+
+#[tokio::test]
+async fn a_community_administrator_breaks_the_glass_only_on_a_headless_namespace() {
+    let f = fixture().await;
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    bind_manual(&f).await;
+    let out = break_glass(&f, &dana, "git.ns.admin", "github.com/acme").await;
+    assert_eq!(code(&out), "git-ns/right/break-glass:notHeadless");
+    assert!(!String::from_utf8_lossy(&out.body).contains(&f.admin.did));
+
+    crate::acl::delete_acl_entry(&f.vtc.state.acl_ks, &f.admin.did)
+        .await
+        .unwrap();
+    let body = ok(&break_glass(&f, &dana, "git.ns.admin", "github.com/acme").await);
+    assert_eq!(body["right"]["subject"], json!(dana.did));
+    let rows = bg_audit_rows(&f).await;
+    assert_eq!(
+        rows.last().unwrap().entitlement.as_deref(),
+        Some("communityAdministratorHeadless")
+    );
+}
+
+#[tokio::test]
+async fn ratify_is_someone_elses_bound_to_the_break_glass_read() {
+    let f = carol_admin_fixture().await;
+    let body = ok(&break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await);
+    let at = body["right"]["breakGlass"]["at"].clone();
+    assert_eq!(
+        code(&ratify_as(&f, &f.carol, &f.carol.did, at.clone()).await),
+        "git-ns/right/ratify:selfRatification"
+    );
+    assert_eq!(
+        code(&ratify_as(&f, &f.admin, &f.carol.did, json!("2020-01-01T00:00:00Z")).await),
+        "git-ns/right/ratify:recordChanged"
+    );
+    // Bob owns widgets explicitly and could grant own there — but under the
+    // default gate an owner-class grant needs a community administrator.
+    let out = ratify_as(&f, &f.bob, &f.carol.did, at.clone()).await;
+    assert_eq!(code(&out), "permissionDenied");
+
+    let body = ok(&ratify_as(&f, &f.admin, &f.carol.did, at.clone()).await);
+    assert_eq!(
+        body["right"]["breakGlass"]["ratifiedBy"],
+        json!(f.admin.did)
+    );
+    assert_eq!(
+        code(&ratify_as(&f, &f.admin, &f.carol.did, at).await),
+        "git-ns/right/ratify:notBreakGlass"
+    );
+    let rows = bg_audit_rows(&f).await;
+    assert_eq!(rows.last().unwrap().event, "ratified");
+}
+
+#[tokio::test]
+async fn a_ratifier_whose_own_authority_is_an_unratified_break_glass_is_refused() {
+    // With the consent stand-in off, an owner may ratify an owner-class
+    // break-glass on their repository — but only through a confirmed right.
+    let cfg = GitNsConfig {
+        elevated_requires_admin: false,
+        ..GitNsConfig::default()
+    };
+    let f = fixture_with(cfg).await;
+    active_repo(&f).await;
+    let (dan, erin) = (Party::new(), Party::new());
+    seed_acl(&f.vtc.state, &dan.did, VtcRole::Member).await;
+    seed_acl(&f.vtc.state, &erin.did, VtcRole::Member).await;
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let scope = Scope::Repo(repo_id(&snap, "github.com/acme/widgets"));
+    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+        .await
+        .unwrap();
+    let at = super::ops::now();
+    for who in [&dan, &erin] {
+        let mut row = super::ops::new_row(&who.did, super::model::Right::RepoOwn, &who.did, true);
+        row.break_glass = Some(super::model::BreakGlassMark {
+            by: who.did.clone(),
+            at,
+            justification: "nobody else".into(),
+            effective_at: None,
+            ratified_by: None,
+            ratified_at: None,
+        });
+        set.rows.push(row);
+    }
+    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+        .await
+        .unwrap();
+    let at = json!(super::wire::timestamp(at));
+    let out = ratify_as(&f, &dan, &erin.did, at.clone()).await;
+    assert_eq!(
+        code(&out),
+        "permissionDenied",
+        "a break-glass cannot confirm a break-glass"
+    );
+    ok(&ratify_as(&f, &f.bob, &erin.did, at).await);
+}
+
+#[tokio::test]
+async fn an_unratified_break_glass_never_counts_toward_the_invariants() {
+    let f = carol_admin_fixture().await;
+    ok(&break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await);
+    // Bob is still the last *counting* owner: his resignation is refused
+    // even though Carol's break-glass record exists.
+    let out = send_ver(
+        &f.vtc.state,
+        &f.bob,
+        "right/revoke",
+        "0.3",
+        json!({ "subject": f.bob.did, "right": "git.repo.own", "resource": "github.com/acme/widgets" }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:lastOwner");
+    // A community administrator with no git right of their own revokes the
+    // break-glass; the revocation is audited as one.
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    let body = ok(&send_ver(
+        &f.vtc.state,
+        &dana,
+        "right/revoke",
+        "0.3",
+        json!({ "subject": f.carol.did, "right": "git.repo.own", "resource": "github.com/acme/widgets", "reason": "not needed" }),
+    )
+    .await);
+    assert!(body["revoked"]["breakGlass"].is_object());
+    assert_eq!(bg_audit_rows(&f).await.last().unwrap().event, "revoked");
+}
+
+#[tokio::test]
+async fn the_break_glass_audience_is_every_other_administrator() {
+    let f = carol_admin_fixture().await;
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let ns = snap.namespaces[0].clone();
+    let got = super::break_glass::audience(&f.vtc.state, &snap, &ns, &f.carol.did)
+        .await
+        .unwrap();
+    let mut want = vec![f.admin.did.clone(), dana.did.clone()];
+    want.sort();
+    assert_eq!(
+        got, want,
+        "community admins and ns admins, never the actor, never a plain member"
+    );
+    let got = super::break_glass::audience(&f.vtc.state, &snap, &ns, &f.admin.did)
+        .await
+        .unwrap();
+    assert!(got.contains(&f.carol.did) && got.contains(&dana.did) && !got.contains(&f.bob.did));
+}
+
+#[tokio::test]
+async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_concerns() {
+    let f = carol_admin_fixture().await;
+    ok(&break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await);
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    let dan = Party::new();
+    seed_acl(&f.vtc.state, &dan.did, VtcRole::Member).await;
+    let flagged = |v: &Value| {
+        v["rights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["breakGlass"]["justification"].is_string())
+    };
+    // A community administrator with no git right sees it.
+    let v = ok(&send_ver(&f.vtc.state, &dana, "view", "0.4", json!({})).await);
+    assert!(flagged(&v), "{v}");
+    // Bob, owner of the repository, sees it.
+    let v = ok(&send_ver(&f.vtc.state, &f.bob, "view", "0.4", json!({})).await);
+    assert!(flagged(&v), "{v}");
+    // A member with nothing to do with it does not.
+    let v = ok(&send_ver(&f.vtc.state, &dan, "view", "0.4", json!({})).await);
+    assert!(!flagged(&v), "{v}");
+    // 0.2 carries no breakGlass member at all.
+    let v = ok(&send_ver(&f.vtc.state, &f.bob, "view", "0.2", json!({})).await);
+    assert!(!v.to_string().contains("breakGlass"));
+
+    // The console list: the community administrator and Carol's co-admin read
+    // it; a plain member session is refused.
+    let (status, body) = get(&f, &dana.did, vec![], "/git-ns/break-glass").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["items"][0]["state"], "unratified");
+    assert_eq!(body["items"][0]["namespaceResource"], "github.com/acme");
+    let (status, _) = get(&f, &f.bob.did, vec!["ops".into()], "/git-ns/break-glass").await;
+    assert_eq!(status, 403);
+    let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/rights").await;
+    assert_eq!(status, 200);
+    assert!(
+        body["rights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["breakGlass"]["by"] == json!(f.carol.did))
+    );
+    let (_, act) = get(&f, &f.admin.did, vec![], "/git-ns/activity").await;
+    assert!(
+        act["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["action"] == "gitNs.right.breakGlass")
+    );
+}

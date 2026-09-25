@@ -413,6 +413,7 @@ fn build_api_chain(
         .routes(routes!(git_ns::projection_show))
         .routes(routes!(git_ns::accounts_list))
         .routes(routes!(git_ns::activity))
+        .routes(routes!(git_ns::break_glass_list))
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension
         // header (same rationale as `did.jsonl`).
