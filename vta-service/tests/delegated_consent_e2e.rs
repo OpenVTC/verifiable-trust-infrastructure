@@ -71,6 +71,22 @@ async fn post(router: &axum::Router, token: &str, doc: &Value) -> (StatusCode, V
     )
 }
 
+/// Post `doc` on a session of its own issuer.
+///
+/// The VTA acts on a document only when its `issuer` is the authenticated
+/// caller (SPEC §4.8.1), so an approver's decision travels on the approver's
+/// session, not the requester's. `monitor` confers nothing: the decision's
+/// authority is its proof and approver-set membership, never the session.
+async fn post_as_approver(
+    router: &axum::Router,
+    ctx: &TestAppContext,
+    who: &Approver,
+    doc: &Value,
+) -> (StatusCode, Value) {
+    let token = ctx.mint_token(&who.did, "monitor", vec![]).await;
+    post(router, &token, doc).await
+}
+
 /// A `did:key` identity that can sign a Data-Integrity proof.
 struct Approver {
     did: String,
@@ -183,7 +199,7 @@ async fn a_did_update_is_approved_by_a_human_and_the_keys_they_saw_are_the_keys_
     let ops = approver(7);
 
     // A real DID, minted over the wire by the VTA that holds its key.
-    let (did, _scid) = create_did(&router, &ctx, &token).await;
+    let (did, _scid) = create_did(&router, &ctx, &token, &requester).await;
     let keys_before = update_keys_in_force(&ctx, &did).await;
     assert_eq!(keys_before.len(), 1, "a fresh DID has one update key");
 
@@ -300,7 +316,7 @@ async fn a_did_update_is_approved_by_a_human_and_the_keys_they_saw_are_the_keys_
             "decision": "approve"
         }),
     );
-    let (status, granted) = post(&router, &token, &decision).await;
+    let (status, granted) = post_as_approver(&router, &ctx, &ops, &decision).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -351,7 +367,7 @@ async fn an_approval_authorizes_exactly_one_execution() {
     let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
     let ops = approver(9);
 
-    let (did, _scid) = create_did(&router, &ctx, &token).await;
+    let (did, _scid) = create_did(&router, &ctx, &token, &requester).await;
     {
         let mut cfg = ctx.config.write().await;
         cfg.policy.enforcement = true;
@@ -379,7 +395,7 @@ async fn an_approval_authorizes_exactly_one_execution() {
             "decision": "approve"
         }),
     );
-    let (status, _) = post(&router, &token, &decision).await;
+    let (status, _) = post_as_approver(&router, &ctx, &ops, &decision).await;
     assert_eq!(status, StatusCode::OK);
 
     // First re-submit (fresh envelope, same payload) executes.
@@ -430,7 +446,7 @@ async fn the_requester_cannot_approve_its_own_task() {
     let requester = approver(11);
     let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
 
-    let (did, _scid) = create_did(&router, &ctx, &token).await;
+    let (did, _scid) = create_did(&router, &ctx, &token, &requester).await;
     {
         let mut cfg = ctx.config.write().await;
         cfg.policy.enforcement = true;
@@ -496,7 +512,7 @@ async fn a_context_admin_approval_lets_a_cross_context_requester_execute() {
     let admin_token = ctx
         .mint_token(&approver(REQUESTER_SEED).did, "admin", vec![])
         .await;
-    let (did, _scid) = create_did(&router, &ctx, &admin_token).await;
+    let (did, _scid) = create_did(&router, &ctx, &admin_token, &approver(REQUESTER_SEED)).await;
     let keys_before = update_keys_in_force(&ctx, &did).await;
 
     // The requester is an admin — but of `other-ctx`, NOT `default`. On its own
@@ -560,7 +576,7 @@ async fn a_context_admin_approval_lets_a_cross_context_requester_execute() {
         &ctx.vta_did,
         json!({ "challenge": challenge, "payloadDigest": payload_digest, "decision": "approve" }),
     );
-    let (status, granted) = post(&router, &deleg_token, &decision).await;
+    let (status, granted) = post_as_approver(&router, &ctx, &ops, &decision).await;
     assert_eq!(status, StatusCode::OK, "decision accepted: {granted}");
     assert_eq!(granted["payload"]["status"], "granted", "{granted}");
 
@@ -611,7 +627,7 @@ async fn an_unsatisfiable_elevation_is_refused_before_any_consent_ceremony() {
     let admin_token = ctx
         .mint_token(&approver(REQUESTER_SEED).did, "admin", vec![])
         .await;
-    let (did, _scid) = create_did(&router, &ctx, &admin_token).await;
+    let (did, _scid) = create_did(&router, &ctx, &admin_token, &approver(REQUESTER_SEED)).await;
     let keys_before = update_keys_in_force(&ctx, &did).await;
 
     let requester = approver(0x52);
@@ -716,14 +732,19 @@ async fn install_policy(ctx: &TestAppContext, rego: &str) {
 /// equivalent of the provisioning step a real deployment runs before any DID
 /// exists. The `url` (with no `server_id`) selects the serverless path, so no
 /// hosting server has to be reachable.
-async fn create_did(router: &axum::Router, ctx: &TestAppContext, token: &str) -> (String, String) {
+async fn create_did(
+    router: &axum::Router,
+    ctx: &TestAppContext,
+    token: &str,
+    caller: &Approver,
+) -> (String, String) {
     vta_service::contexts::create_context(&ctx.contexts_ks, "default", "Default")
         .await
         .expect("seed the default context");
 
     let doc = envelope(
         vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-        &approver(REQUESTER_SEED),
+        caller,
         &ctx.vta_did,
         json!({ "contextId": "default", "url": "https://example.com/acme" }),
     );
@@ -862,7 +883,7 @@ async fn the_webvh_rest_route_is_gated_like_its_trust_task() {
     let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
     let ops = approver(13);
 
-    let (did, scid) = create_did(&router, &ctx, &token).await;
+    let (did, scid) = create_did(&router, &ctx, &token, &requester).await;
     let keys_before = update_keys_in_force(&ctx, &did).await;
 
     {
@@ -1066,7 +1087,7 @@ async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
             "decision": "approve"
         }),
     );
-    let (status, granted) = post(&router, &token, &decision).await;
+    let (status, granted) = post_as_approver(&router, &ctx, &ops, &decision).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -1121,7 +1142,7 @@ async fn a_consent_refusal_keeps_its_coordinates_however_many_approvers() {
         .await;
         let requester = approver(REQUESTER_SEED);
         let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
-        let (did, _scid) = create_did(&router, &ctx, &token).await;
+        let (did, _scid) = create_did(&router, &ctx, &token, &requester).await;
 
         let set: Vec<String> = (0..approvers)
             .map(|i| approver(0x60 + i as u8).did)
