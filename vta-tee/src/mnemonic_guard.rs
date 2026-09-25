@@ -38,6 +38,10 @@ struct GuardState {
     window_secs: u64,
     /// Whether the mnemonic has been exported (one-time use).
     exported: bool,
+    /// Whether an export is in flight — reserved but not yet committed. Keeps
+    /// a second concurrent request from reading the mnemonic while the first
+    /// is still sealing it.
+    reserved: bool,
 }
 
 impl Drop for GuardState {
@@ -104,6 +108,7 @@ impl MnemonicExportGuard {
                 created_at: Instant::now(),
                 window_secs,
                 exported: false,
+                reserved: false,
             }),
         }
     }
@@ -116,6 +121,7 @@ impl MnemonicExportGuard {
                 created_at: Instant::now(),
                 window_secs: 0,
                 exported: false,
+                reserved: false,
             }),
         }
     }
@@ -140,19 +146,40 @@ impl MnemonicExportGuard {
         }
     }
 
-    /// Export the mnemonic if the window is still open.
+    /// Export the mnemonic if the window is still open: [`Self::reserve`] then
+    /// commit at once. Kept for callers with nothing that can fail between
+    /// reading the words and handing them on.
     ///
     /// This is a one-time operation: after a successful export, the entropy
     /// is cryptographically zeroed and no further exports are possible.
-    ///
-    /// Returns `Err` if:
-    /// - The export window has expired
-    /// - The mnemonic was already exported
-    /// - No entropy is available (subsequent boot)
     pub fn export(&self) -> Result<MnemonicExportResponse, AppError> {
+        let reservation = self.reserve()?;
+        let response = MnemonicExportResponse {
+            mnemonic: reservation.mnemonic().to_string(),
+            window_remaining_secs: reservation.window_remaining_secs(),
+        };
+        reservation.commit();
+        Ok(response)
+    }
+
+    /// Reserve the one-time export: read the mnemonic **without** consuming
+    /// the entropy yet.
+    ///
+    /// The export is two-phase because the caller has work that can fail after
+    /// reading the words — sealing them to the operator, recording the audit
+    /// row — and the entropy exists nowhere else. Consuming it first would turn
+    /// a failed seal into a lost root seed. So: reserve, do the work,
+    /// [`MnemonicReservation::commit`] on success. A reservation dropped
+    /// without a commit releases the export for a retry. While one is held, a
+    /// concurrent reserve is refused, so the words are never handed to two
+    /// requests at once.
+    ///
+    /// Returns `Err` if the window has expired (the entropy is zeroed then),
+    /// the mnemonic was already exported, an export is in flight, or no
+    /// entropy is available (subsequent boot).
+    pub fn reserve(&self) -> Result<MnemonicReservation<'_>, AppError> {
         let mut guard = self.inner.lock().unwrap();
 
-        // Check entropy availability
         let entropy = match guard.entropy {
             Some(e) => e,
             None => {
@@ -161,18 +188,18 @@ impl MnemonicExportGuard {
                 ));
             }
         };
-
-        // Check if already exported
         if guard.exported {
             return Err(tee_attestation_error(
                 "mnemonic already exported — one-time operation",
             ));
         }
-
-        // Check window
+        if guard.reserved {
+            return Err(tee_attestation_error(
+                "a mnemonic export is already in progress",
+            ));
+        }
         let elapsed = guard.created_at.elapsed().as_secs();
         if elapsed >= guard.window_secs {
-            // Window expired — securely zero the entropy
             guard.wipe_entropy();
             warn!("mnemonic export attempted after window expired — entropy zeroed");
             return Err(tee_attestation_error(format!(
@@ -181,30 +208,61 @@ impl MnemonicExportGuard {
             )));
         }
 
-        // Generate mnemonic from entropy
         let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
             .map_err(|e| tee_attestation_error(format!("failed to derive mnemonic: {e}")))?;
+        guard.reserved = true;
+        Ok(MnemonicReservation {
+            guard: self,
+            mnemonic: zeroize::Zeroizing::new(mnemonic.to_string()),
+            window_remaining_secs: guard.window_secs.saturating_sub(elapsed),
+            committed: false,
+        })
+    }
+}
 
-        let remaining = guard.window_secs.saturating_sub(elapsed);
+/// An export in flight — see [`MnemonicExportGuard::reserve`].
+pub struct MnemonicReservation<'a> {
+    guard: &'a MnemonicExportGuard,
+    mnemonic: zeroize::Zeroizing<String>,
+    window_remaining_secs: u64,
+    committed: bool,
+}
 
-        // Mark as exported and securely zero the entropy
+impl MnemonicReservation<'_> {
+    /// The mnemonic phrase. Zeroized when the reservation is dropped.
+    pub fn mnemonic(&self) -> &str {
+        &self.mnemonic
+    }
+
+    /// Seconds left in the export window when the reservation was taken.
+    pub fn window_remaining_secs(&self) -> u64 {
+        self.window_remaining_secs
+    }
+
+    /// Complete the export: mark it done and zero the entropy. One-time.
+    pub fn commit(mut self) {
+        let mut guard = self.guard.inner.lock().unwrap();
         guard.exported = true;
+        guard.reserved = false;
         guard.wipe_entropy();
-
+        self.committed = true;
         info!(
-            remaining_secs = remaining,
+            remaining_secs = self.window_remaining_secs,
             "mnemonic exported to authenticated super admin — entropy zeroed"
         );
+    }
+}
 
-        let mut mnemonic_str = mnemonic.to_string();
-        let response = MnemonicExportResponse {
-            mnemonic: mnemonic_str.clone(),
-            window_remaining_secs: remaining,
-        };
-        // Zeroize the local copy of the mnemonic string
-        mnemonic_str.zeroize();
-
-        Ok(response)
+impl Drop for MnemonicReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            // Not committed: release, so the operator can retry inside the
+            // window. `lock()` only fails if a holder panicked; the entropy is
+            // then unreachable anyway.
+            if let Ok(mut guard) = self.guard.inner.lock() {
+                guard.reserved = false;
+            }
+        }
     }
 }
 
@@ -322,6 +380,7 @@ mod tests {
             created_at: Instant::now(),
             window_secs: 60,
             exported: false,
+            reserved: false,
         };
         state.wipe_entropy();
         assert!(
@@ -354,5 +413,22 @@ mod tests {
         let s0 = g0.status();
         assert!(!s0.window_active, "0-second window is never active");
         assert_eq!(s0.window_remaining_secs, 0);
+    }
+
+    /// A reservation dropped without a commit leaves the mnemonic exportable,
+    /// so a failed seal cannot lose the root seed; while it is held, a second
+    /// reserve is refused.
+    #[test]
+    fn an_uncommitted_reservation_releases_the_export() {
+        let g = MnemonicExportGuard::new(TEST_ENTROPY, 60);
+        let first = g.reserve().expect("reserve");
+        let words = first.mnemonic().to_string();
+        assert!(g.reserve().is_err(), "a concurrent reserve is refused");
+        drop(first);
+        let second = g.reserve().expect("released for a retry");
+        assert_eq!(second.mnemonic(), words);
+        second.commit();
+        assert!(g.status().already_exported);
+        assert!(g.reserve().is_err(), "one-time after a commit");
     }
 }

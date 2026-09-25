@@ -762,6 +762,17 @@ pub async fn run(
             Ok(n) => info!(rewritten = n, "seed archive reconciled at boot"),
             Err(e) => warn!(error = %e, "seed archive reconcile failed — continuing"),
         }
+        // Key records written by earlier builds with an unprefixed P-256 (or
+        // imported X25519) public key are rewritten to the multicodec form
+        // custody publishes. Idempotent; non-fatal like the reconcile above.
+        match crate::keys::migrate_unprefixed_public_keys(&keys_ks_boot).await {
+            Ok(0) => {}
+            Ok(n) => info!(
+                rewritten = n,
+                "key records re-encoded with multicodec public keys"
+            ),
+            Err(e) => warn!(error = %e, "public-key re-encoding failed — continuing"),
+        }
     }
 
     // TEE anti-rollback anchor (P0.2). Verify the MAC'd integrity manifest

@@ -6,7 +6,7 @@ use crate::auth::SuperAdminAuth;
 use crate::error::{AppError, tee_attestation_error};
 use crate::operations;
 use crate::server::AppState;
-use crate::tee::mnemonic_guard::{MnemonicExportResponse, MnemonicExportStatus};
+use crate::tee::mnemonic_guard::MnemonicExportStatus;
 use crate::tee::types::{AttestationReport, AttestationRequest, TeeStatus};
 use vta_sdk::attestation_report::ConfigAttestationReport;
 
@@ -178,18 +178,50 @@ pub async fn mnemonic_status(
     Ok(Json(guard.status()))
 }
 
-/// POST /attestation/mnemonic — Export the BIP-39 mnemonic (super admin only, time-limited).
+/// Response to `POST /attestation/mnemonic`: the mnemonic as a sealed bundle.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct SealedMnemonicResponse {
+    /// ASCII-armored sealed bundle carrying a `SeedMnemonic` payload, sealed
+    /// to the request's `client_did` under an `Attested` producer assertion.
+    pub bundle: String,
+    /// SHA-256 of the bundle — confirm it out of band before opening.
+    pub digest: String,
+    /// Seconds that were left in the export window.
+    pub window_remaining_secs: u64,
+}
+
+/// Serializes exports: the guard's reservation already refuses a second
+/// concurrent one, and this keeps the refusal from racing the audit row.
+static MNEMONIC_EXPORT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// POST /attestation/mnemonic — Export the BIP-39 mnemonic **sealed** to the
+/// operator (super admin only, time-limited, one time).
+///
+/// The body is a `BootstrapRequest` (`pnm bootstrap request --out req.json`):
+/// the operator's ephemeral `did:key` and a fresh nonce. The mnemonic is sealed
+/// to that key with sealed-transfer under an `Attested` assertion whose quote
+/// binds `SHA256(client_ed25519 || nonce || producer_ed25519)`, and opened
+/// with `pnm bootstrap open --expect-digest <digest>` on the machine that will
+/// hold the backup.
+///
+/// It used to be returned as plaintext JSON. The mnemonic is the VTA's root
+/// derivation material (VTI-VTA-001, VTI-KEY-033), and over REST that response
+/// exists in the clear wherever TLS terminates — for a TEE deployment, outside
+/// the enclave by definition.
 ///
 /// Requirements:
 /// - VTA must have been started with `VTA_MNEMONIC_EXPORT_WINDOW=<seconds>`
 /// - Must be within the export window since boot
 /// - Caller must be a super admin (JWT-authenticated)
-/// - One-time operation: after successful export, the entropy is zeroed
+/// - One-time operation: after a successful export, the entropy is zeroed. A
+///   failure before the bundle is built leaves the export available to retry.
 #[utoipa::path(
     post, path = "/attestation/mnemonic", tag = "attestation",
     security(("bearer_jwt" = [])),
+    request_body = vta_sdk::sealed_transfer::BootstrapRequest,
     responses(
-        (status = 200, description = "Exported BIP-39 mnemonic (one-time)", body = MnemonicExportResponse),
+        (status = 200, description = "Sealed mnemonic bundle (one-time)", body = SealedMnemonicResponse),
+        (status = 400, description = "Malformed request: version, client_did or nonce"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a super-admin"),
         (status = 503, description = "Mnemonic export not available or window closed"),
@@ -198,35 +230,101 @@ pub async fn mnemonic_status(
 pub async fn mnemonic_export(
     SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
-) -> Result<Json<MnemonicExportResponse>, AppError> {
+    Json(req): Json<vta_sdk::sealed_transfer::BootstrapRequest>,
+) -> Result<Json<SealedMnemonicResponse>, AppError> {
+    use sha2::{Digest, Sha256};
+    use vta_sdk::sealed_transfer::{
+        AssertionProof, AttestationQuoteAssertion, ProducerAssertion, SealedPayloadV1,
+        SeedMnemonicBundle, armor, bundle_digest, generate_ed25519_keypair, seal_payload,
+    };
+
     // The root seed is the export of every key this VTA holds: the same
     // capability as any other export (VTI-VTA-003), not only the role.
     crate::operations::keys::ensure_may_export(&state.acl_ks, &auth, "attestation/mnemonic")
         .await?;
-    let guard = state
-        .tee
-        .as_ref()
-        .and_then(|tc| tc.mnemonic_guard.as_ref())
-        .ok_or_else(|| {
-            tee_attestation_error(
-                "mnemonic export not available (TEE mode not active or no KMS bootstrap)",
-            )
-        })?;
 
-    // The root mnemonic is the most consequential export this VTA has, and it
-    // used to leave only a tracing line. Recorded durably *before* the entropy
-    // is released, and a failed write refuses the export — the same rule as
-    // `keys/export-secret` (VTI-VTA-003): once the words are out they cannot be
-    // taken back, so an unrecorded release is not permitted. The row names the
-    // caller and the transport; never the words.
-    crate::audit::record(
+    if req.version != 1 {
+        return Err(AppError::Validation(format!(
+            "unsupported request version: {}",
+            req.version
+        )));
+    }
+    let client_ed25519_pub = req
+        .decode_client_ed25519_pub()
+        .map_err(|e| AppError::Validation(format!("invalid client_did: {e}")))?;
+    let client_x25519_pub = req
+        .decode_client_x25519_pub()
+        .map_err(|e| AppError::Validation(format!("invalid client_did: {e}")))?;
+    let bundle_id = req
+        .decode_nonce()
+        .map_err(|e| AppError::Validation(format!("invalid nonce: {e}")))?;
+
+    let tee = state.tee.as_ref().ok_or_else(|| {
+        tee_attestation_error("mnemonic export not available (TEE mode not active)")
+    })?;
+    let guard = tee.mnemonic_guard.as_ref().ok_or_else(|| {
+        tee_attestation_error(
+            "mnemonic export not available (TEE mode not active or no KMS bootstrap)",
+        )
+    })?;
+
+    let _serial = MNEMONIC_EXPORT_LOCK.lock().await;
+    // Two-phase: the entropy is consumed only once the bundle exists and the
+    // release is recorded, so a failure here cannot lose the root seed.
+    let reservation = guard.reserve()?;
+
+    let (_producer_seed, producer_ed_pub) = generate_ed25519_keypair();
+    let producer_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&producer_ed_pub);
+    let mut hasher = Sha256::new();
+    hasher.update(client_ed25519_pub);
+    hasher.update(bundle_id);
+    hasher.update(producer_ed_pub);
+    let user_data = hasher.finalize();
+    let report = tee
+        .state
+        .provider
+        .attest(user_data.as_slice(), &bundle_id)
+        .map_err(|e| AppError::Internal(format!("tee attest failed: {e}")))?;
+    let assertion = ProducerAssertion {
+        producer_did,
+        proof: AssertionProof::Attested(AttestationQuoteAssertion {
+            format: format!("{}", report.tee_type),
+            quote_b64: report.evidence,
+        }),
+    };
+    let vta_did = state.config.read().await.vta_did.clone();
+    let payload = SealedPayloadV1::SeedMnemonic(Box::new(SeedMnemonicBundle {
+        mnemonic: reservation.mnemonic().to_string(),
+        vta_did,
+    }));
+    let nonce_store =
+        crate::sealed_nonce_store::PersistentNonceStore::new(state.sealed_nonces_ks.clone());
+    let sealed = seal_payload(
+        &client_x25519_pub,
+        bundle_id,
+        assertion,
+        &payload,
+        &nonce_store,
+    )
+    .await;
+    drop(payload);
+    let bundle =
+        sealed.map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
+    let digest = bundle_digest(&bundle);
+
+    // Recorded durably before the bundle leaves, and a failed write refuses
+    // the export — the same rule as `keys/export-secret` (VTI-VTA-003). The
+    // row names the caller, the recipient key and the transport; never the
+    // words.
+    crate::audit::record_with_detail(
         &state.audit_sink,
         "seed.mnemonic_export",
         &auth.did,
-        None,
+        Some(&req.client_did),
         "success",
-        Some("rest"),
+        Some("rest/sealed"),
         None,
+        Some(&format!("bundle_sha256:{digest}")),
     )
     .await
     .map_err(|e| {
@@ -241,21 +339,12 @@ pub async fn mnemonic_export(
                 .into(),
         )
     })?;
-    match guard.export() {
-        Ok(response) => Ok(Json(response)),
-        Err(e) => {
-            // The row above claimed a release that did not happen; say so.
-            crate::audit::record_best_effort(
-                &state.audit_sink,
-                "seed.mnemonic_export",
-                &auth.did,
-                None,
-                "failure:not_released",
-                Some("rest"),
-                None,
-            )
-            .await;
-            Err(e)
-        }
-    }
+
+    let window_remaining_secs = reservation.window_remaining_secs();
+    reservation.commit();
+    Ok(Json(SealedMnemonicResponse {
+        bundle: armor::encode(&bundle),
+        digest,
+        window_remaining_secs,
+    }))
 }
