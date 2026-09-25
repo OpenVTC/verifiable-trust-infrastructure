@@ -63,7 +63,7 @@ tracing-subscriber = { workspace = true }
 # networked methods (did:web / did:webvh) need network-mode config — later.
 affinidi-did-resolver-cache-sdk = { workspace = true }
 # DIDComm v2 authcrypt/anoncrypt pack + unpack. Pinned to vta-sdk's version.
-affinidi-messaging-didcomm = "0.15"
+affinidi-messaging-didcomm = "0.15.9"
 # Mediator-connected DIDComm session (ATM): the `MediatorSession` FFI wraps
 # `vta-sdk::DIDCommSession` (connect + receive_next) so the mobile approver can
 # pull VTA-pushed step-up approve-requests off the mediator — reusing the SDK
