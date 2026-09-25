@@ -2810,6 +2810,66 @@ mod tests {
         assert_eq!(swap.context_id.as_deref(), Some("ctx-swap"));
     }
 
+    /// An ephemeral granted a time-boxed row (`pnm contexts create
+    /// --admin-expires 1h`) that is itself the authenticated caller cannot
+    /// roll over to a permanent successor: nothing it writes may outlive it
+    /// (VTI-ACL-053). The row carries no marker that tells a bootstrap
+    /// hand-off apart from any other time-boxed admin, and exempting the
+    /// rollover would let every time-boxed admin make itself permanent. The
+    /// grant is refused before anything is minted, and the ephemeral keeps its
+    /// row. Grant the ephemeral without an expiry (the rollover retires it), or
+    /// have an operator whose own entry does not expire run the provisioning.
+    #[tokio::test]
+    async fn an_expiring_ephemeral_cannot_roll_over_to_a_permanent_successor() {
+        use crate::acl::{AclEntry, Role, store_acl_entry};
+
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "ctx-eph", "Ephemeral ctx")
+            .await
+            .expect("create context");
+
+        let request = signed_admin_rotation_request("vta-admin", "ctx-eph").await;
+        let client_did = request.holder().to_string();
+        let expires = vti_common::auth::session::now_epoch() + 3600;
+        let ephemeral_row = AclEntry::new(client_did.clone(), Role::Admin, "operator")
+            .with_contexts(vec!["ctx-eph".into()])
+            .with_expires_at(Some(expires));
+        store_acl_entry(&deps.acl_ks, &ephemeral_row)
+            .await
+            .expect("seed ephemeral ACL row");
+
+        let auth = AuthClaims {
+            did: client_did.clone(),
+            allowed_contexts: vec!["ctx-eph".into()],
+            ..super_admin_claims()
+        };
+        let err = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "ctx-eph".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .err()
+        .expect("a permanent successor would outlive its granter");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("VTI-ACL-053")),
+            "{err:?}"
+        );
+
+        let kept = crate::acl::get_acl_entry(&deps.acl_ks, &client_did)
+            .await
+            .expect("acl get")
+            .expect("the ephemeral is not retired by a refused rollover");
+        assert_eq!(kept.expires_at, Some(expires));
+    }
+
     #[tokio::test]
     async fn provision_integration_admin_rotation_swap_audit_skipped_when_no_ephemeral_row() {
         // Relayer-mode flow: the holder ephemeral was never granted an

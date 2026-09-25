@@ -714,7 +714,17 @@ async fn vti_ops_050_self_promotion_is_refused_on_the_change_role_path() {
     let token = stepped_up_admin_token(&fix, 900).await;
     // The caller's own ACL row now says `member` — the bearer outlived the
     // demotion, which is exactly when self-promotion is reachable.
-    seed_member(&fix, ADMIN, "member").await;
+    // Written directly: the caller cannot rewrite its own entry through
+    // `acl/grant` (VTI-ACL-052), which is the point of the neighbouring tests.
+    seed_entry(
+        &fix.vtc,
+        ADMIN,
+        vtc_service::acl::VtcRole::Member,
+        vec![],
+        None,
+    )
+    .await;
+    make_member(&fix, ADMIN).await;
 
     let (status, body) = call(
         &fix,
@@ -726,10 +736,13 @@ async fn vti_ops_050_self_promotion_is_refused_on_the_change_role_path() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // Refused before the ceremony runs: moving your own role in either
+    // direction is a modification of your own entry (VTI-ACL-052). The
+    // ceremony's self-promotion invariant stays behind it.
     let msg = body["error"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("cannot promote yourself") && msg.contains("acl/change-role"),
-        "the refusal must say why and name the fix: {body}"
+        msg.contains("cannot change your own role"),
+        "the refusal must say why: {body}"
     );
 
     let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, ADMIN)
@@ -877,11 +890,12 @@ async fn vti_ops_050_granting_yourself_the_admin_role_is_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // The caller already holds an entry, so this is a rewrite of it and is
+    // refused as one (VTI-ACL-052); a caller with no entry is refused with
+    // "cannot grant yourself" before anything else.
+    let msg = body["error"].as_str().unwrap_or_default();
     assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("cannot grant yourself"),
+        msg.contains("cannot grant yourself") || msg.contains("your own ACL entry"),
         "{body}"
     );
 }
