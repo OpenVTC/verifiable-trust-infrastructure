@@ -680,6 +680,27 @@ pub(crate) async fn sign_outbound_request(state: &AppState, doc: &mut serde_json
     sign_as_authentication(&secret, doc).await
 }
 
+/// The VTA's operational signing key — the resident secret named by
+/// `signing_vm_id` — for documents this VTA originates (VTI-KEY-106). Falls back
+/// to the `{vta_did}#key-0` issuer key when no resident key is configured, which
+/// is the same key on every standard deployment.
+pub(crate) async fn load_operational_secret(
+    state: &AppState,
+    vta_did: &str,
+    purpose: &'static str,
+) -> Result<affinidi_secrets_resolver::secrets::Secret, crate::error::AppError> {
+    if let (Some(resolver), Some(vm_id)) = (
+        state.secrets_resolver.as_ref(),
+        state.signing_vm_id.as_ref(),
+    ) {
+        use affinidi_tdk::secrets_resolver::SecretsResolver as _;
+        if let Some(secret) = resolver.get_secret(vm_id).await {
+            return Ok(secret);
+        }
+    }
+    crate::operations::credentials::load_vta_issuer_secret(state, vta_did, purpose).await
+}
+
 /// Sign `doc` in place with `secret` and `proofPurpose: authentication` — the
 /// purpose a VTA-originated request carries (the key-roles spec lists the
 /// operational key under `authentication`).

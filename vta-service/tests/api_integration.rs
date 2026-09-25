@@ -907,7 +907,7 @@ async fn acl_mutation_requires_step_up() {
     // reason the approver renders is attributable to this relying party.
     assert_eq!(ar["proof"]["type"], "DataIntegrityProof", "{body}");
     assert_eq!(ar["proof"]["cryptosuite"], "eddsa-jcs-2022", "{body}");
-    assert_eq!(ar["proof"]["proofPurpose"], "assertionMethod", "{body}");
+    assert_eq!(ar["proof"]["proofPurpose"], "authentication", "{body}");
 }
 
 /// A rule that names one task gates that task and no other.
