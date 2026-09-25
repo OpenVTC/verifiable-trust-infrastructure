@@ -614,7 +614,8 @@ fn verify_did_key_signature(did: &str, signing_bytes: &[u8], hex_sig: &str) -> R
 ///
 /// Refuses to fall back to other verification-method
 /// fragments — Phase 2 §10.5 + the workspace's webvh templates
-/// pin `#key-0` as the assertion-method canonical id.
+/// pin `#key-0`, listed under both authentication and assertionMethod;
+/// the key must be listed under authentication.
 async fn verify_did_webvh_signature(
     did: &str,
     payload: &[u8],
@@ -626,18 +627,22 @@ async fn verify_did_webvh_signature(
         .await
         .map_err(|e| format!("did:webvh resolve: {e}"))?;
     let target_vm_id = format!("{did}#key-0");
-    let vm = resolved
-        .doc
-        .verification_method
-        .iter()
-        .find(|m| m.id.as_str() == target_vm_id)
-        .ok_or_else(|| format!("verification method {target_vm_id} not present on {did}"))?;
+    // A rotation signature proves control of the DID, so `#key-0` must be a
+    // key the DID authorised for authentication, controlled by the DID itself
+    // (VTI-KEY-022) — not merely a key its document lists.
+    let vm = vta_sdk::trust_task_proof::purpose::authorised_method(
+        &resolved.doc,
+        did,
+        &target_vm_id,
+        vti_common::auth::ProofPurpose::Authentication,
+    )
+    .map_err(|e| format!("rotation key refused: {e}"))?;
     let pub_bytes = vm
         .get_public_key_bytes()
         .map_err(|e| format!("extract pubkey: {e}"))?;
     if pub_bytes.len() != 32 {
         return Err(format!(
-            "{target_vm_id} pubkey is {} bytes, expected 32 (Ed25519)",
+            "the rotation key is {} bytes, expected 32 (Ed25519)",
             pub_bytes.len()
         ));
     }

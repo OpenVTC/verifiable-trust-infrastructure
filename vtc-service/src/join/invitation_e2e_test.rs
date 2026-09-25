@@ -38,12 +38,7 @@ fn did_key(seed: &[u8; 32]) -> String {
 
 /// A signer whose issuer DID is the `did:key` of its own public key.
 fn signer(seed: &[u8; 32]) -> LocalSigner {
-    let tmp = LocalSigner::from_ed25519_seed("did:key:placeholder".into(), seed);
-    let pub_bytes: [u8; 32] = tmp.public_bytes().try_into().expect("ed25519 pub 32 bytes");
-    LocalSigner::from_ed25519_seed(
-        affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes),
-        seed,
-    )
+    LocalSigner::did_key_for_seed(seed)
 }
 
 /// Build a TestVtc whose `vtc_did` + credential signer are the same `did:key`,

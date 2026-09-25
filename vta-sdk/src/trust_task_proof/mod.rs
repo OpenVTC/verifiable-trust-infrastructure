@@ -27,8 +27,10 @@
 //! returns the proven signer precisely so the caller can make that comparison
 //! itself. A proof by somebody else's key verifies perfectly well.
 
+pub mod purpose;
 pub mod verify;
 pub mod vm_resolver;
 
+pub use purpose::{ProofPurpose, PurposeBound, PurposeVmResolver};
 pub use verify::{DiProofError, verify_trust_task_proof, verify_trust_task_proof_with};
 pub use vm_resolver::TrustTaskVmResolver;

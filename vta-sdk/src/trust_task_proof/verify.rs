@@ -36,6 +36,7 @@
 
 use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 
+use super::purpose::PurposeBound;
 use super::vm_resolver::TrustTaskVmResolver;
 use serde::Serialize;
 use serde_json::Value;
@@ -158,7 +159,11 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
 
     let mut unsigned = doc.clone();
     unsigned.proof = None;
-    di.verify(&unsigned, resolver, VerifyOptions::new())
+    // VTI-KEY-022: the key must be one the signer authorised for the purpose
+    // the proof declares, not merely a key its DID document lists.
+    let bound = PurposeBound::for_proof(resolver, &di)
+        .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
+    di.verify(&unsigned, &bound, VerifyOptions::new())
         .await
         .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
 

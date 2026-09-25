@@ -1463,6 +1463,14 @@ pub async fn derive_and_sign_document(
     proof_purpose: Option<&str>,
     channel: &str,
 ) -> Result<DeriveAndSignDocumentResultBody, AppError> {
+    // A proof no verifier accepts is refused before any key is derived: the
+    // purpose must name a signing relationship (VTI-KEY-022), never
+    // `keyAgreement` or an arbitrary string. A did:key's key is listed under
+    // all four, so any of them verifies.
+    let proof_purpose =
+        vti_common::auth::ProofPurpose::parse(proof_purpose.unwrap_or("assertionMethod"))
+            .map_err(|e| AppError::Validation(format!("proofPurpose: {e}")))?
+            .as_str();
     let signing_bytes = super::key_custody::derive_delegated_identity(
         keys_ks,
         &**seed_store,
@@ -1506,7 +1514,7 @@ pub async fn derive_and_sign_document(
         &document,
         &secret,
         SignOptions::new()
-            .with_proof_purpose(proof_purpose.unwrap_or("assertionMethod"))
+            .with_proof_purpose(proof_purpose)
             .with_cryptosuite(CryptoSuite::EddsaJcs2022)
             .with_created(Utc::now()),
     )
@@ -1533,10 +1541,7 @@ pub async fn derive_and_sign_document(
         auth,
         "keys.derive-and-sign-document",
         derivation_path,
-        &format!(
-            "keyType={key_type} proofPurpose={}",
-            proof_purpose.unwrap_or("assertionMethod")
-        ),
+        &format!("keyType={key_type} proofPurpose={proof_purpose}"),
         &signed_bytes,
         channel,
     )

@@ -10,188 +10,153 @@
 //! This module hoists that one resolver so recognition + relationships verify
 //! through the same library path instead of re-implementing key resolution.
 //!
-//! Resolution: `did:key` verification methods resolve locally (no I/O); other
-//! methods (`did:webvh` / `did:web`) resolve through the DID cache (which must
-//! then be configured). Ed25519 keys are pulled with the upstream
-//! [`VerificationMethod::get_public_key_bytes`] extractor, which handles
-//! Multikey + `Ed25519VerificationKey2020` + `publicKeyJwk` uniformly.
+//! Resolution delegates to [`TrustTaskVmResolver`], the workspace's one
+//! verification-method resolver: `did:key` and `did:peer` resolve locally (no
+//! I/O); other methods (`did:webvh` / `did:web`) resolve through the DID cache
+//! (which must then be configured).
+//!
+//! **Every resolution names a purpose (VTI-KEY-022).** A key is returned only
+//! when the DID that names it lists it under the verification relationship the
+//! proof's `proofPurpose` names, and the method's controller is that DID. This
+//! resolver deliberately does not implement the upstream
+//! `VerificationMethodResolver`, which carries no purpose: a Data Integrity
+//! proof is verified through [`super::proof_set::verify_one`], which binds the
+//! resolver to that proof's own purpose.
 
+use affinidi_data_integrity::{DataIntegrityError, ResolvedKey};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
+use affinidi_secrets_resolver::secrets::KeyType;
 use ed25519_dalek::VerifyingKey;
+use vti_common::auth::{ProofPurpose, PurposeVmResolver, TrustTaskVmResolver};
 use vti_common::error::AppError;
 
-/// A [`VerificationMethodResolver`](affinidi_data_integrity::VerificationMethodResolver)
-/// over the VTC's optional [`DIDCacheClient`].
+/// A [`PurposeVmResolver`] over the VTC's optional [`DIDCacheClient`].
 ///
 /// Owns its [`DIDCacheClient`] (which is cheap to clone — Arc-backed) rather
 /// than borrowing it, so the same resolver can be used both inline (`&resolver`)
-/// and behind an `Arc<dyn VerificationMethodResolver>` (the status-list fetcher
-/// holds one for the credential-signature check).
+/// and behind an `Arc<dyn PurposeVmResolver>` (the status-list fetcher holds one
+/// for the credential-signature check).
 pub struct DidVmResolver {
+    #[cfg_attr(not(feature = "bbs"), allow(dead_code))]
     resolver: Option<DIDCacheClient>,
+    keys: TrustTaskVmResolver,
 }
 
 impl DidVmResolver {
     pub fn new(resolver: Option<DIDCacheClient>) -> Self {
-        Self { resolver }
+        Self {
+            keys: TrustTaskVmResolver::from_optional(resolver.clone()),
+            resolver,
+        }
     }
 
-    /// Resolve a verification-method URI (or a bare `did:key`) to its Ed25519
-    /// public-key bytes. `did:key` is local; other methods use the cache and the
-    /// upstream key extractor (Multikey / `Ed25519VerificationKey2020` / JWK).
-    pub(crate) async fn resolve_ed25519(&self, vm: &str) -> Result<Vec<u8>, AppError> {
-        let base_did = vm.split('#').next().unwrap_or(vm);
-        if base_did.starts_with("did:key:") {
-            return affinidi_crypto::did_key::did_key_to_ed25519_pub(base_did)
-                .map(|k| k.to_vec())
-                .map_err(|e| {
-                    AppError::Validation(format!("`{base_did}` is not a resolvable did:key: {e}"))
-                });
-        }
-        let resolver = self.resolver.as_ref().ok_or_else(|| {
-            AppError::Validation(format!(
-                "resolving `{base_did}` needs a DID resolver, but none is configured — configure \
-                 the DID cache to verify did:webvh / did:web issuers + holders"
-            ))
-        })?;
-        let resolved = resolver
-            .resolve(base_did)
+    /// Resolve a verification-method URI to its Ed25519 public-key bytes,
+    /// provided its DID authorised it for `purpose`.
+    pub(crate) async fn resolve_ed25519(
+        &self,
+        vm: &str,
+        purpose: ProofPurpose,
+    ) -> Result<Vec<u8>, AppError> {
+        let key = self
+            .keys
+            .resolve_vm_for_purpose(vm, purpose)
             .await
-            .map_err(|e| AppError::Validation(format!("DID `{base_did}` did not resolve: {e}")))?;
-        let relative = vm
-            .split_once('#')
-            .map(|(_, f)| format!("#{f}"))
-            .unwrap_or_default();
-        let entry = resolved
-            .doc
-            .verification_method
-            .iter()
-            .find(|m| m.id.as_str() == vm || m.id.as_str() == relative)
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "verificationMethod `{vm}` not found in DID `{base_did}`"
-                ))
-            })?;
-        entry.get_public_key_bytes().map_err(|e| {
-            AppError::Validation(format!(
-                "verificationMethod `{vm}` public key could not be extracted: {e}"
-            ))
-        })
+            .map_err(|e| AppError::Validation(format!("verification method refused: {e}")))?;
+        if key.key_type != KeyType::Ed25519 {
+            return Err(AppError::Validation(format!(
+                "the verification method is a {:?} key; this path verifies Ed25519 signatures",
+                key.key_type
+            )));
+        }
+        Ok(key.public_key_bytes)
     }
 
     /// As [`Self::resolve_ed25519`] but returns a [`VerifyingKey`] for the
     /// SD-JWT issuer-signature path.
-    pub(crate) async fn resolve_verifying_key(&self, vm: &str) -> Result<VerifyingKey, AppError> {
-        let bytes = self.resolve_ed25519(vm).await?;
-        // The length check stays — this path builds an Ed25519 `VerifyingKey`
-        // and nothing else will do. What changed is what it says when it
-        // fails.
-        //
-        // "not 32 bytes" names the symptom and hides the cause. The realistic
-        // way to reach it is a DID whose verification method carries a
-        // post-quantum key: ML-DSA-44 is 1312 bytes, ML-DSA-65 is 1952. An
-        // operator reading "not 32 bytes" has no reason to suspect the
-        // algorithm, and every reason to suspect a truncated or corrupt key —
-        // so the message now identifies the likely algorithm by length and
-        // says which path refused it.
+    pub(crate) async fn resolve_verifying_key(
+        &self,
+        vm: &str,
+        purpose: ProofPurpose,
+    ) -> Result<VerifyingKey, AppError> {
+        let bytes = self.resolve_ed25519(vm, purpose).await?;
         let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
-            let guess = match bytes.len() {
-                1312 => " (an ML-DSA-44 public key)",
-                1952 => " (an ML-DSA-65 public key)",
-                2592 => " (an ML-DSA-87 public key)",
-                32 => "",
-                _ => "",
-            };
             AppError::Validation(format!(
-                "verificationMethod `{vm}` is {} bytes{guess}; this path verifies Ed25519 \
-                 signatures and needs a 32-byte key",
-                bytes.len(),
+                "the verification method's Ed25519 key is {} bytes, not 32",
+                bytes.len()
             ))
         })?;
         VerifyingKey::from_bytes(&arr).map_err(|e| {
             AppError::Validation(format!(
-                "verificationMethod `{vm}` is not a valid Ed25519 key: {e}"
+                "the verification method is not a valid Ed25519 key: {e}"
             ))
         })
     }
 
-    /// Resolve a verification-method URI (or a bare `did:key`) to its 96-byte
-    /// compressed BLS12-381 G2 public key — a BBS+ issuer key. The upstream
-    /// Ed25519 extractor doesn't cover G2, so this keeps the explicit Multikey
-    /// (`0xeb` multicodec) decode.
+    /// Resolve a verification-method URI to its 96-byte compressed BLS12-381
+    /// G2 public key — a BBS+ issuer key — provided its DID authorised it for
+    /// `purpose`. The upstream Ed25519 extractor doesn't cover G2, so this
+    /// keeps the explicit Multikey (`0xeb` multicodec) decode.
     #[cfg(feature = "bbs")]
-    pub(crate) async fn resolve_bbs_g2(&self, vm: &str) -> Result<[u8; 96], AppError> {
+    pub(crate) async fn resolve_bbs_g2(
+        &self,
+        vm: &str,
+        purpose: ProofPurpose,
+    ) -> Result<[u8; 96], AppError> {
         use serde_json::Value;
-        let base_did = vm.split('#').next().unwrap_or(vm);
+        use vta_sdk::trust_task_proof::purpose::{
+            authorised_method, check_did_key_method, split_vm,
+        };
+        let refused = |e: DataIntegrityError| {
+            AppError::Validation(format!("verification method refused: {e}"))
+        };
+        let (base_did, _) = split_vm(vm).map_err(refused)?;
         if base_did.starts_with("did:key:") {
+            check_did_key_method(vm).map_err(refused)?;
             return affinidi_crypto::bls12381::did_key_to_g2_pub(base_did).map_err(|e| {
-                AppError::Validation(format!("`{base_did}` is not a BBS did:key: {e}"))
+                AppError::Validation(format!("the verification method is not a BBS did:key: {e}"))
             });
         }
         let resolver = self.resolver.as_ref().ok_or_else(|| {
+            AppError::Validation(
+                "resolving this verification method needs a DID resolver to verify did:webvh / \
+                 did:web BBS issuers"
+                    .to_string(),
+            )
+        })?;
+        let resolved = resolver.resolve(base_did).await.map_err(|e| {
             AppError::Validation(format!(
-                "resolving `{base_did}` needs a DID resolver to verify did:webvh / did:web \
-                 BBS issuers"
+                "the verification method's DID did not resolve: {e}"
             ))
         })?;
-        let resolved = resolver
-            .resolve(base_did)
-            .await
-            .map_err(|e| AppError::Validation(format!("DID `{base_did}` did not resolve: {e}")))?;
-        let doc: Value = serde_json::to_value(&resolved.doc)
-            .map_err(|e| AppError::Internal(format!("DID document serialise failed: {e}")))?;
-        let vms = doc
-            .get("verificationMethod")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                AppError::Validation(format!("DID `{base_did}` has no verificationMethod array"))
-            })?;
-        let relative = vm
-            .split_once('#')
-            .map(|(_, f)| format!("#{f}"))
-            .unwrap_or_default();
-        let entry = vms
-            .iter()
-            .find(|e| {
-                let id = e.get("id").and_then(Value::as_str).unwrap_or("");
-                id == vm || id == relative
-            })
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "verificationMethod `{vm}` not found in DID `{base_did}`"
-                ))
-            })?;
+        let entry = authorised_method(&resolved.doc, base_did, vm, purpose).map_err(refused)?;
         let multibase = entry
+            .property_set
             .get("publicKeyMultibase")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "verificationMethod `{vm}` has no publicKeyMultibase (BLS12-381 G2 Multikey)"
-                ))
+                AppError::Validation(
+                    "the verification method has no publicKeyMultibase (BLS12-381 G2 Multikey)"
+                        .to_string(),
+                )
             })?;
         affinidi_crypto::bls12381::did_key_to_g2_pub(&format!("did:key:{multibase}")).map_err(|e| {
             AppError::Validation(format!(
-                "verificationMethod `{vm}` is not a BLS12-381 G2 Multikey: {e}"
+                "the verification method is not a BLS12-381 G2 Multikey: {e}"
             ))
         })
     }
 }
 
 #[async_trait::async_trait]
-impl affinidi_data_integrity::VerificationMethodResolver for DidVmResolver {
-    async fn resolve_vm(
+impl PurposeVmResolver for DidVmResolver {
+    async fn resolve_vm_for_purpose(
         &self,
         vm: &str,
-    ) -> Result<affinidi_data_integrity::ResolvedKey, affinidi_data_integrity::DataIntegrityError>
-    {
-        let bytes = self
-            .resolve_ed25519(vm)
-            .await
-            .map_err(|e| affinidi_data_integrity::DataIntegrityError::Resolver(e.to_string()))?;
-        Ok(affinidi_data_integrity::ResolvedKey::new(
-            affinidi_secrets_resolver::secrets::KeyType::Ed25519,
-            bytes,
-        ))
+        purpose: ProofPurpose,
+    ) -> Result<ResolvedKey, DataIntegrityError> {
+        // The declared key type, not an assumed Ed25519: a hybrid credential's
+        // ML-DSA proof must resolve as ML-DSA to verify as one.
+        self.keys.resolve_vm_for_purpose(vm, purpose).await
     }
 }
 
@@ -199,12 +164,38 @@ impl affinidi_data_integrity::VerificationMethodResolver for DidVmResolver {
 /// declared `issuer` — a key controlled by some *other* DID must not sign a
 /// credential claiming this issuer. Shared by every issuer-bound DI verify
 /// (credential-exchange DI VPs, recognition foreign VECs, VRC relationships).
+///
+/// Exact string equality of the DID, and the method must be a DID URL with a
+/// fragment: a bare DID names no verification method. The message names the
+/// rule, not the identifiers.
 pub(crate) fn check_issuer_binding(vm: &str, issuer_did: &str) -> Result<(), AppError> {
-    let base = vm.split('#').next().unwrap_or(vm);
-    if base != issuer_did {
-        return Err(AppError::Validation(format!(
-            "proof verificationMethod `{vm}` is not under the issuer `{issuer_did}`"
-        )));
+    match vm.split_once('#') {
+        Some((base, fragment)) if !fragment.is_empty() && base == issuer_did => Ok(()),
+        Some((_, fragment)) if !fragment.is_empty() => Err(AppError::Validation(
+            "proof verificationMethod is not under the credential's issuer".to_string(),
+        )),
+        _ => Err(AppError::Validation(
+            "proof verificationMethod is not a DID URL naming a verification method".to_string(),
+        )),
     }
-    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issuer_binding_is_exact_and_needs_a_fragment() {
+        check_issuer_binding("did:web:a.example#key-0", "did:web:a.example").expect("bound");
+        assert!(check_issuer_binding("did:web:b.example#key-0", "did:web:a.example").is_err());
+        assert!(check_issuer_binding("did:web:a.example", "did:web:a.example").is_err());
+        assert!(check_issuer_binding("did:web:a.example#", "did:web:a.example").is_err());
+        let err = check_issuer_binding("did:web:b.example#key-0", "did:web:a.example")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !err.contains("a.example"),
+            "no identifiers in the refusal: {err}"
+        );
+    }
 }
