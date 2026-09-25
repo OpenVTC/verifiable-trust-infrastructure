@@ -399,6 +399,22 @@ jobs:
       - name: Typecheck
         run: npx tsc -b --noEmit
 
+      # `src/plugins/repos/actions.test.ts` round-trips `shellQuote` through
+      # every shell an operator might paste a generated command into, and
+      # skips a shell that is not installed. The runner ships sh and bash
+      # only, so without this the zsh and fish cases — fish being the one
+      # with a quoting breakout of its own — were six silent skips. Bounded
+      # and best-effort: the apt mirror is what hangs on this runner (see
+      # Enclave build), and a failed install degrades to those skips rather
+      # than failing the job.
+      - name: Install zsh and fish for the shell-quoting tests
+        working-directory: .
+        run: |
+          sudo timeout 120 apt-get install -y --no-install-recommends zsh fish \
+            || { sudo timeout 90 apt-get -o Acquire::Retries=3 update \
+                 && sudo timeout 120 apt-get install -y --no-install-recommends zsh fish; } \
+            || echo "::warning::zsh/fish unavailable; their shellQuote round-trips will skip"
+
       - name: Unit tests
         run: npx vitest run
 
