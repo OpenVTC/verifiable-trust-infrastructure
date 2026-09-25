@@ -225,3 +225,12 @@ export type GitNsActivityItem = Schemas["GitNsActivityItem"];
 export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
 export type GitNsBreakGlassItem = Schemas["GitNsBreakGlassItem"];
 export type GitNsBreakGlassList = Schemas["GitNsBreakGlassList"];
+
+// Members' step-up passkeys (`auth/passkey/enroll/invite/0.2`, `purpose: stepUp`).
+export type StepUpPasskeyCredential = Schemas["StepUpPasskeyCredential"];
+export type StepUpPasskeyList = Schemas["StepUpPasskeyList"];
+export type StepUpPasskeyInvite = Schemas["StepUpPasskeyInvite"];
+export type StepUpPasskeyRedeemStarted = Schemas["StepUpPasskeyRedeemStarted"];
+export type StepUpPasskeyRedeemed = Schemas["StepUpPasskeyRedeemed"];
+export type StepUpPasskeyRevokeStarted = Schemas["StepUpPasskeyRevokeStarted"];
+export type StepUpPasskeyRevoked = Schemas["StepUpPasskeyRevoked"];

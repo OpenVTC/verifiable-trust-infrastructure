@@ -120,7 +120,10 @@ identity.
 
 Browser passkeys are not restored. After a restore, authenticate with your admin
 DID key (the admin entry is in the restored `acl`) over the CLI / DIDComm path,
-then re-enrol a passkey for browser SPA access.
+then re-enrol a passkey for browser SPA access. Members' step-up passkeys
+(`step_up_passkeys`) are not restored either. An administrator invites each
+member who needs one to enrol again (Members → the member → *Step-up
+passkeys*).
 
 ### Interrupted imports
 

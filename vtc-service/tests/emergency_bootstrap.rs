@@ -340,6 +340,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         consumed_invitations_ks,
         console_keys_ks,
         step_up_marks_ks,
+        step_up_passkeys_ks: store.keyspace("step_up_passkeys").unwrap(),
         task_consent_ks,
         backup_bundles_ks,
         registry_client: None,

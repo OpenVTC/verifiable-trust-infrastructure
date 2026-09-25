@@ -120,6 +120,14 @@ pub const CONSOLE_KEYS: &str = "console_keys";
 /// `crate::acl::bound_step_up`.
 pub const STEP_UP_MARKS: &str = "step_up_marks";
 
+/// Members' step-up passkeys (`auth/passkey/enroll/invite/0.2`,
+/// `purpose: stepUp`): the invites (`invite:<tokenHash>`), redemption and
+/// revocation ceremonies, and the credentials themselves in the passkey
+/// store's own row format. A keyspace of its own **by construction**: login and
+/// session step-up read [`PASSKEY`] only, so a step-up passkey can never open
+/// or elevate a session. See `crate::step_up_passkey`.
+pub const STEP_UP_PASSKEYS: &str = "step_up_passkeys";
+
 /// Second-party consent for unrestricted admin authority (VTI-APV-014): the
 /// pending requests (`pending:<digest>`, indexed by `wire:<wireDigest>`) and
 /// completed grants (`grant:<digest>:<requester>`) of
@@ -169,6 +177,7 @@ pub const ALL: &[&str] = &[
     ACCEPTED_IDS,
     CONSOLE_KEYS,
     STEP_UP_MARKS,
+    STEP_UP_PASSKEYS,
     TASK_CONSENT,
     BACKUP_BUNDLES,
     GIT_NS,
@@ -268,6 +277,11 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // at worst let a passkey gesture made on one host authorize an act on
     // another.
     STEP_UP_MARKS,
+    // Members' step-up passkeys, excluded for the reason `passkey` is: a
+    // credential is bound to this relying party, and a restore into another
+    // host must not arrive with gestures that authorize break-glass there. A
+    // member re-enrols through a fresh invite.
+    STEP_UP_PASSKEYS,
     // Consent requests and grants for unrestricted admin. Both live minutes
     // and bind one operation against the ACL as it stood; restored elsewhere,
     // a grant would authorize an act the approvers never saw on that host.
@@ -294,8 +308,8 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 36 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
-        assert_eq!(ALL.len(), 39, "ALL must list every AppState keyspace");
+        // 37 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
+        assert_eq!(ALL.len(), 40, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

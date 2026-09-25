@@ -126,6 +126,24 @@ describe("answering a step-up", () => {
     expect(creds.get).not.toHaveBeenCalled();
   });
 
+  it("answers unsigned from a browser with no console key — a member's step-up passkey", async () => {
+    // No generateConsoleKey(): a member who is no console user.
+    const requests = mockFetch([
+      { path: "/health", body: { status: "ok", version: "t", vtc_did: VTC_DID } },
+      {
+        method: "POST",
+        path: "/v1/trust-tasks",
+        body: { type: `${APPROVE_RESPONSE_URI}#response`, payload: { status: "recorded", boundTo: "zBoundDigest" } },
+      },
+    ]);
+    const ack = await answerStepUp(REQUEST, fakeCredentials());
+    expect(ack.status).toBe("recorded");
+    const doc = requests.find((r) => r.url === "/v1/trust-tasks")!.body as Record<string, unknown>;
+    expect(doc).not.toHaveProperty("proof");
+    expect(doc.issuer).toBe(ADMIN);
+    expect(doc.recipient).toBe(VTC_DID);
+  });
+
   it("reports a gesture the VTC did not record", async () => {
     await generateConsoleKey();
     mockFetch([

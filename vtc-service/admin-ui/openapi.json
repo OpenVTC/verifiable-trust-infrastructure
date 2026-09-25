@@ -936,6 +936,174 @@
         ]
       }
     },
+    "/v1/admin/step-up-passkeys": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "stepUpPasskeyList",
+        "parameters": [
+          {
+            "name": "subject",
+            "in": "query",
+            "description": "Only this member's step-up passkeys.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Members' step-up passkeys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepUpPasskeyList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a community administrator"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/step-up-passkeys/invites": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "stepUpPasskeyInvite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpPasskeyInviteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The invite: the URL and, separately, the claim code — returned only here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepUpPasskeyInvite"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a community administrator, a self-invite, or the session is not stepped up"
+          },
+          "404": {
+            "description": "The subject is not a current member"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/step-up-passkeys/revoke/finish": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "stepUpPasskeyRevokeFinish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpPasskeyRevokeFinishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepUpPasskeyRevoked"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Your passkey did not verify"
+          },
+          "404": {
+            "description": "No revocation in progress with this id"
+          },
+          "410": {
+            "description": "The revocation lapsed"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/step-up-passkeys/revoke/start": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "stepUpPasskeyRevokeStart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpPasskeyRevokeStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A user-verification ceremony over your own passkeys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepUpPasskeyRevokeStarted"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a community administrator, or no passkey of your own"
+          },
+          "404": {
+            "description": "No such step-up passkey for that member"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/audit": {
       "get": {
         "tags": [
@@ -5508,6 +5676,81 @@
           },
           "503": {
             "description": "Credential signer or state not ready"
+          }
+        }
+      }
+    },
+    "/v1/step-up-passkeys/redeem/finish": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "stepUpPasskeyRedeemFinish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpPasskeyRedeemFinishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The step-up passkey is registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepUpPasskeyRedeemed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An assertion or the attestation did not verify"
+          },
+          "404": {
+            "description": "No redemption in progress, or its invite is gone"
+          },
+          "410": {
+            "description": "The redemption lapsed"
+          }
+        }
+      }
+    },
+    "/v1/step-up-passkeys/redeem/start": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "stepUpPasskeyRedeemStart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpPasskeyRedeemStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The registration the invite authorises",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepUpPasskeyRedeemStarted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The invite cannot be redeemed with that code"
+          },
+          "403": {
+            "description": "Too many wrong codes: the invite is invalidated"
           }
         }
       }
@@ -12347,6 +12590,336 @@
               "boolean",
               "null"
             ]
+          }
+        }
+      },
+      "StepUpPasskeyCredential": {
+        "type": "object",
+        "description": "What the console lists about a step-up passkey.",
+        "required": [
+          "credentialId",
+          "subject",
+          "invitedBy",
+          "registeredAt"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string",
+            "description": "Credential id, hex."
+          },
+          "deviceLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "invitedBy": {
+            "type": "string",
+            "description": "The administrator whose invite it came from."
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The last step-up it answered."
+          },
+          "registeredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The member it answers step-ups for."
+          }
+        }
+      },
+      "StepUpPasskeyInvite": {
+        "type": "object",
+        "description": "An issued invite, returned once. The token rides in `url`; the claim code\nis returned only here and is never in `url`.",
+        "required": [
+          "invite",
+          "subject",
+          "purpose",
+          "expiresAt",
+          "claimCode"
+        ],
+        "properties": {
+          "claimCode": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "invite": {
+            "$ref": "#/components/schemas/StepUpPasskeyInviteLink"
+          },
+          "purpose": {
+            "type": "string",
+            "description": "Always `stepUp`: this VTC issues no session credential by invite."
+          },
+          "subject": {
+            "type": "string"
+          }
+        }
+      },
+      "StepUpPasskeyInviteLink": {
+        "type": "object",
+        "required": [
+          "token",
+          "url"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "StepUpPasskeyInviteRequest": {
+        "type": "object",
+        "required": [
+          "subject",
+          "purpose"
+        ],
+        "properties": {
+          "deviceLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "type": "string",
+            "description": "`stepUp` — the only purpose this VTC issues by invite. Absent means\n`session` in the specification, which this VTC refuses."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The member invited to enrol a step-up passkey."
+          },
+          "ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds the invite stays redeemable (default 3600, at most 86400).",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "StepUpPasskeyList": {
+        "type": "object",
+        "required": [
+          "credentials"
+        ],
+        "properties": {
+          "credentials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepUpPasskeyCredential"
+            }
+          }
+        }
+      },
+      "StepUpPasskeyRedeemFinishRequest": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "credential"
+        ],
+        "properties": {
+          "credential": {
+            "type": "object"
+          },
+          "deviceLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enrollmentId": {
+            "type": "string"
+          },
+          "uvCredential": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Required exactly when the start returned `uvOptions`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "StepUpPasskeyRedeemStartRequest": {
+        "type": "object",
+        "required": [
+          "token",
+          "claimCode"
+        ],
+        "properties": {
+          "claimCode": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StepUpPasskeyRedeemStarted": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "subject",
+          "purpose",
+          "options",
+          "expiresAt"
+        ],
+        "properties": {
+          "deviceLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enrollmentId": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "options": {
+            "type": "object",
+            "description": "For `navigator.credentials.create({ publicKey })`."
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "uvOptions": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "For `navigator.credentials.get({ publicKey })`, over the member's\nexisting step-up passkeys — present exactly when they hold one."
+          }
+        }
+      },
+      "StepUpPasskeyRedeemed": {
+        "type": "object",
+        "required": [
+          "credentialId",
+          "subject",
+          "purpose",
+          "registeredAt"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string"
+          },
+          "deviceLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "registeredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "subject": {
+            "type": "string"
+          }
+        }
+      },
+      "StepUpPasskeyRevokeFinishRequest": {
+        "type": "object",
+        "required": [
+          "revocationId",
+          "uvCredential"
+        ],
+        "properties": {
+          "revocationId": {
+            "type": "string"
+          },
+          "uvCredential": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StepUpPasskeyRevokeStartRequest": {
+        "type": "object",
+        "required": [
+          "credentialId",
+          "subject"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The member whose step-up passkey it is."
+          }
+        },
+        "additionalProperties": false
+      },
+      "StepUpPasskeyRevokeStarted": {
+        "type": "object",
+        "required": [
+          "revocationId",
+          "uvOptions"
+        ],
+        "properties": {
+          "revocationId": {
+            "type": "string"
+          },
+          "uvOptions": {
+            "type": "object",
+            "description": "Over the **administrator's own** passkeys: the person acting verifies."
+          }
+        }
+      },
+      "StepUpPasskeyRevoked": {
+        "type": "object",
+        "required": [
+          "credentialId",
+          "subject",
+          "purpose",
+          "revokedAt",
+          "remaining"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "remaining": {
+            "type": "integer",
+            "description": "The member's step-up passkeys left. May be zero: losing one costs a\ngesture, not an account.",
+            "minimum": 0
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "subject": {
+            "type": "string"
           }
         }
       },

@@ -999,6 +999,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   `AuditSeverity::Critical`, and is announced to every other administrator —
   policy may disable, delay or tighten it, never quieten it. An unratified
   break-glass record never counts toward the last-owner/last-admin invariants.
+  A member who is no console user answers that step-up with a **step-up
+  passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.2` `purpose:
+  stepUp`). It is enrolled only through a community admin's single-use invite
+  plus its claim code, is kept in its own keyspace that login never reads, and
+  is accepted only by `acl::bound_step_up` for its own subject.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
   `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.

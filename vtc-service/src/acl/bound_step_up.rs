@@ -264,17 +264,23 @@ pub async fn redeem_or_request_with_evidence(
                 .into(),
         )
     })?;
-    // Only the acting admin's own credentials. A signed document names one
-    // admin; any other admin's passkey answering for them would be exactly the
-    // substitution the gate exists to stop.
-    let passkeys = get_passkey_user_by_did(&state.passkey_ks, admin_did)
+    // Only the actor's own credentials. A signed document names one actor;
+    // any other principal's passkey answering for them would be exactly the
+    // substitution the gate exists to stop. Their session passkeys, and their
+    // step-up passkeys (`crate::step_up_passkey`) — a member who is no console
+    // user holds only the latter, and this is the one place they count.
+    let mut passkeys = get_passkey_user_by_did(&state.passkey_ks, admin_did)
         .await?
         .map(|u| u.credentials)
         .unwrap_or_default();
+    passkeys.extend(
+        crate::step_up_passkey::credentials_of(&state.step_up_passkeys_ks, admin_did).await?,
+    );
     if passkeys.is_empty() {
         return Err(AppError::StepUpRequired(format!(
             "this operation needs a passkey gesture from {admin_did}, who has no passkey \
-             registered with this community — register one, then retry"
+             registered with this community — a community administrator can invite them to \
+             enrol a step-up passkey (Members → the member → Step-up passkeys), then retry"
         )));
     }
 
@@ -490,10 +496,21 @@ pub async fn approve(
     // refuses one it did not offer — but the offer is state this service wrote,
     // and "whose passkey answered" is the question the gate turns on, so it is
     // answered from the registration record rather than inferred.
+    //
+    // A session passkey, or a step-up passkey of the subject's. A step-up
+    // passkey revoked since the ceremony began has lost its mapping, so it
+    // resolves to nobody and is refused here.
     let cred_id_hex = hex::encode(<_ as AsRef<[u8]>>::as_ref(result.cred_id()));
-    let mut user = get_passkey_user_by_cred(&state.passkey_ks, &cred_id_hex)
-        .await?
-        .ok_or(ApproveError::AssertionInvalid("credentialUnregistered"))?;
+    let (mut user, step_up) =
+        match get_passkey_user_by_cred(&state.passkey_ks, &cred_id_hex).await? {
+            Some(u) => (u, false),
+            None => (
+                get_passkey_user_by_cred(&state.step_up_passkeys_ks, &cred_id_hex)
+                    .await?
+                    .ok_or(ApproveError::AssertionInvalid("credentialUnregistered"))?,
+                true,
+            ),
+        };
     if user.did != pending.admin_did {
         warn!(
             admin = %pending.admin_did,
@@ -503,10 +520,14 @@ pub async fn approve(
         return Err(ApproveError::AssertionInvalid("notSubjectPasskey"));
     }
     // WebAuthn's replay defence is the signature counter, so persist it.
-    for cred in &mut user.credentials {
-        cred.update_credential(&result);
+    if step_up {
+        crate::step_up_passkey::record_use(&state.step_up_passkeys_ks, user, &result).await?;
+    } else {
+        for cred in &mut user.credentials {
+            cred.update_credential(&result);
+        }
+        store_passkey_user(&state.passkey_ks, &user).await?;
     }
-    store_passkey_user(&state.passkey_ks, &user).await?;
 
     let expires_at = now_epoch().saturating_add(MARK_TTL_SECS);
     ks.insert(
