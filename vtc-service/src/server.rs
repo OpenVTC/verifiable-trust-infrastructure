@@ -124,6 +124,10 @@ pub struct AppState {
     /// when a signer holds no ACL row of its own; see
     /// [`crate::acl::console_key`].
     pub console_keys_ks: KeyspaceHandle,
+    /// Operation-bound step-up marks — the pending WebAuthn ceremony for a
+    /// refused signed document, and the one-shot authorization a verified
+    /// gesture leaves for its re-send. See [`crate::acl::bound_step_up`].
+    pub step_up_marks_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
@@ -499,6 +503,7 @@ pub async fn run(
     let vetter_profiles_ks = store.keyspace(keyspaces::VETTER_PROFILES)?;
     let accepted_ids_ks = store.keyspace(keyspaces::ACCEPTED_IDS)?;
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
+    let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
@@ -806,6 +811,7 @@ pub async fn run(
         vetter_profiles_ks,
         accepted_ids_ks: accepted_ids_ks.clone(),
         console_keys_ks,
+        step_up_marks_ks,
         schemas_ks,
         endorsements_ks,
         rooms_ks,
@@ -1273,6 +1279,7 @@ pub async fn run(
         state.join_requests_ks.clone(),
         state.sync_queue_ks.clone(),
         state.accepted_ids_ks.clone(),
+        state.step_up_marks_ks.clone(),
         boot_cfg.join_requests.clone(),
         shutdown_rx.clone(),
     );

@@ -198,6 +198,15 @@ pub enum AuditEvent {
     /// credential, the operation's row names the session.
     AuthSteppedUp(AuthSteppedUpData),
 
+    /// A passkey gesture was recorded against **one operation** rather than a
+    /// session: the operation-bound step-up a signed Trust Task document needs,
+    /// since a document has no session to elevate (VTI-APV-003, VTI-APV-015).
+    ///
+    /// Nothing is elevated. The gesture authorizes exactly the operation whose
+    /// digest `bound_to` names, once, before `expires_at`; the operation's own
+    /// row follows under the same actor when the document is re-sent.
+    OperationStepUpRecorded(OperationStepUpData),
+
     /// `POST /v1/join-requests` (REST or DIDComm) accepted a
     /// well-formed submission and persisted it as `Pending`. The
     /// actor on this event is the applicant DID — they're the
@@ -638,6 +647,7 @@ impl AuditEvent {
             Self::RoleChanged(..) => "RoleChanged",
             Self::AdminPromoted(..) => "AdminPromoted",
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
+            Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
@@ -1174,6 +1184,22 @@ pub struct AuthSteppedUpData {
     pub acr: String,
     /// When the elevation lapses. After this, the same session must re-run the
     /// ceremony before it can authorise anything else.
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::OperationStepUpRecorded`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationStepUpData {
+    /// Type URI of the operation the gesture authorizes.
+    pub task: String,
+    /// The operation's digest salted with the step-up challenge — the value
+    /// the approver was shown. Never the unsalted digest, which over a short
+    /// payload is a confirmation oracle for what was authorized.
+    pub bound_to: String,
+    /// Credential id (hex) of the passkey that asserted user verification.
+    pub credential_id: String,
+    /// When the unspent authorization lapses.
     pub expires_at: DateTime<Utc>,
 }
 

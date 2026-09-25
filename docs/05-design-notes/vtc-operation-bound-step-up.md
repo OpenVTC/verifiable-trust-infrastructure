@@ -1,6 +1,6 @@
 # Step-up on a signed document, bound to the operation — and second-party consent for unrestricted admin
 
-Status: **accepted, not yet implemented** (§7 lists the decisions). Decided with the maintainer on 2026-09-24: the step-up a
+Status: **accepted; §3 implemented for `acl/grant`** (§6 and §8 say what is done and what differs from this design) — §7 lists the decisions. Decided with the maintainer on 2026-09-24: the step-up a
 signed document needs is bound to **the one operation** it authorizes, not to a
 session; and this note also designs the second-party consent VTI-APV-014
 requires for unrestricted-scope admin grants, which the VTC does not implement
@@ -243,14 +243,16 @@ upstream spec and a `trust-tasks-rs` bump first).
 
 ## 6. Order of work
 
-1. Upstream: (1)–(3) above.
-2. VTC: the digest, the pending and redeemable marks (their own keyspace,
+1. Upstream: (1)–(3) above. **Done** — dtgwg-vti-spec#40,
+   dtgwg-trust-tasks-tf#631, released in `trust-tasks-rs` 0.22.7.
+2. **Done.** VTC: the digest, the pending and redeemable marks (their own keyspace,
    excluded from backup, swept on TTL), the gate in front of dispatch, and
    `approve-response` dispatched with `webauthn` evidence. Tests: one gesture
    redeems one act; a second, different payload is refused; the same payload
    twice is refused; a console key cannot create a mark; a silent (non-UV)
    assertion is refused; a passkey of another admin is refused.
 3. Bind `acl/grant` and `acl/change-role` on the signed door behind that gate.
+   **`acl/grant` done**; `acl/change-role` next.
 4. VTC task-consent for unrestricted admin (§4): the threshold config key with
    its write-time and attrition checks, the co-admin at install, and the
    offline break-glass (§4c).
@@ -266,3 +268,32 @@ upstream spec and a `trust-tasks-rs` bump first).
 - **Mark TTL:** 300 s for both the pending and the redeemable mark (§3a).
 - **Consent threshold:** configurable per community, default and minimum 1,
   refused at write time when unmeetable (§4b).
+
+## 8. As built (`acl/grant`, step 2 and half of step 3)
+
+- **Code:** `vtc-service/src/acl/bound_step_up.rs` (digest, marks,
+  `redeem_or_request`, `approve`, sweep); `trust_tasks::handle_acl_grant` and
+  `handle_step_up_approve_response`; `routes::acl::{plan_grant, commit_grant}`,
+  which the bearer route and the signed door now share. Keyspace
+  `step_up_marks`, excluded from backup, swept by the retention sweeper.
+  Audit: `OperationStepUpRecorded` names the task, the salted `boundTo` and
+  the credential.
+- **Tests:** `vtc-service/tests/signed_step_up.rs` drives the loop with the
+  soft authenticator and holds every refusal §6 step 2 lists.
+- **Where the gate sits — one difference from §2 item 1.** The gate is not a
+  spine step in front of `dispatch_typed`. Whether an `acl/grant` needs a
+  gesture depends on the entry it would replace (`widens_admin_authority`),
+  and the gesture must not be asked for a grant that another check would
+  refuse, so the verb asks the gate after `plan_grant` and before
+  `commit_grant`. What §2 item 1 protects still holds: the handler is
+  transport-neutral, so REST, DIDComm and TSP reach the same call; the fact
+  is the host's (a mark only a verified assertion writes); and the gate is one
+  function every gated verb will call.
+- **Evidence:** only `webauthn` is accepted. A `didSigned` or absent
+  `evidence` is refused `noGate` — a proof is possession of a key, which a
+  console key already has.
+- **`approve-response/0.4` declares no proof**, so the dispatcher does not
+  require one; its gate is the assertion. A console may sign it anyway.
+- **WebAuthn challenge = step-up challenge.** webauthn-rs mints the challenge
+  when the ceremony starts, and the pending mark is keyed by it, so the
+  assertion binds the same nonce the mark does.

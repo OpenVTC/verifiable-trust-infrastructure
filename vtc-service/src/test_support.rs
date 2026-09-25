@@ -275,6 +275,9 @@ impl TestVtcBuilder {
             .expect("consumed_invitations ks");
         let invitations_ks = store.keyspace("invitations").expect("invitations ks");
         let console_keys_ks = store.keyspace("console_keys").expect("console_keys ks");
+        let step_up_marks_ks = store
+            .keyspace(crate::store::keyspaces::STEP_UP_MARKS)
+            .expect("step_up_marks ks");
         let outbox_ks = store.keyspace("outbox").expect("outbox ks");
         let tsp_relationships_ks = store
             .keyspace("tsp_relationships")
@@ -436,6 +439,7 @@ impl TestVtcBuilder {
             consumed_invitations_ks,
             invitations_ks,
             console_keys_ks,
+            step_up_marks_ks,
             registry_client: None,
             registry_health: crate::registry::RegistryHealth::new(),
             // Empty: no drift check has run, which is "not yet known" and is

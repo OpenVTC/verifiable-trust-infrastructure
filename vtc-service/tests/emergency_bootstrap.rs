@@ -233,6 +233,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     let invitations_ks = store.keyspace("invitations").unwrap();
     let consumed_invitations_ks = store.keyspace("consumed_invitations").unwrap();
     let console_keys_ks = store.keyspace("console_keys").unwrap();
+    let step_up_marks_ks = store.keyspace("step_up_marks").unwrap();
     let install_store = InstallTokenStore::new(install_ks.clone());
 
     let bundle = test_bundle();
@@ -336,6 +337,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         invitations_ks,
         consumed_invitations_ks,
         console_keys_ks,
+        step_up_marks_ks,
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
         registry_drift: vtc_service::registry::DriftState::new(),

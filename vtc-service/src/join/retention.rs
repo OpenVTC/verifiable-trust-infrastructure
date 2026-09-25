@@ -69,10 +69,14 @@ impl RetentionSweeper {
     ///   absent by `crate::trust_tasks::accepted_ids::AcceptedIds::claim`. The
     ///   in-memory guard it replaced was bounded by capacity eviction; a
     ///   keyspace is not.
+    /// - operation-bound step-up marks past their five-minute life
+    ///   (`step_up_marks_ks`). Also a storage bound: `crate::acl::bound_step_up`
+    ///   treats an expired mark as absent on both reads.
     pub fn spawn(
         join_requests_ks: KeyspaceHandle,
         sync_queue_ks: KeyspaceHandle,
         accepted_ids_ks: KeyspaceHandle,
+        step_up_marks_ks: KeyspaceHandle,
         config: JoinRequestsConfig,
         mut shutdown_rx: watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
@@ -89,6 +93,7 @@ impl RetentionSweeper {
                 &join_requests_ks,
                 &sync_queue_ks,
                 &accepted_ids_ks,
+                &step_up_marks_ks,
                 config.retention_days,
                 Utc::now(),
             )
@@ -107,6 +112,7 @@ impl RetentionSweeper {
                             &join_requests_ks,
                             &sync_queue_ks,
                             &accepted_ids_ks,
+                            &step_up_marks_ks,
                             config.retention_days,
                             Utc::now(),
                         )
@@ -129,6 +135,7 @@ async fn sweep_all(
     join_requests_ks: &KeyspaceHandle,
     sync_queue_ks: &KeyspaceHandle,
     accepted_ids_ks: &KeyspaceHandle,
+    step_up_marks_ks: &KeyspaceHandle,
     retention_days: u32,
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
@@ -144,12 +151,14 @@ async fn sweep_all(
     // costs only storage — `claim` already treats an expired record as absent.
     let accepted_ids =
         crate::trust_tasks::accepted_ids::sweep_expired(accepted_ids_ks, now).await?;
-    if challenges + offers + failed_jobs + accepted_ids > 0 {
+    let step_up_marks = crate::acl::bound_step_up::sweep_expired(step_up_marks_ks, now).await?;
+    if challenges + offers + failed_jobs + accepted_ids + step_up_marks > 0 {
         info!(
             expired_challenges = challenges,
             expired_offers = offers,
             failed_sync_jobs = failed_jobs,
             expired_accepted_ids = accepted_ids,
+            expired_step_up_marks = step_up_marks,
             "retention sweep purged auxiliary stale rows"
         );
     }
@@ -282,6 +291,9 @@ mod tests {
         let accepted_ids_ks = store
             .keyspace(crate::store::keyspaces::ACCEPTED_IDS)
             .unwrap();
+        let step_up_marks_ks = store
+            .keyspace(crate::store::keyspaces::STEP_UP_MARKS)
+            .unwrap();
         let now = Utc::now();
 
         // --- stale rows (all must be purged) ---
@@ -329,9 +341,16 @@ mod tests {
         .await
         .unwrap();
 
-        sweep_all(&join_ks, &sync_ks, &accepted_ids_ks, 30, now)
-            .await
-            .unwrap();
+        sweep_all(
+            &join_ks,
+            &sync_ks,
+            &accepted_ids_ks,
+            &step_up_marks_ks,
+            30,
+            now,
+        )
+        .await
+        .unwrap();
 
         // Stale join purged, fresh join survives.
         let join_ids: Vec<_> = list_join_requests(&join_ks)
