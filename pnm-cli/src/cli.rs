@@ -3223,7 +3223,7 @@ pub(crate) fn install_force_exit_handler() {
             }
             if SHUTDOWN_REQUESTED.swap(true, Ordering::SeqCst) {
                 eprintln!("\nForcing exit.");
-                std::process::exit(130);
+                std::process::exit(crate::exit::INTERRUPTED);
             }
             eprintln!("\nShutting down — press Ctrl-C again to force exit.");
         }

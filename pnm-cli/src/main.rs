@@ -34,6 +34,26 @@ use crate::cli::{
 };
 use clap::Parser;
 
+/// Exit code for a command that returned an error.
+///
+/// Every dispatch arm funnels here, so this is the single place that
+/// decides. The SDK's error is already typed, so the variant picks the
+/// code — a call site does not have to know one.
+///
+/// `Forbidden` stays `FAILURE` on purpose: the caller is who they say
+/// they are and the operation ran, it was refused. That is not the same
+/// signal as "your credential is no good", and a script retrying on
+/// `AUTH` must not retry on it.
+fn exit_code_for(err: &(dyn std::error::Error + 'static)) -> i32 {
+    use vta_sdk::error::VtaError;
+    match err.downcast_ref::<VtaError>() {
+        Some(VtaError::NotFound(_)) => exit::NOT_FOUND,
+        Some(VtaError::Validation(_)) => exit::CONFIG,
+        Some(VtaError::Auth(_)) => exit::AUTH,
+        _ => exit::FAILURE,
+    }
+}
+
 /// This process's log output; see the `tracing_subscriber` setup in `main`.
 pub(crate) static LOGS: std::sync::LazyLock<affinidi_messaging_mediator_tui::LogCapture> =
     std::sync::LazyLock::new(affinidi_messaging_mediator_tui::LogCapture::new);
@@ -59,7 +79,7 @@ async fn main() {
         eprintln!();
         eprintln!("See `pnm services --help` for the full surface, or");
         eprintln!("docs/02-vta/runtime-service-management.md.");
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     }
 
     // PNM_HOME isolates a whole profile — config, sessions, pending setups
@@ -374,7 +394,7 @@ async fn main() {
 
     if let Err(e) = result {
         vta_cli_common::render::print_cli_error(e.as_ref());
-        std::process::exit(exit::FAILURE);
+        std::process::exit(exit_code_for(e.as_ref()));
     }
 }
 
@@ -716,5 +736,36 @@ mod tests {
             command: VtaCommands::List,
         };
         assert!(!requires_auth(&cmd));
+    }
+
+    #[test]
+    fn test_exit_code_for_maps_the_typed_variants() {
+        use vta_sdk::error::VtaError;
+        assert_eq!(
+            exit_code_for(&VtaError::NotFound("acl".into())),
+            exit::NOT_FOUND
+        );
+        assert_eq!(
+            exit_code_for(&VtaError::Validation("bad did".into())),
+            exit::CONFIG
+        );
+        assert_eq!(exit_code_for(&VtaError::Auth("expired".into())), exit::AUTH);
+    }
+
+    #[test]
+    fn test_exit_code_for_refused_is_not_an_auth_failure() {
+        // A refused permission is a finished operation that failed. A
+        // script retrying on AUTH must not retry on this.
+        use vta_sdk::error::VtaError;
+        assert_eq!(
+            exit_code_for(&VtaError::Forbidden("not admin".into())),
+            exit::FAILURE
+        );
+    }
+
+    #[test]
+    fn test_exit_code_for_unknown_error_is_generic_failure() {
+        let err = std::io::Error::other("disk gone");
+        assert_eq!(exit_code_for(&err), exit::FAILURE);
     }
 }
