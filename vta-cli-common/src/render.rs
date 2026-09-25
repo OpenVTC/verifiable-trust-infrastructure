@@ -164,6 +164,30 @@ pub fn print_json<T: serde::Serialize>(value: &T) -> Result<(), serde_json::Erro
     Ok(())
 }
 
+// ── Colour ──────────────────────────────────────────────────────────
+//
+// Colour is a property of the terminal, not of the data. Escape codes
+// written into a pipe or a log file are noise to a reader and a corrupt
+// field to a parser, so they are emitted only when the destination is a
+// terminal and the operator has not set `NO_COLOR`
+// (<https://no-color.org>). Default is on, so a caller that never
+// registers anything keeps the old behaviour.
+
+static COLOR: AtomicBool = AtomicBool::new(true);
+
+/// Enable or disable colour output. Called once at CLI startup from the
+/// terminal check.
+pub fn set_color(enabled: bool) {
+    COLOR.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether colour may be emitted. Renderers check this before writing
+/// any escape sequence.
+#[must_use]
+pub fn color_enabled() -> bool {
+    COLOR.load(Ordering::Relaxed)
+}
+
 // ── ANSI constants ──────────────────────────────────────────────────
 
 pub const BOLD: &str = "\x1b[1m";
@@ -491,11 +515,16 @@ pub fn print_widget(widget: impl Widget, height: u16) {
     let mut buf = Buffer::empty(area);
     widget.render(area, &mut buf);
 
+    // Styling is emitted only for a terminal. Without this the table's
+    // escape codes land in whatever consumed the pipe.
+    let color = color_enabled();
+
     let mut out = String::new();
     for y in 0..height {
         let mut cur_fg = Color::Reset;
         let mut cur_bg = Color::Reset;
         let mut cur_mod = Modifier::empty();
+        let mut line = String::new();
 
         for x in 0..width {
             let cell = &buf[(x, y)];
@@ -503,19 +532,28 @@ pub fn print_widget(widget: impl Widget, height: u16) {
                 continue;
             }
 
-            if cell.fg != cur_fg || cell.bg != cur_bg || cell.modifier != cur_mod {
-                out.push_str("\x1b[0m");
-                push_ansi_fg(&mut out, cell.fg);
-                push_ansi_bg(&mut out, cell.bg);
-                push_ansi_mod(&mut out, cell.modifier);
+            if color && (cell.fg != cur_fg || cell.bg != cur_bg || cell.modifier != cur_mod) {
+                line.push_str("\x1b[0m");
+                push_ansi_fg(&mut line, cell.fg);
+                push_ansi_bg(&mut line, cell.bg);
+                push_ansi_mod(&mut line, cell.modifier);
                 cur_fg = cell.fg;
                 cur_bg = cell.bg;
                 cur_mod = cell.modifier;
             }
 
-            out.push_str(cell.symbol());
+            line.push_str(cell.symbol());
         }
-        out.push_str("\x1b[0m\n");
+
+        if color {
+            out.push_str(&line);
+            out.push_str("\x1b[0m\n");
+        } else {
+            // Every row is padded to the terminal width; uncoloured that
+            // padding is just trailing blanks in someone's file.
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
     }
 
     print!("{out}");
