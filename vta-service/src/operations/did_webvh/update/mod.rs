@@ -1347,6 +1347,7 @@ mod pre_rotation_e2e_tests {
             &scid,
             RotateDidWebvhKeysOptions::default(),
             None,
+            None,
             "test",
         )
         .await
@@ -1763,6 +1764,7 @@ mod pre_rotation_e2e_tests {
                 pre_rotation_count: None,
                 label: None,
             },
+            None,
             None,
             "test",
         )
@@ -2753,6 +2755,7 @@ mod pre_rotation_e2e_tests {
             &scid,
             RotateDidWebvhKeysOptions::default(),
             None,
+            None,
             "test",
         )
         .await
@@ -2918,6 +2921,57 @@ mod pre_rotation_e2e_tests {
         assert_ne!(hashes_before, hashes_after, "the commitment advanced");
     }
 
+    /// Rotating the VTA's **own** DID swaps the new keys into the live
+    /// resolver at once — the DIDComm/TSP legs sign and decrypt with them
+    /// without a restart, and never with the retired ones.
+    #[tokio::test]
+    async fn rotating_the_vtas_own_did_reloads_its_live_secrets() {
+        use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
+        let ctx_id = "ctx-rotate-self";
+        let (ts, seed_store) = setup(ctx_id).await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) =
+            create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 0).await;
+
+        let (live, _handle) = ThreadedSecretsResolver::new(None).await;
+        sleep(VERSION_TIME_GAP).await;
+        rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions::default(),
+            Some(&did),
+            Some(&live),
+            "test",
+        )
+        .await
+        .expect("rotate own DID");
+
+        for frag in ["#key-0", "#key-1"] {
+            let id = format!("{did}{frag}");
+            let record: vta_sdk::keys::KeyRecord = ts
+                .keys_ks
+                .get(crate::keys::store_key(&id))
+                .await
+                .unwrap()
+                .unwrap();
+            let secret = live
+                .get_secret(&id)
+                .await
+                .expect("loaded into the live resolver");
+            assert_eq!(
+                secret.get_public_keymultibase().unwrap(),
+                record.public_key,
+                "{id}: the live secret is the rotated key"
+            );
+        }
+    }
+
     /// `preRotationCount: 0` is an instruction to stop committing successors,
     /// and the rotation still installs records for its keys.
     #[tokio::test]
@@ -2941,6 +2995,7 @@ mod pre_rotation_e2e_tests {
                 pre_rotation_count: Some(0),
                 label: None,
             },
+            None,
             None,
             "test",
         )
@@ -2983,6 +3038,7 @@ mod pre_rotation_e2e_tests {
             &auth,
             &scid,
             RotateDidWebvhKeysOptions::default(),
+            None,
             None,
             "test",
         )

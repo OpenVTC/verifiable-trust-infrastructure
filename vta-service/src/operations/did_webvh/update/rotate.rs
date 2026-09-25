@@ -98,6 +98,7 @@ pub async fn rotate_did_webvh_keys(
     scid: &str,
     opts: RotateDidWebvhKeysOptions,
     vta_did: Option<&str>,
+    identity_secrets: Option<&affinidi_tdk::secrets_resolver::ThreadedSecretsResolver>,
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
     // 1. Load record + log.
@@ -264,6 +265,23 @@ pub async fn rotate_did_webvh_keys(
         let _ = deps.keys_ks.remove(store_key(&staging_id(&r.vm_id))).await;
     }
 
+    // 7. The VTA's own DID: swap the new keys into the live secrets resolver
+    //    now, so DIDComm and TSP decrypt what peers encrypt to the new
+    //    key-agreement key and sign with the new signing key from this moment
+    //    (VTI-KEY-122: from the first use of the new key, never sign with the
+    //    retiring one). Waiting for a restart left the VTA unable to read
+    //    anything sent to it after the rotation published.
+    if vta_did == Some(record.did.as_str()) {
+        match identity_secrets {
+            Some(resolver) => reload_own_identity(resolver, &root, &rotated).await,
+            None => tracing::warn!(
+                did = %record.did,
+                "rotated this VTA's own DID on a path with no live secrets resolver; \
+                 restart the VTA to load the new keys"
+            ),
+        }
+    }
+
     crate::audit::record_best_effort(
         deps.audit,
         "did.webvh.rotate_keys",
@@ -284,6 +302,52 @@ pub async fn rotate_did_webvh_keys(
     );
 
     Ok(result)
+}
+
+/// Insert the rotated keys of the VTA's own DID into the live resolver, under
+/// their (unchanged) method ids, replacing the retired secrets.
+///
+/// A key agreement key replaced in place cannot stay decryptable alongside its
+/// successor: both carry the same method id, and the resolver answers one
+/// secret per id. A message encrypted to the retired key and still in transit
+/// when the rotation lands fails to decrypt and must be resent. Keeping the
+/// retiring key usable for decryption (VTI-KEY-122's overlap) needs the new
+/// key-agreement key under a new method id, which the VTA's and VTC's fixed
+/// `#key-1` addressing does not yet allow.
+async fn reload_own_identity(
+    resolver: &affinidi_tdk::secrets_resolver::ThreadedSecretsResolver,
+    root: &vti_common::slip10::ExtendedSigningKey,
+    rotated: &[Rotated],
+) {
+    use affinidi_tdk::secrets_resolver::SecretsResolver;
+    for r in rotated {
+        let secret = match r.key_type {
+            KeyType::Ed25519 => root.derive_ed25519(&r.path),
+            KeyType::X25519 => root.derive_x25519(&r.path),
+            KeyType::MlDsa44 => root.derive_ml_dsa_44(&r.path),
+            KeyType::MlDsa65 => root.derive_ml_dsa_65(&r.path),
+            _ => {
+                tracing::warn!(
+                    vm_id = %r.vm_id,
+                    "rotated a {:?} key on this VTA's own DID; it is not held by the \
+                     messaging resolver and is loaded on its next use",
+                    r.key_type
+                );
+                continue;
+            }
+        };
+        match secret {
+            Ok(mut secret) => {
+                secret.id = r.vm_id.clone();
+                resolver.insert(secret).await;
+                tracing::info!(vm_id = %r.vm_id, "live secret replaced after rotation");
+            }
+            Err(e) => tracing::error!(
+                vm_id = %r.vm_id, error = %e,
+                "could not derive the rotated key for the live resolver; restart the VTA"
+            ),
+        }
+    }
 }
 
 /// The id a rotated key's path is staged under until the entry publishing it

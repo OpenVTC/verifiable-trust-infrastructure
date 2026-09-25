@@ -226,10 +226,19 @@ the new convention; subsequent updates use the fast path.
 - **Old authorization keys are not deleted.** After a rotation, the previous
   version's handles move from `webvh:` to `superseded:webvh:` for
   audit / recovery.
-- **Services holding a rotated DID's keys must reload them.** A VTC, mediator
+- **Rotating the VTA's own DID reloads its live keys at once.** The new
+  signing and key-agreement secrets replace the old ones in the resolver the
+  DIDComm and TSP legs read, so the VTA signs with the new key from that moment
+  and never with the retired one. Because method ids are preserved, the old and
+  new key-agreement keys share one id and cannot both be held: a message
+  encrypted to the retired key and still in transit fails to decrypt and must be
+  resent.
+- **Other services holding a rotated DID's keys must reload them.** A mediator
   or other integration that fetched its DID's secrets (`vta/contexts/secrets`)
-  keeps using the old keys until it fetches again; a VTA rotating its own DID
-  keeps its in-memory DIDComm secrets until restart.
+  keeps using the old keys until it fetches again. **Do not rotate a VTC's
+  `vtc-host` DID yet:** the VTC derives its at-rest storage key, audit key and
+  install-token key from its DID's `#key-0` seed, so adopting rotated keys would
+  leave it unable to read its own encrypted state.
 - **Concurrent updates** are detected via optimistic concurrency on
   `WebvhDidRecord.log_entry_count`. Within one VTA process, updates to the
   same DID are serialized from log-head read through persistence and publish,
