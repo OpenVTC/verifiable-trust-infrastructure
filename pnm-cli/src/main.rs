@@ -19,6 +19,7 @@ mod bootstrap;
 mod cli;
 mod commands;
 mod config;
+mod exit;
 mod setup;
 
 use std::io::IsTerminal;
@@ -76,7 +77,7 @@ async fn main() {
                 "Error: PNM_HOME={} could not be created: {e}",
                 home.to_string_lossy()
             );
-            std::process::exit(4);
+            std::process::exit(exit::CONFIG);
         }
         // SAFETY: set on the main thread, before any store, keyring or
         // worker task has read HOME or XDG_CONFIG_HOME.
@@ -373,7 +374,7 @@ async fn main() {
 
     if let Err(e) = result {
         vta_cli_common::render::print_cli_error(e.as_ref());
-        std::process::exit(1);
+        std::process::exit(exit::FAILURE);
     }
 }
 
