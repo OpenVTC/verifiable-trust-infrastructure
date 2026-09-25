@@ -25,9 +25,9 @@ use std::path::Path;
 use chrono::{Duration, Utc};
 use tracing::{debug, info, warn};
 
-use crate::backup_bundle_store::{self, BundleRecord, BundleState};
-use vti_common::error::AppError;
-use vti_common::store::KeyspaceHandle;
+use super::bundle_store::{self as backup_bundle_store, BundleRecord, BundleState};
+use crate::error::AppError;
+use crate::store::KeyspaceHandle;
 
 /// How long a terminal bundle's record sticks around before the
 /// retention pass deletes it. Long enough for operator audit
@@ -134,7 +134,7 @@ pub async fn sweep_bundles(
             }
             // A chunked bundle's plan goes with its record. Absent for stream
             // bundles; a failure here only leaves an inert record to retry.
-            if let Err(e) = crate::ops::chunked::delete_plan(bundles_ks, &record.bundle_id).await {
+            if let Err(e) = super::chunked::delete_plan(bundles_ks, &record.bundle_id).await {
                 warn!(
                     bundle_id = %record.bundle_id,
                     error = %e,
@@ -187,18 +187,18 @@ pub fn is_terminal(record: &BundleRecord) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::backup_bundle_store::{BundleKind, BundleRecord};
     use super::*;
-    use crate::backup_bundle_store::{BundleKind, BundleRecord};
+    use crate::config::StoreConfig as VtiStoreConfig;
     use uuid::Uuid;
-    use vti_common::config::StoreConfig as VtiStoreConfig;
 
     async fn setup() -> (tempfile::TempDir, KeyspaceHandle, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let store = vti_common::store::Store::open(&VtiStoreConfig {
+        let store = crate::store::Store::open(&VtiStoreConfig {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let ks = store.keyspace(crate::BACKUP_BUNDLES_SWEEPER_TEST).unwrap();
+        let ks = store.keyspace("backup_bundles_sweeper_test").unwrap();
         let blob_dir = dir.path().join("backups");
         tokio::fs::create_dir_all(&blob_dir).await.unwrap();
         (dir, ks, blob_dir)

@@ -82,7 +82,7 @@ jsonwebtoken = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util"] }
 tracing = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
@@ -90,6 +90,8 @@ hmac = { workspace = true }
 hkdf = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true }
+# Constant-time comparison of backup bundle tokens (`backup_transfer`).
+subtle = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 # Idempotency middleware buffers request + response bodies (bounded by

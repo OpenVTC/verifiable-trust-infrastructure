@@ -18,8 +18,11 @@
 //! `vta_support::restore_stage` for why it cannot be applied in place, and
 //! `docs/05-design-notes/backup-restore-portability.md` for the whole design.
 
-pub mod backup_bundle_store;
-pub mod backup_bundle_sweeper;
+// The bundle store and its sweeper are the node-neutral half of backup
+// transfer, shared with the VTC, and live in `vti_common::backup_transfer`.
+// Re-exported under their old paths so every caller keeps working.
+pub use vti_common::backup_transfer::bundle_store as backup_bundle_store;
+pub use vti_common::backup_transfer::sweeper as backup_bundle_sweeper;
 pub mod ops;
 pub mod restore;
 
@@ -32,13 +35,6 @@ use vta_sdk::protocols::backup_management::types::BackupEnvironment;
 use vta_support::restore_stage::AnchorBinding;
 use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
-
-/// Test-only keyspaces: the sweeper tests open isolated keyspaces so a run
-/// can't clobber the shared `backup_bundles`.
-#[cfg(test)]
-pub(crate) const BACKUP_BUNDLES_TEST: &str = "backup_bundles_test";
-#[cfg(test)]
-pub(crate) const BACKUP_BUNDLES_SWEEPER_TEST: &str = "backup_bundles_sweeper_test";
 
 /// The store a backup is read from, or a restore staged into, and how it is
 /// protected at rest.

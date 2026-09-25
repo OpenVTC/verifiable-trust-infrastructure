@@ -16,6 +16,11 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
 - **Error types** — `AppError` enum used across all services
 - **Config types** — `AuthConfig`, `LogConfig`, `StoreConfig`,
   `MessagingConfig`, `AuditConfig` (shared config shapes)
+- **Backup transfer** (`backup_transfer`) — the node-neutral half of moving a
+  backup bundle: the bundle store and its state machine, the `chunkedTrustTask`
+  staging/serving/accepting and finalize checks, and the sweeper. Shared by the
+  VTA (`vta-backup`) and the VTC for the `backup/*` family. What a bundle
+  *contains* — serializing a node's state, applying one — stays with the node.
 - **Cryptographic primitives with no service-specific policy** — the HMAC
   pagination tokens, the audit-checkpoint signatures, and `slip10` (SLIP-0010
   Ed25519 derivation). See the note below on where the line falls.
