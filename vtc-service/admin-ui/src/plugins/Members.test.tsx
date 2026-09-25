@@ -93,5 +93,7 @@ describe("Members — git rights (UI-13)", () => {
     expect(c.queryByRole("link", { name: "acme" })).toBeNull();
     expect(c.getByText("@bobm")).toBeTruthy();
     expect(card.textContent).toContain("1002");
+    // Unlinking is the member's own act: the console names the command.
+    expect(card.textContent).toContain("cnm git unlink --forge <host>");
   });
 });

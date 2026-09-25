@@ -247,6 +247,14 @@ export function MemberGitCard({ did }: { did: string }) {
               ))}
             </dl>
           )}
+          {accounts.length > 0 && (
+            <p className="muted">
+              Only the member can unlink an account — the link is theirs, and this
+              console cannot sign as them. They run{" "}
+              <code>cnm git unlink --forge &lt;host&gt;</code>; the bridge then
+              withdraws the forge roles it gave that account, and their rights stay.
+            </p>
+          )}
           <p className="muted">
             Rights are granted and revoked on the <Link to="/repos">Repos</Link> page.
           </p>
