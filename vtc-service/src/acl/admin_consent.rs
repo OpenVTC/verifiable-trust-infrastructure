@@ -182,6 +182,52 @@ pub async fn check_threshold_meetable(state: &AppState, threshold: u64) -> Resul
     Ok(())
 }
 
+/// Whether `entry` is a live unrestricted admin — one of the approvers.
+#[must_use]
+pub fn is_live_unrestricted(entry: &VtcAclEntry, now: u64) -> bool {
+    entry.is_super_admin() && !entry.is_expired(now)
+}
+
+/// Refuse a change that takes `subject` — a live unrestricted admin — out of the
+/// approvers, when what is left could never consent to anything: no other
+/// unrestricted admin at all, or fewer than the threshold needs.
+///
+/// The attrition half of VTI-APV-009: a rule must not become unsatisfiable by
+/// removal any more than by being written that way. Callers are every door that
+/// can end an unrestricted admin — a revocation, a removal from the community, a
+/// demotion, a grant rewrite that narrows the entry — and each must hold the
+/// admin-set lock ([`crate::ceremony::lock_admin_set`]) from this check through
+/// its write, or two such changes could each pass it and together strand the
+/// community.
+///
+/// A threshold of 1 needs only one other unrestricted admin, the same bound the
+/// write-time check accepts, so a two-admin community can still remove a
+/// compromised one. Above 1 the threshold has to come down first.
+pub async fn check_attrition(state: &AppState, subject: &str) -> Result<(), AppError> {
+    let remaining = unrestricted_admins(state, now_epoch())
+        .await?
+        .into_iter()
+        .filter(|d| d != subject)
+        .count() as u64;
+    if remaining == 0 {
+        return Err(AppError::Conflict(format!(
+            "refusing to end the last unrestricted admin ({subject}): nobody would be left who \
+             could consent to another (VTI-APV-014). Make another unrestricted admin first"
+        )));
+    }
+    let threshold = threshold(state).await?;
+    if threshold > 1 && threshold > remaining.saturating_sub(1) {
+        return Err(AppError::Conflict(format!(
+            "refusing to end unrestricted admin {subject}: {remaining} would remain, so \
+             {UNRESTRICTED_ADMIN_CONSENT_THRESHOLD} = {threshold} could never be met again \
+             (VTI-APV-009). Lower it first — config/patch \
+             {{\"{UNRESTRICTED_ADMIN_CONSENT_THRESHOLD}\": {}}} — then retry",
+            remaining.saturating_sub(1).max(1)
+        )));
+    }
+    Ok(())
+}
+
 /// A consent found live and still authorizing, not yet spent.
 #[derive(Debug)]
 #[must_use = "a ReadyGrant authorizes nothing until it is spent with the write"]

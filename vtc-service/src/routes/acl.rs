@@ -370,6 +370,10 @@ pub(crate) struct GrantPlan {
     /// which also needs another admin's consent (VTI-APV-014). Implies
     /// `confers_admin`. See [`crate::acl::admin_consent::confers_unrestricted`].
     pub(crate) confers_unrestricted: bool,
+    /// Whether it rewrites a live unrestricted admin into something less — a
+    /// scoped admin — which [`commit_grant`] checks for attrition before
+    /// writing ([`crate::acl::admin_consent::check_attrition`]).
+    ends_unrestricted: bool,
     reason: Option<String>,
 }
 
@@ -405,6 +409,13 @@ pub(crate) async fn plan_grant(
         &req_entry.scopes,
         now_epoch(),
     );
+    // A rewrite keeps the role (a different one is refused below), so what can
+    // end an unrestricted admin here is narrowing its scopes.
+    let ends_unrestricted = existing
+        .as_ref()
+        .is_some_and(|p| crate::acl::admin_consent::is_live_unrestricted(p, now_epoch()))
+        && !vti_common::acl::act_scope_for(&as_vti_role(&req_entry.role), &req_entry.scopes)
+            .is_unrestricted();
     let (created_at, created_by, status) = match existing {
         Some(prev) => {
             if !is_acl_entry_visible(actor, &as_vti_acl_entry(&prev)) {
@@ -454,6 +465,7 @@ pub(crate) async fn plan_grant(
         status,
         confers_admin,
         confers_unrestricted,
+        ends_unrestricted,
         reason: req.reason,
     })
 }
@@ -469,8 +481,18 @@ pub(crate) async fn commit_grant(
         entry,
         status,
         reason,
+        ends_unrestricted,
         ..
     } = plan;
+    // Narrowing an unrestricted admin is attrition like any removal, checked
+    // and written under the same admin-set lock (VTI-APV-009).
+    let _admin_set = if ends_unrestricted {
+        let guard = crate::ceremony::lock_admin_set().await;
+        crate::acl::admin_consent::check_attrition(state, &entry.did).await?;
+        Some(guard)
+    } else {
+        None
+    };
     store_acl_entry(&state.acl_ks, &entry).await?;
 
     if let Some(writer) = state.audit_writer.as_ref() {
@@ -1011,6 +1033,18 @@ pub async fn delete_acl(
              To remove them from the community, use the leave ceremony instead:\n    \
              DELETE /v1/members/{did}"
         )));
+    }
+
+    // Removing an unrestricted admin must not leave nobody able to consent to
+    // another (VTI-APV-014, VTI-APV-009). This route had no last-admin check at
+    // all: an ACL-only admin (no member row, so not refused above) could be
+    // revoked down to none. Checked and written under the admin-set lock the
+    // executor's own removals hold, so the two cannot race past each other.
+    let _admin_set = crate::ceremony::lock_admin_set().await;
+    if let Some(live) = get_acl_entry(&acl, &did).await?
+        && crate::acl::admin_consent::is_live_unrestricted(&live, now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(&state, &did).await?;
     }
 
     delete_acl_entry(&acl, &did).await?;

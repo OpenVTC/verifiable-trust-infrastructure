@@ -35,6 +35,27 @@ async fn build() -> (TestVtc, String) {
         .build()
         .await;
     let token = vtc.admin_token().await;
+    // The invitee already holds a (scoped) admin entry, so these mints take the
+    // path that writes no ACL entry. A mint that *creates* one confers
+    // unrestricted admin and needs a step-up and another admin's consent
+    // (VTI-APV-014) — `unrestricted_admin_consent.rs` covers that. These tests
+    // are about the error codes.
+    vtc_service::acl::store_acl_entry(
+        &vtc.state.acl_ks,
+        &vtc_service::acl::VtcAclEntry {
+            did: "did:key:z6MkInvitee".into(),
+            role: vtc_service::acl::VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec!["ctx-a".into()],
+            created_at: 0,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
     (vtc, token)
 }
 

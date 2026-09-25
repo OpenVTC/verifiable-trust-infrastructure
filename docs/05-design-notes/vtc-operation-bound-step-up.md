@@ -262,7 +262,7 @@ upstream spec and a `trust-tasks-rs` bump first).
       write-time check. **Done.**
    3. Attrition checks, and the paths that confer unrestricted admin without
       reaching the gate: `vtc/admin/invites/create`, and an `acl/grant` rewrite
-      that narrows an unrestricted admin (the attrition case).
+      that narrows an unrestricted admin (the attrition case). **Done** (§10).
    4. The co-admin at install, and audit rows for the offline writers.
 5. Console-key enrolment once `auth/signing-key/*` is published.
 6. Retire the bearer routes of the three verbs; close the #1641 entries.
@@ -376,3 +376,33 @@ upstream spec and a `trust-tasks-rs` bump first).
   is not sent; a requester re-sends the operation to learn the outcome, as the
   VTA's CLI loop does.
 - **Tests:** `vtc-service/tests/unrestricted_admin_consent.rs`.
+
+## 10. As built (step 4.3: attrition and invites)
+
+- **Attrition** (`admin_consent::check_attrition`): a change that ends a live
+  unrestricted admin is refused when no other unrestricted admin would remain,
+  or when the threshold is above 1 and could no longer be met. It runs on every
+  door that can end one: `acl/revoke` (which had no last-admin check at all), a
+  demotion (`execute::remint`), a removal from the community (`execute::depart`)
+  and an `acl/grant` rewrite that narrows the entry to scoped. Each checks and
+  writes under the executor's `LAST_ADMIN_LOCK` (`ceremony::lock_admin_set`), so
+  two such changes cannot each pass the check and together strand the community.
+- **Why threshold 1 is exempt from the second rule:** the write-time check
+  accepts 1 however few admins there are, and attrition matches it. At the
+  default a two-admin community can still remove one of them, which is the
+  compromised-admin case, and must never be a lockout. Above 1 the threshold has
+  to be lowered first, and the refusal names the `config/patch` that does it.
+- **The old last-admin guard** counted any admin, so the last unrestricted admin
+  could step down behind a scoped one. That left nobody who could ever consent to
+  an unrestricted grant. The attrition check refuses it; the old guard is kept for
+  what it still protects (no admin of any kind).
+- **Invites** (`vtc/admin/invites/create`): an invite that writes a new admin
+  entry writes an unrestricted one, so it now costs what that grant costs — an
+  unrestricted caller, a live step-up, and another admin's consent bound to the
+  invite request. Before this, `AdminAuth` was enough, so a **scoped** admin
+  could mint a community-wide one here with no gesture and nobody else asked.
+  An invite for a DID that already holds an admin entry writes nothing and is
+  unchanged.
+- **Console:** the invite form steps up first and, like an unrestricted
+  `acl/grant`, turns `auth:consent_required` into an instruction to wait for
+  another admin and try again.

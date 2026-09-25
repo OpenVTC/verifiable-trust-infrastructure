@@ -65,6 +65,14 @@ use crate::status_list;
 /// process-wide lock is the right grain.)
 static LAST_ADMIN_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+/// Take [`LAST_ADMIN_LOCK`] for a write that can end an admin outside this
+/// executor — `acl/revoke`, an `acl/grant` rewrite — so it serialises with
+/// `depart` and `remint` and the admin-set checks they all make
+/// (`crate::acl::admin_consent::check_attrition`) see one another's writes.
+pub(crate) async fn lock_admin_set() -> tokio::sync::MutexGuard<'static, ()> {
+    LAST_ADMIN_LOCK.lock().await
+}
+
 /// What the executor did. Carries back whatever the caller needs to
 /// audit + respond — currently the credentials minted on admit.
 #[derive(Debug)]
@@ -361,6 +369,14 @@ async fn remint(
         .ok_or_else(|| AppError::NotFound(format!("member not found: {subject_did}")))?;
     let previous_role = acl.role.clone();
 
+    // A demotion ends an unrestricted admin, and must not leave nobody able to
+    // consent to another (VTI-APV-014, VTI-APV-009). Under the same lock.
+    if !matches!(new_role, VtcRole::Admin)
+        && crate::acl::admin_consent::is_live_unrestricted(&acl, crate::auth::session::now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
+    }
+
     // No-last-admin on demotion: refuse to demote the community's only
     // admin (the inverse of the leave guard).
     if matches!(previous_role, VtcRole::Admin) && !matches!(new_role, VtcRole::Admin) {
@@ -460,7 +476,13 @@ async fn depart(
     let _guard = LAST_ADMIN_LOCK.lock().await;
 
     // No-last-admin invariant — checked before any write so a refusal
-    // leaves the community untouched.
+    // leaves the community untouched. Removing an unrestricted admin also must
+    // not leave nobody able to consent to another (VTI-APV-014, VTI-APV-009).
+    if let Some(acl) = get_acl_entry(&state.acl_ks, subject_did).await?
+        && crate::acl::admin_consent::is_live_unrestricted(&acl, crate::auth::session::now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
+    }
     if let Some(acl) = get_acl_entry(&state.acl_ks, subject_did).await?
         && matches!(acl.role, VtcRole::Admin)
     {
