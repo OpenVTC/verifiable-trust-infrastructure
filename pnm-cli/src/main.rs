@@ -61,6 +61,31 @@ async fn main() {
         std::process::exit(2);
     }
 
+    // PNM_HOME isolates a whole profile — config, sessions, pending setups
+    // and bootstrap secrets. It is implemented by pointing the platform
+    // lookups at it rather than by threading a path through every store,
+    // so nothing can be left behind in the real profile by a store that
+    // was not updated. Surrounding tooling already sets HOME and
+    // XDG_CONFIG_HOME alongside PNM_HOME to get this effect by hand.
+    if let Some(home) = std::env::var_os("PNM_HOME")
+        && !home.is_empty()
+    {
+        let config = std::path::Path::new(&home).join(".config");
+        if let Err(e) = std::fs::create_dir_all(&config) {
+            eprintln!(
+                "Error: PNM_HOME={} could not be created: {e}",
+                home.to_string_lossy()
+            );
+            std::process::exit(4);
+        }
+        // SAFETY: set on the main thread, before any store, keyring or
+        // worker task has read HOME or XDG_CONFIG_HOME.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("XDG_CONFIG_HOME", &config);
+        }
+    }
+
     let cli = Cli::parse();
 
     // DID-advertised VTA endpoints are public-only unless the operator opts in.
