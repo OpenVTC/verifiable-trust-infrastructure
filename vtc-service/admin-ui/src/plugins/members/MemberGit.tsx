@@ -242,6 +242,17 @@ export function MemberGitCard({ did }: { did: string }) {
                       · id <code>{a.id}</code>
                       {a.linkedAt && <> · linked {formatDay(a.linkedAt)}</>}
                     </span>
+                    {!a.memberCurrent && (
+                      <>
+                        {" "}
+                        <ToneChip
+                          tone="warning"
+                          title="The member's access has lapsed: the account stays theirs, but it gets no forge role"
+                        >
+                          not current — no forge role
+                        </ToneChip>
+                      </>
+                    )}
                   </dd>
                 </Fragment>
               ))}
