@@ -18,7 +18,7 @@ use serde_json::json;
 use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status,
 };
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_1 as job_wire;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_3 as job_wire;
 use trust_tasks_rs::specs::git_ns::namespace::{
     bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
 };

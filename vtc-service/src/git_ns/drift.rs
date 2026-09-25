@@ -8,11 +8,10 @@
 //! — required for `adopt` — by the `observed` value the caller last read, so a
 //! decision about one forge state is never applied to another.
 //!
-//! The one revert `git-ns/bridge/job` 0.1 cannot express is taking a role the
-//! bridge does not manage off a repository (`roleAdded`): that job is sent as
-//! 0.2, with `removeAccounts`, and in-line, because a bridge that refuses it
-//! — one that implements only 0.1 — must be answered `notRevertible` rather
-//! than reported as done. Every other revert reuses a 0.1 job and is queued.
+//! Taking a role the bridge does not manage off a repository (`roleAdded`) is
+//! a `projectRoles` job with `removeAccounts`, sent in-line, because a bridge
+//! that refuses it must be answered `notRevertible` rather than reported as
+//! done. Every other revert is queued. Every job is `git-ns/bridge/job` 0.4.
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::git_ns::drift::resolve::v0_1 as resolve;
@@ -21,9 +20,7 @@ use trust_tasks_rs::specs::git_ns::right::grant::v0_1 as grant;
 use crate::server::AppState;
 
 use super::bridge::{self, BridgeSendError, JobKind, NewJob};
-use super::model::{
-    Mode, Namespace, OwnerKind, Repo, RepoState, Resource, Right, Scope, SyncState,
-};
+use super::model::{Mode, Namespace, OwnerKind, Repo, RepoState, Resource, Right, SyncState};
 use super::ops::{
     self, Audit, OpError, OpResult, PolicyInput, audit, check_policy, consent_gate, declared, now,
     standing,
@@ -323,23 +320,12 @@ async fn adopt(
     // Step 4 — a forge-side lowering is accepted by revoking, not adopting.
     if d.selector.kind == "roleChanged" {
         let snap = Snapshot::load(&state.git_ns.ks).await?;
-        // Against what the member is projected at, not what they hold by
-        // implication: a namespace admin with no right of their own here is
-        // projected to no role, so a forge role above that is adoptable.
-        let held = match d.repo.resource() {
-            Some(repo_res) => bridge::highest_repo_rights(
-                &d.ns.resource(),
-                snap.rows(&Scope::Namespace(d.ns.id.clone())),
-                &repo_res,
-                snap.rows(&Scope::Repo(d.repo.id.clone())),
-                now(),
-            )
-            .get(&member)
-            .filter(|r| **r != Right::NsAdmin)
-            .map(|r| r.rank())
-            .unwrap_or(0),
-            None => 0,
-        };
+        let held = rules::effective_on(&snap, &member, &d.resource, now())
+            .into_iter()
+            .filter(|r| matches!(r, Right::RepoOwn | Right::RepoMaintain | Right::CommitSign))
+            .map(Right::rank)
+            .max()
+            .unwrap_or(0);
         if right.rank() <= held {
             return Err(declared(
                 NOT_ADOPTABLE,
@@ -458,22 +444,21 @@ async fn revert(state: &AppState, actor: &ops::Standing, d: &Decided) -> OpResul
 
     match d.selector.kind.as_str() {
         "roleAdded" => {
-            // `removeAccounts` — git-ns/bridge/job 0.2, and only here.
+            // `removeAccounts`, and only here.
             let snap = Snapshot::load(&state.git_ns.ks).await?;
-            let mut roles = bridge::desired_roles_now(state, &snap, &d.ns, &d.repo).await?;
+            let roles = bridge::desired_roles_now(state, &snap, &d.ns, &d.repo).await?;
             let account = item.get("account").cloned().unwrap_or(Value::Null);
             let (forge, id) = d.selector.account.clone().unwrap_or_default();
-            let is_account = |r: &Value| {
+            // An account listed at `git.ns.admin` — a namespace admin with no
+            // right of their own here — is projected to no role, so its forge
+            // role may be taken off; `git-ns/bridge/job` 0.4 lets
+            // `removeAccounts` name it, and a bridge before 0.4 is sent no
+            // such entry at all.
+            if roles.iter().any(|r| {
                 r.pointer("/account/forge").and_then(Value::as_str) == Some(forge.as_str())
                     && r.pointer("/account/id").and_then(Value::as_str) == Some(id.as_str())
-            };
-            // A namespace admin with no right of their own here is listed at
-            // `git.ns.admin`, which projects to no role; the job may not name
-            // the account in both lists, so it goes in `removeAccounts` only.
-            roles.retain(|r| {
-                !(is_account(r) && r.get("right").and_then(Value::as_str) == Some("git.ns.admin"))
-            });
-            if roles.iter().any(is_account) {
+                    && r.get("right").and_then(Value::as_str) != Some(Right::NsAdmin.as_str())
+            }) {
                 // Never revert by changing the projection: this account is a
                 // member's, holding a right here.
                 return Err(declared(
@@ -506,12 +491,11 @@ async fn revert(state: &AppState, actor: &ops::Standing, d: &Decided) -> OpResul
                 Err(BridgeSendError::Rejected { code, message }) => {
                     return Err(declared(
                         NOT_REVERTIBLE,
-                        format!(
-                            "the bridge refused the revert ({code}: {message}); a bridge that \
-                             implements only git-ns/bridge/job 0.1 cannot take a role it does \
-                             not manage off a repository"
-                        ),
+                        format!("the bridge refused the revert ({code}: {message})"),
                     ));
+                }
+                Err(BridgeSendError::Outdated(m)) => {
+                    return Err(declared(NOT_REVERTIBLE, m));
                 }
                 Err(BridgeSendError::Transient(m)) => {
                     return Err(OpError::Unavailable(format!(

@@ -847,8 +847,9 @@ export function RepoDetail() {
               <h3 id="gitns-inherited">Through the namespace</h3>
               <p className="muted gitns-small">
                 Rights on {ns.resource} that reach this repository. Change them from the
-                namespace. A namespace admin gets no role on the forge from it: only a right
-                on this repository gives one.
+                namespace. <code>git.ns.admin</code> gives no role on the forge; a
+                namespace-level <code>git.commit.sign</code> is projected here as a committer
+                right on this repository would be.
               </p>
               <PeopleTable
                 rows={inherited}

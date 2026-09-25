@@ -33,12 +33,12 @@ repository role. `ns.admin` is exercised through the VTC and the bridge (bind,
 adopt, reseat, grants); making someone an organisation owner is left to the
 community, outside the VTC. The bridge projects only rights held in a
 person's own name: each repository's `desiredRoles` carries, per linked
-account, the highest `own`, `maintain` or `commit.sign` recorded for them on
-that repository (or `commit.sign` on its namespace). An admin with none of
-those there is sent as `git.ns.admin`, which the bridge maps to no role — so
-it takes off a stale role it manages rather than leave it — and an admin who
-is also an explicit owner is sent as the owner. No namespace-level
-`projectRoles` job is sent ([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635)).
+account and once per account, the highest `own`, `maintain` or `commit.sign`
+recorded for them on that repository (or `commit.sign` on its namespace). An
+admin with none of those there is sent as `git.ns.admin`, which the bridge
+maps to no role — so it takes off a stale role it manages rather than leave
+it — and an admin who is also an explicit owner is sent as the owner. There
+is no namespace-level `projectRoles` job.
 
 The **fixed rules** are code, not policy: containment by whole segment (a
 right never crosses forges, and `acme` does not contain `acme-labs`), no
@@ -178,9 +178,14 @@ recorded as where the repository went. This is `git-ns/bridge/event/0.2`
 The VTC serves 0.1 and 0.2 — the payloads are wire-identical — and applies
 0.2's rules to both.
 
-Jobs go out as `git-ns/bridge/job/0.1`, except the one job 0.1 cannot express:
-taking off a repository a role the bridge does not manage (`projectRoles` with
-`removeAccounts`, reverting a `roleAdded` drift item), sent as 0.2.
+Every job goes out as `git-ns/bridge/job/0.4`
+([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635)),
+and only to a bridge that lists 0.4 when asked with `trust-task-discovery`
+(asked again hourly, so an upgrade is noticed). A bridge that does not is sent
+nothing: in-line jobs (binding, account links, a `roleAdded` revert) are
+refused with "upgrade the bridge", and queued jobs wait with that as their
+last error. A bridge before 0.4 would read a `git.ns.admin` entry as
+ownership, which is why there is no downgrade.
 
 Jobs are queued in `git_ns_jobs`; role projection retries
 forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
@@ -199,18 +204,19 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   grant. The item must still be outstanding as it was selected when the right
   is written; a forge that changed meanwhile adopts nothing. Only a role item (`roleAdded`, or a `roleChanged` that
   raises the member above what they hold) held by a forge account linked to a
-  current member, at a role a right projects to, can be adopted. "Holds" is
-  what the member is projected at, so a namespace admin's forge `admin` role
-  is adoptable as `own` although `ns.admin` implies it. The inverse
+  current member, at a role a right projects to, can be adopted. For a
+  `roleChanged` item, "holds" counts implied rights (`git-ns/drift/resolve`
+  0.2): a namespace admin's forge `admin` role on a repository where they
+  hold `maintain` is not adoptable, though a `roleAdded` one is. The inverse
   of the bridge's default role map is used: `admin` is `git.repo.own`,
   `maintain` is `git.repo.maintain`, and on a personal account collaborator
   `write` is `git.repo.maintain`; `write` on an organisation, `triage` and
   `read` project nothing here (the VTC is not told whether committers get
   `write`).
 - **revert** changes no right and has the bridge undo the change: a
-  `roleAdded` role is removed with `git-ns/bridge/job/0.2`'s
-  `removeAccounts`, sent in-line so that a bridge implementing only 0.1 is
-  answered `notRevertible` instead of a revert that does nothing; a
+  `roleAdded` role is removed with `removeAccounts`, sent in-line so that a
+  bridge that refuses it is answered `notRevertible` instead of a revert that
+  does nothing (a namespace admin at no role may be named there too); a
   `roleChanged` or `roleRemoved` role re-sends the complete `desiredRoles`;
   protection items re-run the `requiredCheck` bootstrap step, and
   `bootstrapMissing` the whole plan. Reverting an `admin` role has the impact
