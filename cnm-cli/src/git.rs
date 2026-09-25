@@ -416,12 +416,53 @@ fn shell_word(s: &str) -> String {
     out
 }
 
-/// Text from elsewhere (the VTC's refusal message, a DID) made safe to print
-/// to a terminal: control characters, escapes included, are shown as `?`.
+/// Text from elsewhere (the VTC's refusal message, a DID, what a bridge
+/// returned) made safe to print to a terminal: control characters, escapes
+/// included, and format characters are shown as `?`.
+///
+/// Format characters (Unicode category Cf) print as nothing, yet the bidi
+/// ones among them — U+202A–202E, U+2066–2069 — reorder what follows, and
+/// the zero-width ones hide in plain sight, so a hostile value could make an
+/// authorisation URL read as another. Nothing here needs one.
 fn terminal_safe(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| {
+            if c.is_control() || is_format_char(c) {
+                '?'
+            } else {
+                c
+            }
+        })
         .collect()
+}
+
+/// Unicode general category Cf (Format), as of Unicode 16. `std` has no
+/// category lookup; the set is small and changes rarely.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x00AD
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x0890..=0x0891
+            | 0x08E2
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0001
+            | 0xE0020..=0xE007F
+    )
 }
 
 fn guidance(code: &str, message: &str, did: &str) -> String {
@@ -582,16 +623,42 @@ fn field(v: &Value, pointer: &str) -> String {
     )
 }
 
+/// The `url` of a `git-ns/account/link` response, parsed and held to what
+/// the specification allows (`^https://`) before anything is printed. What
+/// is printed is the parsed form: its host is IDNA-encoded and its path and
+/// query percent-encoded, so no character in it can disguise it.
+fn authorisation_url(v: &Value) -> Result<url::Url, String> {
+    let raw = v.get("url").and_then(Value::as_str).unwrap_or_default();
+    let refused = |why: &str| {
+        format!(
+            "the community returned an authorisation URL this client will not show ({why}): {}",
+            terminal_safe(raw)
+        )
+    };
+    let url = url::Url::parse(raw).map_err(|e| refused(&e.to_string()))?;
+    if url.scheme() != "https" {
+        return Err(refused("not https"));
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(refused("no host"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(refused("it carries credentials"));
+    }
+    Ok(url)
+}
+
 /// What the member does next, from a `git-ns/account/link` response. The
 /// device code is shown to the member and nowhere else (the specification's
 /// *Data carried*): it is never logged.
-fn link_instructions(forge: &str, v: &Value) -> String {
+fn link_instructions(forge: &str, v: &Value) -> Result<String, String> {
+    let url = authorisation_url(v)?;
     let bin = shell_word(bin_name());
-    let link_id = field(v, "/linkId");
+    let link_id = v.get("linkId").and_then(Value::as_str).unwrap_or_default();
     let mut out = format!(
         "Authorise the link on {}:\n  {}\n",
         terminal_safe(forge),
-        field(v, "/url")
+        terminal_safe(url.as_str())
     );
     if v.get("userCode").and_then(Value::as_str).is_some() {
         out.push_str(&format!(
@@ -602,37 +669,79 @@ fn link_instructions(forge: &str, v: &Value) -> String {
     out.push_str(&format!(
         "{DIM}The link lapses at {}. Follow it later with:\n  {bin} git link --status {}{RESET}",
         field(v, "/expiresAt"),
-        shell_word(&link_id)
+        shell_word(&terminal_safe(link_id))
     ));
-    out
+    Ok(out)
 }
 
-/// A final `git-ns/account/link-status` answer, as the line to print or the
-/// error to return. `None` while it is still `pending`.
-fn link_outcome(v: &Value, did: &str) -> Option<Result<String, String>> {
+/// How a link ended, as far as this command saw it.
+#[derive(Debug, PartialEq, Eq)]
+enum LinkEnd {
+    /// Linked: the line to print.
+    Linked(String),
+    /// Not linked, and no longer worth waiting for (expired, failed, a state
+    /// this client does not know), or still pending when this command
+    /// stopped waiting: why, for the error.
+    NotLinked(String),
+}
+
+/// A `git-ns/account/link-status` answer as a [`LinkEnd`]. A `pending`
+/// answer is only ever the last one when waiting stopped (`--no-wait`, or
+/// the deadline passed), so it is not a success.
+fn link_end(v: &Value, did: &str, link_id: &str) -> LinkEnd {
     let bin = shell_word(bin_name());
     let did = terminal_safe(did);
     match v.get("state").and_then(Value::as_str) {
-        Some("pending") => None,
-        Some("linked") => Some(Ok(format!(
+        Some("linked") => LinkEnd::Linked(format!(
             "Linked {} account {BOLD}{}{RESET} (id {}) to {did}.",
             field(v, "/account/forge"),
             field(v, "/account/login"),
             field(v, "/account/id"),
-        ))),
-        Some("expired") => Some(Err(format!(
+        )),
+        Some("pending") => LinkEnd::NotLinked(format!(
+            "the link is still pending: it has not been authorised on the forge yet. Follow \
+             it with:\n  {bin} git link --status {}",
+            shell_word(&terminal_safe(link_id))
+        )),
+        Some("expired") => LinkEnd::NotLinked(format!(
             "the link lapsed before it was authorised. Start again:\n  {bin} git link --forge \
              <forge>"
-        ))),
-        Some("failed") => Some(Err(format!(
-            "the link failed: the forge account is already linked to another member, or it is \
-             not on the forge you asked to link. See what is linked to {did}:\n  {bin} git link \
-             --list"
-        ))),
-        other => Some(Err(format!(
+        )),
+        Some("failed") => LinkEnd::NotLinked(format!(
+            "the link failed: the forge refused it (the authorisation was declined, or the \
+             bridge could not complete it), or the account is already linked to another \
+             member. See what is linked to {did}:\n  {bin} git link --list\nand start again \
+             with:\n  {bin} git link --forge <forge>"
+        )),
+        other => LinkEnd::NotLinked(format!(
             "the community answered a link state this client does not know: {}",
             terminal_safe(other.unwrap_or("(none)"))
-        ))),
+        )),
+    }
+}
+
+/// Report the last link-status answer: as JSON on `out` in JSON mode, as a
+/// line otherwise. Either way, anything but `linked` is an error, so the
+/// exit status says the same thing in both modes.
+fn finish_link(
+    out: &mut impl std::io::Write,
+    json_mode: bool,
+    v: &Value,
+    did: &str,
+    link_id: &str,
+) -> CliResult {
+    let end = link_end(v, did, link_id);
+    if json_mode {
+        writeln!(out, "{}", serde_json::to_string_pretty(v)?)?;
+    }
+    match end {
+        LinkEnd::Linked(line) => {
+            if !json_mode {
+                writeln!(out, "{line}")?;
+            }
+            Ok(())
+        }
+        LinkEnd::NotLinked(why) => Err(why.into()),
     }
 }
 
@@ -654,8 +763,36 @@ fn account_lines(accounts: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Poll `link_id` until it reaches a final state, or `deadline` (with
-/// [`LINK_GRACE`]) passes. Returns the last answer.
+/// Ask `poll` until it answers a state other than `pending`, or `deadline`
+/// plus [`LINK_GRACE`] has passed by `now`, sleeping with `sleep` between
+/// asks. Returns the last answer. Without a deadline it asks until a final
+/// state: the VTC marks a lapsed link expired on the next ask.
+async fn follow<P, PF, S, SF>(
+    mut poll: P,
+    deadline: Option<chrono::DateTime<chrono::Utc>>,
+    now: impl Fn() -> chrono::DateTime<chrono::Utc>,
+    mut sleep: S,
+) -> CliResult<Value>
+where
+    P: FnMut() -> PF,
+    PF: std::future::Future<Output = CliResult<Value>>,
+    S: FnMut() -> SF,
+    SF: std::future::Future<Output = ()>,
+{
+    loop {
+        let v = poll().await?;
+        if v.get("state").and_then(Value::as_str) != Some("pending") {
+            return Ok(v);
+        }
+        if deadline.is_some_and(|d| now() > d + LINK_GRACE) {
+            return Ok(v);
+        }
+        sleep().await;
+    }
+}
+
+/// [`follow`] against the VTC, every [`LINK_POLL`]. `link_id` is sent as the
+/// VTC returned it; it is sanitised only where it is shown.
 async fn follow_link(
     client: &VtcClient,
     key: &HolderKey,
@@ -663,21 +800,20 @@ async fn follow_link(
     link_id: &str,
     deadline: Option<chrono::DateTime<chrono::Utc>>,
 ) -> CliResult<Value> {
-    loop {
-        let v = serde_json::to_value(
-            client
-                .git_ns_link_status(link_id, key)
-                .await
-                .map_err(|e| explain(e, did))?,
-        )?;
-        if v.get("state").and_then(Value::as_str) != Some("pending") {
-            return Ok(v);
-        }
-        if deadline.is_some_and(|d| chrono::Utc::now() > d + LINK_GRACE) {
-            return Ok(v);
-        }
-        tokio::time::sleep(LINK_POLL).await;
-    }
+    follow(
+        || async {
+            Ok(serde_json::to_value(
+                client
+                    .git_ns_link_status(link_id, key)
+                    .await
+                    .map_err(|e| explain(e, did))?,
+            )?)
+        },
+        deadline,
+        chrono::Utc::now,
+        || tokio::time::sleep(LINK_POLL),
+    )
+    .await
 }
 
 pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
@@ -907,13 +1043,14 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
         } => {
             let (did, key) = signing_key(keyring_key)?;
             let client = anon();
+            let json_mode = is_json_output();
             if list {
                 let resp = client
                     .git_ns_view_v2(None, &key)
                     .await
                     .map_err(|e| explain(e, &did))?;
                 let accounts = serde_json::to_value(&resp)?["accounts"].take();
-                if is_json_output() {
+                if json_mode {
                     return Ok(print_json(&json!({ "accounts": accounts }))?);
                 }
                 let lines = account_lines(&accounts);
@@ -939,12 +1076,14 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                             .await
                             .map_err(|e| explain(e, &did))?,
                     )?;
-                    if no_wait && is_json_output() {
+                    // Refuse a URL this client will not show before anything
+                    // is printed, JSON included.
+                    let text = link_instructions(&forge, &v)?;
+                    if no_wait && json_mode {
                         return Ok(print_json(&v)?);
                     }
                     // With JSON output, stdout carries only the final answer.
-                    let text = link_instructions(&forge, &v);
-                    if is_json_output() {
+                    if json_mode {
                         eprintln!("{text}");
                     } else {
                         println!("{text}");
@@ -957,7 +1096,12 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                         .and_then(Value::as_str)
                         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                         .map(|t| t.with_timezone(&chrono::Utc));
-                    (field(&v, "/linkId"), deadline)
+                    let link_id = v
+                        .get("linkId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    (link_id, deadline)
                 }
                 (None, None) => return Err("name the forge to link: --forge <host>".into()),
             };
@@ -970,28 +1114,12 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 )?
             } else {
                 eprintln!(
-                    "{DIM}Waiting for the forge to confirm (Ctrl-C stops waiting; the link continues){RESET}"
+                    "{DIM}Waiting for the forge to confirm (Ctrl-C stops waiting; the link \
+                     continues){RESET}"
                 );
                 follow_link(&client, &key, &did, &link_id, deadline).await?
             };
-            if is_json_output() {
-                return Ok(print_json(&v)?);
-            }
-            match link_outcome(&v, &did) {
-                None => {
-                    println!(
-                        "Still pending. Follow it with:\n  {} git link --status {}",
-                        shell_word(bin_name()),
-                        shell_word(&link_id)
-                    );
-                    Ok(())
-                }
-                Some(Ok(line)) => {
-                    println!("{line}");
-                    Ok(())
-                }
-                Some(Err(e)) => Err(e.into()),
-            }
+            finish_link(&mut std::io::stdout(), json_mode, &v, &did, &link_id)
         }
         GitCommands::Drift {
             command:
@@ -1316,7 +1444,7 @@ mod tests {
             "userCode": "WDJB-MJHT",
             "expiresAt": "2026-09-23T10:15:00Z",
         });
-        let t = link_instructions("github.com", &device);
+        let t = link_instructions("github.com", &device).unwrap();
         assert!(t.contains("https://github.com/login/device"), "{t}");
         assert!(t.contains("WDJB-MJHT"), "{t}");
         assert!(t.contains("git link --status lnk_4Tq9Xw2P"), "{t}");
@@ -1326,7 +1454,7 @@ mod tests {
             "url": "https://codeberg.org/login/oauth/authorize?client_id=acme-vgi&state=Zp4v",
             "expiresAt": "2026-09-23T10:15:00Z",
         });
-        let t = link_instructions("codeberg.org", &pkce);
+        let t = link_instructions("codeberg.org", &pkce).unwrap();
         assert!(!t.contains("enter the code"), "{t}");
         // What the bridge returns reaches the terminal without control bytes,
         // and a link id that is not one shell word is quoted.
@@ -1336,37 +1464,198 @@ mod tests {
             "userCode": "AB\u{1b}[2J",
             "expiresAt": "2026-09-23T10:15:00Z",
         });
-        let t = link_instructions("github.com", &hostile);
+        let t = link_instructions("github.com", &hostile).unwrap();
         assert!(!t.contains('\u{7}') && !t.contains("\u{1b}]"), "{t:?}");
         assert!(t.contains("--status 'lnk_1; rm -rf ~'"), "{t}");
     }
 
+    /// A bidi override or a zero-width character in what the bridge returned
+    /// cannot make the printed URL read as another.
     #[test]
-    fn a_final_link_state_is_reported_and_a_pending_one_is_not() {
+    fn bidi_and_zero_width_characters_never_reach_the_terminal() {
+        for c in [
+            '\u{202A}',
+            '\u{202B}',
+            '\u{202C}',
+            '\u{202D}',
+            '\u{202E}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{200B}',
+            '\u{200C}',
+            '\u{200D}',
+            '\u{200E}',
+            '\u{200F}',
+            '\u{FEFF}',
+            '\u{00AD}',
+            '\u{2060}',
+            '\u{E0041}',
+        ] {
+            assert_eq!(
+                terminal_safe(&format!("a{c}b")),
+                "a?b",
+                "U+{:04X}",
+                u32::from(c)
+            );
+        }
+        // Printable text is untouched, the non-ASCII included.
+        assert_eq!(terminal_safe("ünïcödé \u{1f980}"), "ünïcödé \u{1f980}");
+        let v = json!({
+            "linkId": "lnk_\u{202E}x",
+            "url": "https://github.com/login/device\u{202E}moc.live",
+            "userCode": "WD\u{2066}JB",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("github.com", &v).unwrap();
+        assert!(
+            !t.chars()
+                .any(|c| is_format_char(c) || (c.is_control() && c != '\n' && c != '\x1b')),
+            "{t:?}"
+        );
+        // In the URL they arrive percent-encoded, as the parsed URL writes them.
+        assert!(
+            t.contains("https://github.com/login/device%E2%80%AEmoc.live"),
+            "{t}"
+        );
+        // And a refusal's text is held to the same rule.
+        let g = guidance("git-ns:lastOwner", "evil\u{202E}txt", "did:key:z");
+        assert!(!g.chars().any(is_format_char), "{g:?}");
+    }
+
+    #[test]
+    fn an_authorisation_url_that_is_not_https_is_refused_before_printing() {
+        for bad in [
+            "http://github.com/login/device",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://",
+            "https://user:pass@github.com/login/device",
+            "not a url",
+            "",
+        ] {
+            let v = json!({ "linkId": "lnk_1", "url": bad, "expiresAt": "2026-09-23T10:15:00Z" });
+            let e = link_instructions("github.com", &v).unwrap_err();
+            assert!(e.contains("will not show"), "{bad}: {e}");
+        }
+        let v = json!({ "linkId": "lnk_1", "expiresAt": "2026-09-23T10:15:00Z" });
+        assert!(link_instructions("github.com", &v).is_err());
+        // A lookalike host is shown in its IDNA form, not as the glyphs.
+        let v = json!({
+            "linkId": "lnk_1",
+            "url": "https://gіthub.com/login/device",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("github.com", &v).unwrap();
+        assert!(t.contains("https://xn--"), "{t}");
+    }
+
+    #[test]
+    fn link_states_other_than_linked_are_errors_in_both_modes() {
         let did = "did:webvh:QmBobScid2:acme-vtc.example:bob";
-        assert!(link_outcome(&json!({ "state": "pending" }), did).is_none());
         let linked = json!({
             "state": "linked",
             "account": { "forge": "github.com", "id": "9120045", "login": "bob-builds" },
         });
-        let line = link_outcome(&linked, did).unwrap().unwrap();
-        assert!(
-            line.contains("bob-builds") && line.contains("9120045"),
-            "{line}"
-        );
-        let e = link_outcome(&json!({ "state": "expired" }), did)
+        for json_mode in [false, true] {
+            let mut out = Vec::new();
+            finish_link(&mut out, json_mode, &linked, did, "lnk_1").unwrap();
+            let text = String::from_utf8(out).unwrap();
+            if json_mode {
+                // stdout is exactly the JSON document, nothing else.
+                let back: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(back, linked);
+            } else {
+                assert!(
+                    text.contains("bob-builds") && text.contains("9120045"),
+                    "{text}"
+                );
+            }
+            for (state, hint) in [
+                ("expired", "git link --forge"),
+                ("failed", "git link --list"),
+                ("pending", "git link --status lnk_1"),
+                ("odd", "does not know"),
+            ] {
+                let v = json!({ "state": state });
+                let mut out = Vec::new();
+                let e = finish_link(&mut out, json_mode, &v, did, "lnk_1")
+                    .unwrap_err()
+                    .to_string();
+                assert!(e.contains(hint), "{state}: {e}");
+                let text = String::from_utf8(out).unwrap();
+                if json_mode {
+                    let back: Value = serde_json::from_str(&text)
+                        .unwrap_or_else(|e| panic!("{state}: stdout is not JSON ({e}): {text}"));
+                    assert_eq!(back, v);
+                } else {
+                    assert!(text.is_empty(), "{state}: {text}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_link_names_both_causes() {
+        let LinkEnd::NotLinked(e) = link_end(&json!({ "state": "failed" }), "did:key:z", "l")
+        else {
+            panic!("failed is not linked");
+        };
+        assert!(e.contains("the forge refused it"), "{e}");
+        assert!(e.contains("already linked to another member"), "{e}");
+    }
+
+    /// Answers `states` in turn (repeating the last), counting the asks, on a
+    /// clock that advances one poll interval per sleep.
+    async fn follow_states(
+        states: &[&str],
+        deadline: Option<chrono::DateTime<chrono::Utc>>,
+        start: chrono::DateTime<chrono::Utc>,
+    ) -> (Value, usize) {
+        use std::cell::Cell;
+        let asks = Cell::new(0usize);
+        let clock = Cell::new(start);
+        let v = follow(
+            || {
+                let i = asks.get();
+                asks.set(i + 1);
+                let state = states[i.min(states.len() - 1)];
+                async move { Ok(json!({ "state": state })) }
+            },
+            deadline,
+            || clock.get(),
+            || {
+                clock.set(clock.get() + chrono::Duration::seconds(5));
+                async {}
+            },
+        )
+        .await
+        .unwrap();
+        (v, asks.get())
+    }
+
+    #[tokio::test]
+    async fn following_a_link_stops_at_a_final_state_or_past_the_deadline() {
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-09-23T10:00:00Z")
             .unwrap()
-            .unwrap_err();
-        assert!(e.contains("git link --forge"), "{e}");
-        let e = link_outcome(&json!({ "state": "failed" }), did)
-            .unwrap()
-            .unwrap_err();
-        assert!(e.contains("git link --list"), "{e}");
-        assert!(
-            link_outcome(&json!({ "state": "odd" }), did)
-                .unwrap()
-                .is_err()
-        );
+            .with_timezone(&chrono::Utc);
+        // A final state ends it at once.
+        let (v, asks) = follow_states(&["pending", "pending", "linked"], None, t0).await;
+        assert_eq!((v["state"].as_str(), asks), (Some("linked"), 3));
+        let (v, asks) = follow_states(&["failed"], Some(t0), t0).await;
+        assert_eq!((v["state"].as_str(), asks), (Some("failed"), 1));
+        // Pending for ever: it stops once the deadline and the grace have
+        // passed — 60 s of deadline plus 30 s of grace, at 5 s a poll: the
+        // 20th ask, the first made at t0 + 95 s, is the last.
+        let (v, asks) =
+            follow_states(&["pending"], Some(t0 + chrono::Duration::seconds(60)), t0).await;
+        assert_eq!(v["state"].as_str(), Some("pending"));
+        assert_eq!(asks, 20);
+        // A deadline already long past: one ask, then stop.
+        let (_, asks) =
+            follow_states(&["pending"], Some(t0 - chrono::Duration::hours(1)), t0).await;
+        assert_eq!(asks, 1);
     }
 
     #[test]

@@ -2702,6 +2702,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "url",
  "vta-cli-common",
  "vta-sdk",
  "vtc-client",

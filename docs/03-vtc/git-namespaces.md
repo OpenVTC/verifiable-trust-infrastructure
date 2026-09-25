@@ -225,9 +225,15 @@ cnm git link --list                  # the accounts linked to this DID (git-ns/v
 ```
 
 It polls every five seconds until the link is `linked`, `expired` or
-`failed`; `--no-wait` prints where to authorise and returns. A link needs a
-bridge-mode namespace on the forge (`unsupportedForge` otherwise), and
-`failed` means the account is already linked to another member. Linking again
+`failed`; `--no-wait` prints where to authorise and returns. Anything but
+`linked` exits non-zero, with `--json` too (which prints the last answer on
+stdout either way). A link needs a bridge-mode namespace on the forge
+(`unsupportedForge` otherwise). `failed` means the forge refused it — the
+member declined the authorisation, or the bridge could not complete it — or
+the account is already linked to another member. The authorisation URL is
+printed only if it is an `https://` URL, in its parsed form, and nothing the
+VTC or bridge returns reaches the terminal with control or format (bidi,
+zero-width) characters in it. Linking again
 replaces the account linked on that forge. There is no unlink task: an
 account is unlinked when its member leaves.
 
