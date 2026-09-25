@@ -3173,12 +3173,20 @@ where
     })
 }
 
+/// Print the PNM banner.
+///
+/// Only called when stderr is a terminal — a human is watching. Piped or
+/// redirected, it is six lines of noise in front of whatever the caller
+/// actually wanted, so the caller never sees it. Colour is dropped when
+/// `NO_COLOR` is set; the block glyphs are text, not escapes, so the logo
+/// still reads.
 pub(crate) fn print_banner() {
-    let cyan = "\x1b[36m";
-    let magenta = "\x1b[35m";
-    let yellow = "\x1b[33m";
-    let dim = "\x1b[2m";
-    let reset = "\x1b[0m";
+    let color = std::env::var_os("NO_COLOR").is_none();
+    let (cyan, magenta, yellow, dim, reset) = if color {
+        ("\x1b[36m", "\x1b[35m", "\x1b[33m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "", "", "")
+    };
 
     eprintln!(
         r#"

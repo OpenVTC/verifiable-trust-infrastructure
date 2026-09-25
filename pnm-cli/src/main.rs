@@ -7,7 +7,7 @@
 //!   1. Maybe-translate retired `pnm mediator …` invocations into a
 //!      `pnm services …` cue and exit.
 //!   2. Parse the CLI, install the force-exit watchdog + tracing
-//!      subscriber, print the banner.
+//!      subscriber, print the banner when a human is watching.
 //!   3. Run the offline pre-auth dispatch (Setup, offline Bootstrap,
 //!      offline DidTemplates, most VtaCommands). If any of these
 //!      handle the command, return.
@@ -20,6 +20,8 @@ mod cli;
 mod commands;
 mod config;
 mod setup;
+
+use std::io::IsTerminal;
 
 use vta_sdk::client::VtaClient;
 
@@ -70,10 +72,29 @@ async fn main() {
     // every signature.
     vta_cli_common::render::set_full_display(cli.full_display);
     vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
-    if cli.json {
+
+    // Format follows the destination. A terminal gets the table; anything
+    // else — a pipe, a file, a CI log — gets JSON, because the only reason
+    // to redirect this output is to have something read it. `--json`
+    // forces JSON even on a terminal.
+    let stdout_is_tty = std::io::stdout().is_terminal();
+    if cli.json || !stdout_is_tty {
         vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
     }
+
+    // Colour is for a terminal only, and NO_COLOR (<https://no-color.org>)
+    // turns it off even on one. Gated on stdout because that is where the
+    // rendered tables go.
+    vta_cli_common::render::set_color(stdout_is_tty && std::env::var_os("NO_COLOR").is_none());
+
     vta_cli_common::render::set_bin_name("pnm");
+
+    // The banner is for a person at a terminal. It goes to stderr, so it
+    // is gated on stderr — redirecting stdout alone (`pnm … > out.json`)
+    // still shows it, which is what an operator running that expects.
+    if std::io::stderr().is_terminal() {
+        print_banner();
+    }
 
     // Initialize tracing: --verbose sets pnm_cli=debug, or respect RUST_LOG
     let filter = if cli.verbose {
@@ -97,8 +118,6 @@ async fn main() {
     // tool does not fall back, it forgets. Stop and say so instead.
     #[cfg(feature = "keyring")]
     vta_sdk::keyring_init::install_default_store_or_exit("pnm");
-
-    print_banner();
 
     // Load PNM config
     let mut pnm_config = match config::load_config() {
