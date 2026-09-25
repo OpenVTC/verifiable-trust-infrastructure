@@ -380,9 +380,19 @@ pub(super) fn encode_path_segment(s: &str) -> String {
 #[cfg(feature = "tsp")]
 fn unsupported_over_tsp(msg_type: &str) -> VtaError {
     VtaError::UnsupportedTransport(format!(
-        "'{msg_type}' is a DIDComm protocol message, which TSP does not carry \
-         (TSP carries Trust Tasks). Reach this operation over DIDComm:\n  \
-         <cli> --transport didcomm <command>"
+        "'{msg_type}' is a REST-only operation: TSP carries only Trust Tasks. \
+         Reach this operation over REST:\n  <cli> --transport rest <command>"
+    ))
+}
+
+/// The DIDComm leg of [`VtaClient::rpc`]. The VTA serves only signed Trust
+/// Tasks over DIDComm; a bare protocol message would be refused as an
+/// unsupported type, so say what to do instead of sending it.
+#[cfg(feature = "session")]
+fn unsupported_over_didcomm(msg_type: &str) -> VtaError {
+    VtaError::UnsupportedTransport(format!(
+        "'{msg_type}' is a REST-only operation: over DIDComm the VTA serves only signed \
+         Trust Tasks. Reach this operation over REST:\n  <cli> --transport rest <command>"
     ))
 }
 
@@ -1650,10 +1660,9 @@ impl VtaClient {
                 Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => {
-                session
-                    .send_and_wait(msg_type, body, result_type, timeout)
-                    .await
+            Transport::DIDComm { .. } => {
+                let _ = (body, result_type, timeout);
+                Err(unsupported_over_didcomm(msg_type))
             }
             #[cfg(feature = "tsp")]
             Transport::Tsp { .. } => Err(unsupported_over_tsp(msg_type)),

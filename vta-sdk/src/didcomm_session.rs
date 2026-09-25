@@ -588,10 +588,34 @@ impl DIDCommSession {
     /// Open a `didcomm-authcrypt` JWE the VTA sealed to this client (the
     /// `sealedSecret` / `sealedSessionBlob` returned by `vault/release` and
     /// `vault/proxy-login`), recovering the cleartext body.
+    ///
+    /// The sealed payload must be authcrypted **by the VTA**: its authcrypt
+    /// sender key id must be bound to the key the key agreement used
+    /// ([`authcrypt_sender_kid`]), be the key the unpack reports, and belong to
+    /// this session's VTA DID, which the plaintext `from` must also name.
     pub(crate) async fn open_from_vta(&self, jwe: &str) -> Result<serde_json::Value, VtaError> {
-        let (msg, _meta) = self.atm.unpack(jwe).await.map_err(|e| {
+        let refuse =
+            |why: String| VtaError::DidcommTransport(format!("sealed secret refused: {why}"));
+        let skid = authcrypt_sender_kid(jwe).map_err(refuse)?;
+        let (msg, meta) = self.atm.unpack(jwe).await.map_err(|e| {
             VtaError::DidcommTransport(format!("failed to open sealed secret: {e}"))
         })?;
+        let base = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+        if !(meta.encrypted && meta.authenticated)
+            || meta.encrypted_from_kid.as_deref() != Some(skid.as_str())
+        {
+            return Err(refuse("not authcrypted by the key its header names".into()));
+        }
+        if base(&skid) != self.vta_did {
+            return Err(refuse(format!(
+                "sealed by {} rather than this session's VTA {}",
+                base(&skid),
+                self.vta_did
+            )));
+        }
+        if msg.from.as_deref().map(base).as_deref() != Some(self.vta_did.as_str()) {
+            return Err(refuse("its `from` is not this session's VTA".into()));
+        }
         Ok(msg.body)
     }
 
@@ -1318,5 +1342,83 @@ mod tsp_leg_send_assertions {
         assert_send(s.send_tsp_document("did:vta", b"{}"));
         assert_send(s.receive_next(1));
         assert_send(s.shutdown());
+    }
+}
+
+/// The authcrypt sender key id of the outer JWE in `jwe` (JSON serialization),
+/// provided the protected header binds it to the key agreement: an ECDH-1PU
+/// `alg`, a `skid` that is a DID URL with a key fragment, and an `apu` that is
+/// exactly `BASE64URL(skid)`. The client-side counterpart of
+/// `vti_common::auth::verify_authcrypt_header`.
+pub(crate) fn authcrypt_sender_kid(jwe: &str) -> Result<String, String> {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let value: serde_json::Value =
+        serde_json::from_str(jwe.trim()).map_err(|e| format!("not a JWE: {e}"))?;
+    let protected = value
+        .get("protected")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("JWE has no protected header")?;
+    let header: serde_json::Value = URL_SAFE_NO_PAD
+        .decode(protected)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or("undecodable protected header")?;
+    let alg = header
+        .get("alg")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if !alg.contains("1PU") {
+        return Err("not authcrypt".into());
+    }
+    let skid = header
+        .get("skid")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("authcrypt header has no skid")?;
+    match skid.split_once('#') {
+        Some((did, frag)) if did.starts_with("did:") && !frag.is_empty() => {}
+        _ => return Err(format!("skid `{skid}` names no key")),
+    }
+    let apu = header
+        .get("apu")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("authcrypt header has no apu")?;
+    if URL_SAFE_NO_PAD.encode(skid) != apu {
+        return Err("apu does not encode skid".into());
+    }
+    Ok(skid.to_string())
+}
+
+#[cfg(test)]
+mod authcrypt_sender_kid_tests {
+    use super::authcrypt_sender_kid;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    fn jwe(header: serde_json::Value) -> String {
+        serde_json::json!({ "protected": URL_SAFE_NO_PAD.encode(header.to_string()), "ciphertext": "AA" })
+            .to_string()
+    }
+
+    const KID: &str = "did:key:z6MkVta#z6LSVta";
+
+    #[test]
+    fn a_consistent_header_names_its_key() {
+        let h = serde_json::json!({ "alg": "ECDH-1PU+A256KW", "skid": KID, "apu": URL_SAFE_NO_PAD.encode(KID) });
+        assert_eq!(authcrypt_sender_kid(&jwe(h)).as_deref(), Ok(KID));
+    }
+
+    #[test]
+    fn a_split_or_incomplete_header_is_refused() {
+        let other = URL_SAFE_NO_PAD.encode("did:key:z6MkAttacker#z6LSAttacker");
+        for h in [
+            serde_json::json!({ "alg": "ECDH-1PU+A256KW", "skid": KID, "apu": other }),
+            serde_json::json!({ "alg": "ECDH-1PU+A256KW", "skid": KID }),
+            serde_json::json!({ "alg": "ECDH-1PU+A256KW", "apu": URL_SAFE_NO_PAD.encode(KID) }),
+            serde_json::json!({ "alg": "ECDH-1PU+A256KW", "skid": "did:key:z6MkVta", "apu": URL_SAFE_NO_PAD.encode("did:key:z6MkVta") }),
+            serde_json::json!({ "alg": "ECDH-ES+A256KW" }),
+        ] {
+            assert!(authcrypt_sender_kid(&jwe(h.clone())).is_err(), "{h}");
+        }
     }
 }

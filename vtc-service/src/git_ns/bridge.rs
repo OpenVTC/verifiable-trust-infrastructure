@@ -494,7 +494,7 @@ impl BridgeClient for MessagingBridgeClient {
         let doc: TrustTask<Value> = serde_json::from_value(value)
             .map_err(|e| BridgeSendError::Transient(format!("reparse signed job: {e}")))?;
 
-        let receiver = self.replies.register(&doc.id);
+        let receiver = self.replies.register(&doc.id, bridge_did);
         let sent = match protocol {
             #[cfg(feature = "tsp")]
             Protocol::Tsp => {

@@ -731,10 +731,13 @@ pub(crate) async fn accept_from_proven_sender(
     // separately from the classification above because `complete` needs the
     // typed document; a response too malformed to type is one nobody can be
     // waiting on anyway.
-    let deliver = |state: &AppState, body: &[u8]| -> bool {
-        serde_json::from_slice::<TrustTask<Value>>(body)
-            .map(|d| state.pending_replies.complete(&d))
-            .unwrap_or(false)
+    //
+    // Released only to the peer the request went to: `deliver_reply` passes the
+    // DID the document's own proof verifies as.
+    let deliver = |state: &AppState, body: &[u8]| {
+        let body = body.to_vec();
+        let state = state.clone();
+        async move { deliver_reply(&state, &body).await }
     };
 
     match kind {
@@ -758,7 +761,7 @@ pub(crate) async fn accept_from_proven_sender(
                 "inbound trust-task error from a peer — terminal, not answered"
             );
             // A failed request should fail now rather than sit out its timeout.
-            deliver(state, body);
+            deliver(state, body).await;
             silent()
         }
         // Threaded, so it *may* answer something we sent — but threading alone
@@ -768,7 +771,7 @@ pub(crate) async fn accept_from_proven_sender(
         // them would strand every ceremony waiting on a human. So the waiter
         // decides. If one is holding this thread the document is its answer and
         // goes no further; if not, it is an ordinary request and falls through.
-        Inbound::Response if deliver(state, body) => {
+        Inbound::Response if deliver(state, body).await => {
             tracing::debug!(sender = %sender_vid, "inbound response delivered to a waiting request");
             silent()
         }
@@ -803,6 +806,29 @@ pub(crate) async fn accept_from_proven_sender(
         }
     }
 }
+/// The DID `doc`'s own Data Integrity proof verifies as, when that DID is also
+/// its in-band `issuer` (fragment ignored); `None` otherwise. What a reply
+/// waiter checks against the peer its request went to.
+pub(crate) async fn verified_issuer(state: &AppState, doc: &TrustTask<Value>) -> Option<String> {
+    doc.proof.as_ref()?;
+    let signer =
+        vti_common::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
+            .await
+            .ok()?;
+    let signer = signer.split('#').next().unwrap_or(&signer).to_string();
+    (doc.issuer.as_deref() == Some(signer.as_str())).then_some(signer)
+}
+
+/// Hand a reply to its waiter, if the peer the request went to signed it.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+async fn deliver_reply(state: &AppState, body: &[u8]) -> bool {
+    let Ok(doc) = serde_json::from_slice::<TrustTask<Value>>(body) else {
+        return false;
+    };
+    let signer = verified_issuer(state, &doc).await;
+    state.pending_replies.complete(&doc, signer.as_deref())
+}
+
 /// Require `body` to carry a Data Integrity proof that verifies as its in-band
 /// `issuer`, and that issuer to be `sender_vid` (fragment ignored): the proof
 /// VM's controller, the issuer and the transport-reported sender must be one
@@ -914,7 +940,10 @@ async fn dispatch_trust_task_inner(
     //
     // An empty body is the "nothing goes back" signal the transports already
     // understand: `handle_tsp` drops an empty reply rather than sealing one.
-    if state.pending_replies.complete(&doc) {
+    if state
+        .pending_replies
+        .complete(&doc, verified_issuer(state, &doc).await.as_deref())
+    {
         tracing::debug!(
             thread_id = ?doc.thread_id,
             "inbound document delivered to a waiting request"
