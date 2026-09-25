@@ -430,14 +430,26 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
+    // TODO(trust-tasks release carrying trust-tasks #635): both entries below
+    // go back to zero, and the hand-written `bridge::JOB_TYPE` and
+    // `git_ns::reseat_v0_3` give way to the generated `job::v0_4` and
+    // `reseat::v0_3`.
+    //
     // `git-ns/bridge/job/0.4` — authored upstream (trust-tasks #635), sent
-    // to the bridge ahead of the `trust-tasks-rs` release that serves it and
-    // generates `job::v0_4`. Goes back to zero with that release.
+    // to the bridge ahead of the `trust-tasks-rs` release that serves it.
     (
         "https://trusttasks.org/spec/git-ns/bridge/job/",
         1,
         "git-ns/bridge/job 0.4 (trust-tasks #635) — authored upstream, awaiting \
          the trust-tasks-rs release that serves it",
+    ),
+    // `git-ns/namespace/reseat/0.3` — the only reseat version served, ahead
+    // of the same release.
+    (
+        "https://trusttasks.org/spec/git-ns/namespace/reseat/",
+        1,
+        "git-ns/namespace/reseat 0.3 (trust-tasks #635) — authored upstream, \
+         awaiting the trust-tasks-rs release that serves it",
     ),
     // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
     // 0.2 were bound ahead of their specs here, and went back to zero with
@@ -703,7 +715,7 @@ fn collect_prefixed_in_file(path: &Path, prefix: &str, out: &mut BTreeSet<String
 const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
     "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
-    "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+    "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
     "https://trusttasks.org/spec/git-ns/right/grant/0.1",
     "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
     "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",

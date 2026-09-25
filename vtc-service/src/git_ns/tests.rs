@@ -1282,10 +1282,17 @@ fn every_git_ns_task_is_served() {
         "bridge/result",
         "bridge/event",
         "drift/resolve",
-        "namespace/reseat",
     ] {
         assert!(served.contains(&uri(task).as_str()), "{task} is not served");
     }
+    assert!(
+        served.contains(&super::reseat_v0_3::TYPE_URI),
+        "reseat 0.3 is not served"
+    );
+    assert!(
+        !served.contains(&uri("namespace/reseat").as_str()),
+        "reseat 0.1 is still served"
+    );
     for task in ["view", "bridge/event"] {
         assert!(
             served.contains(&format!("{URI}/{task}/0.2").as_str()),
@@ -3554,13 +3561,13 @@ async fn view_0_2_returns_only_the_callers_own_linked_accounts() {
     assert_eq!(code(&out), "permissionDenied");
 }
 
-// ── follow-ups: git-ns/namespace/reseat 0.1 ─────────────────────────────────
+// ── follow-ups: git-ns/namespace/reseat 0.3 ─────────────────────────────────
 
 async fn reseat(f: &Fixture, who: &Party, ns: &str, subject: &str) -> TrustTaskOutcome {
-    send(
+    send_v(
         &f.vtc.state,
         who,
-        "namespace/reseat",
+        super::reseat_v0_3::TYPE_URI,
         json!({ "namespace": ns, "subject": subject, "statement": "Alice left; Carol owns most repositories" }),
     )
     .await
@@ -3633,7 +3640,15 @@ async fn reseat_restores_an_admin_to_a_headless_namespace_and_answers_every_code
     // Step 2.
     let out = reseat(&f, &dana, "ns_nope", &f.carol.did).await;
     assert_eq!(code(&out), "git-ns:unknownNamespace");
-    // Step 4.
+    // Step 4 — separation of duties: reseating to yourself is a self-grant
+    // of git.ns.admin, refused with a pointer to break-glass, and nothing is
+    // recorded.
+    let out = reseat(&f, &dana, &ns, &dana.did).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(String::from_utf8_lossy(&out.body).contains("git-ns/right/break-glass"));
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert!(!super::rules::admins(&snap, &ns, super::ops::now()).contains(&dana.did));
+    // Step 4 — members only.
     let out = reseat(&f, &dana, &ns, &f.stranger.did).await;
     assert_eq!(code(&out), "git-ns:membersOnly");
     // Step 5.
@@ -4287,16 +4302,19 @@ async fn every_git_ns_task_that_takes_a_did_refuses_one_that_is_not_did_core() {
             "repo/adopt",
             json!({ "resource": "github.com/acme/gadgets", "owners": [f.carol.did, SHELL_DID] }),
         ),
-        (
-            &f.admin,
-            "namespace/reseat",
-            json!({ "namespace": ns, "subject": SHELL_DID, "statement": "x" }),
-        ),
     ];
     for (who, task, payload) in cases {
         let out = send(&f.vtc.state, who, task, payload).await;
         assert_eq!(code(&out), "malformedRequest", "{task}");
     }
+    let out = send_v(
+        &f.vtc.state,
+        &f.admin,
+        super::reseat_v0_3::TYPE_URI,
+        json!({ "namespace": ns, "subject": SHELL_DID, "statement": "x" }),
+    )
+    .await;
+    assert_eq!(code(&out), "malformedRequest", "namespace/reseat");
     // Nothing was recorded for it anywhere.
     let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
     assert!(
@@ -4537,10 +4555,10 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
         .await
         .unwrap();
 
-    ok(&send(
+    ok(&send_v(
         &f.vtc.state,
         &dana,
-        "namespace/reseat",
+        super::reseat_v0_3::TYPE_URI,
         json!({ "namespace": ns, "subject": f.bob.did, "statement": "the only admin left" }),
     )
     .await);

@@ -146,7 +146,7 @@ describe("signed git-ns tasks", () => {
     expect(c.consent).toBe("normal");
   });
 
-  it("builds a reseat as git-ns/namespace/reseat 0.1 and cnm git reseat sign it", () => {
+  it("builds a reseat as git-ns/namespace/reseat 0.3 and cnm git reseat sign it", () => {
     const t = reseatTask(
       "ns_acme",
       "github.com/acme",
@@ -154,7 +154,7 @@ describe("signed git-ns tasks", () => {
       "  Alice left on 2026-09-20; Bob owns most repos and agreed.  ",
     );
     expect(t.action).toBe("namespace.reseat");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.3");
     // Exactly the spec's three fields, statement trimmed; nothing else.
     expect(t.payload).toEqual({
       namespace: "ns_acme",

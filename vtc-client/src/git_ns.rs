@@ -28,7 +28,12 @@ pub use trust_tasks_rs::specs::git_ns as specs;
 
 use specs::account::{link::v0_1 as link, link_status::v0_1 as link_status};
 use specs::drift::resolve::v0_1 as drift_resolve;
-use specs::namespace::{bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind};
+use specs::namespace::{bind::v0_1 as bind, reseat::v0_2 as reseat, unbind::v0_1 as unbind};
+
+/// `git-ns/namespace/reseat/0.3`, the only reseat version the VTC serves.
+/// TODO(trust-tasks release carrying trust-tasks #635): use the generated
+/// `reseat::v0_3` type URI.
+pub const RESEAT_TYPE_URI: &str = "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3";
 use specs::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
     transfer::v0_1 as transfer,
@@ -252,8 +257,10 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/namespace/reseat/0.1` — a community administrator restores an
-    /// admin to a headless namespace.
+    /// `git-ns/namespace/reseat/0.3` — a community administrator restores an
+    /// admin to a headless namespace. 0.3 is wire-identical to 0.2, whose
+    /// generated types are used until a `trust-tasks-rs` release carries
+    /// 0.3's (TODO, with trust-tasks #635).
     pub async fn git_ns_reseat(
         &self,
         namespace: &str,
@@ -266,12 +273,7 @@ impl VtcClient {
             "subject": subject,
             "statement": statement,
         });
-        self.git_ns_task(
-            <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            &payload,
-            key,
-        )
-        .await
+        self.git_ns_task(RESEAT_TYPE_URI, &payload, key).await
     }
 
     /// `git-ns/account/link/0.1`.

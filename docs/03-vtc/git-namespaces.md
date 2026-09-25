@@ -261,12 +261,17 @@ account is unlinked when its member leaves.
 
 A namespace whose every `git.ns.admin` has left the community or lapsed is
 *headless*. A community administrator restores one with
-`git-ns/namespace/reseat` — `cnm git reseat <namespace> --subject <did>
+`git-ns/namespace/reseat` 0.3 (the only version served; it queues no forge
+projection) — `cnm git reseat <namespace> --subject <did>
 --statement "…"` — which grants a current member a permanent `git.ns.admin`,
 with the statement as its reason. It is refused (`notHeadless`) while any
 live admin record of a current member remains, so it cannot be used to go
 around an admin; the audit record keeps the statement and how each earlier
-admin record ended.
+admin record ended. The subject is never the administrator reseating:
+reseating a namespace to yourself is a self-grant of `git.ns.admin`, refused
+with `git-ns:selfGrantNotAllowed` (separation of duties) — another community
+administrator reseats it to you, or (once this VTC serves it) you record it
+explicitly with `git-ns/right/break-glass`.
 
 ## Administrator surface
 
@@ -341,7 +346,7 @@ scoped administrator sees that said instead of the column.
 
 - **No member step-up** — see *Consent classes* above.
 - **A namespace with no admin.** The last-admin and last-owner invariants count
-  only records with no expiry (`git-ns/namespace/reseat/0.1`), so an expiring
+  only records with no expiry (`git-ns/namespace/reseat/0.3`), so an expiring
   `ns.admin` or `own` cannot be the one that keeps them. A departure can still
   leave a namespace headless; it is recovered with a reseat (above).
 - **No binding credential.** `git-ns/account/link` says the VTC SHOULD issue a

@@ -59,7 +59,7 @@ import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-t
 export const TASK_URI: Record<GitNsAction, string> = {
   "namespace.bind": "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
   "namespace.unbind": "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
-  "namespace.reseat": "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+  "namespace.reseat": "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
   "right.grant": "https://trusttasks.org/spec/git-ns/right/grant/0.1",
   "right.revoke": "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
   "repo.adopt": "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
@@ -205,7 +205,7 @@ export function reasonError(value: string): string | null {
 }
 
 /** A reseat's statement: REQUIRED, 1–1024 characters
- *  (`git-ns/namespace/reseat/0.1`). */
+ *  (`git-ns/namespace/reseat/0.3`). */
 export function statementError(value: string): string | null {
   const v = value.trim();
   if (!v) return "Say why the namespace is headless and why this member.";
@@ -263,7 +263,7 @@ export function unbindTask(namespaceId: string, resource: string): SignedTask {
 }
 
 /**
- * `git-ns/namespace/reseat` 0.1: a community administrator seats `subject` —
+ * `git-ns/namespace/reseat` 0.3: a community administrator seats `subject` —
  * a current member — as the permanent `git.ns.admin` of a headless namespace.
  */
 export function reseatTask(

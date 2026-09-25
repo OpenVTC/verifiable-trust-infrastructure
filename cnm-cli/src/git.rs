@@ -559,6 +559,10 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nA link is answered only to the member who began it, and forgotten some days \
              after it finishes. Start again:\n  {bin} git link --forge <forge>"
         ),
+        "git-ns:selfGrantNotAllowed" => "\nSeparation of duties: you cannot give yourself an \
+             elevated right such as git.ns.admin. Choose another member, or ask another \
+             community administrator to reseat the namespace to you."
+            .to_string(),
         "git-ns/namespace/reseat:notHeadless" => format!(
             "\nThe namespace still has an admin; its admins grant git.ns.admin:\n  {bin} git \
              grant --subject <did> --right git.ns.admin --resource <namespace>"
@@ -1290,6 +1294,13 @@ mod tests {
     fn a_not_revertible_refusal_explains_the_bridge_version() {
         let g = guidance("git-ns/drift/resolve:notRevertible", "refused", "did:key:z");
         assert!(g.contains("bridge/job 0.4"), "{g}");
+    }
+
+    #[test]
+    fn a_self_reseat_refusal_explains_separation_of_duties() {
+        let g = guidance("git-ns:selfGrantNotAllowed", "refused", "did:key:z");
+        assert!(g.contains("Separation of duties"), "{g}");
+        assert!(g.contains("another community administrator"), "{g}");
     }
 
     #[test]
