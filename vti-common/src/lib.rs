@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod audit;
 pub mod auth;
+pub mod backup_transfer;
 /// Client-side wire helpers for the capability Trust Task families —
 /// re-exported from the `trust-tasks-capability-client` crate so both this
 /// (the hook producer) and out-of-repo consumers (management UIs) share one
