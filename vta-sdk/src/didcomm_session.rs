@@ -760,6 +760,10 @@ impl DIDCommSession {
     /// **unpacked** DIDComm message as JSON (`{ id, type, body, from, … }`);
     /// ATM has already decrypted it under the holder key, so the caller works
     /// with plaintext (the application Trust Task rides in `body`).
+    ///
+    /// Its `from` is the plaintext header and is **not** authenticated: do not
+    /// authorise on it. Establish who composed the document from its own Data
+    /// Integrity proof ([`crate::agent_session::InboundMessage::verify`]).
     pub async fn receive_next(&self, timeout_secs: u64) -> Result<Option<String>, VtaError> {
         // Pull from the ONE persistent subscriber. This no longer competes with
         // `send_and_wait`: the dispatcher already routed any thread-correlated

@@ -15,7 +15,6 @@ use crate::client::VtaClient;
 use crate::did_key::decode_private_key_multibase;
 use crate::didcomm_session::DIDCommSession;
 use crate::protocols::did_management::servers::ListWebvhServersResultBody;
-use crate::protocols::did_management::{LIST_WEBVH_SERVERS, LIST_WEBVH_SERVERS_RESULT};
 use crate::protocols::provision_integration_management::ProvisionSpecVersion;
 use crate::provision_integration::didcomm::provision_integration_didcomm;
 
@@ -60,8 +59,12 @@ pub async fn provision_via_didcomm(
     let result = async {
         let vp = ask.to_builder().sign_with(&seed, setup_did).await?;
         let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
+        let relayer_key =
+            crate::trust_task_sign::HolderKey::from_did_key(setup_did, setup_private_key_mb)
+                .map_err(|e| ProvisionError::SetupKeyMalformed(e.to_string()))?;
         let response = provision_integration_didcomm(
             &session,
+            &relayer_key,
             vp.to_signed_wire_value()?,
             Some(ask.context.clone()),
             None,
@@ -175,15 +178,29 @@ pub(crate) async fn run_didcomm_attempt(
             // attempt in the checklist so the consumer can see whether
             // the picker is about to show up.
             let _ = tx.send(VtaEvent::CheckStart(DiagCheck::ListWebvhServers));
-            let servers = match session
-                .send_and_wait::<ListWebvhServersResultBody>(
-                    LIST_WEBVH_SERVERS,
-                    serde_json::json!({}),
-                    LIST_WEBVH_SERVERS_RESULT,
-                    30,
-                )
-                .await
-            {
+            // The Trust Task, signed by the setup key: the VTA serves nothing
+            // over DIDComm that the document itself does not bind to its sender.
+            let listed = match crate::trust_task_sign::HolderKey::from_did_key(
+                &setup_did,
+                &setup_privkey_mb,
+            ) {
+                Ok(key) => {
+                    crate::provision_integration::didcomm::send_signed_task::<
+                        ListWebvhServersResultBody,
+                    >(
+                        &session,
+                        &key,
+                        crate::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
+                        serde_json::json!({}),
+                        30,
+                    )
+                    .await
+                }
+                Err(e) => Err(crate::error::VtaError::Protocol(format!(
+                    "setup key cannot sign: {e}"
+                ))),
+            };
+            let servers = match listed {
                 Ok(body) => {
                     let detail = match body.servers.len() {
                         0 => "no registered servers — serverless path".into(),
@@ -471,8 +488,12 @@ pub async fn provision_admin_rotation_via_didcomm(
     let result = async {
         let vp = ask.to_builder().sign_with(&seed, setup_did).await?;
         let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
+        let relayer_key =
+            crate::trust_task_sign::HolderKey::from_did_key(setup_did, setup_private_key_mb)
+                .map_err(|e| ProvisionError::SetupKeyMalformed(e.to_string()))?;
         let response = provision_integration_didcomm(
             &session,
+            &relayer_key,
             vp.to_signed_wire_value()?,
             Some(ask.context.clone()),
             None,

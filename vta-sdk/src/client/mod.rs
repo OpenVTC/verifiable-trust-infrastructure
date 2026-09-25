@@ -2278,7 +2278,9 @@ impl VtaClient {
     /// document carries `payload`; a rejection does not — surface its
     /// `reason`/`comment` (or the whole document) as a protocol error so the
     /// DIDComm path (which drops the HTTP status) still fails loudly.
-    fn extract_trust_task_payload(doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
+    pub(crate) fn extract_trust_task_payload(
+        doc: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
         if let Some(payload) = doc.get("payload") {
             // A failed task still carries a `payload` — the error envelope goes
             // *inside* it (`{ code, message, retryable }`). Treating "a payload

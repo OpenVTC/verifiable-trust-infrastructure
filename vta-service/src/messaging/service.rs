@@ -485,7 +485,7 @@ impl InboundGate {
 /// verified — so a plaintext frame (`encrypted == false`), an anonymous read
 /// (`sender == None`), or an unverified/forged sender (`verified == false`)
 /// is refused. Applied for ALL message types — not per-handler — so a handler
-/// that doesn't itself call `auth_from_message` (discovery, TEE status/
+/// that does not authorise at all (TEE status/
 /// attestation) still cannot be reached by an unauthenticated or anonymous
 /// sender, exactly as the removed middleware layer guaranteed. There is NO
 /// discovery exemption: the old policy layer required authcrypt for discovery
@@ -526,7 +526,7 @@ async fn handle_didcomm(
     // (`sender` filtered by `verified`, applied inside [`inbound_gate`]).
     // Capture the plaintext `from` first — solely as a best-effort *reply
     // address* for anoncrypt public reads (never for auth) — then overwrite
-    // `from` so every handler's `auth_from_message` / `ctx.sender_did` sees
+    // `from` so every handler's `ctx.sender_did` sees
     // only the proven sender (or `None`, which those reject).
     let plaintext_from = msg.from.clone();
     let gate = inbound_gate(&inbound.message);
