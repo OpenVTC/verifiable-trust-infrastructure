@@ -17,6 +17,22 @@ use crate::config::{self, PnmConfig};
 /// Handle the offline VTA subcommands. Returns `true` if the command
 /// was handled (caller should `return`); `false` if it needs the
 /// authenticated dispatch path (currently only `Restart`).
+/// The JSON shape of a configured VTA.
+///
+/// Shared by `vta list` and `vta info` so the same record cannot be
+/// described two different ways by two commands. `url` is always the
+/// configured value; `info` adds `resolvedUrl` on top.
+fn vta_json(slug: &str, vta: &config::VtaConfig, is_default: bool) -> serde_json::Value {
+    serde_json::json!({
+        "slug": slug,
+        "name": vta.name,
+        "did": vta.vta_did,
+        "url": vta.url,
+        "mediatorDid": vta.mediator_did,
+        "default": is_default,
+    })
+}
+
 pub(crate) async fn run_offline(
     pnm_config: &mut PnmConfig,
     vta_override: Option<&str>,
@@ -29,21 +45,9 @@ pub(crate) async fn run_offline(
                 let out: Vec<_> = pnm_config
                     .vtas
                     .iter()
-                    .map(|(slug, vta)| {
-                        serde_json::json!({
-                            "slug": slug,
-                            "name": vta.name,
-                            "did": vta.vta_did,
-                            "url": vta.url,
-                            "mediatorDid": vta.mediator_did,
-                            "default": slug == default,
-                        })
-                    })
+                    .map(|(slug, vta)| vta_json(slug, vta, slug == default))
                     .collect();
-                if let Err(e) = vta_cli_common::render::print_json(&out) {
-                    eprintln!("Error serializing VTA list: {e}");
-                    std::process::exit(1);
-                }
+                vta_cli_common::render::print_json_or_exit(&out, "VTA list");
                 return true;
             }
             if pnm_config.vtas.is_empty() {
@@ -79,7 +83,7 @@ pub(crate) async fn run_offline(
             pnm_config.default_vta = Some(slug.clone());
             if let Err(e) = config::save_config(pnm_config) {
                 eprintln!("Error saving config: {e}");
-                std::process::exit(1);
+                std::process::exit(crate::exit::FAILURE);
             }
             println!("Default VTA set to '{slug}'.");
             true
@@ -113,7 +117,7 @@ pub(crate) async fn run_offline(
                 let proceed = contexts::confirm_destructive("Proceed with deletion?")
                     .unwrap_or_else(|e| {
                         eprintln!("Error reading confirmation: {e}");
-                        std::process::exit(1);
+                        std::process::exit(crate::exit::FAILURE);
                     });
                 if !proceed {
                     println!("Aborted.");
@@ -137,7 +141,7 @@ pub(crate) async fn run_offline(
             auth::logout(&key);
             if let Err(e) = config::save_config(pnm_config) {
                 eprintln!("Error saving config: {e}");
-                std::process::exit(1);
+                std::process::exit(crate::exit::FAILURE);
             }
             println!("{GREEN}✓{RESET} VTA connection '{slug}' deleted.");
             true
@@ -146,23 +150,21 @@ pub(crate) async fn run_offline(
             match config::resolve_vta(vta_override, pnm_config) {
                 Ok((slug, vta)) => {
                     if vta_cli_common::render::is_json_output() {
-                        let mut url = None;
-                        if let Some(ref did) = vta.vta_did {
-                            url = vta_sdk::session::resolve_vta_url(did).await.ok();
+                        let is_default = pnm_config.default_vta.as_deref() == Some(slug.as_str());
+                        let mut out = vta_json(&slug, vta, is_default);
+                        // Only `info` pays for resolution — doing it per row in
+                        // `list` would be one network round trip per VTA. It is a
+                        // separate key because it is a separate fact: `url` is what
+                        // the config holds, `resolvedUrl` is what the DID document
+                        // advertises right now.
+                        if let Some(ref did) = vta.vta_did
+                            && let Ok(resolved) = vta_sdk::session::resolve_vta_url(did).await
+                        {
+                            out["resolvedUrl"] = serde_json::json!(resolved);
                         }
                         let key = config::vta_keyring_key(&slug);
-                        let out = serde_json::json!({
-                            "slug": slug,
-                            "name": vta.name,
-                            "did": vta.vta_did,
-                            "url": url,
-                            "mediatorDid": vta.mediator_did,
-                            "session": auth::status_json(&key),
-                        });
-                        if let Err(e) = vta_cli_common::render::print_json(&out) {
-                            eprintln!("Error serializing VTA info: {e}");
-                            std::process::exit(1);
-                        }
+                        out["session"] = auth::status_json(&key);
+                        vta_cli_common::render::print_json_or_exit(&out, "VTA info");
                         return true;
                     }
                     println!("Active VTA: {slug}");
@@ -181,7 +183,7 @@ pub(crate) async fn run_offline(
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    std::process::exit(1);
+                    std::process::exit(crate::exit::FAILURE);
                 }
             }
             true
@@ -191,12 +193,12 @@ pub(crate) async fn run_offline(
                 Ok(subject) => subject,
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    std::process::exit(1);
+                    std::process::exit(crate::exit::FAILURE);
                 }
             };
             if let Err(e) = show_qr(label.as_deref(), &did, out.as_deref()) {
                 eprintln!("Error: {e}");
-                std::process::exit(1);
+                std::process::exit(crate::exit::FAILURE);
             }
             true
         }
@@ -356,5 +358,36 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("pnm vta list"), "{err}");
+    }
+
+    #[test]
+    fn test_vta_json_shape_is_shared_and_marks_default() {
+        let vta = VtaConfig {
+            name: "alpha".into(),
+            vta_did: Some("did:webvh:Qm:example".into()),
+            url: None,
+            mediator_did: None,
+        };
+        let v = vta_json("alpha", &vta, true);
+        assert_eq!(v["slug"], "alpha");
+        assert_eq!(v["did"], "did:webvh:Qm:example");
+        assert_eq!(v["default"], true);
+        // `url` is the configured value in both commands; only `info`
+        // adds `resolvedUrl`, so `list` must never carry one.
+        assert!(v["url"].is_null());
+        assert!(v.get("resolvedUrl").is_none());
+    }
+
+    #[test]
+    fn test_vta_json_non_default_is_marked_false() {
+        let vta = VtaConfig {
+            name: "beta".into(),
+            vta_did: None,
+            url: Some("https://example.test".into()),
+            mediator_did: None,
+        };
+        let v = vta_json("beta", &vta, false);
+        assert_eq!(v["default"], false);
+        assert_eq!(v["url"], "https://example.test");
     }
 }

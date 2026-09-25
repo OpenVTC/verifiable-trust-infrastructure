@@ -24,12 +24,8 @@ macro_rules! hprintln {
     };
 }
 
-use std::sync::Mutex;
-
-/// One probe's verdict. Collected as the run goes so the same sequence
-/// that prints the human rows also yields the JSON document — there is
-/// no second code path that could disagree with what is on screen.
-#[derive(serde::Serialize)]
+/// One probe's verdict.
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Check {
     section: &'static str,
@@ -39,36 +35,48 @@ struct Check {
     detail: Option<String>,
 }
 
-static CHECKS: Mutex<Vec<Check>> = Mutex::new(Vec::new());
-static SECTION: Mutex<&'static str> = Mutex::new("");
+/// What this run found. Built as the run goes, so the sequence that
+/// prints the human rows is the one that yields the JSON document and
+/// the two cannot disagree. Owned by `run` rather than held globally —
+/// it is per-run data, and a second run must not inherit the first's
+/// verdicts.
+#[derive(Debug, Default)]
+struct Report {
+    section: &'static str,
+    checks: Vec<Check>,
+}
 
-/// Open a section. Prints its heading for a human; in JSON mode it only
-/// sets what subsequent checks are filed under.
-fn hsection(name: &'static str, label: &str) {
-    *SECTION.lock().expect("section lock") = name;
-    if !vta_cli_common::render::is_json_output() {
-        print_section(label);
+impl Report {
+    /// Open a section. Prints its heading for a human; under `--json` it
+    /// only sets what subsequent checks are filed under.
+    fn section(&mut self, name: &'static str, label: &str) {
+        self.section = name;
+        if !vta_cli_common::render::is_json_output() {
+            print_section(label);
+        }
     }
-}
 
-fn record(name: &'static str, ok: bool, detail: Option<String>) {
-    let section = *SECTION.lock().expect("section lock");
-    CHECKS.lock().expect("checks lock").push(Check {
-        section,
-        name,
-        ok,
-        detail,
-    });
-}
+    fn record(&mut self, name: &'static str, ok: bool, detail: Option<String>) {
+        self.checks.push(Check {
+            section: self.section,
+            name,
+            ok,
+            detail,
+        });
+    }
 
-/// Number of checks that failed.
-pub(crate) fn failure_count() -> u32 {
-    CHECKS
-        .lock()
-        .expect("checks lock")
-        .iter()
-        .filter(|c| !c.ok)
-        .count() as u32
+    fn failures(&self) -> usize {
+        self.checks.iter().filter(|c| !c.ok).count()
+    }
+
+    /// Whether this run established health.
+    ///
+    /// A run that probed nothing has not — an unconfigured profile
+    /// records no checks, and reporting that as healthy would hand a
+    /// pipeline a green light for a VTA that was never contacted.
+    fn healthy(&self) -> bool {
+        !self.checks.is_empty() && self.failures() == 0
+    }
 }
 
 pub(crate) async fn run(
@@ -76,6 +84,7 @@ pub(crate) async fn run(
     keyring_key: &str,
     fresh_tsp_probe: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut report = Report::default();
     let session = auth::loaded_session(keyring_key);
 
     // The process-shared DID resolver — the same one the SDK's own entry points
@@ -85,7 +94,7 @@ pub(crate) async fn run(
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await.ok();
 
     // ── VTA ────────────────────────────────────────────────────────
-    hsection("vta", "VTA");
+    report.section("vta", "VTA");
 
     if let Some(ref info) = session {
         match info.vta_did.as_deref() {
@@ -98,7 +107,7 @@ pub(crate) async fn run(
                                 .strip_prefix("did:")
                                 .and_then(|s| s.split(':').next())
                                 .unwrap_or("?");
-                            record("resolution", true, Some(method.to_string()));
+                            report.record("resolution", true, Some(method.to_string()));
                             hprintln!("                {GREEN}✓{RESET} resolves ({method})");
                             // Names the document claims via `alsoKnownAs`.
                             // Free — the document is already in hand — and
@@ -111,7 +120,7 @@ pub(crate) async fn run(
                             }
                         }
                         Err(e) => {
-                            record("resolution", false, Some(e.to_string()));
+                            report.record("resolution", false, Some(e.to_string()));
                             hprintln!("                {RED}✗{RESET} resolution failed: {e}")
                         }
                     }
@@ -218,11 +227,11 @@ pub(crate) async fn run(
                     .as_deref()
                     .map(|v| format!(" (v{v})"))
                     .unwrap_or_default();
-                record("service", true, None);
+                report.record("service", true, None);
                 hprintln!("  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok{ver}", "Service");
             }
             Err(e) => {
-                record("service", false, Some(e.to_string()));
+                report.record("service", false, Some(e.to_string()));
                 hprintln!(
                     "  {CYAN}{:<13}{RESET} {RED}✗{RESET} unreachable ({e})",
                     "Service"
@@ -232,7 +241,7 @@ pub(crate) async fn run(
     }
 
     // ── Authentication ─────────────────────────────────────────────
-    hsection("authentication", "Authentication");
+    report.section("authentication", "Authentication");
 
     if let Some(ref url) = effective_rest_url {
         if let Some(ref info) = session {
@@ -242,7 +251,7 @@ pub(crate) async fn run(
                     if let Some(status) = auth::session_status(keyring_key) {
                         match status.token_status {
                             vta_sdk::session::TokenStatus::Valid { expires_in_secs } => {
-                                record(
+                                report.record(
                                     "token",
                                     true,
                                     Some(format!("expires in {expires_in_secs}s")),
@@ -253,14 +262,14 @@ pub(crate) async fn run(
                                 );
                             }
                             _ => {
-                                record("token", true, None);
+                                report.record("token", true, None);
                                 hprintln!("  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} valid", "Token");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    record("token", false, Some(e.to_string()));
+                    report.record("token", false, Some(e.to_string()));
                     hprintln!("  {CYAN}{:<13}{RESET} {RED}✗{RESET} {e}", "Token");
                 }
             }
@@ -290,7 +299,7 @@ pub(crate) async fn run(
     let session = auth::loaded_session(keyring_key).or(session);
 
     // ── Mediator + DIDComm pings ──────────────────────────────────
-    hsection("mediator", "Mediator");
+    report.section("mediator", "Mediator");
 
     if let Some(ref info) = session
         && let Some(vta_did) = info.vta_did.as_deref()
@@ -355,11 +364,11 @@ pub(crate) async fn run(
                                 .strip_prefix("did:")
                                 .and_then(|s| s.split(':').next())
                                 .unwrap_or("?");
-                            record("resolution", true, Some(method.to_string()));
+                            report.record("resolution", true, Some(method.to_string()));
                             hprintln!("                {GREEN}✓{RESET} resolves ({method})");
                         }
                         Err(e) => {
-                            record("resolution", false, Some(e.to_string()));
+                            report.record("resolution", false, Some(e.to_string()));
                             hprintln!("                {RED}✗{RESET} resolution failed: {e}");
                         }
                     }
@@ -392,21 +401,21 @@ pub(crate) async fn run(
                         .await
                         {
                             Ok(Ok(latency)) => {
-                                record("trust-ping", true, Some(format!("{latency}ms")));
+                                report.record("trust-ping", true, Some(format!("{latency}ms")));
                                 hprintln!("                {GREEN}✓{RESET} pong ({latency}ms)");
                             }
                             Ok(Err(e)) => {
-                                record("trust-ping", false, Some(e.to_string()));
+                                report.record("trust-ping", false, Some(e.to_string()));
                                 hprintln!("                {RED}✗{RESET} trust-ping failed: {e}");
                             }
                             Err(_) => {
-                                record("trust-ping", false, None);
+                                report.record("trust-ping", false, None);
                                 hprintln!("                {RED}✗{RESET} trust-ping timed out");
                             }
                         }
 
                         // Ping VTA through the same session (steady-state)
-                        hsection("vta-didcomm", "VTA DIDComm");
+                        report.section("vta-didcomm", "VTA DIDComm");
 
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(30),
@@ -415,21 +424,21 @@ pub(crate) async fn run(
                         .await
                         {
                             Ok(Ok(latency)) => {
-                                record("trust-ping", true, Some(format!("{latency}ms")));
+                                report.record("trust-ping", true, Some(format!("{latency}ms")));
                                 hprintln!(
                                     "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} pong ({latency}ms)",
                                     "Trust-ping"
                                 );
                             }
                             Ok(Err(e)) => {
-                                record("trust-ping", false, Some(e.to_string()));
+                                report.record("trust-ping", false, Some(e.to_string()));
                                 hprintln!(
                                     "  {CYAN}{:<13}{RESET} {RED}✗{RESET} trust-ping failed: {e}",
                                     "Trust-ping"
                                 );
                             }
                             Err(_) => {
-                                record("trust-ping", false, None);
+                                report.record("trust-ping", false, None);
                                 hprintln!(
                                     "  {CYAN}{:<13}{RESET} {RED}✗{RESET} trust-ping timed out",
                                     "Trust-ping"
@@ -440,11 +449,11 @@ pub(crate) async fn run(
                         session.shutdown().await;
                     }
                     Ok(Err(e)) => {
-                        record("setup", false, Some(e.to_string()));
+                        report.record("setup", false, Some(e.to_string()));
                         hprintln!("                {RED}✗{RESET} DIDComm setup failed: {e}");
                     }
                     Err(_) => {
-                        record("setup", false, None);
+                        report.record("setup", false, None);
                         hprintln!("                {RED}✗{RESET} DIDComm setup timed out");
                     }
                 }
@@ -453,7 +462,7 @@ pub(crate) async fn run(
                 hprintln!("  {DIM}(not configured){RESET}");
             }
             Err(e) => {
-                record("vta-did", false, Some(e.to_string()));
+                report.record("vta-did", false, Some(e.to_string()));
                 hprintln!(
                     "  {CYAN}{:<13}{RESET} {RED}✗{RESET} could not resolve VTA DID: {e}",
                     "DID"
@@ -475,7 +484,7 @@ pub(crate) async fn run(
     if let (Some(tsp_mediator), Some(info)) = (tsp_mediator, session.as_ref())
         && let Some(vta_did) = info.vta_did.as_deref()
     {
-        hsection("vta-tsp", "VTA TSP");
+        report.section("vta-tsp", "VTA TSP");
         // `--fresh`: probe from a throwaway `did:key` minted right here. A DID
         // that did not exist until this instant can hold no pre-existing TSP
         // relationship, so a successful cold *send* is an unambiguous
@@ -491,7 +500,15 @@ pub(crate) async fn run(
                 "  {DIM}cold send probe — fresh throwaway DID (no prior relationship possible):{RESET}"
             );
             hprintln!("  {CYAN}{:<13}{RESET} {fresh_did}", "Probe DID");
-            tsp_probe(&fresh_did, &fresh_key, tsp_mediator, vta_did, true).await;
+            tsp_probe(
+                &fresh_did,
+                &fresh_key,
+                tsp_mediator,
+                vta_did,
+                true,
+                &mut report,
+            )
+            .await;
         } else {
             tsp_probe(
                 &info.client_did,
@@ -499,24 +516,35 @@ pub(crate) async fn run(
                 tsp_mediator,
                 vta_did,
                 false,
+                &mut report,
             )
             .await;
         }
     }
 
-    let failed = failure_count();
+    let failed = report.failures();
+
+    if report.checks.is_empty() {
+        // Nothing was probed. Saying so beats an empty document that
+        // reads as a pass.
+        hprintln!();
+        hprintln!("  {RED}✗{RESET} no checks ran — is a VTA configured? (`pnm vta list`)");
+    }
 
     if vta_cli_common::render::is_json_output() {
-        let checks = CHECKS.lock().expect("checks lock");
         vta_cli_common::render::print_json(&serde_json::json!({
-            "healthy": failed == 0,
-            "checks": &*checks,
+            "healthy": report.healthy(),
+            "checks": report.checks,
         }))?;
     }
 
     // The rows above are printed whether they passed or not; without this
     // the command exits 0 over a broken VTA and a pipeline gating on it
     // stays green.
+    if report.checks.is_empty() {
+        return Err("no health checks ran — no VTA is configured for this profile".into());
+    }
+
     if failed > 0 {
         return Err(format!(
             "{failed} health check{} failed (see the rows above)",
@@ -557,6 +585,7 @@ async fn tsp_probe(
     mediator_did: &str,
     vta_did: &str,
     cold: bool,
+    report: &mut Report,
 ) {
     match tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -570,14 +599,14 @@ async fn tsp_probe(
                 // because a throwaway VID can never complete the round-trip.
                 match session.probe_send(vta_did).await {
                     Ok(()) => {
-                        record("cold-send", true, None);
+                        report.record("cold-send", true, None);
                         hprintln!(
                             "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} cold send accepted — relationship-free routed send (§3 = 3c)",
                             "Cold-send"
                         );
                     }
                     Err(e) => {
-                        record("cold-send", false, Some(e.to_string()));
+                        report.record("cold-send", false, Some(e.to_string()));
                         hprintln!(
                             "  {CYAN}{:<13}{RESET} {RED}✗{RESET} cold send failed: {e}",
                             "Cold-send"
@@ -606,14 +635,14 @@ async fn tsp_probe(
                 };
                 match measured {
                     Ok(latency) => {
-                        record("ping", true, Some(format!("{latency}ms")));
+                        report.record("ping", true, Some(format!("{latency}ms")));
                         hprintln!(
                             "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} pong ({latency}ms)",
                             "Trust-ping"
                         );
                     }
                     Err(e) => {
-                        record("ping", false, Some(e.to_string()));
+                        report.record("ping", false, Some(e.to_string()));
                         hprintln!(
                             "  {CYAN}{:<13}{RESET} {RED}✗{RESET} TSP ping failed: {e}",
                             "Trust-ping"
@@ -624,14 +653,14 @@ async fn tsp_probe(
             session.shutdown().await;
         }
         Ok(Err(e)) => {
-            record("setup", false, Some(e.to_string()));
+            report.record("setup", false, Some(e.to_string()));
             hprintln!(
                 "  {CYAN}{:<13}{RESET} {RED}✗{RESET} TSP setup failed: {e}",
                 "Trust-ping"
             );
         }
         Err(_) => {
-            record("setup", false, None);
+            report.record("setup", false, None);
             hprintln!(
                 "  {CYAN}{:<13}{RESET} {RED}✗{RESET} TSP setup timed out",
                 "Trust-ping"
@@ -650,6 +679,66 @@ async fn tsp_probe(
     _mediator_did: &str,
     _vta_did: &str,
     _cold: bool,
+    _report: &mut Report,
 ) {
     hprintln!("  {DIM}advertised — rebuild pnm with `--features tsp` to probe over TSP{RESET}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_report_files_checks_under_the_open_section() {
+        let mut r = Report::default();
+        r.section("vta", "VTA");
+        r.record("resolution", true, Some("webvh".into()));
+        r.section("mediator", "Mediator");
+        r.record("trust-ping", false, None);
+
+        let sections: Vec<_> = r.checks.iter().map(|c| c.section).collect();
+        assert_eq!(sections, vec!["vta", "mediator"]);
+    }
+
+    #[test]
+    fn test_report_failures_counts_only_failed_checks() {
+        let mut r = Report::default();
+        r.section("vta", "VTA");
+        r.record("a", true, None);
+        r.record("b", false, None);
+        r.record("c", false, None);
+        assert_eq!(r.failures(), 2);
+    }
+
+    #[test]
+    fn test_report_empty_is_not_healthy() {
+        // A run that probed nothing has not established health, so it
+        // must not hand a pipeline a green light.
+        let r = Report::default();
+        assert_eq!(r.failures(), 0, "nothing ran, so nothing failed");
+        assert!(!r.healthy(), "but zero checks is not a pass");
+    }
+
+    #[test]
+    fn test_report_all_passing_is_healthy() {
+        let mut r = Report::default();
+        r.section("vta", "VTA");
+        r.record("resolution", true, None);
+        assert!(r.healthy());
+    }
+
+    #[test]
+    fn test_check_serializes_camel_case_and_omits_absent_detail() {
+        let mut r = Report::default();
+        r.section("vta", "VTA");
+        r.record("resolution", true, None);
+        let v = serde_json::to_value(&r.checks).expect("checks should serialize");
+        let first = &v[0];
+        assert_eq!(first["section"], "vta");
+        assert_eq!(first["ok"], true);
+        assert!(
+            first.get("detail").is_none(),
+            "an absent detail must not appear as null: {first}"
+        );
+    }
 }
