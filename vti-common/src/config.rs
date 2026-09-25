@@ -63,6 +63,12 @@ pub struct AuthConfig {
     /// while a patient attacker — who simply waits out the window —
     /// never trips it.
     ///
+    /// Does **not** apply to a token retired by a fresh login
+    /// ([`crate::auth::session::TombstoneCause::Superseded`]): a client
+    /// that has just logged in holds its new token, so a replay of the
+    /// old one has no innocent reading and is always a compromise
+    /// signal.
+    ///
     /// Set to `0` to disable the concession and treat every replay as a
     /// compromise signal. Enforced in
     /// `auth::handlers::handle_refresh`.
@@ -312,6 +318,14 @@ fn default_session_cleanup_interval() -> u64 {
 /// enough that it is not a meaningful window to an attacker who has to
 /// both hold a stolen token and beat the legitimate client to the
 /// replacement.
+///
+/// Raise to 60 if real clients turn out to retry later than this. A
+/// client only discovers a lost response when its own HTTP timeout
+/// fires, and 30s is a common default — a retry landing just outside
+/// the window is refused and signs the user out, which is the outcome
+/// the concession exists to avoid. It is a user-experience call, not a
+/// security one: the successor-unspent condition is what keeps the
+/// concession narrow, and it holds at either value.
 fn default_refresh_reuse_grace() -> u64 {
     30
 }

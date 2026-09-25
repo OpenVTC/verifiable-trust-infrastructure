@@ -547,15 +547,50 @@ new flow, update both this section and the relevant `docs/*.md`.
     token works exactly once. Each rotation leaves a hashed tombstone
     (`rotated:{sha256}`), so a *replayed* token is distinguishable from one
     this node never issued. A replay is forgiven only as a lost-response retry
-    (session alive, inside `refresh_reuse_grace()` — default 30s — **and** the
-    tombstoned successor still unspent), in which case the same pair is
-    re-served without rotating. Otherwise it is reuse: the session is revoked
-    (killing every descendant token) and `AuthAuditEvent::RefreshReuseDetected`
-    fires at `error!` with `security_alert = true`. The caller sees the same
-    401 either way, so detection isn't an oracle. Tombstones are reaped on time
-    only (`rotated_at + refresh_token_ttl`), never alongside their session —
-    post-revocation replay is the case most worth catching. Implements
-    RFC 9700 §4.14.2.
+    (cause `Rotated`, session alive, inside `refresh_reuse_grace()` — default
+    30s; raise to 60s if real clients retry later than their HTTP timeout
+    allows — **and** the tombstoned
+    successor still unspent), in which case the same pair is re-served without
+    rotating. Otherwise it is reuse: the session is revoked (killing every
+    descendant token) and `AuthAuditEvent::RefreshReuseDetected` fires at
+    `error!` with `security_alert = true`. The caller sees the same 401 either
+    way, so detection isn't an oracle. Tombstones are reaped on time only
+    (`rotated_at + refresh_token_ttl`), never alongside their session —
+    post-revocation replay is the case most worth catching.
+  - **A fresh login retires the previous refresh token**: `/auth/refresh`
+    authorises from the `refresh:{hash}` index alone and never consults
+    `session.refresh_token`, so overwriting `session:{did}` on login did *not*
+    retire the old token — it left a second live chain that, sharing no token
+    with the first, never replayed and so was never detected. `handle_authenticate`
+    now claim-and-deletes the prior token's index entry and leaves a
+    `Superseded` tombstone. That cause is excluded from the grace window on
+    purpose: a client that just logged in holds its new token, so honouring a
+    replay there would hand the new token to a pre-login theft. Replaying a
+    superseded token is **refused and audited
+    (`AuthAuditEvent::RefreshSuperseded`, `warn!` +`security_alert`) but does
+    *not* revoke** — unlike reuse, the retired token is already dead, and the
+    usual cause is a second device still holding what it was issued before the
+    user signed in elsewhere; revoking would sign out the client that is
+    demonstrably current and the forced re-login would set the same trap again.
+    Implements RFC 9700 §4.14.2.
+  - **One live chain per session, by construction**: retiring at login is
+    best-effort (a racing refresh can slip past it), so `/auth/refresh` also
+    refuses any claimed token that is not the one its session *currently*
+    issues — answered as `RefreshSuperseded`, same as above. Currency comes
+    from a `refresh-current:{session_id}` record written only by
+    `store_refresh_index` (i.e. login and rotation), **never** from
+    `session.refresh_token`: the row is read-modify-written without atomicity
+    (`resolve_did_session` on every DIDComm/TSP message, `touch_last_seen`,
+    step-up's `update_session`), which can write an older token back into it.
+    Don't gate anything on the row's `refresh_token`. The row is only a
+    fallback for sessions issued before the record existed. Login writes its
+    `Superseded` tombstone only when its claim wins, so it never relabels a
+    `Rotated` tombstone a racing refresh just wrote (that would downgrade
+    genuine reuse to a non-revoking alert).
+  - **Orphan `refresh:` entries are swept**: the index has no TTL, so
+    `cleanup_expired_sessions` drops entries whose session row is gone or
+    whose token is not current (same record, same fallback) — hygiene, since
+    refresh already refuses them.
   - **Trust-Task-wrapped responses (engine interop):** `/auth/challenge`,
     `/auth/`, and `/auth/refresh` all content-negotiate on *both* ends — when
     the request body is a Trust Task document, the response is a TT `#response`

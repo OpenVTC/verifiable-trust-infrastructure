@@ -29,7 +29,9 @@ use vta_sdk::protocols::auth::{
 
 use crate::auth::AuthError;
 use crate::auth::backend::{AuthBackend, AuthenticateInput, SessionStore};
-use crate::auth::session::{Session, SessionState, now_epoch};
+use crate::auth::session::{
+    RefreshTombstone, Session, SessionState, TombstoneCause, now_epoch, refresh_token_hash,
+};
 
 /// Default first-factor AMR; the transport layer (or step-up
 /// handler) can override by passing different values to
@@ -186,10 +188,30 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     // ---- Create the authenticated session, replace the challenge row ----
     //
     // Coalesce-per-DID: a fresh login overwrites any prior session for this
-    // identity, so one DID has one active refresh token (last-write-wins). The
-    // access token is pinned via `token_id` (the jti), so the previous login's
-    // access token is superseded immediately. The single-use challenge row (a
-    // distinct, ephemeral, uuid-keyed record) was already taken above.
+    // identity, so one DID has one active refresh token. The access token is
+    // pinned via `token_id` (the jti), so the previous login's access token is
+    // superseded immediately. The single-use challenge row (a distinct,
+    // ephemeral, uuid-keyed record) is deleted.
+    //
+    // "One active refresh token" holds only because the previous token is
+    // explicitly retired below. Overwriting the session row does not do it:
+    // the reverse index is a separate `refresh:{hash}` row per token, and
+    // `/auth/refresh` authorises from that index alone without consulting
+    // `session.refresh_token`. Leaving the old entry behind therefore left a
+    // second, fully live chain on the same account — a token stolen before a
+    // re-login kept working, in its own chain, and since the two chains never
+    // shared a token no replay ever occurred and reuse detection never fired.
+    // Read the outgoing token *before* `store_session` overwrites the row —
+    // afterwards there is nothing left to say which token this login is
+    // replacing. `None` on a first login, or on a prior session that carried
+    // no refresh token (an intrinsic DIDComm/TSP session).
+    let superseded_refresh_token = backend
+        .sessions()
+        .get_session(&did)
+        .await
+        .map_err(|e| AuthError::Internal(format!("get_session failed: {e:?}")))?
+        .and_then(|prior| prior.refresh_token);
+
     let auth_session = Session {
         session_id: did.clone(),
         did: did.clone(),
@@ -219,6 +241,85 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
         .store_refresh_index(&minted.refresh_token, &did)
         .await
         .map_err(|e| AuthError::Internal(format!("store_refresh_index failed: {e:?}")))?;
+
+    // ---- Retire the token this login replaces ----
+    //
+    // Ordered after the new chain is durable, as on the rotation path: a crash
+    // here leaves the old token live, which is merely the previous behaviour,
+    // whereas retiring first and crashing would leave the account with no
+    // usable refresh token at all.
+    //
+    // Claim-and-delete rather than a plain delete, and the tombstone is written
+    // only when the claim wins. `None` means someone else already disposed of
+    // the token — a concurrent refresh spent it (and wrote a `Rotated`
+    // tombstone that must survive, since a later replay of it is genuine
+    // reuse), or a racing login retired it. Writing `Superseded` over either
+    // would downgrade a revoking reuse signal to a non-revoking one.
+    //
+    // This retirement is not what keeps the account to one chain: the read
+    // above can be stale under a racing refresh, so it may name a token that
+    // is already spent while its successor lives on. `/auth/refresh` closes
+    // that by refusing any token that is not the session's current one
+    // (`SessionStore::current_refresh_hash`), which `store_refresh_index`
+    // just moved to this login's token. Retiring here is what lets a replay
+    // of the old token be *attributed* rather than merely refused.
+    //
+    // Store errors are logged, not returned, matching `handle_refresh`'s
+    // handling of the same two writes. The login is already committed: the new
+    // session and its index are durable and the caller's tokens are minted, so
+    // failing here would report an error for a login that in fact succeeded
+    // and withhold the tokens it had already issued. The cost of continuing is
+    // bounded — a retired-but-untombstoned token is still refused, just not
+    // attributed, and a token whose index outlived this call is no worse off
+    // than it was before this retirement existed.
+    if let Some(superseded) = superseded_refresh_token {
+        let claimed = match backend
+            .sessions()
+            .take_session_id_by_refresh(&superseded)
+            .await
+        {
+            Ok(claimed) => claimed.is_some(),
+            Err(e) => {
+                tracing::error!(
+                    did = %did,
+                    "failed to retire the refresh token superseded by this \
+                     login; its index entry remains, but it is no longer \
+                     current and will be refused: {e:?}",
+                );
+                false
+            }
+        };
+        if claimed
+            && let Err(e) = backend
+                .sessions()
+                .store_refresh_tombstone(
+                    &superseded,
+                    &RefreshTombstone {
+                        session_id: did.clone(),
+                        did: did.clone(),
+                        rotated_at: now,
+                        expires_at: now.saturating_add(backend.refresh_token_ttl()),
+                        successor_hash: refresh_token_hash(&minted.refresh_token),
+                        cause: TombstoneCause::Superseded,
+                    },
+                )
+                .await
+        {
+            // Tombstoned, not merely deleted, so the retired token is still
+            // *recognised* if it comes back. Deleting alone would make a
+            // replay indistinguishable from a token this node never issued,
+            // and a token presented after a re-login is worth reporting: the
+            // legitimate client holds the new one and has no reason to send
+            // the old. `TombstoneCause::Superseded` withholds the
+            // innocent-retry grace, which exists only for a lost rotation
+            // response.
+            tracing::error!(
+                did = %did,
+                "failed to tombstone the refresh token superseded by this \
+                 login; a replay of it will be refused but not attributed: {e:?}",
+            );
+        }
+    }
 
     // ---- Build canonical response ----
 
@@ -265,6 +366,8 @@ mod claim_tests {
     #[derive(Default)]
     struct MemStore {
         sessions: Mutex<HashMap<String, Session>>,
+        refresh_index: Mutex<HashMap<String, String>>,
+        tombstones: Mutex<HashMap<String, RefreshTombstone>>,
     }
 
     #[async_trait]
@@ -292,12 +395,31 @@ mod claim_tests {
             Ok(self.sessions.lock().unwrap().remove(session_id))
         }
 
-        async fn store_refresh_index(&self, _: &str, _: &str) -> Result<(), AppError> {
+        async fn store_refresh_index(&self, token: &str, id: &str) -> Result<(), AppError> {
+            self.refresh_index
+                .lock()
+                .unwrap()
+                .insert(token.to_string(), id.to_string());
             Ok(())
         }
 
-        async fn take_session_id_by_refresh(&self, _: &str) -> Result<Option<String>, AppError> {
-            Ok(None)
+        async fn take_session_id_by_refresh(
+            &self,
+            token: &str,
+        ) -> Result<Option<String>, AppError> {
+            Ok(self.refresh_index.lock().unwrap().remove(token))
+        }
+
+        async fn store_refresh_tombstone(
+            &self,
+            token: &str,
+            tombstone: &RefreshTombstone,
+        ) -> Result<(), AppError> {
+            self.tombstones
+                .lock()
+                .unwrap()
+                .insert(token.to_string(), tombstone.clone());
+            Ok(())
         }
 
         async fn count_pending_challenges(&self, did: &str) -> Result<usize, AppError> {
@@ -389,6 +511,47 @@ mod claim_tests {
             session_pubkey_b58btc: None,
             audience: AudienceBinding::Transport,
         }
+    }
+
+    /// A login whose read of the prior token raced a refresh must not
+    /// overwrite the refresh's `Rotated` tombstone with `Superseded`.
+    ///
+    /// The login reads `spent` as the outgoing token, but a concurrent
+    /// refresh has already claimed it and tombstoned it `Rotated`. A replay
+    /// of `spent` is then genuine reuse and must revoke; relabelled
+    /// `Superseded` it would only be reported. Write the tombstone
+    /// regardless of the claim's result and this fails.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_login_does_not_relabel_a_token_a_racing_refresh_spent() {
+        let backend = MockBackend {
+            store: MemStore::default(),
+        };
+        let now = now_epoch();
+        let mut prior = challenge_row();
+        prior.session_id = DID.to_string();
+        prior.state = SessionState::Authenticated;
+        prior.challenge = String::new();
+        prior.refresh_token = Some("spent".to_string());
+        backend.store.store_session(&prior).await.unwrap();
+        // What the racing refresh left: no index entry, a `Rotated` tombstone.
+        backend.store.tombstones.lock().unwrap().insert(
+            "spent".to_string(),
+            RefreshTombstone {
+                session_id: DID.to_string(),
+                did: DID.to_string(),
+                rotated_at: now,
+                expires_at: now + 86_400,
+                successor_hash: refresh_token_hash("successor"),
+                cause: TombstoneCause::Rotated,
+            },
+        );
+        backend.store.store_session(&challenge_row()).await.unwrap();
+
+        handle_authenticate(&backend, input()).await.unwrap();
+
+        let tomb = backend.store.tombstones.lock().unwrap()["spent"].clone();
+        assert_eq!(tomb.cause, TombstoneCause::Rotated);
+        assert_eq!(tomb.successor_hash, refresh_token_hash("successor"));
     }
 
     /// #1656: two presentations of the *same* challenge, interleaved, mint
