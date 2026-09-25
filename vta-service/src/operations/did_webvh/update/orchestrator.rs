@@ -1094,7 +1094,15 @@ async fn run_update(
         .get_version_id_fields()
         .map(|(n, h)| format!("{n}-{h}"))
         .map_err(|e| UpdateDidWebvhError::Library(format!("read version id: {e}")))?;
-    let new_scid = new_log_entry.get_scid().unwrap_or_default().to_string();
+    // The DID's own SCID. webvh carries `scid` in the genesis entry's
+    // parameters only, so reading it off an appended entry yields nothing —
+    // and every update reported `newScid: ""`, where `rotate-keys/1.0` requires
+    // the response to report the existing SCID (VTI-KEY-040: rotation does not
+    // change the identifier).
+    let new_scid = new_log_entry
+        .get_scid()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| canonical_scid.clone());
     let new_log_entry_str = serde_json::to_string(new_log_entry)
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("serialize new entry: {e}")))?;
 

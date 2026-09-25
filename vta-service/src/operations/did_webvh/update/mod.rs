@@ -62,7 +62,9 @@ pub fn state_from_jsonl_pub(
 
 #[cfg(test)]
 mod tests {
-    use super::keys::{derive_webvh_keys, install_derived_webvh_keys, load_active_update_key};
+    use super::keys::{
+        derive_webvh_keys_block, install_derived_webvh_keys, load_active_update_key,
+    };
     use super::options::DerivedWebvhKey;
     use super::validate::{validate_document_for_update, validate_watchers, validate_witnesses};
     use super::*;
@@ -473,7 +475,7 @@ mod tests {
     async fn derive_webvh_keys_returns_empty_for_zero_count() {
         let ks = test_keys_ks().await;
         let seed_store = MockSeedStore(Mutex::new(Some(vec![0x42u8; 32])));
-        let result = derive_webvh_keys(&ks, &seed_store, "m/26'/0'/0'", 0)
+        let result = derive_webvh_keys_block(&ks, &seed_store, "m/26'/0'/0'", 0, None)
             .await
             .expect("zero count is fine");
         assert!(result.is_empty());
@@ -500,9 +502,10 @@ mod tests {
             .unwrap();
 
         // Phase 1: derive (no keyspace writes for handles).
-        let derived: Vec<DerivedWebvhKey> = derive_webvh_keys(&ks, &seed_store, "m/26'/0'/0'", 3)
-            .await
-            .expect("derive 3 keys");
+        let derived: Vec<DerivedWebvhKey> =
+            derive_webvh_keys_block(&ks, &seed_store, "m/26'/0'/0'", 3, None)
+                .await
+                .expect("derive 3 keys");
         assert_eq!(derived.len(), 3);
 
         // Hashes are unique within the batch.
@@ -1667,14 +1670,12 @@ mod pre_rotation_e2e_tests {
         assert_eq!(by_scid.did, did);
     }
 
-    /// Concurrency test for `rotate_did_webvh_keys`. The internal
-    /// `next_fragment_id` bump used to be a read-modify-write with no
-    /// version check, so two parallel rotates each derived the same
-    /// `[next_fragment_id, next_fragment_id + N)` range and only one
-    /// store_did won — the loser's freshly-issued keys collided with
-    /// the winner's published `#key-N` references. The new
-    /// `RecordSnapshot::assert_unchanged` guard refuses the loser
-    /// with `Conflict` so the operator re-runs the rotate cleanly.
+    /// Concurrency guard wiring. `rotate_did_webvh_keys` no longer renumbers
+    /// methods (so no `next_fragment_id` bump races); it pins the version it
+    /// read with `expected_version_id`, so a concurrent update refuses the
+    /// loser with `Conflict` before it promotes any key records. This test
+    /// still pins the `RecordSnapshot` helper the other record writers use,
+    /// and that a rotation succeeds on fresh state.
     ///
     /// This test simulates the race deterministically: rotate once
     /// successfully (committing the bump), then mutate the on-disk
@@ -2080,7 +2081,7 @@ mod pre_rotation_e2e_tests {
     // If a plan predicts one key and the real run installs another, a human
     // approved a rotation that never happened — and every signature over that
     // approval still verifies, so nothing downstream can tell. That is not
-    // hypothetical: `derive_webvh_keys` allocates from a BIP-32 path counter, so
+    // hypothetical: `derive_webvh_keys_block` allocates from a BIP-32 path counter, so
     // a plan that derived keys the way the real run does would consume an index,
     // and the real run would then allocate the *next* one and install a
     // different key than the one shown. Hence `peek_webvh_keys`, and hence these
@@ -2616,6 +2617,383 @@ mod pre_rotation_e2e_tests {
             1,
             "one update key in force across the inherit step"
         );
+    }
+
+    /// Rotate a DID whose document carries an Ed25519 signing method, an
+    /// X25519 key-agreement method and an ML-DSA-44 method, referenced from
+    /// all five relationships including `capabilityInvocation` and
+    /// `capabilityDelegation`, one of them non-exportable.
+    ///
+    /// Holds every property the rotation used to break:
+    /// - each replacement key has its method's algorithm (VTI-KEY-012) — the
+    ///   old code minted Ed25519 for all three;
+    /// - method ids are preserved, so every relationship still resolves —
+    ///   the old code renumbered and left the capability relationships stale;
+    /// - each new key has an active record the VTA can sign with, and the
+    ///   replaced record is kept, retired, under the version it was current
+    ///   at (VTI-KEY-042) — the old code wrote no records at all;
+    /// - a non-exportable key's replacement is non-exportable;
+    /// - pre-rotation is honoured and advanced (VTI-KEY-043), and the chain
+    ///   validates (VTI-KEY-041) with the SCID unchanged (VTI-KEY-040).
+    #[tokio::test]
+    async fn vti_key_012_rotation_keeps_algorithms_ids_relationships_and_records() {
+        use crate::keys::derivation::Bip32Extension;
+        use vta_sdk::keys::{KeyRecord, KeyStatus, KeyType};
+
+        let ctx_id = "ctx-rotate-mixed";
+        let (ts, seed_store) = setup(ctx_id).await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        let (did, scid) =
+            create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 1).await;
+
+        // Add an ML-DSA-44 method, held by the VTA, and reference the signing
+        // method from the two capability relationships.
+        let base = crate::contexts::get_context(&ts.contexts_ks, ctx_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .base_path;
+        let pq_path = crate::keys::paths::allocate_path(&ts.keys_ks, &base)
+            .await
+            .unwrap();
+        let seed = crate::keys::seeds::load_seed_bytes(&ts.keys_ks, &seed_store, Some(0))
+            .await
+            .unwrap();
+        let root = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).unwrap();
+        let pq_pub = root
+            .derive_ml_dsa_44(&pq_path)
+            .unwrap()
+            .get_public_keymultibase()
+            .unwrap();
+        let pq_id = format!("{did}#key-pq");
+        crate::keys::save_key_record(
+            &ts.keys_ks,
+            &pq_id,
+            &pq_path,
+            KeyType::MlDsa44,
+            &pq_pub,
+            "pq",
+            Some(ctx_id),
+            Some(0),
+        )
+        .await
+        .unwrap();
+
+        async fn head(ts: &TestStore, did: String) -> (String, serde_json::Value) {
+            let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+                .await
+                .unwrap()
+                .unwrap();
+            let state = state_from_jsonl(&log).unwrap();
+            let last = state.log_entries().last().unwrap();
+            (
+                last.get_version_id().to_string(),
+                didwebvh_rs::log_entry::LogEntryMethods::get_did_document(&last.log_entry).unwrap(),
+            )
+        }
+        let (_, mut doc) = head(&ts, did.clone()).await;
+        doc["verificationMethod"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": pq_id,
+                "type": "Multikey",
+                "controller": did,
+                "publicKeyMultibase": pq_pub,
+            }));
+        let signing_id = format!("{did}#key-0");
+        doc["capabilityInvocation"] = json!([signing_id]);
+        doc["capabilityDelegation"] = json!([signing_id]);
+        doc["assertionMethod"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(pq_id));
+        sleep(VERSION_TIME_GAP).await;
+        update_did_webvh(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc),
+                ..Default::default()
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect("publish the mixed-algorithm document");
+
+        // One key the operator locked down.
+        let mut locked: KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&signing_id))
+            .await
+            .unwrap()
+            .expect("create_did_webvh records #key-0");
+        locked.exportable = Some(false);
+        ts.keys_ks
+            .insert(crate::keys::store_key(&signing_id), &locked)
+            .await
+            .unwrap();
+
+        let (prior_version, before) = head(&ts, did.clone()).await;
+        let (_, hashes_before) = committed_params(&ts, &did).await;
+        assert!(!hashes_before.is_empty(), "pre-rotation is on");
+
+        sleep(VERSION_TIME_GAP).await;
+        let result = rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions::default(),
+            None,
+            "test",
+        )
+        .await
+        .expect("rotate");
+        assert_eq!(
+            result.new_scid, scid,
+            "VTI-KEY-040: the identifier is unchanged"
+        );
+        assert_chain_validates(&ts, &did).await;
+
+        let (_, after) = head(&ts, did.clone()).await;
+        let ids = |d: &serde_json::Value| -> Vec<String> {
+            d["verificationMethod"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(ids(&before), ids(&after), "method ids are preserved");
+        for rel in [
+            "authentication",
+            "assertionMethod",
+            "keyAgreement",
+            "capabilityInvocation",
+            "capabilityDelegation",
+        ] {
+            assert_eq!(before[rel], after[rel], "{rel} is unchanged");
+            for r in after[rel].as_array().unwrap() {
+                assert!(
+                    ids(&after).contains(&r.as_str().unwrap().to_string()),
+                    "{rel} names a method the document carries: {r}"
+                );
+            }
+        }
+
+        let codec = |mb: &str| multibase::decode(mb).unwrap().1[..2].to_vec();
+        for (old, new) in before["verificationMethod"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(after["verificationMethod"].as_array().unwrap())
+        {
+            let id = new["id"].as_str().unwrap();
+            let (old_pub, new_pub) = (
+                old["publicKeyMultibase"].as_str().unwrap(),
+                new["publicKeyMultibase"].as_str().unwrap(),
+            );
+            assert_ne!(old_pub, new_pub, "{id}: key replaced");
+            assert_eq!(codec(old_pub), codec(new_pub), "{id}: same algorithm");
+
+            let rec: KeyRecord = ts
+                .keys_ks
+                .get(crate::keys::store_key(id))
+                .await
+                .unwrap()
+                .expect("the new key has a record");
+            assert_eq!(rec.status, KeyStatus::Active);
+            assert_eq!(rec.public_key, new_pub);
+            assert_eq!(codec(&rec.public_key), rec.key_type.multicodec_public());
+            assert!(rec.derivation_path.starts_with(&base), "VTI-KEY-030");
+
+            let retired: KeyRecord = ts
+                .keys_ks
+                .get(crate::keys::store_key(&format!("{id}@{prior_version}")))
+                .await
+                .unwrap()
+                .expect("the replaced record is kept");
+            assert_eq!(retired.status, KeyStatus::Revoked);
+            assert_eq!(retired.public_key, old_pub);
+            assert!(
+                ts.keys_ks
+                    .get::<KeyRecord>(crate::keys::store_key(&format!("{id}@rotating")))
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "no staging record is left behind"
+            );
+        }
+        let types: Vec<KeyType> = {
+            let mut v = Vec::new();
+            for id in ids(&after) {
+                let r: KeyRecord = ts
+                    .keys_ks
+                    .get(crate::keys::store_key(&id))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                v.push(r.key_type);
+            }
+            v
+        };
+        assert!(types.contains(&KeyType::Ed25519));
+        assert!(types.contains(&KeyType::X25519));
+        assert!(types.contains(&KeyType::MlDsa44));
+
+        let new_signing: KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&signing_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            new_signing.exportable,
+            Some(false),
+            "a non-exportable key's replacement is non-exportable"
+        );
+
+        // The VTA signs with the new key, and verifies against the published
+        // one; it refuses the retired key.
+        async fn sign(
+            ts: &TestStore,
+            key_id: String,
+        ) -> Result<vta_sdk::protocols::key_management::sign::SignResultBody, crate::error::AppError>
+        {
+            let seed_arc: std::sync::Arc<dyn crate::keys::seed_store::SeedStore> =
+                std::sync::Arc::new(crate::keys::seed_store::PlaintextSeedStore::new(
+                    &ts.data_dir,
+                ));
+            crate::operations::keys::sign_payload(
+                &ts.keys_ks,
+                &ts.imported_ks,
+                &ts.internal_ks,
+                &ts.contexts_ks,
+                &ts.acl_ks,
+                &seed_arc,
+                &ts.audit,
+                &admin_auth(),
+                &key_id,
+                b"after rotation",
+                &vta_sdk::protocols::key_management::sign::SignAlgorithm::EdDSA,
+                vta_sdk::protocols::key_management::sign::SigningDomain::ProtocolDefined,
+                "test",
+            )
+            .await
+        }
+        let signed = sign(&ts, signing_id.clone())
+            .await
+            .expect("sign with the new key");
+        let sig = base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            &signed.signature,
+        )
+        .unwrap();
+        let pub_bytes = multibase::decode(&new_signing.public_key).unwrap().1;
+        let vk =
+            ed25519_dalek::VerifyingKey::from_bytes(pub_bytes[2..].try_into().unwrap()).unwrap();
+        ed25519_dalek::Verifier::verify(
+            &vk,
+            b"after rotation",
+            &ed25519_dalek::Signature::from_slice(&sig).unwrap(),
+        )
+        .expect("the signature verifies against the published key");
+        sign(&ts, format!("{signing_id}@{prior_version}"))
+            .await
+            .expect_err("VTI-KEY-042: the retired key does not sign");
+
+        let (_, hashes_after) = committed_params(&ts, &did).await;
+        assert!(
+            !hashes_after.is_empty(),
+            "VTI-KEY-043: a successor is committed"
+        );
+        assert_ne!(hashes_before, hashes_after, "the commitment advanced");
+    }
+
+    /// `preRotationCount: 0` is an instruction to stop committing successors,
+    /// and the rotation still installs records for its keys.
+    #[tokio::test]
+    async fn rotation_with_pre_rotation_zero_stops_committing() {
+        let ctx_id = "ctx-rotate-stop";
+        let (ts, seed_store) = setup(ctx_id).await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) =
+            create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 1).await;
+        sleep(VERSION_TIME_GAP).await;
+        rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions {
+                pre_rotation_count: Some(0),
+                label: None,
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect("rotate");
+        let (_, hashes) = committed_params(&ts, &did).await;
+        assert!(hashes.is_empty(), "no successor is committed: {hashes:?}");
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// An internal (non-extractable) method key is never replaced by a
+    /// derived one: the rotation is refused and nothing is published.
+    #[tokio::test]
+    async fn rotation_refuses_to_downgrade_an_internal_key() {
+        let ctx_id = "ctx-rotate-internal";
+        let (ts, seed_store) = setup(ctx_id).await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) =
+            create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 0).await;
+        let id = format!("{did}#key-0");
+        let mut rec: vta_sdk::keys::KeyRecord = ts
+            .keys_ks
+            .get(crate::keys::store_key(&id))
+            .await
+            .unwrap()
+            .unwrap();
+        rec.origin = vta_sdk::keys::KeyOrigin::Internal;
+        ts.keys_ks
+            .insert(crate::keys::store_key(&id), &rec)
+            .await
+            .unwrap();
+        sleep(VERSION_TIME_GAP).await;
+        let err = rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions::default(),
+            None,
+            "test",
+        )
+        .await
+        .expect_err("refused");
+        assert!(err.to_string().contains("internal"), "{err}");
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state_from_jsonl(&log).unwrap().log_entries().len(), 1);
     }
 
     /// Read back the update keys and pre-rotation commitments actually in force

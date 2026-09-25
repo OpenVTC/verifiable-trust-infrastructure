@@ -203,13 +203,33 @@ the new convention; subsequent updates use the fast path.
 
 ## Behaviour notes
 
-- **Verification-method fragment ids are monotonic.** Each rotate-keys
-  call mints `#key-N`, `#key-N+1`, … starting from the DID's
-  `next_fragment_id`. Old fragment ids are never reused so external
-  references to specific keys remain unambiguous across log history.
-- **Old keys are not deleted.** After a rotation, the previous
+- **Rotate-keys replaces key material in place.** Each verification method
+  keeps its id, `type` and algorithm (an X25519 key-agreement method gets a
+  new X25519 key, an ML-DSA method a new ML-DSA key) and every relationship —
+  all five, including `capabilityInvocation` / `capabilityDelegation` — keeps
+  pointing at it. Consumers that address their own keys by id (the VTA's
+  `{vta_did}#key-0` / `#key-1`, the VTC's `#key-0` / `#key-1`) keep working;
+  `did:webvh`'s version history is what tells the key an id named before the
+  rotation from the one it names now. **Changed:** earlier builds renumbered
+  every method to a fresh `#key-N` (from `next_fragment_id`), minted Ed25519
+  for every method whatever its algorithm, remapped only three relationships
+  and wrote no key records for the new keys — so a rotated DID could not be
+  signed or decrypted as. A DID rotated by such a build should be rotated
+  again (or its document repaired with `update`) after upgrading.
+- **Key records follow the rotation.** Each new key gets an active record
+  under its method id, inheriting the old one's label and exportability (a
+  non-exportable key's replacement is non-exportable). The replaced record is
+  kept as `{method id}@{versionId}` with status `revoked`, so history is
+  queryable and the VTA refuses to sign with it. A method backed by an
+  internal (non-extractable) key is refused rather than downgraded to a
+  derived one.
+- **Old authorization keys are not deleted.** After a rotation, the previous
   version's handles move from `webvh:` to `superseded:webvh:` for
-  audit / recovery. The legacy `key:{key_id}` records are left alone.
+  audit / recovery.
+- **Services holding a rotated DID's keys must reload them.** A VTC, mediator
+  or other integration that fetched its DID's secrets (`vta/contexts/secrets`)
+  keeps using the old keys until it fetches again; a VTA rotating its own DID
+  keeps its in-memory DIDComm secrets until restart.
 - **Concurrent updates** are detected via optimistic concurrency on
   `WebvhDidRecord.log_entry_count`. Within one VTA process, updates to the
   same DID are serialized from log-head read through persistence and publish,

@@ -1,26 +1,97 @@
-//! `rotate_did_webvh_keys` — convenience wrapper that mints fresh
-//! verificationMethod keys for the current document, bumps the
-//! record's `next_fragment_id` (under a CAS guard), then delegates to
+//! `rotate_did_webvh_keys` — replace the key material behind every
+//! verification method of a `did:webvh`, then append the document through
 //! [`super::update_did_webvh`].
+//!
+//! # What a rotation must preserve, and what it must replace
+//!
+//! A rotation replaces **key material**. Everything a relying party or one of
+//! this VTA's own subsystems addresses a key *by* stays exactly as it was:
+//!
+//! - **the algorithm** (VTI-KEY-012). An X25519 key-agreement method is replaced
+//!   by an X25519 key, an ML-DSA-44 method by an ML-DSA-44 key. The first version
+//!   of this function minted Ed25519 for every method, so rotating a DID with a
+//!   key-agreement key published an Ed25519 key under an X25519 method — a DID
+//!   nobody could encrypt to afterwards;
+//! - **the method ids, and so every relationship** (VTI-KEY-020). The first
+//!   version renumbered each method to a fresh `#key-N` and remapped only
+//!   `authentication`, `assertionMethod` and `keyAgreement`, so
+//!   `capabilityInvocation` and `capabilityDelegation` were left naming methods
+//!   the document no longer carried. Renumbering also broke every consumer that
+//!   addresses its own keys by id — the VTA's `{vta_did}#key-0` issuer key and
+//!   `#key-1` DIDComm key, the VTC's `vtc_did#key-0` / `#key-1` — so rotating
+//!   either node's DID left it unable to sign or decrypt as itself. Keeping the
+//!   id and replacing the key keeps every reference valid by construction;
+//!   `did:webvh`'s versioned history is what distinguishes the key an id named at
+//!   one version from the key it names now, which is why a signature made before
+//!   the rotation still verifies against the entry current when it was made;
+//! - **the custody properties of the key**: a method whose key was marked
+//!   non-exportable gets a replacement marked non-exportable; one whose key is an
+//!   internal (non-extractable) key is refused rather than downgraded to a derived
+//!   key the seed can reproduce.
+//!
+//! # Records: the new key is findable, the old one is retired, nothing is lost
+//!
+//! Each new key gets a [`KeyRecord`] under the method id, so `keys/sign`,
+//! `keys/export-secret` and the VTA's own key loads find it. The first version
+//! wrote none — the keys it published existed only as consumed derivation-path
+//! indices. The record it replaces is kept, under `{method id}@{versionId it was
+//! current at}`, with status `revoked`, so the audit trail can still say which key
+//! an id named at a given version, and the VTA refuses to sign with it
+//! (VTI-KEY-042).
+//!
+//! The new keys' derivation paths are written as inert (`revoked`) staging
+//! records before the log entry is appended, and promoted only once it is: a
+//! crash between the two leaves the paths recorded rather than a published key
+//! nobody can re-derive, and a failed append leaves the active records exactly
+//! as they were.
+//!
+//! The authorization keys and the pre-rotation commitment rotate as a
+//! consequence of the document update (see [`super::update_did_webvh`]),
+//! except on an entry that *activates* pre-rotation, where the authorization
+//! keys stay in force because the commitment this entry publishes is what
+//! authorizes the next one.
 
+use chrono::Utc;
 use didwebvh_rs::log_entry::LogEntryMethods;
 use serde_json::Value;
+use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 
 use super::errors::UpdateDidWebvhError;
-use super::keys::derive_webvh_keys;
 use super::options::{RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, UpdateDidWebvhResult};
 use super::orchestrator::update_did_webvh;
 use super::state::{find_record_by_scid, state_from_jsonl};
 use crate::auth::AuthClaims;
+use crate::keys::derivation::Bip32Extension;
+use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
+use crate::keys::{encode_public_multibase, store_key};
+use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
-/// Rotate every verificationMethod's keys (preserving role/type but
-/// minting fresh public-key bytes + bumping fragment ids), then drive
-/// the doc-bearing [`update_did_webvh`] path. Auth keys + pre-rotation
-/// rotate as a consequence of the document update — except on an entry
-/// that *activates* pre-rotation, where the authorization keys stay in
-/// force because the commitment this entry publishes is what authorizes
-/// the next one.
+/// The relationships a verification method can be referenced from, or
+/// embedded in. All five of DID Core's — a rotation that skips one leaves it
+/// naming a key the document no longer publishes.
+const RELATIONSHIPS: [&str; 5] = [
+    "authentication",
+    "assertionMethod",
+    "keyAgreement",
+    "capabilityInvocation",
+    "capabilityDelegation",
+];
+
+/// One method the rotation replaces the key of.
+struct Rotated {
+    /// Absolute method id (`did:webvh:…#frag`), the key record's id.
+    vm_id: String,
+    key_type: KeyType,
+    path: String,
+    public_key: String,
+    /// The record being replaced, when the VTA holds one.
+    previous: Option<KeyRecord>,
+}
+
+/// Rotate the key behind every verification method (preserving each method's
+/// id, type and algorithm), then drive the doc-bearing [`update_did_webvh`]
+/// path. See the module docs for what is preserved and why.
 pub async fn rotate_did_webvh_keys(
     deps: &super::super::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -30,7 +101,7 @@ pub async fn rotate_did_webvh_keys(
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
     // 1. Load record + log.
-    let mut record = find_record_by_scid(deps.webvh_ks, scid)
+    let record = find_record_by_scid(deps.webvh_ks, scid)
         .await?
         .ok_or_else(|| UpdateDidWebvhError::NotFound(format!("SCID {scid} not found")))?;
     auth.require_admin()
@@ -52,11 +123,16 @@ pub async fn rotate_did_webvh_keys(
     let last = state.log_entries().last().ok_or_else(|| {
         UpdateDidWebvhError::Library(format!("DID {} has no log entries", record.did))
     })?;
+    // Pinned for the append below: a concurrent update between this read and
+    // the append is refused, so two rotations cannot both promote keys for the
+    // same method ids.
+    let prior_version_id = last.get_version_id().to_string();
     let current_doc = last.log_entry.get_did_document().map_err(|e| {
         UpdateDidWebvhError::Library(format!("extract document from last entry: {e}"))
     })?;
 
-    // 2. Resolve context base path.
+    // 2. Resolve context base path — every new key is derived under it
+    //    (VTI-KEY-030), which is also what key custody checks on every later use.
     let context = crate::contexts::get_context(deps.contexts_ks, &record.context_id)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_context: {e}")))?
@@ -67,97 +143,70 @@ pub async fn rotate_did_webvh_keys(
             ))
         })?;
 
-    // 3. Mint fresh keys for each VM in the current document.
-    //    Preserve role/type/controller; mint new fragment ids monotonically
-    //    from `record.next_fragment_id`. Resulting doc has the same
-    //    semantic shape with new key bytes.
+    // 3. Replace the key of every method, wherever it is declared.
     let mut new_doc = current_doc.clone();
-    let vms = new_doc
-        .as_object_mut()
-        .and_then(|o| o.get_mut("verificationMethod"))
-        .and_then(|v| v.as_array_mut())
-        .ok_or_else(|| {
-            UpdateDidWebvhError::Library("current doc has no verificationMethod array".into())
+    let seed_id = get_active_seed_id(deps.keys_ks).await.map_err(|e| {
+        UpdateDidWebvhError::Persistence(format!("could not load active seed id: {e}"))
+    })?;
+    let seed = load_seed_bytes(deps.keys_ks, deps.seed_store, Some(seed_id))
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("could not load seed: {e}")))?;
+    let root = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("BIP-32 root derivation: {e}")))?;
+
+    let mut rotated: Vec<Rotated> = Vec::new();
+    {
+        let obj = new_doc.as_object_mut().ok_or_else(|| {
+            UpdateDidWebvhError::Library("current document is not a JSON object".into())
         })?;
-
-    let vm_count = vms.len() as u32;
-    let derived_vms =
-        derive_webvh_keys(deps.keys_ks, deps.seed_store, &context.base_path, vm_count).await?;
-    let first_new_fragment_id = record.next_fragment_id;
-    // Snapshot the version-vector fields so the next_fragment_id bump
-    // (below) can detect a concurrent rotate that would have derived
-    // overlapping `#key-N` fragment ids. Without this, two parallel
-    // `rotate_did_webvh_keys` calls each derive
-    // [next_fragment_id, next_fragment_id + N) keys; only one
-    // store_did wins, but the loser has minted keys whose ids collide
-    // with the winner's published document.
-    let pre_rotate_snapshot = crate::operations::did_webvh::RecordSnapshot::capture(&record);
-
-    // Track old fragment IDs for replacing references in
-    // assertionMethod / authentication / keyAgreement arrays.
-    let mut frag_remap: Vec<(String, String)> = Vec::with_capacity(vm_count as usize);
-    for (i, (vm, derived_key)) in vms.iter_mut().zip(derived_vms.iter()).enumerate() {
-        let old_id = vm
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                UpdateDidWebvhError::Library(format!("verificationMethod[{i}] missing id"))
-            })?
-            .to_string();
-        let new_frag_id = record.next_fragment_id + i as u32;
-        let new_id = format!("{}#key-{new_frag_id}", record.did);
-        frag_remap.push((old_id, new_id.clone()));
-
-        let obj = vm.as_object_mut().unwrap();
-        obj.insert("id".into(), Value::String(new_id));
-        obj.insert(
-            "publicKeyMultibase".into(),
-            Value::String(derived_key.public_key.clone()),
-        );
-    }
-
-    // Update assertion / authentication / keyAgreement arrays to point
-    // at the new VM ids. The original arrays are preserved positionally;
-    // we just swap each entry's id with the new one assigned to the
-    // VM at that position.
-    for field in ["assertionMethod", "authentication", "keyAgreement"] {
-        if let Some(arr) = new_doc
-            .as_object_mut()
-            .and_then(|o| o.get_mut(field))
-            .and_then(|v| v.as_array_mut())
-        {
-            for entry in arr.iter_mut() {
-                if let Some(s) = entry.as_str()
-                    && let Some((_, new_id)) = frag_remap.iter().find(|(old, _)| old == s)
-                {
-                    *entry = Value::String(new_id.clone());
-                }
+        // Declared methods, and methods embedded in a relationship array. A
+        // string entry in a relationship is a reference, and keeps pointing at
+        // the same id, so it needs nothing.
+        let mut methods: Vec<&mut Value> = Vec::new();
+        for (field, value) in obj.iter_mut() {
+            let Value::Array(entries) = value else {
+                continue;
+            };
+            if field == "verificationMethod" {
+                methods.extend(entries.iter_mut());
+            } else if RELATIONSHIPS.contains(&field.as_str()) {
+                methods.extend(entries.iter_mut().filter(|e| e.is_object()));
             }
+        }
+        if methods.is_empty() {
+            return Err(UpdateDidWebvhError::Library(
+                "current document declares no verification methods to rotate".into(),
+            ));
+        }
+
+        for (i, vm) in methods.into_iter().enumerate() {
+            let entry =
+                rotate_one(deps.keys_ks, &root, &context.base_path, &record.did, i, vm).await?;
+            if rotated.iter().any(|r| r.vm_id == entry.vm_id) {
+                return Err(UpdateDidWebvhError::InvalidDocument(format!(
+                    "verification method `{}` is declared more than once",
+                    entry.vm_id
+                )));
+            }
+            rotated.push(entry);
         }
     }
 
-    // 4. Bump next_fragment_id on the record so subsequent rotates
-    //    don't collide. CAS first: if a concurrent op already touched
-    //    the record between snapshot and now, refuse rather than
-    //    blindly clobbering — the in-flight derived keys would
-    //    overlap the winner's already-issued fragment ids.
-    let current = webvh_store::get_did(deps.webvh_ks, &record.did)
-        .await
-        .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_did (rotate CAS): {e}")))?
-        .ok_or_else(|| {
-            UpdateDidWebvhError::NotFound(format!("DID {} disappeared mid-rotate", record.did))
-        })?;
-    pre_rotate_snapshot
-        .assert_unchanged(&current)
-        .map_err(|race| UpdateDidWebvhError::Conflict(race.to_string()))?;
-    record.next_fragment_id += vm_count;
-    webvh_store::store_did(deps.webvh_ks, &record)
-        .await
-        .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did (frag bump): {e}")))?;
+    // 4. Stage the new keys' paths durably, inert, before anything is published.
+    for r in &rotated {
+        let id = staging_id(&r.vm_id);
+        deps.keys_ks
+            .insert(
+                store_key(&id),
+                &new_record(r, &id, &record.context_id, seed_id, false),
+            )
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("stage rotated key: {e}")))?;
+    }
 
-    // 5. Drive the generic update path. The doc-bearing branch will
-    //    rotate auth keys + pre-rotation as a side effect (see the note
-    //    above for the one entry where it does not).
+    // 5. Drive the generic update path. The doc-bearing branch rotates the
+    //    authorization keys + pre-rotation as a side effect (see the note above
+    //    for the one entry where it does not).
     let label = opts
         .label
         .or_else(|| Some(format!("rotate-keys for {}", record.did)));
@@ -172,24 +221,236 @@ pub async fn rotate_did_webvh_keys(
             watchers: None,
             ttl: None,
             label,
-            // rotate_did_webvh_keys composes update_did_webvh internally;
-            // it doesn't expose the precondition (rotation is not a
-            // user-edited document flow), so pass None.
-            expected_version_id: None,
+            expected_version_id: Some(prior_version_id.clone()),
         },
         vta_did,
         channel,
     )
-    .await?;
+    .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(e) => {
+            // Nothing was published: unstage, leaving the active records as
+            // they were.
+            for r in &rotated {
+                let _ = deps.keys_ks.remove(store_key(&staging_id(&r.vm_id))).await;
+            }
+            return Err(e);
+        }
+    };
 
+    // 6. Promote: retire each replaced record under the version it was current
+    //    at, install the new one under the method id, drop the staging copy.
+    let now = Utc::now();
+    for r in &rotated {
+        if let Some(previous) = &r.previous {
+            let retired_id = format!("{}@{prior_version_id}", r.vm_id);
+            let mut retired = previous.clone();
+            retired.key_id = retired_id.clone();
+            retired.status = KeyStatus::Revoked;
+            retired.updated_at = now;
+            deps.keys_ks
+                .insert(store_key(&retired_id), &retired)
+                .await
+                .map_err(|e| UpdateDidWebvhError::Persistence(format!("retire key: {e}")))?;
+        }
+        deps.keys_ks
+            .insert(
+                store_key(&r.vm_id),
+                &new_record(r, &r.vm_id, &record.context_id, seed_id, true),
+            )
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("install rotated key: {e}")))?;
+        let _ = deps.keys_ks.remove(store_key(&staging_id(&r.vm_id))).await;
+    }
+
+    crate::audit::record_best_effort(
+        deps.audit,
+        "did.webvh.rotate_keys",
+        &auth.did,
+        Some(&record.did),
+        "success",
+        Some(channel),
+        Some(&record.context_id),
+    )
+    .await;
     tracing::info!(
         channel,
         did = %record.did,
         scid = %scid,
-        first_fragment = first_new_fragment_id,
-        last_fragment = record.next_fragment_id - 1,
+        methods = rotated.len(),
+        version = %result.new_version_id,
         "did:webvh keys rotated"
     );
 
     Ok(result)
+}
+
+/// The id a rotated key's path is staged under until the entry publishing it
+/// is appended.
+fn staging_id(vm_id: &str) -> String {
+    format!("{vm_id}@rotating")
+}
+
+/// The record for a rotated key: `active` once promoted, `revoked` (inert)
+/// while staged. Inherits the replaced key's label and exportability.
+fn new_record(
+    r: &Rotated,
+    key_id: &str,
+    context_id: &str,
+    seed_id: u32,
+    active: bool,
+) -> KeyRecord {
+    let now = Utc::now();
+    KeyRecord {
+        key_id: key_id.to_string(),
+        derivation_path: r.path.clone(),
+        key_type: r.key_type.clone(),
+        status: if active {
+            KeyStatus::Active
+        } else {
+            KeyStatus::Revoked
+        },
+        public_key: r.public_key.clone(),
+        label: Some(
+            r.previous
+                .as_ref()
+                .and_then(|p| p.label.clone())
+                .unwrap_or_else(|| r.vm_id.clone()),
+        ),
+        context_id: Some(context_id.to_string()),
+        seed_id: Some(seed_id),
+        // A restriction survives the rotation: the replacement of a key an
+        // operator marked non-exportable is non-exportable too.
+        exportable: r.previous.as_ref().and_then(|p| p.exportable),
+        origin: KeyOrigin::Derived,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+/// Replace the key of one verification method in place, returning what the
+/// records need.
+async fn rotate_one(
+    keys_ks: &KeyspaceHandle,
+    root: &vti_common::slip10::ExtendedSigningKey,
+    base_path: &str,
+    did: &str,
+    index: usize,
+    vm: &mut Value,
+) -> Result<Rotated, UpdateDidWebvhError> {
+    let obj = vm.as_object_mut().ok_or_else(|| {
+        UpdateDidWebvhError::InvalidDocument(format!(
+            "verification method {index} is not an object"
+        ))
+    })?;
+    let raw_id = obj
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            UpdateDidWebvhError::InvalidDocument(format!("verification method {index} has no id"))
+        })?
+        .to_string();
+    let vm_id = if raw_id.starts_with('#') {
+        format!("{did}{raw_id}")
+    } else {
+        raw_id
+    };
+    let Some(current_public) = obj.get("publicKeyMultibase").and_then(Value::as_str) else {
+        return Err(UpdateDidWebvhError::InvalidDocument(format!(
+            "verification method `{vm_id}` carries no publicKeyMultibase; rotation replaces \
+             multibase keys only"
+        )));
+    };
+
+    let previous: Option<KeyRecord> = keys_ks
+        .get(store_key(&vm_id))
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("load key record: {e}")))?;
+    if let Some(p) = &previous
+        && p.origin == KeyOrigin::Internal
+    {
+        return Err(UpdateDidWebvhError::InvalidDocument(format!(
+            "verification method `{vm_id}` is backed by an internal (non-extractable) key; \
+             rotating it here would replace it with a key the seed can reproduce, which is \
+             weaker. Mint a new internal key and publish it with vta/webvh/dids/update instead"
+        )));
+    }
+    // The algorithm comes from the record where there is one — the record is
+    // where the truth about a key's algorithm lives — and otherwise from the
+    // published key's own multicodec. Never assumed (VTI-KEY-012).
+    let key_type = match &previous {
+        Some(p) => p.key_type.clone(),
+        None => key_type_of_multibase(current_public).ok_or_else(|| {
+            UpdateDidWebvhError::InvalidDocument(format!(
+                "verification method `{vm_id}` publishes a key of an algorithm this VTA \
+                 cannot identify or mint, so it cannot rotate it"
+            ))
+        })?,
+    };
+
+    let path = crate::keys::paths::allocate_path(keys_ks, base_path)
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("allocate_path: {e}")))?;
+    let public_key = derive_public(root, &key_type, &path)?;
+    obj.insert(
+        "publicKeyMultibase".into(),
+        Value::String(public_key.clone()),
+    );
+
+    Ok(Rotated {
+        vm_id,
+        key_type,
+        path,
+        public_key,
+        previous,
+    })
+}
+
+/// The public key at `path` for `key_type`, multicodec-prefixed multibase — the
+/// same derivation key custody performs when the key is later used, so what is
+/// published is what signs and decrypts.
+fn derive_public(
+    root: &vti_common::slip10::ExtendedSigningKey,
+    key_type: &KeyType,
+    path: &str,
+) -> Result<String, UpdateDidWebvhError> {
+    let err = |e: crate::error::AppError| {
+        UpdateDidWebvhError::Persistence(format!("derive {key_type:?} at `{path}`: {e}"))
+    };
+    let secret = match key_type {
+        KeyType::Ed25519 => root.derive_ed25519(path).map_err(err)?,
+        KeyType::X25519 => root.derive_x25519(path).map_err(err)?,
+        KeyType::MlDsa44 => root.derive_ml_dsa_44(path).map_err(err)?,
+        KeyType::MlDsa65 => root.derive_ml_dsa_65(path).map_err(err)?,
+        KeyType::P256 => {
+            use p256::elliptic_curve::sec1::ToSec1Point;
+            let secret = root.derive_p256(path).map_err(err)?;
+            let point = secret.secret_key.public_key().to_sec1_point(true);
+            return Ok(encode_public_multibase(&KeyType::P256, point.as_bytes()));
+        }
+        #[allow(unreachable_patterns)]
+        other => {
+            return Err(UpdateDidWebvhError::InvalidDocument(format!(
+                "rotation cannot mint a {other:?} key"
+            )));
+        }
+    };
+    secret
+        .get_public_keymultibase()
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("public key encoding: {e}")))
+}
+
+/// Identify a published key's algorithm from its multicodec prefix.
+fn key_type_of_multibase(public: &str) -> Option<KeyType> {
+    let (_, bytes) = multibase::decode(public).ok()?;
+    [
+        KeyType::Ed25519,
+        KeyType::X25519,
+        KeyType::P256,
+        KeyType::MlDsa44,
+        KeyType::MlDsa65,
+    ]
+    .into_iter()
+    .find(|t| bytes.starts_with(t.multicodec_public()))
 }
