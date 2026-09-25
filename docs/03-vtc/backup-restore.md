@@ -3,10 +3,16 @@
 The VTC holds a community's irreplaceable social state — members, ACL,
 endorsements, relationships, policies, the audit log, and the bitstring
 **status lists** whose loss bricks every issued VMC's `credentialStatus`.
-`POST /v1/backup/export` and `POST /v1/backup/import` capture and restore that
-state in a single password-encrypted artifact.
+A backup captures and restores that state in a single password-encrypted
+artifact.
 
-Both endpoints are **super-admin only**.
+Backup and restore are **super-admin only**, and they travel **only over DIDComm
+or TSP**. The request carries the backup password, and the backup carries the
+community's signing key. Over REST both would exist in plaintext wherever TLS
+terminates. So `POST /v1/backup/export` and `POST /v1/backup/import` always
+answer 403, and the Trust Tasks are refused on the HTTPS binding. An export is
+recorded in the audit log **before** it is released, and a VTC with no audit
+trail refuses to export.
 
 ## What's in a backup
 
@@ -67,17 +73,11 @@ The file is created readable by its owner only (`0600` on Unix, an owner-only
 ACL on Windows). An existing file is never overwritten unless you pass
 `--force`.
 
-Under the hood this is `POST /v1/backup/export` (super-admin) — to script it
-directly:
-
-```sh
-curl -sS -X POST https://vtc.example.com/v1/backup/export \
-  -H "Authorization: Bearer $SUPER_ADMIN_JWT" \
-  -H 'Trust-Task: https://trusttasks.org/openvtc/vtc/backup/export/1.0' \
-  -H 'Content-Type: application/json' \
-  -d '{"password":"correct-horse-battery-staple","include_audit":true}' \
-  > vtc-backup.json
-```
+Under the hood `cnm` opens a TSP session to the VTC, or a DIDComm session when
+the VTC advertises no TSP. It then runs the `backup/*` chunked transfer:
+`initiate-export`, one `get-chunk` per chunk, and `complete-export`. Each chunk
+is checked against the manifest, and the whole against its committed digest. A
+VTC that advertises neither transport cannot be backed up this way.
 
 ## Restore
 
@@ -89,21 +89,10 @@ Restore is a two-step **preview → confirm** to prevent fat-finger overwrites.
 cnm backup import vtc-backup-<slug>-<timestamp>.vtcbak [--preview]
 ```
 
-Equivalent REST (the CLI just drives these two calls):
-
-```sh
-# 1. Preview — decrypts, checks identity, returns per-keyspace row counts.
-#    Mutates nothing.
-curl -sS -X POST https://vtc.example.com/v1/backup/import \
-  -H "Authorization: Bearer $SUPER_ADMIN_JWT" \
-  -H 'Trust-Task: https://trusttasks.org/openvtc/vtc/backup/import/1.0' \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -n --slurpfile b vtc-backup.json \
-        '{backup:$b[0], password:"correct-horse-battery-staple", confirm:false}')"
-
-# 2. Apply — clears the backed-up keyspaces and replays the backup.
-#    Same body with confirm:true.
-```
+Under the hood this is the `backup/*` chunked upload over the same session:
+`initiate-import`, then one `put-chunk` per chunk, then `finalize-import`.
+`finalize-import` carries the password, with `confirm: false` for the preview
+and `confirm: true` to apply.
 
 After a successful import, **restart the daemon** so it serves the restored
 identity.

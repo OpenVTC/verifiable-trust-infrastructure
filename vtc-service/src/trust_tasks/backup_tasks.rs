@@ -133,6 +133,18 @@ pub(super) async fn dispatch(
     if let Err(e) = actor.require_super_admin() {
         return Some(app_error_to_reject(&doc, &e));
     }
+    // The verbs that carry the password, or open the bundle it unlocks, are
+    // served only end to end. The chunks are ciphertext.
+    let channel_bound = match handler {
+        Op::InitiateExport => Some("export"),
+        Op::InitiateImport | Op::FinalizeImport => Some("import"),
+        _ => None,
+    };
+    if let Some(what) = channel_bound
+        && let Err(reject) = super::refuse_hop_by_hop_backup(ctx, &doc, what)
+    {
+        return Some(reject);
+    }
     Some(match handler {
         Op::InitiateExport => handle_initiate_export(state, &actor, doc).await,
         Op::GetChunk => handle_get_chunk(state, &actor, doc).await,
@@ -676,7 +688,9 @@ mod tests {
     use sha2::Digest as _;
     use vti_rooms_dtg::test_support::Party;
 
-    use super::super::members_admin_tests::{dispatch, error_code, payload_of, seed_acl, signed};
+    use super::super::members_admin_tests::{
+        dispatch, dispatch_didcomm, error_code, payload_of, seed_acl, signed,
+    };
 
     const PASSWORD: &str = "a-long-enough-backup-password";
     const MIN: u64 = vta_sdk::protocols::backup_management::chunked::MIN_CHUNK_SIZE;
@@ -728,6 +742,11 @@ mod tests {
     }
 
     async fn send(fix: &Fixture, from: &Party, uri: &str, payload: Value) -> TrustTaskOutcome {
+        dispatch_didcomm(&fix.vtc, &signed(from, uri, payload).await).await
+    }
+
+    /// As [`send`], over the REST binding.
+    async fn send_rest(fix: &Fixture, from: &Party, uri: &str, payload: Value) -> TrustTaskOutcome {
         dispatch(&fix.vtc, &signed(from, uri, payload).await).await
     }
 
@@ -1095,5 +1114,38 @@ mod tests {
             error_code(&out).as_deref(),
             Some("backup/finalize-import:decryptionFailed")
         );
+    }
+
+    /// The verbs that carry the password, or open the bundle it unlocks, are
+    /// refused over REST; nothing is minted.
+    #[tokio::test]
+    async fn the_password_bearing_verbs_are_refused_over_rest() {
+        let fix = fixture().await;
+        for (uri, payload) in [
+            (
+                INITIATE_EXPORT_TYPE,
+                json!({ "password": "a-long-enough-backup-password", "algorithm": ALGORITHM_CHUNKED }),
+            ),
+            (
+                FINALIZE_IMPORT_TYPE,
+                json!({
+                    "bundleId": uuid::Uuid::new_v4().to_string(),
+                    "password": "a-long-enough-backup-password",
+                    "confirm": false,
+                }),
+            ),
+        ] {
+            let out = send_rest(&fix, &fix.super_admin, uri, payload).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("permissionDenied"),
+                "{uri}: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+            assert!(
+                String::from_utf8_lossy(&out.body).contains("over REST"),
+                "{uri}"
+            );
+        }
     }
 }

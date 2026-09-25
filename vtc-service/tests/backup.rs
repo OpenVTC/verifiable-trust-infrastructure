@@ -347,22 +347,10 @@ async fn excluding_the_audit_log_also_excludes_its_checkpoints() {
 }
 
 // ---------------------------------------------------------------------------
-// #1600 — the codes `vtc/backup/{export,import}/0.1` declare, read from the
-// generated bindings and observed through the REST routes.
+// The bearer routes refuse: a backup moves only over DIDComm or TSP. The codes
+// `vtc/backup/{export,import}/0.1` declare are covered on the Trust Task door
+// (`trust_tasks::backup_export_tests`, `trust_tasks::backup_tasks`).
 // ---------------------------------------------------------------------------
-
-const EXPORT_ERR_PASSWORD_TOO_SHORT: &str =
-    trust_tasks_rs::specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT.code;
-const IMPORT_ERR_DECRYPTION_FAILED: &str =
-    trust_tasks_rs::specs::vtc::backup::import::v0_1::error_codes::DECRYPTION_FAILED.code;
-
-const EXPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
-const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
-
-/// The extended error code carried by a REST error body (`{"error", "code"}`).
-fn rest_error_code(body: &serde_json::Value) -> &str {
-    body["code"].as_str().unwrap_or_default()
-}
 
 async fn post_backup(
     vtc: &TestVtc,
@@ -390,84 +378,38 @@ async fn post_backup(
     )
 }
 
-/// A password under the minimum is `passwordTooShort` (400, unchanged).
-/// The minimum is the workspace's `MIN_BACKUP_PASSWORD_LEN`, so one character
-/// short of it is the boundary.
+/// A super-admin with a valid envelope and its password is still refused over
+/// REST, for export and import alike, and nothing is imported.
 #[tokio::test]
-async fn the_export_task_answers_with_the_code_its_spec_declares() {
-    let vtc = TestVtc::builder().vtc_did(VTC_DID).build().await;
-    let short = "x".repeat(vta_sdk::protocols::backup_management::MIN_BACKUP_PASSWORD_LEN - 1);
-    let (status, body) = post_backup(
-        &vtc,
-        "/v1/backup/export",
-        EXPORT_TASK,
-        serde_json::json!({ "password": short }),
-    )
-    .await;
-    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(
-        rest_error_code(&body),
-        EXPORT_ERR_PASSWORD_TOO_SHORT,
-        "{body}"
-    );
-}
-
-/// A password that does not decrypt the envelope is `decryptionFailed`
-/// (401, unchanged), and so is a ciphertext altered after export — both fail
-/// the same GCM tag. An envelope of the wrong shape is not: it is a 400 with
-/// no code, because nothing was decrypted.
-#[tokio::test]
-async fn the_import_task_answers_with_the_code_its_spec_declares() {
+async fn backup_export_and_import_are_refused_over_rest() {
     let a = TestVtc::builder().vtc_did(VTC_DID).build().await;
     let a_store = PlaintextSecretStore::new(a.data_dir());
-    a_store.set(b"bundle").await.unwrap();
-    let envelope = export_backup(&a.state, &a_store, PW, false).await.unwrap();
-    let envelope = serde_json::to_value(&envelope).unwrap();
-
-    let b = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    a_store.set(b"signing-bundle").await.unwrap();
+    let envelope =
+        serde_json::to_value(export_backup(&a.state, &a_store, PW, false).await.unwrap()).unwrap();
 
     let (status, body) = post_backup(
-        &b,
-        "/v1/backup/import",
-        IMPORT_TASK,
-        serde_json::json!({ "backup": envelope, "password": "not-the-password-at-all" }),
+        &a,
+        "/v1/backup/export",
+        "https://trusttasks.org/spec/vtc/backup/export/0.1",
+        serde_json::json!({ "password": PW }),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(
-        rest_error_code(&body),
-        IMPORT_ERR_DECRYPTION_FAILED,
-        "{body}"
-    );
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("DIDComm or TSP"), "{body}");
 
-    // Flip the first ciphertext character to another base64 digit.
-    let mut tampered = envelope.clone();
-    let ct = tampered["ciphertext"].as_str().unwrap().to_string();
-    let first = if ct.starts_with('A') { "B" } else { "A" };
-    tampered["ciphertext"] = serde_json::Value::String(format!("{first}{}", &ct[1..]));
-    let (status, body) = post_backup(
-        &b,
-        "/v1/backup/import",
-        IMPORT_TASK,
-        serde_json::json!({ "backup": tampered, "password": PW }),
-    )
-    .await;
-    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(
-        rest_error_code(&body),
-        IMPORT_ERR_DECRYPTION_FAILED,
-        "{body}"
-    );
-
-    let mut unsupported = envelope.clone();
-    unsupported["version"] = serde_json::json!(999);
-    let (status, body) = post_backup(
-        &b,
-        "/v1/backup/import",
-        IMPORT_TASK,
-        serde_json::json!({ "backup": unsupported, "password": PW }),
-    )
-    .await;
-    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(rest_error_code(&body), "", "{body}");
+    for confirm in [false, true] {
+        let (status, body) = post_backup(
+            &a,
+            "/v1/backup/import",
+            "https://trusttasks.org/spec/vtc/backup/import/0.1",
+            serde_json::json!({ "backup": envelope, "password": PW, "confirm": confirm }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::FORBIDDEN,
+            "confirm={confirm}: {body}"
+        );
+    }
 }

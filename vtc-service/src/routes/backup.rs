@@ -1,14 +1,14 @@
 //! Encrypted backup / restore endpoints (P3.9).
 //!
-//! `POST /v1/backup/export` → encrypted [`BackupEnvelope`];
-//! `POST /v1/backup/import` applies one (or, with `confirm = false`,
-//! previews it). Both are super-admin only. The heavy lifting —
+//! `POST /v1/backup/export` and `POST /v1/backup/import` are **refused**: a
+//! backup moves only over DIDComm or TSP. [`export_inner`] and
+//! [`import_inner`] are what the Trust Task handlers call. The heavy lifting —
 //! keyspace census, crypto, identity guard, crash-safe replay — lives in
 //! [`crate::backup`].
 
 use axum::Json;
 use axum::extract::State;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::auth::SuperAdminAuth;
 use crate::backup::{self, BackupEnvelope, ImportResult};
@@ -17,29 +17,7 @@ use crate::keys::seed_store::create_secret_store;
 use crate::server::AppState;
 use crate::store::keyspaces;
 use vti_common::audit::{AuditEvent, BackupData};
-
-/// `POST /v1/backup/export` body.
-#[derive(Deserialize, utoipa::ToSchema)]
-#[schema(as = BackupExportRequest)]
-#[serde(rename_all = "camelCase")]
-pub struct ExportRequest {
-    /// Encryption password (Argon2id). Minimum 15 characters.
-    pub password: String,
-    /// Include the audit log in the backup. Default `false` — audit logs
-    /// can be large and carry plaintext DIDs.
-    #[serde(default)]
-    pub include_audit: bool,
-}
-
-/// Written by hand so the backup password never reaches a log: a derived `Debug` would print it.
-impl std::fmt::Debug for ExportRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ExportRequest")
-            .field("password", &"<redacted>")
-            .field("include_audit", &self.include_audit)
-            .finish()
-    }
-}
+use vti_common::error::AppError;
 
 /// `{ envelope: … }` — the shape `vtc/backup/export/0.1` publishes.
 ///
@@ -52,61 +30,38 @@ pub struct ExportResponse {
     pub envelope: BackupEnvelope,
 }
 
-/// `POST /v1/backup/import` body.
-#[derive(Deserialize, utoipa::ToSchema)]
-#[schema(as = BackupImportRequest)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportRequest {
-    /// The encrypted backup envelope produced by `export`.
-    pub backup: BackupEnvelope,
-    /// The password the backup was encrypted with.
-    pub password: String,
-    /// `false` (default) previews the restore (row counts, no mutation);
-    /// `true` clears the backed-up keyspaces and applies the backup.
-    #[serde(default)]
-    pub confirm: bool,
-}
-
-/// Written by hand so the backup password never reaches a log: a derived `Debug` would print it.
-impl std::fmt::Debug for ImportRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ImportRequest")
-            .field("backup", &self.backup)
-            .field("password", &"<redacted>")
-            .field("confirm", &self.confirm)
-            .finish()
-    }
-}
-
-/// POST /backup/export — encrypted full-state backup. Auth: super-admin.
+/// POST /backup/export — **refused**. Auth: super-admin.
 ///
-/// **Transitional bearer-token path (#1641).**
-/// `vtc/backup/export/0.1` declares `proof` REQUIRED, and the authoritative
-/// binding is the signed Trust Task document at `POST /v1/trust-tasks`, where
-/// the proof authenticates the super-administrator and their authority is
-/// read from their ACL entry. This route authenticates by bearer JWT and
-/// verifies no document proof; it is kept because `vtc-client` calls it, and
-/// it is removed once that client signs.
+/// The request carries the backup password and the reply is the backup it
+/// opens, so over REST both exist in plaintext wherever TLS terminates. A
+/// community backup is exported only over DIDComm or TSP (`vtc/backup/export`
+/// or the `backup/*` family), per the backup Channel requirement
+/// (trustoverip/dtgwg-trust-tasks-tf#646). The route stays so an old client
+/// gets a reason rather than a 404.
 #[utoipa::path(
     post, path = "/backup/export", tag = "backup",
     security(("bearer_jwt" = [])),
-    request_body = ExportRequest,
     responses(
-        (status = 200, description = "Encrypted full-state backup", body = ExportResponse),
-        (status = 400, description = "Password too short"),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
+        (status = 403, description = "Always: a backup is not exported over REST"),
     ),
 )]
 pub async fn export(
-    SuperAdminAuth(auth): SuperAdminAuth,
-    State(state): State<AppState>,
-    Json(req): Json<ExportRequest>,
+    SuperAdminAuth(_auth): SuperAdminAuth,
+    State(_state): State<AppState>,
 ) -> Result<Json<ExportResponse>, TaskError> {
-    export_inner(&state, &auth.did, &req.password, req.include_audit)
-        .await
-        .map(Json)
+    Err(TaskError::App(AppError::Forbidden(
+        REST_EXPORT_REFUSED.into(),
+    )))
 }
+
+const REST_EXPORT_REFUSED: &str = "a backup export is refused over REST: the backup password \
+    and the backup would exist in plaintext wherever TLS terminates. Export over DIDComm or TSP \
+    (cnm backup export does)";
+
+const REST_IMPORT_REFUSED: &str = "a backup import is refused over REST: the backup and the \
+    password that opens it would exist in plaintext wherever TLS terminates. Import over DIDComm \
+    or TSP (cnm backup import does)";
 
 /// The export, independent of the door it was asked through — the bearer
 /// route above and the signed `vtc/backup/export/0.1` document
@@ -118,43 +73,49 @@ pub(crate) async fn export_inner(
     password: &str,
     include_audit: bool,
 ) -> Result<ExportResponse, TaskError> {
+    // A backup carries the community's keys, and an unrecorded copy of them is
+    // not permitted: with no audit trail to write to, the export is refused
+    // before anything is serialized, and the row is written before the
+    // envelope is returned. A failed write refuses the export.
+    let Some(writer) = state.audit_writer.as_ref() else {
+        return Err(TaskError::App(AppError::Internal(
+            "the backup was not exported: this VTC has no audit trail to record it in, and an \
+             unrecorded export is not permitted"
+                .into(),
+        )));
+    };
     let store = create_secret_store(&*state.config.read().await)?;
     let envelope = backup::export_backup(state, store.as_ref(), password, include_audit).await?;
-    if let Some(writer) = state.audit_writer.as_ref() {
-        writer
-            .write(
-                actor_did,
-                None,
-                AuditEvent::BackupExported(BackupData {
-                    keyspace_count: keyspaces::BACKED_UP.len() as u32,
-                    vtc_did: envelope.source_did.clone(),
-                }),
-            )
-            .await?;
-    }
+    writer
+        .write(
+            actor_did,
+            None,
+            AuditEvent::BackupExported(BackupData {
+                keyspace_count: keyspaces::BACKED_UP.len() as u32,
+                vtc_did: envelope.source_did.clone(),
+            }),
+        )
+        .await?;
     Ok(ExportResponse { envelope })
 }
 
+/// POST /backup/import — **refused**. Auth: super-admin. Import over DIDComm
+/// or TSP with the `backup/*` family instead; see [`export`].
 #[utoipa::path(
     post, path = "/backup/import", tag = "backup",
     security(("bearer_jwt" = [])),
-    request_body = ImportRequest,
     responses(
-        (status = 200, description = "Import applied, or (confirm=false) a preview", body = ImportResult),
-        (status = 400, description = "Malformed / unsupported backup"),
-        (status = 401, description = "Wrong backup password or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
-        (status = 409, description = "Backup vtc_did does not match this VTC"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Always: a backup is not imported over REST"),
     ),
 )]
 pub async fn import(
-    SuperAdminAuth(auth): SuperAdminAuth,
-    State(state): State<AppState>,
-    Json(req): Json<ImportRequest>,
+    SuperAdminAuth(_auth): SuperAdminAuth,
+    State(_state): State<AppState>,
 ) -> Result<Json<ImportResult>, TaskError> {
-    import_inner(&state, &auth.did, &req.backup, &req.password, req.confirm)
-        .await
-        .map(Json)
+    Err(TaskError::App(AppError::Forbidden(
+        REST_IMPORT_REFUSED.into(),
+    )))
 }
 
 /// The import, independent of the door — this bearer route with the envelope
