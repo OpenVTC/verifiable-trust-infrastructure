@@ -59,6 +59,18 @@ fn view(row: PolicyModule) -> PolicyModuleView {
     }
 }
 
+/// Whether `auth` may read a policy row. A super-admin reads every row. Anyone
+/// else reads the rows that govern them: a global row (empty `applies_to`) and a
+/// row naming a context they may act in. A row that applies only to other
+/// contexts is not theirs to read (VTI-CTX-002). The admin role alone used to
+/// show every context's rules, the defences of tenants the caller has no
+/// authority over.
+fn policy_visible_to(auth: &AuthClaims, applies_to: &[String]) -> bool {
+    auth.is_super_admin()
+        || applies_to.is_empty()
+        || applies_to.iter().any(|c| auth.has_context_access(c))
+}
+
 /// `policy/list/0.2`. Auth: admin (reading policy is not a secret-bearing act,
 /// but it does disclose the shape of the VTA's defences).
 pub async fn list_policies(
@@ -78,6 +90,7 @@ pub async fn list_policies(
 
     let mut matching: Vec<PolicyModule> = rows
         .into_iter()
+        .filter(|r| policy_visible_to(auth, &r.applies_to))
         .filter(|r| !enabled_only || r.enabled)
         .filter(|r| match context_id {
             // An unscoped policy applies everywhere, so it matches every
@@ -111,7 +124,8 @@ pub async fn list_policies(
     })
 }
 
-/// `policy/get/0.1`. Auth: admin.
+/// `policy/get/0.1`. Auth: admin or initiator, limited to rows it may read
+/// ([`policy_visible_to`]).
 pub async fn get_policy(
     policy_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -119,8 +133,11 @@ pub async fn get_policy(
     channel: &str,
 ) -> Result<GetPolicyResultBody, AppError> {
     auth.require_manage()?;
+    // A row outside the caller's reach answers exactly as a missing one does,
+    // so `get` cannot be used to discover another context's rules.
     let row = storage::get_policy(policy_ks, id)
         .await?
+        .filter(|r| policy_visible_to(auth, &r.applies_to))
         .ok_or_else(|| AppError::NotFound(format!("policy `{id}` not found")))?;
     tracing::info!(channel, caller = %auth.did, policy = id, "policy get");
     Ok(GetPolicyResultBody { policy: view(row) })
@@ -467,6 +484,66 @@ mod tests {
     }
 
     /// Whoever can write policy can delete the rule that gates them.
+    /// VTI-CTX-002: a scoped caller reads the policy that governs it (global
+    /// rows and its own contexts'), never another context's. `get` answers a
+    /// row outside its reach as NotFound, so it cannot probe for them.
+    #[tokio::test]
+    async fn a_scoped_caller_reads_only_the_policy_that_governs_it() {
+        let (policy_ks, audit, _d) = keyspaces().await;
+        for (id, applies_to) in [
+            ("global", vec![]),
+            ("for-a", vec!["ctx-a".to_string()]),
+            ("for-b", vec!["ctx-b".to_string()]),
+        ] {
+            upsert_policy(
+                &policy_ks,
+                &audit,
+                &super_admin(),
+                UpsertPolicyBody {
+                    id: Some(id.into()),
+                    name: id.into(),
+                    description: None,
+                    module: HAND_REGO.into(),
+                    applies_to,
+                    priority: Some(10),
+                    enabled: true,
+                    expected_version: None,
+                    ext: serde_json::json!({}),
+                },
+                "test",
+            )
+            .await
+            .expect("seed policy");
+        }
+
+        let ids = async |auth: &AuthClaims| {
+            let mut v: Vec<String> = list_policies(&policy_ks, auth, None, false, None, "test")
+                .await
+                .unwrap()
+                .policies
+                .into_iter()
+                .map(|p| p.id)
+                .collect();
+            v.sort();
+            v
+        };
+        let scoped = ids(&admin_only()).await;
+        assert!(scoped.contains(&"global".to_string()), "{scoped:?}");
+        assert!(scoped.contains(&"for-a".to_string()), "{scoped:?}");
+        assert!(!scoped.contains(&"for-b".to_string()), "{scoped:?}");
+        assert!(ids(&super_admin()).await.contains(&"for-b".to_string()));
+
+        let err = get_policy(&policy_ks, &admin_only(), "for-b", "test")
+            .await
+            .expect_err("another context's policy is not visible");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+        assert!(
+            get_policy(&policy_ks, &admin_only(), "for-a", "test")
+                .await
+                .is_ok()
+        );
+    }
+
     #[tokio::test]
     async fn writing_policy_is_super_admin_only() {
         let (policy_ks, audit, _d) = keyspaces().await;

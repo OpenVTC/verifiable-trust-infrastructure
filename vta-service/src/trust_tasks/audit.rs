@@ -40,21 +40,50 @@ pub(super) async fn handle_list_logs(
     }
 }
 
-/// Handler for the canonical `audit/verify/0.1`. Admin only.
+/// Handler for the canonical `audit/verify/0.1`. Super-admin only.
 ///
 /// Verifying is a read of the whole log, so it takes the same authority
-/// reading the log takes — and the answer is about the log as a whole, so
-/// there is no context-scoped form of the question.
+/// reading the whole log takes: `audit/list` without a `contextId` needs a
+/// super-admin. The answer is about the log as a whole (entry counts, head
+/// digest, where the chain breaks), so there is no context-scoped form of
+/// the question. The admin role alone used to suffice, which let a
+/// context-scoped admin read facts about every context's activity.
+///
+/// VTI-AUD-006: access to the audit trail is authorized *and audited*. Both
+/// a verification and a refusal leave a row.
 pub(super) async fn handle_verify_chain(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
+    if let Err(e) = auth.require_super_admin() {
+        crate::audit::record_with_detail_best_effort(
+            &state.audit_sink,
+            "audit.verify",
+            &auth.did,
+            None,
+            "denied",
+            Some(TRANSPORT_TRUST_TASK),
+            None,
+            Some("verifying the whole audit log requires a super-admin"),
+        )
+        .await;
         return app_error_to_reject(&doc, e);
     }
     match operations::audit::verify_audit_chain(&state.audit_ks).await {
-        Ok(report) => success_response(&doc, report),
+        Ok(report) => {
+            crate::audit::record_best_effort(
+                &state.audit_sink,
+                "audit.verify",
+                &auth.did,
+                None,
+                "success",
+                Some(TRANSPORT_TRUST_TASK),
+                None,
+            )
+            .await;
+            success_response(&doc, report)
+        }
         Err(e) => app_error_to_reject(&doc, e),
     }
 }

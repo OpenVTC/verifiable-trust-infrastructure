@@ -12,8 +12,16 @@ use uuid::Uuid;
 use crate::acl::{
     AclEntry, Capability, CompanionFormFactor, ConsumerKind, DeviceBinding, ServiceKind,
     WakeChannel, effective_capabilities, get_acl_entry, is_acl_entry_visible, list_acl_entries,
-    store_acl_entry,
+    store_acl_entry, validate_role_assignment,
 };
+
+/// Whether `auth` may manage the device bound to `entry`: it can see the entry
+/// (context scope) *and* is at least as privileged as the entry's role, the
+/// rule `acl/delete` applies to the same entry. Visibility alone let an
+/// initiator disable or wipe the device of an admin in its context.
+fn device_manageable_by(auth: &AuthClaims, entry: &AclEntry) -> bool {
+    is_acl_entry_visible(auth, entry) && validate_role_assignment(auth, &entry.role).is_ok()
+}
 use crate::audit;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
@@ -225,7 +233,7 @@ pub async fn list_devices(
         // above is role-only, and on its own it handed a context-scoped admin
         // every binding on the VTA — including the hostname, platform and
         // activity window of machines in contexts they hold no rights in.
-        if !is_acl_entry_visible(auth, entry) {
+        if !device_manageable_by(auth, entry) {
             continue;
         }
         if !payload.include_disabled && b.disabled_at.is_some() {
@@ -301,7 +309,8 @@ fn form_factor_matches(
 /// the id exists, turning the error into an oracle for enumerating device ids
 /// the caller cannot otherwise see. Same reading as the vault's use paths.
 ///
-/// [`is_acl_entry_visible`] is the *management* predicate, not the wider
+/// [`device_manageable_by`] (visibility plus [`validate_role_assignment`]) is
+/// the *management* predicate, not the wider
 /// [`crate::acl::is_acl_entry_auditable`] used by `acl list`. Both mutations here plainly
 /// need management authority, and `device/list` reads the same way on purpose:
 /// a binding carries operational metadata about a **machine** — hostname,
@@ -318,7 +327,7 @@ async fn find_manageable_device(
         .await?
         .into_iter()
         .find(|e| e.device.as_ref().map(|b| b.device_id.as_str()) == Some(device_id))
-        .filter(|e| is_acl_entry_visible(auth, e))
+        .filter(|e| device_manageable_by(auth, e))
         .ok_or_else(|| AppError::NotFound(format!("{op} — no device with id {device_id}")))
 }
 
@@ -1232,6 +1241,39 @@ mod tests {
             .device
             .unwrap()
             .device_id
+    }
+
+    /// Managing a device follows `acl/delete`: context scope *and* privilege.
+    /// An initiator in the same context can neither see nor disable nor wipe an
+    /// admin's device; the context's admin can.
+    #[tokio::test]
+    async fn an_initiator_cannot_manage_an_admins_device() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered_in(&acl_ks, &audit, "did:key:zBoss", &["acme"], "boss-laptop").await;
+        let mut entry = get_acl_entry(&acl_ks, "did:key:zBoss")
+            .await
+            .unwrap()
+            .unwrap();
+        entry.role = Role::Admin;
+        store_acl_entry(&acl_ks, &entry).await.unwrap();
+        let id = device_id_of(&acl_ks, "did:key:zBoss").await;
+
+        let initiator = AuthClaims {
+            role: Role::Initiator,
+            ..context_admin("did:key:zInit", &["acme"])
+        };
+        assert!(listed_names(&acl_ks, &initiator).await.is_empty());
+        let err = disable_device(&acl_ks, &audit, &initiator, &id)
+            .await
+            .expect_err("an initiator must not disable an admin's device");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+        let err = wipe_device(&acl_ks, &audit, &initiator, &id, "lost", "full")
+            .await
+            .expect_err("an initiator must not wipe an admin's device");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+
+        let admin = context_admin("did:key:zAcmeAdmin", &["acme"]);
+        assert!(disable_device(&acl_ks, &audit, &admin, &id).await.is_ok());
     }
 
     /// The #1216 defect: `require_manage` is role-only, so a context admin read
