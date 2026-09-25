@@ -24,11 +24,21 @@
 //!
 //! This mirrors the step-up "reject → approve → re-submit" loop, but the
 //! authorization is bound to the payload digest rather than the session.
+//!
+//! **Node-neutral.** Every node type that runs the ceremony — the VTA's PDP
+//! gate and the VTC's unrestricted-admin gate (VTI-APV-014) — keeps its
+//! pending requests and grants through this module, so the digest, the
+//! single-use consume and the expiry rules cannot drift between them. What a
+//! node gates on, who its approvers are and how it pushes the request stay
+//! with the node. `vta_policy::consent` re-exports this module.
+
+pub mod effects;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use vti_common::error::AppError;
-use vti_common::store::KeyspaceHandle;
+
+use crate::error::AppError;
+use crate::store::KeyspaceHandle;
 
 const PENDING_PREFIX: &[u8] = b"pending:";
 const GRANT_PREFIX: &[u8] = b"grant:";
@@ -36,6 +46,12 @@ const WIRE_INDEX_PREFIX: &[u8] = b"wire:";
 
 /// Domain-separation tag: keeps these digests from colliding with any other
 /// SHA-256 over a canonical payload elsewhere in the system.
+///
+/// The `vta/` prefix predates the module's move out of `vta-policy` and is
+/// kept deliberately: the digest keys stored pending requests and grants, so
+/// changing the tag would orphan every ceremony in flight across an upgrade.
+/// It separates this digest from other digests, not one node from another —
+/// pendings and grants never leave the node that minted them.
 const DIGEST_DOMAIN: &[u8] = b"vta/task-consent/v1\0";
 
 /// Deterministic digest of a task: SHA-256 over the type URI and the RFC 8785
@@ -83,15 +99,33 @@ fn digest_with(
     payload: &serde_json::Value,
     challenge: Option<&str>,
 ) -> Result<String, AppError> {
+    domain_digest(DIGEST_DOMAIN, type_uri, payload, challenge)
+}
+
+/// The construction under [`payload_digest`] and [`wire_digest`], for another
+/// domain: SHA-256 over `domain`, the length-prefixed type URI, the
+/// length-prefixed RFC 8785 canonical payload and, when given, the salt — as a
+/// base58btc multibase multihash.
+///
+/// For a digest that binds one operation the same way but must never be
+/// mistaken for a task-consent digest: the VTC's operation-bound step-up mark
+/// (`vtc/step-up/v1\0`) is one. `domain` should end in a NUL so no tag is a
+/// prefix of another.
+pub fn domain_digest(
+    domain: &[u8],
+    type_uri: &str,
+    payload: &serde_json::Value,
+    salt: Option<&str>,
+) -> Result<String, AppError> {
     let canonical = serde_json_canonicalizer::to_string(payload)
         .map_err(|e| AppError::Internal(format!("payload JCS canonicalization failed: {e}")))?;
     let mut h = Sha256::new();
-    h.update(DIGEST_DOMAIN);
+    h.update(domain);
     h.update((type_uri.len() as u64).to_be_bytes());
     h.update(type_uri.as_bytes());
     h.update((canonical.len() as u64).to_be_bytes());
     h.update(canonical.as_bytes());
-    if let Some(c) = challenge {
+    if let Some(c) = salt {
         h.update(c.as_bytes());
     }
     Ok(encode_digest_multibase(&h.finalize()))
@@ -180,10 +214,10 @@ pub struct PendingTaskConsent {
     /// re-assert: a human in the loop makes the window minutes wide, so the world
     /// can move underneath an approval.
     #[serde(default)]
-    pub state_pin: Option<crate::effects::StatePin>,
+    pub state_pin: Option<effects::StatePin>,
     /// Executor-internal preconditions to re-assert at execution.
     #[serde(default)]
-    pub guards: vti_common::guards::Guards,
+    pub guards: crate::guards::Guards,
     /// The context whose admin authority the task acts under (webvh update: the
     /// DID's context), when the planner could determine it. An approver must
     /// administer this context for their approval to confer execution authority.
@@ -214,9 +248,9 @@ pub struct TaskConsentGrant {
     /// Carried from the pending request: what the approvers were shown, and what
     /// execution must still find true.
     #[serde(default)]
-    pub state_pin: Option<crate::effects::StatePin>,
+    pub state_pin: Option<effects::StatePin>,
     #[serde(default)]
-    pub guards: vti_common::guards::Guards,
+    pub guards: crate::guards::Guards,
     /// Contexts this grant confers admin authority in for the single execution
     /// that consumes it. Empty for an ordinary same-context consent (the
     /// requester already held the context); populated only when the approvals
@@ -414,9 +448,9 @@ pub async fn consume_grant(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::StoreConfig;
+    use crate::store::Store;
     use serde_json::json;
-    use vta_config::StoreConfig;
-    use vti_common::store::Store;
 
     async fn temp_ks() -> (KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -424,7 +458,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        (store.keyspace(vta_keyspaces::TASK_CONSENT).unwrap(), dir)
+        (store.keyspace("task_consent").unwrap(), dir)
     }
 
     const T_UPDATE: &str = "https://trusttasks.org/spec/webvh/dids/update/1.0";
@@ -540,6 +574,32 @@ mod tests {
         assert_ne!(
             payload_digest("ab", &json!("c")).unwrap(),
             payload_digest("a", &json!("bc")).unwrap(),
+        );
+    }
+
+    /// Fixed vectors, computed independently of this code. The digest keys
+    /// stored pendings and grants and is what approvers sign, so a change to
+    /// the construction — even one every round-trip test above would still
+    /// pass — must fail here first.
+    #[test]
+    fn digest_matches_its_pinned_vectors() {
+        const URI: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+        let p = json!({ "role": "admin", "did": "did:key:z6MkA" });
+        assert_eq!(
+            payload_digest(URI, &p).unwrap(),
+            "zQmNsLmSgtT4jrcgWEC8nHhjambJmen2phxzMKVrCoDWL4Q"
+        );
+        assert_eq!(
+            wire_digest(URI, &p, "chal").unwrap(),
+            "zQmYdqiqiHsozX3N5NRnM6CmYRwWmPo4P5Pu1MVopiCfwa2"
+        );
+        assert_eq!(
+            domain_digest(b"vtc/step-up/v1\0", URI, &p, None).unwrap(),
+            "zQmcC7Puan5QbvK5HZ5HWSzrfr7m9pLk8ajR6JRfvB2BG7k"
+        );
+        assert_eq!(
+            domain_digest(b"vtc/step-up/v1\0", URI, &p, Some("chal")).unwrap(),
+            "zQmc1qnh2HJTpPzHCsPV81Dred9WPgqRKBooU7WYZdGqJEi"
         );
     }
 

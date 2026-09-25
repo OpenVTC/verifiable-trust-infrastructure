@@ -11142,11 +11142,9 @@ name = "vta-policy"
 version = "0.3.22"
 dependencies = [
  "hex",
- "multibase",
  "regorus",
  "serde",
  "serde_json",
- "serde_json_canonicalizer",
  "sha2 0.11.0",
  "tempfile",
  "tokio",
@@ -11604,6 +11602,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2 0.11.0",
  "subtle",
  "tempfile",

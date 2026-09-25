@@ -51,7 +51,7 @@ any identity it holds. Only two things do:
 - **(i) Don't give one process that credential.** Split, so each process holds
   one identity's authority.
 - **(ii) Require a factor the attacker cannot supply** — end-user consent,
-  out-of-band ratification. The VTA has these (`vta-policy/src/consent.rs`,
+  out-of-band ratification. The VTA has these (`vti-common/src/task_consent/`,
   step-up, `confirm/1.0`), and they are appropriate for high-value discrete
   operations. They are not appropriate per-request on a gateway attesting every
   proxied LLM call.

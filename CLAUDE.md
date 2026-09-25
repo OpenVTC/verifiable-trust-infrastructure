@@ -800,7 +800,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   (#907). Ceremony tasks are exempt from PDP re-gating
   (`trust_tasks/ceremony.rs`). Two digests: internal `payload_digest` keys
   storage, challenge-salted `wire_digest` is all the approver ever sees.
-- **Code**: `vta-policy/src/{consent,approvals,defaults,effects,types}.rs`,
+- **Code**: `vta-policy/src/{approvals,defaults,types}.rs`, `vti-common/src/task_consent/` (the node-neutral pending/grant store + digest, re-exported as `vta_policy::{consent,effects}`),
   `vta-service/src/trust_tasks/{policy_gate,task_consent,consent_request,
   ceremony,planner}.rs`, `vta-service/src/approvals_cli.rs`,
   `vta-sdk/src/approvals/`, `vta-cli-common/src/{commands/approvals,

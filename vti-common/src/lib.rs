@@ -27,6 +27,7 @@ pub mod seed_store;
 pub mod setup;
 pub mod slip10;
 pub mod store;
+pub mod task_consent;
 pub mod telemetry;
 pub mod trust_task;
 pub mod vault;
