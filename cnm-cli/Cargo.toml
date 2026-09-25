@@ -38,6 +38,8 @@ vtc-client = { path = "../vtc-client", version = "0.7" }
 # certifications and cleartext-signed link statements.
 pgp = { workspace = true }
 chrono = { workspace = true }
+# `cnm git link`: the authorisation URL is parsed before it is printed.
+url = { workspace = true }
 ratatui = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 dialoguer = { workspace = true }
