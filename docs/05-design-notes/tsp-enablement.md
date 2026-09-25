@@ -658,6 +658,16 @@ messaging service to a VTC post-mint should add both.
 4. ~~VTC member messaging default~~ **Resolved (round 3):** VTC→member **stays DIDComm
    until the Phase B flip** (§12). TSP is advertised/accepted before then, but VTC's
    outbound default does not switch to TSP until Phase B.
+   **Done for Trust Task pushes (2026-09-25):** a VTC-originated Trust Task push —
+   removal notice, task-consent request, granted notice — goes through
+   `vtc-service::member_push` and follows the preference order, TSP > DIDComm > REST,
+   matched on the recipient's advertised service `type` (REST only by
+   `TrustTaskHTTPS`). Each attempt is durable on the delivery outbox, and one that
+   produces no delivery evidence in its window escalates to the next transport the
+   recipient offers (VTI-TRN-042). A recipient that advertises nothing still goes over
+   DIDComm through the shared mediator. The credential-exchange protocol messages
+   (offer, issue, query, request-VMC) have no TSP binding and stay on
+   `AppState::send_to_member`, DIDComm.
 5. ~~Endpoint-shape vs reference impl~~ **Resolved (round 4, verified against the
    mediator + SDK source):** the consumer-doc convention (`#tsp` = mediator DID) is
    sound — see §7.1 for the verified mechanics. The mediator **never URL-parses a

@@ -32,9 +32,10 @@ default = ["setup", "keyring", "website", "admin-ui", "tsp"]
 # This is Phase A of docs/05-design-notes/tsp-enablement.md §12 — "advertise
 # TSP + DIDComm; prefer TSP when both peers speak it" — and NOT the Phase B
 # flip. It enables `handle_tsp`, which answers an inbound TSP frame over TSP
-# because the caller is waiting on the TSP correlation. VTC-*initiated* sends
-# to a member (`AppState::send_to_member`) stay DIDComm until Phase B (§14 Q4);
-# nothing here touches that path.
+# because the caller is waiting on the TSP correlation. VTC-*initiated* Trust
+# Task pushes (`member_push`) follow TSP > DIDComm > REST by what the recipient
+# advertises (§14 Q4); the credential-exchange messages on
+# `AppState::send_to_member` stay DIDComm, having no TSP binding.
 #
 # The two legs: `vta-sdk/tsp` for the SDK capability, and `affinidi-tdk/tsp`
 # for `atm.tsp()` — the receive side reads TSP frames off the shared mediator

@@ -131,6 +131,8 @@ pub struct AppState {
     /// Unrestricted-admin consent requests and grants (VTI-APV-014). See
     /// `crate::acl::admin_consent`.
     pub task_consent_ks: KeyspaceHandle,
+    /// Member pushes in flight (`crate::member_push`). Encrypted at rest.
+    pub member_pushes_ks: KeyspaceHandle,
     /// In-flight backup bundles for the chunked `backup/*` transfer — records
     /// and manifests; the bytes are staged under `<data_dir>/backups`. See
     /// [`vti_common::backup_transfer`].
@@ -512,6 +514,7 @@ pub async fn run(
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
     let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
     let task_consent_ks = store.keyspace(keyspaces::TASK_CONSENT)?;
+    let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
@@ -625,6 +628,13 @@ pub async fn run(
     // crash-safe; a failure aborts boot rather than serving a store with a
     // half-encrypted secret keyspace. `install_store` is (re)built on the
     // wrapped handle so issued tokens are encrypted on disk.
+    // A push record holds the signed Trust Task a TSP or REST outbox entry
+    // names, so it is encrypted like the other stores that hold content; it
+    // starts empty, so there is nothing to migrate.
+    let member_pushes_ks = match storage_key {
+        Some(key) => member_pushes_ks.with_encryption(key),
+        None => member_pushes_ks,
+    };
     let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
         Some(key) => {
             let n_install = install_ks.migrate_to_encrypted(key).await?;
@@ -822,6 +832,7 @@ pub async fn run(
         console_keys_ks,
         step_up_marks_ks,
         task_consent_ks,
+        member_pushes_ks,
         backup_bundles_ks,
         schemas_ks,
         endorsements_ks,
