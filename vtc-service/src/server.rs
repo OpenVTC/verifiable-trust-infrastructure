@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -2030,23 +2030,40 @@ async fn init_auth(
         }
     };
 
-    // 1. DID resolver (local mode)
-    let did_resolver = match DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("failed to create DID resolver: {e} — auth endpoints will not work");
-            return Ok((
-                None,
-                None,
-                None,
-                None,
-                install_signer,
-                audit_writer,
-                credential_signer,
-                storage_key,
-            ));
-        }
-    };
+    // 1. DID resolver (local mode) — the node's one DID-document cache. The
+    // messaging listener shares it (`messaging::build_messaging`), so a
+    // refresh on any path is seen by all of them. Its TTL is explicit and
+    // bounded (`[did_cache]`, default 60 s, at most 300 s): it is how long a
+    // key revoked from a member's document keeps verifying here. The host
+    // policy is the one the VTA and the CLIs use.
+    info!(
+        ttl_secs = config.did_cache.ttl_secs,
+        capacity = config.did_cache.capacity,
+        "DID document cache bounds"
+    );
+    let did_resolver =
+        match DIDCacheClient::new(vta_sdk::resolver::build_verifier_did_cache_config(
+            None,
+            config.did_cache.ttl_secs,
+            config.did_cache.capacity,
+        ))
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("failed to create DID resolver: {e} — auth endpoints will not work");
+                return Ok((
+                    None,
+                    None,
+                    None,
+                    None,
+                    install_signer,
+                    audit_writer,
+                    credential_signer,
+                    storage_key,
+                ));
+            }
+        };
 
     // 2. Secrets resolver with VTC's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;

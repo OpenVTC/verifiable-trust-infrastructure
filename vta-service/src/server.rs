@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -1985,16 +1985,28 @@ async fn init_auth(
     };
 
     // 1. DID resolver (network mode if resolver_url is set, local mode otherwise)
+    //
+    // The cache TTL is explicit and bounded (`[did_cache]`, default 60 s, at
+    // most 300 s): it is how long a key revoked from a peer's document keeps
+    // verifying here. A proof that fails against a cached document re-resolves
+    // it once before it is refused (`vta_sdk::trust_task_proof`), so a
+    // rotation does not wait for the TTL.
     let resolver_config = {
-        let mut builder = DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy());
         if let Some(ref url) = config.resolver_url {
             info!(url = %url, "DID resolver using network mode (remote resolver)");
-            builder = builder.with_network_mode(url);
         } else {
             info!("DID resolver using local mode");
         }
-        builder.build()
+        info!(
+            ttl_secs = config.did_cache.ttl_secs,
+            capacity = config.did_cache.capacity,
+            "DID document cache bounds"
+        );
+        vta_sdk::resolver::build_verifier_did_cache_config(
+            config.resolver_url.as_deref(),
+            config.did_cache.ttl_secs,
+            config.did_cache.capacity,
+        )
     };
     let mut did_resolver = match DIDCacheClient::new(resolver_config).await {
         Ok(r) => r,

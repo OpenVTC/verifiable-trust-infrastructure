@@ -118,6 +118,10 @@ pub mod context_provision;
 pub mod contexts;
 pub mod credentials;
 pub mod did_key;
+/// Forcing a fresh resolution of a DID a verification failed against — see
+/// the module docs.
+#[cfg(feature = "proof-verify")]
+pub mod did_refresh;
 pub mod did_secrets;
 pub mod did_templates;
 /// Verifying a Trust-Task document's Data-Integrity proof. Moved down from

@@ -171,6 +171,122 @@ pub struct MessagingConfig {
     pub drain_inbox_on_start: bool,
 }
 
+/// Default time a verifier may hold a mutable DID's document before resolving
+/// it again, in seconds. See [`DidCacheConfig::ttl_secs`].
+pub const DID_CACHE_TTL_DEFAULT_SECS: u32 = 60;
+/// The longest a node may be configured to hold one. See
+/// [`DidCacheConfig::ttl_secs`].
+pub const DID_CACHE_TTL_MAX_SECS: u32 = 300;
+/// Default number of DID documents held.
+pub const DID_CACHE_CAPACITY_DEFAULT: u32 = 1000;
+
+/// The node's DID-document cache — how long, and how many, documents it holds
+/// as a verifier (`[did_cache]`).
+///
+/// Shared by the VTA and the VTC so the two cannot disagree about how stale a
+/// key they accept may be.
+///
+/// Unknown keys are not refused here: each service's loader already warns on
+/// every key it ignores, and a mistyped key leaves the bounded default in force.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DidCacheConfig {
+    /// Seconds a mutable DID's document (`did:webvh`, `did:web`, …) is served
+    /// from the cache before it is resolved again. Immutable methods
+    /// (`did:key`, `did:peer`) carry their keys in the identifier and are not
+    /// subject to it.
+    ///
+    /// **This bounds how long a revoked key keeps verifying here.** A
+    /// revocation for compromise takes the key out of the document with no
+    /// overlap (VTI-KEY-123), so until this node re-resolves it accepts what
+    /// that key signs. A *new* key is not what the TTL is for: a proof naming a
+    /// key the cached document lacks, or failing under a cached key, forces one
+    /// fresh re-resolution before it is refused (VTI-KEY-134), so a planned
+    /// rotation (VTI-KEY-122) is followed at once whatever this says.
+    ///
+    /// Default [`DID_CACHE_TTL_DEFAULT_SECS`] (60): a compromised key is
+    /// accepted for at most a minute after its revocation is published, at the
+    /// cost of one resolution per active DID per minute. Must be between 1 and
+    /// [`DID_CACHE_TTL_MAX_SECS`] (300, the SDK's own default, which this
+    /// narrows); a longer window is refused rather than honoured.
+    #[serde(default = "default_did_cache_ttl_secs")]
+    pub ttl_secs: u32,
+    /// Most documents held. Only a performance knob: an evicted document is
+    /// resolved again, never trusted less. Default
+    /// [`DID_CACHE_CAPACITY_DEFAULT`].
+    #[serde(default = "default_did_cache_capacity")]
+    pub capacity: u32,
+}
+
+fn default_did_cache_ttl_secs() -> u32 {
+    DID_CACHE_TTL_DEFAULT_SECS
+}
+
+fn default_did_cache_capacity() -> u32 {
+    DID_CACHE_CAPACITY_DEFAULT
+}
+
+impl Default for DidCacheConfig {
+    fn default() -> Self {
+        Self {
+            ttl_secs: DID_CACHE_TTL_DEFAULT_SECS,
+            capacity: DID_CACHE_CAPACITY_DEFAULT,
+        }
+    }
+}
+
+impl DidCacheConfig {
+    /// Every problem with this section, as operator-facing sentences.
+    pub fn validation_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.ttl_secs == 0 || self.ttl_secs > DID_CACHE_TTL_MAX_SECS {
+            errors.push(format!(
+                "did_cache.ttl_secs = {} is outside 1..={DID_CACHE_TTL_MAX_SECS}: it bounds how \
+                 long a revoked key keeps verifying on this node, so it may not be longer than \
+                 {DID_CACHE_TTL_MAX_SECS} seconds (and 0 would disable the cache the node relies \
+                 on). The default is {DID_CACHE_TTL_DEFAULT_SECS}.",
+                self.ttl_secs
+            ));
+        }
+        if self.capacity == 0 {
+            errors.push(
+                "did_cache.capacity = 0 would cache nothing and resolve every DID on every \
+                 request; remove the key for the default"
+                    .into(),
+            );
+        }
+        errors
+    }
+}
+
+#[cfg(test)]
+mod did_cache_config_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_bounded_and_valid() {
+        let c: DidCacheConfig = toml::from_str("").unwrap();
+        assert_eq!(c.ttl_secs, DID_CACHE_TTL_DEFAULT_SECS);
+        assert!(c.ttl_secs <= DID_CACHE_TTL_MAX_SECS);
+        assert!(c.validation_errors().is_empty());
+    }
+
+    #[test]
+    fn a_ttl_past_the_bound_or_zero_is_refused() {
+        for ttl in [0, DID_CACHE_TTL_MAX_SECS + 1, 86_400] {
+            let c = DidCacheConfig {
+                ttl_secs: ttl,
+                ..Default::default()
+            };
+            assert_eq!(c.validation_errors().len(), 1, "ttl {ttl}");
+        }
+        let c = DidCacheConfig {
+            ttl_secs: DID_CACHE_TTL_MAX_SECS,
+            ..Default::default()
+        };
+        assert!(c.validation_errors().is_empty());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditConfig {
     /// Number of days to retain audit logs (default 28).
