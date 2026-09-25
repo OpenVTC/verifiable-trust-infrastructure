@@ -92,6 +92,15 @@ describe("signed git-ns tasks", () => {
     );
   });
 
+  it("says an ns.admin grant gives no forge role, and a repository grant does", () => {
+    expect(grantTask({ subject: BOB, right: "git.ns.admin", resource: "github.com/acme" }).effect).toMatch(
+      /no role on the forge/,
+    );
+    expect(grantTask({ subject: BOB, right: "git.repo.own", resource: "github.com/acme/x" }).effect).toMatch(
+      /projected onto the forge/,
+    );
+  });
+
   it("builds a revoke, bind, unbind and adopt with their cnm commands", () => {
     expect(revokeTask(BOB, "git.repo.maintain", "github.com/acme/x").command).toBe(
       `cnm git revoke --subject=${BOB} --right=git.repo.maintain --resource=github.com/acme/x`,

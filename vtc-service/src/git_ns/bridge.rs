@@ -707,9 +707,17 @@ pub async fn linked_accounts(
 
 // ── role projection ─────────────────────────────────────────────────────────
 
-/// Each subject's highest right on a repository, from the namespace's rows
-/// and the repository's own. `own` > `maintain` > `commit.sign`; an
-/// `ns.admin` is an owner here, by implication.
+/// The right each subject is projected at on a repository: the one right per
+/// person that goes into its `desiredRoles`.
+///
+/// Counted only from rights recorded in the subject's own name — `own`,
+/// `maintain` or `commit.sign` on the repository, or `commit.sign` on its
+/// namespace — never from what `git.ns.admin` implies (`git-ns/bridge/job`,
+/// `desiredRoles`): a namespace admin gets no forge role. A namespace admin
+/// with no right of their own there is listed as `git.ns.admin`, which every
+/// adapter maps to no role, so the bridge takes off any role it manages that
+/// they still hold rather than leave it and report drift. One who is also an
+/// explicit owner is listed as the owner.
 pub fn highest_repo_rights(
     ns_res: &Resource,
     ns_rows: &[RightRow],
@@ -719,7 +727,10 @@ pub fn highest_repo_rights(
 ) -> BTreeMap<String, Right> {
     let mut out: BTreeMap<String, Right> = BTreeMap::new();
     let consider = |rows: &[RightRow], on: &Resource, out: &mut BTreeMap<String, Right>| {
-        for row in rows.iter().filter(|r| r.is_live(t)) {
+        for row in rows
+            .iter()
+            .filter(|r| r.is_live(t) && r.right != Right::NsAdmin)
+        {
             if let Some(best) = rules::conferred(row.right, on, repo_res)
                 .into_iter()
                 .filter(|r| matches!(r, Right::RepoOwn | Right::RepoMaintain | Right::CommitSign))
@@ -734,6 +745,14 @@ pub fn highest_repo_rights(
     };
     consider(ns_rows, ns_res, &mut out);
     consider(repo_rows, repo_res, &mut out);
+    // Admins with nothing of their own here: listed, at no role.
+    for row in ns_rows.iter().filter(|r| {
+        r.right == Right::NsAdmin
+            && r.is_live(t)
+            && !rules::conferred(r.right, ns_res, repo_res).is_empty()
+    }) {
+        out.entry(row.subject.clone()).or_insert(Right::NsAdmin);
+    }
     out
 }
 
@@ -843,35 +862,9 @@ pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError
         let ns_scope = Scope::Namespace(ns.id.clone());
         let ns_res = ns.resource();
 
-        // The namespace itself: its admins, as owners of the organisation.
-        let admins: BTreeMap<String, Right> = snap
-            .rows(&ns_scope)
-            .iter()
-            .filter(|r| r.right == Right::NsAdmin && r.is_live(t))
-            .map(|r| (r.subject.clone(), Right::NsAdmin))
-            .collect();
-        let roles = render_roles(&admins, &ns.forge, &accounts);
-        let d = digest(&roles);
-        if force || ns.roles_digest.as_deref() != Some(d.as_str()) {
-            let mut updated = ns.clone();
-            updated.roles_digest = Some(d);
-            store::put_namespace(&state.git_ns.ks, &updated).await?;
-            enqueue(
-                state,
-                NewJob {
-                    namespace_id: ns.id.clone(),
-                    kind: JobKind::ProjectRoles,
-                    payload: json!({
-                        "namespace": ns.id,
-                        "kind": "projectRoles",
-                        "desiredRoles": roles,
-                    }),
-                    repo_id: None,
-                    link_id: None,
-                },
-            )
-            .await?;
-        }
+        // No namespace-level job: `git.ns.admin` projects to no forge role
+        // (`git-ns/bridge/job`, `desiredRoles`), so nothing projects to the
+        // organisation's own roles, and a bridge refuses one `notCapable`.
 
         for repo in snap.repos.iter().filter(|r| {
             r.namespace_id == ns.id && matches!(r.state, RepoState::Active | RepoState::Orphaned)
@@ -2131,4 +2124,90 @@ async fn complete_account_link(
     attempt.finished_at = Some(t);
     store::put_link(&state.git_ns.ks, &attempt).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ADMIN: &str = "did:key:admin";
+    const ADMIN_OWNER: &str = "did:key:admin-owner";
+    const OWNER: &str = "did:key:owner";
+    const MAINTAINER: &str = "did:key:maintainer";
+    const NS_SIGNER: &str = "did:key:ns-signer";
+    const ADMIN_SIGNER: &str = "did:key:admin-signer";
+
+    fn t() -> DateTime<Utc> {
+        "2026-09-25T12:00:00Z".parse().unwrap()
+    }
+
+    fn row(subject: &str, right: Right) -> RightRow {
+        RightRow {
+            subject: subject.into(),
+            right,
+            granted_by: ADMIN.into(),
+            granted_at: t(),
+            expires_at: None,
+            reason: None,
+            subject_was_member: true,
+            granter_was_member: true,
+        }
+    }
+
+    fn rights(ns_rows: &[RightRow], repo_rows: &[RightRow]) -> BTreeMap<String, Right> {
+        highest_repo_rights(
+            &Resource::parse("github.com/acme").unwrap(),
+            ns_rows,
+            &Resource::parse("github.com/acme/widgets").unwrap(),
+            repo_rows,
+            t(),
+        )
+    }
+
+    #[test]
+    fn a_namespace_admin_with_nothing_of_their_own_is_sent_as_ns_admin() {
+        let got = rights(&[row(ADMIN, Right::NsAdmin)], &[row(OWNER, Right::RepoOwn)]);
+        // Not `own` — which it implies — and not left out, so the bridge
+        // maps it to no role and takes off a stale one.
+        assert_eq!(got.get(ADMIN), Some(&Right::NsAdmin));
+        assert_eq!(got.get(OWNER), Some(&Right::RepoOwn));
+    }
+
+    #[test]
+    fn a_namespace_admin_keeps_the_rights_recorded_in_their_own_name() {
+        let got = rights(
+            &[
+                row(ADMIN_OWNER, Right::NsAdmin),
+                row(MAINTAINER, Right::NsAdmin),
+            ],
+            &[
+                row(ADMIN_OWNER, Right::RepoOwn),
+                row(MAINTAINER, Right::RepoMaintain),
+            ],
+        );
+        assert_eq!(got.get(ADMIN_OWNER), Some(&Right::RepoOwn));
+        assert_eq!(got.get(MAINTAINER), Some(&Right::RepoMaintain));
+    }
+
+    #[test]
+    fn a_namespace_commit_right_projects_as_before() {
+        let got = rights(
+            &[
+                row(NS_SIGNER, Right::CommitSign),
+                row(ADMIN_SIGNER, Right::NsAdmin),
+                row(ADMIN_SIGNER, Right::CommitSign),
+            ],
+            &[],
+        );
+        assert_eq!(got.get(NS_SIGNER), Some(&Right::CommitSign));
+        // Recorded in their own name, so it wins over the admin's no-role.
+        assert_eq!(got.get(ADMIN_SIGNER), Some(&Right::CommitSign));
+    }
+
+    #[test]
+    fn a_lapsed_admin_is_not_sent() {
+        let mut lapsed = row(ADMIN, Right::NsAdmin);
+        lapsed.expires_at = Some(t() - chrono::Duration::days(1));
+        assert!(rights(&[lapsed], &[]).is_empty());
+    }
 }

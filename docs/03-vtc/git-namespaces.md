@@ -28,6 +28,18 @@ by the VTC and is never a record — except that, because verifiers ask only
 about `git.commit.sign`, the implied commit right of every `own`,
 `maintain` and `ns.admin` is published explicitly.
 
+A namespace admin gets **no role on the forge** — not organisation owner, no
+repository role. `ns.admin` is exercised through the VTC and the bridge (bind,
+adopt, reseat, grants); making someone an organisation owner is left to the
+community, outside the VTC. The bridge projects only rights held in a
+person's own name: each repository's `desiredRoles` carries, per linked
+account, the highest `own`, `maintain` or `commit.sign` recorded for them on
+that repository (or `commit.sign` on its namespace). An admin with none of
+those there is sent as `git.ns.admin`, which the bridge maps to no role — so
+it takes off a stale role it manages rather than leave it — and an admin who
+is also an explicit owner is sent as the owner. No namespace-level
+`projectRoles` job is sent ([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635)).
+
 The **fixed rules** are code, not policy: containment by whole segment (a
 right never crosses forges, and `acme` does not contain `acme-labs`), no
 escalation, `repo.create` not re-delegable, a repository keeps an owner, a
@@ -187,7 +199,9 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   grant. The item must still be outstanding as it was selected when the right
   is written; a forge that changed meanwhile adopts nothing. Only a role item (`roleAdded`, or a `roleChanged` that
   raises the member above what they hold) held by a forge account linked to a
-  current member, at a role a right projects to, can be adopted. The inverse
+  current member, at a role a right projects to, can be adopted. "Holds" is
+  what the member is projected at, so a namespace admin's forge `admin` role
+  is adoptable as `own` although `ns.admin` implies it. The inverse
   of the bridge's default role map is used: `admin` is `git.repo.own`,
   `maintain` is `git.repo.maintain`, and on a personal account collaborator
   `write` is `git.repo.maintain`; `write` on an organisation, `triage` and

@@ -946,10 +946,8 @@ pub async fn namespace_reseat(
     row.granter_was_member = actor.member;
     set.rows.push(row.clone());
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
-    // Step 8 — the namespace-level forge projection, as for any ns.admin.
-    let mut updated = ns.clone();
-    updated.roles_digest = None;
-    store::put_namespace(&state.git_ns.ks, &updated).await?;
+    // Step 8 — no forge projection to queue: `git.ns.admin` projects to no
+    // forge role.
 
     // Step 7.
     audit(

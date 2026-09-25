@@ -277,7 +277,7 @@ export function reseatTask(
     action: "namespace.reseat",
     title: `Reseat ${resource}`,
     effect:
-      "The member receives namespace admin (git.ns.admin) with no expiry, published to the Trust Registry and projected onto the forge by the bridge. The statement becomes the right's reason, is kept in the audit record with how each earlier admin record ended, and is shown to the namespace's repository owners. Refused while a current member holds a live git.ns.admin there.",
+      "The member receives namespace admin (git.ns.admin) with no expiry, published to the Trust Registry. It gives no role on the forge. The statement becomes the right's reason, is kept in the audit record with how each earlier admin record ended, and is shown to the namespace's repository owners. Refused while a current member holds a live git.ns.admin there.",
     taskUri: TASK_URI["namespace.reseat"],
     payload: { namespace: namespaceId, subject, statement: s },
     consent: consentClass("namespace.reseat"),
@@ -321,7 +321,9 @@ export function grantTask(g: GrantInput, now = new Date()): SignedTask {
     action: "right.grant",
     title: `Grant ${rightLabel(g.right).toLowerCase()} on ${shortName(g.resource)}`,
     effect:
-      "The right is recorded, published to the Trust Registry (with its implied commit right where it has one), and projected onto the forge by the bridge.",
+      g.right === "git.ns.admin"
+        ? "The right is recorded and published to the Trust Registry (with its implied commit right). It gives no role on the forge: a namespace admin acts through the VTC and the bridge."
+        : "The right is recorded, published to the Trust Registry (with its implied commit right where it has one), and projected onto the forge by the bridge.",
     taskUri: TASK_URI["right.grant"],
     payload,
     consent: consentClass("right.grant", g.right),

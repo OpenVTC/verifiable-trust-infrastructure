@@ -4455,3 +4455,149 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
     );
     assert!(!detail.to_string().contains(&f.carol.did));
 }
+
+// ── a namespace admin gets no forge role (decision 2026-09-25) ──────────────
+
+fn admin_acct() -> Value {
+    json!({ "forge": "github.com", "id": "5550777", "login": "admin-a" })
+}
+
+/// The `projectRoles` jobs queued so far, newest last.
+async fn role_jobs(f: &Fixture) -> Vec<Value> {
+    super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.kind == super::bridge::JobKind::ProjectRoles)
+        .map(|j| j.payload)
+        .collect()
+}
+
+fn desired_right(job: &Value, did: &str) -> Option<String> {
+    job["desiredRoles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["subject"] == did)
+        .map(|r| r["right"].as_str().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn a_namespace_admin_is_projected_at_no_role_and_an_explicit_owner_as_owner() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
+    link_account(&f, &ns, &f.bob, "9120045", "bob-builds").await;
+    super::bridge::project_roles(&f.vtc.state, true)
+        .await
+        .unwrap();
+    let jobs = role_jobs(&f).await;
+    // No namespace-level job: nothing projects to the organisation's roles.
+    assert!(jobs.iter().all(|j| j.get("repo").is_some()), "{jobs:?}");
+    let job = jobs.iter().rev().find(|j| j["repo"] == RES).unwrap();
+    // The admin, with no right of their own on `widgets`: `git.ns.admin`,
+    // which the bridge maps to no role — not the `own` it implies.
+    assert_eq!(
+        desired_right(job, &f.admin.did).as_deref(),
+        Some("git.ns.admin")
+    );
+    assert_eq!(
+        desired_right(job, &f.bob.did).as_deref(),
+        Some("git.repo.own")
+    );
+    // Carol holds nothing here, so she is not listed.
+    assert_eq!(desired_right(job, &f.carol.did), None);
+
+    // Bob made a namespace admin as well: still sent as the owner he is.
+    ok(&grant(&f, &f.admin, &f.bob.did, "git.ns.admin", "github.com/acme").await);
+    super::bridge::project_roles(&f.vtc.state, true)
+        .await
+        .unwrap();
+    let jobs = role_jobs(&f).await;
+    assert!(jobs.iter().all(|j| j.get("repo").is_some()));
+    let job = jobs.iter().rev().find(|j| j["repo"] == RES).unwrap();
+    assert_eq!(
+        desired_right(job, &f.bob.did).as_deref(),
+        Some("git.repo.own")
+    );
+    assert_eq!(
+        desired_right(job, &f.admin.did).as_deref(),
+        Some("git.ns.admin")
+    );
+    // One entry per account.
+    let n = job["desiredRoles"].as_array().unwrap().len();
+    assert_eq!(n, 2, "{job}");
+}
+
+#[tokio::test]
+async fn a_namespace_commit_right_is_projected_as_commit_sign() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.commit.sign",
+        "github.com/acme",
+    )
+    .await);
+    let _ = ns;
+    super::bridge::project_roles(&f.vtc.state, true)
+        .await
+        .unwrap();
+    let jobs = role_jobs(&f).await;
+    let job = jobs.iter().rev().find(|j| j["repo"] == RES).unwrap();
+    assert_eq!(
+        desired_right(job, &f.carol.did).as_deref(),
+        Some("git.commit.sign")
+    );
+}
+
+#[tokio::test]
+async fn a_forge_role_held_by_a_namespace_admin_can_be_reverted() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": admin_acct(), "observed": "admin" }]),
+    )
+    .await;
+    ok(&resolve(
+        &f,
+        &f.admin,
+        json!({ "type": "roleAdded", "account": admin_acct(), "observed": "admin" }),
+        "revert",
+    )
+    .await);
+    let sent = f.bridge.jobs.lock().unwrap().clone();
+    let job = sent
+        .iter()
+        .map(|(_, p)| p)
+        .find(|p| p.get("removeAccounts").is_some())
+        .expect("a projectRoles job with removeAccounts");
+    assert_eq!(job["removeAccounts"], json!([admin_acct()]));
+    // Never in both lists.
+    assert_eq!(desired_right(job, &f.admin.did), None, "{job}");
+}
+
+#[tokio::test]
+async fn a_namespace_admins_forge_admin_role_is_adoptable_as_ownership() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
+    ok(&grant(&f, &f.bob, &f.admin.did, "git.repo.maintain", RES).await);
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleChanged", "resource": RES, "account": admin_acct(), "expected": "maintain", "observed": "admin" }]),
+    )
+    .await;
+    // `own` is implied by `ns.admin`, but not projected: raising the forge
+    // role above the recorded `maintain` is adoptable.
+    let body = ok(&resolve(
+        &f,
+        &f.admin,
+        json!({ "type": "roleChanged", "account": admin_acct(), "observed": "admin" }),
+        "adopt",
+    )
+    .await);
+    assert_eq!(body["right"]["right"], "git.repo.own");
+}
