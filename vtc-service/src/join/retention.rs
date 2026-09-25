@@ -69,6 +69,9 @@ impl RetentionSweeper {
     ///   absent by `crate::trust_tasks::accepted_ids::AcceptedIds::claim`. The
     ///   in-memory guard it replaced was bounded by capacity eviction; a
     ///   keyspace is not.
+    /// - backup bundles past their TTL (bytes deleted, record marked
+    ///   `Expired`) or past retention once terminal
+    ///   ([`vti_common::backup_transfer::sweeper`]);
     /// - operation-bound step-up marks past their five-minute life
     ///   (`step_up_marks_ks`). Also a storage bound: `crate::acl::bound_step_up`
     ///   treats an expired mark as absent on both reads.
@@ -77,6 +80,8 @@ impl RetentionSweeper {
         sync_queue_ks: KeyspaceHandle,
         accepted_ids_ks: KeyspaceHandle,
         step_up_marks_ks: KeyspaceHandle,
+        backup_bundles_ks: KeyspaceHandle,
+        backup_blob_dir: std::path::PathBuf,
         config: JoinRequestsConfig,
         mut shutdown_rx: watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
@@ -101,6 +106,7 @@ impl RetentionSweeper {
             {
                 warn!(error = %e, "initial retention sweep failed");
             }
+            sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
             loop {
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
@@ -120,10 +126,20 @@ impl RetentionSweeper {
                         {
                             warn!(error = %e, "retention sweep failed");
                         }
+                        sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
                     }
                 }
             }
         })
+    }
+}
+
+/// Expire backup bundles past their TTL and drop terminal ones past retention.
+/// Separate from [`sweep_all`] because its failures are its own: a bundle whose
+/// bytes could not be deleted is retried next pass without holding up the rest.
+async fn sweep_backup_bundles(ks: &KeyspaceHandle, blob_dir: &std::path::Path) {
+    if let Err(e) = vti_common::backup_transfer::sweeper::sweep_bundles(ks, blob_dir).await {
+        warn!(error = %e, "backup-bundle sweep failed");
     }
 }
 

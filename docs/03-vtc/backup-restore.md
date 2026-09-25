@@ -129,11 +129,45 @@ success. If the process dies mid-import, the next boot **refuses to start** (the
 datastore is half-restored) and tells you to re-run the import with the same
 backup to finish it.
 
+## Signed documents: the chunked `backup/*` transfer
+
+The two routes above take a bearer token. The same export and restore are also
+served as signed Trust Task documents at `POST /v1/trust-tasks` (and over
+DIDComm and TSP), authorized by the signer's ACL entry — an unrestricted
+administrator's. A backup is too large for one document, so it moves as a
+**bundle**, in chunks (the node-neutral `backup/*` family, shared with the VTA):
+
+| step | task | what it does |
+|---|---|---|
+| export | `backup/initiate-export/0.1` | encrypts the community (as `/backup/export` does) and returns a manifest: chunk size, count, one digest per chunk, the whole bundle's SHA-256 |
+| | `backup/get-chunk/0.1` | one chunk by index; repeatable until the bundle ends |
+| | `backup/complete-export/0.1` | releases the bundle and deletes its staged bytes |
+| restore | `backup/initiate-import/0.1` | commits to a manifest before any byte moves |
+| | `backup/put-chunk/0.1` | one chunk, checked against its committed digest; a repeat is `stored: false` |
+| | `backup/finalize-import/0.1` | checks every chunk is present and the assembled bytes are the committed ones, then previews (`confirm` absent) or applies (`confirm: true`) exactly as `/backup/import` does |
+| either | `backup/abort/0.1` | cancels an open bundle |
+
+Every request asks for `algorithm: chunkedTrustTask`; `stream` needs an HTTPS
+blob endpoint this service does not publish and is refused
+`transportUnavailable`. Chunks are at most **32 KiB** — the largest whose
+`put-chunk` document fits what the door accepts before it checks a proof — so a
+bundle may be up to 128 MiB. A bundle belongs to the administrator who opened it,
+lives five minutes past its last use (never more than an hour), and at most three
+may be open per administrator at once. Staged bytes live under
+`<data_dir>/backups`, owner-only, and are swept when a bundle ends or expires.
+
+**Over REST the transfer is rate-limited.** `/v1/trust-tasks` sits behind the
+per-IP limiter on the unauthenticated chain (a burst of 10, then one request
+every 5 s), which is roughly 12 chunks a minute — about 384 KiB a minute at full
+chunk size. DIDComm and TSP are not behind that limiter; chunk requests there are
+bounded per administrator (50 a second). For a large community, restore over a
+messaging transport or use the bearer route above.
+
 ## Limits
 
-- Import request body cap: **64 MiB**. A community with a very large audit log
-  may exceed it — export with `include_audit: false` (the community state itself
-  is far smaller).
+- Bearer import request body cap: **64 MiB**. A community with a very large
+  audit log may exceed it — export with `include_audit: false` (the community
+  state itself is far smaller), or use the chunked transfer above.
 - Crypto: Argon2id (64 MiB / t=3 / p=4) + AES-256-GCM. Wrong password or a
   tampered envelope fails closed (401).
 

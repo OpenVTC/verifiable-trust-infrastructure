@@ -152,22 +152,31 @@ pub async fn import(
     State(state): State<AppState>,
     Json(req): Json<ImportRequest>,
 ) -> Result<Json<ImportResult>, TaskError> {
+    import_inner(&state, &auth.did, &req.backup, &req.password, req.confirm)
+        .await
+        .map(Json)
+}
+
+/// The import, independent of the door — this bearer route with the envelope
+/// inline, and the chunked `backup/finalize-import/0.1` with the envelope
+/// assembled from `put-chunk`s (`trust_tasks::backup_tasks`). `actor_did` is
+/// the super-administrator the door authenticated; the audit row names it.
+pub(crate) async fn import_inner(
+    state: &AppState,
+    actor_did: &str,
+    envelope: &BackupEnvelope,
+    password: &str,
+    confirm: bool,
+) -> Result<ImportResult, TaskError> {
     let store = create_secret_store(&*state.config.read().await)?;
-    let result = backup::import_backup(
-        &state,
-        store.as_ref(),
-        &req.backup,
-        &req.password,
-        req.confirm,
-    )
-    .await?;
+    let result = backup::import_backup(state, store.as_ref(), envelope, password, confirm).await?;
     // Audit only a real restore — `confirm: false` is a preview (no writes).
     if result.status == "imported"
         && let Some(writer) = state.audit_writer.as_ref()
     {
         writer
             .write(
-                &auth.did,
+                actor_did,
                 None,
                 AuditEvent::BackupImported(BackupData {
                     keyspace_count: result.counts.len() as u32,
@@ -176,5 +185,5 @@ pub async fn import(
             )
             .await?;
     }
-    Ok(Json(result))
+    Ok(result)
 }
