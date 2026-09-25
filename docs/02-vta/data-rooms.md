@@ -514,7 +514,7 @@ document's own proof and authorized by the room's chain, never by the
 community's ACL or a session.
 
 - **Keyspaces**: `rooms` (one row per room) and `room_records`. Both are in
-  `BACKED_UP`, so `POST /v1/backup/export` captures them.
+  `BACKED_UP`, so a community backup captures them.
 - **Audit**: room operations land in the VTC's hash-chained audit keyspace, with
   the same tier rule as above.
 - **Governance**: the `rooms` policy purpose (`vtc.rooms` package) decides who

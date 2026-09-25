@@ -2894,6 +2894,9 @@ async fn handle_backup_export(
     if let Err(e) = actor.require_super_admin() {
         return app_error_to_reject(&doc, &e);
     }
+    if let Err(reject) = refuse_hop_by_hop_backup(ctx, &doc, "export") {
+        return reject;
+    }
     let checked: backup_export::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -2908,6 +2911,34 @@ async fn handle_backup_export(
     {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// Refuse a backup export or import that arrived over the REST binding.
+///
+/// The export and `finalize-import` carry the password that opens a complete
+/// copy of the community, and the export's reply (or `initiate-export`'s
+/// manifest) is the bundle it opens. Over REST both exist in plaintext
+/// wherever TLS terminates. So these tasks are served only over a channel
+/// confidential end-to-end between the administrator and this VTC: DIDComm or
+/// TSP (the backup family's Channel requirement,
+/// trustoverip/dtgwg-trust-tasks-tf#646). Checked after the super-admin check
+/// and before any state is serialized, a slot is opened or a key is derived.
+/// The chunks themselves are ciphertext and are not affected.
+pub(super) fn refuse_hop_by_hop_backup(
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+    what: &str,
+) -> Result<(), TrustTaskOutcome> {
+    match ctx.transport {
+        JoinTransport::DIDComm | JoinTransport::Tsp => Ok(()),
+        JoinTransport::Rest => Err(app_error_to_reject(
+            doc,
+            &AppError::Forbidden(format!(
+                "a backup {what} is refused over REST: the backup password and the bundle \
+                 would exist in plaintext wherever TLS terminates. Send it over DIDComm or TSP"
+            )),
+        )),
     }
 }
 
@@ -4110,6 +4141,20 @@ mod members_admin_tests {
     pub(super) async fn dispatch(vtc: &TestVtc, doc: &TrustTask<Value>) -> TrustTaskOutcome {
         let body = serde_json::to_vec(doc).expect("a document serialises");
         dispatch_trust_task_core(&vtc.state, &JoinAuthCtx::rest(), &body).await
+    }
+
+    /// As [`dispatch`], delivered over DIDComm with the document's issuer as
+    /// the authcrypt sender — for the tasks served only end to end.
+    pub(super) async fn dispatch_didcomm(
+        vtc: &TestVtc,
+        doc: &TrustTask<Value>,
+    ) -> TrustTaskOutcome {
+        let body = serde_json::to_vec(doc).expect("a document serialises");
+        let sender = doc
+            .issuer
+            .clone()
+            .expect("the test document names its issuer");
+        dispatch_trust_task_core(&vtc.state, &JoinAuthCtx::didcomm(sender), &body).await
     }
 
     pub(super) fn body_of(out: &TrustTaskOutcome) -> Value {
@@ -6248,7 +6293,8 @@ mod endorsement_type_tests {
 #[cfg(test)]
 mod backup_export_tests {
     use super::members_admin_tests::{
-        assert_conforms, dispatch, error_code, payload_of, seed_acl, signed, unsigned,
+        assert_conforms, dispatch, dispatch_didcomm, error_code, payload_of, seed_acl, signed,
+        unsigned,
     };
     use super::*;
     use crate::acl::VtcRole;
@@ -6328,7 +6374,7 @@ mod backup_export_tests {
             json!({ "password": PASSWORD }),
         )
         .await;
-        let out = dispatch(&fix.vtc, &doc).await;
+        let out = dispatch_didcomm(&fix.vtc, &doc).await;
         assert!(
             out.status.is_success(),
             "{}",
@@ -6385,7 +6431,7 @@ mod backup_export_tests {
             json!({ "password": short }),
         )
         .await;
-        let out = dispatch(&fix.vtc, &doc).await;
+        let out = dispatch_didcomm(&fix.vtc, &doc).await;
         assert_eq!(
             error_code(&out).as_deref(),
             Some(
@@ -6409,13 +6455,62 @@ mod backup_export_tests {
             json!({ "password": PASSWORD }),
         )
         .await;
-        let first = dispatch(&fix.vtc, &doc).await;
-        let second = dispatch(&fix.vtc, &doc).await;
+        let first = dispatch_didcomm(&fix.vtc, &doc).await;
+        let second = dispatch_didcomm(&fix.vtc, &doc).await;
         assert!(first.status.is_success() && second.status.is_success());
         assert_eq!(
             payload_of(&first)["envelope"],
             payload_of(&second)["envelope"],
             "a redelivery must be answered with the recorded export"
         );
+    }
+
+    /// The backup password and the backup never cross a hop-by-hop channel:
+    /// the same signed super-admin document is refused over REST.
+    #[tokio::test]
+    async fn an_export_over_rest_is_refused() {
+        let fix = fixture().await;
+        let doc = signed(
+            &fix.super_admin,
+            BACKUP_EXPORT_TYPE,
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+        let out = dispatch(&fix.vtc, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("permissionDenied"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        assert!(String::from_utf8_lossy(&out.body).contains("DIDComm or TSP"));
+    }
+
+    /// With no audit trail to record it in, the export is refused rather than
+    /// released unrecorded.
+    #[tokio::test]
+    async fn an_export_with_no_audit_trail_is_refused() {
+        let vtc = TestVtc::builder()
+            .vtc_did(TEST_VTC_DID)
+            .with_audit(false)
+            .with_signers(true)
+            .build()
+            .await;
+        // Everything else an export needs is in place, so the audit trail is
+        // the only thing missing.
+        let store = {
+            let mut config = vtc.state.config.write().await;
+            config.secrets.backend = Some(crate::config::SecretBackend::Plaintext);
+            crate::keys::seed_store::create_secret_store(&config).expect("plaintext store")
+        };
+        store.set(b"signing-bundle").await.expect("seed the store");
+        let admin = Party::new();
+        seed_acl(&vtc, &admin.did, VtcRole::Admin, vec![]).await;
+        let doc = signed(&admin, BACKUP_EXPORT_TYPE, json!({ "password": PASSWORD })).await;
+        let out = dispatch_didcomm(&vtc, &doc).await;
+        // The reply masks internal detail; what matters is that no envelope
+        // left.
+        assert_eq!(error_code(&out).as_deref(), Some("internalError"));
+        assert!(payload_of(&out).get("envelope").is_none());
     }
 }

@@ -33,7 +33,8 @@ affinidi-did-resolver-cache-sdk = { workspace = true }
 # authenticates with the VTC's own DID as the audience, and carries the
 # Trust-Task headers, finite HTTP timeouts and typed errors the commands turn
 # into guidance.
-vtc-client = { path = "../vtc-client", version = "0.7" }
+# `tsp` (which includes `didcomm`): `cnm backup` reaches the VTC only end to end.
+vtc-client = { path = "../vtc-client", version = "0.7", features = ["tsp"] }
 # `cnm vetting bootstrap-pgp`: parse an OpenPGP keyring, verify third-party
 # certifications and cleartext-signed link statements.
 pgp = { workspace = true }

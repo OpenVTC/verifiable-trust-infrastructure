@@ -1,13 +1,15 @@
 //! `cnm backup …` — encrypted full-state backup / restore of the VTC
-//! community (the P3.9 REST surface).
+//! community.
 //!
-//! Mirrors `pnm backup` but targets the VTC's `/v1/backup/{export,
-//! import}` endpoints, which return a `vtc-backup-v1` envelope. The CLI
-//! treats the envelope as **opaque JSON** — it never needs the typed
+//! Mirrors `pnm backup` but targets the VTC, whose backup is a `vtc-backup-v1`
+//! envelope. The CLI treats the envelope as **opaque JSON** — it never needs the typed
 //! struct, just save/load/forward — so this stays decoupled from the
 //! vtc-service crate.
 //!
-//! Backup is REST-only and super-admin, so it authenticates to the VTC itself —
+//! Backup is super-admin, and it moves only over a channel confidential
+//! end-to-end: the VTC refuses it over REST, where the password and the bundle
+//! would exist in plaintext wherever TLS terminates. So it opens a TSP or
+//! DIDComm session to the VTC itself ([`crate::vtc::connect_end_to_end`]) —
 //! with the VTC's DID as the audience, as [`crate::vtc`] explains — rather than
 //! riding the profile's VTA session.
 
@@ -48,7 +50,7 @@ pub(crate) async fn cmd_export(
         .interact()?;
     validate_backup_password(&password)?;
 
-    let vtc = vtc::connect(keyring_key, target).await?;
+    let vtc = vtc::connect_end_to_end(keyring_key, target).await?;
     println!("Exporting community backup...");
     let envelope = vtc
         .client
@@ -118,7 +120,7 @@ pub(crate) async fn cmd_import(
     validate_backup_password(&password)?;
 
     // Preview first (confirm=false) — no mutation, just row counts.
-    let vtc = vtc::connect(keyring_key, target).await?;
+    let vtc = vtc::connect_end_to_end(keyring_key, target).await?;
     println!("Validating backup...");
     let preview = vtc
         .client
@@ -156,7 +158,7 @@ pub(crate) async fn cmd_import(
             .and_then(Value::as_str)
             .unwrap_or("Import complete")
     );
-    if result.get("status").and_then(Value::as_str) == Some("imported") {
+    if result.get("status").and_then(Value::as_str) == Some("committed") {
         println!("  Restart the VTC daemon to serve the restored identity.");
         println!("  Browser passkeys are not restored — re-enrol via your admin DID.");
     }
