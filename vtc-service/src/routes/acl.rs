@@ -549,13 +549,55 @@ pub async fn update_acl(
     Path(did): Path<String>,
     Json(req): Json<UpdateAclRequest>,
 ) -> Result<Json<AclEntryEnvelope>, AppError> {
+    match change_role_inner(
+        &state,
+        &auth.0,
+        &did,
+        req,
+        crate::ceremony::StepUpSource::Session,
+    )
+    .await?
+    {
+        ChangeRoleOutcome::Changed(envelope) => Ok(Json(*envelope)),
+        // Only a bound source parks a ceremony; a session that is not elevated
+        // is refused `step_up_required` inside the pipeline.
+        ChangeRoleOutcome::StepUpRequired(_) => Err(AppError::Internal(
+            "a session-gated role change produced a bound step-up request".into(),
+        )),
+    }
+}
+
+/// What [`change_role_inner`] produced.
+#[derive(Debug)]
+pub(crate) enum ChangeRoleOutcome {
+    Changed(Box<AclEntryEnvelope>),
+    /// A promotion that needs a gesture bound to it, and has none yet. Nothing
+    /// was written.
+    StepUpRequired(Box<trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload>),
+}
+
+/// `acl/change-role` for either door. The bearer route passes
+/// [`StepUpSource::Session`](crate::ceremony::StepUpSource::Session); the
+/// signed-document door passes the document's type and payload, so a
+/// promotion's gesture is bound to that one operation.
+///
+/// `actor` must already hold the admin role — the bearer route's `AdminAuth`,
+/// the signed door's explicit check.
+pub(crate) async fn change_role_inner(
+    state: &AppState,
+    actor: &AuthClaims,
+    did: &str,
+    req: UpdateAclRequest,
+    source: crate::ceremony::StepUpSource<'_>,
+) -> Result<ChangeRoleOutcome, AppError> {
+    let did = did.to_string();
     let acl = state.acl_ks.clone();
     let entry = get_acl_entry(&acl, &did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
 
     // Context admins can only modify entries they can see
-    if !is_acl_entry_visible(&auth.0, &as_vti_acl_entry(&entry)) {
+    if !is_acl_entry_visible(actor, &as_vti_acl_entry(&entry)) {
         return Err(AppError::NotFound(format!(
             "ACL entry not found for DID: {did}"
         )));
@@ -566,7 +608,7 @@ pub async fn update_acl(
     // demote a peer admin scoped to `[ctx-a, ctx-b]`, and can never touch a
     // super-admin. Only a super-admin, or an admin covering *every* context
     // the target holds, may modify an existing Admin entry.
-    if entry.role == VtcRole::Admin && !caller_covers_admin_target(&auth.0, &entry) {
+    if entry.role == VtcRole::Admin && !caller_covers_admin_target(actor, &entry) {
         return Err(AppError::Forbidden(
             "cannot modify an admin entry scoped outside your contexts".into(),
         ));
@@ -586,7 +628,7 @@ pub async fn update_acl(
         )));
     }
 
-    validate_vtc_role_assignment(&auth.0, &req.to_role)?;
+    validate_vtc_role_assignment(actor, &req.to_role)?;
     // …and the *resulting* entry must be one this caller could have granted.
     //
     // `create_acl` has always run this; this route never did, and the gap is
@@ -596,7 +638,7 @@ pub async fn update_acl(
     // can act nowhere — to `admin`, and land a **community-wide super-admin**
     // without ever naming a context they do not hold. `ActScope` is what tells
     // the two apart, and `validate_acl_modification` decodes through it.
-    validate_acl_modification(&auth.0, &as_vti_role(&req.to_role), &entry.allowed_contexts)?;
+    validate_acl_modification(actor, &as_vti_role(&req.to_role), &entry.allowed_contexts)?;
 
     // The role change itself is the **role-change ceremony**, not a field
     // write (#1645). This route used to set `entry.role` and store it, which
@@ -607,14 +649,36 @@ pub async fn update_acl(
     // ACL row disagreed about what a role change costs, and this was the
     // cheaper one.
     let promoting = matches!(req.to_role, VtcRole::Admin);
-    let granted = crate::ceremony::role_change_via_pipeline(
-        &state,
-        &auth.0,
-        &did,
-        &prev_role.to_string(),
-        &req.to_role.to_string(),
-    )
-    .await?;
+    let granted = match source {
+        crate::ceremony::StepUpSource::Session => {
+            crate::ceremony::role_change_via_pipeline(
+                state,
+                actor,
+                &did,
+                &prev_role.to_string(),
+                &req.to_role.to_string(),
+            )
+            .await?
+        }
+        crate::ceremony::StepUpSource::BoundTo { type_uri, payload } => {
+            match crate::ceremony::role_change_via_bound_step_up(
+                state,
+                actor,
+                &did,
+                &prev_role.to_string(),
+                &req.to_role.to_string(),
+                type_uri,
+                payload,
+            )
+            .await?
+            {
+                crate::ceremony::RoleChangeOutcome::Changed(result) => result,
+                crate::ceremony::RoleChangeOutcome::StepUpRequired(request) => {
+                    return Ok(ChangeRoleOutcome::StepUpRequired(request));
+                }
+            }
+        }
+    };
 
     // The ceremony's executor owns the role write, so re-read it rather than
     // storing a copy shaped before the ceremony ran, and stamp the provenance
@@ -623,7 +687,7 @@ pub async fn update_acl(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
     entry.updated_at = Some(now_epoch());
-    entry.updated_by = Some(auth.0.did.clone());
+    entry.updated_by = Some(actor.did.clone());
     store_acl_entry(&acl, &entry).await?;
 
     if promoting {
@@ -666,7 +730,7 @@ pub async fn update_acl(
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &auth.0.did,
+                &actor.did,
                 Some(&did),
                 AuditEvent::AclUpdated(AclChangeData {
                     did: did.clone(),
@@ -685,12 +749,15 @@ pub async fn update_acl(
             // happened without.
             writer
                 .write(
-                    &auth.0.did,
+                    &actor.did,
                     Some(&did),
                     AuditEvent::AdminPromoted(AdminPromotedData {
                         previous_role: granted.previous_role.clone(),
                         authorising_credential_id: String::new(),
-                        authorising_session_id: auth.0.session_id.clone(),
+                        // Empty on the signed door, which has no session: the
+                        // gesture there is the `OperationStepUpRecorded` row
+                        // under the same actor, written moments before.
+                        authorising_session_id: actor.session_id.clone(),
                     }),
                 )
                 .await?;
@@ -704,9 +771,9 @@ pub async fn update_acl(
         reason = req.reason.as_deref().unwrap_or(""),
         "ACL role changed",
     );
-    Ok(Json(AclEntryEnvelope {
+    Ok(ChangeRoleOutcome::Changed(Box::new(AclEntryEnvelope {
         entry: AclEntryResponse::from(entry),
-    }))
+    })))
 }
 
 // ---------- DELETE /acl/{did} ----------
