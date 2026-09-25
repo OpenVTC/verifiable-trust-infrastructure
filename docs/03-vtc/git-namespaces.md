@@ -270,8 +270,17 @@ defines, and carry no Trust-Task URL.
 | `GET /v1/git-ns/drift` | repositories with outstanding drift |
 | `GET /v1/git-ns/jobs` | bridge jobs |
 | `GET /v1/git-ns/projection` | what is published, and how many changes are pending |
-| `GET /v1/git-ns/accounts` | members' linked forge accounts |
+| `GET /v1/git-ns/accounts` | members' linked forge accounts, each with `memberCurrent` |
 | `GET /v1/git-ns/activity?namespace=&limit=` | rights changes, drift and jobs in the namespaces the caller administers (any session) |
+
+One forge account links to one member. Link completion checks and records it
+in one step under the member-row lock, inside the git-ns store lock that
+serialises every link, so two members can never both hold it. A member whose
+access lapsed but who has not left keeps the account — nobody else may link
+it — but it projects no forge role and a role it holds cannot be adopted;
+`accounts` says so with `memberCurrent`, and the console offers no adoption
+for it. A departed member's links are deleted by the departure sweep whether
+or not they held a right.
 
 The bridge reports what the specification's payloads do not carry — its app
 installation, missing permissions, the owner's plan, the guard in force on a

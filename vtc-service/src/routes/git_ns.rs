@@ -803,6 +803,10 @@ pub struct GitNsAccountRow {
     pub login: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_at: Option<String>,
+    /// Whether the member is still a current member. One whose access lapsed
+    /// keeps the link — no one else may link the account — but it projects
+    /// no forge role, and a forge role it holds cannot be adopted as a right.
+    pub member_current: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -832,6 +836,7 @@ pub async fn accounts_list(
         let Some(forges) = m.extensions.get("forges").and_then(Value::as_object) else {
             continue;
         };
+        let member_current = standing(&state, &m.did).await?.member;
         for (forge, a) in forges {
             let (Some(id), Some(login)) = (
                 a.get("id").and_then(Value::as_str),
@@ -848,6 +853,7 @@ pub async fn accounts_list(
                     .get("linkedAt")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                member_current,
             });
         }
     }

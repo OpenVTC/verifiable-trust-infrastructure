@@ -7,6 +7,7 @@ import { Repos } from "@/plugins/repos";
 import { mockFetch, renderWithProviders } from "@/test/render";
 
 import {
+  ACCOUNTS,
   ACME,
   ALICE,
   BOB,
@@ -461,6 +462,21 @@ describe("Repo detail", () => {
     );
     const sign = await screen.findByRole("dialog", { name: "Revert drift on acme/docs" });
     expect(sign.textContent).toMatch(/Consent class: Elevated/);
+  });
+
+  it("offers no adoption for an account whose member is no longer current", async () => {
+    mockFetch(
+      gitNsRoutes({
+        accounts: ACCOUNTS.map((a) => (a.member === HANA ? { ...a, memberCurrent: false } : a)),
+      }),
+    );
+    mount(DOCS.resource);
+
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    expect(within(drift).getByText("Role added on the forge")).toBeTruthy();
+    await waitFor(() => expect(drift.textContent).toContain("@hsato"));
+    expect(drift.textContent).not.toContain("linked by Hana Sato");
+    expect(within(drift).queryByRole("button", { name: /Adopt into VTC/ })).toBeNull();
   });
 
   it("transfers ownership with cnm git transfer, excluding current owners", async () => {

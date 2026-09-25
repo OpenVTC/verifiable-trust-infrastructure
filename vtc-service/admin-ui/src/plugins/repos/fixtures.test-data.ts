@@ -173,9 +173,9 @@ export const MEMBERS = [
 ];
 
 export const ACCOUNTS: GitNsAccountRow[] = [
-  { member: ALICE, forge: "github.com", id: "1001", login: "alicew" },
-  { member: BOB, forge: "github.com", id: "1002", login: "bobm" },
-  { member: HANA, forge: "github.com", id: "1003", login: "hsato" },
+  { member: ALICE, forge: "github.com", id: "1001", login: "alicew", memberCurrent: true },
+  { member: BOB, forge: "github.com", id: "1002", login: "bobm", memberCurrent: true },
+  { member: HANA, forge: "github.com", id: "1003", login: "hsato", memberCurrent: true },
 ];
 
 export const ACTIVITY: GitNsActivityItem[] = [
@@ -216,6 +216,7 @@ export function gitNsRoutes(
     rights?: GitNsRightRow[];
     extra?: MockRoute[];
     activityStatus?: number;
+    accounts?: GitNsAccountRow[];
   } = {},
 ): MockRoute[] {
   return [
@@ -253,7 +254,7 @@ export function gitNsRoutes(
       },
     },
     { path: "/v1/git-ns/jobs", body: { jobs: [] } },
-    { path: "/v1/git-ns/accounts", body: { accounts: ACCOUNTS } },
+    { path: "/v1/git-ns/accounts", body: { accounts: over.accounts ?? ACCOUNTS } },
     {
       path: "/v1/git-ns/activity",
       status: over.activityStatus,

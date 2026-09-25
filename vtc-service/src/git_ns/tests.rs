@@ -1233,6 +1233,95 @@ async fn account_link_needs_a_bridge_namespace_and_status_answers_only_its_owner
     assert_eq!(accounts[&f.bob.did]["github.com"].login, "bob-builds");
 }
 
+// ── one account, one member ────────────────────────────────────────────────
+
+/// git-ns/account/link *Request* item 4: an account already linked to a
+/// member is refused to another, and the attempt ends `failed`.
+#[tokio::test]
+async fn a_forge_account_already_linked_to_a_member_cannot_be_linked_to_another() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    link_account(&f, &ns, &f.bob, "9120045", "bob-builds").await;
+    let id = link(&f, &f.carol).await;
+    let job = f.bridge.jobs.lock().unwrap().last().unwrap().1["jobId"].clone();
+    ok(&event(
+        &f,
+        &ns,
+        json!({ "type": "accountLinked", "jobId": job, "account": { "forge": "github.com", "id": "9120045", "login": "renamed" } }),
+    )
+    .await);
+    assert_eq!(link_state(&f, &f.carol, id).await, "failed");
+    let accounts = super::bridge::linked_accounts(&f.vtc.state).await.unwrap();
+    assert_eq!(accounts[&f.bob.did]["github.com"].login, "bob-builds");
+    assert!(!accounts.contains_key(&f.carol.did));
+
+    // Still Bob's while his access has lapsed: not projected, not adoptable,
+    // but not anyone else's to take either.
+    crate::acl::delete_acl_entry(&f.vtc.state.acl_ks, &f.bob.did)
+        .await
+        .unwrap();
+    assert!(
+        !super::bridge::linked_accounts(&f.vtc.state)
+            .await
+            .unwrap()
+            .contains_key(&f.bob.did),
+        "a lapsed member's account projects nothing"
+    );
+    let id = link(&f, &f.carol).await;
+    let job = f.bridge.jobs.lock().unwrap().last().unwrap().1["jobId"].clone();
+    ok(&event(
+        &f,
+        &ns,
+        json!({ "type": "accountLinked", "jobId": job, "account": { "forge": "github.com", "id": "9120045", "login": "bob-builds" } }),
+    )
+    .await);
+    assert_eq!(link_state(&f, &f.carol, id).await, "failed");
+    // The console's read says whose account it is and that they are not
+    // current, so it offers no adoption for it.
+    let list = crate::routes::git_ns::accounts_list(
+        vti_common::auth::SuperAdminAuth(vti_common::auth::extractor::AuthClaims {
+            did: f.admin.did.clone(),
+            role: vti_common::acl::Role::Admin,
+            ..Default::default()
+        }),
+        axum::extract::State(f.vtc.state.clone()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let row = list
+        .accounts
+        .iter()
+        .find(|a| a.member == f.bob.did)
+        .unwrap();
+    assert!(!row.member_current);
+}
+
+/// A member who held no right still loses their linked accounts when they
+/// leave: the departure pass for links does not depend on the one for rights.
+#[tokio::test]
+async fn a_departed_member_with_no_rights_loses_their_linked_accounts() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    link_account(&f, &ns, &f.carol, "5550001", "carol-c").await;
+    crate::members::storage::edit_member(&f.vtc.state.members_ks, &f.carol.did, |m| {
+        m.removed_at = Some(chrono::Utc::now());
+        true
+    })
+    .await
+    .unwrap();
+    assert!(super::lifecycle::sweep(&f.vtc.state).await.unwrap());
+    let carol = crate::members::get_member(&f.vtc.state.members_ks, &f.carol.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        carol.extensions.get("forges").is_none(),
+        "{:?}",
+        carol.extensions
+    );
+}
+
 // ── the dispatcher ──────────────────────────────────────────────────────────
 
 #[test]

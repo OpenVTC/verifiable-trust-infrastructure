@@ -3531,6 +3531,12 @@ export interface components {
             /** @description The login — display only: logins are renamed and re-registered. */
             login: string;
             member: string;
+            /**
+             * @description Whether the member is still a current member. One whose access lapsed
+             *     keeps the link — no one else may link the account — but it projects
+             *     no forge role, and a forge role it holds cannot be adopted as a right.
+             */
+            memberCurrent: boolean;
         };
         GitNsActivity: {
             items: components["schemas"]["GitNsActivityItem"][];

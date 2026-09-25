@@ -12,7 +12,7 @@ pub(crate) mod did_log;
 pub(crate) mod directory;
 pub(crate) mod endorsement_types;
 pub(crate) mod endorsements;
-mod git_ns;
+pub(crate) mod git_ns;
 mod health;
 pub(crate) mod install;
 pub(crate) mod invitations;
