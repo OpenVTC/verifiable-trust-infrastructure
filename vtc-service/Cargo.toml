@@ -57,7 +57,7 @@ tsp = [
 # the crate's own integration tests via a `[dev-dependencies]` self-dep,
 # and by downstream multi-service harnesses (`vti-harness`). Kept out of
 # production builds — it pulls in `tempfile` and exposes seeding helpers.
-test-support = ["dep:tempfile"]
+test-support = ["dep:tempfile", "vti-common/test-support"]
 # In-process DIDComm join-requests harness for `MockVtc` (#436). Spins up an
 # embedded `affinidi-messaging-test-mediator`, stands up a VTC DIDComm responder
 # bound to the REAL `submit`/`manifest`/`status` handlers, and exercises the

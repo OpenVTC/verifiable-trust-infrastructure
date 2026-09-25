@@ -173,7 +173,7 @@ pub async fn authenticate(
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
+    let sender_base = vti_common::auth::bind_authcrypt_sender(&body, &msg, &metadata)
         .map_err(|e| AppError::Authentication(e.message("authenticate message")))?;
 
     // Canonical Trust-Task URI only. The legacy
@@ -352,7 +352,7 @@ pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Resp
 
     // The opaque refresh token is the credential, but `handle_refresh` still
     // binds `msg.from` to the session DID — so require the same authcrypt gate.
-    let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
+    let sender_base = vti_common::auth::bind_authcrypt_sender(&body, &msg, &metadata)
         .map_err(|e| AppError::Authentication(e.message("refresh message")))?;
 
     // Canonical Trust-Task URI only; the legacy
