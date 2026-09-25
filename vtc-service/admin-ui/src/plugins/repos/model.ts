@@ -21,6 +21,8 @@
 
 import type {
   GitNsBootstrapStatus,
+  GitNsBreakGlassItem,
+  GitNsBreakGlassMark,
   GitNsDriftItem,
   GitNsNamespaceRow,
   GitNsPublishedRow,
@@ -106,14 +108,20 @@ export type GitNsAction =
   | "repo.transfer"
   | "repo.archive"
   | "repo.create"
-  | "drift.resolve";
+  | "drift.resolve"
+  | "right.breakGlass"
+  | "right.ratify";
 
 /** Mirrors `git_ns::ops::consent_class`. */
 export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentClass {
   if (
     action === "namespace.bind" ||
     action === "namespace.unbind" ||
-    action === "namespace.reseat"
+    action === "namespace.reseat" ||
+    // `git-ns/right/break-glass` declares `sideEffects: destructive`: one
+    // person widening their own authority. Gated by a passkey gesture bound
+    // to the document rather than by `elevated_requires_admin`.
+    action === "right.breakGlass"
   ) {
     return "destructive";
   }
@@ -121,7 +129,14 @@ export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentCl
   // adopt as `consent_gate("right.grant", right)` inside `right_grant_via`,
   // revert as `consent_gate("right.revoke", impact)` — so it is classed by
   // that right the same way.
-  if (action === "right.grant" || action === "right.revoke" || action === "drift.resolve") {
+  if (
+    action === "right.grant" ||
+    action === "right.revoke" ||
+    action === "drift.resolve" ||
+    // Ratifying makes a self-granted right count as an ordinary grant, so it
+    // weighs as granting it.
+    action === "right.ratify"
+  ) {
     if (right === "git.ns.admin") return "destructive";
     if (right === "git.repo.own" || right === "git.repo.create") return "elevated";
     return "normal";
@@ -832,6 +847,9 @@ const ACTIVITY: Record<string, string> = {
   "gitNs.drift.reported": "drift reported",
   "gitNs.drift.resolved": "drift resolved",
   "gitNs.account.linked": "forge account linked",
+  "gitNs.right.breakGlass": "broke the glass — self-granted",
+  "gitNs.right.breakGlassRatified": "break-glass ratified",
+  "gitNs.right.breakGlassRevoked": "break-glass revoked",
 };
 
 /** An activity item's action in words. Unknown actions are shown verbatim
@@ -840,4 +858,146 @@ export function activityVerb(action: string): string {
   if (ACTIVITY[action]) return ACTIVITY[action];
   if (action.startsWith("gitNs.job.")) return `bridge job ${action.slice("gitNs.job.".length)}`;
   return action;
+}
+
+// ── break-glass (git-ns/right/break-glass, ratify) ──────────────────────
+//
+// Separation of duties (`git-ns/right/grant` 0.3, fixed rule 7): nobody grants
+// themselves an *elevated* right. The explicit self-grant is break-glass,
+// which takes effect at once, never expires, and stays flagged in front of
+// every administrator until another one ratifies or revokes it.
+
+/** The rights separation of duties covers. Mirrors `_shared/0.4`
+ *  `ElevatedRight`. */
+export const ELEVATED_RIGHTS: readonly GitNsRight[] = [
+  "git.ns.admin",
+  "git.repo.create",
+  "git.repo.own",
+];
+
+export function isElevated(right: string): boolean {
+  return (ELEVATED_RIGHTS as readonly string[]).includes(right);
+}
+
+/** Would granting `right` to `subject`, signed as `viewer`, be a self-grant
+ *  the VTC refuses with `git-ns:selfGrantNotAllowed`? */
+export function isSelfGrant(viewer: string | null, subject: string, right: string): boolean {
+  return !!viewer && viewer === subject.trim() && isElevated(right);
+}
+
+export type BreakGlassState = "unratified" | "pending" | "ratified";
+
+/** A break-glass mark's state now. `pending` — a policy delay has not run
+ *  out, so the right confers nothing yet; `unratified` — live and flagged. */
+export function breakGlassState(
+  mark: GitNsBreakGlassMark | null | undefined,
+  now = Date.now(),
+): BreakGlassState | null {
+  if (!mark) return null;
+  if (mark.ratifiedBy) return "ratified";
+  if (mark.effectiveAt) {
+    const at = new Date(mark.effectiveAt).getTime();
+    if (!Number.isNaN(at) && at > now) return "pending";
+  }
+  return "unratified";
+}
+
+/** Unratified or pending: what the banner counts. */
+export function awaitsDecision(state: BreakGlassState | string | null | undefined): boolean {
+  return state === "unratified" || state === "pending";
+}
+
+export const BREAK_GLASS_STATE_LABEL: Record<BreakGlassState, string> = {
+  unratified: "Break-glass · unratified",
+  pending: "Break-glass · delayed",
+  ratified: "Break-glass · ratified",
+};
+
+/**
+ * Whether a record counts toward the last-owner and last-admin invariants —
+ * mirrors fixed rules 3 and 4 of `git-ns/right/grant` 0.3: no `expiresAt`,
+ * and not an unratified break-glass record.
+ */
+export function countsTowardInvariant(row: GitNsRightRow, now = Date.now()): boolean {
+  if (row.expiresAt) return false;
+  return !awaitsDecision(breakGlassState(row.breakGlass, now));
+}
+
+/** Items still waiting for another administrator, oldest first. */
+export function awaitingItems(items: GitNsBreakGlassItem[]): GitNsBreakGlassItem[] {
+  return items
+    .filter((i) => awaitsDecision(i.state))
+    .sort((a, b) => a.breakGlass.at.localeCompare(b.breakGlass.at));
+}
+
+export type Standing = { may: true } | { may: false; why: string };
+
+/**
+ * Whether the VTC would accept `viewer` ratifying `item` — mirrors
+ * `git-ns/right/ratify` 0.1, *Authorization*, as far as the console can see:
+ *
+ * - never the record's subject (`selfRatification`);
+ * - a community administrator; or
+ * - an authority over the right on the resource by a right that is not
+ *   itself an unratified break-glass: a namespace admin of its namespace, or
+ *   for `git.repo.own`, an owner of the repository.
+ *
+ * `rights` are the console's live right rows, to tell the viewer's own
+ * standing apart from a break-glass of theirs nobody has confirmed.
+ */
+export function ratifyStanding(
+  viewer: string | null,
+  superAdmin: boolean,
+  item: GitNsBreakGlassItem,
+  rights: GitNsRightRow[],
+): Standing {
+  if (!viewer) return { may: false, why: "Signed-in DID unknown." };
+  if (viewer === item.subject) {
+    return {
+      may: false,
+      why: "You broke this glass yourself. A break-glass is ratified by someone else or not at all — ask another administrator to ratify it, or revoke it yourself if it is no longer needed.",
+    };
+  }
+  if (item.state === "ratified") return { may: false, why: "Already ratified." };
+  if (superAdmin) return { may: true };
+  const confirmed = (r: GitNsRightRow) =>
+    r.subject === viewer && r.origin === "recorded" && !awaitsDecision(breakGlassState(r.breakGlass));
+  const nsAdmin = rights.some(
+    (r) => confirmed(r) && r.right === "git.ns.admin" && r.resource === item.namespaceResource,
+  );
+  const owner =
+    item.right === "git.repo.own" &&
+    rights.some((r) => confirmed(r) && r.right === "git.repo.own" && r.resource === item.resource);
+  if (nsAdmin || owner) return { may: true };
+  return {
+    may: false,
+    why: "Ratifying needs a community administrator, or an administrator of this resource whose own standing is not an unconfirmed break-glass. Hand the command below to one.",
+  };
+}
+
+/**
+ * Whether the VTC would accept `viewer` revoking `item` — mirrors
+ * `git-ns/right/revoke` 0.3: the subject resigning, any community
+ * administrator (for an unratified record), a namespace admin of its
+ * namespace, or an owner of the repository for `own`.
+ */
+export function revokeBreakGlassStanding(
+  viewer: string | null,
+  superAdmin: boolean,
+  item: GitNsBreakGlassItem,
+  rights: GitNsRightRow[],
+): Standing {
+  if (!viewer) return { may: false, why: "Signed-in DID unknown." };
+  if (viewer === item.subject) return { may: true };
+  if (superAdmin && awaitsDecision(item.state)) return { may: true };
+  const holds = (right: string, resource: string) =>
+    rights.some((r) => r.subject === viewer && r.origin === "recorded" && r.right === right && r.resource === resource);
+  if (holds("git.ns.admin", item.namespaceResource)) return { may: true };
+  if (item.right === "git.repo.own" && holds("git.repo.own", item.resource)) return { may: true };
+  return {
+    may: false,
+    why: superAdmin
+      ? "Ratified, it is an ordinary grant: its namespace admins revoke it. Hand the command below to one."
+      : "Revoking it needs a community administrator or an administrator of this resource. Hand the command below to one.",
+  };
 }

@@ -222,3 +222,6 @@ export type GitNsAccountRow = Schemas["GitNsAccountRow"];
 export type GitNsAccountList = Schemas["GitNsAccountList"];
 export type GitNsActivity = Schemas["GitNsActivity"];
 export type GitNsActivityItem = Schemas["GitNsActivityItem"];
+export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
+export type GitNsBreakGlassItem = Schemas["GitNsBreakGlassItem"];
+export type GitNsBreakGlassList = Schemas["GitNsBreakGlassList"];

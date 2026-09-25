@@ -62,6 +62,7 @@
 import { Route, Routes } from "react-router-dom";
 
 import { BindFlow } from "./repos/BindFlow";
+import { BreakGlassList } from "./repos/BreakGlass";
 import { DepartedReview } from "./repos/DepartedReview";
 import { Overview } from "./repos/Overview";
 import { RepoDetail } from "./repos/RepoDetail";
@@ -74,6 +75,7 @@ export function Repos() {
         <Route path="repo/:resource" element={<RepoDetail />} />
         <Route path="bind" element={<BindFlow />} />
         <Route path="departed" element={<DepartedReview />} />
+        <Route path="break-glass" element={<BreakGlassList />} />
         <Route
           path="*"
           element={

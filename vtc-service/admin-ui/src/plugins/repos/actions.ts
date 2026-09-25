@@ -47,7 +47,9 @@ import {
   rightLabel,
   shortName,
 } from "./model";
-import { postSignedTrustTask } from "@/lib/api";
+import { postSignedDocument, postSignedTrustTask } from "@/lib/api";
+import type { SignedTrustTaskDocument } from "@/lib/console-key";
+import { stepUpRequestOf, type StepUpRequest } from "@/lib/bound-step-up";
 import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
 
 // Document `type`s, not `Trust-Task` headers: each is dispatched by
@@ -60,8 +62,11 @@ export const TASK_URI: Record<GitNsAction, string> = {
   "namespace.bind": "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
   "namespace.unbind": "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
   "namespace.reseat": "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
-  "right.grant": "https://trusttasks.org/spec/git-ns/right/grant/0.1",
-  "right.revoke": "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
+  // 0.3: separation of duties (fixed rule 7) and break-glass records.
+  "right.grant": "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+  "right.revoke": "https://trusttasks.org/spec/git-ns/right/revoke/0.3",
+  "right.breakGlass": "https://trusttasks.org/spec/git-ns/right/break-glass/0.1",
+  "right.ratify": "https://trusttasks.org/spec/git-ns/right/ratify/0.1",
   "repo.adopt": "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
   "repo.transfer": "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
   "repo.archive": "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
@@ -201,6 +206,18 @@ export const MAX_REASON = 1024;
 export function reasonError(value: string): string | null {
   return value.trim().length > MAX_REASON
     ? `At most ${MAX_REASON} characters — it is ${value.trim().length}.`
+    : null;
+}
+
+/** The longest break-glass justification (`git-ns/right/break-glass/0.1`). */
+export const MAX_JUSTIFICATION = 2048;
+
+/** A break-glass justification: REQUIRED, never blank, at most 2048. */
+export function justificationError(value: string): string | null {
+  const v = value.trim();
+  if (!v) return "Say why nobody else could grant this right now. It is shown to every administrator.";
+  return v.length > MAX_JUSTIFICATION
+    ? `At most ${MAX_JUSTIFICATION} characters — it is ${v.length}.`
     : null;
 }
 
@@ -354,6 +371,72 @@ export function revokeTask(
     consent: consentClass("right.revoke", right),
     resource,
     parties: [{ role: "Loses the right", did: subject }],
+    command: cnm(...args),
+  };
+}
+
+/**
+ * `git-ns/right/break-glass` 0.1: the signer records an elevated right for
+ * themselves — one their rights already let them grant to anyone else, but
+ * which separation of duties forbids them granting to themselves. There is no
+ * `subject` (it is always the signer) and no expiry (it must still work when
+ * nobody else is there to extend it).
+ */
+export function breakGlassTask(right: GitNsRight, resource: string, justification: string): SignedTask {
+  const j = justification.trim();
+  return {
+    action: "right.breakGlass",
+    title: `Break glass: ${rightLabel(right).toLowerCase()} on ${shortName(resource)}`,
+    effect:
+      "You receive the right at once, published to the Trust Registry like any other. It never expires on its own. Every community administrator and every namespace admin is notified immediately with your justification, and it stays flagged on every administrator's console until another administrator ratifies or revokes it. Any of them may revoke it at any time.",
+    taskUri: TASK_URI["right.breakGlass"],
+    payload: { right, resource, justification: j },
+    consent: consentClass("right.breakGlass"),
+    consentNote:
+      "Before it records the right, the VTC asks for a passkey gesture bound to this one document: it is refused until you confirm with your passkey, and then the same document is sent again. The community's policy may disable break-glass, delay its effect, or ask for more — never make it quieter.",
+    resource,
+    parties: [],
+    command: cnm(w("break-glass"), o("right", right), o("resource", resource), o("justification", j)),
+  };
+}
+
+/**
+ * `git-ns/right/ratify` 0.1: confirm someone else's break-glass, turning it
+ * into an ordinary grant. `breakGlassAt` binds the ratification to the
+ * break-glass the ratifier read, so it cannot confirm a later one.
+ */
+export function ratifyTask(
+  subject: string,
+  right: GitNsRight,
+  resource: string,
+  breakGlassAt: string,
+  statement?: string,
+): SignedTask {
+  const payload: Record<string, unknown> = { subject, right, resource, breakGlassAt };
+  const args: (Word | string | { opt: string })[] = [
+    w("ratify"),
+    o("subject", subject),
+    o("right", right),
+    o("resource", resource),
+    o("break-glass-at", breakGlassAt),
+  ];
+  const st = statement?.trim();
+  if (st) {
+    payload.statement = st;
+    args.push(o("statement", st));
+  }
+  return {
+    action: "right.ratify",
+    title: `Ratify break-glass: ${rightLabel(right).toLowerCase()} on ${shortName(resource)}`,
+    effect:
+      "The self-granted right becomes an ordinary grant: its flag clears on every console, and it starts counting toward the last-owner and last-admin invariants. Who holds what does not change. Every other administrator is told. Refused if this is not the break-glass you read.",
+    taskUri: TASK_URI["right.ratify"],
+    payload,
+    consent: consentClass("right.ratify", right),
+    consentNote:
+      "The second person's half of a two-person grant, after the fact. Only an administrator other than the one who broke the glass may sign it.",
+    resource,
+    parties: [{ role: "Broke the glass", did: subject }],
     command: cnm(...args),
   };
 }
@@ -543,14 +626,54 @@ export function driftAdoptTask(
 }
 
 /**
+ * The VTC refused a signed task until a passkey gesture bound to it is
+ * recorded (`details.stepUpRequest`). Carries the document that was sent, so
+ * that once the gesture is recorded the **identical** document is sent again
+ * (`sendSigned`) — see `lib/bound-step-up.ts`.
+ */
+export class StepUpNeeded extends Error {
+  constructor(
+    readonly request: StepUpRequest,
+    readonly signed: SignedTrustTaskDocument,
+  ) {
+    super(`a passkey gesture bound to this operation is required: ${request.reason}`);
+    this.name = "StepUpNeeded";
+  }
+}
+
+/**
  * Sign `task` with this browser's console key and send it.
  *
  * Throws `SigningUnavailableError` when this browser cannot sign — the dialog
- * then offers only the hand-over — and an `ApiError` carrying the VTC's own
- * refusal (`git-ns:lastOwner`, `permissionDenied`, …) otherwise.
+ * then offers only the hand-over — `StepUpNeeded` when the VTC wants a passkey
+ * gesture bound to this document first, and an `ApiError` carrying the VTC's
+ * own refusal (`git-ns:lastOwner`, `permissionDenied`, …) otherwise.
  */
-export function sendTask<T = Record<string, unknown>>(task: SignedTask): Promise<T> {
-  return postSignedTrustTask<T>(task.taskUri, task.payload);
+export async function sendTask<T = Record<string, unknown>>(task: SignedTask): Promise<T> {
+  try {
+    return await postSignedTrustTask<T>(task.taskUri, task.payload);
+  } catch (e) {
+    throw asStepUp(e);
+  }
+}
+
+/** Send, again, a document whose step-up is now recorded. */
+export async function sendSigned<T = Record<string, unknown>>(
+  signed: SignedTrustTaskDocument,
+): Promise<T> {
+  try {
+    return await postSignedDocument<T>(signed);
+  } catch (e) {
+    throw asStepUp(e);
+  }
+}
+
+/** A refusal that asks for a bound step-up, as `StepUpNeeded`; anything else
+ *  unchanged. */
+function asStepUp(e: unknown): unknown {
+  const request = stepUpRequestOf(e);
+  const document = (e as { document?: SignedTrustTaskDocument } | null)?.document;
+  return request && document ? new StepUpNeeded(request, document) : e;
 }
 
 /** The document body the signer wraps — URI and payload, as the dispatch

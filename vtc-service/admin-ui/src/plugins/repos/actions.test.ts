@@ -69,7 +69,7 @@ describe("signed git-ns tasks", () => {
       },
       new Date("2026-09-23T00:00:00.000Z"),
     );
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/right/grant/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/right/grant/0.3");
     expect(t.payload).toEqual({
       subject: BOB,
       right: "git.commit.sign",

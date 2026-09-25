@@ -946,6 +946,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/git-ns/break-glass": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["gitNsBreakGlassList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/git-ns/drift": {
         parameters: {
             query?: never;
@@ -3565,6 +3581,36 @@ export interface components {
             variables: boolean;
             workflow: boolean;
         };
+        /** @description One break-glass record. */
+        GitNsBreakGlassItem: {
+            breakGlass: components["schemas"]["GitNsBreakGlassMark"];
+            grantedAt: string;
+            /** @description The namespace's identifier. */
+            namespace: string;
+            /** @description The namespace's resource (`github.com/acme`). */
+            namespaceResource: string;
+            resource: string;
+            right: string;
+            /**
+             * @description `unratified` — live, flagged, awaiting another administrator;
+             *     `pending` — unratified and not yet in effect (a policy delay);
+             *     `ratified` — an ordinary grant now, kept here as history.
+             */
+            state: string;
+            subject: string;
+        };
+        GitNsBreakGlassList: {
+            items: components["schemas"]["GitNsBreakGlassItem"][];
+        };
+        /** @description A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`). */
+        GitNsBreakGlassMark: {
+            at: string;
+            by: string;
+            effectiveAt?: string | null;
+            justification: string;
+            ratifiedAt?: string | null;
+            ratifiedBy?: string | null;
+        };
         /** @description The grants one departed member issued. */
         GitNsDepartedGranter: {
             granter: string;
@@ -3752,6 +3798,7 @@ export interface components {
         };
         /** @description One git right, recorded or role-derived. */
         GitNsRightRow: {
+            breakGlass?: null | components["schemas"]["GitNsBreakGlassMark"];
             expiresAt?: string | null;
             grantedAt?: string | null;
             grantedBy?: string | null;
@@ -9015,6 +9062,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GitNsActivity"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller administers no namespace (or not the one named) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    gitNsBreakGlassList: {
+        parameters: {
+            query?: {
+                /** @description Only this namespace (its identifier). */
+                namespace?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Break-glass records in the namespaces the caller administers, unratified first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitNsBreakGlassList"];
                 };
             };
             /** @description Missing or invalid bearer token */

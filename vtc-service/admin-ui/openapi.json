@@ -2395,6 +2395,48 @@
         ]
       }
     },
+    "/v1/git-ns/break-glass": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsBreakGlassList",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "query",
+            "description": "Only this namespace (its identifier).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Break-glass records in the namespaces the caller administers, unratified first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsBreakGlassList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "The caller administers no namespace (or not the one named)"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/git-ns/drift": {
       "get": {
         "tags": [
@@ -8057,6 +8099,101 @@
           }
         }
       },
+      "GitNsBreakGlassItem": {
+        "type": "object",
+        "description": "One break-glass record.",
+        "required": [
+          "namespace",
+          "namespaceResource",
+          "subject",
+          "right",
+          "resource",
+          "grantedAt",
+          "breakGlass",
+          "state"
+        ],
+        "properties": {
+          "breakGlass": {
+            "$ref": "#/components/schemas/GitNsBreakGlassMark"
+          },
+          "grantedAt": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "The namespace's identifier."
+          },
+          "namespaceResource": {
+            "type": "string",
+            "description": "The namespace's resource (`github.com/acme`)."
+          },
+          "resource": {
+            "type": "string"
+          },
+          "right": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`unratified` — live, flagged, awaiting another administrator;\n`pending` — unratified and not yet in effect (a policy delay);\n`ratified` — an ordinary grant now, kept here as history."
+          },
+          "subject": {
+            "type": "string"
+          }
+        }
+      },
+      "GitNsBreakGlassList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsBreakGlassItem"
+            }
+          }
+        }
+      },
+      "GitNsBreakGlassMark": {
+        "type": "object",
+        "description": "A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`).",
+        "required": [
+          "by",
+          "at",
+          "justification"
+        ],
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "effectiveAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "justification": {
+            "type": "string"
+          },
+          "ratifiedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ratifiedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "GitNsDepartedGranter": {
         "type": "object",
         "description": "The grants one departed member issued.",
@@ -8626,6 +8763,17 @@
           "granterDeparted"
         ],
         "properties": {
+          "breakGlass": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsBreakGlassMark",
+                "description": "Present exactly when the subject gave themselves this right through\n`git-ns/right/break-glass/0.1`. Unratified while `ratifiedBy` is absent."
+              }
+            ]
+          },
           "expiresAt": {
             "type": [
               "string",
