@@ -51,6 +51,7 @@ import {
   lastCheckOf,
   REPO_RIGHTS,
   repoRights,
+  type AdoptStanding,
   adoptStanding,
   heldRepoRank,
   isAdoptableKind,
@@ -248,7 +249,10 @@ function DriftList({
   forges: ForgeAccounts | undefined;
   ns: GitNsNamespaceRow;
   repo: GitNsRepoRow;
-  rights: GitNsRightRow[];
+  /** `null` until the rights listing has answered: adopting a `roleChanged`
+   *  depends on what the member already holds, so nothing is offered until
+   *  that is known. */
+  rights: GitNsRightRow[] | null;
   onAdopt: (item: GitNsDriftItem, member: string, right: GitNsRight) => void;
   onRevert: (item: GitNsDriftItem) => void;
 }) {
@@ -260,17 +264,23 @@ function DriftList({
       {items.map((d, i) => {
         const member =
           d.account && forges ? memberForAccount(forges, d.account.forge, d.account.id) : undefined;
-        const adopt = isAdoptableKind(d)
-          ? adoptStanding(
-              viewer,
-              superAdmin,
-              ns,
-              repo,
-              d,
-              member,
-              member ? heldRepoRank(rights, member, repo, ns) : 0,
-            )
-          : null;
+        const adopt: AdoptStanding | null = !isAdoptableKind(d)
+          ? null
+          : rights === null
+            ? {
+                may: false,
+                handOver: false,
+                why: "Reading who holds what here before offering to adopt…",
+              }
+            : adoptStanding(
+                viewer,
+                superAdmin,
+                ns,
+                repo,
+                d,
+                member,
+                member ? heldRepoRank(rights, member, repo, ns) : 0,
+              );
         const protection = d.type === "requiredCheckMissing" || d.type === "protectionWeakened";
         const standing = revertStanding(viewer, superAdmin, ns, repo, d);
         const label = DRIFT_LABEL[d.type] ?? d.type;
@@ -864,7 +874,7 @@ export function RepoDetail() {
                 forges={forges}
                 ns={ns}
                 repo={repo}
-                rights={allRights}
+                rights={rightsQ.isSuccess ? allRights : null}
                 onRevert={(item) => setDialog({ kind: "drift", item })}
                 onAdopt={(item, member, right) =>
                   setDialog({ kind: "drift", item, adopt: { member, right } })

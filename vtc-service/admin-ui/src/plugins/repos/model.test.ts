@@ -330,5 +330,10 @@ describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
     expect(heldRepoRank(RIGHTS, HANA, DOCS, ACME)).toBe(0);
     const lapsed = [{ ...RIGHTS[4]!, expiresAt: "2000-01-01T00:00:00Z" }];
     expect(heldRepoRank(lapsed, HANA, WIDGETS, ACME)).toBe(0);
+    // A namespace admin owns every repository in it, with or without a row.
+    expect(heldRepoRank([], ALICE, DOCS, ACME)).toBe(3);
+    // A v0.1 hook-relay grant is not in the store effective_on reads.
+    const derived = [{ ...RIGHTS[4]!, resource: DOCS.resource, origin: "roleDerived" }];
+    expect(heldRepoRank(derived, HANA, DOCS, ACME)).toBe(0);
   });
 });

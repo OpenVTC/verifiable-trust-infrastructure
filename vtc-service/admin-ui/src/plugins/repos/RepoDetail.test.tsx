@@ -292,6 +292,40 @@ describe("Repo detail", () => {
     expect(within(drift).getByRole("button", { name: /^Revert/ })).toBeTruthy();
   });
 
+  it("offers no adopt until the rights listing has answered", async () => {
+    // The listing never settles: a lowering must not be offered on no data.
+    let release: (v: unknown) => void = () => {};
+    const held = new Promise((r) => (release = r));
+    const routes = gitNsRoutes({
+      rights: [...RIGHTS, { ...RIGHTS[4]!, resource: DOCS.resource }],
+      extra: [
+        driftRoute([{ type: "roleChanged", resource: DOCS.resource, observed: "maintain", expected: "admin", account: hsato }]),
+      ],
+    });
+    const rightsRoute = routes.find((r) => r.path === "/v1/git-ns/rights")!;
+    const body = rightsRoute.body;
+    const realFetch = globalThis.fetch;
+    mockFetch(routes);
+    const mocked = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (new URL(url, "http://x").pathname === "/v1/git-ns/rights") await held;
+      return mocked(input, init);
+    }) as typeof fetch;
+    try {
+      mount(DOCS.resource, signedInAs(BOB, ["admin"]));
+      const drift = await screen.findByRole("region", { name: "Drift" });
+      await waitFor(() => expect(drift.textContent).toMatch(/before offering to adopt/));
+      expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
+      release(body);
+      // Once read, the lowering is recognised and still not offered.
+      await waitFor(() => expect(drift.textContent).toMatch(/lowering, accepted by revoking/));
+      expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it.each([
     ["a DID that holds no right there", signedInAs(HANA, ["admin"])],
     ["a viewer without a session probe", undefined],

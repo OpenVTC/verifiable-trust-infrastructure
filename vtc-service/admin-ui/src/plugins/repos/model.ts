@@ -688,7 +688,11 @@ export function isAdoptableKind(item: GitNsDriftItem): boolean {
  * The strongest of own / maintain / commit.sign `member` holds on the
  * repository, explicit or implied, as a rank (`Right::rank`: own 3,
  * maintain 2, commit.sign 1; 0 for nothing) — what `adopt` step 4 compares
- * a `roleChanged` against. Expired rows count for nothing.
+ * a `roleChanged` against. It mirrors `rules::effective_on`, which reads the
+ * git-ns store only: expired rows count for nothing, and `roleDerived` rows —
+ * v0.1 hook-relay grants merged into the listing from the registry, never
+ * held in that store — are ignored. The namespace's admins (`ns.admins`, the
+ * live `git.ns.admin` holders) own every repository in it.
  */
 export function heldRepoRank(
   rights: GitNsRightRow[],
@@ -697,9 +701,10 @@ export function heldRepoRank(
   ns: GitNsNamespaceRow,
   now = Date.now(),
 ): number {
-  let best = repo.owners.includes(member) ? 3 : 0;
+  let best = repo.owners.includes(member) || ns.admins.includes(member) ? 3 : 0;
   for (const r of rights) {
     if (r.subject !== member) continue;
+    if (r.origin === "roleDerived") continue;
     if (r.expiresAt && Date.parse(r.expiresAt) <= now) continue;
     if (r.resource === repo.resource) {
       if (r.right === "git.repo.own") best = Math.max(best, 3);
