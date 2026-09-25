@@ -80,8 +80,39 @@ pub struct AppConfig {
     /// key from being read as if it said nothing.
     #[serde(default)]
     pub trust_tasks: TrustTasksConfig,
+    /// Authority settings for the community's ACL (VTI-APV-014).
+    #[serde(default)]
+    pub acl: AclConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// Authority settings for the community's ACL.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AclConfig {
+    /// How many **other** unrestricted admins must consent before anyone is
+    /// granted unrestricted admin authority, or has an entry widened to it
+    /// (VTI-APV-014). The requester never counts (VTI-APV-007).
+    ///
+    /// At least 1: a second party is the requirement, so there is no value that
+    /// switches it off. A value the community cannot meet — more than its
+    /// unrestricted admins other than the requester — is refused when it is
+    /// written at runtime (VTI-APV-009); see `crate::acl::admin_consent`.
+    #[serde(default = "default_unrestricted_admin_consent_threshold")]
+    pub unrestricted_admin_consent_threshold: u64,
+}
+
+impl Default for AclConfig {
+    fn default() -> Self {
+        Self {
+            unrestricted_admin_consent_threshold: default_unrestricted_admin_consent_threshold(),
+        }
+    }
+}
+
+pub(crate) fn default_unrestricted_admin_consent_threshold() -> u64 {
+    1
 }
 
 /// Trust Task document-dispatch settings. **Empty of live settings**: every

@@ -241,7 +241,7 @@ pub async fn list_acl(
 
 /// Canonical `acl/grant` request: the entry the maintainer should hold
 /// for the subject, plus an optional operator rationale.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateAclRequest {
     pub entry: GrantEntry,
@@ -255,7 +255,7 @@ pub struct CreateAclRequest {
 /// The writable subset of a canonical `AclEntry`. Server-owned fields
 /// (`createdAt`/`createdBy`/`updatedAt`/`updatedBy`) are deliberately
 /// absent — a caller must not be able to backdate provenance.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GrantEntry {
     pub subject: String,
@@ -286,6 +286,10 @@ pub async fn create_acl(
     State(state): State<AppState>,
     Json(req): Json<CreateAclRequest>,
 ) -> Result<(StatusCode, Json<AclEntryEnvelope>), AppError> {
+    // What the consent, if one is needed, is bound to: the grant exactly as
+    // asked, so an approval for one grant cannot be spent on another.
+    let op_payload = serde_json::to_value(&req)
+        .map_err(|e| AppError::Internal(format!("serialise acl/grant body: {e}")))?;
     let plan = plan_grant(&state, &auth.0, req).await?;
 
     // Conferring `admin` demands a live step-up here too (VTI-OPS-051).
@@ -319,8 +323,31 @@ pub async fn create_acl(
         )));
     }
 
+    // Unrestricted authority also needs another admin's agreement
+    // (VTI-APV-014) — after the requester's own step-up, so an unelevated
+    // session cannot make the other admins' devices ring.
+    if plan.confers_unrestricted {
+        let consent = crate::acl::admin_consent::require(
+            &state,
+            &auth.0.did,
+            &plan.entry.did,
+            crate::acl::admin_consent::Operation {
+                type_uri: crate::trust_tasks::ACL_GRANT_TYPE,
+                payload: &op_payload,
+            },
+            &unrestricted_grant_summary(&plan.entry.did),
+        )
+        .await?;
+        consent.spend(&state).await?;
+    }
+
     let (status, envelope) = commit_grant(&state, &auth.0, plan).await?;
     Ok((status, Json(envelope)))
+}
+
+/// What an approver is shown for a grant of unrestricted admin.
+pub(crate) fn unrestricted_grant_summary(subject: &str) -> String {
+    format!("Make {subject} an unrestricted administrator of this community")
 }
 
 /// An `acl/grant` that has passed every check deciding whether it may happen,
@@ -339,6 +366,10 @@ pub(crate) struct GrantPlan {
     /// already hold — what needs the gesture. See
     /// [`crate::acl::elevation::widens_admin_authority`].
     pub(crate) confers_admin: bool,
+    /// Whether it makes the subject an **unrestricted** admin who was not one —
+    /// which also needs another admin's consent (VTI-APV-014). Implies
+    /// `confers_admin`. See [`crate::acl::admin_consent::confers_unrestricted`].
+    pub(crate) confers_unrestricted: bool,
     reason: Option<String>,
 }
 
@@ -368,6 +399,12 @@ pub(crate) async fn plan_grant(
     // more than the subject already holds?
     let confers_admin = granting_admin
         && crate::acl::elevation::widens_admin_authority(existing.as_ref(), &req_entry.scopes);
+    let confers_unrestricted = crate::acl::admin_consent::confers_unrestricted(
+        existing.as_ref(),
+        &req_entry.role,
+        &req_entry.scopes,
+        now_epoch(),
+    );
     let (created_at, created_by, status) = match existing {
         Some(prev) => {
             if !is_acl_entry_visible(actor, &as_vti_acl_entry(&prev)) {
@@ -416,6 +453,7 @@ pub(crate) async fn plan_grant(
         },
         status,
         confers_admin,
+        confers_unrestricted,
         reason: req.reason,
     })
 }
@@ -514,7 +552,7 @@ pub async fn get_acl(
 /// Label and scope edits are **not** here: they go to `acl/grant` with
 /// the subject's existing role, which is what canonical means by "the
 /// entry the maintainer should hold".
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateAclRequest {
     pub from_role: VtcRole,
@@ -554,7 +592,8 @@ pub async fn update_acl(
         &auth.0,
         &did,
         req,
-        crate::ceremony::StepUpSource::Session,
+        // `change_role_inner` fills in the operation the consent binds to.
+        crate::ceremony::StepUpSource::Session { op: None },
     )
     .await?
     {
@@ -591,6 +630,18 @@ pub(crate) async fn change_role_inner(
     source: crate::ceremony::StepUpSource<'_>,
 ) -> Result<ChangeRoleOutcome, AppError> {
     let did = did.to_string();
+    // The bearer route's operation, as the canonical `acl/change-role` payload
+    // it describes — the body plus the subject its path names — so a consent
+    // for promoting one subject cannot be spent promoting another. The signed
+    // door binds to its own document's payload instead.
+    let op_payload = {
+        let mut v = serde_json::to_value(&req)
+            .map_err(|e| AppError::Internal(format!("serialise acl/change-role body: {e}")))?;
+        if let Some(map) = v.as_object_mut() {
+            map.insert("subject".into(), serde_json::Value::String(did.clone()));
+        }
+        v
+    };
     let acl = state.acl_ks.clone();
     let entry = get_acl_entry(&acl, &did)
         .await?
@@ -650,13 +701,17 @@ pub(crate) async fn change_role_inner(
     // cheaper one.
     let promoting = matches!(req.to_role, VtcRole::Admin);
     let granted = match source {
-        crate::ceremony::StepUpSource::Session => {
+        crate::ceremony::StepUpSource::Session { .. } => {
             crate::ceremony::role_change_via_pipeline(
                 state,
                 actor,
                 &did,
                 &prev_role.to_string(),
                 &req.to_role.to_string(),
+                Some(crate::acl::admin_consent::Operation {
+                    type_uri: crate::trust_tasks::ACL_CHANGE_ROLE_TYPE,
+                    payload: &op_payload,
+                }),
             )
             .await?
         }

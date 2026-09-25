@@ -255,7 +255,15 @@ upstream spec and a `trust-tasks-rs` bump first).
    **Done.**
 4. VTC task-consent for unrestricted admin (§4): the threshold config key with
    its write-time and attrition checks, the co-admin at install, and the
-   offline break-glass (§4c).
+   offline break-glass (§4c). **In progress** (§9):
+   1. The shared core moved to `vti_common::task_consent` (#1730). **Done.**
+   2. The gate on `acl/grant` and `acl/change-role`, both doors;
+      `task-consent/decision/0.1` dispatched; the threshold key with its
+      write-time check. **Done.**
+   3. Attrition checks, and the paths that confer unrestricted admin without
+      reaching the gate: `vtc/admin/invites/create`, and an `acl/grant` rewrite
+      that narrows an unrestricted admin (the attrition case).
+   4. The co-admin at install, and audit rows for the offline writers.
 5. Console-key enrolment once `auth/signing-key/*` is published.
 6. Retire the bearer routes of the three verbs; close the #1641 entries.
 
@@ -310,3 +318,61 @@ upstream spec and a `trust-tasks-rs` bump first).
 - **`AdminPromoted.authorising_session_id`** is empty for a promotion made on
   the signed door, which has no session; the gesture is the
   `OperationStepUpRecorded` row under the same actor.
+
+## 9. As built (step 4.2: the consent gate)
+
+- **Code:** `vtc-service/src/acl/admin_consent.rs` — the trigger
+  (`confers_unrestricted`), the approver set, the threshold, `require` (find a
+  live consent or raise the request), `gesture_then_consent` (the signed door's
+  combined gate), `decide` (a `task-consent/decision/0.1`) and
+  `ReadyGrant::spend`. Storage is `vti_common::task_consent`, the same code the
+  VTA's gate runs, in its own `task_consent` keyspace: excluded from backup and
+  swept by the retention sweeper.
+- **Trigger:** the resulting entry is an admin with `ActScope::All`, and the
+  entry before it was not a live unrestricted admin. So a new unrestricted
+  admin, a scoped admin widened to community-wide, a scopeless member promoted
+  by `acl/change-role`, and an expired unrestricted admin granted again all need
+  consent. A label edit on a live unrestricted admin, and any scoped admin
+  grant, do not.
+- **Approvers:** every other live unrestricted admin, requester always
+  excluded. The approver set is named `unrestricted-admins` on the wire; there
+  is no rule to look it up in, because VTI-APV-014 fixes it.
+- **Threshold:** `acl.unrestricted_admin_consent_threshold`
+  (`[acl] unrestricted_admin_consent_threshold` in TOML,
+  `VTC_ACL_UNRESTRICTED_ADMIN_CONSENT_THRESHOLD`), 1–16, default 1. The gate
+  reads it through the config layers on every request, so a runtime patch binds
+  the next grant without a `config/reload`. `config/patch` and the config import
+  both refuse a value above the number of unrestricted admins less one;
+  1 is always accepted, since there is no lower value to choose.
+- **Order on the signed door:** satisfiable → gesture → consent → spend both.
+  A community with too few possible approvers is refused before any gesture, with
+  the break-glass command in the message. The gesture comes before any other
+  admin is asked, so a party holding only the requester's signing key cannot
+  make their devices ring. A gesture made while the consent is outstanding is
+  kept (`bound_step_up::has_mark`); if it lapses before the approvals land it is
+  asked for again.
+- **Bearer route:** the session's step-up, then the consent. The digest is taken
+  over the canonical task payload the body describes; for `acl/change-role` that
+  includes the subject from the path.
+- **Re-checked when spent:** the approvers must still be unrestricted admins,
+  the threshold in force must still be met, and the subject's ACL entry must
+  hash to the version the approvers were shown (a `StatePin` over the whole
+  entry, label included). A consent that fails any of these is discarded and
+  asked for again.
+- **Refusal:** `auth:consent_required`, in the VTA gate's shape — `taskFailed`
+  with the reason in `details` on the signed door, `403` with the details merged
+  into the body on REST — carrying `payloadDigest` (salted), `challenge`,
+  `correlator`, `approverSet`, `minApprovals`, `excludeRequester` and the
+  VTC-signed `consentRequests` to relay. When the requests would push `details`
+  over the framework's 4 KiB bound they are left out and counted
+  (`consentRequestsOmitted`), because an oversized `details` is dropped whole.
+- **Requests** are VTC-signed, one per approver, each addressed to that
+  approver, and pushed over DIDComm when first raised; re-asking returns the
+  same challenge and pushes nothing. An approver's device must list the VTC DID
+  as a trusted issuer to show them.
+- **Audit:** `TaskConsentRecorded` with a `stage` of `requested`, `approved`,
+  `declined`, `granted` or `consumed`, under whoever took the step.
+- **Not yet:** the granted notice to the requester (`task-consent/granted/0.1`)
+  is not sent; a requester re-sends the operation to learn the outcome, as the
+  VTA's CLI loop does.
+- **Tests:** `vtc-service/tests/unrestricted_admin_consent.rs`.

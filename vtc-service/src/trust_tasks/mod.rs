@@ -125,6 +125,7 @@ use crate::join::{JoinSubmitOutcome, JoinTransport};
 use crate::routes::join_requests::manifest::ManifestVersion;
 use crate::server::AppState;
 
+pub(crate) use helpers::DETAILS_MAX_JCS_BYTES;
 pub(crate) use helpers::TrustTaskOutcome;
 // The one spelling of the framework error document's Type URI in this crate.
 // Re-exported so the messaging layer labels a type-less reply with the same
@@ -730,6 +731,9 @@ async fn dispatch_typed(
         ACL_GRANT_TYPE => handle_acl_grant(state, ctx, doc).await,
         ACL_CHANGE_ROLE_TYPE => handle_acl_change_role(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, doc).await,
+        crate::acl::admin_consent::DECISION_TYPE => {
+            handle_task_consent_decision(state, ctx, doc).await
+        }
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1214,14 +1218,14 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            40,
+            41,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
              moved (`config/export`, `config/import`) + the 2 batch 4 moved \
              (`endorsement-types/register`, `endorsement-types/delete`) + batch \
              5's `backup/export` + `acl/grant` + `acl/change-role` + the 7 \
-             `backup/*` chunked-transfer tasks. \
+             `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries; got {required:?}"
@@ -1386,6 +1390,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_CHANGE_ROLE_TYPE,
     // The gesture that operation-bound step-up asks for.
     STEP_UP_APPROVE_RESPONSE_TYPE,
+    // Another admin's consent to an unrestricted grant (VTI-APV-014). The
+    // request it answers is pushed by this service, never dispatched here.
+    crate::acl::admin_consent::DECISION_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,
@@ -2956,18 +2963,48 @@ async fn handle_acl_grant(
     // After every check, before any write: a gesture must never be asked for
     // an act that would be refused anyway, and one that has been spent must
     // not be spent on a write that then fails a check.
-    if plan.confers_admin {
-        let reason = match plan.entry.allowed_contexts.as_slice() {
-            [] => format!(
+    let step_up_refusal =
+        |request: &trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload| {
+            reject_with_code(
+                &doc,
+                TrustTaskCode::Standard(StandardCode::PermissionDenied),
+                "a passkey gesture bound to this grant is required",
+                Some(bound_step_up::refusal_details(request)),
+            )
+        };
+    if plan.confers_unrestricted {
+        // Unrestricted authority needs the gesture *and* another admin's
+        // consent (VTI-APV-014), both bound to this document's payload.
+        use crate::acl::admin_consent::{self, Operation, SignedGate};
+        let gate = admin_consent::gesture_then_consent(
+            state,
+            &actor.did,
+            &plan.entry.did,
+            Operation {
+                type_uri: ACL_GRANT_TYPE,
+                payload: &doc.payload,
+            },
+            &format!(
                 "Grant community-wide administrator authority to {}",
                 plan.entry.did
             ),
-            scopes => format!(
-                "Grant administrator authority over {} to {}",
-                scopes.join(", "),
-                plan.entry.did
-            ),
+            &crate::routes::acl::unrestricted_grant_summary(&plan.entry.did),
+        )
+        .await;
+        let ready = match gate {
+            Ok(SignedGate::Ready(ready)) => ready,
+            Ok(SignedGate::StepUpRequired(request)) => return step_up_refusal(&request),
+            Err(e) => return app_error_to_reject(&doc, &e),
         };
+        if let Err(e) = ready.spend(state).await {
+            return app_error_to_reject(&doc, &e);
+        }
+    } else if plan.confers_admin {
+        let reason = format!(
+            "Grant administrator authority over {} to {}",
+            plan.entry.allowed_contexts.join(", "),
+            plan.entry.did
+        );
         match bound_step_up::redeem_or_request(
             state,
             &actor.did,
@@ -2978,14 +3015,7 @@ async fn handle_acl_grant(
         .await
         {
             Ok(Gate::Satisfied) => {}
-            Ok(Gate::Required(request)) => {
-                return reject_with_code(
-                    &doc,
-                    TrustTaskCode::Standard(StandardCode::PermissionDenied),
-                    "a passkey gesture bound to this grant is required",
-                    Some(bound_step_up::refusal_details(&request)),
-                );
-            }
+            Ok(Gate::Required(request)) => return step_up_refusal(&request),
             Err(e) => return app_error_to_reject(&doc, &e),
         }
     }
@@ -3137,6 +3167,84 @@ async fn handle_step_up_approve_response(
             Some(hint),
         ),
         Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `task-consent/decision/0.1` — another admin's answer to a request for
+/// consent to an unrestricted grant (VTI-APV-014).
+///
+/// The approver is the document's proven signer, resolved as every signed admin
+/// verb resolves it ([`admin_signer`]), and must be an unrestricted admin now
+/// and not the requester. Which operation is being consented to is this
+/// service's own record of the request, found by the salted digest — never
+/// anything the decision says. See [`crate::acl::admin_consent::decide`].
+async fn handle_task_consent_decision(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::acl::admin_consent::{self, Decided, DecisionError};
+    use decision::error_codes as codes;
+    use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
+
+    let approver = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let payload: decision::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let refuse = |code: trust_tasks_rs::DeclaredErrorCode, message: &str| {
+        reject_with_code(&doc, extended_code(code.code), message, None)
+    };
+    match admin_consent::decide(state, &approver.did, &payload).await {
+        Ok(Decided::Granted {
+            payload_digest,
+            approvals,
+        }) => success_response(
+            &doc,
+            serde_json::json!({
+                "status": "granted",
+                "payloadDigest": payload_digest,
+                "approvals": approvals,
+            }),
+        ),
+        Ok(Decided::Pending {
+            payload_digest,
+            approvals,
+            needed,
+        }) => success_response(
+            &doc,
+            serde_json::json!({
+                "status": "pending",
+                "payloadDigest": payload_digest,
+                "approvals": approvals,
+                "needed": needed,
+            }),
+        ),
+        Ok(Decided::Denied { payload_digest }) => success_response(
+            &doc,
+            serde_json::json!({ "status": "denied", "payloadDigest": payload_digest }),
+        ),
+        Err(DecisionError::NoPending) => refuse(
+            codes::NO_PENDING,
+            "no consent request is waiting on this digest; it has lapsed, been decided, or was \
+             never made",
+        ),
+        Err(DecisionError::ChallengeMismatch) => refuse(
+            codes::CHALLENGE_MISMATCH,
+            "the challenge does not match the consent request",
+        ),
+        Err(DecisionError::NotAnApprover) => refuse(
+            codes::NOT_AN_APPROVER,
+            "only another unrestricted admin of this community can consent to this",
+        ),
+        Err(DecisionError::RequesterExcluded) => refuse(
+            codes::REQUESTER_EXCLUDED,
+            "the admin who asked for this cannot consent to it",
+        ),
+        Err(DecisionError::Internal(e)) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -3455,6 +3563,7 @@ mod tests {
             <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            crate::acl::admin_consent::DECISION_TYPE,
             backup_tasks::INITIATE_EXPORT_TYPE,
             backup_tasks::GET_CHUNK_TYPE,
             backup_tasks::COMPLETE_EXPORT_TYPE,

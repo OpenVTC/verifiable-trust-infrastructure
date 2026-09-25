@@ -278,6 +278,9 @@ impl TestVtcBuilder {
         let step_up_marks_ks = store
             .keyspace(crate::store::keyspaces::STEP_UP_MARKS)
             .expect("step_up_marks ks");
+        let task_consent_ks = store
+            .keyspace(crate::store::keyspaces::TASK_CONSENT)
+            .expect("task_consent ks");
         let backup_bundles_ks = store
             .keyspace(crate::store::keyspaces::BACKUP_BUNDLES)
             .expect("backup_bundles ks");
@@ -443,6 +446,7 @@ impl TestVtcBuilder {
             invitations_ks,
             console_keys_ks,
             step_up_marks_ks,
+            task_consent_ks,
             backup_bundles_ks,
             registry_client: None,
             registry_health: crate::registry::RegistryHealth::new(),

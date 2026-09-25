@@ -54,7 +54,7 @@ pub use event::{
     PersonhoodAssertedData, PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData,
     REDACTED_MARKER, RegistryRecordPolicyOverrideData, RegistryStatusChangedData,
     RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData, RoomOperationData,
-    SchemaChangeData, SessionRevokedData, SignedOutData, StatusListFlippedData,
+    SchemaChangeData, SessionRevokedData, SignedOutData, StatusListFlippedData, TaskConsentData,
     VetterAutoGrantConfiguredData, VetterAutoGrantSweptData, VetterGrantResentData,
     VetterGrantedData, VetterProfileDeletedData, VetterProfileUpdatedData,
     VettingStatementRevokedData, VpcAnnotationData, VrcLifecycleData, VrcPublishedData,

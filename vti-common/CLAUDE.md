@@ -21,6 +21,12 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
   staging/serving/accepting and finalize checks, and the sweeper. Shared by the
   VTA (`vta-backup`) and the VTC for the `backup/*` family. What a bundle
   *contains* — serializing a node's state, applying one — stays with the node.
+- **Task consent** (`task_consent`) — the node-neutral data layer of the DTTE
+  ceremony: the payload and wire digests, pending requests, grants and their
+  single-use consume. Shared by the VTA's policy gate (re-exported as
+  `vta_policy::consent`) and the VTC's unrestricted-admin gate (VTI-APV-014).
+  What a node gates on, who its approvers are and how it pushes a request stay
+  with the node.
 - **Cryptographic primitives with no service-specific policy** — the HMAC
   pagination tokens, the audit-checkpoint signatures, and `slip10` (SLIP-0010
   Ed25519 derivation). See the note below on where the line falls.
