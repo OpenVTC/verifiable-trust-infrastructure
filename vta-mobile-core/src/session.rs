@@ -49,6 +49,7 @@ use trust_tasks_rs::specs::auth::{
     authenticate::v0_1 as authenticate, challenge::v0_1 as challenge, refresh::v0_1 as refresh,
     revoke_session::v0_1 as revoke_session, whoami::v0_1 as whoami,
 };
+use trust_tasks_rs::specs::messaging::ping::v0_1 as ping;
 use trust_tasks_rs::{Payload, TrustTask};
 
 use crate::error::FfiError;
@@ -293,6 +294,27 @@ pub fn parse_whoami_response(json: String) -> Result<SessionInfo, FfiError> {
         roles: r.roles.iter().map(|x| x.to_string()).collect(),
         scopes: r.scopes.iter().map(|x| x.to_string()).collect(),
     })
+}
+
+/// Build a signed `messaging/ping/0.1` liveness probe to the VTA.
+///
+/// Over TSP this is how the device announces its reachability: the VTA records
+/// the sealed sender of any inbound frame as TSP-reachable (learn-from-inbound)
+/// and answers the ping. It is holder-signed like every other document the
+/// device sends — the VTA refuses an unsigned one (`proofRequired`). `env.id`
+/// doubles as the ping's correlation `nonce`.
+#[uniffi::export]
+pub fn build_messaging_ping(
+    env: AuthEnvelope,
+    signer: Box<dyn Signer>,
+) -> Result<String, FfiError> {
+    let payload: ping::Payload = ping::Payload::builder()
+        .nonce(Some(env.id.clone()))
+        .try_into()
+        .map_err(conv)?;
+    let mut doc = envelope_doc(&env, payload)?;
+    attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
+    serialize(&doc)
 }
 
 /// Build a signed `auth/revoke-session/0.1` that invalidates one named session.
@@ -771,6 +793,54 @@ mod tests {
             affinidi_data_integrity::VerifyOptions::default(),
         )
         .expect("the revoke proof must verify against the holder key");
+    }
+
+    /// The TSP reachability announce is a signed ping: the VTA refuses an
+    /// unsigned document on either messaging transport.
+    #[test]
+    fn messaging_ping_is_signed_under_authentication_and_verifies() {
+        let (signer, pk, mb) = enclave_signer(13);
+        let did = signer.did();
+        let e = AuthEnvelope {
+            id: "urn:uuid:ping-1".to_string(),
+            holder_did: did.clone(),
+            vta_did: "did:web:vta.example".to_string(),
+            issued_at: "2026-09-25T10:00:00Z".to_string(),
+        };
+        let json = build_messaging_ping(e, signer).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "https://trusttasks.org/spec/messaging/ping/0.1");
+        assert_eq!(v["issuer"], did.as_str());
+        assert_eq!(v["recipient"], "did:web:vta.example");
+        assert_eq!(v["payload"]["nonce"], "urn:uuid:ping-1");
+        assert_eq!(v["proof"]["proofPurpose"], "authentication");
+
+        let doc: TrustTask<ping::Payload> = serde_json::from_str(&json).unwrap();
+        let di: affinidi_data_integrity::DataIntegrityProof =
+            serde_json::from_value(serde_json::to_value(doc.proof.clone().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(di.verification_method, format!("{did}#{mb}"));
+        let mut unsigned = doc;
+        unsigned.proof = None;
+        di.verify_with_public_key(
+            &unsigned,
+            pk.as_bytes(),
+            affinidi_data_integrity::VerifyOptions::default(),
+        )
+        .expect("the ping proof must verify against the holder key");
+    }
+
+    /// A document issued in a name other than the signer's is refused before
+    /// anything is signed: the VTA binds proof signer, issuer and transport
+    /// sender to one DID, so it could never be accepted.
+    #[test]
+    fn a_document_issued_in_another_name_is_not_signed() {
+        let (signer, _pk, _mb) = enclave_signer(14);
+        let err = build_whoami(env(), signer).unwrap_err();
+        assert!(
+            matches!(&err, FfiError::InvalidInput { reason } if reason.contains("issuer")),
+            "{err:?}"
+        );
     }
 
     #[test]
