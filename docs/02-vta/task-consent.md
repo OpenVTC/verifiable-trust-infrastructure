@@ -11,7 +11,7 @@ what an approver actually sees. Read that page first; a rule is what starts any
 of this.
 
 > **Naming.** The subsystem is spelled `task_consent` / `requireConsent`
-> everywhere in code — `vta-policy/src/consent.rs`, the `task_consent` keyspace,
+> everywhere in code — `vti-common/src/task_consent/`, the `task_consent` keyspace,
 > `vta-service/src/trust_tasks/task_consent.rs`. "DTTE" is the name in prose.
 > It is deliberately **not** the same thing as *messaging consent*
 > (`consent/*/1.0`, the `consent_ks` keyspace), which asks whether two parties
@@ -95,7 +95,7 @@ consume the result. Expired pendings are swept by
 ## The two digests
 
 This trips people up, so it is worth being explicit. There are two, and they are
-not interchangeable (`vta-policy/src/consent.rs:50-91`).
+not interchangeable (`vti-common/src/task_consent/mod.rs`, `payload_digest` / `wire_digest`).
 
 - **`payload_digest`** — SHA-256 over `DIGEST_DOMAIN ‖ len(uri) ‖ uri ‖
   len(JCS(payload)) ‖ JCS(payload)`. **Executor-internal; never leaves the
@@ -161,7 +161,7 @@ Ceremony tasks are also exempt from PDP re-gating (`trust_tasks/ceremony.rs:48`)
 ## What the approver is shown
 
 Not just a digest. The VTA dry-runs the handler it is about to invoke and signs
-the resulting **effects** (`vta-policy/src/effects.rs:31`) into the request
+the resulting **effects** (`vti-common/src/task_consent/effects.rs`) into the request
 document, alongside a **state pin** (`:94`) recording the world the effects were
 computed against.
 

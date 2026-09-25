@@ -32,9 +32,11 @@
 //! policies land alongside this in the same PR series.
 
 pub mod approvals;
-pub mod consent;
+/// The DTTE data layer, node-neutral since it moved to `vti-common` so the
+/// VTC shares it (VTI-APV-014). Re-exported so existing paths resolve.
+pub use vti_common::task_consent as consent;
 pub mod defaults;
-pub mod effects;
+pub use vti_common::task_consent::effects;
 pub mod engine;
 pub mod input;
 pub mod storage;

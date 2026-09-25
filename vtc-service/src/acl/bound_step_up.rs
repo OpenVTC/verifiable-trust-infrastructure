@@ -51,7 +51,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use trust_tasks_rs::specs::auth::step_up::approve_request::v0_3 as approve_request;
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as approve_response;
@@ -79,9 +78,6 @@ const DIGEST_DOMAIN: &[u8] = b"vtc/step-up/v1\0";
 
 const PENDING_PREFIX: &str = "pending:";
 const MARK_PREFIX: &str = "mark:";
-
-/// Multihash prefix for a 32-byte SHA-256.
-const MULTIHASH_SHA2_256_32: [u8; 2] = [0x12, 0x20];
 
 /// The operation's digest: SHA-256 over the domain tag, the length-prefixed
 /// type URI and the length-prefixed RFC 8785 canonical payload, as a
@@ -112,21 +108,7 @@ fn digest_with(
     payload: &Value,
     challenge: Option<&str>,
 ) -> Result<String, AppError> {
-    let canonical = serde_json_canonicalizer::to_string(payload)
-        .map_err(|e| AppError::Internal(format!("payload JCS canonicalization failed: {e}")))?;
-    let mut h = Sha256::new();
-    h.update(DIGEST_DOMAIN);
-    h.update((type_uri.len() as u64).to_be_bytes());
-    h.update(type_uri.as_bytes());
-    h.update((canonical.len() as u64).to_be_bytes());
-    h.update(canonical.as_bytes());
-    if let Some(c) = challenge {
-        h.update(c.as_bytes());
-    }
-    let mut mh = Vec::with_capacity(34);
-    mh.extend_from_slice(&MULTIHASH_SHA2_256_32);
-    mh.extend_from_slice(&h.finalize());
-    Ok(multibase::encode(multibase::Base::Base58Btc, mh))
+    vti_common::task_consent::domain_digest(DIGEST_DOMAIN, type_uri, payload, challenge)
 }
 
 /// A parked WebAuthn ceremony for one refused operation, keyed by its
@@ -601,7 +583,7 @@ mod tests {
         let d = operation_digest(GRANT, &payload("did:key:z1")).unwrap();
         let (base, bytes) = multibase::decode(&d).unwrap();
         assert_eq!(base, multibase::Base::Base58Btc);
-        assert_eq!(&bytes[..2], &MULTIHASH_SHA2_256_32);
+        assert_eq!(&bytes[..2], &[0x12, 0x20], "sha2-256 multihash prefix");
         assert_eq!(bytes.len(), 34);
     }
 

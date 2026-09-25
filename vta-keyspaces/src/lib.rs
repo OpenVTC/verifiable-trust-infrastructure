@@ -225,8 +225,8 @@ pub const POLICY: &str = "policy";
 /// Task-execution consent for the PDP's `requireConsent` disposition: pending
 /// approvals keyed by payload digest, and granted consents a re-submitted task
 /// consumes. Distinct from [`CONSENT`] (messaging-bridge conversation consent).
-/// One `policy::consent::PendingTaskConsent` per `pending:<digest>` and
-/// `policy::consent::TaskConsentGrant` per `grant:<digest>:<requester>`.
+/// One `vti_common::task_consent::PendingTaskConsent` per `pending:<digest>` and
+/// `vti_common::task_consent::TaskConsentGrant` per `grant:<digest>:<requester>`.
 /// Durable operator-facing security state → [`BACKED_UP`].
 pub const TASK_CONSENT: &str = "task_consent";
 
