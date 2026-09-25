@@ -592,4 +592,79 @@ mod tests {
             framework_error_type_uri().to_string()
         );
     }
+
+    /// The `did:key` for a one-byte test seed, plus the private-key
+    /// multibase `vta_sdk::trust_task_sign::build_signed` accepts.
+    fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+        use ed25519_dalek::SigningKey;
+        let seed = [seed_byte; 32];
+        let sk = SigningKey::from_bytes(&seed);
+        let did = format!(
+            "did:key:{}",
+            vta_sdk::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut buf = vec![0x80, 0x26];
+        buf.extend_from_slice(&seed);
+        (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+    }
+
+    /// This is the join dispatcher's holder-binding check on an
+    /// unauthenticated request — one of the ~12 inbound routes FTL-29595 fix
+    /// direction 3 must leave byte-identical: a resolver failure and an
+    /// actual bad signature must render the same `AppError::Unauthorized`,
+    /// or an anonymous caller learns whether a DID resolves at all.
+    #[tokio::test]
+    async fn a_resolver_failure_and_a_bad_signature_render_identically() {
+        let tv = crate::test_support::build_test_vtc().await;
+
+        // Resolver failure: a `did:webvh` verification method against a
+        // did:key-only resolver (this test VTC has none configured) —
+        // refused before any signature check runs.
+        let resolver_fail_doc: TrustTask<Value> = serde_json::from_value(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000020",
+            "type": "https://trusttasks.org/spec/acl/list/0.1",
+            "issuer": "did:webvh:QmScid:example.com:glenn",
+            "recipient": "did:webvh:vtc.example.com:abc",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:webvh:QmScid:example.com:glenn#key-0",
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        }))
+        .expect("well-formed document");
+
+        // Bad signature: a real did:key, signed, then corrupted.
+        let (signer_did, secret_mb) = did_key_from_seed(31);
+        let signed = vta_sdk::trust_task_sign::build_signed(
+            "https://trusttasks.org/spec/acl/list/0.1",
+            json!({}),
+            &signer_did,
+            &secret_mb,
+            "did:webvh:vtc.example.com:abc",
+        )
+        .await
+        .expect("build a validly-signed document");
+        let mut bad_sig_doc: TrustTask<Value> =
+            serde_json::from_str(&signed).expect("signed doc parses");
+        let proof = bad_sig_doc.proof.as_mut().expect("document is signed");
+        let last = proof.proof_value.pop().expect("non-empty proofValue");
+        proof.proof_value.push(if last == '1' { '2' } else { '1' });
+
+        let resolver_failure = verify_trust_task_proof(&tv.state, &resolver_fail_doc).await;
+        let bad_signature = verify_trust_task_proof(&tv.state, &bad_sig_doc).await;
+
+        match (resolver_failure, bad_signature) {
+            (Err(AppError::Unauthorized(a)), Err(AppError::Unauthorized(b))) => {
+                assert_eq!(
+                    a, b,
+                    "a resolver failure must render exactly as a bad signature does"
+                );
+            }
+            other => panic!("expected both to be Unauthorized errors, got {other:?}"),
+        }
+    }
 }

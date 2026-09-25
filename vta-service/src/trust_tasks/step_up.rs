@@ -100,9 +100,9 @@ pub(super) async fn verify_did_signed_gate(
             DiProofError::NotDataIntegrity => {
                 GateError::ProofInvalid("not a Data Integrity proof".to_string())
             }
-            DiProofError::NoDid | DiProofError::VerifyFailed(_) => {
-                GateError::ProofInvalid(e.to_string())
-            }
+            DiProofError::NoDid
+            | DiProofError::ResolverFailed(_)
+            | DiProofError::VerifyFailed(_) => GateError::ProofInvalid(e.to_string()),
         })?;
 
     // Bind identity: the proven signer must be the expected signer (the document
@@ -1704,6 +1704,45 @@ mod tests {
             verify_did_signed_gate(&doc, &did).await,
             Err(GateError::ProofInvalid(_))
         ));
+    }
+
+    /// This gate is `did:key`-only (no network), so a resolver failure can
+    /// only happen one way here: the proof names a method that isn't
+    /// `did:key`/`did:peer`, which is refused before any signature is
+    /// checked. That refusal and an actual bad signature (above) must render
+    /// identically — this call site is unauthenticated (inbound), so it must
+    /// never let a caller learn which of the two occurred. This is the one
+    /// inbound site with its own `match` over `DiProofError`
+    /// (`verify_did_signed_gate` above), so it is the one most at risk of a
+    /// silent per-variant divergence.
+    #[tokio::test]
+    async fn resolver_failure_renders_the_same_as_a_bad_signature() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let (did, mb) = did_key(&sk);
+        let vm = format!("{did}#{mb}");
+
+        let mut resolver_fail_doc = signed_doc(&sk, &did, &vm);
+        resolver_fail_doc
+            .proof
+            .as_mut()
+            .unwrap()
+            .verification_method = "did:webvh:QmScid:example.com:glenn#key-0".to_string();
+
+        let mut bad_sig_doc = signed_doc(&sk, &did, &vm);
+        bad_sig_doc.payload = json!({ "subject": did, "decision": "approved", "tampered": true });
+
+        let resolver_failure = verify_did_signed_gate(&resolver_fail_doc, &did).await;
+        let bad_signature = verify_did_signed_gate(&bad_sig_doc, &did).await;
+
+        match (resolver_failure, bad_signature) {
+            (Err(GateError::ProofInvalid(a)), Err(GateError::ProofInvalid(b))) => {
+                assert_eq!(
+                    a, b,
+                    "a resolver failure must render exactly as a bad signature does"
+                );
+            }
+            other => panic!("expected both to be ProofInvalid, got {other:?}"),
+        }
     }
 }
 
