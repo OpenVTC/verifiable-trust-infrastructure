@@ -21,6 +21,7 @@
 
 import type {
   GitNsBootstrapStatus,
+  GitNsDriftItem,
   GitNsNamespaceRow,
   GitNsPublishedRow,
   GitNsRepoRow,
@@ -104,7 +105,8 @@ export type GitNsAction =
   | "repo.adopt"
   | "repo.transfer"
   | "repo.archive"
-  | "repo.create";
+  | "repo.create"
+  | "drift.resolve";
 
 /** Mirrors `git_ns::ops::consent_class`. */
 export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentClass {
@@ -115,7 +117,10 @@ export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentCl
   ) {
     return "destructive";
   }
-  if (action === "right.grant" || action === "right.revoke") {
+  // A drift revert is gated as the revocation it amounts to
+  // (`git_ns::drift::revert` → `consent_gate("right.revoke", impact)`), so it
+  // is classed by its impact the same way.
+  if (action === "right.grant" || action === "right.revoke" || action === "drift.resolve") {
     if (right === "git.ns.admin") return "destructive";
     if (right === "git.repo.own" || right === "git.repo.create") return "elevated";
     return "normal";
@@ -577,6 +582,117 @@ export function rightForForgeRole(role: string | undefined): GitNsRight | null {
   }
 }
 
+// ── drift ───────────────────────────────────────────────────────────────
+
+const ROLE_DRIFT: readonly GitNsDriftItem["type"][] = ["roleAdded", "roleRemoved", "roleChanged"];
+
+/** Whether a drift item is about one account's role (selected by account). */
+export function isRoleDrift(item: GitNsDriftItem): boolean {
+  return ROLE_DRIFT.includes(item.type);
+}
+
+/**
+ * The right the namespace's forge adapter projects to `role` — mirrors
+ * `git_ns::drift::projected_right`. On an organisation `admin` projects
+ * `git.repo.own` and `maintain` `git.repo.maintain`; on a personal account
+ * collaborator `write` is the one level, and projects `git.repo.maintain`.
+ */
+export function projectedRight(
+  kind: string | null | undefined,
+  role: string | undefined,
+): GitNsRight | null {
+  if (kind === "user") return role === "write" ? "git.repo.maintain" : null;
+  if (role === "admin") return "git.repo.own";
+  if (role === "maintain") return "git.repo.maintain";
+  return null;
+}
+
+/**
+ * The revocation a revert amounts to, which is what the VTC gates it as —
+ * mirrors `git_ns::drift::revert`: taking off or lowering a forge role that
+ * projects `own` weighs as revoking `own`; any other revert at most as
+ * revoking `maintain`.
+ */
+export function driftRevertImpact(
+  item: GitNsDriftItem,
+  ns: GitNsNamespaceRow,
+): "git.repo.own" | "git.repo.maintain" {
+  return isRoleDrift(item) &&
+    item.type !== "roleRemoved" &&
+    projectedRight(ns.kind, item.observed) === "git.repo.own"
+    ? "git.repo.own"
+    : "git.repo.maintain";
+}
+
+/** What reverting the item has the bridge do, in the operator's words. */
+export function driftRevertEffect(item: GitNsDriftItem): string {
+  switch (item.type) {
+    case "roleAdded":
+      return "The bridge takes the forge role off the account, so the repository's roles match the VTC's projection again. No VTC right changes.";
+    case "roleRemoved":
+    case "roleChanged":
+      return "The bridge re-applies the projected roles, so the account holds the level its VTC right calls for again. No VTC right changes.";
+    case "requiredCheckMissing":
+    case "protectionWeakened":
+      return "The bridge re-applies the ruleset, so “Verify commit trust” is required again and the protection is as the VTC projects it. No VTC right changes.";
+    default:
+      return "The bridge re-runs the bootstrap plan, which restores only what is missing (workflow, keyring, variables, required check). No VTC right changes.";
+  }
+}
+
+export type RevertStanding =
+  | { may: true }
+  | { may: false; why: string };
+
+/**
+ * Whether the VTC would accept a revert of `item` signed as `viewer` — the
+ * same checks `git-ns/drift/resolve` makes, in its order, as far as the
+ * console can see them:
+ *
+ * - the namespace has a bridge to undo anything (`notRevertible` otherwise);
+ * - the repository is active or orphaned (`repoNotActive`);
+ * - the signer holds `git.repo.own` there, explicit or implied by the
+ *   namespace's `git.ns.admin` (`drift_revert_admitted`);
+ * - where the revert weighs as revoking `own`, the signer is a community
+ *   administrator (`consent_gate`, under `[git_ns] elevated_requires_admin`,
+ *   which is on by default and which the console assumes, as it does for
+ *   every elevated task).
+ *
+ * The VTC decides either way; this only keeps the console from offering what
+ * it would refuse.
+ */
+export function revertStanding(
+  viewer: string | null,
+  superAdmin: boolean,
+  ns: GitNsNamespaceRow,
+  repo: GitNsRepoRow,
+  item: GitNsDriftItem,
+): RevertStanding {
+  if (ns.mode !== "bridge" || !ns.bridgeDid) {
+    return {
+      may: false,
+      why: "This namespace is governed in manual mode: no bridge can undo a forge-side change, so fix it on the forge by hand.",
+    };
+  }
+  if (repo.state !== "active" && repo.state !== "orphaned") {
+    return { may: false, why: `The repository is ${repo.state}; drift is resolved on an active or orphaned one.` };
+  }
+  const owns = !!viewer && (repo.owners.includes(viewer) || ns.admins.includes(viewer));
+  if (!owns) {
+    return {
+      may: false,
+      why: "Reverting drift is an owner's decision: it needs git.repo.own on the repository, which its owners and the namespace's admins hold. This session's DID holds neither, so hand the command below to one of them.",
+    };
+  }
+  if (driftRevertImpact(item, ns) === "git.repo.own" && !superAdmin) {
+    return {
+      may: false,
+      why: "Taking an admin role off the forge weighs as revoking ownership, an elevated action this VTC accepts only from a community administrator who also owns the repository. Hand the command below to one.",
+    };
+  }
+  return { may: true };
+}
+
 // ── activity ────────────────────────────────────────────────────────────
 
 const ACTIVITY: Record<string, string> = {
@@ -599,6 +715,7 @@ const ACTIVITY: Record<string, string> = {
   "gitNs.right.revoked": "revoked",
   "gitNs.right.lapsed": "lapsed",
   "gitNs.drift.reported": "drift reported",
+  "gitNs.drift.resolved": "drift resolved",
   "gitNs.account.linked": "forge account linked",
 };
 

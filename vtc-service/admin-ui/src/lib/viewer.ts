@@ -23,10 +23,24 @@ export function isSuperAdmin(who: WhoamiResponse | null | undefined): boolean {
  * viewer is not one.
  */
 export function useIsSuperAdmin(): boolean {
+  return isSuperAdmin(useWhoami());
+}
+
+/**
+ * The DID the signed-in viewer's session authenticates, read the same way
+ * from the shell's `whoami` cache; `null` until a probe has answered. A
+ * console key signs `git-ns` tasks as this DID (`git_ns::tasks::acting_as`),
+ * so it is whose git rights decide what the console may offer.
+ */
+export function useViewerDid(): string | null {
+  return useWhoami()?.session.subject ?? null;
+}
+
+function useWhoami(): WhoamiResponse | null | undefined {
   const { data } = useQuery({
     queryKey: ["whoami"],
     queryFn: probeSession,
     enabled: false,
   });
-  return isSuperAdmin(data);
+  return data;
 }

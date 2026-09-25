@@ -9,6 +9,7 @@ import { Check, Plus, X } from "lucide-react";
 
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
+import { useIsSuperAdmin, useViewerDid } from "@/lib/viewer";
 import type {
   GitNsDriftItem,
   GitNsNamespaceRow,
@@ -17,7 +18,7 @@ import type {
   GitNsRightRow,
 } from "@/lib/wire-types";
 
-import { archiveTask, grantTask, type SignedTask } from "./actions";
+import { archiveTask, driftRevertTask, grantTask, type SignedTask } from "./actions";
 import {
   fetchAccounts,
   fetchActivity,
@@ -31,7 +32,13 @@ import {
   indexAccounts,
   memberForAccount,
 } from "./api";
-import { AdoptDialog, GrantDialog, RevokeDialog, TransferDialog } from "./dialogs";
+import {
+  AdoptDialog,
+  GrantDialog,
+  RevertDriftDialog,
+  RevokeDialog,
+  TransferDialog,
+} from "./dialogs";
 import {
   activityVerb,
   bootstrapSteps,
@@ -45,6 +52,7 @@ import {
   REPO_RIGHTS,
   repoRights,
   repoStatus,
+  revertStanding,
   rightForForgeRole,
   rightLabel,
   shortName,
@@ -66,6 +74,7 @@ type Dialog =
   | { kind: "transfer" }
   | { kind: "revoke"; row: GitNsRightRow }
   | { kind: "adopt" }
+  | { kind: "revert"; item: GitNsDriftItem }
   | { kind: "sign"; task: SignedTask };
 
 const RIGHT_TONE: Record<string, "accent" | "success" | "neutral" | "danger"> = {
@@ -227,13 +236,21 @@ const DRIFT_LABEL: Record<GitNsDriftItem["type"], string> = {
 function DriftList({
   items,
   forges,
+  ns,
+  repo,
   onAdopt,
+  onRevert,
 }: {
   items: GitNsDriftItem[];
   forges: ForgeAccounts | undefined;
+  ns: GitNsNamespaceRow;
+  repo: GitNsRepoRow;
   onAdopt: (subject: string, right: ReturnType<typeof rightForForgeRole>) => void;
+  onRevert: (item: GitNsDriftItem) => void;
 }) {
   const book = useNameBook();
+  const viewer = useViewerDid();
+  const superAdmin = useIsSuperAdmin();
   return (
     <ul className="finding-list">
       {items.map((d, i) => {
@@ -241,9 +258,11 @@ function DriftList({
           d.account && forges ? memberForAccount(forges, d.account.forge, d.account.id) : undefined;
         const right = d.type === "roleAdded" ? rightForForgeRole(d.observed) : null;
         const protection = d.type === "requiredCheckMissing" || d.type === "protectionWeakened";
+        const standing = revertStanding(viewer, superAdmin, ns, repo, d);
+        const label = DRIFT_LABEL[d.type] ?? d.type;
         return (
           <li key={i} className={`finding ${protection ? "error" : "warn"}`}>
-            <strong>{DRIFT_LABEL[d.type] ?? d.type}</strong>
+            <strong>{label}</strong>
             <span>
               {d.account && (
                 <>
@@ -270,9 +289,31 @@ function DriftList({
                 re-applies it by default (rulesets enforce).
               </span>
             )}
-            {d.type === "roleAdded" && (
-              <span className="gitns-drift-actions">
-                {member && right ? (
+            <span className="gitns-drift-actions">
+              {standing.may ? (
+                <button
+                  type="button"
+                  className="secondary sm"
+                  aria-label={`Revert: ${label}${d.account ? ` @${d.account.login}` : ""}`}
+                  onClick={() => onRevert(d)}
+                >
+                  Revert to the VTC's state
+                </button>
+              ) : (
+                <span className="muted">
+                  {standing.why}
+                  {ns.mode === "bridge" && (
+                    <>
+                      {" "}
+                      <code aria-label="Revert command">
+                        {driftRevertTask(repo.resource, ns, d).command}
+                      </code>
+                    </>
+                  )}
+                </span>
+              )}
+              {d.type === "roleAdded" &&
+                (member && right ? (
                   <button type="button" className="secondary sm" onClick={() => onAdopt(member, right)}>
                     Adopt into VTC as {rightLabel(right).toLowerCase()}
                   </button>
@@ -282,14 +323,14 @@ function DriftList({
                       ? `No git right corresponds to the forge role "${d.observed}".`
                       : "No member has linked this forge account, so there is nobody to grant it to."}
                   </span>
-                )}
+                ))}
+              {d.type === "roleAdded" && ns.roleDrift !== "enforce" && (
                 <span className="muted">
-                  To revert instead, remove the role on the forge — or set{" "}
-                  <code>role_drift = "enforce"</code> in the git namespace policy and the
-                  bridge re-projects roles itself.
+                  Or set <code>role_drift = "enforce"</code> in the git namespace policy and
+                  the bridge re-projects roles itself.
                 </span>
-              </span>
-            )}
+              )}
+            </span>
           </li>
         );
       })}
@@ -796,6 +837,9 @@ export function RepoDetail() {
               <DriftList
                 items={drift}
                 forges={forges}
+                ns={ns}
+                repo={repo}
+                onRevert={(item) => setDialog({ kind: "revert", item })}
                 onAdopt={(subject, right) =>
                   right &&
                   setDialog({
@@ -858,6 +902,16 @@ export function RepoDetail() {
       {dialog?.kind === "adopt" && (
         <AdoptDialog
           resource={repo.resource}
+          onClose={() => setDialog(null)}
+          onBuilt={(task) => setDialog({ kind: "sign", task })}
+        />
+      )}
+      {dialog?.kind === "revert" && (
+        <RevertDriftDialog
+          resource={repo.resource}
+          ns={ns}
+          item={dialog.item}
+          label={DRIFT_LABEL[dialog.item.type] ?? dialog.item.type}
           onClose={() => setDialog(null)}
           onBuilt={(task) => setDialog({ kind: "sign", task })}
         />

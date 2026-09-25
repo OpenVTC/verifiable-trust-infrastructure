@@ -40,12 +40,15 @@
 import {
   consentClass,
   type ConsentClass,
+  driftRevertEffect,
+  driftRevertImpact,
   type GitNsAction,
+  isRoleDrift,
   rightLabel,
   shortName,
 } from "./model";
 import { postSignedTrustTask } from "@/lib/api";
-import type { GitNsRight } from "@/lib/wire-types";
+import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
 
 // Document `type`s, not `Trust-Task` headers: each is dispatched by
 // `POST /v1/trust-tasks` from the document itself, and no REST route binds
@@ -63,6 +66,7 @@ export const TASK_URI: Record<GitNsAction, string> = {
   "repo.transfer": "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
   "repo.archive": "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
   "repo.create": "https://trusttasks.org/spec/git-ns/repo/create/0.1",
+  "drift.resolve": "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
 };
 
 /** Someone a change is about, named in the dialog before it is signed. */
@@ -433,6 +437,61 @@ export function createTask(c: CreateInput): SignedTask {
     payload,
     consent: consentClass("repo.create"),
     resource: `${c.namespaceResource}/${c.name}`,
+    parties: [],
+    command: cnm(...args),
+  };
+}
+
+/**
+ * `git-ns/drift/resolve` 0.1, `revert`: the bridge makes the forge match the
+ * VTC's projection again for one reported drift item, and no right changes.
+ *
+ * The item is selected as the spec selects it — by `type`, by account for
+ * the role types — and by the `observed` value read here, so a revert decided
+ * about one forge state is refused (`driftNotFound`) rather than applied to
+ * another. The account's `login` is display only; its `forge` and `id` pick
+ * it out.
+ */
+export function driftRevertTask(
+  resource: string,
+  ns: GitNsNamespaceRow,
+  item: GitNsDriftItem,
+  reason?: string,
+): SignedTask {
+  const drift: Record<string, unknown> = { type: item.type };
+  const args: (Word | string | { opt: string })[] = [
+    w("drift"),
+    w("resolve"),
+    resource,
+    w("revert"),
+    o("type", item.type),
+  ];
+  if (isRoleDrift(item) && item.account) {
+    drift.account = { forge: item.account.forge, id: item.account.id, login: item.account.login };
+    args.push(o("account-id", item.account.id), o("account-login", item.account.login));
+  }
+  if (item.observed !== undefined) {
+    drift.observed = item.observed;
+    args.push(o("observed", item.observed));
+  }
+  const payload: Record<string, unknown> = { resource, drift, action: "revert" };
+  const r = reason?.trim();
+  if (r) {
+    payload.reason = r;
+    args.push(o("reason", r));
+  }
+  return {
+    action: "drift.resolve",
+    title: `Revert drift on ${shortName(resource)}`,
+    effect: `${driftRevertEffect(item)} The item leaves the outstanding drift and the bridge inspects the repository again to confirm it; refused if the forge no longer shows what was read here.`,
+    taskUri: TASK_URI["drift.resolve"],
+    payload,
+    consent: consentClass("drift.resolve", driftRevertImpact(item, ns)),
+    consentNote:
+      driftRevertImpact(item, ns) === "git.repo.own"
+        ? "Taking an admin role off the forge weighs as revoking ownership, so this VTC gates it as that revocation: an elevated action it accepts only from a community administrator (`elevated_requires_admin`) who also holds git.repo.own here."
+        : "Gated as the revocation it amounts to, which is normal-class: authorized by the signer's git.repo.own on the repository, explicit or implied by git.ns.admin.",
+    resource,
     parties: [],
     command: cnm(...args),
   };
