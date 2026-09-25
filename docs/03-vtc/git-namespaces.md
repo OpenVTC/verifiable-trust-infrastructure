@@ -285,6 +285,12 @@ archive — is signed with the browser's console key and sent where one is
 enrolled, and otherwise handed to the administrator as the `cnm git …`
 command that signs it, with the document itself.
 
+The **Members** page shows each member's git rights and linked forge accounts
+(from `rights` and `accounts`) in its list, and a member's page lists them in
+a *Git rights* card — recorded rights with their resource, granter and expiry,
+and role-derived ones marked as such. Both need a community administrator; a
+scoped administrator sees that said instead of the column.
+
 ## Limits
 
 - **No member step-up** — see *Consent classes* above.
