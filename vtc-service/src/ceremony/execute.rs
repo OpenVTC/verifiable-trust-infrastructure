@@ -369,14 +369,6 @@ async fn remint(
         .ok_or_else(|| AppError::NotFound(format!("member not found: {subject_did}")))?;
     let previous_role = acl.role.clone();
 
-    // A demotion ends an unrestricted admin, and must not leave nobody able to
-    // consent to another (VTI-APV-014, VTI-APV-009). Under the same lock.
-    if !matches!(new_role, VtcRole::Admin)
-        && crate::acl::admin_consent::is_live_unrestricted(&acl, crate::auth::session::now_epoch())
-    {
-        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
-    }
-
     // No-last-admin on demotion: refuse to demote the community's only
     // admin (the inverse of the leave guard).
     if matches!(previous_role, VtcRole::Admin) && !matches!(new_role, VtcRole::Admin) {
@@ -391,6 +383,15 @@ async fn remint(
                  member to admin first"
             )));
         }
+    }
+
+    // A demotion ends an unrestricted admin, and must not leave nobody able to
+    // consent to another (VTI-APV-014, VTI-APV-009). After the broader guard
+    // above, so the community's very last admin is refused in those terms.
+    if !matches!(new_role, VtcRole::Admin)
+        && crate::acl::admin_consent::is_live_unrestricted(&acl, crate::auth::session::now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
     }
 
     acl.role = new_role.clone();
@@ -476,14 +477,9 @@ async fn depart(
     let _guard = LAST_ADMIN_LOCK.lock().await;
 
     // No-last-admin invariant — checked before any write so a refusal
-    // leaves the community untouched. Removing an unrestricted admin also must
-    // not leave nobody able to consent to another (VTI-APV-014, VTI-APV-009).
-    if let Some(acl) = get_acl_entry(&state.acl_ks, subject_did).await?
-        && crate::acl::admin_consent::is_live_unrestricted(&acl, crate::auth::session::now_epoch())
-    {
-        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
-    }
-    if let Some(acl) = get_acl_entry(&state.acl_ks, subject_did).await?
+    // leaves the community untouched.
+    let acl = get_acl_entry(&state.acl_ks, subject_did).await?;
+    if let Some(acl) = acl.as_ref()
         && matches!(acl.role, VtcRole::Admin)
     {
         let other_admins = list_acl_entries(&state.acl_ks)
@@ -497,6 +493,14 @@ async fn depart(
                  member to admin first"
             )));
         }
+    }
+    // Removing an unrestricted admin also must not leave nobody able to consent
+    // to another (VTI-APV-014, VTI-APV-009). After the broader guard, so the
+    // community's very last admin is refused in those terms.
+    if let Some(acl) = acl.as_ref()
+        && crate::acl::admin_consent::is_live_unrestricted(acl, crate::auth::session::now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
     }
 
     let member = get_member(&state.members_ks, subject_did).await?;
