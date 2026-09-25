@@ -49,10 +49,39 @@ async fn build() -> Fixture {
     )
     .await
     .expect("install default policies");
+    // The caller every test acts as. Its entry is what bounds the entries it
+    // may write (VTI-ACL-053), so it has to exist, as it would for any caller
+    // that could have authenticated.
+    seed_entry(&vtc, ADMIN, vtc_service::acl::VtcRole::Admin, vec![], None).await;
     Fixture {
         router: vtc.router.clone(),
         vtc,
     }
+}
+
+async fn seed_entry(
+    vtc: &TestVtc,
+    did: &str,
+    role: vtc_service::acl::VtcRole,
+    scopes: Vec<String>,
+    expires_at: Option<u64>,
+) {
+    vtc_service::acl::store_acl_entry(
+        &vtc.state.acl_ks,
+        &vtc_service::acl::VtcAclEntry {
+            did: did.into(),
+            role,
+            label: None,
+            allowed_contexts: scopes,
+            created_at: now_epoch(),
+            created_by: "test".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at,
+        },
+    )
+    .await
+    .unwrap();
 }
 
 async fn admin_token(fix: &Fixture) -> String {
@@ -917,4 +946,183 @@ async fn granting_a_non_admin_role_needs_no_step_up() {
         .await,
         StatusCode::CREATED
     );
+}
+
+// ─── VTI-ACL-052 / VTI-ACL-053: no self-widening, no grant past the granter ──
+
+/// VTI-ACL-052: a rewrite of your own entry is a modification of it. Before
+/// this, an administrator could re-grant itself at the same role with the
+/// expiry dropped (time-boxed → permanent) or the scopes moved.
+#[tokio::test]
+async fn vti_acl_052_an_admin_cannot_rewrite_its_own_entry() {
+    let fix = build().await;
+    const SELF: &str = "did:key:z6MkExpiringCtxAdmin";
+    let expires = now_epoch() + 3600;
+    seed_entry(
+        &fix.vtc,
+        SELF,
+        vtc_service::acl::VtcRole::Admin,
+        vec!["ctx-a".into()],
+        Some(expires),
+    )
+    .await;
+    let token = fix.vtc.token(SELF, "admin", vec!["ctx-a".into()]).await;
+
+    let (status, body) = call(
+        &fix,
+        "POST",
+        "/v1/acl",
+        GRANT,
+        &token,
+        Some(json!({ "entry": { "subject": SELF, "role": "admin", "scopes": ["ctx-a"] } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, SELF)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.expires_at, Some(expires), "expiry must be untouched");
+}
+
+/// VTI-ACL-052 on the role path: demoting yourself is a modification of
+/// your own entry too (the ceremony only refused self-*promotion*).
+#[tokio::test]
+async fn vti_acl_052_an_admin_cannot_change_its_own_role() {
+    let fix = build().await;
+    let token = admin_token(&fix).await;
+    let (status, body) = call(
+        &fix,
+        "PATCH",
+        &format!("/v1/acl/{ADMIN}"),
+        CHANGE_ROLE,
+        &token,
+        Some(json!({ "fromRole": "admin", "toRole": "moderator" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// VTI-ACL-053: an administrator whose entry expires cannot write an entry
+/// that outlives it — the way it would otherwise widen itself, by granting a
+/// second DID it controls.
+#[tokio::test]
+async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
+    let fix = build().await;
+    const GRANTER: &str = "did:key:z6MkShortLivedAdmin";
+    let expires = now_epoch() + 3600;
+    seed_entry(
+        &fix.vtc,
+        GRANTER,
+        vtc_service::acl::VtcRole::Admin,
+        vec!["ctx-a".into()],
+        Some(expires),
+    )
+    .await;
+    let token = fix.vtc.token(GRANTER, "admin", vec!["ctx-a".into()]).await;
+    let at = |secs: u64| {
+        chrono::DateTime::from_timestamp(secs as i64, 0)
+            .unwrap()
+            .to_rfc3339()
+    };
+
+    for (what, entry) in [
+        (
+            "permanent",
+            json!({ "subject": "did:key:z6MkSib1", "role": "member", "scopes": ["ctx-a"] }),
+        ),
+        (
+            "later",
+            json!({ "subject": "did:key:z6MkSib2", "role": "member", "scopes": ["ctx-a"],
+                    "expiresAt": at(expires + 60) }),
+        ),
+    ] {
+        let (status, body) = call(
+            &fix,
+            "POST",
+            "/v1/acl",
+            GRANT,
+            &token,
+            Some(json!({ "entry": entry })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{what}: {body}");
+    }
+
+    let (status, body) = call(
+        &fix,
+        "POST",
+        "/v1/acl",
+        GRANT,
+        &token,
+        Some(
+            json!({ "entry": { "subject": "did:key:z6MkSib3", "role": "member",
+                                "scopes": ["ctx-a"], "expiresAt": at(expires) } }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "within the granter's expiry: {body}"
+    );
+}
+
+/// Overlap makes an entry visible, not manageable. An administrator of ctx-a
+/// could previously rewrite a `[ctx-a, ctx-b]` member entry down to `[ctx-a]`,
+/// strip `ctx-b` with a scoped revoke, or move its role — each a change to
+/// authority in a context it does not administer.
+#[tokio::test]
+async fn a_context_admin_cannot_manage_an_entry_straddling_its_scope() {
+    let fix = build().await;
+    let super_token = admin_token(&fix).await;
+    const DID: &str = "did:key:z6MkStraddler";
+    assert_eq!(
+        grant(&fix, &super_token, DID, "member", json!(["ctx-a", "ctx-b"])).await,
+        StatusCode::CREATED
+    );
+    let ctx_admin = fix
+        .vtc
+        .token("did:key:z6MkCtxAdminA", "admin", vec!["ctx-a".into()])
+        .await;
+
+    let (status, body) = call(
+        &fix,
+        "POST",
+        "/v1/acl",
+        GRANT,
+        &ctx_admin,
+        Some(json!({ "entry": { "subject": DID, "role": "member", "scopes": ["ctx-a"] } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "rewrite: {body}");
+
+    let (status, body) = call(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{DID}?scopes=ctx-b"),
+        REVOKE,
+        &ctx_admin,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "scoped revoke: {body}");
+
+    let (status, body) = call(
+        &fix,
+        "PATCH",
+        &format!("/v1/acl/{DID}"),
+        CHANGE_ROLE,
+        &ctx_admin,
+        Some(json!({ "fromRole": "member", "toRole": "moderator" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "change-role: {body}");
+
+    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, DID)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.allowed_contexts, vec!["ctx-a", "ctx-b"]);
+    assert_eq!(entry.role, vtc_service::acl::VtcRole::Member);
 }

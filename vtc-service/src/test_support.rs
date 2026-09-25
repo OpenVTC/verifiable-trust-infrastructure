@@ -524,8 +524,37 @@ impl TestVtc {
     /// Mint a bearer token for `did` with `role`, creating the backing
     /// `Authenticated` session row so the `AuthClaims` extractor (which
     /// re-checks session state on every request) accepts it.
+    ///
+    /// Also writes the ACL row the token stands for, when there is none. A
+    /// real token is only ever minted for a DID with an entry, and the ACL
+    /// write paths bound what a caller may grant by that entry (VTI-ACL-053),
+    /// so a token with no row behind it would describe a caller that cannot
+    /// exist. A row a test seeded itself is left as it is.
     pub async fn token(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
         use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
+        if crate::acl::get_acl_entry(&self.state.acl_ks, did)
+            .await
+            .expect("read ACL row")
+            .is_none()
+            && let Ok(vtc_role) = role.parse::<crate::acl::VtcRole>()
+        {
+            crate::acl::store_acl_entry(
+                &self.state.acl_ks,
+                &crate::acl::VtcAclEntry {
+                    did: did.to_string(),
+                    role: vtc_role,
+                    label: None,
+                    allowed_contexts: contexts.clone(),
+                    created_at: now_epoch(),
+                    created_by: "test-support".into(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("seed the token's ACL row");
+        }
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {
             session_id: session_id.clone(),

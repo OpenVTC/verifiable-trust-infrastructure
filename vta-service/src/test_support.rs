@@ -630,6 +630,23 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
         webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
     };
+    // The operator every provisioning test acts as ([`super_admin_claims`])
+    // must hold an entry: an ACL write is bounded by the writer's own entry
+    // (VTI-ACL-053), and a real caller could not have authenticated without
+    // one.
+    if crate::acl::get_acl_entry(&ts.acl_ks, &test_admin_did().0)
+        .await
+        .expect("read ACL")
+        .is_none()
+    {
+        seed_acl_entry(
+            &ts.acl_ks,
+            &test_admin_did().0,
+            crate::acl::Role::Admin,
+            vec![],
+        )
+        .await;
+    }
     (vta_did, deps)
 }
 

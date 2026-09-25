@@ -418,11 +418,28 @@ pub(crate) async fn plan_grant(
             .is_unrestricted();
     let (created_at, created_by, status) = match existing {
         Some(prev) => {
+            // VTI-ACL-052. A rewrite of your own entry is a modification of it,
+            // whatever it changes: re-stating it with no expiry makes a
+            // time-boxed grant permanent, and re-scoping it moves your own
+            // authority. Another administrator makes those changes.
+            if req_entry.subject == actor.did {
+                return Err(AppError::Forbidden(
+                    "you cannot rewrite your own ACL entry (VTI-ACL-052) — another administrator whose scope covers it must make this change"
+                        .into(),
+                ));
+            }
             if !is_acl_entry_visible(actor, &as_vti_acl_entry(&prev)) {
                 return Err(AppError::NotFound(format!(
                     "ACL entry not found for DID: {}",
                     req_entry.subject
                 )));
+            }
+            // Visible is overlap; rewriting needs all of it. The rewrite
+            // replaces the scope list, so an administrator of `a` rewriting an
+            // entry that acts in `[a, b]` would otherwise evict the subject
+            // from `b`, which it does not administer.
+            if !caller_covers_target(actor, &prev) {
+                return Err(not_covered(&req_entry.subject, "rewrite"));
             }
             if prev.role != req_entry.role {
                 return Err(AppError::Conflict(format!(
@@ -449,6 +466,26 @@ pub(crate) async fn plan_grant(
             (now_epoch(), actor.did.clone(), StatusCode::CREATED)
         }
     };
+
+    // Nothing this caller writes may outlive the caller's own authority
+    // (VTI-ACL-053): an administrator whose entry expires cannot grant a
+    // permanent entry, or one expiring later, to a DID it also controls.
+    let own = caller_entry(state, actor).await?;
+    if let Some(mine) = own.expires_at {
+        match expires_at {
+            None => {
+                return Err(AppError::Forbidden(format!(
+                    "your entry expires at {mine}, so you cannot write a permanent one — give it an expiry no later than yours (VTI-ACL-053)"
+                )));
+            }
+            Some(theirs) if theirs > mine => {
+                return Err(AppError::Forbidden(format!(
+                    "this entry would expire at {theirs}, after your own ({mine}) — an entry you write cannot outlive your authority (VTI-ACL-053)"
+                )));
+            }
+            Some(_) => {}
+        }
+    }
 
     Ok(GrantPlan {
         entry: VtcAclEntry {
@@ -652,6 +689,14 @@ pub(crate) async fn change_role_inner(
     source: crate::ceremony::StepUpSource<'_>,
 ) -> Result<ChangeRoleOutcome, AppError> {
     let did = did.to_string();
+    // VTI-ACL-052: in either direction. The ceremony refuses self-*promotion*;
+    // a subject moving its own role at all is a modification of its own entry.
+    if actor.did == did {
+        return Err(AppError::Forbidden(
+            "you cannot change your own role (VTI-ACL-052) — another administrator whose scope covers your entry must make this change"
+                .into(),
+        ));
+    }
     // The bearer route's operation, as the canonical `acl/change-role` payload
     // it describes — the body plus the subject its path names — so a consent
     // for promoting one subject cannot be spent promoting another. The signed
@@ -676,15 +721,14 @@ pub(crate) async fn change_role_inner(
         )));
     }
 
-    // Visibility (overlapping contexts) is enough to *see* an admin entry but
-    // not to downgrade it: a context-admin of `ctx-a` must not be able to
-    // demote a peer admin scoped to `[ctx-a, ctx-b]`, and can never touch a
+    // Visibility (overlapping contexts) is enough to *see* an entry but not to
+    // change it: a context-admin of `ctx-a` must not be able to move the role
+    // of a subject scoped to `[ctx-a, ctx-b]`, and can never touch a
     // super-admin. Only a super-admin, or an admin covering *every* context
-    // the target holds, may modify an existing Admin entry.
-    if entry.role == VtcRole::Admin && !caller_covers_admin_target(actor, &entry) {
-        return Err(AppError::Forbidden(
-            "cannot modify an admin entry scoped outside your contexts".into(),
-        ));
+    // the target holds, may modify it. This used to apply to admin targets
+    // only, which left every other role's entry in `ctx-b` movable by `ctx-a`.
+    if !caller_covers_target(actor, &entry) {
+        return Err(not_covered(&did, "change the role of"));
     }
 
     // Snapshot the pre-change authorization so we can detect a privilege
@@ -923,14 +967,13 @@ pub async fn delete_acl(
         )));
     }
 
-    // Same target-role guard as `update_acl`: overlapping contexts make an
-    // admin entry *visible* but not *deletable* by a context-admin scoped
-    // outside its full context set, and a super-admin can only be deleted by
-    // another super-admin.
-    if entry.role == VtcRole::Admin && !caller_covers_admin_target(&auth.0, &entry) {
-        return Err(AppError::Forbidden(
-            "cannot delete an admin entry scoped outside your contexts".into(),
-        ));
+    // Same guard as `acl/change-role`, for every role: overlapping contexts
+    // make an entry *visible* but not *revocable* by a context-admin scoped
+    // outside its full context set, and a super-admin can only be revoked by
+    // another super-admin. A scope reduction is covered too — without this an
+    // administrator of `a` could strip `b` from an entry acting in `[a, b]`.
+    if !caller_covers_target(&auth.0, &entry) {
+        return Err(not_covered(&did, "revoke"));
     }
 
     // Canonical `acl/revoke` has two modes. With `scopes`, this is a
@@ -1087,15 +1130,38 @@ pub(crate) fn as_vti_acl_entry(e: &VtcAclEntry) -> vti_common::acl::AclEntry {
         .with_expires_at(e.expires_at)
 }
 
-/// May `caller` delete or downgrade `target`, which is an **Admin** entry?
+/// The caller's own entry — what bounds the entries it writes (VTI-ACL-053).
+/// A caller with no live entry of its own writes nothing (VTI-ACL-001).
+async fn caller_entry(state: &AppState, actor: &AuthClaims) -> Result<VtcAclEntry, AppError> {
+    match get_acl_entry(&state.acl_ks, &actor.did).await? {
+        Some(e) if e.is_expired(now_epoch()) => Err(AppError::Forbidden(format!(
+            "your ACL entry ({}) has expired; an expired entry confers no authority to grant (VTI-ACL-004)",
+            actor.did
+        ))),
+        Some(e) => Ok(e),
+        None => Err(AppError::Forbidden(format!(
+            "{} has no ACL entry of its own, so there is no authority to bound this grant by (VTI-ACL-001, VTI-ACL-053)",
+            actor.did
+        ))),
+    }
+}
+
+/// The refusal for an entry the caller can see but does not wholly administer.
+fn not_covered(did: &str, verb: &str) -> AppError {
+    AppError::Forbidden(format!(
+        "{did} holds authority outside your contexts — only an administrator whose scope covers every context it acts in can {verb} it"
+    ))
+}
+
+/// May `caller` modify or revoke `target`, whatever its role?
 ///
 /// Mirrors [`vti_common::acl::delegated_any_approver_covers`]: a super-admin
 /// covers any target; a context-admin covers only a context-scoped target
 /// **all** of whose contexts fall within the caller's authority. A target with
-/// no `allowed_contexts` is itself a super-admin and can only be acted on by a
-/// super-admin (the empty-context branch below is `false` for a non-super
-/// caller, so it is refused).
-fn caller_covers_admin_target(caller: &AuthClaims, target: &VtcAclEntry) -> bool {
+/// no `allowed_contexts` is either a super-admin or acts nowhere, and in both
+/// cases can only be acted on by a super-admin (the non-`Contexts` branch
+/// below is `false` for a non-super caller, so it is refused).
+fn caller_covers_target(caller: &AuthClaims, target: &VtcAclEntry) -> bool {
     if caller.is_super_admin() {
         return true;
     }
@@ -1178,26 +1244,23 @@ mod tests {
     #[test]
     fn super_admin_covers_any_admin_target() {
         let sa = claims(true, &[]);
-        assert!(caller_covers_admin_target(
-            &sa,
-            &admin_entry(&["ctx-a", "ctx-b"])
-        ));
-        assert!(caller_covers_admin_target(&sa, &admin_entry(&[]))); // super-admin target
+        assert!(caller_covers_target(&sa, &admin_entry(&["ctx-a", "ctx-b"])));
+        assert!(caller_covers_target(&sa, &admin_entry(&[]))); // super-admin target
     }
 
     #[test]
     fn context_admin_covers_only_targets_fully_within_its_scope() {
         let ca = claims(false, &["ctx-a"]);
         // Target scoped exactly to ctx-a → covered.
-        assert!(caller_covers_admin_target(&ca, &admin_entry(&["ctx-a"])));
+        assert!(caller_covers_target(&ca, &admin_entry(&["ctx-a"])));
         // Accept-criterion: ctx-a admin can't act on an admin scoped to
         // [ctx-a, ctx-b] — ctx-b is outside its authority.
-        assert!(!caller_covers_admin_target(
+        assert!(!caller_covers_target(
             &ca,
             &admin_entry(&["ctx-a", "ctx-b"])
         ));
         // A context-admin can never act on a super-admin (empty-context) target.
-        assert!(!caller_covers_admin_target(&ca, &admin_entry(&[])));
+        assert!(!caller_covers_target(&ca, &admin_entry(&[])));
     }
 
     // ── P0.20: privilege-reduction detection ───────────────────────
