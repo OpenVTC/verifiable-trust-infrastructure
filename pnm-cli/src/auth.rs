@@ -136,12 +136,43 @@ pub fn session_status(keyring_key: &str) -> Option<vta_sdk::session::SessionStat
     store().session_status(keyring_key)
 }
 
+/// Session status as a JSON value.
+///
+/// Shared by `pnm auth status` and `pnm vta info` so both describe a
+/// session the same way — the token state is a word rather than a
+/// sentence, and `expiresInSecs` is present only when it means
+/// something.
+pub(crate) fn status_json(keyring_key: &str) -> serde_json::Value {
+    match store().session_status(keyring_key) {
+        Some(status) => {
+            let (token, expires_in_secs) = match status.token_status {
+                TokenStatus::Valid { expires_in_secs } => ("valid", Some(expires_in_secs)),
+                TokenStatus::Expired => ("expired", None),
+                TokenStatus::None => ("none", None),
+            };
+            serde_json::json!({
+                "authenticated": true,
+                "clientDid": status.client_did,
+                "vtaDid": status.vta_did,
+                "token": token,
+                "expiresInSecs": expires_in_secs,
+            })
+        }
+        None => serde_json::json!({ "authenticated": false }),
+    }
+}
+
 /// Show current authentication status.
 ///
 /// The VTA's REST URL isn't shown here — it's derived from the VTA DID
 /// at runtime, not stored by PNM. Use `pnm health` or `pnm vta info` to
 /// see the resolved URL.
 pub fn status(keyring_key: &str) {
+    if vta_cli_common::render::is_json_output() {
+        vta_cli_common::render::print_json_or_exit(&status_json(keyring_key), "auth status");
+        return;
+    }
+
     match store().session_status(keyring_key) {
         Some(status) => {
             println!("Client DID: {}", status.client_did);

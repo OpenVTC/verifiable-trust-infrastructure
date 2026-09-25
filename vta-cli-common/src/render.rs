@@ -164,6 +164,44 @@ pub fn print_json<T: serde::Serialize>(value: &T) -> Result<(), serde_json::Erro
     Ok(())
 }
 
+/// Print `value` as JSON, or exit reporting what could not be serialized.
+///
+/// A failure here is a bug in the shape being emitted, not something the
+/// caller can recover from or the operator can act on, so there is no
+/// `Result` worth threading back. `what` names the thing, so the message
+/// says which command produced the bad shape. Exits 1 — the generic
+/// operational failure both CLIs use.
+pub fn print_json_or_exit<T: serde::Serialize>(value: &T, what: &str) {
+    if let Err(e) = print_json(value) {
+        eprintln!("Error serializing {what}: {e}");
+        std::process::exit(1);
+    }
+}
+
+// ── Colour ──────────────────────────────────────────────────────────
+//
+// Colour is a property of the terminal, not of the data. Escape codes
+// written into a pipe or a log file are noise to a reader and a corrupt
+// field to a parser, so they are emitted only when the destination is a
+// terminal and the operator has not set `NO_COLOR`
+// (<https://no-color.org>). Default is on, so a caller that never
+// registers anything keeps the old behaviour.
+
+static COLOR: AtomicBool = AtomicBool::new(true);
+
+/// Enable or disable colour output. Called once at CLI startup from the
+/// terminal check.
+pub fn set_color(enabled: bool) {
+    COLOR.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether colour may be emitted. Renderers check this before writing
+/// any escape sequence.
+#[must_use]
+pub fn color_enabled() -> bool {
+    COLOR.load(Ordering::Relaxed)
+}
+
 // ── ANSI constants ──────────────────────────────────────────────────
 
 pub const BOLD: &str = "\x1b[1m";
@@ -486,6 +524,15 @@ fn extract_human_message(body: &str) -> String {
 // ── Ratatui rendering helpers ───────────────────────────────────────
 
 pub fn print_widget(widget: impl Widget, height: u16) {
+    print!("{}", render_widget(widget, height, color_enabled()));
+}
+
+/// Render `widget` to the string `print_widget` would emit.
+///
+/// Takes `color` rather than reading the global, so the escape-sequence
+/// behaviour — the whole point of the gate — is testable without
+/// capturing stdout and without tests racing each other over one flag.
+fn render_widget(widget: impl Widget, height: u16, color: bool) -> String {
     let width = ratatui::crossterm::terminal::size().map_or(120, |(w, _)| w);
     let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);
@@ -496,6 +543,7 @@ pub fn print_widget(widget: impl Widget, height: u16) {
         let mut cur_fg = Color::Reset;
         let mut cur_bg = Color::Reset;
         let mut cur_mod = Modifier::empty();
+        let mut line = String::new();
 
         for x in 0..width {
             let cell = &buf[(x, y)];
@@ -503,22 +551,31 @@ pub fn print_widget(widget: impl Widget, height: u16) {
                 continue;
             }
 
-            if cell.fg != cur_fg || cell.bg != cur_bg || cell.modifier != cur_mod {
-                out.push_str("\x1b[0m");
-                push_ansi_fg(&mut out, cell.fg);
-                push_ansi_bg(&mut out, cell.bg);
-                push_ansi_mod(&mut out, cell.modifier);
+            if color && (cell.fg != cur_fg || cell.bg != cur_bg || cell.modifier != cur_mod) {
+                line.push_str("\x1b[0m");
+                push_ansi_fg(&mut line, cell.fg);
+                push_ansi_bg(&mut line, cell.bg);
+                push_ansi_mod(&mut line, cell.modifier);
                 cur_fg = cell.fg;
                 cur_bg = cell.bg;
                 cur_mod = cell.modifier;
             }
 
-            out.push_str(cell.symbol());
+            line.push_str(cell.symbol());
         }
-        out.push_str("\x1b[0m\n");
+
+        if color {
+            out.push_str(&line);
+            out.push_str("\x1b[0m\n");
+        } else {
+            // Every row is padded to the terminal width; uncoloured that
+            // padding is just trailing blanks in someone's file.
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
     }
 
-    print!("{out}");
+    out
 }
 
 pub fn push_ansi_fg(out: &mut String, color: Color) {
@@ -691,7 +748,7 @@ mod rate_limit_render_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_human_message;
+    use super::{extract_human_message, render_widget};
 
     #[test]
     fn prefers_message_field() {
@@ -716,5 +773,45 @@ mod tests {
         // Valid JSON but neither `message` nor `error` present → raw text.
         let body = r#"{"detail":"something"}"#;
         assert_eq!(extract_human_message(body), body);
+    }
+
+    // ── Colour gate ─────────────────────────────────────────────────
+
+    use ratatui::style::{Color, Style};
+    use ratatui::widgets::Paragraph;
+
+    fn coloured_line() -> Paragraph<'static> {
+        Paragraph::new("hello").style(Style::default().fg(Color::Red))
+    }
+
+    #[test]
+    fn test_widget_colour_enabled_emits_escapes() {
+        let out = render_widget(coloured_line(), 1, true);
+        assert!(
+            out.contains('\u{1b}'),
+            "expected escape sequences with colour on, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_widget_colour_disabled_emits_none() {
+        let out = render_widget(coloured_line(), 1, false);
+        assert!(
+            !out.contains('\u{1b}'),
+            "no escape may reach a non-terminal, got {out:?}"
+        );
+        assert!(out.contains("hello"), "the text itself must survive");
+    }
+
+    #[test]
+    fn test_widget_colour_disabled_trims_row_padding() {
+        let out = render_widget(coloured_line(), 1, false);
+        for line in out.lines() {
+            assert_eq!(
+                line.trim_end(),
+                line,
+                "rows are padded to terminal width; uncoloured that is trailing blanks"
+            );
+        }
     }
 }

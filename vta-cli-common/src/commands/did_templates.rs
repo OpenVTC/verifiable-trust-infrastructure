@@ -473,6 +473,21 @@ pub async fn cmd_delete(
 ///
 /// Show the names of every built-in template shipped with this SDK.
 pub fn cmd_list_builtins() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::render::is_json_output() {
+        let mut out = Vec::with_capacity(BUILTIN_NAMES.len());
+        for name in BUILTIN_NAMES {
+            let tpl = load_embedded(name)?;
+            out.push(serde_json::json!({
+                "name": name,
+                "kind": tpl.kind,
+                "requiredVars": tpl.required_vars,
+                "description": tpl.description,
+            }));
+        }
+        crate::render::print_json(&out)?;
+        return Ok(());
+    }
+
     let dim = Style::default().fg(Color::DarkGray);
     let header_style = Style::default()
         .fg(Color::White)
