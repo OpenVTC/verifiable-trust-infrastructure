@@ -62,6 +62,9 @@ tracing-subscriber = { workspace = true }
 # DID resolution. Default config is local (did:key / did:peer resolve offline);
 # networked methods (did:web / did:webvh) need network-mode config — later.
 affinidi-did-resolver-cache-sdk = { workspace = true }
+# Local (no-network) did:key resolution, to check an approval key is listed
+# under `assertionMethod` before signing a decision with it.
+affinidi-did-common = { workspace = true }
 # DIDComm v2 authcrypt/anoncrypt pack + unpack. Pinned to vta-sdk's version.
 affinidi-messaging-didcomm = "0.15"
 # Mediator-connected DIDComm session (ATM): the `MediatorSession` FFI wraps

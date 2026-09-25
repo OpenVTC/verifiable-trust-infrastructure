@@ -10,10 +10,12 @@
 //! Trust Task over DIDComm or TSP only when its proof verifies as its `issuer`
 //! and that issuer is the transport sender, so the proof is what authenticates
 //! the request. Requests are signed under [`REQUEST_PROOF_PURPOSE`]
-//! (`authentication`, [`attach_did_signed_proof`]). The one exception is the
-//! step-up `approve-response`, where the proof is also the human approver's
-//! evidence and is signed under [`APPROVAL_PROOF_PURPOSE`] (`assertionMethod`,
-//! [`attach_approval_proof`]). Both refuse to sign a document that does not
+//! (`authentication`, [`attach_did_signed_proof`]). The exception is the human
+//! approver's own decision (the step-up `approve-response` and the
+//! `task-consent/decision`), where the proof is the approver's evidence and is
+//! signed under [`APPROVAL_PROOF_PURPOSE`] (`assertionMethod`,
+//! [`attach_approval_proof`]), with a key the approver's DID document lists
+//! under `assertionMethod`. Both refuse to sign a document that does not
 //! name the signer as its `issuer`, or that lacks a `recipient` or an
 //! `issuedAt`, because the peer would refuse it anyway.
 //!
@@ -56,10 +58,13 @@ pub(crate) const REPLY_PROOF_PURPOSE: &str = "authentication";
 /// `authentication` (VTI-KEY-106), and the key must be listed there.
 pub(crate) const PUSHED_REQUEST_PROOF_PURPOSE: &str = "authentication";
 
-/// The proof purpose of the human approver's own step-up `approve-response`.
-/// Its proof is not only the device authenticating the message: it is the
-/// approver's evidence (the did-signed gate) that the VTA records, an
-/// assertion by the approver, so it stays `assertionMethod`.
+/// The proof purpose of the human approver's own decisions: the step-up
+/// `approve-response` and the `task-consent/decision`. Their proof is not only
+/// the device authenticating the message: it is the approver's evidence that
+/// the executor records, an assertion by the approver, so it is
+/// `assertionMethod`. The did-hosting RP (affinidi-webvh-service #213,
+/// `verify_approval`) refuses a decision under any other purpose, or by a key
+/// not listed under `assertionMethod`.
 pub(crate) const APPROVAL_PROOF_PURPOSE: &str = "assertionMethod";
 
 /// Build an `eddsa-jcs-2022` Data Integrity proof over `doc` (which MUST NOT yet
@@ -87,13 +92,52 @@ pub(crate) fn attach_did_signed_proof<P: Serialize>(
 }
 
 /// [`attach_did_signed_proof`] under [`APPROVAL_PROOF_PURPOSE`], for the human
-/// approver's step-up `approve-response`. The same refusals apply.
+/// approver's own decision (step-up `approve-response`, `task-consent/decision`).
+/// The same refusals apply, and one more: the approver's DID document must list
+/// the signing key under `assertionMethod`. A consumer that checks the
+/// relationship would refuse the decision otherwise, after the human approved.
 pub(crate) fn attach_approval_proof<P: Serialize>(
     doc: &mut TrustTask<P>,
     signer: &dyn Signer,
     created: &str,
 ) -> Result<(), FfiError> {
+    let signer_did = signer.did();
+    let vm = did_key_vm(&signer_did)?;
+    let did_doc = local_did_document(&signer_did)?;
+    require_listed_under(&did_doc, &vm, APPROVAL_PROOF_PURPOSE)?;
     attach_proof(doc, signer, created, APPROVAL_PROOF_PURPOSE)
+}
+
+/// The DID document of a locally resolvable DID (the device's `did:key`),
+/// without network I/O.
+fn local_did_document(did: &str) -> Result<serde_json::Value, FfiError> {
+    let invalid = |reason: String| FfiError::InvalidInput { reason };
+    let parsed: affinidi_did_common::DID = did
+        .parse()
+        .map_err(|e| invalid(format!("`{did}` is not a DID: {e}")))?;
+    let doc = parsed
+        .resolve()
+        .map_err(|e| invalid(format!("could not resolve `{did}` locally: {e}")))?;
+    serde_json::to_value(&doc)
+        .map_err(|e| invalid(format!("could not read the DID document of `{did}`: {e}")))
+}
+
+/// Refuse, before signing, unless `did_doc` lists `vm` under `relationship`.
+fn require_listed_under(
+    did_doc: &serde_json::Value,
+    vm: &str,
+    relationship: &str,
+) -> Result<(), FfiError> {
+    if lists_method_under(did_doc, vm, relationship) {
+        Ok(())
+    } else {
+        Err(FfiError::InvalidInput {
+            reason: format!(
+                "{vm} is not listed under `{relationship}` in its DID document; \
+                 a decision signed with it would be refused"
+            ),
+        })
+    }
 }
 
 fn attach_proof<P: Serialize>(
@@ -488,7 +532,25 @@ pub(crate) mod test_support {
 mod tests {
     use serde_json::json;
 
-    use super::lists_method_under;
+    use super::{lists_method_under, local_did_document, require_listed_under};
+
+    /// An approval is signed only with a key the approver lists under
+    /// `assertionMethod`; the device's `did:key` does.
+    #[test]
+    fn an_approval_key_must_be_listed_under_assertion_method() {
+        let doc = json!({
+            "id": "did:web:approver.example",
+            "authentication": ["#k1"],
+        });
+        let err = require_listed_under(&doc, "did:web:approver.example#k1", "assertionMethod")
+            .unwrap_err();
+        assert!(err.to_string().contains("assertionMethod"), "{err}");
+
+        let did = super::test_support::did_for(9);
+        let vm = super::did_key_vm(&did).unwrap();
+        let doc = local_did_document(&did).unwrap();
+        require_listed_under(&doc, &vm, "assertionMethod").unwrap();
+    }
 
     /// A key the DID lists only under `assertionMethod` is not an
     /// `authentication` key, however the reference is spelled.
