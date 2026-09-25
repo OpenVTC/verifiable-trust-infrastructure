@@ -251,6 +251,66 @@ async fn full_install_to_bootstrap_succeeds() {
 // 409 — bootstrap-after-bootstrap
 // ---------------------------------------------------------------------------
 
+/// VTI-APV-014: the co-admin `vtc setup` was given is installed beside the
+/// first admin, both unrestricted, so the community can make a third
+/// unrestricted admin remotely from its first day. The record is spent.
+#[tokio::test]
+async fn vti_apv_014_the_bootstrap_installs_the_co_admin_beside_the_first() {
+    let fix = build_fixture(true, true).await;
+    const CO_ADMIN: &str = "did:key:z6MkCoAdmin";
+    fix.install_store.record_co_admin(CO_ADMIN).await.unwrap();
+    let (session_jwt, admin_did) = run_claim_ceremony(&fix).await;
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/admin/bootstrap",
+        BOOTSTRAP_TASK,
+        json!({ "setupSessionToken": session_jwt }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "bootstrap: {body}");
+
+    let acl = list_acl_entries(&fix.state.acl_ks).await.unwrap();
+    assert_eq!(acl.len(), 2, "{acl:?}");
+    for did in [admin_did.as_str(), CO_ADMIN] {
+        let entry = acl
+            .iter()
+            .find(|e| e.did == did)
+            .unwrap_or_else(|| panic!("{did} installed: {acl:?}"));
+        assert_eq!(entry.role, Role::Admin);
+        assert!(entry.is_super_admin(), "{did} is unrestricted");
+    }
+    // The co-admin can enrol a passkey later; it needs none to consent.
+    let co_entry = get_admin_entry(&fix.state.passkey_ks, CO_ADMIN)
+        .await
+        .unwrap()
+        .expect("co-admin sister record");
+    assert!(co_entry.passkeys.is_empty());
+
+    assert!(
+        fix.install_store.take_co_admin().await.unwrap().is_none(),
+        "the record is spent by the bootstrap"
+    );
+}
+
+/// A co-admin record naming the first admin installs nobody extra.
+#[tokio::test]
+async fn a_co_admin_that_is_the_first_admin_installs_nothing_extra() {
+    let fix = build_fixture(true, true).await;
+    let (session_jwt, admin_did) = run_claim_ceremony(&fix).await;
+    fix.install_store.record_co_admin(&admin_did).await.unwrap();
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/admin/bootstrap",
+        BOOTSTRAP_TASK,
+        json!({ "setupSessionToken": session_jwt }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "bootstrap: {body}");
+    assert_eq!(list_acl_entries(&fix.state.acl_ks).await.unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn second_bootstrap_returns_409() {
     let fix = build_fixture(true, true).await;

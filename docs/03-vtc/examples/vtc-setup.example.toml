@@ -49,6 +49,16 @@ context = "default"   # the VTA context this community provisions under
 # See docs/03-vtc/community-lifecycle.md.
 # registry_did = "did:webvh:abc:registry.example.com"
 
+# ── Second administrator (optional, recommended) ────────────────────────
+# Making anyone an unrestricted administrator needs the consent of another
+# unrestricted administrator (VTI-APV-014). A community installed with one
+# has nobody to give it, so a second could then only be added offline, with
+# the daemon stopped (`vtc acl add`). Name a second administrator's DID here
+# and the install bootstrap writes both. They need no passkey to approve — an
+# approval is a document their DID signs — and can enrol one later through an
+# admin invite. Omit to install a single administrator.
+# co_admin_did = "did:key:z6Mk…"
+
 # ── DID hosting (optional) ──────────────────────────────────────────────
 # Omit the whole [webvh] table for the serverless default: the VTC
 # self-hosts its did.jsonl at base_url with a server-assigned path.

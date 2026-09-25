@@ -264,6 +264,7 @@ upstream spec and a `trust-tasks-rs` bump first).
       reaching the gate: `vtc/admin/invites/create`, and an `acl/grant` rewrite
       that narrows an unrestricted admin (the attrition case). **Done** (§10).
    4. The co-admin at install, and audit rows for the offline writers.
+      **Done** (§11).
 5. Console-key enrolment once `auth/signing-key/*` is published.
 6. Retire the bearer routes of the three verbs; close the #1641 entries.
 
@@ -406,3 +407,28 @@ upstream spec and a `trust-tasks-rs` bump first).
 - **Console:** the invite form steps up first and, like an unrestricted
   `acl/grant`, turns `auth:consent_required` into an instruction to wait for
   another admin and try again.
+
+## 11. As built (step 4.4: co-admin at install, audited break-glass)
+
+- **Co-admin at install:** `vtc setup` takes an optional second administrator
+  DID — `co_admin_did` in the `--from` TOML, a prompt interactively — and
+  refuses one equal to the first admin. Setup records it in the `install`
+  keyspace (`install:co_admin`) beside the install token; the install
+  bootstrap takes the record once and writes the co-admin as an unrestricted
+  admin in the same step as the first, audited as an `AclGranted` by
+  `did:key:vtc-install`. The co-admin needs no passkey to consent — a decision
+  is a document its DID signs — and gets the empty admin sister record a
+  promotion writes, so it can enrol a passkey later through an invite (which,
+  for an existing admin, writes no entry and needs no consent).
+- **Audited break-glass:** every offline ACL write — `vtc acl add` and
+  `remove`, `vtc create-did-key --admin`, `vtc admin invite` — queues a record
+  (`install:break_glass:<uuid>`) in the same store session as the write. On its
+  next boot the daemon takes every record and writes an `AclBreakGlassWritten`
+  audit row for each under `did:key:vtc-break-glass`, naming the command, the
+  change, the DID and the host. The offline commands hold no audit writer,
+  which is why the daemon writes the row, as it already does for the
+  emergency-bootstrap marker. Emergency bootstrap keeps its own
+  `EmergencyBootstrapInvoked` event.
+- **With this step §4 is complete:** the gate (§9), attrition and invites
+  (§10), a way to start with two unrestricted admins, and an audited way out
+  when there are too few.

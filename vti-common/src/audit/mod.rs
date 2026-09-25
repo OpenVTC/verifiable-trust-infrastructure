@@ -41,8 +41,8 @@ pub use envelope::{
 pub use event::{
     AclChangeData, AclRevokedData, AdminConsoleKeyData, AdminInviteData, AdminPasskeyData,
     AdminPromotedData, AdminUiServedData, AuditEvent, AuditKeyRotatedData, AuthSteppedUpData,
-    BackupData, CommunityBrandingUpdatedData, CommunityDidLogInstalledData, CommunityInstalledData,
-    CommunityJoinDiscoveryUpdatedData, CommunityProfileUpdatedData,
+    BackupData, BreakGlassAclData, CommunityBrandingUpdatedData, CommunityDidLogInstalledData,
+    CommunityInstalledData, CommunityJoinDiscoveryUpdatedData, CommunityProfileUpdatedData,
     CommunityRequestedAttributesUpdatedData, ConfigChange, ConfigChangedData, ConfigReloadedData,
     ConfigSource, CredentialIssuedData, CrossCommunitySessionMintedData,
     CustomEndorsementIssuedData, CustomEndorsementRevokedData, DidRotatedData, DidRotationReason,
