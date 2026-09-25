@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { postSignedTrustTask, signingAvailable } from "@/lib/api";
+import { postSignedTrustTask, signingAvailable, type WhoamiResponse } from "@/lib/api";
 
 import { Repos } from "@/plugins/repos";
 import {
@@ -28,8 +28,23 @@ beforeEach(() => {
   vi.mocked(signingAvailable).mockResolvedValue(false);
   vi.mocked(postSignedTrustTask).mockReset();
 });
-const mount = (route = "/repos") =>
-  renderWithProviders(<Repos />, { route, path: "/repos/*" });
+const mount = (route = "/repos", whoami?: WhoamiResponse) =>
+  renderWithProviders(<Repos />, { route, path: "/repos/*", whoami });
+
+const signedInAs = (roles: string[], scopes: string[]): WhoamiResponse => ({
+  session: {
+    id: "sess_1",
+    subject: "did:webvh:QmAdmin:admin.example",
+    issuedAt: "2026-09-01T00:00:00Z",
+    expiresAt: "2026-09-01T00:05:00Z",
+  },
+  roles,
+  scopes,
+});
+/** The admin role with no context restriction: the community administrator
+ *  that reseat is signed as. */
+const COMMUNITY_ADMIN = signedInAs(["admin"], []);
+const CONTEXT_ADMIN = signedInAs(["admin"], ["ctx-a"]);
 
 describe("Repos plugin — overview", () => {
   it("reads the console projections with no Trust-Task header, and sends nothing", async () => {
@@ -181,15 +196,15 @@ describe("Repos plugin — overview", () => {
 
   it("offers reseat only on a headless namespace, and says it needs a community administrator", async () => {
     mockFetch(gitNsRoutes());
-    mount();
+    mount("/repos", COMMUNITY_ADMIN);
     const acme = await screen.findByRole("article", { name: "github.com/acme" });
     expect(within(acme).queryByRole("button", { name: "Reseat github.com/acme" })).toBeNull();
     expect(acme.textContent).not.toMatch(/Needs a community administrator/);
   });
 
-  it("shows the reseat action on a headless namespace card", async () => {
+  it("shows the reseat action on a headless namespace card to a community administrator", async () => {
     mockFetch(gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }, PERSONAL] }));
-    mount();
+    mount("/repos", COMMUNITY_ADMIN);
     const acme = await screen.findByRole("article", { name: "github.com/acme" });
     expect(within(acme).getByRole("button", { name: "Reseat github.com/acme" })).toBeTruthy();
     expect(acme.textContent).toMatch(/Needs a community administrator/);
@@ -197,11 +212,23 @@ describe("Repos plugin — overview", () => {
     expect(within(personal).queryByRole("button", { name: /Reseat/ })).toBeNull();
   });
 
+  it.each([
+    ["an admin limited to some contexts", CONTEXT_ADMIN],
+    ["a viewer without a session probe", undefined],
+  ])("does not offer reseat to %s, who can still unbind", async (_, whoami) => {
+    mockFetch(gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }, PERSONAL] }));
+    mount("/repos", whoami);
+    const acme = await screen.findByRole("article", { name: "github.com/acme" });
+    expect(within(acme).getByRole("button", { name: "Unbind github.com/acme" })).toBeTruthy();
+    expect(within(acme).queryByRole("button", { name: /Reseat/ })).toBeNull();
+    expect(acme.textContent).not.toMatch(/Needs a community administrator/);
+  });
+
   it("reseats with a member and a required statement, handed over when this browser cannot sign", async () => {
     const requests = mockFetch(
       gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }] }),
     );
-    mount();
+    mount("/repos", COMMUNITY_ADMIN);
 
     fireEvent.click(await screen.findByRole("button", { name: "Reseat github.com/acme" }));
     const form = await screen.findByRole("dialog", { name: "Reseat github.com/acme" });
@@ -248,7 +275,7 @@ describe("Repos plugin — overview", () => {
     vi.mocked(signingAvailable).mockResolvedValue(true);
     vi.mocked(postSignedTrustTask).mockResolvedValue({ right: {} });
     mockFetch(gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }] }));
-    mount();
+    mount("/repos", COMMUNITY_ADMIN);
 
     fireEvent.click(await screen.findByRole("button", { name: "Reseat github.com/acme" }));
     const form = await screen.findByRole("dialog", { name: "Reseat github.com/acme" });

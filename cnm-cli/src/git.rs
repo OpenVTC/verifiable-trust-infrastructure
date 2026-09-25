@@ -340,12 +340,20 @@ fn did_arg(label: &str, value: &str) -> CliResult<String> {
     Ok(value.to_string())
 }
 
-/// `s` as one POSIX shell word: unchanged when it holds nothing a shell
-/// interprets, otherwise single-quoted. Every value this module puts into a
-/// command it prints goes through here, so a printed command can be pasted
-/// as it stands.
+/// `s` as one shell word that sh, bash, zsh and fish all read back as `s`:
+/// unchanged when it holds nothing a shell interprets and does not start with
+/// `-` (an option), `=` (zsh's `=cmd` expansion) or `%` (fish's `%self`);
+/// otherwise quoted. Every value this module puts into a command it prints
+/// goes through here, so a printed command can be pasted as it stands.
+///
+/// POSIX's `'…'\''…'` is not enough: fish reads `\'` and `\\` as escapes
+/// even inside single quotes. So runs without `'` or `\` are single-quoted
+/// (nothing else is special there in any of these shells), and each `'` is
+/// written `"'"` and each `\` `"\\"`, which mean the same one character in
+/// double quotes in POSIX shells and in fish.
 fn shell_word(s: &str) -> String {
     let plain = !s.is_empty()
+        && !s.starts_with(['-', '=', '%'])
         && s.bytes().all(|b| {
             b.is_ascii_alphanumeric()
                 || matches!(
@@ -354,10 +362,36 @@ fn shell_word(s: &str) -> String {
                 )
         });
     if plain {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
+        return s.to_string();
     }
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if !run.is_empty() {
+            out.push('\'');
+            out.push_str(run);
+            out.push('\'');
+            run.clear();
+        }
+    };
+    for c in s.chars() {
+        match c {
+            '\'' => {
+                flush(&mut run, &mut out);
+                out.push_str("\"'\"");
+            }
+            '\\' => {
+                flush(&mut run, &mut out);
+                out.push_str("\"\\\\\"");
+            }
+            c => run.push(c),
+        }
+    }
+    flush(&mut run, &mut out);
+    out
 }
 
 /// Text from elsewhere (the VTC's refusal message, a DID) made safe to print
@@ -908,14 +942,98 @@ mod tests {
         );
         assert_eq!(shell_word("a b"), "'a b'");
         assert_eq!(shell_word("$(id)"), "'$(id)'");
-        assert_eq!(shell_word("it's"), "'it'\\''s'");
+        assert_eq!(shell_word("it's"), r#"'it'"'"'s'"#);
+        assert_eq!(shell_word("'"), r#""'""#);
+        assert_eq!(shell_word("\\"), r#""\\""#);
+        assert_eq!(
+            shell_word(FISH_BREAKOUT),
+            r#"'x'"\\""'"' ; echo INJECTED ; echo '"\\""#
+        );
         assert_eq!(shell_word(""), "''");
+        assert_eq!(shell_word("-x"), "'-x'");
+        assert_eq!(shell_word("=ls"), "'=ls'");
+        assert_eq!(shell_word("%self"), "'%self'");
+        assert_eq!(shell_word("a=b"), "a=b");
         // A refusal's text reaches the terminal without its control bytes.
         let g = guidance("git-ns:lastOwner", "evil\u{1b}[2Jmsg", "did:key:z\u{7}");
         assert!(!g.chars().any(|c| c.is_control() && c != '\n'), "{g:?}");
         // The code too: it is the VTC's text as much as the message is.
         let g = guidance("x\u{1b}]0;pwned\u{7}", "m", "did:key:z");
         assert!(!g.chars().any(|c| c.is_control() && c != '\n'), "{g:?}");
+    }
+
+    /// POSIX `'\''` quoting breaks out here in fish, which reads `\'` and
+    /// `\\` as escapes inside single quotes.
+    const FISH_BREAKOUT: &str = r"x\' ; echo INJECTED ; echo \";
+
+    /// What `shell` makes of `words`, read back through an external printf.
+    fn argv_in(shell: &str, words: &str) -> Option<Vec<String>> {
+        let home = std::env::temp_dir().join("cnm-shell-word-test-home");
+        std::fs::create_dir_all(&home).ok()?;
+        let out = std::process::Command::new(shell)
+            .arg("-c")
+            .arg(format!(r"env printf '%s\0' {words}"))
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", &home)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        assert!(out.status.success(), "{shell} failed on {words:?}");
+        let text = String::from_utf8(out.stdout).expect("utf-8");
+        let mut v: Vec<String> = text.split('\0').map(str::to_string).collect();
+        v.pop();
+        Some(v)
+    }
+
+    #[test]
+    fn printed_words_round_trip_in_sh_bash_zsh_and_fish() {
+        let hostile = [
+            FISH_BREAKOUT,
+            "it's",
+            "'",
+            r"\",
+            r"\\",
+            r"\'",
+            r"'\",
+            r"a\'b\\'c",
+            "$(echo INJECTED)",
+            "${HOME}",
+            "$fish_pid",
+            "`echo INJECTED`",
+            "(echo INJECTED)",
+            "line one\nline two\n",
+            "emoji \u{1f980} and \u{fc}n\u{ef}c\u{f6}d\u{e9}",
+            "-rf",
+            "--help",
+            "=ls",
+            "%self",
+            "~root",
+            "*",
+            "{a,b}",
+            "a;b|c&d>e<f",
+            "\"double\" quotes",
+            "#hash",
+            "",
+            " ",
+            "did:webvh:QmScid:acme.example",
+        ];
+        let words = hostile
+            .iter()
+            .map(|v| shell_word(v))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut ran = 0;
+        for shell in ["sh", "bash", "zsh", "fish"] {
+            // sh is everywhere; the others are checked where installed.
+            let Some(argv) = argv_in(shell, &words) else {
+                assert_ne!(shell, "sh", "sh must be runnable");
+                continue;
+            };
+            assert_eq!(argv, hostile, "{shell}");
+            ran += 1;
+        }
+        assert!(ran >= 1);
     }
 
     #[test]

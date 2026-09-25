@@ -95,21 +95,34 @@ export interface SignedTask {
 }
 
 /**
- * POSIX-shell quoting for one argument.
+ * Shell quoting for one argument, safe in sh, bash, zsh and fish alike.
  *
  * Every argument of every command goes through this — DIDs, resources, ids,
  * names, free text alike — because the command is meant to be pasted into a
  * shell, and a value that validated as a DID is not thereby safe to run: a
- * DID's method-specific id is not a shell word. A value is left bare only when
- * it is made of characters no shell treats specially and cannot be read as an
- * option; everything else is single-quoted, with embedded quotes closed and
- * escaped, which leaves nothing inside for the shell to expand.
+ * DID's method-specific id is not a shell word.
+ *
+ * A value is left bare only when it is made of characters no shell treats
+ * specially and its first character cannot start an expansion or an option:
+ * not `-` (an option), `=` (zsh's `=cmd` path expansion) or `%` (fish's
+ * `%self`). Everything else is quoted so that sh, bash, zsh and fish all read
+ * the same bytes back. POSIX's `'…'\''…'` is not enough: fish reads `\'` and
+ * `\\` as escapes even inside single quotes, so a value such as
+ * `x\' ; echo INJECTED ; echo \` closes the quote early there. So runs of
+ * characters other than `'` and `\` go inside single quotes (where nothing
+ * else — `$`, backticks, newlines — is special in any of these shells), and
+ * each `'` is written `"'"` and each `\` is written `"\\"`, which mean the
+ * same single character inside double quotes in POSIX shells and in fish.
  */
 export function shellQuote(value: string): string {
-  if (value !== "" && /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) && !value.startsWith("-")) {
+  if (value !== "" && /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) && !/^[-=%]/.test(value)) {
     return value;
   }
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  const parts = value.match(/[^'\\]+|'|\\/g) ?? [];
+  if (parts.length === 0) return "''";
+  return parts
+    .map((part) => (part === "'" ? `"'"` : part === "\\" ? `"\\\\"` : `'${part}'`))
+    .join("");
 }
 
 /** A subcommand word or an option, spelled by this module — never a value. */
@@ -161,15 +174,19 @@ export function segmentError(value: string, what = "owner"): string | null {
 // DID Core §3.1: `did:` method-name `:` method-specific-id, where
 // method-name = 1*method-char (a-z, 0-9) and method-specific-id =
 // *( *idchar ":" ) 1*idchar, idchar = ALPHA / DIGIT / "." / "-" / "_" /
-// pct-encoded. A DID URL's fragment is accepted over the same characters.
+// pct-encoded. A DID, not a DID URL: no path, query or `#fragment` — every
+// field this checks names a party (a subject, an owner, a recipient), and the
+// VTC checks it the same way (`vta_sdk::identifier::validate_did_core`),
+// including its 1024-byte bound.
 const IDCHAR = "(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})";
-const DID_RE = new RegExp(
-  `^did:[a-z0-9]+:(?:${IDCHAR}*:)*${IDCHAR}+(?:#${IDCHAR}+)?$`,
-);
+const DID_RE = new RegExp(`^did:[a-z0-9]+:(?:${IDCHAR}*:)*${IDCHAR}+$`);
+const MAX_DID = 1024;
 
 export function didError(value: string): string | null {
   const v = value.trim();
   if (!v) return "Name the DID.";
+  if (v.includes("#")) return "A DID, not a DID URL — drop the #fragment.";
+  if (new TextEncoder().encode(v).length > MAX_DID) return `At most ${MAX_DID} bytes.`;
   if (!DID_RE.test(v)) return "Not a DID (did:method:id, DID Core syntax).";
   return null;
 }
@@ -256,7 +273,7 @@ export function reseatTask(
     action: "namespace.reseat",
     title: `Reseat ${resource}`,
     effect:
-      "The member receives namespace admin (git.ns.admin) with no expiry, published to the Trust Registry and projected onto the forge by the bridge. The statement becomes the right's reason, is kept in the audit record with how each earlier admin record ended, and is shown to the namespace's repository owners. Refused unless the namespace has no live git.ns.admin.",
+      "The member receives namespace admin (git.ns.admin) with no expiry, published to the Trust Registry and projected onto the forge by the bridge. The statement becomes the right's reason, is kept in the audit record with how each earlier admin record ended, and is shown to the namespace's repository owners. Refused while a current member holds a live git.ns.admin there.",
     taskUri: TASK_URI["namespace.reseat"],
     payload: { namespace: namespaceId, subject, statement: s },
     consent: consentClass("namespace.reseat"),

@@ -197,7 +197,7 @@ describe("namespace facts", () => {
     expect(headless.detail).toMatch(/A community administrator can reseat it/);
     expect(headless.detail).toMatch(/current member of the community/);
     expect(headless.detail).toMatch(/statement of why that is kept in the audit record/);
-    expect(headless.detail).toMatch(/refused while the namespace has any live git\.ns\.admin/);
+    expect(headless.detail).toMatch(/refused while a current member holds a live git\.ns\.admin there/);
     expect(namespaceFindings(ACME)).toEqual([]);
   });
 

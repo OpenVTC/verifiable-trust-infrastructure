@@ -10,6 +10,7 @@ import { FolderGit2, Plus } from "lucide-react";
 import { NamedDid } from "@/components/NamedDid";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useNameBook } from "@/lib/names";
+import { useIsSuperAdmin } from "@/lib/viewer";
 import type {
   GitNsNamespaceRow,
   GitNsRepoRow,
@@ -126,6 +127,9 @@ function NamespaceCard({
   onReseat: () => void;
 }) {
   const book = useNameBook();
+  // Reseat is signed with the community-administrator capability alone, so
+  // nobody else is offered it. Unbind stays: a namespace admin may sign it too.
+  const superAdmin = useIsSuperAdmin();
   const managed = repos.filter((r) => r.state !== "unmanaged" && r.state !== "detached").length;
   const unmanaged = repos.filter((r) => r.state === "unmanaged").length;
   const creators = rights?.filter(
@@ -233,7 +237,7 @@ function NamespaceCard({
       ))}
       {isPersonal(ns) && <PersonalAccountHint ns={ns} />}
       <div className="gitns-card-actions">
-        {ns.headless && ns.state === "bound" && (
+        {ns.headless && ns.state === "bound" && superAdmin && (
           <>
             <span className="muted gitns-small">Needs a community administrator.</span>
             <button

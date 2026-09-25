@@ -13,6 +13,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { vi } from "vitest";
 
 import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
+import type { WhoamiResponse } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
 
 export interface MockRoute {
@@ -86,11 +87,16 @@ export const NAME_BOOK_ROUTES: MockRoute[] = [
 /**
  * `path` is the route the component is mounted on, as the shell mounts a
  * plugin on `/<plugin>/*`; a component with descendant `<Routes>` needs it to
- * match its sections.
+ * match its sections. `whoami` seeds the shell's session probe, as `App`
+ * leaves it in the cache for the views it hosts.
  */
 export function renderWithProviders(
   ui: ReactElement,
-  { route = "/", path = "*" }: { route?: string; path?: string } = {},
+  {
+    route = "/",
+    path = "*",
+    whoami,
+  }: { route?: string; path?: string; whoami?: WhoamiResponse } = {},
 ) {
   const client = new QueryClient({
     defaultOptions: {
@@ -98,6 +104,7 @@ export function renderWithProviders(
       mutations: { retry: false },
     },
   });
+  if (whoami) client.setQueryData(["whoami"], whoami);
   return render(
     <QueryClientProvider client={client}>
       <ToastProvider>
