@@ -27,6 +27,7 @@ import type {
   GitNsRepoRow,
   GitNsRight,
   GitNsRightRow,
+  GitNsRoleMap,
 } from "@/lib/wire-types";
 
 export const RIGHTS: readonly GitNsRight[] = [
@@ -106,7 +107,8 @@ export type GitNsAction =
   | "repo.transfer"
   | "repo.archive"
   | "repo.create"
-  | "drift.resolve";
+  | "drift.resolve"
+  | "roles.reproject";
 
 /** Mirrors `git_ns::ops::consent_class`. */
 export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentClass {
@@ -125,7 +127,7 @@ export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentCl
     if (right === "git.repo.own" || right === "git.repo.create") return "elevated";
     return "normal";
   }
-  if (action === "repo.create") return "normal";
+  if (action === "repo.create" || action === "roles.reproject") return "normal";
   return "elevated";
 }
 
@@ -566,22 +568,6 @@ export function inheritedRights(
     );
 }
 
-/** Forge role → the right an owner adopting it into the VTC would grant.
- *  The inverse of the org projection in design §4.2. */
-export function rightForForgeRole(role: string | undefined): GitNsRight | null {
-  switch (role) {
-    case "admin":
-      return "git.repo.own";
-    case "maintain":
-      return "git.repo.maintain";
-    case "write":
-    case "push":
-      return "git.commit.sign";
-    default:
-      return null;
-  }
-}
-
 // ── drift ───────────────────────────────────────────────────────────────
 
 const ROLE_DRIFT: readonly GitNsDriftItem["type"][] = ["roleAdded", "roleRemoved", "roleChanged"];
@@ -591,35 +577,74 @@ export function isRoleDrift(item: GitNsDriftItem): boolean {
   return ROLE_DRIFT.includes(item.type);
 }
 
+// ── the bridge's role map ───────────────────────────────────────────────
+
+/** The bridge's forge-neutral role ladder, lowest first. */
+export const FORGE_LEVELS = ["none", "read", "triage", "write", "maintain", "admin"] as const;
+
+function level(role: string | undefined): number {
+  return role === undefined ? -1 : (FORGE_LEVELS as readonly string[]).indexOf(role);
+}
+
 /**
- * The right the namespace's forge adapter projects to `role` — mirrors
- * `git_ns::drift::projected_right`. On an organisation `admin` projects
- * `git.repo.own` and `maintain` `git.repo.maintain`; on a personal account
- * collaborator `write` is the one level, and projects `git.repo.maintain`.
+ * The default role map, as the VTC assumes it until the bridge reports its
+ * own — mirrors `git_ns::role_map::RoleMap::default_for`. A personal account
+ * has only collaborator `write`.
  */
-export function projectedRight(
-  kind: string | null | undefined,
-  role: string | undefined,
-): GitNsRight | null {
-  if (kind === "user") return role === "write" ? "git.repo.maintain" : null;
-  if (role === "admin") return "git.repo.own";
-  if (role === "maintain") return "git.repo.maintain";
+export function defaultRoleMap(kind: string | null | undefined): GitNsRoleMap {
+  return kind === "user"
+    ? { own: "write", maintain: "write", commit: "none" }
+    : { own: "admin", maintain: "maintain", commit: "none" };
+}
+
+/**
+ * The forge role `right` projects to under `map` — mirrors
+ * `RoleMap::role_for`. A namespace admin (and a repo creator) gets no forge
+ * role, whatever the map.
+ */
+export function forgeRoleFor(map: GitNsRoleMap, right: string): string {
+  switch (right) {
+    case "git.repo.own":
+      return map.own;
+    case "git.repo.maintain":
+      return map.maintain;
+    case "git.commit.sign":
+      return map.commit;
+    default:
+      return "none";
+  }
+}
+
+/**
+ * The right the bridge projects to `role` — mirrors
+ * `git_ns::drift::projected_right`: the **lowest** right whose role in the
+ * bridge's map is `role`. `none`, or a role no right's is, has none. Under
+ * the default map on an organisation `admin` is `git.repo.own` and
+ * `maintain` `git.repo.maintain`; on a personal account `write` is
+ * `git.repo.maintain`, the lower of the two it collapses.
+ */
+export function projectedRight(map: GitNsRoleMap, role: string | undefined): GitNsRight | null {
+  if (role === undefined || role === "none" || level(role) < 0) return null;
+  for (const right of ["git.commit.sign", "git.repo.maintain", "git.repo.own"] as const) {
+    if (forgeRoleFor(map, right) === role) return right;
+  }
   return null;
 }
 
 /**
  * The revocation a revert amounts to, which is what the VTC gates it as —
- * mirrors `git_ns::drift::revert`: taking off or lowering a forge role that
- * projects `own` weighs as revoking `own`; any other revert at most as
- * revoking `maintain`.
+ * mirrors `git_ns::drift::revert`: taking off or lowering a forge role at or
+ * above the one `own` projects to weighs as revoking `own`; any other revert
+ * at most as revoking `maintain`.
  */
 export function driftRevertImpact(
   item: GitNsDriftItem,
-  ns: GitNsNamespaceRow,
+  map: GitNsRoleMap,
 ): "git.repo.own" | "git.repo.maintain" {
   return isRoleDrift(item) &&
     item.type !== "roleRemoved" &&
-    projectedRight(ns.kind, item.observed) === "git.repo.own"
+    map.own !== "none" &&
+    level(item.observed) >= level(map.own)
     ? "git.repo.own"
     : "git.repo.maintain";
 }
@@ -684,7 +709,7 @@ export function revertStanding(
       why: "Reverting drift is an owner's decision: it needs git.repo.own on the repository, which its owners and the namespace's admins hold. This session's DID holds neither, so hand the command below to one of them.",
     };
   }
-  if (driftRevertImpact(item, ns) === "git.repo.own" && !superAdmin) {
+  if (driftRevertImpact(item, repo.roleMap) === "git.repo.own" && !superAdmin) {
     return {
       may: false,
       why: "Taking an admin role off the forge weighs as revoking ownership, an elevated action this VTC accepts only from a community administrator who also owns the repository. Hand the command below to one.",

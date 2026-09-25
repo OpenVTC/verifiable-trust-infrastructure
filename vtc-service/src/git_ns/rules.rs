@@ -511,6 +511,18 @@ pub fn reseat_admitted(
     (actor_community_admin && headless && subject_member).then(RulesPassed::new)
 }
 
+/// `git-ns/roles/reproject`: the community-administrator capability, or
+/// `git.ns.admin` on the namespace by explicit, live record of a current
+/// member. Nothing implied suffices — a re-projection acts on everyone with a
+/// role in what it covers, which is a namespace-level act.
+pub fn reproject_admitted(
+    actor_community_admin: bool,
+    actor_member: bool,
+    explicit_ns_admin: bool,
+) -> Option<RulesPassed> {
+    (actor_community_admin || (actor_member && explicit_ns_admin)).then(RulesPassed::new)
+}
+
 /// The explicit owners of a repository, in grant order.
 pub fn owners(snap: &Snapshot, repo_id: &str, now: DateTime<Utc>) -> Vec<String> {
     live_holders(snap, &Scope::Repo(repo_id.to_string()), Right::RepoOwn, now)
@@ -594,6 +606,7 @@ mod tests {
             roles_digest: None,
             installation_removed: false,
             forge_status: None,
+            role_map: None,
         });
         s.repos.push(Repo {
             id: "r1".into(),

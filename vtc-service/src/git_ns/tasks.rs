@@ -23,7 +23,7 @@ use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status,
 };
 use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_1 as event, event::v0_2 as event2, result::v0_1 as result,
+    event::v0_1 as event, event::v0_2 as event2, event::v0_3 as event3, result::v0_1 as result,
 };
 use trust_tasks_rs::specs::git_ns::drift::resolve::v0_1 as drift_resolve;
 use trust_tasks_rs::specs::git_ns::namespace::{
@@ -34,6 +34,7 @@ use trust_tasks_rs::specs::git_ns::repo::{
     transfer::v0_1 as transfer,
 };
 use trust_tasks_rs::specs::git_ns::right::{grant::v0_1 as grant, revoke::v0_1 as revoke};
+use trust_tasks_rs::specs::git_ns::roles::reproject::v0_1 as reproject;
 use trust_tasks_rs::specs::git_ns::view::{v0_1 as view, v0_2 as view2};
 use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 
@@ -107,11 +108,13 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_view_v2)
         .on_async(handle_drift_resolve)
         .on_async(handle_reseat)
+        .on_async(handle_reproject)
         .on_async(handle_link)
         .on_async(handle_link_status)
         .on_async(handle_result)
         .on_async(handle_event)
         .on_async(handle_event_v2)
+        .on_async(handle_event_v3)
 }
 
 /// Render an operation's outcome.
@@ -243,35 +246,64 @@ signed_handler!(handle_grant, grant::Payload, ops::right_grant);
 signed_handler!(handle_revoke, revoke::Payload, ops::right_revoke);
 signed_handler!(handle_link, link::Payload, ops::account_link);
 bridge_handler!(handle_result, result::Payload, super::bridge::handle_result);
-bridge_handler!(handle_event, event::Payload, super::bridge::handle_event);
 signed_handler!(
     handle_drift_resolve,
     drift_resolve::Payload,
     super::drift::drift_resolve
 );
 signed_handler!(handle_reseat, reseat::Payload, ops::namespace_reseat);
+signed_handler!(
+    handle_reproject,
+    reproject::Payload,
+    super::reproject::roles_reproject
+);
 
-/// `git-ns/bridge/event/0.2`. Wire-identical to 0.1; what changed is what the
-/// VTC does with it (a transfer detaches wherever it goes, a reused name
-/// detaches the old repository, every resource is confined to the event's
-/// namespace) — and this VTC applies those rules to a 0.1 event too, so the
-/// two are one handler.
-async fn event_v2_as_v1(
+/// `git-ns/bridge/event` 0.1 and 0.2, read as 0.3. The three share every
+/// event type but 0.3's `roleMapReported`, and 0.2 changed only what the VTC
+/// does with a transfer, a reused name and a resource outside the namespace —
+/// rules this VTC applies to a 0.1 event too. So an older payload is carried
+/// as 0.3 (which it is a valid instance of) into the one handler, and its
+/// acknowledgement goes back in the version it was sent.
+async fn event_as_v3<P, R>(
     state: &crate::server::AppState,
     issuer: &str,
-    p: event2::Payload,
-) -> Result<event2::Response, OpError> {
-    let v1: event::Payload = serde_json::from_value(
+    p: P,
+) -> Result<R, OpError>
+where
+    P: serde::Serialize,
+    R: serde::de::DeserializeOwned,
+{
+    let v3: event3::Payload = serde_json::from_value(
         serde_json::to_value(&p).map_err(vti_common::error::AppError::from)?,
     )
-    .map_err(|e| OpError::Malformed(format!("bridge/event 0.2 payload: {e}")))?;
-    let ack = super::bridge::handle_event(state, issuer, v1).await?;
+    .map_err(|e| OpError::Malformed(format!("bridge/event payload: {e}")))?;
+    let ack = super::bridge::handle_event(state, issuer, v3).await?;
     Ok(serde_json::from_value(
         serde_json::to_value(&ack).map_err(vti_common::error::AppError::from)?,
     )
     .map_err(vti_common::error::AppError::from)?)
 }
-bridge_handler!(handle_event_v2, event2::Payload, event_v2_as_v1);
+async fn event_v1(
+    state: &crate::server::AppState,
+    issuer: &str,
+    p: event::Payload,
+) -> Result<event::Response, OpError> {
+    event_as_v3(state, issuer, p).await
+}
+async fn event_v2(
+    state: &crate::server::AppState,
+    issuer: &str,
+    p: event2::Payload,
+) -> Result<event2::Response, OpError> {
+    event_as_v3(state, issuer, p).await
+}
+bridge_handler!(handle_event, event::Payload, event_v1);
+bridge_handler!(handle_event_v2, event2::Payload, event_v2);
+bridge_handler!(
+    handle_event_v3,
+    event3::Payload,
+    super::bridge::handle_event
+);
 
 /// `git-ns/view/0.1` — any member, what they may see.
 pub(crate) async fn handle_view(doc: TrustTask<view::Payload>, ctx: GitNsCtx) -> TrustTaskOutcome {

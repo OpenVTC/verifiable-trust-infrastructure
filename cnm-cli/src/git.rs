@@ -124,6 +124,18 @@ pub enum GitCommands {
         #[arg(long)]
         statement: String,
     },
+    /// Have the bridge re-apply the forge roles of every repository in a
+    /// namespace, or of one repository, from the VTC's rights under the
+    /// bridge's current role map (`git-ns/roles/reproject`). No right changes.
+    /// Community administrators and the namespace's admins.
+    Reproject {
+        /// `github.com/acme` (every active or orphaned repository in it) or
+        /// `github.com/acme/widgets`.
+        resource: String,
+        /// Why, for the audit record.
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// What this profile's DID may see (`git-ns/view`), with its linked forge
     /// accounts, or with `--admin` every record and reason (admin session).
     View {
@@ -484,6 +496,12 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
              that implements only git-ns/bridge/job 0.1 cannot take a role it does not manage \
              off a repository. Remove it on the forge, or upgrade the bridge."
             .to_string(),
+        "git-ns/roles/reproject:manualMode" => "\nThe namespace is governed in manual mode: \
+             no bridge projects its roles, so set them on the forge yourself."
+            .to_string(),
+        "git-ns/roles/reproject:noForgeAccess" => "\nThe bridge lost its access to the \
+             forge owner. Once an owner reinstalls the app (or restores the bot), run this again."
+            .to_string(),
         "git-ns/namespace/reseat:notHeadless" => format!(
             "\nThe namespace still has an admin; its admins grant git.ns.admin:\n  {bin} git \
              grant --subject <did> --right git.ns.admin --resource <namespace>"
@@ -778,6 +796,30 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
+        }
+        GitCommands::Reproject { resource, reason } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let resp = anon()
+                .git_ns_reproject(&resource.to_lowercase(), reason.as_deref(), &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            if is_json_output() {
+                return show(&resp);
+            }
+            if resp.repos.is_empty() {
+                println!("No active or orphaned repository in {resource}: nothing to re-project.");
+            } else {
+                println!(
+                    "Queued a re-projection of {} repositor{}; the bridge applies its current \
+                     role map:",
+                    resp.repos.len(),
+                    if resp.repos.len() == 1 { "y" } else { "ies" }
+                );
+                for r in &resp.repos {
+                    println!("  {}", r.as_str());
+                }
+            }
+            Ok(())
         }
         GitCommands::Reseat {
             namespace,

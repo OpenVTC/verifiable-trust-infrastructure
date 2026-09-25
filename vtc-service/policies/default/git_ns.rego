@@ -28,6 +28,9 @@
 #                 item is evaluated as the right.grant it is) |
 #                 bridge.serviceGrant (the community granting its bridge
 #                 `git.commit.sign` on a namespace it has just bound)
+#                 | roles.reproject (a community administrator or namespace
+#                 admin having the bridge re-apply a namespace's or a
+#                 repository's forge roles; no right changes)
 #   actor         { did, member, role?, rights[] }  — rights on `resource`
 #   subject       { did, member, role?, rights[] }  — whoever receives or loses
 #                 the right (grant, revoke, transfer, each adopted owner)

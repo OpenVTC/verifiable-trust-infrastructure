@@ -20,7 +20,12 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { useNameBook } from "@/lib/names";
 import { shortenDid } from "@/lib/format";
-import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
+import type {
+  GitNsDriftItem,
+  GitNsNamespaceRow,
+  GitNsRight,
+  GitNsRoleMap,
+} from "@/lib/wire-types";
 
 import {
   adoptTask,
@@ -678,6 +683,7 @@ export function ReseatDialog({
 export function RevertDriftDialog({
   resource,
   ns,
+  roleMap,
   item,
   label,
   onClose,
@@ -685,6 +691,8 @@ export function RevertDriftDialog({
 }: {
   resource: string;
   ns: GitNsNamespaceRow;
+  /** The repository's role map (`GitNsRepoRow.roleMap`). */
+  roleMap?: GitNsRoleMap;
   item: GitNsDriftItem;
   /** The item as the drift list names it. */
   label: string;
@@ -696,7 +704,7 @@ export function RevertDriftDialog({
   const submit = () => {
     const e = reasonError(reason);
     setError(e);
-    if (!e) onBuilt(driftRevertTask(resource, ns, item, reason));
+    if (!e) onBuilt(driftRevertTask(resource, ns, item, reason, roleMap));
   };
   return (
     <FormDialog

@@ -548,6 +548,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
                 roles_digest: None,
                 installation_removed: false,
                 forge_status: None,
+                role_map: None,
             };
             store::put_namespace(&state.git_ns.ks, &ns).await?;
             let scope = Scope::Namespace(ns.id.clone());
@@ -652,6 +653,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
         roles_digest: None,
         installation_removed: false,
         forge_status: None,
+        role_map: None,
     };
     store::put_namespace(&state.git_ns.ks, &ns).await?;
     bridge::record_inline_job(

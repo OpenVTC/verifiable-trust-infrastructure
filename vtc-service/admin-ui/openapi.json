@@ -8317,7 +8317,9 @@
           "headless",
           "installationRemoved",
           "roleDrift",
-          "cascadeOnDeparture"
+          "cascadeOnDeparture",
+          "roleMap",
+          "roleMapSource"
         ],
         "properties": {
           "admins": {
@@ -8407,6 +8409,20 @@
           "roleDrift": {
             "type": "string",
             "description": "The active policy's `role_drift` setting in effect: `report` or\n`enforce`."
+          },
+          "roleMap": {
+            "$ref": "#/components/schemas/GitNsRoleMap",
+            "description": "The forge role each right projects to on a repository without a map\nof its own: the bridge's report (`git-ns/bridge/event/0.3`\n`roleMapReported`), or the default map while it has not reported."
+          },
+          "roleMapReportedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "roleMapSource": {
+            "type": "string",
+            "description": "`reported` — the bridge serving the namespace said so; `default` — it\nhas not, and the default map is assumed."
           },
           "state": {
             "type": "string",
@@ -8498,7 +8514,9 @@
           "syncState",
           "driftCount",
           "createdAt",
-          "steps"
+          "steps",
+          "roleMap",
+          "roleMapStale"
         ],
         "properties": {
           "bootstrap": {
@@ -8578,6 +8596,14 @@
           },
           "resource": {
             "type": "string"
+          },
+          "roleMap": {
+            "$ref": "#/components/schemas/GitNsRoleMap",
+            "description": "The forge role each right projects to on this repository, under the\nbridge's reported map (or the default one, per the namespace's\n`roleMapSource`)."
+          },
+          "roleMapStale": {
+            "type": "boolean",
+            "description": "The bridge last projected this repository's roles under an earlier\nrole map; a re-projection is queued and has not yet succeeded."
           },
           "state": {
             "type": "string",
@@ -8670,6 +8696,26 @@
           "subjectMember": {
             "type": "boolean",
             "description": "Whether the subject is a current member (an external signer is not)."
+          }
+        }
+      },
+      "GitNsRoleMap": {
+        "type": "object",
+        "description": "Which forge role `git.repo.own`, `git.repo.maintain` and\n`git.commit.sign` project to — `none`, `read`, `triage`, `write`,\n`maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to\nno forge role under any map.",
+        "required": [
+          "own",
+          "maintain",
+          "commit"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "maintain": {
+            "type": "string"
+          },
+          "own": {
+            "type": "string"
           }
         }
       },

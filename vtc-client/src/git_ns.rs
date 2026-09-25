@@ -34,6 +34,7 @@ use specs::repo::{
     transfer::v0_1 as transfer,
 };
 use specs::right::{grant::v0_1 as grant, revoke::v0_1 as revoke};
+use specs::roles::reproject::v0_1 as reproject;
 use specs::view::{v0_1 as view, v0_2 as view2};
 
 /// The `Trust-Task` URL every git-namespace admin read is gated on.
@@ -268,6 +269,27 @@ impl VtcClient {
         });
         self.git_ns_task(
             <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/roles/reproject/0.1` — a community administrator or namespace
+    /// admin has the bridge re-apply the forge roles of a namespace's
+    /// repositories, or of one repository. No right changes.
+    pub async fn git_ns_reproject(
+        &self,
+        resource: &str,
+        reason: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<reproject::Response, VtcError> {
+        let mut payload = serde_json::json!({ "resource": resource });
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
+        self.git_ns_task(
+            <reproject::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             &payload,
             key,
         )

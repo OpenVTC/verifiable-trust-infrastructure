@@ -14,6 +14,7 @@ import {
   createTask,
   didError,
   driftRevertTask,
+  reprojectTask,
   expiryDaysError,
   forgeHostError,
   grantTask,
@@ -48,6 +49,8 @@ const ORG_NS: GitNsNamespaceRow = {
   installationRemoved: false,
   roleDrift: "report",
   cascadeOnDeparture: false,
+  roleMap: { own: "admin", maintain: "maintain", commit: "none" },
+  roleMapSource: "reported",
 };
 const ROLE_ADDED: GitNsDriftItem = {
   type: "roleAdded",
@@ -188,10 +191,31 @@ describe("signed git-ns tasks", () => {
     expect(
       driftRevertTask("github.com/acme/widgets", ORG_NS, { ...admin, type: "roleRemoved" }).consent,
     ).toBe("normal");
-    // On a personal account `admin` projects nothing.
+    // On a personal account owners get collaborator `write`, so taking off
+    // `write` — or anything above it — weighs as revoking ownership.
+    const user = { ...ORG_NS, kind: "user" };
+    expect(driftRevertTask("github.com/glenn-g/x", user, admin).consent).toBe("elevated");
     expect(
-      driftRevertTask("github.com/glenn-g/x", { ...ORG_NS, kind: "user" }, admin).consent,
+      driftRevertTask("github.com/glenn-g/x", user, { ...admin, observed: "read" }).consent,
     ).toBe("normal");
+    // Under the bridge's map: owners given only `maintain` make a `maintain`
+    // revert an owner-level one; maintainers given `admin` do not lower it.
+    const map = { own: "maintain", maintain: "write", commit: "none" };
+    expect(
+      driftRevertTask("github.com/acme/widgets", ORG_NS, ROLE_ADDED, undefined, map).consent,
+    ).toBe("elevated");
+  });
+
+  it("builds a re-projection of a namespace or a repository", () => {
+    const ns = reprojectTask("github.com/acme", " map changed ");
+    expect(ns.taskUri).toBe("https://trusttasks.org/spec/git-ns/roles/reproject/0.1");
+    expect(ns.payload).toEqual({ resource: "github.com/acme", reason: "map changed" });
+    expect(ns.consent).toBe("normal");
+    expect(ns.effect).toMatch(/every active or orphaned repository/);
+    expect(ns.command).toBe("cnm git reproject github.com/acme --reason='map changed'");
+    const repo = reprojectTask("github.com/acme/widgets");
+    expect(repo.payload).toEqual({ resource: "github.com/acme/widgets" });
+    expect(repo.command).toBe("cnm git reproject github.com/acme/widgets");
   });
 
   it("leaves the account out of a ruleset revert", () => {

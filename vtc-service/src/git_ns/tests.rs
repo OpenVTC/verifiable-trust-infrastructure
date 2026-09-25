@@ -1254,6 +1254,7 @@ fn every_git_ns_task_is_served() {
         "bridge/event",
         "drift/resolve",
         "namespace/reseat",
+        "roles/reproject",
     ] {
         assert!(served.contains(&uri(task).as_str()), "{task} is not served");
     }
@@ -1263,6 +1264,8 @@ fn every_git_ns_task_is_served() {
             "{task} 0.2 is not served"
         );
     }
+    assert!(served.contains(&format!("{URI}/bridge/event/0.3").as_str()));
+    assert!(served.contains(&uri("roles/reproject").as_str()));
     // `bridge/job` is the VTC's to send, never to serve.
     assert!(!served.contains(&uri("bridge/job").as_str()));
 }
@@ -4454,4 +4457,279 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
         "{evidence:?}"
     );
     assert!(!detail.to_string().contains(&f.carol.did));
+}
+
+// ── the bridge's role map (git-ns/bridge/event 0.3) and re-projection ───────
+
+fn uri3(task: &str) -> String {
+    format!("{URI}/{task}/0.3")
+}
+
+async fn report_role_map(f: &Fixture, ns: &str, event: Value) -> TrustTaskOutcome {
+    send_v(
+        &f.vtc.state,
+        &f.bridge_party,
+        &uri3("bridge/event"),
+        json!({ "namespace": ns, "event": event }),
+    )
+    .await
+}
+
+/// The `projectRoles` jobs queued for `repo`, oldest first.
+async fn role_jobs_for(f: &Fixture, repo: &str) -> Vec<super::bridge::BridgeJob> {
+    let mut jobs: Vec<_> = super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.kind == super::bridge::JobKind::ProjectRoles && j.payload["repo"] == repo)
+        .collect();
+    jobs.sort_by_key(|j| j.created_at);
+    jobs
+}
+
+async fn namespace_now(f: &Fixture, ns: &str) -> super::model::Namespace {
+    Snapshot::load(&f.vtc.state.git_ns.ks)
+        .await
+        .unwrap()
+        .namespace(ns)
+        .unwrap()
+        .clone()
+}
+
+#[tokio::test]
+async fn a_role_map_report_is_kept_and_its_stale_repositories_are_reprojected() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    super::bridge::project_roles(&f.vtc.state, false)
+        .await
+        .unwrap();
+    let before = role_jobs_for(&f, RES).await.len();
+    ok(&report_role_map(
+        &f,
+        &ns,
+        json!({
+            "type": "roleMapReported",
+            "roleMap": { "own": "admin", "maintain": "admin", "commit": "none" },
+            "repos": [{ "resource": RES, "roleMap": { "own": "admin", "maintain": "admin", "commit": "write" } }],
+            "stale": [RES],
+        }),
+    )
+    .await);
+    let n = namespace_now(&f, &ns).await;
+    let (m, src) = super::role_map::for_repo(&n, RES);
+    assert_eq!(src, super::role_map::Source::Reported);
+    assert_eq!(m.commit, super::role_map::ForgeLevel::Write);
+    assert!(super::role_map::is_stale(&n, RES));
+    let (nm, _) = super::role_map::for_namespace(&n);
+    assert_eq!(nm.commit, super::role_map::ForgeLevel::None);
+
+    // Re-projected without anyone asking: the projector sends it again.
+    super::bridge::project_roles(&f.vtc.state, false)
+        .await
+        .unwrap();
+    let jobs = role_jobs_for(&f, RES).await;
+    assert_eq!(jobs.len(), before + 1, "{jobs:?}");
+    // Its success takes the repository off `stale`.
+    let job = jobs.last().unwrap();
+    ok(&send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/result",
+        json!({
+            "jobId": job.job_id, "outcome": "succeeded",
+            "repo": { "resource": RES, "forgeId": "100" },
+            "steps": [{ "step": "roles", "outcome": "applied" }],
+        }),
+    )
+    .await);
+    assert!(!super::role_map::is_stale(
+        &namespace_now(&f, &ns).await,
+        RES
+    ));
+}
+
+#[tokio::test]
+async fn a_role_map_report_is_refused_unordered_or_outside_its_namespace() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    let out = report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "write", "maintain": "admin", "commit": "none" } }),
+    )
+    .await;
+    assert_eq!(code(&out), "malformedRequest");
+    let out = report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" },
+                "stale": ["github.com/beta/tools"] }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+    let out = report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" },
+                "repos": [{ "resource": "github.com/beta/tools", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" } }] }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+    // Nothing was kept: the default map still stands.
+    assert!(namespace_now(&f, &ns).await.role_map.is_none());
+    // Only the namespace's own bridge reports it.
+    let out = send_v(
+        &f.vtc.state,
+        &f.stranger,
+        &uri3("bridge/event"),
+        json!({ "namespace": ns, "event": { "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" } } }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+}
+
+#[tokio::test]
+async fn drift_adopt_derives_the_right_from_the_bridges_role_map() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    // Maintainers get `admin` here: a forge `admin` is a maintainer's role.
+    ok(&report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "admin", "commit": "none" } }),
+    )
+    .await);
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "admin" }]),
+    )
+    .await;
+    let body = ok(&resolve(
+        &f,
+        &f.bob,
+        json!({ "type": "roleAdded", "account": carol_acct(), "observed": "admin" }),
+        "adopt",
+    )
+    .await);
+    assert_eq!(body["right"]["right"], "git.repo.maintain");
+}
+
+#[tokio::test]
+async fn drift_adopt_refuses_a_role_no_right_projects_to_under_the_map() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    // Owners get only `maintain`: nothing projects to `admin`.
+    ok(&report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "maintain", "maintain": "write", "commit": "none" } }),
+    )
+    .await);
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "admin" }]),
+    )
+    .await;
+    let out = resolve(
+        &f,
+        &f.bob,
+        json!({ "type": "roleAdded", "account": carol_acct(), "observed": "admin" }),
+        "adopt",
+    )
+    .await;
+    assert_eq!(code(&out), super::drift::NO_MATCHING_RIGHT);
+}
+
+#[tokio::test]
+async fn reproject_queues_every_repository_for_a_namespace_admin_or_community_admin() {
+    let (f, _ns) = drift_fixture(json!([])).await;
+    adopt_with_forge_id(&f, "github.com/acme/gadgets", "101").await;
+    super::bridge::project_roles(&f.vtc.state, false)
+        .await
+        .unwrap();
+    let before = role_jobs_for(&f, RES).await.len();
+    // The community administrator (who is also the binding's admin).
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "roles/reproject",
+        json!({ "resource": "github.com/acme", "reason": "role map changed" }),
+    )
+    .await);
+    let mut repos: Vec<String> = serde_json::from_value(body["repos"].clone()).unwrap();
+    repos.sort();
+    assert_eq!(
+        repos,
+        vec!["github.com/acme/gadgets".to_string(), RES.to_string()]
+    );
+    // Queued now, with the complete set, though nothing changed.
+    assert_eq!(role_jobs_for(&f, RES).await.len(), before + 1);
+    assert!(!role_jobs_for(&f, "github.com/acme/gadgets").await.is_empty());
+
+    // A namespace admin by explicit record, who is not a community admin.
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.ns.admin",
+        "github.com/acme",
+    )
+    .await);
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.carol,
+        "roles/reproject",
+        json!({ "resource": RES }),
+    )
+    .await);
+    assert_eq!(body["repos"], json!([RES]));
+}
+
+#[tokio::test]
+async fn reproject_is_refused_to_an_owner_in_manual_mode_and_without_forge_access() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    // Bob owns widgets — implied or explicit ownership is not enough.
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "roles/reproject",
+        json!({ "resource": RES }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "roles/reproject",
+        json!({ "resource": "github.com/acme/nothing-here" }),
+    )
+    .await;
+    assert_eq!(code(&out), super::ops::UNKNOWN_REPO);
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "roles/reproject",
+        json!({ "resource": "github.com/nobody" }),
+    )
+    .await;
+    assert_eq!(code(&out), super::ops::UNKNOWN_NAMESPACE);
+
+    ok(&event(&f, &ns, json!({ "type": "installationRemoved" })).await);
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "roles/reproject",
+        json!({ "resource": RES }),
+    )
+    .await;
+    assert_eq!(code(&out), super::reproject::NO_FORGE_ACCESS);
+
+    let g = fixture().await;
+    let _manual = bind_manual(&g).await;
+    let out = send(
+        &g.vtc.state,
+        &g.admin,
+        "roles/reproject",
+        json!({ "resource": "github.com/acme" }),
+    )
+    .await;
+    assert_eq!(code(&out), super::reproject::MANUAL_MODE);
 }

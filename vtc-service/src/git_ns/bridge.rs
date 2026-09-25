@@ -39,7 +39,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_1 as event_wire, job::v0_1 as job_wire, result::v0_1 as result_wire,
+    event::v0_3 as event_wire, job::v0_1 as job_wire, result::v0_1 as result_wire,
 };
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities, select_protocol};
 use vti_common::error::AppError;
@@ -1160,6 +1160,8 @@ pub async fn handle_result(
                     error = ?job.last_error,
                     "a git-ns bridge job did not succeed"
                 );
+            } else if job.kind == JobKind::ProjectRoles {
+                clear_stale(state, &job).await?;
             }
         }
     }
@@ -1187,6 +1189,30 @@ pub async fn handle_result(
     }
     put_job(&state.git_ns.jobs_ks, &job).await?;
     Ok(ack)
+}
+
+/// A repository's roles were projected: it is no longer projected under an
+/// earlier role map (`git-ns/bridge/event/0.3`, request step 5.4). Only a job
+/// queued after the report counts — one queued before it may have run on the
+/// bridge before its map changed, and its result can arrive late.
+async fn clear_stale(state: &AppState, job: &BridgeJob) -> Result<(), AppError> {
+    let Some(repo_id) = job.repo_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(repo) = store::get_repo(&state.git_ns.ks, repo_id).await? else {
+        return Ok(());
+    };
+    let Some(mut ns) = store::get_namespace(&state.git_ns.ks, &job.namespace_id).await? else {
+        return Ok(());
+    };
+    let Some(report) = ns.role_map.as_mut() else {
+        return Ok(());
+    };
+    if job.created_at < report.reported_at || !report.stale.contains(&repo.resource) {
+        return Ok(());
+    }
+    report.stale.retain(|r| *r != repo.resource);
+    store::put_namespace(&state.git_ns.ks, &ns).await
 }
 
 /// The bridge's `ext` report ([`FORGE_REPORT_EXT`]) on a result or event.
@@ -1304,7 +1330,7 @@ async fn detach(state: &AppState, actor: &str, repo: &mut Repo, why: &str) -> Re
     Ok(())
 }
 
-// ── git-ns/bridge/event/0.1 ─────────────────────────────────────────────────
+// ── git-ns/bridge/event (0.1, 0.2 and 0.3, read as 0.3) ─────────────────────
 
 fn s(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
@@ -1738,6 +1764,55 @@ pub async fn handle_event(
         "bindCompleted" => {
             let job_id = s(&event, "jobId").unwrap_or_default();
             complete_binding(state, issuer, &ns, &job_id, &event).await?;
+        }
+        "roleMapReported" => {
+            // `git-ns/bridge/event` 0.3, request step 5.
+            let report = super::role_map::read_report(&event, issuer, t, inside)?
+                .map_err(OpError::Malformed)?;
+            // 5.4: re-project each stale repository, without waiting for
+            // anyone. Forgetting what was sent makes the projector send its
+            // complete desiredRoles again on its next pass; the entry leaves
+            // `stale` when that job succeeds (`handle_result`).
+            for resource in &report.stale {
+                if let Some(mut repo) = snap
+                    .repos
+                    .iter()
+                    .find(|r| {
+                        r.namespace_id == ns.id
+                            && r.resource == *resource
+                            && matches!(r.state, RepoState::Active | RepoState::Orphaned)
+                    })
+                    .cloned()
+                {
+                    repo.roles_digest = None;
+                    store::put_repo(&state.git_ns.ks, &repo).await?;
+                }
+            }
+            if let Some(mut current) = store::get_namespace(&state.git_ns.ks, &ns.id).await? {
+                let changed = current
+                    .role_map
+                    .as_ref()
+                    .is_none_or(|old| old.role_map != report.role_map || old.repos != report.repos);
+                let stale = report.stale.len();
+                current.role_map = Some(report);
+                store::put_namespace(&state.git_ns.ks, &current).await?;
+                if changed || stale > 0 {
+                    audit(
+                        state,
+                        issuer,
+                        None,
+                        Audit {
+                            action: "gitNs.roleMap.reported",
+                            namespace: Some(&ns.id),
+                            resource: Some(ns_res.to_string()),
+                            right: None,
+                            policy_version: None,
+                            detail: Some(json!({ "changed": changed, "stale": stale }).to_string()),
+                        },
+                    )
+                    .await;
+                }
+            }
         }
         other => {
             // A newer bridge speaking a newer vocabulary: recorded in the log,

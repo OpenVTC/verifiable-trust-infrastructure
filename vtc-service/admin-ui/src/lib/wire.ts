@@ -3679,6 +3679,18 @@ export interface components {
              *     `enforce`.
              */
             roleDrift: string;
+            /**
+             * @description The forge role each right projects to on a repository without a map
+             *     of its own: the bridge's report (`git-ns/bridge/event/0.3`
+             *     `roleMapReported`), or the default map while it has not reported.
+             */
+            roleMap: components["schemas"]["GitNsRoleMap"];
+            roleMapReportedAt?: string | null;
+            /**
+             * @description `reported` — the bridge serving the namespace said so; `default` — it
+             *     has not, and the default map is assumed.
+             */
+            roleMapSource: string;
             /** @description `pending` | `bound`. */
             state: string;
         };
@@ -3736,6 +3748,17 @@ export interface components {
             owners: string[];
             resource: string;
             /**
+             * @description The forge role each right projects to on this repository, under the
+             *     bridge's reported map (or the default one, per the namespace's
+             *     `roleMapSource`).
+             */
+            roleMap: components["schemas"]["GitNsRoleMap"];
+            /**
+             * @description The bridge last projected this repository's roles under an earlier
+             *     role map; a re-projection is queued and has not yet succeeded.
+             */
+            roleMapStale: boolean;
+            /**
              * @description `pendingCreate` | `active` | `archived` | `detached` | `orphaned` |
              *     `unmanaged`.
              */
@@ -3769,6 +3792,17 @@ export interface components {
             subject: string;
             /** @description Whether the subject is a current member (an external signer is not). */
             subjectMember: boolean;
+        };
+        /**
+         * @description Which forge role `git.repo.own`, `git.repo.maintain` and
+         *     `git.commit.sign` project to — `none`, `read`, `triage`, `write`,
+         *     `maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to
+         *     no forge role under any map.
+         */
+        GitNsRoleMap: {
+            commit: string;
+            maintain: string;
+            own: string;
         };
         /** @description One bootstrap step's outcome, as the bridge reported it. */
         GitNsStepOutcome: {

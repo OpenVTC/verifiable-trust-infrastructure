@@ -11,8 +11,9 @@ import {
   namespaceFindings,
   projectedRight,
   repoStatus,
+  defaultRoleMap,
+  forgeRoleFor,
   revertStanding,
-  rightForForgeRole,
 } from "./model";
 import {
   ACME,
@@ -217,11 +218,13 @@ describe("namespace facts", () => {
     );
   });
 
-  it("maps a forge role back to the right that projects it", () => {
-    expect(rightForForgeRole("admin")).toBe("git.repo.own");
-    expect(rightForForgeRole("maintain")).toBe("git.repo.maintain");
-    expect(rightForForgeRole("write")).toBe("git.commit.sign");
-    expect(rightForForgeRole("triage")).toBeNull();
+  it("shows the forge role a right projects to, and none for a namespace admin", () => {
+    const map = { own: "admin", maintain: "admin", commit: "write" };
+    expect(forgeRoleFor(map, "git.repo.own")).toBe("admin");
+    expect(forgeRoleFor(map, "git.repo.maintain")).toBe("admin");
+    expect(forgeRoleFor(map, "git.commit.sign")).toBe("write");
+    expect(forgeRoleFor(map, "git.ns.admin")).toBe("none");
+    expect(forgeRoleFor(map, "git.repo.create")).toBe("none");
   });
 });
 
@@ -235,11 +238,22 @@ describe("revertStanding — what git-ns/drift/resolve accepts", () => {
   const admin = { ...maintain, observed: "admin" };
 
   it("mirrors projected_right, org and personal", () => {
-    expect(projectedRight("organization", "admin")).toBe("git.repo.own");
-    expect(projectedRight("organization", "maintain")).toBe("git.repo.maintain");
-    expect(projectedRight("organization", "write")).toBeNull();
-    expect(projectedRight("user", "write")).toBe("git.repo.maintain");
-    expect(projectedRight("user", "admin")).toBeNull();
+    const org = defaultRoleMap("organization");
+    expect(projectedRight(org, "admin")).toBe("git.repo.own");
+    expect(projectedRight(org, "maintain")).toBe("git.repo.maintain");
+    expect(projectedRight(org, "write")).toBeNull();
+    const user = defaultRoleMap("user");
+    expect(projectedRight(user, "write")).toBe("git.repo.maintain");
+    expect(projectedRight(user, "admin")).toBeNull();
+  });
+
+  it("derives the right from the bridge's map: the lowest right with that role", () => {
+    const forgejo = { own: "admin", maintain: "admin", commit: "none" };
+    expect(projectedRight(forgejo, "admin")).toBe("git.repo.maintain");
+    const branches = { own: "admin", maintain: "maintain", commit: "write" };
+    expect(projectedRight(branches, "write")).toBe("git.commit.sign");
+    expect(projectedRight(branches, "none")).toBeNull();
+    expect(projectedRight({ own: "maintain", maintain: "write", commit: "none" }, "admin")).toBeNull();
   });
 
   it("lets an owner or a namespace admin revert", () => {
