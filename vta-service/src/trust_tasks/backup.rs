@@ -162,25 +162,27 @@ async fn record_export_or_abort(
     ))
 }
 
-/// Refuse an export whose request arrived hop-by-hop (Trust Tasks over HTTPS).
+/// Refuse a backup export or import whose request arrived hop-by-hop (Trust
+/// Tasks over HTTPS).
 ///
-/// The bundle is sealed with the password the request carries. Over a channel
-/// that is confidential only per hop, that password exists in plaintext
-/// wherever TLS terminates, next to the bundle it opens — which carries the
-/// seed. So, like `keys/export-secret`, a backup export needs a channel
-/// confidential to the two parties: DIDComm or TSP (VTI-VTA-003). Fetching the
-/// bundle's ciphertext afterwards is not affected.
-fn refuse_hop_by_hop_export(doc: &TrustTask<Value>) -> Result<(), TrustTaskOutcome> {
+/// `initiate-export` and `finalize-import` carry the password that opens a
+/// complete copy of the agent, and `initiate-import` returns a bearer credential
+/// for writing into it. Over a channel that is confidential only per hop, each
+/// exists in plaintext wherever TLS terminates, next to the ciphertext it opens.
+/// So these tasks need a channel confidential end-to-end between the two
+/// parties: DIDComm or TSP (`vta/backup/*` Channel requirement, VTI-VTA-003).
+/// Checked after entitlement and before any state is serialized, a slot is
+/// minted or a key is derived. Moving the ciphertext itself is not affected.
+fn refuse_hop_by_hop(doc: &TrustTask<Value>, what: &str) -> Result<(), TrustTaskOutcome> {
     match super::transport::current() {
         super::transport::TransportConfidentiality::EndToEnd => Ok(()),
         super::transport::TransportConfidentiality::HopByHop => Err(app_error_to_reject(
             doc,
-            AppError::Forbidden(
-                "a backup export is refused over a hop-by-hop transport: the password that \
-                 seals the bundle would exist in plaintext wherever TLS terminates. Send \
-                 initiate-export over DIDComm or TSP"
-                    .into(),
-            ),
+            AppError::Forbidden(format!(
+                "a backup {what} is refused over a hop-by-hop transport: the backup password \
+                 and the bundle's transfer credentials would exist in plaintext wherever TLS \
+                 terminates. Send the {what} tasks over DIDComm or TSP"
+            )),
         )),
     }
 }
@@ -199,7 +201,7 @@ pub(super) async fn handle_initiate_export(
     if let Err(resp) = initiate_precheck(state, auth, &doc, INITIATE_EXPORT_SLUG).await {
         return resp;
     }
-    if let Err(resp) = refuse_hop_by_hop_export(&doc) {
+    if let Err(resp) = refuse_hop_by_hop(&doc, "export") {
         return resp;
     }
     let committer = state.backup_access().committer().await;
@@ -280,6 +282,9 @@ pub(super) async fn handle_initiate_import(
     if let Err(resp) = initiate_precheck(state, auth, &doc, INITIATE_IMPORT_SLUG).await {
         return resp;
     }
+    if let Err(resp) = refuse_hop_by_hop(&doc, "import") {
+        return resp;
+    }
     let committer = state.backup_access().committer().await;
     let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     match descriptors::initiate_import(&deps, auth, req).await {
@@ -318,6 +323,13 @@ pub(super) async fn handle_finalize_import(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // This carries the password: entitlement first, then the channel.
+    if let Err(e) = auth.require_super_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    if let Err(resp) = refuse_hop_by_hop(&doc, "import") {
+        return resp;
+    }
     // A chunked upload is assembled and verified here, before the password is
     // used; a no-op for a stream bundle. 1.0 declares none of the chunked codes,
     // so its refusals ride out as general failures — 1.1 renders them properly.
@@ -530,7 +542,7 @@ pub(super) async fn handle_initiate_export_1_1(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    if let Err(resp) = refuse_hop_by_hop_export(&doc) {
+    if let Err(resp) = refuse_hop_by_hop(&doc, "export") {
         return resp;
     }
     let include_audit = req.include_audit.unwrap_or(false);
@@ -589,6 +601,9 @@ pub(super) async fn handle_initiate_import_1_1(
     let algorithm = req.algorithm.as_ref().map(|a| a.as_str());
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
+    }
+    if let Err(resp) = refuse_hop_by_hop(&doc, "import") {
+        return resp;
     }
     if !is_chunked(algorithm) {
         // `chunks` belongs to `chunkedTrustTask` alone (the spec's
@@ -665,6 +680,13 @@ pub(super) async fn handle_finalize_import_1_1(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // This carries the password: entitlement first, then the channel.
+    if let Err(e) = auth.require_super_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    if let Err(resp) = refuse_hop_by_hop(&doc, "import") {
+        return resp;
+    }
     if let Err(e) =
         chunked::finalize_precheck(&state.backup_bundles_ks, auth, req.bundle_id.as_str()).await
     {
@@ -870,5 +892,97 @@ mod tests {
             doc["payload"]["descriptor"].is_object(),
             "expected a chunked bundle descriptor, got: {doc}"
         );
+    }
+
+    /// Run a backup handler as a super-admin over the given transport.
+    async fn run_over<F, Fut>(
+        confidentiality: super::super::transport::TransportConfidentiality,
+        uri: &str,
+        payload: Value,
+        handler: F,
+    ) -> Value
+    where
+        F: FnOnce(AppState, AuthClaims, TrustTask<Value>) -> Fut,
+        Fut: std::future::Future<Output = TrustTaskOutcome>,
+    {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let uri: TypeUri = uri.parse().unwrap();
+        let doc = TrustTask::new("urn:uuid:test", uri, payload);
+        let auth = crate::test_support::super_admin_claims();
+        let outcome = super::super::transport::with_confidentiality(
+            confidentiality,
+            Box::pin(handler(state, auth, doc)),
+        )
+        .await;
+        serde_json::from_slice(&outcome.body).expect("a response document")
+    }
+
+    fn chunked_import_payload() -> Value {
+        serde_json::json!({
+            "expectedSha256": "a".repeat(64),
+            "expectedSizeBytes": 16384,
+            "algorithm": "chunkedTrustTask",
+            "chunks": {
+                "chunkSize": 16384,
+                "chunkCount": 1,
+                "chunkDigests": ["zQmehatQCtXyeV6kFkRVXjhDifqT3qARJ24248K2GJp7iWx"],
+            },
+        })
+    }
+
+    /// The import tasks follow the same channel rule as export: over HTTPS no
+    /// slot is minted and no password is used.
+    #[tokio::test]
+    async fn backup_import_tasks_over_https_are_refused() {
+        use super::super::transport::TransportConfidentiality::HopByHop;
+        let initiate = run_over(
+            HopByHop,
+            vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1,
+            chunked_import_payload(),
+            |st, a, d| async move { handle_initiate_import_1_1(&st, &a, d).await },
+        )
+        .await;
+        assert!(initiate["payload"]["descriptor"].is_null(), "{initiate}");
+        assert!(initiate.to_string().contains("hop-by-hop"), "{initiate}");
+
+        for uri in [
+            vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0,
+            vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1,
+        ] {
+            let finalize = run_over(
+                HopByHop,
+                uri,
+                serde_json::json!({
+                    "bundleId": uuid::Uuid::new_v4().to_string(),
+                    "password": "import-test-password",
+                    "confirm": false,
+                }),
+                |st, a, d| async move {
+                    if d.type_uri.to_string().ends_with("/1.1") {
+                        handle_finalize_import_1_1(&st, &a, d).await
+                    } else {
+                        handle_finalize_import(&st, &a, d).await
+                    }
+                },
+            )
+            .await;
+            assert!(
+                finalize.to_string().contains("hop-by-hop"),
+                "{uri}: {finalize}"
+            );
+        }
+    }
+
+    /// Over an end-to-end channel an import slot is minted.
+    #[tokio::test]
+    async fn a_backup_import_over_an_end_to_end_channel_mints_a_slot() {
+        let doc = run_over(
+            super::super::transport::TransportConfidentiality::EndToEnd,
+            vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1,
+            chunked_import_payload(),
+            |st, a, d| async move { handle_initiate_import_1_1(&st, &a, d).await },
+        )
+        .await;
+        assert!(doc["payload"]["descriptor"].is_object(), "{doc}");
     }
 }

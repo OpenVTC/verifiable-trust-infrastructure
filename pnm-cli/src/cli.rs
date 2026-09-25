@@ -1010,9 +1010,12 @@ pub(crate) enum BackupCommands {
         /// a DID of its own. Without it a backup of another DID is refused.
         #[arg(long)]
         replace_identity: bool,
-        /// Fall back to the legacy inline `/backup/import` REST route
-        /// instead of the descriptor-pattern trust-task flow. See
-        /// `Export::use_rest_legacy`; removed at rollout step 6.
+        /// Use the legacy inline backup import instead of the
+        /// descriptor-pattern trust-task flow.
+        ///
+        /// Works only over DIDComm: the VTA refuses a backup import over
+        /// REST or HTTPS Trust Tasks, because the backup and its password
+        /// would exist in plaintext wherever TLS terminates.
         #[arg(long)]
         use_rest_legacy: bool,
     },

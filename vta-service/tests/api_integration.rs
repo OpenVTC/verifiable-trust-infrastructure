@@ -1219,28 +1219,32 @@ async fn export_envelope(ctx: &TestContext, password: &str) -> Value {
     serde_json::to_value(envelope).unwrap()
 }
 
+/// A backup is never imported over REST, even a valid one with its right
+/// password, to a super-admin: the backup and its password together are every
+/// key it holds, and both would exist in plaintext wherever TLS terminates.
 #[tokio::test]
-async fn backup_export_and_import_preview() {
+async fn backup_import_is_refused_over_rest() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
 
     let envelope = export_envelope(&ctx, "test-password-12!!").await;
     assert_eq!(envelope["format"], "vta-backup-v2");
 
-    // Import preview (confirm=false)
-    let (status, preview) = app
-        .request(post_auth(
-            "/backup/import",
-            &token,
-            json!({
-                "backup": envelope,
-                "password": "test-password-12!!",
-                "confirm": false
-            }),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::OK, "preview: {preview}");
-    assert_eq!(preview["status"], "preview");
+    for confirm in [false, true] {
+        let (status, body) = app
+            .request(post_auth(
+                "/backup/import",
+                &token,
+                json!({
+                    "backup": envelope,
+                    "password": "test-password-12!!",
+                    "confirm": confirm
+                }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "confirm={confirm}: {body}");
+        assert!(body.to_string().contains("REST"), "{body}");
+    }
 }
 
 // ── Cache ──────────────────────────────────────────────────────────
@@ -1594,30 +1598,6 @@ async fn audit_retention_get_and_update() {
         ))
         .await;
     assert!(status.is_success(), "update retention: {status} {body}");
-}
-
-// ── Backup wrong password ──────────────────────────────────────────
-
-#[tokio::test]
-async fn backup_import_wrong_password_returns_auth_error() {
-    let (app, ctx) = TestApp::new().await;
-    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
-
-    let envelope = export_envelope(&ctx, "correct-password!!").await;
-
-    // Import with wrong password
-    let (status, body) = app
-        .request(post_auth(
-            "/backup/import",
-            &token,
-            json!({"backup": envelope, "password": "wrong-password!!!", "confirm": false}),
-        ))
-        .await;
-    assert_eq!(
-        status,
-        StatusCode::UNAUTHORIZED,
-        "wrong password should → 401: {body}"
-    );
 }
 
 // ── ACL CRUD full lifecycle ────────────────────────────────────────
