@@ -1369,6 +1369,50 @@ pub async fn run(
         }
     }
 
+    // VTI-APV-014: audit every ACL write an offline command made while the
+    // daemon was stopped. Each skipped the consent and attrition rules by
+    // design; this is the row that says so. Taken (and deleted) as it is read,
+    // so a restart loop audits each once.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        match state.install_store.take_break_glass().await {
+            Ok(writes) => {
+                for w in writes {
+                    warn!(
+                        command = %w.command,
+                        action = %w.action,
+                        did = %w.did,
+                        operator_hostname = %w.operator_hostname,
+                        invoked_at = %w.invoked_at,
+                        "an ACL change was made offline (break-glass) since the daemon last ran \
+                         — auditing now",
+                    );
+                    let subject = w.did.clone();
+                    if let Err(e) = writer
+                        .write(
+                            "did:key:vtc-break-glass",
+                            Some(&subject),
+                            vti_common::audit::AuditEvent::AclBreakGlassWritten(
+                                vti_common::audit::BreakGlassAclData {
+                                    command: w.command,
+                                    action: w.action,
+                                    did: w.did,
+                                    role: w.role,
+                                    contexts: w.contexts,
+                                    operator_hostname: w.operator_hostname,
+                                    invoked_at: w.invoked_at,
+                                },
+                            ),
+                        )
+                        .await
+                    {
+                        error!(error = %e, "failed to emit AclBreakGlassWritten envelope");
+                    }
+                }
+            }
+            Err(e) => error!(error = %e, "failed to read queued break-glass ACL writes"),
+        }
+    }
+
     // Snapshot the CORS allowlist + routing config before the
     // AppState `move` into the REST thread. Both layers are fixed
     // at start-up; a future `POST /v1/admin/config/reload` can
