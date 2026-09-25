@@ -930,6 +930,41 @@ fn restated_narrowing(entry: &vti_common::acl::AclEntry) -> Option<String> {
     Some(names.join(","))
 }
 
+/// Load the record `key_id` names **for a caller**, answering "absent" and
+/// "not yours" identically.
+///
+/// A caller whose scope is restricted learns nothing about ids outside it: a
+/// key that does not exist and a key in a context it cannot act in get the same
+/// refusal, with a message that names neither the key's context nor whether it
+/// exists. Only a super-admin — who can reach every key — is told a key is
+/// absent. Without this, `keys/export-secret` and `keys/sign` were an existence
+/// oracle for every key id in the VTA, and their "no access to context: X"
+/// refusal also named the context the key lived in.
+pub(crate) async fn load_record_in_caller_scope(
+    keys_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    key_id: &str,
+) -> Result<KeyRecord, AppError> {
+    let out_of_reach =
+        || AppError::Forbidden(format!("key `{key_id}` is not within the caller's scope"));
+    let record: Option<KeyRecord> = keys_ks.get(keys::store_key(key_id)).await?;
+    let Some(record) = record else {
+        return Err(if auth.is_super_admin() {
+            AppError::NotFound(format!("key {key_id} not found"))
+        } else {
+            out_of_reach()
+        });
+    };
+    let reachable = match record.context_id.as_deref() {
+        Some(ctx) => auth.has_context_access(ctx),
+        None => auth.is_super_admin(),
+    };
+    if !reachable {
+        return Err(out_of_reach());
+    }
+    Ok(record)
+}
+
 /// How the channel a released private key travels over protects it — stated
 /// by the caller of [`get_key_secret`], because only the transport knows.
 ///
@@ -1050,17 +1085,15 @@ async fn release_key_secret(
     key_id: &str,
     channel: &str,
 ) -> Result<GetKeySecretResultBody, AppError> {
-    let record: KeyRecord = keys_ks
-        .get(keys::store_key(key_id))
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
 
-    if let Some(ref ctx) = record.context_id {
-        auth.require_context(ctx)?;
-    } else if !auth.is_super_admin() {
-        return Err(AppError::Forbidden(
-            "only super admin can access keys without a context".into(),
-        ));
+    // A revoked key is refused like a missing one would be to its owner: its
+    // record is kept for history (and a rotation's retired and staging records
+    // are revoked by construction), not so its private half can still leave.
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is not active and its private half is not released"
+        )));
     }
 
     // Internal keys are refused here too. `InternalAuthority` bypasses the ACL,
@@ -1087,7 +1120,10 @@ async fn release_key_secret(
     // unaffected.
     if record.exportable == Some(false) {
         return Err(AppError::Forbidden(format!(
-            "key `{key_id}` is marked non-exportable and its private half is never              released; it can still be used for signing and key agreement. Changing              that needs `keys/set-exportability` with authority beyond the one that              set it"
+            "key `{key_id}` is marked non-exportable and its private half is never \
+             released; it can still be used for signing and key agreement. Changing \
+             that needs `keys/set-exportability` with authority beyond the one that \
+             set it"
         )));
     }
 
@@ -1314,6 +1350,15 @@ pub async fn get_key_secret_internal(
     // Deliberately no `auth.require_context` / `is_super_admin` gate —
     // possessing an `InternalAuthority` IS the gate.
 
+    // Internal authority skips the ACL, not the key's lifecycle: a revoked key
+    // (retired by a rotation, or revoked outright) must not keep signing or
+    // decrypting for the VTA.
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is not active and is not loaded for use"
+        )));
+    }
+
     let (public_key_multibase, private_key_multibase) = match record.origin {
         // Unreachable: the early return above refuses internal keys. Kept as a
         // second, local refusal so deleting that guard cannot quietly turn this
@@ -1464,10 +1509,9 @@ pub async fn sign_payload(
         ensure_may_sign(acl_ks, auth, "keys/sign").await?;
     }
 
-    let record: KeyRecord = keys_ks
-        .get(keys::store_key(key_id))
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
+    // Scope before existence: an out-of-scope caller gets the same refusal for
+    // a key that exists and one that does not.
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
 
     if record.status != KeyStatus::Active {
         return Err(AppError::Validation(
@@ -4256,6 +4300,107 @@ mod tests {
         .expect_err("no sign");
         assert!(
             matches!(&err, AppError::Forbidden(m) if m.contains("sign capability")),
+            "{err:?}"
+        );
+    }
+
+    /// Scope before existence: a caller restricted to `test-ctx` gets one
+    /// refusal for a key in another context and for a key that does not
+    /// exist — naming neither — on both the export and the signing oracle.
+    #[tokio::test]
+    async fn out_of_scope_and_absent_keys_are_indistinguishable() {
+        let h = TestHarness::new().await;
+        create_context(&h.contexts_ks, "other-ctx", "Other")
+            .await
+            .unwrap();
+        create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("k-elsewhere".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("other-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+        let auth = h.context_admin_auth();
+        let refuse = |id: &'static str| {
+            let h = &h;
+            let auth = auth.clone();
+            async move {
+                let e = export(h, &h.audit, &auth, id, ExportChannel::Local("t"))
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                let s = sign_as(h, &auth, id, SigningDomain::Opaque)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                (e.replace(id, "<id>"), s.replace(id, "<id>"))
+            }
+        };
+        let real = refuse("k-elsewhere").await;
+        let absent = refuse("k-nowhere").await;
+        assert_eq!(real, absent);
+        assert!(
+            !real.0.contains("other-ctx"),
+            "must not name the key's context: {real:?}"
+        );
+    }
+
+    /// A revoked key's private half is not released, and internal authority
+    /// does not load it for use either.
+    #[tokio::test]
+    async fn revoked_keys_are_neither_exported_nor_loaded() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-gone").await;
+        revoke_key(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-gone",
+            "test",
+        )
+        .await
+        .expect("revoke");
+        let err = export(
+            &h,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-gone",
+            ExportChannel::Local("t"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
+            "{err:?}"
+        );
+        let err = get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &*h.seed_store,
+            &h.audit,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-gone",
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
             "{err:?}"
         );
     }

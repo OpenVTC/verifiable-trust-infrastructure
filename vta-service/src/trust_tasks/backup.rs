@@ -121,6 +121,70 @@ async fn record_bundle_event(
     }
 }
 
+/// Record an export's `backup.initiate-export` row **durably**, before the
+/// descriptor that makes the bundle fetchable is returned. A failed write
+/// aborts the bundle and refuses: the bundle carries the seed, and an
+/// unrecorded copy of it is not permitted (VTI-VTA-003). The other bundle
+/// events stay best-effort — by then the decision to release was recorded.
+async fn record_export_or_abort(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    bundles_ks: &crate::store::KeyspaceHandle,
+    bundle_id: &str,
+    detail: String,
+) -> Result<(), TrustTaskOutcome> {
+    let Err(e) = crate::audit::record_with_detail(
+        &state.audit_sink,
+        "backup.initiate-export",
+        &auth.did,
+        Some(bundle_id),
+        "success",
+        Some(super::transport::audit_channel()),
+        None,
+        Some(&detail),
+    )
+    .await
+    else {
+        return Ok(());
+    };
+    tracing::error!(target: vta_audit::AUDIT_WRITE_FAILURE_TARGET, error = %e, actor = %auth.did, bundle_id, "backup export refused: its audit row could not be written");
+    if let Ok(id) = uuid::Uuid::parse_str(bundle_id) {
+        let _ = vti_common::backup_transfer::abort(bundles_ks, &auth.did, &id).await;
+    }
+    Err(app_error_to_reject(
+        doc,
+        AppError::Internal(
+            "the backup was not released: the export could not be recorded in the audit \
+             trail, and an unrecorded export is not permitted (VTI-VTA-003)"
+                .into(),
+        ),
+    ))
+}
+
+/// Refuse an export whose request arrived hop-by-hop (Trust Tasks over HTTPS).
+///
+/// The bundle is sealed with the password the request carries. Over a channel
+/// that is confidential only per hop, that password exists in plaintext
+/// wherever TLS terminates, next to the bundle it opens — which carries the
+/// seed. So, like `keys/export-secret`, a backup export needs a channel
+/// confidential to the two parties: DIDComm or TSP (VTI-VTA-003). Fetching the
+/// bundle's ciphertext afterwards is not affected.
+fn refuse_hop_by_hop_export(doc: &TrustTask<Value>) -> Result<(), TrustTaskOutcome> {
+    match super::transport::current() {
+        super::transport::TransportConfidentiality::EndToEnd => Ok(()),
+        super::transport::TransportConfidentiality::HopByHop => Err(app_error_to_reject(
+            doc,
+            AppError::Forbidden(
+                "a backup export is refused over a hop-by-hop transport: the password that \
+                 seals the bundle would exist in plaintext wherever TLS terminates. Send \
+                 initiate-export over DIDComm or TSP"
+                    .into(),
+            ),
+        )),
+    }
+}
+
 /// `spec/vta/backup/initiate-export/1.0` — mint an export bundle.
 /// Auth: super-admin.
 pub(super) async fn handle_initiate_export(
@@ -135,6 +199,9 @@ pub(super) async fn handle_initiate_export(
     if let Err(resp) = initiate_precheck(state, auth, &doc, INITIATE_EXPORT_SLUG).await {
         return resp;
     }
+    if let Err(resp) = refuse_hop_by_hop_export(&doc) {
+        return resp;
+    }
     let committer = state.backup_access().committer().await;
     let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     // `include_audit` is read BEFORE the request moves into the op: it is the
@@ -144,17 +211,21 @@ pub(super) async fn handle_initiate_export(
     let include_audit = req.include_audit;
     match descriptors::initiate_export(&deps, auth, req).await {
         Ok(body) => {
-            record_bundle_event(
+            if let Err(reject) = record_export_or_abort(
                 state,
                 auth,
-                "backup.initiate-export",
+                &doc,
+                deps.bundles_ks,
                 &body.descriptor.bundle_id,
                 format!(
                     "includeAudit={include_audit} bytes={} expires={}",
                     body.descriptor.expected_size_bytes, body.descriptor.expires_at
                 ),
             )
-            .await;
+            .await
+            {
+                return reject;
+            }
             success_response(&doc, body)
         }
         Err(e) => app_error_to_reject(&doc, e),
@@ -459,6 +530,9 @@ pub(super) async fn handle_initiate_export_1_1(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
+    if let Err(resp) = refuse_hop_by_hop_export(&doc) {
+        return resp;
+    }
     let include_audit = req.include_audit.unwrap_or(false);
     let committer = state.backup_access().committer().await;
     let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
@@ -474,17 +548,21 @@ pub(super) async fn handle_initiate_export_1_1(
         Ok(b) => b,
         Err(e) => return chunked_reject(&doc, e),
     };
-    record_bundle_event(
+    if let Err(reject) = record_export_or_abort(
         state,
         auth,
-        "backup.initiate-export",
+        &doc,
+        deps.bundles_ks,
         &bundle.bundle_id.to_string(),
         format!(
             "algorithm={ALGORITHM_CHUNKED} includeAudit={include_audit} bytes={} chunks={} expires={}",
             bundle.expected_size_bytes, bundle.chunk_count, bundle.expires_at
         ),
     )
-    .await;
+    .await
+    {
+        return reject;
+    }
     match typed::<initiate_export_1_1::Response>(json!({
         "descriptor": manifest_json(&bundle),
         "completionHint": format!(
@@ -737,5 +815,60 @@ mod tests {
                 "the wire message must not name configuration: {parsed}"
             );
         }
+    }
+
+    /// Run a chunked `initiate-export/1.1` as a super-admin over the given
+    /// transport, returning the response document.
+    async fn initiate_chunked_over(
+        confidentiality: super::super::transport::TransportConfidentiality,
+    ) -> Value {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1
+            .parse()
+            .unwrap();
+        let doc = TrustTask::new(
+            "urn:uuid:test",
+            uri,
+            serde_json::json!({
+                "algorithm": "chunkedTrustTask",
+                "includeAudit": false,
+                "password": "chunked-export-test-pw",
+            }),
+        );
+        let auth = crate::test_support::super_admin_claims();
+        // Boxed: this is one of the largest handler futures the VTA has, and
+        // the dispatch seam boxes it the same way.
+        let outcome = super::super::transport::with_confidentiality(
+            confidentiality,
+            Box::pin(handle_initiate_export_1_1(&state, &auth, doc)),
+        )
+        .await;
+        serde_json::from_slice(&outcome.body).expect("a response document")
+    }
+
+    /// The sealing password travels in the request, so an export requested
+    /// hop-by-hop is refused before any bundle is built.
+    #[tokio::test]
+    async fn a_backup_export_over_https_is_refused() {
+        let doc =
+            initiate_chunked_over(super::super::transport::TransportConfidentiality::HopByHop)
+                .await;
+        assert!(
+            doc["payload"]["descriptor"].is_null(),
+            "no bundle is minted: {doc}"
+        );
+        assert!(doc.to_string().contains("hop-by-hop"), "{doc}");
+    }
+
+    /// Over an end-to-end channel the export runs.
+    #[tokio::test]
+    async fn a_backup_export_over_an_end_to_end_channel_mints_a_bundle() {
+        let doc =
+            initiate_chunked_over(super::super::transport::TransportConfidentiality::EndToEnd)
+                .await;
+        assert!(
+            doc["payload"]["descriptor"].is_object(),
+            "expected a chunked bundle descriptor, got: {doc}"
+        );
     }
 }

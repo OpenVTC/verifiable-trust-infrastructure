@@ -1374,16 +1374,28 @@ pub async fn handle_backup_export(
         )
         .await
     );
-    let _ = crate::audit::record(
-        &state.audit_sink,
-        "backup.export",
-        &auth.did,
-        None,
-        "success",
-        Some("didcomm"),
-        None,
-    )
-    .await;
+    // Durable before the envelope leaves, refusing on failure — see the REST
+    // route.
+    app_try!(
+        crate::audit::record(
+            &state.audit_sink,
+            "backup.export",
+            &auth.did,
+            None,
+            "success",
+            Some("didcomm"),
+            None,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(target: vta_audit::AUDIT_WRITE_FAILURE_TARGET, error = %e, actor = %auth.did, "backup export refused: its audit row could not be written");
+            AppError::Internal(
+                "the backup was not released: the export could not be recorded in the audit \
+                 trail, and an unrecorded export is not permitted (VTI-VTA-003)"
+                    .into(),
+            )
+        })
+    );
     info!(
         ciphertext_bytes = envelope.ciphertext.len(),
         "backup export DIDComm response size"

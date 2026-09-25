@@ -986,14 +986,12 @@ pub(crate) enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
-        /// Fall back to the legacy inline `/backup/export` REST route
-        /// instead of the descriptor-pattern trust-task flow.
+        /// Use the legacy inline backup export instead of the
+        /// descriptor-pattern trust-task flow.
         ///
-        /// The trust-task flow is the default as of rollout step 5
-        /// (`docs/05-design-notes/backup-descriptor-pattern.md`). This
-        /// escape hatch exists for an emergency where the descriptor
-        /// flow cannot complete — it is removed at step 6, along with
-        /// the legacy route itself.
+        /// Works only over DIDComm: the VTA refuses a backup export over
+        /// REST or HTTPS Trust Tasks, because the sealing password would
+        /// exist in plaintext wherever TLS terminates.
         #[arg(long)]
         use_rest_legacy: bool,
     },

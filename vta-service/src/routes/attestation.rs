@@ -199,6 +199,10 @@ pub async fn mnemonic_export(
     SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<MnemonicExportResponse>, AppError> {
+    // The root seed is the export of every key this VTA holds: the same
+    // capability as any other export (VTI-VTA-003), not only the role.
+    crate::operations::keys::ensure_may_export(&state.acl_ks, &auth, "attestation/mnemonic")
+        .await?;
     let guard = state
         .tee
         .as_ref()

@@ -10,45 +10,34 @@ use vta_sdk::protocols::backup_management::types::{
     BackupEnvelope, ExportRequest, ImportRequest, ImportResult,
 };
 
-/// POST /backup/export — export VTA state to an encrypted backup. Auth: Super Admin.
+/// POST /backup/export — **refused**. Auth: Super Admin.
+///
+/// A backup carries the seed, sealed by the password the request carries.
+/// Over REST both exist in plaintext wherever TLS terminates, so whoever holds
+/// that point holds every key the VTA can derive. A backup is exported only
+/// over a channel confidential to the two parties: DIDComm, or
+/// `vta/backup/initiate-export` over DIDComm or TSP (VTI-VTA-003). The route
+/// stays so an old client gets a reason rather than a 404.
 #[utoipa::path(
     post, path = "/backup/export", tag = "backup",
     security(("bearer_jwt" = [])),
     request_body = ExportRequest,
     responses(
-        (status = 200, description = "Encrypted backup envelope", body = BackupEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
+        (status = 403, description = "Always: a backup is not exported over REST"),
     ),
 )]
 pub async fn export(
-    SuperAdminAuth(auth): SuperAdminAuth,
-    State(state): State<AppState>,
-    Json(req): Json<ExportRequest>,
+    SuperAdminAuth(_auth): SuperAdminAuth,
+    State(_state): State<AppState>,
+    Json(_req): Json<ExportRequest>,
 ) -> Result<Json<BackupEnvelope>, AppError> {
-    let config = state.config.read().await;
-    let envelope = operations::backup::export_backup(
-        &state.backup_access().target(),
-        &*state.seed_store,
-        &config,
-        &auth,
-        &req.password,
-        req.include_audit,
-    )
-    .await?;
-
-    let _ = crate::audit::record(
-        &state.audit_sink,
-        "backup.export",
-        &auth.did,
-        None,
-        "success",
-        Some("rest"),
-        None,
-    )
-    .await;
-
-    Ok(Json(envelope))
+    Err(AppError::Forbidden(
+        "a backup export is refused over REST: the password that seals the backup would \
+         exist in plaintext wherever TLS terminates. Export over DIDComm, or send \
+         vta/backup/initiate-export over DIDComm or TSP"
+            .into(),
+    ))
 }
 
 /// POST /backup/import — import VTA state from an encrypted backup.

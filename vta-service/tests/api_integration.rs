@@ -1184,22 +1184,39 @@ async fn backup_export_requires_super_admin() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+/// A backup is never exported over REST, even to a super-admin with the
+/// key-export capability: the sealing password would exist in plaintext
+/// wherever TLS terminates.
 #[tokio::test]
-async fn backup_export_rejects_short_password() {
+async fn backup_export_is_refused_over_rest() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
     let (status, body) = app
         .request(post_auth(
             "/backup/export",
             &token,
-            json!({"password": "short", "include_audit": false}),
+            json!({"password": "test-password-12!!", "include_audit": false}),
         ))
         .await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "should reject short password: {body}"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("REST"), "{body}");
+}
+
+/// A backup envelope minted in process — the REST route no longer exports.
+async fn export_envelope(ctx: &TestContext, password: &str) -> Value {
+    let state = &ctx.inner.state;
+    let config = state.config.read().await;
+    let envelope = vta_service::operations::backup::export_backup(
+        &state.backup_access().target(),
+        &*state.seed_store,
+        &config,
+        &vta_service::test_support::super_admin_claims(),
+        password,
+        false,
+    )
+    .await
+    .expect("export");
+    serde_json::to_value(envelope).unwrap()
 }
 
 #[tokio::test]
@@ -1207,15 +1224,7 @@ async fn backup_export_and_import_preview() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
 
-    // Export
-    let (status, envelope) = app
-        .request(post_auth(
-            "/backup/export",
-            &token,
-            json!({"password": "test-password-12!!", "include_audit": false}),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::OK, "export: {envelope}");
+    let envelope = export_envelope(&ctx, "test-password-12!!").await;
     assert_eq!(envelope["format"], "vta-backup-v2");
 
     // Import preview (confirm=false)
@@ -1594,15 +1603,7 @@ async fn backup_import_wrong_password_returns_auth_error() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
 
-    // Export with one password
-    let (status, envelope) = app
-        .request(post_auth(
-            "/backup/export",
-            &token,
-            json!({"password": "correct-password!!", "include_audit": false}),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::OK);
+    let envelope = export_envelope(&ctx, "correct-password!!").await;
 
     // Import with wrong password
     let (status, body) = app
