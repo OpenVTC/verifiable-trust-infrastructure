@@ -373,9 +373,14 @@ upstream spec and a `trust-tasks-rs` bump first).
   as a trusted issuer to show them.
 - **Audit:** `TaskConsentRecorded` with a `stage` of `requested`, `approved`,
   `declined`, `granted` or `consumed`, under whoever took the step.
-- **Not yet:** the granted notice to the requester (`task-consent/granted/0.1`)
-  is not sent; a requester re-sends the operation to learn the outcome, as the
-  VTA's CLI loop does.
+- **Granted notice:** once the threshold is met, the requester is sent a
+  `task-consent/granted/0.1` over DIDComm, so it re-sends the operation at once
+  instead of polling. It is VTC-signed (the proof is optional in the
+  specification; this service signs what it originates), threaded on the
+  ceremony's `correlator`, and carries the salted digest and the task type.
+  It is advisory and best-effort: the grant found when the operation is re-sent
+  is the authorization, a failed send is logged and never fails the decision,
+  and a denial sends no notice, as the specification requires.
 - **Tests:** `vtc-service/tests/unrestricted_admin_consent.rs`.
 
 ## 10. As built (step 4.3: attrition and invites)
