@@ -60,6 +60,10 @@ static PROMOTE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// role change is gated by construction and VTI-OPS-050/051 hold wherever the
 /// transition is driven from.
 ///
+/// The signed-document door, which has no session, goes through
+/// [`role_change_via_bound_step_up`] instead. That names *where* the host looks
+/// — a gesture bound to the operation — and still never *what* it finds.
+///
 /// Promotion to `admin` additionally:
 ///
 /// - is serialised on [`PROMOTE_LOCK`], and
@@ -73,6 +77,80 @@ pub async fn role_change_via_pipeline(
     current_role: &str,
     target_role: &str,
 ) -> Result<RoleChangeResult, AppError> {
+    match run_role_change(
+        state,
+        actor,
+        subject_did,
+        current_role,
+        target_role,
+        StepUpSource::Session,
+    )
+    .await?
+    {
+        RoleChangeOutcome::Changed(result) => Ok(result),
+        // Only a bound source parks a ceremony; the session source refuses
+        // with `step_up_required` instead.
+        RoleChangeOutcome::StepUpRequired(_) => Err(AppError::Internal(
+            "a session-gated role change produced a bound step-up request".into(),
+        )),
+    }
+}
+
+/// Where the promotion gate reads the passkey gesture from. Never a boolean
+/// from the caller: both sources are host state the pipeline resolves itself.
+#[derive(Debug, Clone, Copy)]
+pub enum StepUpSource<'a> {
+    /// The actor's live session elevation — the bearer route.
+    Session,
+    /// A gesture bound to this one operation by a digest of its type and
+    /// payload — the signed-document door, which has no session
+    /// ([`crate::acl::bound_step_up`]).
+    BoundTo {
+        type_uri: &'a str,
+        payload: &'a serde_json::Value,
+    },
+}
+
+/// What a role change produced when its gesture may be bound to the operation.
+#[derive(Debug)]
+pub enum RoleChangeOutcome {
+    Changed(RoleChangeResult),
+    /// A promotion the pipeline would allow, with no gesture recorded for it
+    /// yet. Nothing was written; a ceremony is parked, and this is the
+    /// approve-request to refuse with.
+    StepUpRequired(Box<trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload>),
+}
+
+/// [`role_change_via_pipeline`] for the signed-document door: the promotion's
+/// gesture is bound to this operation rather than read from a session.
+pub async fn role_change_via_bound_step_up(
+    state: &AppState,
+    actor: &vti_common::auth::extractor::AuthClaims,
+    subject_did: &str,
+    current_role: &str,
+    target_role: &str,
+    type_uri: &str,
+    payload: &serde_json::Value,
+) -> Result<RoleChangeOutcome, AppError> {
+    run_role_change(
+        state,
+        actor,
+        subject_did,
+        current_role,
+        target_role,
+        StepUpSource::BoundTo { type_uri, payload },
+    )
+    .await
+}
+
+async fn run_role_change(
+    state: &AppState,
+    actor: &vti_common::auth::extractor::AuthClaims,
+    subject_did: &str,
+    current_role: &str,
+    target_role: &str,
+    source: StepUpSource<'_>,
+) -> Result<RoleChangeOutcome, AppError> {
     let actor_did = actor.did.as_str();
     let promoting = target_role == super::invariant::ADMIN_ROLE;
 
@@ -99,10 +177,23 @@ pub async fn role_change_via_pipeline(
         )));
     }
 
-    // The fact the host invariant reads, resolved from the session rather than
+    // The fact the host invariant reads, resolved from host state rather than
     // taken on trust. Only promotions need it, and reading it only for them
     // keeps a plain demotion off the session keyspace.
-    let step_up = promoting && crate::acl::elevation::verified(actor, &state.sessions_ks).await;
+    //
+    // A bound source decides *as if* the gesture were present. That verdict is
+    // acted on only after the gesture has actually been spent, below; until
+    // then it answers one question — would anything other than the missing
+    // gesture refuse this? — so a promotion another rule refuses (self-
+    // promotion, the operator's policy) is refused for its own reason and
+    // never asks a human for a passkey gesture it could not use.
+    let step_up = promoting
+        && match source {
+            StepUpSource::Session => {
+                crate::acl::elevation::verified(actor, &state.sessions_ks).await
+            }
+            StepUpSource::BoundTo { .. } => true,
+        };
 
     let facts = assemble_role_change_facts(
         state,
@@ -164,6 +255,23 @@ pub async fn role_change_via_pipeline(
         .role
         .ok_or_else(|| AppError::Internal("role-change allow carried no role".into()))?;
 
+    // Spend the bound gesture now — after the decision, before the write — or
+    // park the ceremony that asks for one. Still under `PROMOTE_LOCK`, so the
+    // re-read above is what the gesture is spent against.
+    if promoting && let StepUpSource::BoundTo { type_uri, payload } = source {
+        let reason = format!("Promote {subject_did} from {current_role} to administrator");
+        match crate::acl::bound_step_up::redeem_or_request(
+            state, actor_did, type_uri, payload, &reason,
+        )
+        .await?
+        {
+            crate::acl::bound_step_up::Gate::Satisfied => {}
+            crate::acl::bound_step_up::Gate::Required(request) => {
+                return Ok(RoleChangeOutcome::StepUpRequired(request));
+            }
+        }
+    }
+
     let plan = EffectPlan::Remint {
         subject: subject_did.to_string(),
         role: granted.clone(),
@@ -192,10 +300,10 @@ pub async fn role_change_via_pipeline(
         );
     }
 
-    Ok(RoleChangeResult {
+    Ok(RoleChangeOutcome::Changed(RoleChangeResult {
         previous_role: outcome.previous_role.to_string(),
         new_role: granted,
-    })
+    }))
 }
 
 /// Assemble purpose-`role-change` [`Facts`](super::Facts): the actor's role, the

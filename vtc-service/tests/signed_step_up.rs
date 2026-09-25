@@ -34,6 +34,7 @@ use common::webauthn_harness::SoftEd25519Authenticator;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
+const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 
 struct Fixture {
     vtc: TestVtc,
@@ -48,6 +49,14 @@ async fn fixture() -> Fixture {
         .with_signers(true)
         .build()
         .await;
+    // A promotion is the role-change ceremony, which decides against the
+    // default `role_change` policy.
+    vtc_service::policy::default::install_defaults(
+        &vtc.state.policies_ks,
+        &vtc.state.active_policies_ks,
+    )
+    .await
+    .unwrap();
     Fixture {
         vtc,
         authenticator: SoftEd25519Authenticator::new(),
@@ -522,4 +531,140 @@ async fn a_refused_grant_never_asks_for_a_gesture() {
         reply["details"].get("stepUpRequest").is_none(),
         "a doomed grant must not ask for a passkey gesture: {reply}"
     );
+}
+
+// ─── acl/change-role ─────────────────────────────────────────────────────
+
+/// A plain member, ready to promote.
+async fn member(fix: &Fixture) -> Party {
+    let party = Party::new();
+    store_acl_entry(&fix.vtc.state.acl_ks, &row(&party.did, VtcRole::Member))
+        .await
+        .unwrap();
+    vtc_service::members::store_member(
+        &fix.vtc.state.members_ks,
+        &vtc_service::members::Member::fresh(&party.did),
+    )
+    .await
+    .unwrap();
+    party
+}
+
+fn promote(subject: &str) -> Value {
+    json!({ "subject": subject, "fromRole": "member", "toRole": "admin" })
+}
+
+/// The promotion loop on the signed door: refused with the ceremony inline,
+/// the gesture recorded, the identical document re-sent and completed through
+/// the role-change ceremony.
+#[tokio::test]
+async fn vti_apv_015_a_gesture_bound_to_the_promotion_lets_the_same_document_through() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let subject = member(&fix).await;
+
+    let doc = signed(&admin, CHANGE_ROLE, promote(&subject.did)).await;
+    let (status, refusal) = post(&fix, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
+    let request = step_up_request(&refusal);
+    assert_eq!(
+        get_acl_entry(&fix.vtc.state.acl_ks, &subject.did)
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        VtcRole::Member,
+        "nothing moves before the gesture"
+    );
+
+    let cred = fix
+        .authenticator
+        .authenticate(&options(&request), RP_ORIGIN);
+    let (status, ack) = approve(&fix, &admin, &request, &cred).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    assert_eq!(ack["status"], "recorded");
+
+    let (status, reply) = post(&fix, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["entry"]["role"], "admin", "{reply}");
+    let entry = get_acl_entry(&fix.vtc.state.acl_ks, &subject.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.role, VtcRole::Admin);
+    assert_eq!(entry.updated_by.as_deref(), Some(admin.did.as_str()));
+}
+
+/// A gesture for a grant does not promote: the digest covers the task's type,
+/// so a promotion finds nothing for it.
+#[tokio::test]
+async fn a_gesture_for_a_grant_does_not_authorize_a_promotion() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let subject = member(&fix).await;
+
+    let other = Party::new();
+    let (_, refusal) = post(&fix, &signed(&admin, GRANT, grant_admin(&other.did)).await).await;
+    let request = step_up_request(&refusal);
+    let cred = fix
+        .authenticator
+        .authenticate(&options(&request), RP_ORIGIN);
+    let (status, _) = approve(&fix, &admin, &request, &cred).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let doc = signed(&admin, CHANGE_ROLE, promote(&subject.did)).await;
+    let (status, refusal) = post(&fix, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
+    step_up_request(&refusal);
+}
+
+/// A stale `fromRole` is the compare-and-swap conflict, on this door as on the
+/// bearer route — and asks for nothing.
+#[tokio::test]
+async fn a_stale_from_role_is_a_conflict_not_a_gesture() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let subject = member(&fix).await;
+
+    let stale = json!({ "subject": subject.did, "fromRole": "moderator", "toRole": "admin" });
+    let (status, reply) = post(&fix, &signed(&admin, CHANGE_ROLE, stale).await).await;
+    assert_ne!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["details"]["reason"], "conflict", "{reply}");
+}
+
+/// A demotion confers nothing and needs no gesture.
+#[tokio::test]
+async fn a_demotion_needs_no_gesture() {
+    let mut fix = fixture().await;
+    let _admin = admin_with_passkey(&mut fix).await;
+    let colleague = admin_with_passkey(&mut fix).await;
+    let actor = admin_with_passkey(&mut fix).await;
+    vtc_service::members::store_member(
+        &fix.vtc.state.members_ks,
+        &vtc_service::members::Member::fresh(&colleague.did),
+    )
+    .await
+    .unwrap();
+
+    let demote = json!({ "subject": colleague.did, "fromRole": "admin", "toRole": "member" });
+    let (status, reply) = post(&fix, &signed(&actor, CHANGE_ROLE, demote).await).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["entry"]["role"], "member", "{reply}");
+}
+
+/// Changing roles is an administrator's act. A member's signature is refused
+/// before anything else is looked at — including the member promoting
+/// themselves.
+#[tokio::test]
+async fn a_non_admin_signer_cannot_change_roles() {
+    let fix = fixture().await;
+    let signer = member(&fix).await;
+    let subject = member(&fix).await;
+
+    for target in [&subject.did, &signer.did] {
+        let doc = signed(&signer, CHANGE_ROLE, promote(target)).await;
+        let (status, reply) = post(&fix, &doc).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+        assert!(reply["details"].get("stepUpRequest").is_none(), "{reply}");
+    }
 }

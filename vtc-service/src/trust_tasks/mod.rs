@@ -100,6 +100,7 @@ use trust_tasks_rs::specs::vtc::backup::export::v0_1 as backup_export;
 // The first verb that confers administrative authority on this door, and the
 // answer to the operation-bound step-up it asks for (#1641; design note
 // `vtc-operation-bound-step-up.md`).
+use trust_tasks_rs::specs::acl::change_role::v0_1 as acl_change_role;
 use trust_tasks_rs::specs::acl::grant::v0_1 as acl_grant;
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as step_up_approve_response;
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -715,6 +716,7 @@ async fn dispatch_typed(
         ENDORSEMENT_TYPE_DELETE_TYPE => handle_endorsement_type_delete(state, ctx, doc).await,
         BACKUP_EXPORT_TYPE => handle_backup_export(state, ctx, doc).await,
         ACL_GRANT_TYPE => handle_acl_grant(state, ctx, doc).await,
+        ACL_CHANGE_ROLE_TYPE => handle_acl_change_role(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, doc).await,
         other => unsupported_type_or_version(&doc, other),
     }
@@ -1200,13 +1202,14 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            32,
+            33,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
              moved (`config/export`, `config/import`) + the 2 batch 4 moved \
              (`endorsement-types/register`, `endorsement-types/delete`) + batch \
-             5's `backup/export` + `acl/grant`. `auth/step-up/approve-response/0.4` \
+             5's `backup/export` + `acl/grant` + `acl/change-role`. \
+             `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries; got {required:?}"
         );
@@ -1366,6 +1369,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // a signed document does not have; the bearer route stays mounted and
     // keeps its session gate.
     ACL_GRANT_TYPE,
+    // A role transition; promotion to admin takes the same bound gesture.
+    ACL_CHANGE_ROLE_TYPE,
     // The gesture that operation-bound step-up asks for.
     STEP_UP_APPROVE_RESPONSE_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
@@ -1428,6 +1433,11 @@ pub(crate) const BACKUP_EXPORT_TYPE: &str =
 
 /// `acl/grant/0.1` — the entry the maintainer should hold for a subject.
 pub(crate) const ACL_GRANT_TYPE: &str = <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/change-role/0.1` — move a subject between roles, compare-and-swap on
+/// `fromRole`.
+pub(crate) const ACL_CHANGE_ROLE_TYPE: &str =
+    <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `auth/step-up/approve-response/0.4` — the passkey gesture an
 /// operation-bound step-up asks for.
@@ -2900,6 +2910,11 @@ async fn handle_acl_grant(
         Ok(a) => a,
         Err(reject) => return reject,
     };
+    // The bearer route's `ManageAuth`, stated rather than left to the role
+    // checks inside `plan_grant` to imply.
+    if let Err(e) = actor.require_manage() {
+        return app_error_to_reject(&doc, &e);
+    }
     let _checked: acl_grant::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -2955,6 +2970,82 @@ async fn handle_acl_grant(
 
     match crate::routes::acl::commit_grant(state, &actor, plan).await {
         Ok((_status, envelope)) => success_response(&doc, envelope),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `acl/change-role/0.1` — move a subject from `fromRole` to `toRole`.
+///
+/// Administrator only, from the signer's ACL row — the bearer route's
+/// `AdminAuth`. The transition runs the role-change ceremony exactly as the
+/// bearer route does ([`crate::routes::acl::change_role_inner`]): the
+/// compare-and-swap on `fromRole`, the scope checks, the operator's
+/// `role_change` policy, the host invariants and the role-VEC re-mint.
+///
+/// A promotion to `admin` needs a passkey gesture, and here it is **bound to
+/// this operation** ([`crate::acl::bound_step_up`]) rather than read from a
+/// session. The pipeline decides first; only a promotion nothing else refuses
+/// is refused for want of a gesture, with the ceremony inline in
+/// `details.stepUpRequest`. The same document, re-sent once the gesture is
+/// recorded, spends it and completes.
+async fn handle_acl_change_role(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::{StandardCode, TrustTaskCode};
+
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    if let Err(e) = actor.require_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
+    let checked: acl_change_role::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    // The bearer body is the payload without `subject`, which the route takes
+    // from its path. Read through that body so an unknown role or an `ext` is
+    // refused here as it is there.
+    let mut body = doc.payload.clone();
+    if let Some(map) = body.as_object_mut() {
+        map.remove("subject");
+    }
+    let req: crate::routes::acl::UpdateAclRequest = match serde_json::from_value(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("payload parse: {e}"),
+                },
+            );
+        }
+    };
+
+    match crate::routes::acl::change_role_inner(
+        state,
+        &actor,
+        checked.subject.as_str(),
+        req,
+        crate::ceremony::StepUpSource::BoundTo {
+            type_uri: ACL_CHANGE_ROLE_TYPE,
+            payload: &doc.payload,
+        },
+    )
+    .await
+    {
+        Ok(crate::routes::acl::ChangeRoleOutcome::Changed(envelope)) => {
+            success_response(&doc, *envelope)
+        }
+        Ok(crate::routes::acl::ChangeRoleOutcome::StepUpRequired(request)) => reject_with_code(
+            &doc,
+            TrustTaskCode::Standard(StandardCode::PermissionDenied),
+            "a passkey gesture bound to this role change is required",
+            Some(crate::acl::bound_step_up::refusal_details(&request)),
+        ),
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -3340,6 +3431,7 @@ mod tests {
             <endorsement_type_delete::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <backup_export::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy

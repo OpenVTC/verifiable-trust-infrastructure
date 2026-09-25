@@ -1,6 +1,6 @@
 # Step-up on a signed document, bound to the operation — and second-party consent for unrestricted admin
 
-Status: **accepted; §3 implemented for `acl/grant`** (§6 and §8 say what is done and what differs from this design) — §7 lists the decisions. Decided with the maintainer on 2026-09-24: the step-up a
+Status: **accepted; §3 implemented for `acl/grant` and `acl/change-role`** (§6 and §8 say what is done and what differs from this design) — §7 lists the decisions. Decided with the maintainer on 2026-09-24: the step-up a
 signed document needs is bound to **the one operation** it authorizes, not to a
 session; and this note also designs the second-party consent VTI-APV-014
 requires for unrestricted-scope admin grants, which the VTC does not implement
@@ -252,7 +252,7 @@ upstream spec and a `trust-tasks-rs` bump first).
    twice is refused; a console key cannot create a mark; a silent (non-UV)
    assertion is refused; a passkey of another admin is refused.
 3. Bind `acl/grant` and `acl/change-role` on the signed door behind that gate.
-   **`acl/grant` done**; `acl/change-role` next.
+   **Done.**
 4. VTC task-consent for unrestricted admin (§4): the threshold config key with
    its write-time and attrition checks, the co-admin at install, and the
    offline break-glass (§4c).
@@ -269,7 +269,7 @@ upstream spec and a `trust-tasks-rs` bump first).
 - **Consent threshold:** configurable per community, default and minimum 1,
   refused at write time when unmeetable (§4b).
 
-## 8. As built (`acl/grant`, step 2 and half of step 3)
+## 8. As built (steps 2 and 3)
 
 - **Code:** `vtc-service/src/acl/bound_step_up.rs` (digest, marks,
   `redeem_or_request`, `approve`, sweep); `trust_tasks::handle_acl_grant` and
@@ -297,3 +297,16 @@ upstream spec and a `trust-tasks-rs` bump first).
 - **WebAuthn challenge = step-up challenge.** webauthn-rs mints the challenge
   when the ceremony starts, and the pending mark is keyed by it, so the
   assertion binds the same nonce the mark does.
+- **`acl/change-role`.** A promotion runs the role-change ceremony, whose host
+  invariant `StepUpForAdmin` reads a `step_up` fact. The pipeline takes a
+  `StepUpSource` — the bearer route's live session, or a gesture bound to the
+  operation — and never a boolean from its caller (#1645). On the bound
+  source it decides *as if* the gesture were present, and acts on that verdict
+  only after spending the mark: the verdict answers "would anything but the
+  missing gesture refuse this?", so a promotion the policy or another
+  invariant refuses is refused for that reason and asks nobody for a
+  passkey. Spend and write both happen under `PROMOTE_LOCK`. `decide` is pure,
+  so deciding before the spend has no effect of its own.
+- **`AdminPromoted.authorising_session_id`** is empty for a promotion made on
+  the signed door, which has no session; the gesture is the
+  `OperationStepUpRecorded` row under the same actor.
