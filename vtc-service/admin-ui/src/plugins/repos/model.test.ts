@@ -323,6 +323,20 @@ describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
     expect(adoptStanding(ALICE, false, ACME, DOCS, added("maintain"), HANA, 0).may).toBe(true);
   });
 
+  it("never offers a viewer their own account as an elevated right (grant 0.3 rule 7)", () => {
+    // Alice, a namespace admin and community administrator, adopting the
+    // forge admin role on her own linked account would grant herself own.
+    const self = adoptStanding(ALICE, true, ACME, DOCS, added("admin"), ALICE, 0);
+    expect(self).toMatchObject({ may: false, handOver: true, right: "git.repo.own" });
+    expect(!self.may && self.why).toMatch(/separation of duties/);
+    // A normal right for oneself is no self-grant of an elevated right.
+    expect(adoptStanding(ALICE, true, ACME, DOCS, added("maintain"), ALICE, 0)).toEqual({
+      may: true,
+      member: ALICE,
+      right: "git.repo.maintain",
+    });
+  });
+
   it("ranks what a member holds, explicit, implied and unexpired", () => {
     expect(heldRepoRank(RIGHTS, BOB, DOCS, ACME)).toBe(3);
     expect(heldRepoRank(RIGHTS, HANA, WIDGETS, ACME)).toBe(2);

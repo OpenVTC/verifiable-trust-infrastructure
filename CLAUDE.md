@@ -992,7 +992,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   new repository at the old name inherits nothing); the projection withdraws
   before it publishes, and publishes the implied `git.commit.sign` of every
   `own`, `maintain` and `ns.admin`; a grant's `reason` is never published or
-  audited. **Separation of duties** (grant 0.3 rule 7): no elevated self-grant
+  audited. Grant and revoke are served at 0.3 only (no 0.1/0.2).
+  **Separation of duties** (grant 0.3 rule 7): no elevated self-grant
   through any task; the only way is `git-ns/right/break-glass` (`git_ns::break_glass`),
   which always takes an operation-bound passkey step-up, is audited at
   `AuditSeverity::Critical`, and is announced to every other administrator —

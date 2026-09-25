@@ -1085,7 +1085,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             let payload: specs::right::grant::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that grant is not well formed: {e}"))?;
             let resp = anon()
-                .git_ns_grant_v3(&payload, &key)
+                .git_ns_grant(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
@@ -1109,7 +1109,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             let payload: specs::right::revoke::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that revocation is not well formed: {e}"))?;
             let resp = anon()
-                .git_ns_revoke_v3(&payload, &key)
+                .git_ns_revoke(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)

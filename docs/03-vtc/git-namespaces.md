@@ -5,7 +5,7 @@ Forgejo instance such as Codeberg — and publish who may do what there to its
 Trust Registry, where CI checks such as `did-git-sign verify-trust` read it.
 
 - **Normative:** the `git-ns/*` Trust Tasks in dtgwg-trust-tasks-tf
-  (`specs/git-ns/**`). The rights model is in `git-ns/right/grant/0.1`.
+  (`specs/git-ns/**`). The rights model is in `git-ns/right/grant/0.3`.
 - **Design:** `design-docs/vtc-git-namespaces-design.md`.
 - **Code:** `vtc-service/src/git_ns/`.
 
@@ -259,8 +259,9 @@ drift item whose linked member is the resolver, `repo/adopt` naming oneself
 an owner, and `namespace/reseat` to oneself. Self-grants of
 `git.repo.maintain` and `git.commit.sign` stay allowed. `namespace/bind`
 (the binder's first `git.ns.admin`) and `repo/create` (the creator's first
-`own`) are not self-grants. The rule is applied to the 0.1 grant and revoke
-this VTC still serves, as 0.3 requires.
+`own`) are not self-grants. This VTC serves grant and revoke at 0.3 only:
+0.1 and 0.2 are refused as unknown task types, so no client reaches a grant
+that skips the rule or a record without its `breakGlass` flag.
 
 When nobody else can grant it, the actor **breaks the glass**
 (`git-ns/right/break-glass/0.1`):

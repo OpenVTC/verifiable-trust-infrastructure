@@ -34,8 +34,8 @@ use trust_tasks_rs::specs::git_ns::repo::{
     transfer::v0_1 as transfer,
 };
 use trust_tasks_rs::specs::git_ns::right::{
-    break_glass::v0_1 as break_glass, grant::v0_1 as grant, grant::v0_3 as grant3,
-    ratify::v0_1 as ratify, revoke::v0_1 as revoke, revoke::v0_3 as revoke3,
+    break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
+    revoke::v0_3 as revoke,
 };
 use trust_tasks_rs::specs::git_ns::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
 use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
@@ -105,9 +105,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_transfer)
         .on_async(handle_archive)
         .on_async(handle_grant)
-        .on_async(handle_grant_v3)
         .on_async(handle_revoke)
-        .on_async(handle_revoke_v3)
         .on_async(handle_break_glass)
         .on_async(handle_ratify)
         .on_async(handle_view)
@@ -255,8 +253,6 @@ signed_handler!(handle_transfer, transfer::Payload, ops::repo_transfer);
 signed_handler!(handle_archive, archive::Payload, ops::repo_archive);
 signed_handler!(handle_grant, grant::Payload, ops::right_grant);
 signed_handler!(handle_revoke, revoke::Payload, ops::right_revoke);
-signed_handler!(handle_grant_v3, grant3::Payload, ops::right_grant_v3);
-signed_handler!(handle_revoke_v3, revoke3::Payload, ops::right_revoke_v3);
 signed_handler!(
     handle_break_glass,
     break_glass::Payload,

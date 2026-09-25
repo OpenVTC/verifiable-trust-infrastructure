@@ -34,8 +34,8 @@ use specs::repo::{
     transfer::v0_1 as transfer,
 };
 use specs::right::{
-    break_glass::v0_1 as break_glass, grant::v0_1 as grant, grant::v0_3 as grant3,
-    ratify::v0_1 as ratify, revoke::v0_1 as revoke, revoke::v0_3 as revoke3,
+    break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
+    revoke::v0_3 as revoke,
 };
 use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
 
@@ -206,7 +206,9 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/right/grant/0.1`.
+    /// `git-ns/right/grant/0.3` — separation of duties: an elevated right
+    /// (`git.ns.admin`, `git.repo.create`, `git.repo.own`) is refused
+    /// `git-ns:selfGrantNotAllowed` when the subject is the signer.
     pub async fn git_ns_grant(
         &self,
         payload: &grant::Payload,
@@ -220,7 +222,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/right/revoke/0.1`.
+    /// `git-ns/right/revoke/0.3`.
     pub async fn git_ns_revoke(
         &self,
         payload: &revoke::Payload,
@@ -228,36 +230,6 @@ impl VtcClient {
     ) -> Result<revoke::Response, VtcError> {
         self.git_ns_task(
             <revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            payload,
-            key,
-        )
-        .await
-    }
-
-    /// `git-ns/right/grant/0.3` — separation of duties: an elevated right
-    /// (`git.ns.admin`, `git.repo.create`, `git.repo.own`) is refused
-    /// `git-ns:selfGrantNotAllowed` when the subject is the signer.
-    pub async fn git_ns_grant_v3(
-        &self,
-        payload: &grant3::Payload,
-        key: &HolderKey,
-    ) -> Result<grant3::Response, VtcError> {
-        self.git_ns_task(
-            <grant3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            payload,
-            key,
-        )
-        .await
-    }
-
-    /// `git-ns/right/revoke/0.3`.
-    pub async fn git_ns_revoke_v3(
-        &self,
-        payload: &revoke3::Payload,
-        key: &HolderKey,
-    ) -> Result<revoke3::Response, VtcError> {
-        self.git_ns_task(
-            <revoke3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             payload,
             key,
         )

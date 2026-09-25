@@ -764,9 +764,12 @@ export type AdoptStanding =
  *   through the namespace's own adapter (`projectedRight`);
  * - step 4: a `roleChanged` adopts only a raise — a lowering is accepted by
  *   revoking, not adopting (`notAdoptable`);
- * - step 5: the grant's consent class — `own` is elevated, which this VTC
- *   accepts only from a community administrator (`elevated_requires_admin`,
- *   assumed on, as for every elevated task).
+ * - step 5: the grant it makes is held to fixed rule 7 of
+ *   `git-ns/right/grant` 0.3 — nobody adopts their own account into an
+ *   elevated right (`git-ns:selfGrantNotAllowed`) — and to its consent class:
+ *   `own` is elevated, which this VTC accepts only from a community
+ *   administrator (`elevated_requires_admin`, assumed on, as for every
+ *   elevated task).
  *
  * The VTC decides either way; this only keeps the console from offering what
  * it would refuse.
@@ -809,6 +812,15 @@ export function adoptStanding(
       member,
       right,
       why: "Adopting is an owner's decision too: hand the command below to an owner or namespace admin.",
+    };
+  }
+  if (isSelfGrant(viewer, member, right)) {
+    return {
+      may: false,
+      handOver: true,
+      member,
+      right,
+      why: `This is your own forge account: adopting it as ${rightLabel(right).toLowerCase()} would grant you an elevated right yourself, which separation of duties refuses. Hand the command below to another owner or administrator — or, if nobody else can, break the glass, which is announced to every administrator.`,
     };
   }
   if (consentClass("drift.resolve", right) !== "normal" && !superAdmin) {

@@ -27,8 +27,8 @@ use trust_tasks_rs::specs::git_ns::repo::{
     transfer::v0_1 as transfer,
 };
 use trust_tasks_rs::specs::git_ns::right::{
-    break_glass::v0_1 as break_glass, grant::v0_1 as grant, grant::v0_3 as grant3,
-    ratify::v0_1 as ratify, revoke::v0_1 as revoke, revoke::v0_3 as revoke3,
+    break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
+    revoke::v0_3 as revoke,
 };
 use vti_common::audit::{AuditEvent, GitNsOperationData};
 use vti_common::error::AppError;
@@ -69,7 +69,7 @@ pub const SELF_TRANSFER: &str = transfer::error_codes::SELF_TRANSFER.code;
 pub const UNSUPPORTED_FORGE: &str = link::error_codes::UNSUPPORTED_FORGE.code;
 pub const UNKNOWN_LINK: &str = link_status::error_codes::UNKNOWN_LINK.code;
 pub const NOT_HEADLESS: &str = reseat::error_codes::NOT_HEADLESS.code;
-pub const SELF_GRANT_NOT_ALLOWED: &str = grant3::error_codes::SELF_GRANT_NOT_ALLOWED.code;
+pub const SELF_GRANT_NOT_ALLOWED: &str = grant::error_codes::SELF_GRANT_NOT_ALLOWED.code;
 pub const BREAK_GLASS_DISABLED: &str = break_glass::error_codes::DISABLED.code;
 pub const BREAK_GLASS_NOT_HEADLESS: &str = break_glass::error_codes::NOT_HEADLESS.code;
 pub const NOT_BREAK_GLASS: &str = ratify::error_codes::NOT_BREAK_GLASS.code;
@@ -1735,7 +1735,10 @@ pub async fn repo_archive(
     }))?)
 }
 
-// ── git-ns/right/grant/0.1 ──────────────────────────────────────────────────
+// ── git-ns/right/grant/0.3 ──────────────────────────────────────────────────
+//
+// 0.1 and 0.2 are not served: every grant is held to fixed rule 7, and every
+// record answered carries its `breakGlass`.
 
 pub async fn right_grant(
     state: &AppState,
@@ -1763,39 +1766,7 @@ pub(crate) async fn right_grant_via(
 ) -> OpResult<grant::Response> {
     let (row, resource) = right_grant_record(state, actor_did, p, via).await?;
     Ok(wire::into(
-        json!({ "right": wire::right_record(&row, &resource, true) }),
-    )?)
-}
-
-/// `git-ns/right/grant/0.3`. The request is wire-identical to 0.1's, and 0.1
-/// is served under the same rules — fixed rule 7 included (0.3, *Changes*:
-/// "where it does, it MUST apply fixed rule 7 to them as well"); only the
-/// response's record differs, carrying `breakGlass` where there is one.
-pub async fn right_grant_v3(
-    state: &AppState,
-    actor_did: &str,
-    p: grant3::Payload,
-) -> OpResult<grant3::Response> {
-    let v1: grant::Payload = wire::into(serde_json::to_value(&p).map_err(AppError::from)?)
-        .map_err(|e| OpError::Malformed(format!("grant 0.3 payload: {e}")))?;
-    let (row, resource) = right_grant_record(state, actor_did, v1, None).await?;
-    Ok(wire::into(
         json!({ "right": wire::right_record_full(&row, &resource, true) }),
-    )?)
-}
-
-/// `git-ns/right/revoke/0.3` — 0.1's request; the revoked record carries its
-/// `breakGlass`.
-pub async fn right_revoke_v3(
-    state: &AppState,
-    actor_did: &str,
-    p: revoke3::Payload,
-) -> OpResult<revoke3::Response> {
-    let v1: revoke::Payload = wire::into(serde_json::to_value(&p).map_err(AppError::from)?)
-        .map_err(|e| OpError::Malformed(format!("revoke 0.3 payload: {e}")))?;
-    let (row, resource) = right_revoke_record(state, actor_did, v1).await?;
-    Ok(wire::into(
-        json!({ "revoked": wire::right_record_full(&row, &resource, true) }),
     )?)
 }
 
@@ -1935,7 +1906,7 @@ async fn right_grant_record(
     Ok((row, resource))
 }
 
-// ── git-ns/right/revoke/0.1 ─────────────────────────────────────────────────
+// ── git-ns/right/revoke/0.3 ─────────────────────────────────────────────────
 
 pub async fn right_revoke(
     state: &AppState,
@@ -1944,7 +1915,7 @@ pub async fn right_revoke(
 ) -> OpResult<revoke::Response> {
     let (row, resource) = right_revoke_record(state, actor_did, p).await?;
     Ok(wire::into(
-        json!({ "revoked": wire::right_record(&row, &resource, true) }),
+        json!({ "revoked": wire::right_record_full(&row, &resource, true) }),
     )?)
 }
 
@@ -1960,19 +1931,9 @@ async fn right_revoke_record(
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
     let subject = p.subject.to_string();
-    // A subject recorded before DID-core was enforced can still be revoked:
-    // refusing it would leave a right nobody can take away. Anything else
-    // must be a DID-core DID, as for a grant.
-    if did_core("subject", &subject).is_err() {
-        let recorded = Snapshot::load(&state.git_ns.ks)
-            .await?
-            .rights
-            .values()
-            .any(|set| set.rows.iter().any(|r| r.subject == subject));
-        if !recorded {
-            did_core("subject", &subject)?;
-        }
-    }
+    // `revoke/0.3` pins `_shared/0.4`, whose `Did` is DID-core, so the payload
+    // cannot carry anything else; checked again here as for a grant.
+    did_core("subject", &subject)?;
     let not_granted = || {
         declared(
             NOT_GRANTED,

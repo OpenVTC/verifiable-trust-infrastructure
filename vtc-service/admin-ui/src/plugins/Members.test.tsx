@@ -17,7 +17,9 @@ import { mockFetch, renderWithProviders, type MockRoute } from "@/test/render";
 
 const NOBODY = "did:webvh:QmNobody:nobody.dev";
 
-const routes = (over: { rightsStatus?: number } = {}): MockRoute[] => [
+const routes = (
+  over: { rightsStatus?: number; rights?: typeof RIGHTS } = {},
+): MockRoute[] => [
   {
     path: "/v1/members",
     body: { items: [...MEMBERS, member(NOBODY, "No Rights")], nextCursor: null },
@@ -28,7 +30,7 @@ const routes = (over: { rightsStatus?: number } = {}): MockRoute[] => [
   {
     path: "/v1/git-ns/rights",
     status: over.rightsStatus,
-    body: over.rightsStatus ? { error: "forbidden" } : { rights: RIGHTS },
+    body: over.rightsStatus ? { error: "forbidden" } : { rights: over.rights ?? RIGHTS },
   },
   { path: "/v1/git-ns/accounts", body: { accounts: ACCOUNTS } },
 ];
@@ -95,5 +97,26 @@ describe("Members — git rights (UI-13)", () => {
     expect(card.textContent).toContain("1002");
     // Unlinking is the member's own act: the console names the command.
     expect(card.textContent).toContain("cnm git unlink --forge <host>");
+  });
+
+  it("flags a right Bob granted himself by break-glass until it is ratified", async () => {
+    const mark = {
+      by: BOB,
+      at: "2026-09-25T02:10:31Z",
+      justification: "Both owners unreachable; CVE fix must ship tonight.",
+    };
+    const rights = RIGHTS.map((r) =>
+      r.subject === BOB && r.right === "git.repo.own" ? { ...r, breakGlass: mark } : r,
+    );
+    mockFetch(routes({ rights }));
+    mount(`/members/${encodeURIComponent(BOB)}`);
+
+    const card = (await screen.findByRole("heading", { name: "Git rights" })).closest("section");
+    if (!card) throw new Error("no Git rights card");
+    const rows = await within(card).findAllByRole("row");
+    const owner = rows.find((r) => r.textContent?.includes("Owner"));
+    expect(owner?.textContent).toContain("Break-glass · unratified");
+    // The other right carries no flag.
+    expect(rows[1]?.textContent).not.toContain("Break-glass");
   });
 });

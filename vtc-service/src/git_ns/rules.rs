@@ -1,4 +1,4 @@
-//! The fixed rules of the rights model (`git-ns/right/grant/0.1`,
+//! The fixed rules of the rights model (`git-ns/right/grant/0.3`,
 //! *The fixed rules*), as pure functions over a [`Snapshot`].
 //!
 //! "A VTC **MUST** enforce these in its own code, before and independently of
@@ -244,7 +244,7 @@ pub fn authority_to_grant(
     )))
 }
 
-/// `git-ns/right/revoke/0.1`, *Authorization*: the granter while still a
+/// `git-ns/right/revoke/0.3`, *Authorization*: the granter while still a
 /// member and still holding authority over the right, an authority over the
 /// resource, or the subject resigning.
 ///

@@ -16,7 +16,7 @@
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::git_ns::drift::resolve::v0_1 as resolve;
-use trust_tasks_rs::specs::git_ns::right::grant::v0_1 as grant;
+use trust_tasks_rs::specs::git_ns::right::grant::v0_3 as grant;
 
 use crate::server::AppState;
 

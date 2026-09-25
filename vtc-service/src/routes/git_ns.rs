@@ -3,7 +3,7 @@
 //!
 //! Read-only, and deliberately so. Every change to a git right is a signed
 //! `git-ns/*` Trust Task, authorized by the signer's own git rights
-//! (`git-ns/right/grant/0.1`, *Authorization*: "a VTC administrator who holds
+//! (`git-ns/right/grant/0.3`, *Authorization*: "a VTC administrator who holds
 //! no git right grants nothing through this task"). A bearer session carries
 //! no proof, and these tasks declare one REQUIRED, so there is no bearer door
 //! to them here; the console acts by having the administrator sign.

@@ -2,7 +2,7 @@
 //! it has bound, and publishes who may do what there.
 //!
 //! Normative: the `git-ns/*` Trust Task family in dtgwg-trust-tasks-tf
-//! (`specs/git-ns/**`), whose rights model lives in `git-ns/right/grant/0.1`.
+//! (`specs/git-ns/**`), whose rights model lives in `git-ns/right/grant/0.3`.
 //! Design: `design-docs/vtc-git-namespaces-design.md`. Where the two differ,
 //! the specification is followed and the design is not.
 //!

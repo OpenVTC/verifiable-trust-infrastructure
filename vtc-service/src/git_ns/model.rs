@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One of the five git rights (`git-ns/right/grant/0.1`, *The rights model*).
+/// One of the five git rights (`git-ns/right/grant/0.3`, *The rights model*).
 ///
 /// Each string is also the TRQP `action` the right is published under, so the
 /// spelling is the specification's, carried verbatim.
@@ -106,7 +106,7 @@ impl std::fmt::Display for Right {
 }
 
 /// A forge-qualified resource: `<forge-host>/<owner>` or
-/// `<forge-host>/<owner>/<repo>`, lowercase (`git-ns/right/grant/0.1`,
+/// `<forge-host>/<owner>/<repo>`, lowercase (`git-ns/right/grant/0.3`,
 /// *Resources*).
 ///
 /// Parsed, never assumed: an unqualified `owner/repo` is refused, because the

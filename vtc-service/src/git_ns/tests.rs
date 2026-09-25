@@ -29,8 +29,14 @@ use super::store::{self, Snapshot};
 
 const URI: &str = "https://trusttasks.org/spec/git-ns";
 
+/// The version of each task this VTC serves: grant and revoke only at 0.3
+/// (0.1 is not served), everything else at 0.1.
 fn uri(task: &str) -> String {
-    format!("{URI}/{task}/0.1")
+    let version = match task {
+        "right/grant" | "right/revoke" => "0.3",
+        _ => "0.1",
+    };
+    format!("{URI}/{task}/{version}")
 }
 
 /// A bridge that accepts every job and remembers them.
@@ -1265,6 +1271,16 @@ fn every_git_ns_task_is_served() {
     }
     // `bridge/job` is the VTC's to send, never to serve.
     assert!(!served.contains(&uri("bridge/job").as_str()));
+    // Grant and revoke are served at 0.3 only: an older version would skip
+    // fixed rule 7 and the `breakGlass` flag on the records it answers.
+    for task in ["right/grant", "right/revoke"] {
+        for old in ["0.1", "0.2"] {
+            assert!(
+                !served.contains(&format!("{URI}/{task}/{old}").as_str()),
+                "{task} {old} is still served"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -3768,6 +3784,56 @@ async fn drift_resolve_adopts_a_members_forge_role_as_the_grant_it_is() {
     assert_eq!(code(&out), "git-ns/drift/resolve:driftNotFound");
 }
 
+/// Fixed rule 7 of `git-ns/right/grant/0.3` binds an adoption too: the
+/// namespace admin (who owns every repository in it, so may resolve drift)
+/// adopting the forge `admin` role on their *own* linked account would grant
+/// themselves `git.repo.own`. Refused, nothing written, the item still
+/// outstanding for another community administrator — or a break-glass.
+#[tokio::test]
+async fn drift_adopt_of_ones_own_account_into_an_elevated_right_is_a_self_grant() {
+    let f = fixture().await;
+    let ns = bind_bridge(&f).await;
+    adopt_with_forge_id(&f, RES, "100").await;
+    let admin_acct = json!({ "forge": "github.com", "id": "5550077", "login": "admin-a" });
+    link_account(&f, &ns, &f.admin, "5550077", "admin-a").await;
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": admin_acct, "observed": "admin" }]),
+    )
+    .await;
+
+    let out = resolve(
+        &f,
+        &f.admin,
+        json!({ "type": "roleAdded", "account": admin_acct, "observed": "admin" }),
+        "adopt",
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(
+        payload(&out)["message"]
+            .as_str()
+            .unwrap()
+            .contains("break-glass")
+    );
+
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap();
+    assert!(
+        !snap
+            .rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .any(|r| r.subject == f.admin.did && r.right == super::model::Right::RepoOwn),
+        "a refused self-adoption wrote a right"
+    );
+    assert_eq!(
+        repo.sync.drift.len(),
+        1,
+        "the drift item stays outstanding for someone who may adopt it"
+    );
+}
+
 #[tokio::test]
 async fn drift_resolve_refuses_what_cannot_be_adopted_with_the_declared_codes() {
     let (f, _ns) = drift_fixture(json!([
@@ -4294,7 +4360,7 @@ async fn an_adoption_whose_item_changed_grants_nothing() {
             message: "changed".into(),
         })
     };
-    let payload: trust_tasks_rs::specs::git_ns::right::grant::v0_1::Payload =
+    let payload: trust_tasks_rs::specs::git_ns::right::grant::v0_3::Payload =
         serde_json::from_value(
             json!({ "subject": f.carol.did, "right": "git.repo.maintain", "resource": RES }),
         )
@@ -4322,38 +4388,17 @@ async fn an_adoption_whose_item_changed_grants_nothing() {
     );
 }
 
-/// A subject recorded before DID-core was enforced can still be revoked; a
-/// non-DID-core subject nobody holds is still refused.
+/// Grant and revoke 0.3 both hold the subject to DID-core: a DID URL (here
+/// with a fragment) is refused as malformed by either.
 #[tokio::test]
-async fn a_legacy_subject_can_still_be_revoked() {
+async fn a_non_did_core_subject_is_refused_by_grant_and_revoke() {
     let f = fixture().await;
     let res = active_repo(&f).await;
-    let legacy = "did:web:legacy.example#k";
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
-    let scope = Scope::Repo(snap.repo_at(&res).unwrap().id.clone());
-    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
-        .await
-        .unwrap();
-    let mut row = set.rows[0].clone();
-    row.subject = legacy.into();
-    row.right = super::model::Right::CommitSign;
-    set.rows.push(row);
-    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
-        .await
-        .unwrap();
-    let revoke =
-        |subject: &str| json!({ "subject": subject, "right": "git.commit.sign", "resource": res });
-    let out = send(
-        &f.vtc.state,
-        &f.bob,
-        "right/revoke",
-        revoke("did:web:other.example#k"),
-    )
-    .await;
+    let not_core = "did:web:legacy.example#k";
+    let body = json!({ "subject": not_core, "right": "git.commit.sign", "resource": res });
+    let out = send(&f.vtc.state, &f.bob, "right/revoke", body).await;
     assert_eq!(code(&out), "malformedRequest");
-    ok(&send(&f.vtc.state, &f.bob, "right/revoke", revoke(legacy)).await);
-    // Still refused for a grant.
-    let out = grant(&f, &f.bob, legacy, "git.commit.sign", &res).await;
+    let out = grant(&f, &f.bob, not_core, "git.commit.sign", &res).await;
     assert_eq!(code(&out), "malformedRequest");
 }
 
@@ -4560,9 +4605,6 @@ async fn grant_rule_7_refuses_an_elevated_self_grant_and_names_break_glass() {
                 .unwrap()
                 .contains("break-glass")
         );
-        // 0.1 is still served, under the same rule (grant 0.3, *Changes*).
-        let out = grant(&f, &f.carol, &f.carol.did, right, res).await;
-        assert_eq!(code(&out), "git-ns:selfGrantNotAllowed", "0.1 {right}");
     }
 }
 
