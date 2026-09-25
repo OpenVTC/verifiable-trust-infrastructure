@@ -476,6 +476,12 @@ impl AclEntryResponse {
             .flatten()
             .unwrap_or_default()
     }
+    /// Whether the entry carries an unexercised one-time hand-off marker
+    /// (VTI-ACL-054).
+    pub fn handoff(&self) -> bool {
+        crate::protocols::acl_management::entry::handoff_from_ext(self.ext.as_ref())
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -608,6 +614,11 @@ pub struct CreateAclRequest {
     /// wider than intended — a window during which the subject may already be
     /// authenticating.
     pub capabilities: Vec<String>,
+    /// Mark the entry as a one-time hand-off (VTI-ACL-054): its subject may
+    /// roll over once, while the entry is live, to a successor bounded by the
+    /// granter's own authority rather than by this entry's expiry. Requires an
+    /// expiry. The provision-integration admin rollover needs it.
+    pub handoff: bool,
 }
 
 impl serde::Serialize for CreateAclRequest {
@@ -647,9 +658,12 @@ impl serde::Serialize for CreateAclRequest {
                 // The narrowing is ecosystem-local, so it rides the entry's
                 // `ext` slot — the same member the update path and the
                 // response use, so one spelling serves all three.
-                ext: crate::protocols::acl_management::entry::capabilities_into_ext(
-                    None,
-                    &self.capabilities,
+                ext: crate::protocols::acl_management::entry::handoff_into_ext(
+                    crate::protocols::acl_management::entry::capabilities_into_ext(
+                        None,
+                        &self.capabilities,
+                    ),
+                    self.handoff,
                 ),
             },
             reason: None,
@@ -673,7 +687,13 @@ impl CreateAclRequest {
             approve_contexts: Vec::new(),
             allowed_keys: None,
             capabilities: Vec::new(),
+            handoff: false,
         }
+    }
+    /// Mark the entry as a one-time hand-off. See [`CreateAclRequest::handoff`].
+    pub fn handoff(mut self) -> Self {
+        self.handoff = true;
+        self
     }
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());

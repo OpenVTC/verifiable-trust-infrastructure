@@ -17,7 +17,7 @@
 #   2. Grant that did:key an admin ACL at the VTA (run the printed command
 #      on a host with PNM authenticated to the VTA):
 #        pnm contexts create --id <context> --name "VTC" \
-#          --admin-did <setup-did> --admin-expires 1h
+#          --admin-did <setup-did> --admin-expires 1h --admin-handoff
 #      (or `pnm acl create ...` if the context already exists).
 #   3. Provision (phase 2):
 #        vtc setup --from vtc-setup.toml

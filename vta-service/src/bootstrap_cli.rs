@@ -830,6 +830,7 @@ pub async fn run_context_create(
     admin_did: Option<String>,
     admin_label: Option<String>,
     admin_expires: Option<String>,
+    admin_handoff: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::auth::AuthClaims;
     use vta_cli_common::commands::contexts::render_context_record;
@@ -878,6 +879,27 @@ pub async fn run_context_create(
         // Scope to the full path the operation assigned (`<parent>/<id>` nested).
         .with_contexts(vec![record.id.clone()])
         .with_expires_at(expires_at);
+        // The granter here is the local operator acting as super-admin, so
+        // the bound is unrestricted and permanent (VTI-ACL-054).
+        let entry = if admin_handoff {
+            if expires_at.is_none() {
+                return Err("--admin-handoff requires --admin-expires (VTI-ACL-054)".into());
+            }
+            entry.with_handoff(Some(crate::acl::HandOff {
+                granted_by: auth.did.clone(),
+                granted_at: crate::auth::session::now_epoch(),
+                bound: crate::acl::HandOffBound {
+                    role: crate::acl::Role::Admin,
+                    allowed_contexts: Vec::new(),
+                    capabilities: Vec::new(),
+                    approve_scope: crate::acl::ApproveScope::None,
+                    allowed_keys: None,
+                    expires_at: None,
+                },
+            }))
+        } else {
+            entry
+        };
         crate::acl::store_acl_entry(&acl_ks, &entry).await?;
         eprintln!(
             "Admin ACL entry created for {did} (context: {}).",

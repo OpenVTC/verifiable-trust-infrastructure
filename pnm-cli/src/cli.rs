@@ -2115,6 +2115,15 @@ pub(crate) enum ContextCommands {
         /// Super-admin only, like every grant of holder authority.
         #[arg(long, requires = "admin_did")]
         admin_holder: bool,
+        /// Mark the admin entry as a **one-time hand-off** (VTI-ACL-054): the
+        /// admin DID may roll over once, while the entry is live, to a long-term
+        /// admin DID the VTA mints for it (provision-integration with an admin
+        /// template). The long-term admin is bounded by your own authority, and
+        /// takes your expiry rather than this entry's. Without it, the rollover
+        /// is refused because the long-term admin would outlive this entry.
+        /// Requires `--admin-expires`.
+        #[arg(long, requires = "admin_expires")]
+        admin_handoff: bool,
     },
     /// Update an existing context
     Update {
@@ -2314,6 +2323,12 @@ pub(crate) enum AclCommands {
         /// Without this flag the entry is permanent.
         #[arg(long)]
         expires: Option<String>,
+        /// Mark the entry as a **one-time hand-off** (VTI-ACL-054): its subject
+        /// may roll over once, while the entry is live, to a successor bounded
+        /// by your own authority and expiry instead of this entry's. Requires
+        /// `--expires`.
+        #[arg(long, requires = "expires")]
+        handoff: bool,
         /// DID of the delegated AAL2 step-up approver for this subject
         /// (`stepUp.approver`) — the VID that ratifies the subject's step-ups
         /// when policy `mode: delegated` applies (e.g. the holder's phone).

@@ -811,9 +811,52 @@ How it works:
    themselves.
 4. The authorization VC's `credentialSubject.id` is set to the
    VTA-minted admin DID, not `client_did`.
-5. The ACL row is written for the VTA-minted admin DID. No transient
-   ACL row is created for `client_did` — if bundle open fails,
-   there's nothing to clean up.
+5. The ACL row is written for the VTA-minted admin DID, and the
+   ephemeral `client_did`'s own row (if the operator granted one) is
+   retired. No transient ACL row is created for `client_did` by the
+   VTA — if bundle open fails, there's nothing to clean up.
+
+### Who writes the long-term row: the one-time hand-off
+
+The long-term admin row has no expiry. When an **operator** (or a
+relayer) runs provision-integration, that row is an ordinary grant,
+bounded by the operator's own entry (VTI-ACL-053).
+
+When the **ephemeral itself** is the authenticated caller — the usual
+online flow, where the operator granted it a time-boxed row with
+`--admin-expires 1h` — the long-term row would outlive the entry that
+writes it, and VTI-ACL-053 refuses it. The operator therefore grants the
+ephemeral a **one-time hand-off** at creation:
+
+```sh
+pnm contexts create --id <ctx> --name "…" \
+    --admin-did <ephemeral> --admin-expires 1h --admin-handoff
+# or, for an existing context:
+pnm acl create --did <ephemeral> --role admin --contexts <ctx> \
+    --expires 1h --handoff
+```
+
+(`cnm contexts create --admin-handoff` and the offline
+`vta contexts create --admin-handoff` do the same.) The marker
+(`org.openvtc.handoff` on the wire, VTI-ACL-054 – 058):
+
+- is set **only by the granter, only at creation**, only on an entry with
+  an expiry, and only by a granter whose own entry carries no marker. An
+  update naming it is refused, and `acl/swap-key` drops it;
+- records the granter's authority at that moment. The successor may not
+  exceed it, nor the ephemeral's own entry, on role, contexts,
+  capabilities, key filter or approve scope, and it takes the
+  **granter's** expiry (permanent only if the granter's entry is);
+- is exercised **once**, while the ephemeral's entry is live: the
+  successor is written and the ephemeral's row removed in one atomic
+  step, and of two concurrent rollovers exactly one succeeds;
+- is audited (`acl.handoff`, naming the granter) **before** the commit,
+  and the rollover is abandoned if that record cannot be written.
+
+Without the marker, an ephemeral with an expiring entry cannot roll
+over: the refusal names VTI-ACL-058, the ephemeral keeps its row, and
+the operator re-grants it with `--admin-handoff` (or runs the
+provisioning itself).
 
 Absent `adminTemplate`, behaviour is unchanged: VC subject =
 `client_did`, ACL row for `client_did`.
@@ -928,7 +971,7 @@ impl OperatorMessages for MyAppMessages {
     fn pnm_admin_command_hint(&self, ctx: &str, did: &str) -> String {
         format!(
             "pnm contexts create --id {ctx} --name \"MyApp\" \\\n  \
-             --admin-did {did} --admin-expires 1h"
+             --admin-did {did} --admin-expires 1h --admin-handoff"
         )
     }
 }

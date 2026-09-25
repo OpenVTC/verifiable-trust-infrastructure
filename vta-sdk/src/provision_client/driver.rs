@@ -151,7 +151,11 @@ pub async fn run_phase1_init(
     )?;
     writeln!(
         writer,
-        "  roll-outs; the entry is promoted to permanent on first auth."
+        "  roll-outs. --admin-handoff lets the setup DID hand off once to a"
+    )?;
+    writeln!(
+        writer,
+        "  long-term admin the VTA mints, bounded by your own authority."
     )?;
     writeln!(writer)?;
     if let Some(cmd) = finalise_command {

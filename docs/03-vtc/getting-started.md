@@ -64,7 +64,7 @@ sequenceDiagram
     CLI->>Op: DIDComm messaging choice
     CLI->>CLI: Mint ephemeral did:key<br/>(round-trip identity)
     CLI->>Op: Print ephemeral DID
-    Op->>VTA: pnm contexts create / acl create<br/>--admin-did <eph> --admin-expires 1h
+    Op->>VTA: pnm contexts create / acl create<br/>--admin-did <eph> --admin-expires 1h --admin-handoff
     Op->>CLI: Confirm ACL grant
     CLI->>VTA: Authenticate ephemeral key<br/>List did-hosting servers + domains
     CLI->>Op: Pick did-hosting server / domain / path<br/>then secrets backend
@@ -168,8 +168,8 @@ same shape the mediator and did-hosting services use:
    vtc setup --setup-key-out /srv/vtc/setup-key.json --context mycommunity
    # prints the exact command to run next:
    pnm contexts create --id mycommunity --name "VTC" \
-       --admin-did "did:key:z6Mk..." --admin-expires 1h
-   # (or `pnm acl create ...` if the context already exists)
+       --admin-did "did:key:z6Mk..." --admin-expires 1h --admin-handoff
+   # (or `pnm acl create ... --expires 1h --handoff` if the context already exists)
    ```
 
 2. Point `setup_key_file` in the TOML at that persisted key and run

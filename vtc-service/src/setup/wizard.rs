@@ -9,7 +9,7 @@
 //! 3. Pause for the operator to create the target context at the VTA
 //!    and grant the ephemeral DID admin access in one step
 //!    (`pnm contexts create --id <ctx> --name "VTC" --admin-did <…>
-//!    --admin-expires 1h`). Matches the canonical
+//!    --admin-expires 1h --admin-handoff`). Matches the canonical
 //!    `MediatorMessages` / `WebvhServerMessages` shape so all
 //!    template-driven integration setups read the same.
 //! 4. Drive `vta_sdk::provision_client::run_provision` with
@@ -1607,7 +1607,7 @@ impl OperatorMessages for VtcHostMessages {
         // found" and the wizard hung.
         format!(
             "pnm contexts create --id {context_id} --name \"VTC\" \\\n  \
-             --admin-did {setup_did} --admin-expires 1h"
+             --admin-did {setup_did} --admin-expires 1h --admin-handoff"
         )
     }
 }
@@ -1929,7 +1929,7 @@ mod tests {
         assert!(msg.contains("--id ctx-x"));
         assert!(msg.contains("--name \"VTC\""));
         assert!(msg.contains("--admin-did did:key:zAbc"));
-        assert!(msg.contains("--admin-expires 1h"));
+        assert!(msg.contains("--admin-expires 1h --admin-handoff"));
     }
 
     #[cfg(unix)]
