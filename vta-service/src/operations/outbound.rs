@@ -842,12 +842,17 @@ async fn verify_reply(
     let vm_resolver = vti_common::auth::TrustTaskVmResolver::from_optional(Some(resolver.clone()));
     let signer = vti_common::auth::verify_trust_task_proof_with(&doc, &vm_resolver)
         .await
-        .map_err(|e| {
-            AppError::Forbidden(format!(
+        .map_err(|e| match e {
+            vti_common::auth::DiProofError::ResolverFailed(_) => bad_gateway_error(format!(
+                "could not retrieve `{recipient}`'s verification key to check the reply ({e}). \
+                 This is a retrieval failure, not a bad proof — the reply may be genuine; retry \
+                 once the resolver is reachable"
+            )),
+            other => AppError::Forbidden(format!(
                 "the reply from `{recipient}` is unsigned or its proof does not verify \
-                 ({e}), so nothing in it can be believed — an unsigned answer is bytes, not \
+                 ({other}), so nothing in it can be believed — an unsigned answer is bytes, not \
                  evidence"
-            ))
+            )),
         })?;
 
     if signer != recipient {
@@ -894,6 +899,91 @@ mod tests {
         )
         .await
         .expect("a refusal needs no proof");
+    }
+
+    /// A reply signed by a DID method this resolver cannot resolve fails at
+    /// resolution — before any signature is even inspected — and must be
+    /// reported as a retrieval failure, not folded into "does not verify".
+    /// The mutation may already have committed on the peer's side; only the
+    /// verification *fetch* failed (FTL-29595, fix direction 3, server-side
+    /// half: this is the VTA acting as an outbound caller to a peer/room-host).
+    #[tokio::test]
+    async fn a_resolver_failure_reports_retrieval_not_invalid_proof() {
+        let reply = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000002",
+            "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
+            "issuer": "did:example:host",
+            "recipient": "did:example:agent",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": { "links": [] },
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:example:host#key-0",
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        });
+        let err = verify_reply(
+            &test_resolver().await,
+            &reply,
+            "did:example:host",
+            ReplyTrust::SignedByRecipient,
+        )
+        .await
+        .expect_err("did:example is not a method this resolver can resolve");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not retrieve"),
+            "expected a retrieval-failure message, got: {msg}"
+        );
+        assert!(msg.contains("retry"), "got: {msg}");
+        assert!(
+            !msg.contains("does not verify"),
+            "a retrieval failure must not read as an invalid proof: {msg}"
+        );
+    }
+
+    /// The control: an actual bad signature, reached through a `did:key`
+    /// verification method the resolver handles locally (so resolution
+    /// itself succeeds), must still say "does not verify".
+    #[tokio::test]
+    async fn an_actual_bad_signature_still_says_does_not_verify() {
+        let (recipient, _vm) = crate::test_support::did_for_seed(13);
+        let mut doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000003",
+            "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
+            "issuer": recipient,
+            "recipient": "did:key:zAgent",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": { "links": [] }
+        }))
+        .expect("well-formed reply");
+        crate::test_support::sign_as(13, &mut doc);
+
+        // Corrupt the signature — a one-character flip keeps the multibase
+        // string decodable, so this exercises "does not verify" rather than
+        // "malformed proof".
+        let proof = doc.proof.as_mut().expect("document is signed");
+        let last = proof.proof_value.pop().expect("non-empty proofValue");
+        proof.proof_value.push(if last == '1' { '2' } else { '1' });
+
+        let reply = serde_json::to_value(&doc).expect("doc serialises");
+        let err = verify_reply(
+            &test_resolver().await,
+            &reply,
+            &recipient,
+            ReplyTrust::SignedByRecipient,
+        )
+        .await
+        .expect_err("a corrupted signature must not verify");
+        let msg = err.to_string();
+        assert!(msg.contains("does not verify"), "got: {msg}");
+        assert!(
+            !msg.contains("could not retrieve"),
+            "a bad signature must not read as a retrieval failure: {msg}"
+        );
     }
 
     /// An unsigned success reply is refused. Bytes off a socket attest to

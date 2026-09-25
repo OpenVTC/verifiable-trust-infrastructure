@@ -1436,6 +1436,80 @@ mod tests {
         (dir, state)
     }
 
+    /// The `did:key` for a one-byte test seed, plus the private-key
+    /// multibase `vta_sdk::trust_task_sign::build_signed` accepts.
+    fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+        use ed25519_dalek::SigningKey;
+        let seed = [seed_byte; 32];
+        let sk = SigningKey::from_bytes(&seed);
+        let did = format!(
+            "did:key:{}",
+            vta_sdk::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut buf = vec![0x80, 0x26];
+        buf.extend_from_slice(&seed);
+        (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+    }
+
+    /// `presenter` runs on every request reaching this host, including from a
+    /// party this host has no relationship with — so it is one of the ~12
+    /// inbound routes FTL-29595 fix direction 3 must leave byte-identical: a
+    /// resolver failure and an actual bad signature must render the same
+    /// `AppError::Forbidden`, never letting a caller learn which occurred.
+    #[tokio::test]
+    async fn a_resolver_failure_and_a_bad_signature_render_identically() {
+        let (_dir, state) = state();
+
+        // Resolver failure: a `did:webvh` verification method against this
+        // did:key-only host — refused before any signature check runs.
+        let resolver_fail_doc: TrustTask<Value> = serde_json::from_value(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000030",
+            "type": ROOMS_RECORDS_PUT_TYPE,
+            "issuer": "did:webvh:QmScid:example.com:glenn",
+            "recipient": "did:key:zHost",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:webvh:QmScid:example.com:glenn#key-0",
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        }))
+        .expect("well-formed document");
+
+        // Bad signature: a real did:key, signed, then corrupted.
+        let (signer_did, secret_mb) = did_key_from_seed(41);
+        let signed = vta_sdk::trust_task_sign::build_signed(
+            ROOMS_RECORDS_PUT_TYPE,
+            json!({}),
+            &signer_did,
+            &secret_mb,
+            "did:key:zHost",
+        )
+        .await
+        .expect("build a validly-signed document");
+        let mut bad_sig_doc: TrustTask<Value> =
+            serde_json::from_str(&signed).expect("signed doc parses");
+        let proof = bad_sig_doc.proof.as_mut().expect("document is signed");
+        let last = proof.proof_value.pop().expect("non-empty proofValue");
+        proof.proof_value.push(if last == '1' { '2' } else { '1' });
+
+        let resolver_failure = state.presenter(&resolver_fail_doc).await;
+        let bad_signature = state.presenter(&bad_sig_doc).await;
+
+        match (resolver_failure, bad_signature) {
+            (Err(AppError::Forbidden(a)), Err(AppError::Forbidden(b))) => {
+                assert_eq!(
+                    a, b,
+                    "a resolver failure must render exactly as a bad signature does"
+                );
+            }
+            other => panic!("expected both to be Forbidden errors, got {other:?}"),
+        }
+    }
+
     /// Send a **signed** document and return the status plus the response payload.
     ///
     /// Signing is not ceremony: the host reads the presenter from this proof, and an

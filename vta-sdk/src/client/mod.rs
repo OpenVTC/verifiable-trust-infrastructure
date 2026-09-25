@@ -2254,13 +2254,21 @@ impl VtaClient {
             crate::trust_task_proof::TrustTaskVmResolver::from_optional(resolver.clone());
         let signer = crate::trust_task_proof::verify_trust_task_proof_with(&parsed, &vm_resolver)
             .await
-            .map_err(|e| {
-                VtaError::Protocol(format!(
-                    "the reply from `{}` is unsigned or its proof does not verify ({e}). An \
+            .map_err(|e| match e {
+                crate::trust_task_proof::DiProofError::ResolverFailed(_) => {
+                    VtaError::Protocol(format!(
+                        "could not retrieve `{}`'s verification key to check the reply ({e}). This \
+                     is a retrieval failure, not a bad proof — the reply may be genuine; retry \
+                     once the resolver is reachable",
+                        identity.vta_did
+                    ))
+                }
+                other => VtaError::Protocol(format!(
+                    "the reply from `{}` is unsigned or its proof does not verify ({other}). An \
                      unsigned answer is bytes, not evidence — every specification that requires \
                      a proof on its request requires one on its response too (SPEC §7.3 item 7)",
                     identity.vta_did
-                ))
+                )),
             })?;
 
         if signer != identity.vta_did {
@@ -3130,6 +3138,129 @@ mod tests {
             vta_did: "did:key:zAgent".into(),
             verification_method: None,
         })
+    }
+
+    /// As [`signed_reply_client`], but naming `vta_did` and with the reply
+    /// resolver forced to "no resolver configured" — deterministic and
+    /// offline, rather than depending on `PNM_RESOLVER_URL` or reaching the
+    /// network. This is exactly the state a `did:webvh`-only TEE VTA's peer
+    /// is in whenever no DID-cache is configured, which is the case FTL-29595
+    /// is about.
+    fn signed_reply_client_named(vta_did: &str) -> VtaClient {
+        let mut client = VtaClient::new("https://vta.example").with_identity(ClientIdentity {
+            client_did: "did:key:zClient".into(),
+            private_key_multibase: "z0".into(),
+            vta_did: vta_did.to_string(),
+            verification_method: None,
+        });
+        client.reply_resolver = std::sync::Arc::new(tokio::sync::OnceCell::new_with(Some(None)));
+        client
+    }
+
+    /// The `did:key` and private-key multibase for a one-byte test seed —
+    /// enough to sign a document `vta_sdk::trust_task_sign::build_signed`
+    /// accepts, with no network involved.
+    fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+        use ed25519_dalek::SigningKey;
+        let seed = [seed_byte; 32];
+        let sk = SigningKey::from_bytes(&seed);
+        let did = format!(
+            "did:key:{}",
+            crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut buf = vec![0x80, 0x26];
+        buf.extend_from_slice(&seed);
+        (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+    }
+
+    // ── reply verification: resolver failure vs. an actual bad proof ─
+
+    /// A reply signed by a `did:webvh` the client has no resolver for must be
+    /// reported as a retrieval failure, not folded into "does not verify" —
+    /// the mutation may well have succeeded server-side; only the client's
+    /// ability to *check* the proof failed. This is the fix-direction-3
+    /// behavior change: before it, this case and an actual bad signature were
+    /// indistinguishable to the caller.
+    #[tokio::test]
+    async fn a_resolver_failure_reports_retrieval_not_invalid_proof() {
+        let vta_did = "did:webvh:QmScid:example.com:glenn";
+        let client = signed_reply_client_named(vta_did);
+        let doc = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000002",
+            "type": "https://trusttasks.org/spec/vta/contexts/list/1.0#response",
+            "issuer": vta_did,
+            "recipient": "did:key:zClient",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": format!("{vta_did}#key-0"),
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        });
+
+        let err = client
+            .verify_reply(&doc)
+            .await
+            .expect_err("no resolver is configured for did:webvh");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not retrieve"),
+            "expected a retrieval-failure message, got: {msg}"
+        );
+        assert!(msg.contains("retry"), "got: {msg}");
+        assert!(
+            !msg.contains("does not verify"),
+            "a retrieval failure must not read as an invalid proof: {msg}"
+        );
+    }
+
+    /// The control: an actual bad signature — reached via the same
+    /// `did:key`-resolving path, so resolution itself succeeds — must still
+    /// say "does not verify". The fix must not blur that distinction the
+    /// other way.
+    #[tokio::test]
+    async fn an_actual_bad_signature_still_says_does_not_verify() {
+        let (vta_did, secret_mb) = did_key_from_seed(11);
+        let client = signed_reply_client_named(&vta_did);
+
+        let signed = crate::trust_task_sign::build_signed(
+            "https://trusttasks.org/spec/vta/contexts/list/1.0#response",
+            serde_json::json!({}),
+            &vta_did,
+            &secret_mb,
+            "did:key:zClient",
+        )
+        .await
+        .expect("build a validly-signed reply");
+        let mut doc: serde_json::Value = serde_json::from_str(&signed).expect("signed doc parses");
+
+        // Corrupt the signature — same technique as the DiProofError-level
+        // test in `trust_task_proof::verify`: flip the last character, which
+        // keeps the multibase string decodable so this exercises "does not
+        // verify" rather than "malformed proof".
+        let proof_value = doc["proof"]["proofValue"]
+            .as_str()
+            .expect("proofValue present")
+            .to_string();
+        let mut corrupted = proof_value.clone();
+        let last = corrupted.pop().expect("non-empty proofValue");
+        corrupted.push(if last == '1' { '2' } else { '1' });
+        doc["proof"]["proofValue"] = serde_json::Value::String(corrupted);
+
+        let err = client
+            .verify_reply(&doc)
+            .await
+            .expect_err("a corrupted signature must not verify");
+        let msg = err.to_string();
+        assert!(msg.contains("does not verify"), "got: {msg}");
+        assert!(
+            !msg.contains("could not retrieve"),
+            "a bad signature must not read as a retrieval failure: {msg}"
+        );
     }
 
     // ── extract_trust_task_payload ──────────────────────────────────

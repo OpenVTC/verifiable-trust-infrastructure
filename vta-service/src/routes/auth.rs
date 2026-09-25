@@ -872,3 +872,66 @@ pub async fn passkey_login_finish(
 
     Ok(Json(resp))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `POST /auth/` is unauthenticated — the caller has no session yet — so
+    /// this is one of the ~12 inbound routes a resolver failure must never
+    /// read differently from a bad signature (FTL-29595 fix direction 3):
+    /// distinguishing them here would let an anonymous caller learn whether a
+    /// DID resolves at all.
+    #[tokio::test]
+    async fn a_resolver_failure_and_a_bad_signature_render_identically() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        // Resolver failure: a `did:webvh` verification method, and this test
+        // state's resolver is unconfigured (did:key only) — refused before
+        // any signature check runs.
+        let resolver_fail_doc: TrustTask<Value> = serde_json::from_value(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000010",
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+            "issuer": "did:webvh:QmScid:example.com:glenn",
+            "recipient": "did:web:vta.example",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:webvh:QmScid:example.com:glenn#key-0",
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        }))
+        .expect("well-formed document");
+
+        // Bad signature: a real did:key, signed, then corrupted.
+        let (signer_did, _vm) = crate::test_support::did_for_seed(21);
+        let mut bad_sig_doc: TrustTask<Value> = serde_json::from_value(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000011",
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+            "issuer": signer_did,
+            "recipient": "did:web:vta.example",
+            "payload": {}
+        }))
+        .expect("well-formed document");
+        crate::test_support::sign_as(21, &mut bad_sig_doc);
+        let proof = bad_sig_doc.proof.as_mut().expect("document is signed");
+        let last = proof.proof_value.pop().expect("non-empty proofValue");
+        proof.proof_value.push(if last == '1' { '2' } else { '1' });
+
+        let resolver_failure = verify_authenticate_proof(&state, &resolver_fail_doc).await;
+        let bad_signature = verify_authenticate_proof(&state, &bad_sig_doc).await;
+
+        match (resolver_failure, bad_signature) {
+            (Err(AppError::Authentication(a)), Err(AppError::Authentication(b))) => {
+                assert_eq!(
+                    a, b,
+                    "a resolver failure must render exactly as a bad signature does"
+                );
+            }
+            other => panic!("expected both to be Authentication errors, got {other:?}"),
+        }
+    }
+}
