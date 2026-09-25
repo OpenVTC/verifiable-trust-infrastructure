@@ -360,7 +360,7 @@ fn conv<E: ::std::fmt::Display>(e: E) -> FfiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proof::test_support::{did_for, sign_as};
+    use crate::proof::test_support::{did_for, sign_as, sign_as_with_purpose};
 
     /// Seed of the enrolled executor the happy-path tests sign as.
     const EXECUTOR: u8 = 7;
@@ -625,5 +625,22 @@ mod tests {
         assert_eq!(v["payload"]["decision"], "deny");
         assert_eq!(v["payload"]["reason"], "codes did not match");
         assert!(v["proof"]["proofValue"].is_string());
+    }
+
+    /// The VTA signs a task-consent request with its operational key under
+    /// `authentication` (VTI-KEY-106); one signed under `assertionMethod` is
+    /// refused and never prompts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refuses_a_request_signed_under_assertion_method() {
+        let mut v: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        v["issuer"] = serde_json::Value::String(did_for(EXECUTOR));
+        sign_as_with_purpose(&mut v, EXECUTOR, "assertionMethod").await;
+        let err = parse_task_consent_request(v.to_string(), enrolled())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, FfiError::UntrustedIssuer { reason } if reason.contains("authentication")),
+            "{err:?}"
+        );
     }
 }

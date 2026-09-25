@@ -6,12 +6,15 @@
 //! [`Signer`] signs the result, and we assemble the proof. Used by the step-up
 //! DID-signed gate ([`crate::stepup`]) and VTA `authenticate` ([`crate::session`]).
 //!
-//! Every document the device sends is signed under
-//! [`REQUEST_PROOF_PURPOSE`] (`authentication`): the VTA and the VTC accept a
+//! Every document the device sends is signed: the VTA and the VTC accept a
 //! Trust Task over DIDComm or TSP only when its proof verifies as its `issuer`
 //! and that issuer is the transport sender, so the proof is what authenticates
-//! the request. [`attach_did_signed_proof`] refuses to sign a document that does
-//! not name the signer as its `issuer`, or that lacks a `recipient` or an
+//! the request. Requests are signed under [`REQUEST_PROOF_PURPOSE`]
+//! (`authentication`, [`attach_did_signed_proof`]). The one exception is the
+//! step-up `approve-response`, where the proof is also the human approver's
+//! evidence and is signed under [`APPROVAL_PROOF_PURPOSE`] (`assertionMethod`,
+//! [`attach_approval_proof`]). Both refuse to sign a document that does not
+//! name the signer as its `issuer`, or that lacks a `recipient` or an
 //! `issuedAt`, because the peer would refuse it anyway.
 //!
 //! Verification, of two kinds:
@@ -48,8 +51,16 @@ pub(crate) const REQUEST_PROOF_PURPOSE: &str = "authentication";
 pub(crate) const REPLY_PROOF_PURPOSE: &str = "authentication";
 
 /// The proof purpose the VTA signs the approval requests it pushes to a device
-/// under (step-up approve-request, task-consent request).
-pub(crate) const PUSHED_REQUEST_PROOF_PURPOSE: &str = "assertionMethod";
+/// under (step-up approve-request, consent and task-consent request). These are
+/// the VTA's operational messages, signed with its operational key under
+/// `authentication` (VTI-KEY-106), and the key must be listed there.
+pub(crate) const PUSHED_REQUEST_PROOF_PURPOSE: &str = "authentication";
+
+/// The proof purpose of the human approver's own step-up `approve-response`.
+/// Its proof is not only the device authenticating the message: it is the
+/// approver's evidence (the did-signed gate) that the VTA records, an
+/// assertion by the approver, so it stays `assertionMethod`.
+pub(crate) const APPROVAL_PROOF_PURPOSE: &str = "assertionMethod";
 
 /// Build an `eddsa-jcs-2022` Data Integrity proof over `doc` (which MUST NOT yet
 /// carry a proof), signed via the native `signer` under
@@ -71,6 +82,25 @@ pub(crate) fn attach_did_signed_proof<P: Serialize>(
     doc: &mut TrustTask<P>,
     signer: &dyn Signer,
     created: &str,
+) -> Result<(), FfiError> {
+    attach_proof(doc, signer, created, REQUEST_PROOF_PURPOSE)
+}
+
+/// [`attach_did_signed_proof`] under [`APPROVAL_PROOF_PURPOSE`], for the human
+/// approver's step-up `approve-response`. The same refusals apply.
+pub(crate) fn attach_approval_proof<P: Serialize>(
+    doc: &mut TrustTask<P>,
+    signer: &dyn Signer,
+    created: &str,
+) -> Result<(), FfiError> {
+    attach_proof(doc, signer, created, APPROVAL_PROOF_PURPOSE)
+}
+
+fn attach_proof<P: Serialize>(
+    doc: &mut TrustTask<P>,
+    signer: &dyn Signer,
+    created: &str,
+    purpose: &str,
 ) -> Result<(), FfiError> {
     let refuse = |reason: String| Err(FfiError::InvalidInput { reason });
     let signer_did = signer.did();
@@ -103,7 +133,7 @@ pub(crate) fn attach_did_signed_proof<P: Serialize>(
     let mut proof_config = DataIntegrityProof::new(
         CryptoSuite::EddsaJcs2022,
         did_key_vm(&signer_did)?,
-        REQUEST_PROOF_PURPOSE.to_string(),
+        purpose.to_string(),
         None,
         Some(created.to_string()),
         None,
@@ -142,7 +172,9 @@ pub(crate) fn attach_did_signed_proof<P: Serialize>(
 ///
 /// Enforced, in order:
 /// 1. the document carries an `issuer` and a `proof`;
-/// 2. the proof is a Data Integrity proof with `proofPurpose:assertionMethod`;
+/// 2. the proof is a Data Integrity proof with `proofPurpose:authentication`
+///    (the VTA signs these operational messages with its operational key,
+///    VTI-KEY-106);
 /// 3. the DID of `proof.verificationMethod` **is** the document `issuer` (a
 ///    valid signature only proves *some* key signed; authenticity additionally
 ///    requires that key to be the declared issuer's);
@@ -150,8 +182,9 @@ pub(crate) fn attach_did_signed_proof<P: Serialize>(
 ///    native layer holds (the enrolled VTA DID plus any granted executor DIDs).
 ///    Checked **before** any DID resolution so the device never performs
 ///    network I/O on behalf of a DID it is not enrolled with;
-/// 5. the signature verifies (`eddsa-jcs-2022` only) against key material
-///    resolved from the issuer's DID document, via the crate's shared resolver
+/// 5. the proof's verification method is listed under `authentication` in the
+///    issuer's DID document, and the signature verifies (`eddsa-jcs-2022` only)
+///    against key material resolved from it, via the crate's shared resolver
 ///    cache (`did:key` offline; `did:web` / `did:webvh` over the network).
 ///
 /// Verification runs over the **raw** JSON document (`proof` removed), not a
@@ -405,7 +438,7 @@ pub(crate) fn did_key_vm(did: &str) -> Result<String, FfiError> {
 /// Deterministic executor keys + the production sign path, for the request
 /// verification tests in [`crate::consent`] and [`crate::task`]. Mirrors the
 /// VTA's `mint_signed_requests` (`vta-service` `consent_request.rs`): sign the
-/// proofless document with `eddsa-jcs-2022` / `assertionMethod`, attach the
+/// proofless document with `eddsa-jcs-2022` / `authentication`, attach the
 /// proof. `did:key` issuers resolve offline, so the tests exercise the full
 /// verify path without touching the network.
 #[cfg(test)]
@@ -448,5 +481,53 @@ pub(crate) mod test_support {
         .await
         .expect("test signing cannot fail");
         doc["proof"] = serde_json::to_value(&proof).expect("proof serializes");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::lists_method_under;
+
+    /// A key the DID lists only under `assertionMethod` is not an
+    /// `authentication` key, however the reference is spelled.
+    #[test]
+    fn a_method_counts_only_under_the_relationship_that_lists_it() {
+        let doc = json!({
+            "id": "did:web:vta.example",
+            "authentication": ["did:web:vta.example#auth", { "id": "#embedded" }],
+            "assertionMethod": ["#assert"]
+        });
+        assert!(lists_method_under(
+            &doc,
+            "did:web:vta.example#auth",
+            "authentication"
+        ));
+        assert!(lists_method_under(
+            &doc,
+            "did:web:vta.example#embedded",
+            "authentication"
+        ));
+        assert!(!lists_method_under(
+            &doc,
+            "did:web:vta.example#assert",
+            "authentication"
+        ));
+        assert!(lists_method_under(
+            &doc,
+            "did:web:vta.example#assert",
+            "assertionMethod"
+        ));
+        assert!(!lists_method_under(
+            &doc,
+            "did:web:vta.example#auth",
+            "assertionMethod"
+        ));
+        assert!(!lists_method_under(
+            &doc,
+            "did:web:vta.example#other",
+            "authentication"
+        ));
     }
 }

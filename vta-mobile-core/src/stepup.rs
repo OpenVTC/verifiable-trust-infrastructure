@@ -10,6 +10,10 @@
 //!   subject's key. The private key never enters Rust: `affinidi-data-integrity`
 //!   produces the canonical signing input, the native [`crate::keys::Signer`]
 //!   signs it in the enclave, and we assemble the proof from the signature.
+//!
+//! Every approve-response proof is made under `assertionMethod`
+//! ([`crate::proof::APPROVAL_PROOF_PURPOSE`]): it is the human approver's own
+//! answer, not an operational request.
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
@@ -17,7 +21,7 @@ use trust_tasks_rs::specs::auth::step_up::approve_response::v0_2 as approve_resp
 
 use crate::error::FfiError;
 use crate::keys::Signer;
-use crate::proof::attach_did_signed_proof;
+use crate::proof::attach_approval_proof;
 
 /// A WebAuthn assertion produced natively (`ASAuthorization` / Credential
 /// Manager). Binary fields are base64url-encoded, mirroring
@@ -93,7 +97,7 @@ pub fn build_approve_response_webauthn(
         approve_response::PayloadDecision::Approved,
         None,
     )?;
-    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
+    attach_approval_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -113,7 +117,7 @@ pub fn build_approve_response_did_signed(
         approve_response::PayloadDecision::Approved,
         None,
     )?;
-    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
+    attach_approval_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -134,7 +138,7 @@ pub fn build_approve_response_denied(
         approve_response::PayloadDecision::Denied,
         Some(reason),
     )?;
-    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
+    attach_approval_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -264,8 +268,8 @@ mod tests {
         assert_eq!(v["payload"]["decision"], "approved");
         assert_eq!(v["payload"]["evidence"]["kind"], "webauthn");
         // The assertion is the gate; the framework proof binds the document
-        // to its sender, under `authentication`.
-        assert_eq!(v["proof"]["proofPurpose"], "authentication");
+        // to its sender. It is the approver's own answer, so `assertionMethod`.
+        assert_eq!(v["proof"]["proofPurpose"], "assertionMethod");
     }
 
     #[test]
@@ -454,15 +458,16 @@ mod tests {
         .expect("the denial's proof must verify against the holder's key");
     }
 
-    /// Every approve-response is signed under `authentication`, and one issued
-    /// in a name other than the signer's is refused before it is signed.
+    /// Every approve-response is the human approver's own answer, signed under
+    /// `assertionMethod` by its issuer; one issued in a name other than the
+    /// signer's is refused before it is signed.
     #[test]
-    fn approve_responses_are_authenticated_by_their_issuer() {
+    fn approve_responses_are_signed_by_their_issuer_as_an_assertion() {
         let signer = enclave(6);
         let json =
             build_approve_response_did_signed(draft_by(&signer), Box::new(enclave(6))).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["proof"]["proofPurpose"], "authentication");
+        assert_eq!(v["proof"]["proofPurpose"], "assertionMethod");
         assert_eq!(v["issuer"], signer.did.as_str());
         assert_eq!(v["recipient"], "did:web:bank.example");
         assert!(v["issuedAt"].is_string());
