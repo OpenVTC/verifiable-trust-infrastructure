@@ -200,7 +200,7 @@ async fn main() {
             let result = commands::setup::run(&mut pnm_config, setup_cmd, name, overwrite).await;
             if let Err(e) = result {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
+                std::process::exit(exit::FAILURE);
             }
             return;
         }
@@ -212,7 +212,7 @@ async fn main() {
                 Some(Ok(())) => return,
                 Some(Err(e)) => {
                     vta_cli_common::render::print_cli_error(e.as_ref());
-                    std::process::exit(1);
+                    std::process::exit(exit::FAILURE);
                 }
                 None => {
                     command = Commands::Bootstrap { command: bs_cmd };
@@ -225,7 +225,7 @@ async fn main() {
             } else {
                 if let Err(e) = commands::did_templates::run_offline(&dt_cmd) {
                     vta_cli_common::render::print_cli_error(e.as_ref());
-                    std::process::exit(1);
+                    std::process::exit(exit::FAILURE);
                 }
                 return;
             }
@@ -247,7 +247,7 @@ async fn main() {
             // `~/.config/pnm/config.toml`. No VTA round-trip.
             if let Err(e) = commands::config::run_resolver_url(&mut pnm_config, url, unset).await {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
+                std::process::exit(exit::FAILURE);
             }
             return;
         }
@@ -263,7 +263,7 @@ async fn main() {
         Ok((slug, cfg)) => (slug, cfg.clone()),
         Err(e) => {
             eprintln!("Error: {e}");
-            std::process::exit(1);
+            std::process::exit(exit::FAILURE);
         }
     };
     let keyring_key = config::vta_keyring_key(&slug);
@@ -296,7 +296,7 @@ async fn main() {
             Ok(c) => c,
             Err(e) => {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
+                std::process::exit(exit::FAILURE);
             }
         }
     } else {

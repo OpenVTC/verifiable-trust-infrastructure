@@ -142,7 +142,7 @@ pub fn session_status(keyring_key: &str) -> Option<vta_sdk::session::SessionStat
 /// session the same way — the token state is a word rather than a
 /// sentence, and `expiresInSecs` is present only when it means
 /// something.
-pub fn status_json(keyring_key: &str) -> serde_json::Value {
+pub(crate) fn status_json(keyring_key: &str) -> serde_json::Value {
     match store().session_status(keyring_key) {
         Some(status) => {
             let (token, expires_in_secs) = match status.token_status {
@@ -169,10 +169,7 @@ pub fn status_json(keyring_key: &str) -> serde_json::Value {
 /// see the resolved URL.
 pub fn status(keyring_key: &str) {
     if vta_cli_common::render::is_json_output() {
-        if let Err(e) = vta_cli_common::render::print_json(&status_json(keyring_key)) {
-            eprintln!("Error serializing auth status: {e}");
-            std::process::exit(1);
-        }
+        vta_cli_common::render::print_json_or_exit(&status_json(keyring_key), "auth status");
         return;
     }
 

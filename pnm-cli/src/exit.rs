@@ -7,17 +7,17 @@
 //!
 //! `2` stays with clap. The documented matrix put auth there, but clap
 //! owns the code for a usage error and moving it would change what every
-//! existing caller sees for a typo, so auth takes its own code instead.
+//! existing caller sees for a typo. Auth gets `5` when the authenticated
+//! paths grow typed errors; it is not reserved here until something
+//! returns it.
 
 /// The operation ran and failed.
 pub(crate) const FAILURE: i32 = 1;
-/// Usage error. Clap's, not ours — listed so nothing else claims it.
+/// Usage error. Clap returns this itself; named here only so nothing
+/// else claims the code. Deliberately unreferenced.
 #[allow(dead_code)]
 pub(crate) const USAGE: i32 = 2;
 /// The named thing does not exist.
 pub(crate) const NOT_FOUND: i32 = 3;
 /// Bad configuration, or input that failed validation.
 pub(crate) const CONFIG: i32 = 4;
-/// Not authenticated, or the credential is no longer good.
-#[allow(dead_code)]
-pub(crate) const AUTH: i32 = 5;
