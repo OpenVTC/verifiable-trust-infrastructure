@@ -24,6 +24,28 @@ pub(crate) async fn run_offline(
 ) -> bool {
     match command {
         VtaCommands::List => {
+            if vta_cli_common::render::is_json_output() {
+                let default = pnm_config.default_vta.as_deref().unwrap_or("");
+                let out: Vec<_> = pnm_config
+                    .vtas
+                    .iter()
+                    .map(|(slug, vta)| {
+                        serde_json::json!({
+                            "slug": slug,
+                            "name": vta.name,
+                            "did": vta.vta_did,
+                            "url": vta.url,
+                            "mediatorDid": vta.mediator_did,
+                            "default": slug == default,
+                        })
+                    })
+                    .collect();
+                if let Err(e) = vta_cli_common::render::print_json(&out) {
+                    eprintln!("Error serializing VTA list: {e}");
+                    std::process::exit(1);
+                }
+                return true;
+            }
             if pnm_config.vtas.is_empty() {
                 println!("No VTAs configured.");
                 println!("\nRun `pnm setup` to configure your first VTA.");
@@ -119,6 +141,26 @@ pub(crate) async fn run_offline(
         VtaCommands::Info => {
             match config::resolve_vta(vta_override, pnm_config) {
                 Ok((slug, vta)) => {
+                    if vta_cli_common::render::is_json_output() {
+                        let mut url = None;
+                        if let Some(ref did) = vta.vta_did {
+                            url = vta_sdk::session::resolve_vta_url(did).await.ok();
+                        }
+                        let key = config::vta_keyring_key(&slug);
+                        let out = serde_json::json!({
+                            "slug": slug,
+                            "name": vta.name,
+                            "did": vta.vta_did,
+                            "url": url,
+                            "mediatorDid": vta.mediator_did,
+                            "session": auth::status_json(&key),
+                        });
+                        if let Err(e) = vta_cli_common::render::print_json(&out) {
+                            eprintln!("Error serializing VTA info: {e}");
+                            std::process::exit(1);
+                        }
+                        return true;
+                    }
                     println!("Active VTA: {slug}");
                     println!("  Name: {}", vta.name);
                     if let Some(ref did) = vta.vta_did {

@@ -172,6 +172,11 @@ pub async fn cmd_services_list(client: &VtaClient) -> Result<(), Box<dyn std::er
     }
     let response = client.list_services().await?;
 
+    if crate::render::is_json_output() {
+        crate::render::print_json(&response)?;
+        return Ok(());
+    }
+
     println!("Services advertised on this VTA's DID document:");
     println!();
     for state in &response.services {
