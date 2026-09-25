@@ -616,10 +616,15 @@ mod key_export_tests {
             ),
         )
         .await;
+        // The key does not exist, so the lookup refuses it — as out of scope,
+        // since an absent key and another context's key look alike to a
+        // scoped caller. What matters is that the refusal is not the gate's.
+        let body = String::from_utf8_lossy(&out.body);
         assert!(
-            !refused_by_the_gate(&out),
-            "an admin derives KeyExport and must reach the key lookup"
+            !body.contains("key-export capability"),
+            "an admin derives KeyExport and must reach the key lookup: {body}"
         );
+        assert!(body.contains("not within the caller's scope"), "{body}");
     }
 
     /// `keys/export-secret/0.1` over the HTTPS binding is refused even for an
