@@ -47,4 +47,15 @@ pub enum FfiError {
     /// member exists to make that refusable.
     #[error("addressed to {recipient}, not to this approver")]
     NotForThisApprover { recipient: String },
+
+    /// A reply to a Trust Task this device sent could not be attributed to the
+    /// peer it was sent to: it carries no proof, the proof does not verify, it
+    /// was made under a purpose other than `authentication` or with a key the
+    /// peer does not list under `authentication`, its signer or `issuer` is not
+    /// the peer, it is addressed to someone else, or its `threadId` is not the
+    /// request's. Discard the reply unread. Error replies are held to the same
+    /// rule: a refusal nobody can attribute is no more trustworthy than a
+    /// success nobody can attribute.
+    #[error("unverified reply: {reason}")]
+    UnverifiedReply { reason: String },
 }

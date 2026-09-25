@@ -18,9 +18,12 @@
 //! - [`build_task_consent_decision_did_signed`] / [`build_task_consent_decision_denied`]
 //!   assemble the decision from the **typed** `decision` payload (which this
 //!   crate constructs, so no unknown-field concern) and attach the same
-//!   `eddsa-jcs-2022` Data Integrity proof the step-up gate uses. The proof — not
-//!   the transport — is the approver's authority: the VTA takes the signer from
-//!   it (see the executor's `task_consent::handle_decision`).
+//!   `eddsa-jcs-2022` Data Integrity proof the step-up gate uses, under
+//!   `assertionMethod` with a key the approver lists there: the decision is the
+//!   approver's attestation, which the did-hosting RP requires
+//!   (affinidi-webvh-service #213). The proof — not the transport — is the
+//!   approver's authority: the executor takes the signer from it (see the
+//!   VTA's `task_consent::handle_decision`).
 //!
 //! Sender attribution is layered. The transport authenticates first: the
 //! mediator verifies the VTA's authcrypt envelope before `receive_next` yields,
@@ -39,7 +42,7 @@ use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
 
 use crate::error::FfiError;
 use crate::keys::Signer;
-use crate::proof::attach_did_signed_proof;
+use crate::proof::attach_approval_proof;
 
 /// Type URI of the request document this approver renders.
 const TASK_CONSENT_REQUEST_TYPE: &str = "https://trusttasks.org/spec/task-consent/request/0.1";
@@ -287,7 +290,7 @@ pub fn build_task_consent_decision_did_signed(
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
     let mut doc = assemble_decision(&draft, decision::Decision::Approve, None)?;
-    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
+    attach_approval_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -301,7 +304,7 @@ pub fn build_task_consent_decision_denied(
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
     let mut doc = assemble_decision(&draft, decision::Decision::Deny, Some(reason))?;
-    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
+    attach_approval_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -360,7 +363,7 @@ fn conv<E: ::std::fmt::Display>(e: E) -> FfiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proof::test_support::{did_for, sign_as};
+    use crate::proof::test_support::{did_for, sign_as, sign_as_with_purpose};
 
     /// Seed of the enrolled executor the happy-path tests sign as.
     const EXECUTOR: u8 = 7;
@@ -611,6 +614,9 @@ mod tests {
         assert_eq!(v["proof"]["type"], "DataIntegrityProof");
         assert_eq!(v["proof"]["cryptosuite"], "eddsa-jcs-2022");
         assert!(v["proof"]["proofValue"].as_str().unwrap().starts_with('z'));
+        // The approver's own decision is an attestation (webvh #213
+        // `verify_approval`); the device's requests are `authentication`.
+        assert_eq!(v["proof"]["proofPurpose"], "assertionMethod");
     }
 
     #[test]
@@ -625,5 +631,23 @@ mod tests {
         assert_eq!(v["payload"]["decision"], "deny");
         assert_eq!(v["payload"]["reason"], "codes did not match");
         assert!(v["proof"]["proofValue"].is_string());
+        assert_eq!(v["proof"]["proofPurpose"], "assertionMethod");
+    }
+
+    /// The VTA signs a task-consent request with its operational key under
+    /// `authentication` (VTI-KEY-106); one signed under `assertionMethod` is
+    /// refused and never prompts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refuses_a_request_signed_under_assertion_method() {
+        let mut v: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        v["issuer"] = serde_json::Value::String(did_for(EXECUTOR));
+        sign_as_with_purpose(&mut v, EXECUTOR, "assertionMethod").await;
+        let err = parse_task_consent_request(v.to_string(), enrolled())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, FfiError::UntrustedIssuer { reason } if reason.contains("authentication")),
+            "{err:?}"
+        );
     }
 }
