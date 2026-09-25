@@ -646,7 +646,9 @@ async fn sign_requests(
         let doc = build_document(&vtc_did, approver, REQUEST_TYPE, payload.clone());
         let mut doc = serde_json::to_value(&doc)
             .map_err(|e| AppError::Internal(format!("serialise task-consent request: {e}")))?;
-        signer.sign_doc(&mut doc).await?;
+        // The operational key, under `authentication`: this is a request
+        // the VTC sends as itself, not a credential it issues (VTI-KEY-106).
+        signer.sign_operational_doc(&mut doc).await?;
         signed.push(doc);
     }
     Ok(signed)

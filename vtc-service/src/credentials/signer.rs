@@ -27,6 +27,7 @@ use affinidi_data_integrity::{DataIntegrityProof, SignOptions, VerifyOptions};
 use affinidi_secrets_resolver::secrets::Secret;
 use affinidi_vc::VerifiableCredential;
 use vti_common::error::AppError;
+use vti_common::trust_task::envelope::{EnvelopeRole, seal_envelope};
 
 /// Verification-method fragment the VTC consistently uses for
 /// its assertion-method key. Lines up with what
@@ -221,8 +222,30 @@ impl LocalSigner {
     /// Sign a Trust Task request this VTC originates to a peer — `proofPurpose:
     /// authentication`, the purpose under which the key-roles spec lists the
     /// operational key — in place. The document must already carry `id`,
-    /// `issuer`, `recipient` and `issuedAt`.
+    /// this VTC as `issuer`, and `recipient`; `issuedAt` is set or truncated
+    /// to whole seconds (VTI-KEY-107).
     pub async fn sign_operational_doc(&self, doc: &mut serde_json::Value) -> Result<(), AppError> {
+        self.sign_operational(doc, EnvelopeRole::Request).await
+    }
+
+    /// Sign a Trust Task response (success or `trust-task-error`) this VTC
+    /// returns, as [`sign_operational_doc`](Self::sign_operational_doc) does a
+    /// request. The response is issued by this VTC whatever the request named,
+    /// and gets an `id` and a whole-second `issuedAt` when it lacks them.
+    pub async fn sign_operational_response(
+        &self,
+        doc: &mut serde_json::Value,
+    ) -> Result<(), AppError> {
+        self.sign_operational(doc, EnvelopeRole::Response).await
+    }
+
+    async fn sign_operational(
+        &self,
+        doc: &mut serde_json::Value,
+        role: EnvelopeRole,
+    ) -> Result<(), AppError> {
+        seal_envelope(doc, &self.issuer_did, role)
+            .map_err(|e| AppError::Internal(format!("cannot sign as this VTC: {e}")))?;
         let obj = doc
             .as_object_mut()
             .ok_or_else(|| AppError::Internal("request document is not a JSON object".into()))?;

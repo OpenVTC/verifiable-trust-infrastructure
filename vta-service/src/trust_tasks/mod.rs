@@ -43,6 +43,7 @@ use trust_tasks_rs::TrustTask;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::server::AppState;
+use vti_common::trust_task::envelope::EnvelopeRole;
 
 mod acl;
 mod app_state;
@@ -652,7 +653,7 @@ pub(crate) async fn attach_proof_in_place(
     secret: &affinidi_secrets_resolver::secrets::Secret,
     doc: &mut serde_json::Value,
 ) -> bool {
-    sign_as_authentication(secret, doc).await
+    sign_as_authentication(secret, doc, EnvelopeRole::Response).await
 }
 
 /// Sign a Trust Task document this VTA *originates* to a peer — a request, not
@@ -677,7 +678,7 @@ pub(crate) async fn sign_outbound_request(state: &AppState, doc: &mut serde_json
         tracing::error!(%vm_id, "no resident secret for the signing key");
         return false;
     };
-    sign_as_authentication(&secret, doc).await
+    sign_as_authentication(&secret, doc, EnvelopeRole::Request).await
 }
 
 /// The VTA's operational signing key — the resident secret named by
@@ -704,10 +705,20 @@ pub(crate) async fn load_operational_secret(
 /// Sign `doc` in place with `secret` and `proofPurpose: authentication` — the
 /// purpose a VTA-originated request carries (the key-roles spec lists the
 /// operational key under `authentication`).
+///
+/// The envelope is sealed first (VTI-KEY-107): `issuer` is the secret's DID,
+/// `issuedAt` is whole seconds, and a request must carry `id` and `recipient`.
+/// A document that cannot be sealed is not signed.
 pub(crate) async fn sign_as_authentication(
     secret: &affinidi_secrets_resolver::secrets::Secret,
     doc: &mut serde_json::Value,
+    role: EnvelopeRole,
 ) -> bool {
+    let signer_did = secret.id.split('#').next().unwrap_or_default();
+    if let Err(e) = vti_common::trust_task::envelope::seal_envelope(doc, signer_did, role) {
+        tracing::error!(error = %e, ?role, "refusing to sign a document with an incomplete envelope");
+        return false;
+    }
     attach_proof_in_place_with(
         secret,
         doc,

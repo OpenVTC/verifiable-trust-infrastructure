@@ -186,7 +186,12 @@ impl DIDCommBridge {
             tracing::error!(%vm_id, "no resident secret for the signing key");
             return false;
         };
-        crate::trust_tasks::sign_as_authentication(&secret, doc).await
+        crate::trust_tasks::sign_as_authentication(
+            &secret,
+            doc,
+            vti_common::trust_task::envelope::EnvelopeRole::Request,
+        )
+        .await
     }
 
     /// Publish the live delivery-layer wiring, replacing any previous session's.

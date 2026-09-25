@@ -654,7 +654,7 @@ pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -
     if doc.get("proof").is_some() {
         return outcome;
     }
-    if let Err(e) = signer.sign_operational_doc(&mut doc).await {
+    if let Err(e) = signer.sign_operational_response(&mut doc).await {
         tracing::error!(error = %e, "could not sign the response; returning it unsigned");
         return outcome;
     }
