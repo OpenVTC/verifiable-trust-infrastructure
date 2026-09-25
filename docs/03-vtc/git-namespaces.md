@@ -211,6 +211,26 @@ cnm git drift resolve github.com/acme/widgets revert --type roleAdded \
   --account-id 5550123 --account-login eve-dev --observed write
 ```
 
+## Linking a forge account
+
+The bridge gives a member the forge role their rights call for only once it
+knows which forge account is theirs. A member links it with
+`git-ns/account/link` and follows it with `git-ns/account/link-status`;
+`cnm git link` does both, signed as the community profile's DID:
+
+```sh
+cnm git link --forge github.com      # prints the URL (and on GitHub a device code), then waits
+cnm git link --status lnk_4Tq9Xw2P   # follow a link begun earlier
+cnm git link --list                  # the accounts linked to this DID (git-ns/view/0.2)
+```
+
+It polls every five seconds until the link is `linked`, `expired` or
+`failed`; `--no-wait` prints where to authorise and returns. A link needs a
+bridge-mode namespace on the forge (`unsupportedForge` otherwise), and
+`failed` means the account is already linked to another member. Linking again
+replaces the account linked on that forge. There is no unlink task: an
+account is unlinked when its member leaves.
+
 ## Reseating a headless namespace
 
 A namespace whose every `git.ns.admin` has left the community or lapsed is

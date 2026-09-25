@@ -2,8 +2,8 @@
 //!
 //! Two kinds of command, and the difference is who is authorized:
 //!
-//! - **Changes** (`namespace bind|unbind`, `grant`, `revoke`, `adopt`, `view`)
-//!   are signed `git-ns/*` Trust Tasks, signed with this community profile's
+//! - **Changes** (`namespace bind|unbind`, `grant`, `revoke`, `adopt`, `view`,
+//!   `link`) are signed `git-ns/*` Trust Tasks, signed with this community profile's
 //!   key and authorized by *that DID's git rights* in the VTC's records. A
 //!   community administrator's role binds namespaces and nothing more: to
 //!   grant, this DID must hold a right that carries the authority.
@@ -131,6 +131,28 @@ pub enum GitCommands {
         resource: Option<String>,
         #[arg(long)]
         admin: bool,
+    },
+    /// Link your account on a forge to this profile's DID
+    /// (`git-ns/account/link`), so the bridge can give it the forge roles
+    /// this DID's rights call for. With `--list`, show the linked accounts.
+    ///
+    /// One account per forge: linking again replaces the one linked there.
+    /// There is no unlink task; an account is unlinked when you leave.
+    Link {
+        /// The forge host: `github.com`, `codeberg.org`, a GHES or Forgejo
+        /// host. It needs a bridge-mode namespace.
+        #[arg(long, required_unless_present_any = ["list", "status"])]
+        forge: Option<String>,
+        /// List the forge accounts linked to this profile's DID.
+        #[arg(long, conflicts_with_all = ["forge", "status", "no_wait"])]
+        list: bool,
+        /// Follow a link begun earlier, by the link id it printed.
+        #[arg(long, value_name = "LINK_ID", conflicts_with = "forge")]
+        status: Option<String>,
+        /// Print where to authorise (or, with `--status`, where the link
+        /// stands) and return, rather than waiting for the link to finish.
+        #[arg(long)]
+        no_wait: bool,
     },
 }
 
@@ -418,6 +440,9 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nA namespace always keeps an admin. Grant another first:\n  {bin} git grant \
              --subject <did> --right git.ns.admin --resource <namespace>"
         ),
+        "permissionDenied" if message.contains("for members of this community") => {
+            format!("\nOnly a current member links a forge account, and {did} is not one here.")
+        }
         "permissionDenied" if message.contains("elevated_requires_admin") => format!(
             "\nUnder the default `[git_ns] elevated_requires_admin`, an owner cannot transfer, \
              resign ownership, archive or name a co-owner without a community administrator: \
@@ -484,6 +509,15 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
              that implements only git-ns/bridge/job 0.1 cannot take a role it does not manage \
              off a repository. Remove it on the forge, or upgrade the bridge."
             .to_string(),
+        "git-ns/account/link:unsupportedForge" => format!(
+            "\nA link is completed by a bridge, so it needs a bridge-mode namespace on that \
+             forge; a manual-mode namespace gives nobody a forge role. A community \
+             administrator can see what is bound:\n  {bin} git namespace list"
+        ),
+        "git-ns/account/link-status:unknownLink" => format!(
+            "\nA link is answered only to the member who began it, and forgotten some days \
+             after it finishes. Start again:\n  {bin} git link --forge <forge>"
+        ),
         "git-ns/namespace/reseat:notHeadless" => format!(
             "\nThe namespace still has an admin; its admins grant git.ns.admin:\n  {bin} git \
              grant --subject <did> --right git.ns.admin --resource <namespace>"
@@ -528,6 +562,122 @@ async fn announce_then<T>(
 ) -> T {
     let _ = writeln!(out, "{DIM}{notice}{RESET}");
     send.await
+}
+
+/// How often `git link` asks where a link stands. `git-ns/account/link-status`:
+/// a client SHOULD poll no faster than every five seconds.
+const LINK_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long past its `expiresAt` a pending link is still polled: the VTC
+/// marks it expired on the first poll after that, so this only bounds a VTC
+/// that never answers with a final state.
+const LINK_GRACE: chrono::Duration = chrono::Duration::seconds(30);
+
+/// A string member of a response, safe to print.
+fn field(v: &Value, pointer: &str) -> String {
+    terminal_safe(
+        v.pointer(pointer)
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+}
+
+/// What the member does next, from a `git-ns/account/link` response. The
+/// device code is shown to the member and nowhere else (the specification's
+/// *Data carried*): it is never logged.
+fn link_instructions(forge: &str, v: &Value) -> String {
+    let bin = shell_word(bin_name());
+    let link_id = field(v, "/linkId");
+    let mut out = format!(
+        "Authorise the link on {}:\n  {}\n",
+        terminal_safe(forge),
+        field(v, "/url")
+    );
+    if v.get("userCode").and_then(Value::as_str).is_some() {
+        out.push_str(&format!(
+            "and enter the code {BOLD}{}{RESET}\n",
+            field(v, "/userCode")
+        ));
+    }
+    out.push_str(&format!(
+        "{DIM}The link lapses at {}. Follow it later with:\n  {bin} git link --status {}{RESET}",
+        field(v, "/expiresAt"),
+        shell_word(&link_id)
+    ));
+    out
+}
+
+/// A final `git-ns/account/link-status` answer, as the line to print or the
+/// error to return. `None` while it is still `pending`.
+fn link_outcome(v: &Value, did: &str) -> Option<Result<String, String>> {
+    let bin = shell_word(bin_name());
+    let did = terminal_safe(did);
+    match v.get("state").and_then(Value::as_str) {
+        Some("pending") => None,
+        Some("linked") => Some(Ok(format!(
+            "Linked {} account {BOLD}{}{RESET} (id {}) to {did}.",
+            field(v, "/account/forge"),
+            field(v, "/account/login"),
+            field(v, "/account/id"),
+        ))),
+        Some("expired") => Some(Err(format!(
+            "the link lapsed before it was authorised. Start again:\n  {bin} git link --forge \
+             <forge>"
+        ))),
+        Some("failed") => Some(Err(format!(
+            "the link failed: the forge account is already linked to another member, or it is \
+             not on the forge you asked to link. See what is linked to {did}:\n  {bin} git link \
+             --list"
+        ))),
+        other => Some(Err(format!(
+            "the community answered a link state this client does not know: {}",
+            terminal_safe(other.unwrap_or("(none)"))
+        ))),
+    }
+}
+
+/// `git-ns/view/0.2`'s `accounts`, one line each.
+fn account_lines(accounts: &Value) -> Vec<String> {
+    accounts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| {
+            format!(
+                "{BOLD}{}{RESET}  {}  id {}  {DIM}linked {}{RESET}",
+                field(a, "/account/forge"),
+                field(a, "/account/login"),
+                field(a, "/account/id"),
+                field(a, "/linkedAt"),
+            )
+        })
+        .collect()
+}
+
+/// Poll `link_id` until it reaches a final state, or `deadline` (with
+/// [`LINK_GRACE`]) passes. Returns the last answer.
+async fn follow_link(
+    client: &VtcClient,
+    key: &HolderKey,
+    did: &str,
+    link_id: &str,
+    deadline: Option<chrono::DateTime<chrono::Utc>>,
+) -> CliResult<Value> {
+    loop {
+        let v = serde_json::to_value(
+            client
+                .git_ns_link_status(link_id, key)
+                .await
+                .map_err(|e| explain(e, did))?,
+        )?;
+        if v.get("state").and_then(Value::as_str) != Some("pending") {
+            return Ok(v);
+        }
+        if deadline.is_some_and(|d| chrono::Utc::now() > d + LINK_GRACE) {
+            return Ok(v);
+        }
+        tokio::time::sleep(LINK_POLL).await;
+    }
 }
 
 pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
@@ -748,6 +898,100 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
+        }
+        GitCommands::Link {
+            forge,
+            list,
+            status,
+            no_wait,
+        } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let client = anon();
+            if list {
+                let resp = client
+                    .git_ns_view_v2(None, &key)
+                    .await
+                    .map_err(|e| explain(e, &did))?;
+                let accounts = serde_json::to_value(&resp)?["accounts"].take();
+                if is_json_output() {
+                    return Ok(print_json(&json!({ "accounts": accounts }))?);
+                }
+                let lines = account_lines(&accounts);
+                if lines.is_empty() {
+                    println!(
+                        "No forge account is linked to {}. Link one:\n  {} git link --forge <forge>",
+                        terminal_safe(&did),
+                        shell_word(bin_name())
+                    );
+                }
+                for line in lines {
+                    println!("{line}");
+                }
+                return Ok(());
+            }
+            let (link_id, deadline) = match (status, forge) {
+                (Some(id), _) => (id, None),
+                (None, Some(forge)) => {
+                    let forge = forge.to_lowercase();
+                    let v = serde_json::to_value(
+                        client
+                            .git_ns_link_account(&forge, &key)
+                            .await
+                            .map_err(|e| explain(e, &did))?,
+                    )?;
+                    if no_wait && is_json_output() {
+                        return Ok(print_json(&v)?);
+                    }
+                    // With JSON output, stdout carries only the final answer.
+                    let text = link_instructions(&forge, &v);
+                    if is_json_output() {
+                        eprintln!("{text}");
+                    } else {
+                        println!("{text}");
+                    }
+                    if no_wait {
+                        return Ok(());
+                    }
+                    let deadline = v
+                        .get("expiresAt")
+                        .and_then(Value::as_str)
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                        .map(|t| t.with_timezone(&chrono::Utc));
+                    (field(&v, "/linkId"), deadline)
+                }
+                (None, None) => return Err("name the forge to link: --forge <host>".into()),
+            };
+            let v = if no_wait {
+                serde_json::to_value(
+                    client
+                        .git_ns_link_status(&link_id, &key)
+                        .await
+                        .map_err(|e| explain(e, &did))?,
+                )?
+            } else {
+                eprintln!(
+                    "{DIM}Waiting for the forge to confirm (Ctrl-C stops waiting; the link continues){RESET}"
+                );
+                follow_link(&client, &key, &did, &link_id, deadline).await?
+            };
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            match link_outcome(&v, &did) {
+                None => {
+                    println!(
+                        "Still pending. Follow it with:\n  {} git link --status {}",
+                        shell_word(bin_name()),
+                        shell_word(&link_id)
+                    );
+                    Ok(())
+                }
+                Some(Ok(line)) => {
+                    println!("{line}");
+                    Ok(())
+                }
+                Some(Err(e)) => Err(e.into()),
+            }
         }
         GitCommands::Drift {
             command:
@@ -1062,6 +1306,108 @@ mod tests {
             "did:key:z",
         );
         assert!(g.contains("git revoke"), "{g}");
+    }
+
+    #[test]
+    fn link_instructions_show_the_code_and_how_to_follow_the_link() {
+        let device = json!({
+            "linkId": "lnk_4Tq9Xw2P",
+            "url": "https://github.com/login/device",
+            "userCode": "WDJB-MJHT",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("github.com", &device);
+        assert!(t.contains("https://github.com/login/device"), "{t}");
+        assert!(t.contains("WDJB-MJHT"), "{t}");
+        assert!(t.contains("git link --status lnk_4Tq9Xw2P"), "{t}");
+        // Forgejo has no device flow: a URL and no code.
+        let pkce = json!({
+            "linkId": "lnk_8Rm3Kd7Q",
+            "url": "https://codeberg.org/login/oauth/authorize?client_id=acme-vgi&state=Zp4v",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("codeberg.org", &pkce);
+        assert!(!t.contains("enter the code"), "{t}");
+        // What the bridge returns reaches the terminal without control bytes,
+        // and a link id that is not one shell word is quoted.
+        let hostile = json!({
+            "linkId": "lnk_1; rm -rf ~",
+            "url": "https://x.example/\u{1b}]0;pwned\u{7}",
+            "userCode": "AB\u{1b}[2J",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("github.com", &hostile);
+        assert!(!t.contains('\u{7}') && !t.contains("\u{1b}]"), "{t:?}");
+        assert!(t.contains("--status 'lnk_1; rm -rf ~'"), "{t}");
+    }
+
+    #[test]
+    fn a_final_link_state_is_reported_and_a_pending_one_is_not() {
+        let did = "did:webvh:QmBobScid2:acme-vtc.example:bob";
+        assert!(link_outcome(&json!({ "state": "pending" }), did).is_none());
+        let linked = json!({
+            "state": "linked",
+            "account": { "forge": "github.com", "id": "9120045", "login": "bob-builds" },
+        });
+        let line = link_outcome(&linked, did).unwrap().unwrap();
+        assert!(
+            line.contains("bob-builds") && line.contains("9120045"),
+            "{line}"
+        );
+        let e = link_outcome(&json!({ "state": "expired" }), did)
+            .unwrap()
+            .unwrap_err();
+        assert!(e.contains("git link --forge"), "{e}");
+        let e = link_outcome(&json!({ "state": "failed" }), did)
+            .unwrap()
+            .unwrap_err();
+        assert!(e.contains("git link --list"), "{e}");
+        assert!(
+            link_outcome(&json!({ "state": "odd" }), did)
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn linked_accounts_are_listed_one_per_line() {
+        let accounts = json!([
+            {
+                "account": { "forge": "github.com", "id": "9120045", "login": "bob-builds" },
+                "linkedAt": "2026-09-23T10:02:14Z",
+            },
+            {
+                "account": { "forge": "codeberg.org", "id": "311", "login": "bob" },
+                "linkedAt": "2026-09-24T08:00:00Z",
+            },
+        ]);
+        let lines = account_lines(&accounts);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("github.com") && lines[0].contains("bob-builds"));
+        assert!(lines[1].contains("codeberg.org") && lines[1].contains("311"));
+        assert!(account_lines(&json!([])).is_empty());
+    }
+
+    #[test]
+    fn link_refusals_name_the_fix() {
+        let g = guidance(
+            "git-ns/account/link:unsupportedForge",
+            "this VTC has no bridge-mode namespace on gitlab.com to complete a link",
+            "did:key:z",
+        );
+        assert!(g.contains("git namespace list"), "{g}");
+        let g = guidance(
+            "permissionDenied",
+            "linking a forge account is for members of this community",
+            "did:key:z",
+        );
+        assert!(g.contains("not one here") && !g.contains("git view"), "{g}");
+        let g = guidance(
+            "git-ns/account/link-status:unknownLink",
+            "no link",
+            "did:key:z",
+        );
+        assert!(g.contains("git link --forge"), "{g}");
     }
 
     #[test]

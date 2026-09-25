@@ -26,7 +26,7 @@ use crate::{HolderKey, VtcClient, VtcError};
 /// The generated `git-ns/*` wire types.
 pub use trust_tasks_rs::specs::git_ns as specs;
 
-use specs::account::link::v0_1 as link;
+use specs::account::{link::v0_1 as link, link_status::v0_1 as link_status};
 use specs::drift::resolve::v0_1 as drift_resolve;
 use specs::namespace::{bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind};
 use specs::repo::{
@@ -283,6 +283,23 @@ impl VtcClient {
         let payload = serde_json::json!({ "forge": forge });
         self.git_ns_task(
             <link::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/account/link-status/0.1` — where a link `key`'s DID began with
+    /// [`Self::git_ns_link_account`] stands. Anyone else's `link_id` is
+    /// answered `git-ns/account/link-status:unknownLink`, as a missing one is.
+    pub async fn git_ns_link_status(
+        &self,
+        link_id: &str,
+        key: &HolderKey,
+    ) -> Result<link_status::Response, VtcError> {
+        let payload = serde_json::json!({ "linkId": link_id });
+        self.git_ns_task(
+            <link_status::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             &payload,
             key,
         )

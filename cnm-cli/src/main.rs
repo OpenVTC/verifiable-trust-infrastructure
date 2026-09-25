@@ -2315,6 +2315,51 @@ mod tests {
         }
     }
 
+    /// `git link` starts a link (`--forge`), follows one (`--status`) or lists
+    /// what is linked (`--list`), and those three do not mix.
+    #[test]
+    fn git_link_takes_exactly_one_of_forge_status_or_list() {
+        for ok in [
+            vec!["cnm", "git", "link", "--forge", "github.com"],
+            vec!["cnm", "git", "link", "--forge", "codeberg.org", "--no-wait"],
+            vec!["cnm", "git", "link", "--status", "lnk_4Tq9Xw2P"],
+            vec![
+                "cnm",
+                "git",
+                "link",
+                "--status",
+                "lnk_4Tq9Xw2P",
+                "--no-wait",
+            ],
+            vec!["cnm", "--json", "git", "link", "--list"],
+        ] {
+            if let Err(e) = Cli::try_parse_from(&ok) {
+                panic!("{ok:?} should parse: {e}");
+            }
+        }
+        for bad in [
+            vec!["cnm", "git", "link"],
+            vec!["cnm", "git", "link", "--no-wait"],
+            vec!["cnm", "git", "link", "--list", "--forge", "github.com"],
+            vec!["cnm", "git", "link", "--list", "--status", "lnk_1"],
+            vec!["cnm", "git", "link", "--list", "--no-wait"],
+            vec![
+                "cnm",
+                "git",
+                "link",
+                "--forge",
+                "github.com",
+                "--status",
+                "lnk_1",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(&bad).is_err(),
+                "{bad:?} should be refused"
+            );
+        }
+    }
+
     #[test]
     fn a_bare_origin_names_no_api_mount() {
         assert!(url_has_no_path("https://vtc.example.com"));
