@@ -430,6 +430,15 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
+    // `git-ns/bridge/job/0.4` — authored upstream (trust-tasks #635), sent
+    // to the bridge ahead of the `trust-tasks-rs` release that serves it and
+    // generates `job::v0_4`. Goes back to zero with that release.
+    (
+        "https://trusttasks.org/spec/git-ns/bridge/job/",
+        1,
+        "git-ns/bridge/job 0.4 (trust-tasks #635) — authored upstream, awaiting \
+         the trust-tasks-rs release that serves it",
+    ),
     // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
     // 0.2 were bound ahead of their specs here, and went back to zero with
     // trust-tasks-rs 0.20.4, which serves all nine and generates their wire
