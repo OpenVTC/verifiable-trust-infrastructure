@@ -684,3 +684,251 @@ async fn vti_apv_009_an_unmeetable_threshold_is_refused_when_written() {
     let (status, reply) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, body).await;
     assert_eq!(status, StatusCode::CREATED, "{reply}");
 }
+
+// ─── attrition (VTI-APV-009): ending an unrestricted admin ─────────────────
+
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+
+/// Three unrestricted admins and a threshold of 2: removing any one would leave
+/// two, of whom only one could ever approve the other's grant.
+async fn three_admins_threshold_two(fix: &Fixture) -> (Party, Party, Party, String) {
+    let a = admin(fix).await;
+    let b = admin(fix).await;
+    let c = admin(fix).await;
+    let token = stepped_up_token(fix, &a.did).await;
+    let reply = patch_threshold(fix, &token, 2).await;
+    assert_eq!(reply["applied"][0], THRESHOLD_KEY, "{reply}");
+    (a, b, c, token)
+}
+
+/// `acl/revoke` of an unrestricted admin that would strand the threshold is
+/// refused, names the fix, and writes nothing. Lowering the threshold first
+/// lets it through.
+#[tokio::test]
+async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
+    let fix = fixture().await;
+    let (_a, _b, c, token) = three_admins_threshold_two(&fix).await;
+
+    let (status, body) = bearer(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{}", c.did),
+        REVOKE,
+        &token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let message = body.to_string();
+    assert!(message.contains("config/patch"), "names the fix: {message}");
+    assert!(entry(&fix, &c.did).await.is_some(), "nothing removed");
+
+    patch_threshold(&fix, &token, 1).await;
+    let (status, body) = bearer(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{}", c.did),
+        REVOKE,
+        &token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+}
+
+/// At the default threshold a two-admin community can still remove one of
+/// them: the compromised-admin case must never be a lockout.
+#[tokio::test]
+async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
+    let fix = fixture().await;
+    let a = admin(&fix).await;
+    let b = admin(&fix).await;
+    let token = stepped_up_token(&fix, &a.did).await;
+    let (status, body) = bearer(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{}", b.did),
+        REVOKE,
+        &token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+}
+
+/// An `acl/grant` rewrite that narrows an unrestricted admin to a scoped one is
+/// attrition too.
+#[tokio::test]
+async fn vti_apv_009_narrowing_an_unrestricted_admin_is_attrition() {
+    let fix = fixture().await;
+    let (_a, _b, c, token) = three_admins_threshold_two(&fix).await;
+    let narrow = json!({ "entry": { "subject": c.did, "role": "admin", "scopes": ["ctx-a"] } });
+
+    let (status, body) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, narrow.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        entry(&fix, &c.did).await.unwrap().is_super_admin(),
+        "unchanged"
+    );
+
+    patch_threshold(&fix, &token, 1).await;
+    let (status, body) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, narrow).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!entry(&fix, &c.did).await.unwrap().is_super_admin());
+}
+
+/// A demotion through `acl/change-role` is attrition too.
+#[tokio::test]
+async fn vti_apv_009_demoting_an_unrestricted_admin_is_attrition() {
+    let fix = fixture().await;
+    let (_a, _b, c, token) = three_admins_threshold_two(&fix).await;
+    let (status, body) = bearer(
+        &fix,
+        "PATCH",
+        &format!("/v1/acl/{}", c.did),
+        CHANGE_ROLE,
+        &token,
+        json!({ "fromRole": "admin", "toRole": "member" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(entry(&fix, &c.did).await.unwrap().role, VtcRole::Admin);
+}
+
+/// The last unrestricted admin cannot demote themselves while a scoped admin
+/// remains — the old last-admin guard counted the scoped admin and let it
+/// through, leaving nobody who could ever consent to an unrestricted grant.
+#[tokio::test]
+async fn the_last_unrestricted_admin_cannot_step_down_behind_a_scoped_one() {
+    let fix = fixture().await;
+    let a = admin(&fix).await;
+    let scoped = Party::new();
+    store_acl_entry(
+        &fix.vtc.state.acl_ks,
+        &row(&scoped.did, VtcRole::Admin, &["ctx-a"]),
+    )
+    .await
+    .unwrap();
+    let token = stepped_up_token(&fix, &a.did).await;
+    let (status, body) = bearer(
+        &fix,
+        "PATCH",
+        &format!("/v1/acl/{}", a.did),
+        CHANGE_ROLE,
+        &token,
+        json!({ "fromRole": "admin", "toRole": "member" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body.to_string().contains("last unrestricted admin"),
+        "{body}"
+    );
+    assert!(entry(&fix, &a.did).await.unwrap().is_super_admin());
+}
+
+// ─── invites: an invited admin is unrestricted ─────────────────────────────
+
+const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
+
+async fn invite_fixture() -> Fixture {
+    let vtc = TestVtc::builder()
+        .with_public_url(RP_ORIGIN)
+        .with_signers(true)
+        .with_audit(true)
+        .with_install_signer(std::sync::Arc::new(
+            vtc_service::install::InstallTokenSigner::from_master_seed(&[0xAB; 64]).unwrap(),
+        ))
+        .build()
+        .await;
+    Fixture {
+        vtc,
+        authenticator: SoftEd25519Authenticator::new(),
+    }
+}
+
+/// A scoped admin cannot invite: the entry an invite writes is unrestricted.
+/// Before VTI-APV-014 this was a way for a scoped admin to mint a community-wide
+/// one.
+#[tokio::test]
+async fn a_scoped_admin_cannot_invite_an_admin() {
+    let fix = invite_fixture().await;
+    let scoped = Party::new();
+    store_acl_entry(
+        &fix.vtc.state.acl_ks,
+        &row(&scoped.did, VtcRole::Admin, &["ctx-a"]),
+    )
+    .await
+    .unwrap();
+    let token = fix
+        .vtc
+        .token(&scoped.did, "admin", vec!["ctx-a".into()])
+        .await;
+    let invitee = Party::new();
+    let (status, body) = bearer(
+        &fix,
+        "POST",
+        "/v1/admin/invites",
+        CREATE_INVITE,
+        &token,
+        json!({ "did": invitee.did }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(entry(&fix, &invitee.did).await.is_none());
+}
+
+/// An unrestricted admin's invite needs the step-up and another admin's
+/// consent, like the grant it is.
+#[tokio::test]
+async fn vti_apv_014_an_invite_needs_the_step_up_and_another_admins_consent() {
+    let fix = invite_fixture().await;
+    let requester = admin(&fix).await;
+    let approver = admin(&fix).await;
+    let invitee = Party::new();
+    let body = json!({ "did": invitee.did });
+
+    // An unelevated session is asked to step up first.
+    let plain = fix.vtc.token(&requester.did, "admin", vec![]).await;
+    let (status, reply) = bearer(
+        &fix,
+        "POST",
+        "/v1/admin/invites",
+        CREATE_INVITE,
+        &plain,
+        body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert_eq!(reply["error"], "step_up_required", "{reply}");
+
+    let token = stepped_up_token(&fix, &requester.did).await;
+    let (status, refusal) = bearer(
+        &fix,
+        "POST",
+        "/v1/admin/invites",
+        CREATE_INVITE,
+        &token,
+        body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
+    assert_eq!(refusal["error"], "auth:consent_required", "{refusal}");
+    assert!(entry(&fix, &invitee.did).await.is_none(), "nothing written");
+
+    let (status, ack) = decide(&fix, &approver, &refusal, "approve").await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+
+    let (status, minted) = bearer(
+        &fix,
+        "POST",
+        "/v1/admin/invites",
+        CREATE_INVITE,
+        &token,
+        body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    assert!(minted["installUrl"].is_string(), "{minted}");
+    assert!(entry(&fix, &invitee.did).await.unwrap().is_super_admin());
+}
