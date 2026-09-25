@@ -223,6 +223,18 @@ pub(crate) async fn dispatch_trust_task_core(
     ctx: &JoinAuthCtx,
     body: &[u8],
 ) -> TrustTaskOutcome {
+    // Every answer is signed, refusals included — the early returns below as
+    // well as the dispatched result (which `dispatch_trust_task_validated`
+    // signs before recording it for redelivery).
+    let outcome = dispatch_trust_task_validated(state, ctx, body).await;
+    sign_response(state, outcome).await
+}
+
+async fn dispatch_trust_task_validated(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    body: &[u8],
+) -> TrustTaskOutcome {
     // 1. Parse the envelope.
     let doc: TrustTask<Value> = match serde_json::from_slice(body) {
         Ok(d) => d,
@@ -486,7 +498,7 @@ pub(crate) async fn dispatch_trust_task_core(
 
     // 4. Dispatch by type URI, then sign what comes back.
     let outcome = dispatch_typed(state, ctx, doc, &type_uri).await;
-    let outcome = sign_success_response(state, outcome).await;
+    let outcome = sign_response(state, outcome).await;
 
     // Close out the claim taken at 3b.
     //
@@ -612,19 +624,17 @@ fn retain_until(
 ///
 /// # Scope
 ///
-/// Success responses only. An *error response*'s `type` resolves to the
-/// framework's `trust-task-error` specification, whose own requirement is
-/// RECOMMENDED rather than REQUIRED (SPEC §8.1, and §7.3's note that the error
-/// variant is deliberately not declarable by a task). Signing those is a
-/// separate decision with its own rationale — a retained compliance refusal is
-/// the case that argues for it — and is not smuggled in here.
+/// Every response document — success **and** `trust-task-error` — is signed
+/// with `proofPurpose: authentication` (VTI-KEY-106): a client that refuses
+/// unsigned replies must be able to attribute a refusal as well as a result.
+/// A document that already carries a proof, or an empty body, is left alone.
 ///
 /// A community with no signer configured (setup, before provisioning) returns
 /// the document unsigned rather than failing: it has nothing to sign with, and
 /// refusing to answer would make an unprovisioned VTC unusable rather than
 /// merely unattributable.
-async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
-    if !outcome.status.is_success() {
+pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
+    if outcome.body.is_empty() {
         return outcome;
     }
     let Some(signer) = state.credential_signer.clone() else {
@@ -641,8 +651,11 @@ async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> T
             return outcome;
         }
     };
-    if let Err(e) = signer.sign_doc(&mut doc).await {
-        tracing::error!(error = %e, "could not sign the success response; returning it unsigned");
+    if doc.get("proof").is_some() {
+        return outcome;
+    }
+    if let Err(e) = signer.sign_operational_doc(&mut doc).await {
+        tracing::error!(error = %e, "could not sign the response; returning it unsigned");
         return outcome;
     }
     match serde_json::to_vec(&doc) {
@@ -3946,6 +3959,50 @@ mod tests {
                 body.contains("not a member"),
                 "expected a permission refusal naming membership, got: {body}"
             );
+        }
+
+        /// A refusal is signed, for `authentication`, like a result.
+        #[tokio::test]
+        async fn a_refusal_is_signed() {
+            let vtc = fixture().await;
+            let stranger = Party::new();
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &signed_document(
+                    &stranger,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": stranger.did }),
+                )
+                .await,
+            )
+            .await;
+            assert!(!out.status.is_success(), "{}", rendered(&out));
+            let doc: serde_json::Value = serde_json::from_slice(&out.body).expect("JSON reply");
+            assert_eq!(
+                doc["proof"]["proofPurpose"], "authentication",
+                "a refusal must carry this community's proof: {doc}"
+            );
+
+            // So is one refused before dispatch — here an unsigned document.
+            let mut unsigned: serde_json::Value = serde_json::from_slice(
+                &signed_document(
+                    &stranger,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": stranger.did }),
+                )
+                .await,
+            )
+            .unwrap();
+            unsigned.as_object_mut().unwrap().remove("proof");
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &serde_json::to_vec(&unsigned).unwrap(),
+            )
+            .await;
+            let doc: serde_json::Value = serde_json::from_slice(&out.body).expect("JSON reply");
+            assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
         }
 
         /// `assert/0.1` declares `actsAsSubject: true`. On a transport that

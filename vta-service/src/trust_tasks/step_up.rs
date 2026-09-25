@@ -1047,12 +1047,37 @@ async fn maybe_push_step_up(
     trigger_gateway_wake(state, recipient, &mediator_did).await;
 }
 
+/// The unsigned `push/wake/0.2` request [`trigger_gateway_wake`] signs and
+/// sends: `id`, `issuedAt`, `issuer` (this VTA), `recipient` (the gateway).
+#[cfg(feature = "didcomm")]
+pub(crate) fn push_wake_document(
+    vta_did: Option<&str>,
+    gateway: &str,
+    handle: &str,
+    approver_mediator: &str,
+) -> serde_json::Value {
+    json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/push/wake/0.2",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": vta_did,
+        "recipient": gateway,
+        "payload": {
+            "handle": handle,
+            "v": 1,
+            "mediator": approver_mediator,
+            "urgency": "interactive",
+        },
+    })
+}
+
 /// Send a `push/wake` to the approver device's push gateway over DIDComm
 /// (spawned, best-effort): a contentless doorbell telling the device to connect
 /// to `approver_mediator` and drain the queued `approve-request`. No-op if the
 /// approver has no wake channel (set via `device/set-wake`) or its gateway isn't
-/// a DID. The VTA authenticates to the gateway as the authcrypt sender (it is on
-/// the handle's allowlist, provisioned at set-wake).
+/// a DID. The document carries this VTA's Data Integrity proof (`proofPurpose:
+/// authentication`), which is what identifies it to the gateway as a party on
+/// the handle's allowlist (provisioned at set-wake).
 #[cfg(feature = "didcomm")]
 pub(super) async fn trigger_gateway_wake(
     state: &AppState,
@@ -1070,19 +1095,16 @@ pub(super) async fn trigger_gateway_wake(
         return; // URL gateway → HTTPS path (follow-up).
     }
     let vta_did = state.config.read().await.vta_did.clone();
-    let wake_doc = json!({
-        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/push/wake/0.2",
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": vta_did,
-        "recipient": wake.gateway,
-        "payload": {
-            "handle": wake.handle,
-            "v": 1,
-            "mediator": approver_mediator,
-            "urgency": "interactive",
-        },
-    });
+    let mut wake_doc = push_wake_document(
+        vta_did.as_deref(),
+        &wake.gateway,
+        &wake.handle,
+        approver_mediator,
+    );
+    if !super::sign_outbound_request(state, &mut wake_doc).await {
+        tracing::warn!(gateway = %wake.gateway, "push/wake not sent: it could not be signed");
+        return;
+    }
     let bridge = state.didcomm_bridge.clone();
     let gateway = wake.gateway.clone();
     let approver = recipient.to_string();

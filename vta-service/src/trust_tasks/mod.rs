@@ -518,10 +518,11 @@ async fn validate_payload(
 ///
 /// # Scope
 ///
-/// Success responses only. An error response's `type` resolves to the
-/// framework's `trust-task-error` specification, whose requirement is
-/// RECOMMENDED rather than REQUIRED and whose variant §7.3 makes undeclarable
-/// by a task.
+/// Every response document — success **and** `trust-task-error` — is signed,
+/// with `proofPurpose: authentication` (VTI-KEY-106): a client that refuses
+/// unsigned replies must be able to attribute a refusal as well as a result.
+/// An empty body (the "no reply" outcome) is left alone. An error this agent
+/// cannot sign still goes out unsigned, since there is nothing better to say.
 ///
 /// # Two failures that look alike and mean opposite things
 ///
@@ -543,10 +544,11 @@ async fn validate_payload(
 ///
 /// So a misconfiguration is now an error naming itself. It is a 500 because it
 /// is this agent's fault and retrying the same call will not fix it.
-async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
-    if !outcome.status.is_success() {
+pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
+    if outcome.body.is_empty() {
         return outcome;
     }
+    let is_success = outcome.status.is_success();
     let (Some(resolver), Some(vm_id)) = (
         state.secrets_resolver.as_ref(),
         state.signing_vm_id.as_ref(),
@@ -556,7 +558,11 @@ async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> T
     use affinidi_tdk::secrets_resolver::SecretsResolver as _;
     let Some(secret) = resolver.get_secret(vm_id).await else {
         tracing::error!(%vm_id, "no resident secret for the signing key");
-        return cannot_sign(vm_id, "its signing key is not resident");
+        return if is_success {
+            cannot_sign(vm_id, "its signing key is not resident")
+        } else {
+            outcome
+        };
     };
 
     match attach_proof(&secret, &outcome.body).await {
@@ -564,9 +570,21 @@ async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> T
             status: outcome.status,
             body,
         },
-        None => {
+        None if is_success => {
             tracing::error!(%vm_id, "the signature would not attach");
-            cannot_sign(vm_id, "its signature would not attach")
+            let refusal = cannot_sign(vm_id, "its signature would not attach");
+            // The refusal itself is signed where it can be.
+            match attach_proof(&secret, &refusal.body).await {
+                Some(body) => TrustTaskOutcome {
+                    status: refusal.status,
+                    body,
+                },
+                None => refusal,
+            }
+        }
+        None => {
+            tracing::error!(%vm_id, "an error response could not be signed; sending it unsigned");
+            outcome
         }
     }
 }
@@ -634,18 +652,136 @@ pub(crate) async fn attach_proof_in_place(
     secret: &affinidi_secrets_resolver::secrets::Secret,
     doc: &mut serde_json::Value,
 ) -> bool {
+    sign_as_authentication(secret, doc).await
+}
+
+/// Sign a Trust Task document this VTA *originates* to a peer — a request, not
+/// a response — with its operational signing key (`signing_vm_id`) and
+/// `proofPurpose: authentication`, in place.
+///
+/// The peer must not rely on the DIDComm sender to learn who composed the
+/// document; the proof is what binds it to this VTA's `issuer`. The document
+/// must already carry `id`, `issuer`, `recipient` and `issuedAt`. `false` when
+/// this VTA has no resident signing key or the signature will not attach —
+/// the caller must then not send the document.
+pub(crate) async fn sign_outbound_request(state: &AppState, doc: &mut serde_json::Value) -> bool {
+    let (Some(resolver), Some(vm_id)) = (
+        state.secrets_resolver.as_ref(),
+        state.signing_vm_id.as_ref(),
+    ) else {
+        tracing::warn!("no signing key configured; an outbound request cannot be signed");
+        return false;
+    };
+    use affinidi_tdk::secrets_resolver::SecretsResolver as _;
+    let Some(secret) = resolver.get_secret(vm_id).await else {
+        tracing::error!(%vm_id, "no resident secret for the signing key");
+        return false;
+    };
+    sign_as_authentication(&secret, doc).await
+}
+
+/// Sign `doc` in place with `secret` and `proofPurpose: authentication` — the
+/// purpose a VTA-originated request carries (the key-roles spec lists the
+/// operational key under `authentication`).
+pub(crate) async fn sign_as_authentication(
+    secret: &affinidi_secrets_resolver::secrets::Secret,
+    doc: &mut serde_json::Value,
+) -> bool {
+    attach_proof_in_place_with(
+        secret,
+        doc,
+        affinidi_data_integrity::SignOptions::new().with_proof_purpose("authentication"),
+    )
+    .await
+}
+
+/// VTA-originated push requests carry a proof by this VTA, bound to their
+/// `issuer`, with `proofPurpose: authentication`.
+#[cfg(all(test, feature = "didcomm"))]
+mod outbound_request_signing {
+    use super::*;
+
+    async fn signed_and_verified(state: &AppState, mut doc: Value) -> Value {
+        assert!(sign_outbound_request(state, &mut doc).await, "must sign");
+        let typed: TrustTask<Value> = serde_json::from_value(doc.clone()).unwrap();
+        let signer =
+            vti_common::auth::verify_trust_task_proof_with(&typed, &state.trust_task_vm_resolver())
+                .await
+                .expect("the proof verifies");
+        let vta_did = state.config.read().await.vta_did.clone().unwrap();
+        assert_eq!(signer.split('#').next(), Some(vta_did.as_str()));
+        assert_eq!(doc["issuer"], Value::String(vta_did));
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
+        for member in ["id", "issuedAt", "recipient"] {
+            assert!(
+                doc.get(member).is_some_and(|v| !v.is_null()),
+                "{member}: {doc}"
+            );
+        }
+        doc
+    }
+
+    #[tokio::test]
+    async fn push_wake_is_signed_by_the_vta() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone();
+        let doc = step_up::push_wake_document(
+            vta_did.as_deref(),
+            "did:key:z6MkGateway",
+            "handle-1",
+            "did:web:mediator.example",
+        );
+        let a = signed_and_verified(&state, doc).await;
+        assert_eq!(a["recipient"], "did:key:z6MkGateway");
+        // Each request gets its own id.
+        let b = step_up::push_wake_document(vta_did.as_deref(), "did:key:z6MkGateway", "h", "m");
+        assert_ne!(a["id"], b["id"]);
+    }
+
+    #[tokio::test]
+    async fn push_provision_is_signed_by_the_vta() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone();
+        let doc = device::push_provision_document(
+            vta_did.as_deref(),
+            "did:key:z6MkGateway",
+            "handle-1",
+            serde_json::json!(["step-up"]),
+        );
+        let doc = signed_and_verified(&state, doc).await;
+        assert_eq!(doc["recipient"], "did:key:z6MkGateway");
+    }
+
+    /// Tampering after signing is caught — the proof covers the payload.
+    #[tokio::test]
+    async fn a_signed_push_request_cannot_be_retargeted() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone();
+        let mut doc = step_up::push_wake_document(vta_did.as_deref(), "did:key:z6MkGw", "h", "m");
+        assert!(sign_outbound_request(&state, &mut doc).await);
+        doc["payload"]["handle"] = Value::String("someone-else".into());
+        let typed: TrustTask<Value> = serde_json::from_value(doc).unwrap();
+        assert!(
+            vti_common::auth::verify_trust_task_proof_with(&typed, &state.trust_task_vm_resolver())
+                .await
+                .is_err()
+        );
+    }
+}
+
+async fn attach_proof_in_place_with(
+    secret: &affinidi_secrets_resolver::secrets::Secret,
+    doc: &mut serde_json::Value,
+    options: affinidi_data_integrity::SignOptions,
+) -> bool {
     // A proof never covers itself.
     let Some(obj) = doc.as_object_mut() else {
         return false;
     };
     obj.remove("proof");
 
-    let proof = match affinidi_data_integrity::DataIntegrityProof::sign(
-        &*doc,
-        secret,
-        affinidi_data_integrity::SignOptions::new(),
-    )
-    .await
+    let proof = match affinidi_data_integrity::DataIntegrityProof::sign(&*doc, secret, options)
+        .await
     {
         Ok(p) => p,
         Err(e) => {
@@ -790,18 +926,24 @@ pub(crate) async fn accept_from_proven_sender(
                     ?reason,
                     "trust-task document is not bound to its sender by a proof — refused"
                 );
-                return reject_trust_task(body, reason);
+                return sign_response(state, reject_trust_task(body, reason)).await;
             }
             match crate::messaging::auth::auth_for_trust_task_envelope(state, sender_vid, body)
                 .await
             {
                 Ok(auth) => dispatch_trust_task_core(state, &auth, body, confidentiality).await,
-                Err(e) => reject_trust_task(
-                    body,
-                    trust_tasks_rs::RejectReason::PermissionDenied {
-                        reason: e.to_string(),
-                    },
-                ),
+                Err(e) => {
+                    sign_response(
+                        state,
+                        reject_trust_task(
+                            body,
+                            trust_tasks_rs::RejectReason::PermissionDenied {
+                                reason: e.to_string(),
+                            },
+                        ),
+                    )
+                    .await
+                }
             }
         }
     }
@@ -884,7 +1026,7 @@ pub(crate) async fn dispatch_trust_task_core(
     .await;
     // Before the conformance observation below, so what that layer sees is what
     // ships rather than a document one proof short of it.
-    let outcome = sign_success_response(state, outcome).await;
+    let outcome = sign_response(state, outcome).await;
     // Observe the real response against the schema its own `type` names. Here
     // rather than in the REST route because REST is one of three transports
     // through this function — DIDComm and TSP read `outcome.body` directly, and
@@ -2688,7 +2830,7 @@ mod tests {
         let end = body.find("\n}\n").expect("the spine has an end");
 
         assert!(
-            body[..end].contains("sign_success_response("),
+            body[..end].contains("sign_response("),
             "the dispatch spine no longer signs its responses. 265 published \
              specifications require a proof on the response (SPEC §7.3 item 7). \
              `VtaClient` verifies one since #1341, so dropping this would break \
@@ -2716,7 +2858,7 @@ mod tests {
         // than relying on.
         state.secrets_resolver = None;
         state.signing_vm_id = None;
-        let unsigned = super::sign_success_response(&state, outcome()).await;
+        let unsigned = super::sign_response(&state, outcome()).await;
         let doc: Value = serde_json::from_slice(&unsigned.body).expect("parses");
         assert!(doc.get("proof").is_none());
         assert!(
@@ -2732,13 +2874,53 @@ mod tests {
         state.secrets_resolver = Some(std::sync::Arc::new(resolver));
         state.signing_vm_id = Some(vm_id.clone());
 
-        let signed = super::sign_success_response(&state, outcome()).await;
+        let signed = super::sign_response(&state, outcome()).await;
         let doc: Value = serde_json::from_slice(&signed.body).expect("parses");
         assert_eq!(
             doc["proof"]["verificationMethod"].as_str(),
             Some(vm_id.as_str()),
             "signed by the wrong key, or not at all: {doc}"
         );
+    }
+
+    /// Refusals are signed too, for `authentication`: a client that refuses
+    /// unsigned replies must be able to attribute a `trust-task-error`.
+    #[tokio::test]
+    async fn an_error_response_is_signed_for_authentication() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let refused = super::sign_response(
+            &state,
+            super::reject_trust_task(
+                br#"{"id":"urn:uuid:y","type":"https://trusttasks.org/spec/vta/contexts/list/1.0","payload":{}}"#,
+                RejectReason::PermissionDenied {
+                    reason: "no".into(),
+                },
+            ),
+        )
+        .await;
+        assert!(!refused.status.is_success());
+        let doc: Value = serde_json::from_slice(&refused.body).expect("parses");
+        assert!(
+            doc["type"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("trust-task-error"),
+            "{doc}"
+        );
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
+        // The success path uses the same purpose.
+        let ok = super::sign_response(
+            &state,
+            TrustTaskOutcome {
+                status: axum::http::StatusCode::OK,
+                body:
+                    br#"{"id":"urn:uuid:z","type":"https://example.org/t#response","payload":{}}"#
+                        .to_vec(),
+            },
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&ok.body).expect("parses");
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
     }
 
     /// An Ed25519 `did:key` secret, which is what the agent's own signing key is
@@ -3849,7 +4031,7 @@ mod replay_guard {
         //
         // And compared **without the proof**, which is the part that made this
         // test flaky: `record_response` is called inside
-        // `dispatch_trust_task_inner`, while `sign_success_response` runs in the
+        // `dispatch_trust_task_inner`, while `sign_response` runs in the
         // outer `dispatch_trust_task` — so the guard caches the *unsigned*
         // response and every delivery, first or duplicate, is signed afresh on
         // the way out. `proof.created` has one-second resolution, so two

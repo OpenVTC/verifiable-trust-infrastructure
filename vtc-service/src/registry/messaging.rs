@@ -319,8 +319,10 @@ impl MessagingRegistryClient {
         if sign {
             let mut as_value = serde_json::to_value(&doc)
                 .map_err(|e| RegistryError::Transient(format!("serialise document: {e}")))?;
+            // A request, so `proofPurpose: authentication` — the registry
+            // checks the key is listed under `authentication`.
             self.signer
-                .sign_doc(&mut as_value)
+                .sign_operational_doc(&mut as_value)
                 .await
                 .map_err(|e| RegistryError::Transient(format!("sign document: {e}")))?;
             doc = serde_json::from_value(as_value)

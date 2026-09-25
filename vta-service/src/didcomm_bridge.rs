@@ -110,6 +110,15 @@ pub struct DIDCommBridge {
     /// (R1.3: never hold a lock across an await), which is also why this is a
     /// `std` lock rather than a `tokio` one.
     inner: RwLock<Option<Arc<BridgeInner>>>,
+    /// The VTA's operational signing key (resolver + verification-method id),
+    /// used to sign Trust Task documents this VTA originates to a peer
+    /// ([`Self::sign_outbound_request`]). Set once at state construction.
+    signer: RwLock<
+        Option<(
+            Arc<affinidi_tdk::secrets_resolver::ThreadedSecretsResolver>,
+            String,
+        )>,
+    >,
     /// The primary transport id (e.g. `"vta-main"`). Retained for parity with
     /// the old listener id; outbound always routes through the service's
     /// current primary regardless.
@@ -123,6 +132,7 @@ impl DIDCommBridge {
     pub fn new(listener_id: impl Into<String>) -> Self {
         Self {
             inner: RwLock::new(None),
+            signer: RwLock::new(None),
             listener_id: listener_id.into(),
         }
     }
@@ -143,6 +153,40 @@ impl DIDCommBridge {
         static PLACEHOLDER: std::sync::LazyLock<Arc<DIDCommBridge>> =
             std::sync::LazyLock::new(|| Arc::new(DIDCommBridge::placeholder()));
         &PLACEHOLDER
+    }
+
+    /// Install the VTA's operational signing key for
+    /// [`Self::sign_outbound_request`].
+    pub fn set_document_signer(
+        &self,
+        resolver: Arc<affinidi_tdk::secrets_resolver::ThreadedSecretsResolver>,
+        signing_vm_id: String,
+    ) {
+        *self.signer.write().unwrap_or_else(|p| p.into_inner()) = Some((resolver, signing_vm_id));
+    }
+
+    /// Sign a Trust Task document this VTA originates to a peer — with its
+    /// operational key and `proofPurpose: authentication` — in place. The
+    /// document must already carry `id`, `issuer`, `recipient` and `issuedAt`.
+    /// `false` when no signer is installed or the signature will not attach; the
+    /// caller must then not send the document, because the peer does not rely
+    /// on the transport sender to identify its composer.
+    pub async fn sign_outbound_request(&self, doc: &mut serde_json::Value) -> bool {
+        let signer = self
+            .signer
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let Some((resolver, vm_id)) = signer else {
+            tracing::warn!("no signing key installed; an outbound request cannot be signed");
+            return false;
+        };
+        use affinidi_tdk::secrets_resolver::SecretsResolver as _;
+        let Some(secret) = resolver.get_secret(&vm_id).await else {
+            tracing::error!(%vm_id, "no resident secret for the signing key");
+            return false;
+        };
+        crate::trust_tasks::sign_as_authentication(&secret, doc).await
     }
 
     /// Publish the live delivery-layer wiring, replacing any previous session's.
