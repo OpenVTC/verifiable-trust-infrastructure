@@ -207,6 +207,15 @@ pub enum AuditEvent {
     /// row follows under the same actor when the document is re-sent.
     OperationStepUpRecorded(OperationStepUpData),
 
+    /// A step of the second-party consent that unrestricted admin authority
+    /// needs (VTI-APV-014): asked for, approved or declined by another admin,
+    /// granted once enough have approved, or spent by the operation it names.
+    ///
+    /// The actor is whoever took the step — the requester for `requested` and
+    /// `consumed`, the approver for `approved` and `declined`. `payload_digest`
+    /// is the salted digest the approvers were shown, never the unsalted one.
+    TaskConsentRecorded(TaskConsentData),
+
     /// `POST /v1/join-requests` (REST or DIDComm) accepted a
     /// well-formed submission and persisted it as `Pending`. The
     /// actor on this event is the applicant DID — they're the
@@ -648,6 +657,7 @@ impl AuditEvent {
             Self::AdminPromoted(..) => "AdminPromoted",
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
+            Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
@@ -1201,6 +1211,28 @@ pub struct OperationStepUpData {
     pub credential_id: String,
     /// When the unspent authorization lapses.
     pub expires_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::TaskConsentRecorded`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskConsentData {
+    /// `requested`, `approved`, `declined`, `granted` or `consumed`.
+    pub stage: String,
+    /// Type URI of the operation consented to.
+    pub task: String,
+    /// The DID that asked for the operation.
+    pub requester: String,
+    /// The DID the operation acts on.
+    pub subject: String,
+    /// The digest salted with the ceremony's challenge — what the approvers
+    /// were shown.
+    pub payload_digest: String,
+    /// Approvals needed, and those recorded so far (on `granted` and
+    /// `consumed`, the approvers whose consent the grant carries).
+    pub min_approvals: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

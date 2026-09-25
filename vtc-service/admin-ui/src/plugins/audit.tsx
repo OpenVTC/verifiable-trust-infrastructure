@@ -43,6 +43,7 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   AdminPromoted: "Member promoted to admin",
   AuthSteppedUp: "Session stepped up with a passkey",
   OperationStepUpRecorded: "Passkey gesture recorded for one operation",
+  TaskConsentRecorded: "Admin consent step recorded",
   JoinRequestSubmitted: "Applicant submitted a join request",
   JoinRequestApproved: "Join request approved",
   JoinRequestRejected: "Join request rejected",

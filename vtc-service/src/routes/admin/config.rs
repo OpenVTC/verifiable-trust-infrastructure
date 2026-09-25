@@ -136,6 +136,13 @@ pub async fn patch_config(
             });
             continue;
         }
+        if let Err(e) = check_against_community(&state, &key, &value).await {
+            rejected.push(RejectedKey {
+                key,
+                reason: format!("validation failed: {e}"),
+            });
+            continue;
+        }
 
         let old_value = current.get(&key).cloned();
 
@@ -396,6 +403,26 @@ fn require_audit_writer(state: &AppState) -> Result<&AuditWriter, AppError> {
         })
 }
 
+/// The checks a value's shape cannot settle: whether the community, as it is
+/// now, can live with it. Run on every runtime write path — `config/patch` and
+/// the import — after [`validate_value`].
+///
+/// Today that is one key: an unrestricted-admin consent threshold the
+/// community cannot meet is refused here, when it is written, rather than
+/// discovered when it blocks a grant (VTI-APV-009).
+async fn check_against_community(
+    state: &AppState,
+    key: &str,
+    value: &Value,
+) -> Result<(), AppError> {
+    if key == crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD
+        && let Some(n) = value.as_u64()
+    {
+        crate::acl::admin_consent::check_threshold_meetable(state, n).await?;
+    }
+    Ok(())
+}
+
 /// Read the live in-memory value for `key` out of an `AppConfig`.
 /// Phase-0 keys only; unknown keys return `Value::Null`.
 fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {
@@ -404,6 +431,9 @@ fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {
         "server.port" => Value::Number(cfg.server.port.into()),
         "log.level" => Value::String(cfg.log.level.clone()),
         "auth.admin_idle_timeout" => Value::Number(cfg.auth.admin_idle_timeout.into()),
+        crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD => {
+            Value::Number(cfg.acl.unrestricted_admin_consent_threshold.into())
+        }
         _ => Value::Null,
     }
 }
@@ -437,6 +467,14 @@ fn apply_to_live(cfg: &mut crate::config::AppConfig, key: &str, value: &Value) -
         && let Some(n) = value.as_u64()
     {
         cfg.auth.admin_idle_timeout = n;
+        return true;
+    }
+    // The gate reads the effective value itself (`admin_consent::threshold`),
+    // so this only keeps the in-memory copy in step with what it enforces.
+    if key == crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD
+        && let Some(n) = value.as_u64().filter(|n| *n >= 1)
+    {
+        cfg.acl.unrestricted_admin_consent_threshold = n;
         return true;
     }
     false
@@ -683,6 +721,13 @@ pub(crate) async fn import_inner(
             continue;
         };
         if let Err(e) = validate_value(def, new_value) {
+            rejected.push(RejectedKey {
+                key: key.clone(),
+                reason: format!("validation failed: {e}"),
+            });
+            continue;
+        }
+        if let Err(e) = check_against_community(state, key, new_value).await {
             rejected.push(RejectedKey {
                 key: key.clone(),
                 reason: format!("validation failed: {e}"),

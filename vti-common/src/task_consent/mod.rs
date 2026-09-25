@@ -445,6 +445,42 @@ pub async fn consume_grant(
     Ok(Some(grant))
 }
 
+/// Read the live grant for `(requester, digest)` **without spending it**.
+///
+/// For a gate that must find two things before it may spend either — the VTC
+/// needs both another admin's consent and the requester's own bound passkey
+/// gesture, and must not burn one while the other is missing. The caller spends
+/// with [`consume_grant`], which is still the single-use step: a grant this read
+/// returns may be gone by the time the caller consumes it, and the caller must
+/// treat that as absent. An expired grant is removed and reads as absent.
+pub async fn get_grant(
+    ks: &KeyspaceHandle,
+    requester_did: &str,
+    digest: &str,
+    now: u64,
+) -> Result<Option<TaskConsentGrant>, AppError> {
+    let key = grant_key(requester_did, digest);
+    let Some(bytes) = ks.get_raw(key.clone()).await? else {
+        return Ok(None);
+    };
+    let grant: TaskConsentGrant = decode(&bytes)?;
+    if grant.expires_at <= now {
+        ks.remove(key).await?;
+        return Ok(None);
+    }
+    Ok(Some(grant))
+}
+
+/// Remove the grant for `(requester, digest)`, if any — for a gate that has read
+/// one with [`get_grant`] and found it no longer authorizes anything.
+pub async fn discard_grant(
+    ks: &KeyspaceHandle,
+    requester_did: &str,
+    digest: &str,
+) -> Result<(), AppError> {
+    ks.remove(grant_key(requester_did, digest)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,6 +783,64 @@ mod tests {
         store_grant(&ks, &g).await.unwrap();
         assert!(
             consume_grant(&ks, "did:key:zOther", T_UPDATE, "d1", 200)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A read that does not spend: the grant is still there to consume, and an
+    /// expired one reads as absent and is gone.
+    #[tokio::test]
+    async fn get_grant_reads_without_spending() {
+        let (ks, _d) = temp_ks().await;
+        store_grant(&ks, &grant("d1", 500)).await.unwrap();
+
+        assert!(
+            get_grant(&ks, "did:key:zReq", "d1", 200)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            get_grant(&ks, "did:key:zReq", "d1", 200)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            get_grant(&ks, "did:key:zOther", "d1", 200)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            consume_grant(&ks, "did:key:zReq", T_UPDATE, "d1", 200)
+                .await
+                .unwrap()
+                .is_some(),
+            "a read must leave the grant for the consume"
+        );
+
+        store_grant(&ks, &grant("d1", 500)).await.unwrap();
+        assert!(
+            get_grant(&ks, "did:key:zReq", "d1", 600)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            get_grant(&ks, "did:key:zReq", "d1", 200)
+                .await
+                .unwrap()
+                .is_none(),
+            "an expired grant is removed on read"
+        );
+
+        store_grant(&ks, &grant("d1", 500)).await.unwrap();
+        discard_grant(&ks, "did:key:zReq", "d1").await.unwrap();
+        assert!(
+            get_grant(&ks, "did:key:zReq", "d1", 200)
                 .await
                 .unwrap()
                 .is_none()
