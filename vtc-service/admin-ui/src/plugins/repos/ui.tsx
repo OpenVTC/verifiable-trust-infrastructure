@@ -287,7 +287,7 @@ export function SignTaskDialog({
             )}{" "}
             Consent class: {CONSENT_LABEL[task.consent]}
           </strong>
-          <span className="muted">{CONSENT_MEANS[task.consent]}</span>
+          <span className="muted">{task.consentNote ?? CONSENT_MEANS[task.consent]}</span>
         </div>
 
         {signing ? (

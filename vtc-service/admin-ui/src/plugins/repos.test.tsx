@@ -8,6 +8,7 @@ import {
   ACME,
   BOB,
   gitNsRoutes,
+  PERSONAL,
   PRIYA,
   SANDBOX,
   WIDGETS,
@@ -176,6 +177,100 @@ describe("Repos plugin — overview", () => {
       "cnm git namespace unbind ns_acme",
     );
     expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+
+  it("offers reseat only on a headless namespace, and says it needs a community administrator", async () => {
+    mockFetch(gitNsRoutes());
+    mount();
+    const acme = await screen.findByRole("article", { name: "github.com/acme" });
+    expect(within(acme).queryByRole("button", { name: "Reseat github.com/acme" })).toBeNull();
+    expect(acme.textContent).not.toMatch(/Needs a community administrator/);
+  });
+
+  it("shows the reseat action on a headless namespace card", async () => {
+    mockFetch(gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }, PERSONAL] }));
+    mount();
+    const acme = await screen.findByRole("article", { name: "github.com/acme" });
+    expect(within(acme).getByRole("button", { name: "Reseat github.com/acme" })).toBeTruthy();
+    expect(acme.textContent).toMatch(/Needs a community administrator/);
+    const personal = screen.getByRole("article", { name: "github.com/glenn-g" });
+    expect(within(personal).queryByRole("button", { name: /Reseat/ })).toBeNull();
+  });
+
+  it("reseats with a member and a required statement, handed over when this browser cannot sign", async () => {
+    const requests = mockFetch(
+      gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }] }),
+    );
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reseat github.com/acme" }));
+    const form = await screen.findByRole("dialog", { name: "Reseat github.com/acme" });
+    expect(form.textContent).toMatch(/Only a community administrator/);
+    // Members only: git.ns.admin goes to no one else.
+    await within(form).findByRole("option", { name: /Bob Mensah/ });
+    expect(within(form).queryByRole("option", { name: /paste a DID/ })).toBeNull();
+    fireEvent.change(within(form).getByLabelText("New namespace admin"), { target: { value: BOB } });
+
+    // The statement is required.
+    fireEvent.click(within(form).getByRole("button", { name: "Build the reseat" }));
+    expect(within(form).getByLabelText("Statement").getAttribute("aria-invalid")).toBe("true");
+    expect(form.textContent).toMatch(/Say why the namespace is headless/);
+
+    fireEvent.change(within(form).getByLabelText("Statement"), {
+      target: { value: "Alice left; Bob owns most repos" },
+    });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the reseat" }));
+
+    const sign = await screen.findByRole("dialog", { name: "Reseat github.com/acme" });
+    const body = sign.querySelector(".gitns-parties")!;
+    await waitFor(() => expect(body.textContent).toMatch(/Becomes namespace admin/));
+    expect(body.textContent).toMatch(/Bob Mensah/);
+    expect(body.textContent).toContain(BOB);
+    expect(body.textContent).toContain("github.com/acme");
+    expect(sign.textContent).toMatch(/Destructive — step-up and confirmation/);
+    expect(sign.textContent).toMatch(/community-administrator capability/);
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      `cnm git reseat ns_acme --subject=${BOB} --statement='Alice left; Bob owns most repos'`,
+    );
+    expect(JSON.parse(within(sign).getByLabelText("Document").textContent!)).toEqual({
+      type: "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+      payload: { namespace: "ns_acme", subject: BOB, statement: "Alice left; Bob owns most repos" },
+    });
+    // No console key: nothing to sign with, so nothing is sent.
+    await within(sign).findByRole("button", { name: "I have sent it — refresh" });
+    expect(within(sign).queryByRole("button", { name: "Sign and send" })).toBeNull();
+    expect(within(sign).queryByLabelText(/destructive and want to sign it/)).toBeNull();
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+    expect(requests.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it("makes a reseat be confirmed before this browser signs and sends it", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockResolvedValue({ right: {} });
+    mockFetch(gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }] }));
+    mount();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reseat github.com/acme" }));
+    const form = await screen.findByRole("dialog", { name: "Reseat github.com/acme" });
+    await within(form).findByRole("option", { name: /Bob Mensah/ });
+    fireEvent.change(within(form).getByLabelText("New namespace admin"), { target: { value: BOB } });
+    fireEvent.change(within(form).getByLabelText("Statement"), { target: { value: "Alice left" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the reseat" }));
+
+    const sign = await screen.findByRole("dialog", { name: "Reseat github.com/acme" });
+    const send = await within(sign).findByRole("button", { name: "Sign and send" });
+    expect((send as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(send);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+    fireEvent.click(within(sign).getByLabelText(/destructive and want to sign it/));
+    expect((send as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() =>
+      expect(postSignedTrustTask).toHaveBeenCalledWith(
+        "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+        { namespace: "ns_acme", subject: BOB, statement: "Alice left" },
+      ),
+    );
   });
 
   it("lists repositories with their bootstrap dots, sync state and the action each needs", async () => {

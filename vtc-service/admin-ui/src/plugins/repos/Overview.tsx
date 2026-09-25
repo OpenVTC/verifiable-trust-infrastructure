@@ -24,7 +24,7 @@ import {
   fetchRights,
   gitNsKeys,
 } from "./api";
-import { AdoptDialog, CreateDialog, GrantDialog } from "./dialogs";
+import { AdoptDialog, CreateDialog, GrantDialog, ReseatDialog } from "./dialogs";
 import {
   isPersonal,
   isServiceGrant,
@@ -51,6 +51,7 @@ type Dialog =
   | { kind: "grant"; resource: string; right: "git.ns.admin" | "git.repo.create" | "git.repo.own"; title?: string }
   | { kind: "adopt"; resource?: string; namespaceResource?: string }
   | { kind: "create"; ns: GitNsNamespaceRow }
+  | { kind: "reseat"; ns: GitNsNamespaceRow }
   | { kind: "sign"; task: SignedTask };
 
 function PersonalAccountHint({ ns }: { ns: GitNsNamespaceRow }) {
@@ -111,6 +112,7 @@ function NamespaceCard({
   selected,
   policyVersion,
   onUnbind,
+  onReseat,
 }: {
   ns: GitNsNamespaceRow;
   repos: GitNsRepoRow[];
@@ -121,6 +123,7 @@ function NamespaceCard({
   selected: boolean;
   policyVersion: number | null | undefined;
   onUnbind: () => void;
+  onReseat: () => void;
 }) {
   const book = useNameBook();
   const managed = repos.filter((r) => r.state !== "unmanaged" && r.state !== "detached").length;
@@ -230,6 +233,19 @@ function NamespaceCard({
       ))}
       {isPersonal(ns) && <PersonalAccountHint ns={ns} />}
       <div className="gitns-card-actions">
+        {ns.headless && ns.state === "bound" && (
+          <>
+            <span className="muted gitns-small">Needs a community administrator.</span>
+            <button
+              type="button"
+              className="secondary sm destructive"
+              onClick={onReseat}
+              aria-label={`Reseat ${ns.resource}`}
+            >
+              Reseat
+            </button>
+          </>
+        )}
         <button
           type="button"
           className="secondary sm destructive"
@@ -604,6 +620,7 @@ export function Overview() {
               onUnbind={() =>
                 setDialog({ kind: "sign", task: unbindTask(ns.id, ns.resource) })
               }
+              onReseat={() => setDialog({ kind: "reseat", ns })}
             />
           ))}
         </section>
@@ -724,6 +741,14 @@ export function Overview() {
           namespaceId={dialog.ns.id}
           namespaceResource={dialog.ns.resource}
           personal={isPersonal(dialog.ns)}
+          onClose={() => setDialog(null)}
+          onBuilt={(task) => setDialog({ kind: "sign", task })}
+        />
+      )}
+      {dialog?.kind === "reseat" && (
+        <ReseatDialog
+          namespaceId={dialog.ns.id}
+          namespaceResource={dialog.ns.resource}
           onClose={() => setDialog(null)}
           onBuilt={(task) => setDialog({ kind: "sign", task })}
         />

@@ -694,6 +694,7 @@ fn collect_prefixed_in_file(path: &Path, prefix: &str, out: &mut BTreeSet<String
 const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
     "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
+    "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
     "https://trusttasks.org/spec/git-ns/right/grant/0.1",
     "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
     "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",

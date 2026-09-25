@@ -29,6 +29,7 @@ describe("consentClass — mirrors git_ns::ops::consent_class", () => {
   it("classes bind, unbind and ns.admin as destructive", () => {
     expect(consentClass("namespace.bind")).toBe("destructive");
     expect(consentClass("namespace.unbind")).toBe("destructive");
+    expect(consentClass("namespace.reseat")).toBe("destructive");
     expect(consentClass("right.grant", "git.ns.admin")).toBe("destructive");
     expect(consentClass("right.revoke", "git.ns.admin")).toBe("destructive");
   });
@@ -191,7 +192,12 @@ describe("namespace facts", () => {
     expect(titles).toEqual(["The App lost access", "No namespace admin"]);
     const headless = namespaceFindings({ ...ACME, headless: true })[0]!;
     expect(headless.detail).toMatch(/git-ns\/namespace\/reseat \(cnm git reseat\)/);
-    expect(headless.detail).toMatch(/until then the only recovery is to unbind and bind again/);
+    // Served now: no "once this VTC serves it", no unbind-and-rebind fallback.
+    expect(headless.detail).not.toMatch(/once this VTC serves it|unbind and bind again/);
+    expect(headless.detail).toMatch(/A community administrator can reseat it/);
+    expect(headless.detail).toMatch(/current member of the community/);
+    expect(headless.detail).toMatch(/statement of why that is kept in the audit record/);
+    expect(headless.detail).toMatch(/refused while the namespace has any live git\.ns\.admin/);
     expect(namespaceFindings(ACME)).toEqual([]);
   });
 

@@ -13,9 +13,11 @@ import {
   grantTask,
   nextUrlOf,
   reasonError,
+  reseatTask,
   revokeTask,
   segmentError,
   shellQuote,
+  statementError,
   transferTask,
   unbindTask,
   urlIsOnForge,
@@ -103,6 +105,30 @@ describe("signed git-ns tasks", () => {
     expect(c.consent).toBe("normal");
   });
 
+  it("builds a reseat as git-ns/namespace/reseat 0.1 and cnm git reseat sign it", () => {
+    const t = reseatTask(
+      "ns_acme",
+      "github.com/acme",
+      BOB,
+      "  Alice left on 2026-09-20; Bob owns most repos and agreed.  ",
+    );
+    expect(t.action).toBe("namespace.reseat");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.1");
+    // Exactly the spec's three fields, statement trimmed; nothing else.
+    expect(t.payload).toEqual({
+      namespace: "ns_acme",
+      subject: BOB,
+      statement: "Alice left on 2026-09-20; Bob owns most repos and agreed.",
+    });
+    expect(t.consent).toBe("destructive");
+    expect(t.consentNote).toMatch(/community-administrator capability/);
+    expect(t.resource).toBe("github.com/acme");
+    expect(t.parties).toEqual([{ role: "Becomes namespace admin", did: BOB }]);
+    expect(t.command).toBe(
+      `cnm git reseat ns_acme --subject=${BOB} --statement='Alice left on 2026-09-20; Bob owns most repos and agreed.'`,
+    );
+  });
+
   it("reads next.url from a bind response, https only", () => {
     expect(nextUrlOf({ next: { url: "https://github.com/apps/x/installations/new?state=1" } })).toBe(
       "https://github.com/apps/x/installations/new?state=1",
@@ -161,6 +187,9 @@ describe("every command is safe to paste into a shell", () => {
     ["bind forge", (v) => bindTask(v, "acme", "bridge")],
     ["bind owner", (v) => bindTask("github.com", v, "bridge")],
     ["unbind namespace", (v) => unbindTask(v, NS)],
+    ["reseat namespace", (v) => reseatTask(v, NS, BOB, "Alice left")],
+    ["reseat subject", (v) => reseatTask("ns_1", NS, v, "Alice left")],
+    ["reseat statement", (v) => reseatTask("ns_1", NS, BOB, v)],
     [
       "create namespace",
       (v) => createTask({ namespaceId: v, namespaceResource: NS, name: "x", visibility: "public", personal: false }),
@@ -245,6 +274,13 @@ describe("form limits", () => {
   it("bounds a reason to 1024 characters", () => {
     expect(reasonError("x".repeat(1024))).toBeNull();
     expect(reasonError("x".repeat(1025))).toMatch(/At most 1024 characters — it is 1025/);
+  });
+
+  it("requires a reseat statement of at most 1024 characters", () => {
+    expect(statementError("")).toMatch(/Say why/);
+    expect(statementError("   ")).toMatch(/Say why/);
+    expect(statementError("x".repeat(1024))).toBeNull();
+    expect(statementError("x".repeat(1025))).toMatch(/At most 1024 characters — it is 1025/);
   });
 
   it("only calls a next URL on the forge when its host is the forge", () => {

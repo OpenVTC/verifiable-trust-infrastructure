@@ -186,14 +186,19 @@ pub enum ConsentClass {
 
 /// Design §6: `normal` — grant/revoke `commit.sign` and `maintain`, create,
 /// link; `elevated` — grant/revoke `own`, transfer, archive, adopt, grant
-/// `repo.create`; `destructive` — bind, unbind, grant `ns.admin`.
+/// `repo.create`; `destructive` — bind, unbind, grant `ns.admin`, and reseat
+/// (a grant of `ns.admin`; its spec declares `sideEffects: destructive`).
+/// Reseat does not go through `consent_gate`: it already requires the
+/// community-administrator capability, which is all the gate would add.
 ///
 /// The design names the grant of `repo.create` and `ns.admin`; revoking one
 /// is classed the same, because taking a namespace-level right away is the
 /// same weight of decision as conferring it.
 pub fn consent_class(action: &str, right: Option<Right>) -> ConsentClass {
     match (action, right) {
-        ("namespace.bind" | "namespace.unbind", _) => ConsentClass::Destructive,
+        ("namespace.bind" | "namespace.unbind" | "namespace.reseat", _) => {
+            ConsentClass::Destructive
+        }
         ("right.grant" | "right.revoke", Some(Right::NsAdmin)) => ConsentClass::Destructive,
         ("right.grant" | "right.revoke", Some(Right::RepoOwn | Right::RepoCreate)) => {
             ConsentClass::Elevated

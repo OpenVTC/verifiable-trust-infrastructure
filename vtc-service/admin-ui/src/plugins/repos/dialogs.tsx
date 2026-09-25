@@ -30,9 +30,11 @@ import {
   grantTask,
   MAX_REASON,
   reasonError,
+  reseatTask,
   revokeTask,
   segmentError,
   type SignedTask,
+  statementError,
   transferTask,
 } from "./actions";
 import { fetchMembersPage, gitNsKeys } from "./api";
@@ -596,6 +598,70 @@ export function CreateDialog({
         onChange={setDescription}
         placeholder="Optional"
         hint="Shown by the forge. Nothing you would not publish."
+      />
+    </FormDialog>
+  );
+}
+
+/**
+ * Reseat a headless namespace (`git-ns/namespace/reseat` 0.1). Offered only
+ * where the daemon reports the namespace headless; the VTC checks it again
+ * when it runs the task. The subject is picked from current members only —
+ * the fixed rules give `git.ns.admin` to no one else — and the statement is
+ * required.
+ */
+export function ReseatDialog({
+  namespaceId,
+  namespaceResource,
+  onClose,
+  onBuilt,
+}: {
+  namespaceId: string;
+  namespaceResource: string;
+  onClose: () => void;
+  onBuilt: (task: SignedTask) => void;
+}) {
+  const [subject, setSubject] = useState("");
+  const [statement, setStatement] = useState("");
+  const [errors, setErrors] = useState<{ subject: string | null; statement: string | null }>({
+    subject: null,
+    statement: null,
+  });
+
+  const submit = () => {
+    const next = { subject: didError(subject), statement: statementError(statement) };
+    setErrors(next);
+    if (next.subject || next.statement) return;
+    onBuilt(reseatTask(namespaceId, namespaceResource, subject.trim(), statement));
+  };
+
+  return (
+    <FormDialog
+      title={`Reseat ${namespaceResource}`}
+      onClose={onClose}
+      onSubmit={submit}
+      submitLabel="Build the reseat"
+    >
+      <p className="muted">
+        Seats a new namespace admin where none is left. Only a community administrator
+        (an admin not limited to some contexts) can do this, and only while the
+        namespace has no live <code>git.ns.admin</code>: the VTC refuses it otherwise.
+        The admin it seats has no expiry.
+      </p>
+      <PersonField
+        label="New namespace admin"
+        value={subject}
+        onChange={setSubject}
+        membersOnly
+        error={errors.subject}
+      />
+      <TextField
+        label="Statement"
+        value={statement}
+        onChange={setStatement}
+        placeholder="Why the namespace is headless, and why this member"
+        hint={`Required. Recorded as the right's reason, kept in the audit record, and shown to the namespace's repository owners. Never published. At most ${MAX_REASON} characters.`}
+        error={errors.statement}
       />
     </FormDialog>
   );
