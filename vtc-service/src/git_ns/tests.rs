@@ -4662,7 +4662,11 @@ async fn reproject_queues_every_repository_for_a_namespace_admin_or_community_ad
     );
     // Queued now, with the complete set, though nothing changed.
     assert_eq!(role_jobs_for(&f, RES).await.len(), before + 1);
-    assert!(!role_jobs_for(&f, "github.com/acme/gadgets").await.is_empty());
+    assert!(
+        !role_jobs_for(&f, "github.com/acme/gadgets")
+            .await
+            .is_empty()
+    );
 
     // A namespace admin by explicit record, who is not a community admin.
     ok(&grant(
