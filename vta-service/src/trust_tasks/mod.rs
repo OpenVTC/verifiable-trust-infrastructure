@@ -418,11 +418,14 @@ pub async fn dispatch_trust_task(
 ) -> Result<Response, AppError> {
     // REST is hop-by-hop by construction: TLS terminates at whatever the
     // operator put in front of this process, and the plaintext exists there.
-    Ok(dispatch_trust_task_core(
-        &state,
-        &auth,
-        &body,
-        transport::TransportConfidentiality::HopByHop,
+    Ok(transport::with_binding(
+        "https",
+        dispatch_trust_task_core(
+            &state,
+            &auth,
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        ),
     )
     .await
     .into_response())
