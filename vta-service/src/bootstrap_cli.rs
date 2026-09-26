@@ -386,6 +386,16 @@ fn print_opened(
             println!("  Platform:   {}", b.platform);
             println!("  Fields:     {}", b.fields.len());
         }
+        SealedPayloadV1::SeedMnemonic(m) => {
+            println!("Payload: SeedMnemonic");
+            if let Some(ref did) = m.vta_did {
+                println!("  VTA DID:    {did}");
+            }
+            println!("  Words:      {}", m.mnemonic.split_whitespace().count());
+            println!(
+                "  Open with `pnm bootstrap open` on the offline machine that will hold the backup."
+            );
+        }
     }
     Ok(())
 }

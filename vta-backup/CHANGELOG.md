@@ -2,6 +2,136 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.5.3...vta-backup-v0.6.0) — 2026-09-26
+
+
+### Changed
+
+- **vti-common**: Move the node-neutral backup transfer core out of vta-backup ([#1641](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1641)) ([#1721](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1721))
+
+The community node needs the backup transfer the agent already has. A VTC
+  backup, like any real node's, is too large for one Trust Task document, and the
+  node-neutral `backup/*` family (trustoverip/dtgwg-trust-tasks-tf#633, released
+  in trust-tasks-rs 0.22.7) is how it moves: a bundle, a manifest committed before
+  any byte moves, chunks pulled and pushed by index, a finalize that checks the
+  assembled bytes before trusting them.
+
+  `vta-backup` implements all of that for `vta/backup/*`, but the VTC cannot
+  depend on it — it pulls `vta-config`, `vta-keys`, `vta-support` and `vta-webvh`.
+  Only a thin layer of it is the agent's: serializing the agent's state into an
+  envelope, and applying one. The rest never asked what a bundle contains.
+
+  So that rest moves to `vti_common::backup_transfer`, which both nodes already
+  depend on for storage and auth:
+
+  - `bundle_store` — the `BundleRecord` state machine, token minting and the
+    constant-time token check (was `vta_backup::backup_bundle_store`);
+  - `sweeper` — TTL expiry and retention (was `vta_backup::backup_bundle_sweeper`);
+  - `chunked` — staging, the chunk plan, `get_chunk`, `initiate_import`,
+    `put_chunk`, `finalize_precheck` and the per-DID rate limiter (was
+    `vta_backup::ops::chunked`), plus `check_initiate` and a node-neutral chunked
+    `complete_export`;
+  - the ownership, kind, TTL and open-bundle-cap rules, and `abort`, from
+    `vta_backup::ops::descriptors`.
+
+  Files moved with `git mv`, so their history follows them. `vta-backup`
+  re-exports every moved module under its old path, keeps `initiate_export`
+  (which serializes the agent's state and hands the bytes to `stage_export`), and
+  routes `abort_bundle` through the shared `abort`. No behaviour changes, and no
+  public path in `vta-backup` disappears.
+
+  `vti-common` gains `subtle`, and now declares the tokio `fs` and `io-util`
+  features the moved code uses. `vta-backup` had used `tokio::fs` without
+  declaring `fs`, building only by feature unification.
+
+  The 32 moved tests run in `vti-common`, and `vta-backup`'s own suite (54) is
+  unchanged. The VTC's `backup/*` handlers follow in the next change.
+
+
+
+### Fixed
+
+- **vta-service**: Apply the key-export and sign capability checks on every transport ([#1733](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1733))
+
+* fix(vta-service): apply the key-export and sign capability checks on every transport
+
+  The KeyExport capability was checked only by the keys/export-secret
+  Trust-Task handler, so GET /keys/{id}/secret and DIDComm get-key-secret
+  released private keys to an admin whose entry was narrowed without
+  key-export. Capability::Sign was checked nowhere.
+
+  Both checks now live in the operation layer (VTI-VTA-003, VTI-VTA-007):
+
+  - get_key_secret requires key-export before any lookup, refuses a
+    hop-by-hop channel (keys/export-secret/0.1 requires a channel
+    confidential to the two parties), keeps the internal-key and
+    non-exportable refusals, and writes the key.secret_export audit row
+    durably before releasing the material, refusing if it cannot.
+  - The Trust-Task binding (https, didcomm, tsp) is recorded at the three
+    entry points and named in the export's audit channel.
+  - vta/contexts/secrets and provision-integration use the same gate.
+  - sign_payload requires sign for opaque caller bytes; derive-and-sign
+    and derive-and-sign-document require sign.
+  - The legacy REST and DIDComm key routes now consult the policy gate
+    with the matching Trust-Task URI.
+  - The TEE mnemonic export writes a durable audit row before release.
+
+
+
+### Security
+
+- **resolver**: One bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134) ([#1737](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1737))
+
+* security(resolver)!: one bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134)
+
+  The VTC ran two DID-document caches: the app resolver built in
+  `init_auth`, and a second one the messaging TDK built for itself
+  because it was given none. Both used the SDK defaults of a 300 s TTL and
+  100 entries. Every DIDComm and TSP message on the mediator socket was
+  checked against a cache the REST and Trust Task paths could not see or
+  evict. Neither cache was ever refreshed when a verification failed, so
+  a peer that rotated was refused as a forger until its entry aged out.
+
+  Bounded TTL (key-roles, dtgwg-vti-spec #42: VTI-KEY-060/062/122/123/134):
+
+  - A new `[did_cache]` section (`vti_common::config::DidCacheConfig`)
+    holds `ttl_secs` (default 60, refused outside 1..=300) and `capacity`
+    (default 1000). The VTA and the VTC read the same type.
+  - The TTL is what bounds how long a key revoked for compromise keeps
+    verifying: VTI-KEY-123 allows no overlap, and nothing else notices a
+    removal. A new key does not wait on the TTL, because of the refresh
+    below. 60 s caps the revocation window at a minute, for one resolution
+    per active DID per minute. 300 s, the SDK default and the old
+    behaviour, is the ceiling.
+  - `vta_sdk::resolver::build_verifier_did_cache_config` builds it, with
+    the webvh host policy the VTA already used. The VTC now uses that
+    policy too, so the private-host opt-in reaches it as well.
+
+  One cache:
+
+  - The VTC messaging TDK is handed the app resolver.
+  - The VTA already shared its resolver. Its fallback when there is no
+    app resolver now gets the same bounds, not the SDK defaults.
+
+  Re-resolve once, then fail closed (`vta_sdk::did_refresh`):
+
+  - `resolve_for_vm`: when a cached document does not list the method a
+    proof names, re-resolve it fresh once. This covers every Trust Task
+    proof on both nodes (`TrustTaskVmResolver`) and the VTC credential/VP
+    resolver (`DidVmResolver`).
+  - `verify_trust_task_proof_with`: when verification fails and the
+    signer's document came from the cache, evict it and verify once more.
+    This covers a key id kept with its material replaced.
+  - `unpack_refreshing_sender`: when an authcrypt unpack fails, evict the
+    sender named in the protected header (`skid`) and retry once. It is
+    used on the REST DIDComm auth and refresh paths of both nodes.
+  - Each forced refresh is rate-limited per DID (5 s, with at most 4096
+    DIDs tracked). A failing proof is something anyone can send, and
+    without the limit each one would make this node fetch a third party's
+    document.
+
+
+
 ## [0.5.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.5.2...vta-backup-v0.5.3) — 2026-09-24
 
 

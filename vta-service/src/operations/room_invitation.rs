@@ -139,8 +139,19 @@ pub async fn verify(
         )));
     }
 
+    // An invitation is the room's attestation, so its key must be one the room
+    // authorised for assertionMethod (VTI-KEY-022).
+    if proof.proof_purpose != "assertionMethod" {
+        tracing::warn!("an invitation's proof does not declare proofPurpose assertionMethod");
+        return Err(AppError::Validation(
+            "the invitation could not be verified".into(),
+        ));
+    }
     let key = keys
-        .public_key(&proof.verification_method)
+        .public_key(
+            &proof.verification_method,
+            vti_common::auth::ProofPurpose::AssertionMethod,
+        )
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -216,7 +227,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl vti_rooms_dtg::VerificationKeys for DidKeyOnly {
-        async fn public_key(&self, verification_method: &str) -> Result<Vec<u8>, AppError> {
+        async fn public_key(
+            &self,
+            verification_method: &str,
+            _purpose: vti_common::auth::ProofPurpose,
+        ) -> Result<Vec<u8>, AppError> {
             let did = verification_method
                 .split('#')
                 .next()

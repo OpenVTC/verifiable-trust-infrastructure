@@ -2969,6 +2969,32 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    // ─── vta/attestation/mnemonic-export (tee-gated like its dispatch arm) ─
+    #[cfg(feature = "tee")]
+    {
+        use vta_sdk::protocols::attestation_management::MnemonicExportResultBody;
+        // Serialised from the types the service reads and answers with. The
+        // response carries the root seed sealed to the caller, so what this
+        // pins is that the sealed shape matches the published schema exactly.
+        t.push((
+            uris::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+            checked!(
+                specs::vta::attestation::mnemonic_export::v1_0::Payload,
+                specs::vta::attestation::mnemonic_export::v1_0::Response,
+                json!({
+                    "clientDid": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+                    "label": "first boot",
+                }),
+                to_v(MnemonicExportResultBody {
+                    bundle: "-----BEGIN VTA SEALED BUNDLE-----".into(),
+                    digest: "0".repeat(64),
+                    window_remaining_secs: 42,
+                })
+            ),
+        ));
+    }
+
     // ─── vta/webvh/dids/update (webvh-gated like its dispatch arm) ─
     #[cfg(feature = "webvh")]
     {

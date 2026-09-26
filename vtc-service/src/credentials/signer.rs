@@ -108,7 +108,7 @@ impl LocalSigner {
     }
 
     /// Construct from 32 raw Ed25519 seed bytes. The resulting
-    /// signer's `secret.id` is `{issuer_did}#key-0`. Used by
+    /// signer's `secret.id` is [`assertion_method_id`] of the issuer. Used by
     /// tests + the boot path that decodes a `VtcKeyBundle`.
     pub fn from_ed25519_seed(issuer_did: String, seed: &[u8; 32]) -> Self {
         let assertion_id = assertion_method_id(&issuer_did);
@@ -117,6 +117,18 @@ impl LocalSigner {
             issuer_did,
             secrets: vec![secret],
         }
+    }
+
+    /// A signer whose issuer is the `did:key` of its own Ed25519 key, signing
+    /// as that did:key's one verification method (`did:key:<id>#<id>`) — for
+    /// tests, which have no DID document to put `#key-0` in.
+    #[cfg(test)]
+    pub(crate) fn did_key_for_seed(seed: &[u8; 32]) -> Self {
+        let probe = Secret::generate_ed25519(None, Some(seed));
+        let mb = probe.get_public_keymultibase().expect("ed25519 multikey");
+        let did = format!("did:key:{mb}");
+        let secret = Secret::generate_ed25519(Some(&format!("{did}#{mb}")), Some(seed));
+        Self::new(did, secret)
     }
 
     /// Sign `doc` with every key this signer holds and return the value to put
@@ -294,22 +306,32 @@ impl LocalSigner {
         let mut vc_without_proof = vc.clone();
         vc_without_proof.proof = None;
 
+        // Each proof is checked against the key it names: a hybrid credential's
+        // ML-DSA proof against the ML-DSA key, not the primary Ed25519 one. A
+        // proof naming no key this signer holds is not one it made.
         let outcomes: Vec<(String, Result<(), String>)> = proofs
             .iter()
             .map(|proof| {
                 let did = super::proof_set::proof_signer_did(proof).to_string();
-                let r = proof
-                    .verify_with_public_key(
-                        &vc_without_proof,
-                        self.public_bytes(),
-                        VerifyOptions::new(),
-                    )
-                    .map_err(|e| e.to_string());
+                let r = match self
+                    .secrets
+                    .iter()
+                    .find(|s| s.id == proof.verification_method)
+                {
+                    None => Err("proof names a key this signer does not hold".to_string()),
+                    Some(secret) => proof
+                        .verify_with_public_key(
+                            &vc_without_proof,
+                            secret.get_public_bytes(),
+                            VerifyOptions::new(),
+                        )
+                        .map_err(|e| e.to_string()),
+                };
                 (did, r)
             })
             .collect();
 
-        super::proof_set::accept_any(&outcomes)
+        super::proof_set::accept_all(&outcomes)
             .map_err(|e| AppError::Forbidden(format!("verify VC: {e}")))?;
         Ok(())
     }
@@ -319,8 +341,15 @@ impl LocalSigner {
 /// VTC. Re-exposed here so the VMC + VEC builders compose the
 /// same URI without re-deriving it from `LocalSigner` every
 /// time.
+///
+/// A `did:key` has no `#key-0`: its one verification method is
+/// `did:key:<id>#<id>`, and a verifier refuses a proof naming any other
+/// (VTI-KEY-022), so that is the id a did:key issuer signs as.
 pub fn assertion_method_id(issuer_did: &str) -> String {
-    format!("{issuer_did}#{ASSERTION_KEY_FRAGMENT}")
+    match issuer_did.strip_prefix("did:key:") {
+        Some(id) => format!("{issuer_did}#{id}"),
+        None => format!("{issuer_did}#{ASSERTION_KEY_FRAGMENT}"),
+    }
 }
 
 #[cfg(test)]
@@ -353,8 +382,12 @@ mod tests {
     #[test]
     fn assertion_method_id_is_did_hash_fragment() {
         assert_eq!(
+            assertion_method_id("did:webvh:scid:vtc.example"),
+            "did:webvh:scid:vtc.example#key-0".to_string()
+        );
+        assert_eq!(
             assertion_method_id("did:key:zX"),
-            "did:key:zX#key-0".to_string()
+            "did:key:zX#zX".to_string()
         );
     }
 }
