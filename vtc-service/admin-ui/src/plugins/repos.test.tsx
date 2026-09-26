@@ -447,7 +447,7 @@ describe("Repos plugin — overview", () => {
     fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
     expect(await within(sign).findByText("gh repo create glenn-g/tool --public")).toBeTruthy();
     expect(postSignedTrustTask).toHaveBeenCalledWith(
-      "https://trusttasks.org/spec/git-ns/repo/create/0.1",
+      "https://trusttasks.org/spec/git-ns/repo/create/0.3",
       { namespace: "ns_glenn", name: "tool", visibility: "private" },
     );
   });

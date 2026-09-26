@@ -259,7 +259,19 @@ drift item whose linked member is the resolver, `repo/adopt` naming oneself
 an owner, and `namespace/reseat` to oneself. Self-grants of
 `git.repo.maintain` and `git.commit.sign` stay allowed. `namespace/bind`
 (the binder's first `git.ns.admin`) and `repo/create` (the creator's first
-`own`) are not self-grants. This VTC serves grant and revoke at 0.3 only:
+`own`) are not self-grants — but `repo/create` (served at 0.3) makes its
+creator the owner only on an **explicit** `git.repo.create` record (granted by
+someone else, or a break-glass). A `git.repo.create` implied by `git.ns.admin`
+carries no creator ownership: a namespace admin names another member with
+`owners` (`cnm git create --owner <did>`), or is refused
+`git-ns:selfGrantNotAllowed`. A single-admin community breaks the glass once
+for `git.repo.create` on the namespace, not once per repository.
+
+Elevated rights (`own`, `repo.create`, `ns.admin`) go only to a current
+member with an ACL entry, and are granted only by one — on grant, adopt,
+create, transfer, drift adopt and reseat alike (fixed rule 5; policy cannot
+waive it). A throwaway `did:key` cannot stand in for a second person. Two
+member DIDs held by one person are out of scope for the DID comparison. This VTC serves grant and revoke at 0.3 only:
 0.1 and 0.2 are refused as unknown task types, so no client reaches a grant
 that skips the rule or a record without its `breakGlass` flag.
 

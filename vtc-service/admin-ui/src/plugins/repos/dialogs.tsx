@@ -573,14 +573,26 @@ export function CreateDialog({
   const [name, setName] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [description, setDescription] = useState("");
+  const [owner, setOwner] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [ownerError, setOwnerError] = useState<string | null>(null);
 
   const submit = () => {
     const e = segmentError(name, "repository");
+    const oe = owner.trim() ? didError(owner) : null;
     setError(e);
-    if (!e) {
+    setOwnerError(oe);
+    if (!e && !oe) {
       onBuilt(
-        createTask({ namespaceId, namespaceResource, name, visibility, description, personal }),
+        createTask({
+          namespaceId,
+          namespaceResource,
+          name,
+          visibility,
+          description,
+          owners: owner.trim() ? [owner.trim()] : undefined,
+          personal,
+        }),
       );
     }
   };
@@ -595,8 +607,16 @@ export function CreateDialog({
       <p className="muted">
         {personal
           ? "On a personal account no bot can create a repository: the VTC reserves the name and answers with the commands the account holder runs."
-          : "The bridge creates it and bootstraps commit trust. Whoever signs becomes its owner, and needs git.repo.create here."}
+          : "The bridge creates it and bootstraps commit trust. Whoever signs needs git.repo.create here."}
       </p>
+      <TextField
+        label="Owner (DID)"
+        value={owner}
+        onChange={setOwner}
+        placeholder="Optional — you, if empty"
+        error={ownerError}
+        hint="Empty makes you the owner, which the VTC accepts only if someone else granted you git.repo.create here (or you broke the glass for it). A namespace admin's create right is implied and makes nobody an owner on its own: name another member."
+      />
       <TextField
         label="Name"
         value={name}

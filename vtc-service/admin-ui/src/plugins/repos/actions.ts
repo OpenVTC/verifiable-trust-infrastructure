@@ -70,7 +70,7 @@ export const TASK_URI: Record<GitNsAction, string> = {
   "repo.adopt": "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
   "repo.transfer": "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
   "repo.archive": "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
-  "repo.create": "https://trusttasks.org/spec/git-ns/repo/create/0.1",
+  "repo.create": "https://trusttasks.org/spec/git-ns/repo/create/0.3",
   "drift.resolve": "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
 };
 
@@ -493,6 +493,10 @@ export interface CreateInput {
   name: string;
   visibility: "public" | "private";
   description?: string;
+  /** Who owns it (`git-ns/repo/create` 0.3). Absent, the signer — which the
+   *  VTC accepts only on an explicit `git.repo.create`; a namespace admin
+   *  whose create right is only implied names another member. */
+  owners?: string[];
   /** A personal account: no bot can create there, so the VTC reserves the
    *  name and returns the steps for the account holder. */
   personal: boolean;
@@ -510,12 +514,18 @@ export function createTask(c: CreateInput): SignedTask {
     payload.description = d;
     args.push(o("description", d));
   }
+  const owners = (c.owners ?? []).map((x) => x.trim()).filter(Boolean);
+  if (owners.length > 0) {
+    payload.owners = owners;
+    for (const x of owners) args.push(o("owner", x));
+  }
+  const owner = owners.length > 0 ? `${owners.join(", ")} becomes its owner.` : "The signer becomes its owner.";
   return {
     action: "repo.create",
     title: `Create ${shortName(`${c.namespaceResource}/${c.name}`)}`,
     effect: c.personal
-      ? "The VTC reserves the name and answers with the commands the account holder runs to create it; it becomes active when adopted. The signer becomes its owner."
-      : "The bridge creates the repository and bootstraps commit trust on it — workflow, keyring, variables, required check. The signer becomes its owner. Needs git.repo.create on the namespace.",
+      ? `The VTC reserves the name and answers with the commands the account holder runs to create it; it becomes active when adopted. ${owner}`
+      : `The bridge creates the repository and bootstraps commit trust on it — workflow, keyring, variables, required check. ${owner} Needs git.repo.create on the namespace.`,
     taskUri: TASK_URI["repo.create"],
     payload,
     consent: consentClass("repo.create"),

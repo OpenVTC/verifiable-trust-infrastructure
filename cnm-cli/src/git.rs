@@ -69,8 +69,10 @@ pub enum GitCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Create a repository in a namespace, becoming its owner (needs
-    /// `git.repo.create`). Where no bot can create it, prints the steps.
+    /// Create a repository in a namespace (needs `git.repo.create`). You own
+    /// it only if you hold `git.repo.create` by explicit record; a namespace
+    /// admin names another member with `--owner`. Where no bot can create it,
+    /// prints the steps.
     Create {
         /// The namespace identifier (`namespace list`).
         #[arg(long)]
@@ -82,6 +84,10 @@ pub enum GitCommands {
         /// Shown by the forge; do not put anything here you would not publish.
         #[arg(long)]
         description: Option<String>,
+        /// An owner's DID, a current member. Repeat for several. Omitted, you
+        /// are the owner.
+        #[arg(long = "owner")]
+        owners: Vec<String>,
     },
     /// Hand this profile's ownership of a repository to someone else.
     Transfer {
@@ -602,12 +608,11 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nA link is answered only to the member who began it, and forgotten some days \
              after it finishes. Start again:\n  {bin} git link --forge <forge>"
         ),
-        "git-ns:selfGrantNotAllowed" => format!(
-            "\nSeparation of duties: nobody grants themselves git.ns.admin, git.repo.create or \
-             git.repo.own. Ask another administrator to grant it. If nobody else can, break the \
-             glass — it is announced to every other administrator:\n  {bin} git break-glass \
-             --right=<right> --resource=<resource> --justification='<why nobody else could>'"
-        ),
+        "git-ns:selfGrantNotAllowed" => "\nThis would give you an elevated right (own, \
+             repo.create or ns.admin) on your own authority. Ask another community \
+             administrator to do it, or use break-glass (`cnm git break-glass`), which is \
+             audited and must be ratified."
+            .to_string(),
         "git-ns/right/break-glass:disabled" => "\nThis community's policy has turned \
              break-glass off: another administrator must grant the right."
             .to_string(),
@@ -1119,7 +1124,11 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             name,
             visibility,
             description,
+            owners,
         } => {
+            for o in &owners {
+                did_arg("--owner", o)?;
+            }
             let (did, key) = signing_key(keyring_key)?;
             let mut payload = json!({
                 "namespace": namespace,
@@ -1132,7 +1141,10 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             if let Some(d) = description {
                 payload["description"] = json!(d);
             }
-            let payload: specs::repo::create::v0_1::Payload = serde_json::from_value(payload)
+            if !owners.is_empty() {
+                payload["owners"] = json!(owners);
+            }
+            let payload: specs::repo::create::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that repository is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_create_repo(&payload, &key)

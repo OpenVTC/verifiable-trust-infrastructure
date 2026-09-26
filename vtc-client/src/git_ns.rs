@@ -30,7 +30,7 @@ use specs::account::{link::v0_1 as link, link_status::v0_1 as link_status};
 use specs::drift::resolve::v0_1 as drift_resolve;
 use specs::namespace::{bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind};
 use specs::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
     transfer::v0_1 as transfer,
 };
 use specs::right::{
@@ -144,7 +144,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/repo/create/0.1`.
+    /// `git-ns/repo/create/0.3`.
     pub async fn git_ns_create_repo(
         &self,
         payload: &create::Payload,

@@ -124,7 +124,7 @@ describe("signed git-ns tasks", () => {
       description: "Gadget tools",
       personal: false,
     });
-    expect(c.taskUri).toBe("https://trusttasks.org/spec/git-ns/repo/create/0.1");
+    expect(c.taskUri).toBe("https://trusttasks.org/spec/git-ns/repo/create/0.3");
     expect(c.payload).toEqual({
       namespace: "ns_1",
       name: "gadgets",
@@ -134,6 +134,18 @@ describe("signed git-ns tasks", () => {
     expect(c.command).toBe(
       "cnm git create --namespace=ns_1 gadgets --visibility=public --description='Gadget tools'",
     );
+    // A namespace admin names the owner (`git-ns/repo/create` 0.3).
+    const forBob = createTask({
+      namespaceId: "ns_1",
+      namespaceResource: "github.com/acme",
+      name: "gadgets",
+      visibility: "public",
+      owners: ["did:web:bob.example"],
+      personal: false,
+    });
+    expect(forBob.payload).toMatchObject({ owners: ["did:web:bob.example"] });
+    expect(forBob.command).toContain("--owner=did:web:bob.example");
+    expect(forBob.effect).toContain("did:web:bob.example becomes its owner.");
     expect(c.consent).toBe("normal");
   });
 

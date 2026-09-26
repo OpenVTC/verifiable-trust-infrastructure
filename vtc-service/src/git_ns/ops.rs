@@ -23,7 +23,7 @@ use trust_tasks_rs::specs::git_ns::namespace::{
     bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
 };
 use trust_tasks_rs::specs::git_ns::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
     transfer::v0_1 as transfer,
 };
 use trust_tasks_rs::specs::git_ns::right::{
@@ -1050,7 +1050,7 @@ async fn admin_record_history(
     Ok(out)
 }
 
-// ── git-ns/repo/create/0.1 ──────────────────────────────────────────────────
+// ── git-ns/repo/create/0.3 ──────────────────────────────────────────────────
 
 pub async fn repo_create(
     state: &AppState,
@@ -1074,11 +1074,36 @@ pub async fn repo_create(
     }
     let ns_res = ns.resource();
     // Item 2 — `git.repo.create` on the namespace, explicit or implied.
-    let passed = rules::holds_admitted(&snap, &actor.did, Right::RepoCreate, &ns_res, t)?;
+    rules::holds_admitted(&snap, &actor.did, Right::RepoCreate, &ns_res, t)?;
     let actor_rights = rules::effective_on(&snap, &actor.did, &ns_res, t);
     let visibility = visibility_from_wire(&to_string_json(&p.visibility))?;
     let name = p.name.to_string();
     let resource = ns_res.child(&name);
+    // Who owns it (`git-ns/repo/create/0.3`, *Authorization*): the requester
+    // by default, and only on an explicit `git.repo.create` — an implied one
+    // (from `git.ns.admin`) makes the requester's own ownership a self-grant.
+    let owner_dids: Vec<String> = match &p.owners {
+        Some(o) => o.iter().map(|d| d.to_string()).collect(),
+        None => vec![actor.did.clone()],
+    };
+    let mut owners = Vec::with_capacity(owner_dids.len());
+    for o in owner_dids {
+        did_core("owners", &o)?;
+        let member = standing(state, &o).await?.member;
+        owners.push((o, member));
+    }
+    let st = settings(state).await;
+    let passed = rules::create_owners_admitted(
+        &snap,
+        &actor.did,
+        actor.member,
+        &Scope::Namespace(ns.id.clone()),
+        &ns_res,
+        &resource,
+        &owners,
+        st.rules,
+        t,
+    )?;
     consent_gate(state, &actor, "repo.create", None).await?;
     let version = check_policy(
         state,
@@ -1131,12 +1156,10 @@ pub async fn repo_create(
     store::put_repo(&state.git_ns.ks, &repo).await?;
     let scope = Scope::Repo(repo.id.clone());
     let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
-    set.rows.push(new_row(
-        &actor.did,
-        Right::RepoOwn,
-        &actor.did,
-        actor.member,
-    ));
+    for (owner, member) in &owners {
+        set.rows
+            .push(new_row(owner, Right::RepoOwn, &actor.did, *member));
+    }
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
     audit(
         state,
@@ -1152,22 +1175,31 @@ pub async fn repo_create(
         },
     )
     .await;
-    audit(
-        state,
-        &actor.did,
-        Some(&actor.did),
-        Audit {
-            action: "gitNs.right.granted",
-            namespace: Some(&ns.id),
-            resource: Some(resource.to_string()),
-            right: Some(Right::RepoOwn),
-            policy_version: version,
-            detail: Some("creator".into()),
-        },
-    )
-    .await;
+    for (owner, _) in &owners {
+        audit(
+            state,
+            &actor.did,
+            Some(owner),
+            Audit {
+                action: "gitNs.right.granted",
+                namespace: Some(&ns.id),
+                resource: Some(resource.to_string()),
+                right: Some(Right::RepoOwn),
+                policy_version: version,
+                detail: Some(
+                    if *owner == actor.did {
+                        "creator"
+                    } else {
+                        "create"
+                    }
+                    .into(),
+                ),
+            },
+        )
+        .await;
+    }
 
-    let owners = vec![actor.did.clone()];
+    let owners: Vec<String> = owners.into_iter().map(|(o, _)| o).collect();
     let mut response = json!({ "repo": wire::repo_summary(&repo, &owners) });
     if bot {
         // Item 5 — the bridge creates it and turns commit trust on.
@@ -1314,10 +1346,13 @@ pub async fn repo_adopt(
                 Right::RepoOwn,
                 &resource,
                 s.member,
+                actor.member,
                 st.rules,
                 t,
             )?,
         };
+        // Fixed rule 5 binds the reservation path too: every owner is a member.
+        rules::members_only(Right::RepoOwn, s.member, actor.member)?;
         version = check_policy(
             state,
             PolicyInput {
@@ -1505,6 +1540,8 @@ pub async fn repo_transfer(
         return Err(declared(SELF_TRANSFER, "`to` is you"));
     }
     let to_standing = standing(state, &to).await?;
+    // Fixed rule 5 of `git-ns/right/grant/0.3`: `own` goes only to a member.
+    rules::members_only(Right::RepoOwn, to_standing.member, actor.member)?;
     consent_gate(state, &actor, "repo.transfer", Some(Right::RepoOwn)).await?;
     let version = check_policy(
         state,
@@ -1825,6 +1862,7 @@ async fn right_grant_record(
         right,
         &resource,
         subject_standing.member,
+        actor.member,
         st.rules,
         t,
     )?;

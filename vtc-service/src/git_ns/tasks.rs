@@ -30,7 +30,7 @@ use trust_tasks_rs::specs::git_ns::namespace::{
     bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
 };
 use trust_tasks_rs::specs::git_ns::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
     transfer::v0_1 as transfer,
 };
 use trust_tasks_rs::specs::git_ns::right::{

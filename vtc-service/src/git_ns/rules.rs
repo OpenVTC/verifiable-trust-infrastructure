@@ -279,13 +279,30 @@ pub fn authority_to_revoke(
     }
 }
 
-/// Fixed rule 5: `git.ns.admin` and `git.repo.create` go only to current
-/// members, because a non-member cannot be reached by the membership
-/// lifecycle that revokes rights on departure.
-pub fn members_only(right: Right, subject_is_member: bool) -> Result<(), Refusal> {
-    if right.is_namespace_right() && !subject_is_member {
+/// Fixed rule 5 of `git-ns/right/grant/0.3`: an elevated right
+/// (`git.ns.admin`, `git.repo.create`, `git.repo.own`) goes only to a current
+/// member — an unexpired ACL entry and no recorded departure — and is granted
+/// only by one. A non-member cannot be reached by the membership lifecycle
+/// that revokes rights on departure, and a DID the VTC does not know as a
+/// member (a fresh `did:key`) would otherwise let an actor hand an elevated
+/// right to a second identity they control. Policy cannot waive it.
+pub fn members_only(
+    right: Right,
+    subject_is_member: bool,
+    actor_is_member: bool,
+) -> Result<(), Refusal> {
+    if !right.is_elevated() {
+        return Ok(());
+    }
+    if !actor_is_member {
         return Err(Refusal::MembersOnly(format!(
-            "{right} goes only to current members of the community"
+            "{right} is granted only by a current member of the community"
+        )));
+    }
+    if !subject_is_member {
+        return Err(Refusal::MembersOnly(format!(
+            "{right} goes only to a current member of the community, holding standing in its \
+             access-control records"
         )));
     }
     Ok(())
@@ -416,12 +433,55 @@ pub fn grant_admitted(
     right: Right,
     target: &Resource,
     subject_is_member: bool,
+    actor_is_member: bool,
     settings: RuleSettings,
     now: DateTime<Utc>,
 ) -> Result<RulesPassed, Refusal> {
     authority_to_grant(snap, actor, right, target, settings, now)?;
     separation_of_duties(actor, subject, right, target)?;
-    members_only(right, subject_is_member)?;
+    members_only(right, subject_is_member, actor_is_member)?;
+    Ok(RulesPassed::new())
+}
+
+/// `git-ns/repo/create/0.3`, *Authorization*: who may own what a create
+/// makes. The requester may be an owner only when they hold `git.repo.create`
+/// on the namespace by explicit, live record (granted by someone else, or a
+/// break-glass record); a `git.repo.create` only implied by `git.ns.admin`
+/// carries no creator ownership, and naming oneself is a self-grant of
+/// `git.repo.own` (fixed rule 7). Every other owner is a grant of `own` under
+/// rule 2, and every owner and the requester are members (rule 5).
+#[allow(clippy::too_many_arguments)]
+pub fn create_owners_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    actor_is_member: bool,
+    ns_scope: &Scope,
+    ns_res: &Resource,
+    target: &Resource,
+    owners: &[(String, bool)],
+    settings: RuleSettings,
+    now: DateTime<Utc>,
+) -> Result<RulesPassed, Refusal> {
+    let explicit_create =
+        explicit_admitted(snap, actor, Right::RepoCreate, ns_scope, now).is_some();
+    for (owner, owner_is_member) in owners {
+        if owner == actor {
+            if !explicit_create {
+                return Err(Refusal::SelfGrant(format!(
+                    "your git.repo.create on this namespace is only implied by git.ns.admin, \
+                     which does not make you the owner of what you create: name another member \
+                     in owners, or break the glass once for git.repo.create — `cnm git \
+                     break-glass --right=git.repo.create --resource={} \
+                     --justification='…'` — which is audited, announced to every administrator, \
+                     and flagged until another administrator ratifies or revokes it",
+                    ns_res
+                )));
+            }
+        } else {
+            authority_to_grant(snap, actor, Right::RepoOwn, target, settings, now)?;
+        }
+        members_only(Right::RepoOwn, *owner_is_member, actor_is_member)?;
+    }
     Ok(RulesPassed::new())
 }
 
@@ -511,7 +571,7 @@ pub fn break_glass_admitted(
             }
         }
     };
-    members_only(right, actor_is_member)?;
+    members_only(right, actor_is_member, actor_is_member)?;
     Ok((RulesPassed::new(), entitlement))
 }
 
@@ -984,11 +1044,23 @@ mod tests {
     }
 
     #[test]
-    fn namespace_rights_go_to_members_only() {
-        assert!(members_only(Right::NsAdmin, false).is_err());
-        assert!(members_only(Right::RepoCreate, false).is_err());
-        assert!(members_only(Right::CommitSign, false).is_ok());
-        assert!(members_only(Right::RepoOwn, false).is_ok());
+    fn elevated_rights_go_to_and_from_members_only() {
+        for right in [Right::NsAdmin, Right::RepoCreate, Right::RepoOwn] {
+            assert!(
+                members_only(right, false, true).is_err(),
+                "{right} to a non-member"
+            );
+            assert!(
+                members_only(right, true, false).is_err(),
+                "{right} by a non-member"
+            );
+            assert!(
+                members_only(right, true, true).is_ok(),
+                "{right} member to member"
+            );
+        }
+        assert!(members_only(Right::CommitSign, false, false).is_ok());
+        assert!(members_only(Right::RepoMaintain, false, false).is_ok());
     }
 
     /// A service grant is admitted for exactly one shape: `commit.sign`, on a

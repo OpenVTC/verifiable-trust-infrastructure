@@ -33,7 +33,7 @@ const URI: &str = "https://trusttasks.org/spec/git-ns";
 /// (0.1 is not served), everything else at 0.1.
 fn uri(task: &str) -> String {
     let version = match task {
-        "right/grant" | "right/revoke" => "0.3",
+        "right/grant" | "right/revoke" | "repo/create" => "0.3",
         _ => "0.1",
     };
     format!("{URI}/{task}/{version}")
@@ -644,6 +644,152 @@ async fn create_needs_repo_create() {
     assert_eq!(code(&out), "permissionDenied");
 }
 
+/// `git-ns/repo/create/0.3`: a `git.repo.create` implied by `git.ns.admin`
+/// carries no creator ownership. The binder of `acme` (its namespace admin)
+/// creating without naming an owner would own the repository on their own
+/// authority: refused, nothing reserved.
+#[tokio::test]
+async fn create_on_an_implied_repo_create_refuses_the_creator_as_owner() {
+    let f = fixture().await;
+    let ns = bind_manual(&f).await;
+    for body in [
+        json!({ "namespace": ns, "name": "gadgets", "visibility": "public" }),
+        json!({ "namespace": ns, "name": "gadgets", "visibility": "public", "owners": [f.admin.did, f.bob.did] }),
+    ] {
+        let out = send(&f.vtc.state, &f.admin, "repo/create", body).await;
+        assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+        assert!(
+            payload(&out)["message"]
+                .as_str()
+                .unwrap()
+                .contains("break-glass")
+        );
+    }
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert!(
+        snap.repo_at("github.com/acme/gadgets").is_none(),
+        "nothing reserved"
+    );
+}
+
+/// … and naming another member as owner works: the namespace admin may
+/// grant `own`, so the create records it for Bob, granted by the admin.
+#[tokio::test]
+async fn create_on_an_implied_repo_create_may_name_another_owner() {
+    let f = fixture().await;
+    let ns = bind_manual(&f).await;
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/create",
+        json!({ "namespace": ns, "name": "gadgets", "visibility": "public", "owners": [f.bob.did] }),
+    )
+    .await);
+    assert_eq!(body["repo"]["owners"], json!([f.bob.did]));
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at("github.com/acme/gadgets").unwrap();
+    let rows = snap.rows(&Scope::Repo(repo.id.clone()));
+    assert!(rows.iter().any(|r| r.subject == f.bob.did
+        && r.right == super::model::Right::RepoOwn
+        && r.granted_by == f.admin.did));
+    assert!(!rows.iter().any(|r| r.subject == f.admin.did));
+    // An owner who is not a member is refused (fixed rule 5).
+    let stranger = Party::new();
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/create",
+        json!({ "namespace": ns, "name": "sprockets", "visibility": "public", "owners": [stranger.did] }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:membersOnly");
+}
+
+/// An explicit `git.repo.create`, granted by someone else, keeps creator
+/// ownership; a holder who cannot grant `own` names nobody else.
+#[tokio::test]
+async fn create_on_an_explicit_repo_create_makes_the_creator_owner() {
+    let f = fixture().await;
+    let ns = bind_manual(&f).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.bob.did,
+        "git.repo.create",
+        "github.com/acme",
+    )
+    .await);
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "repo/create",
+        json!({ "namespace": ns, "name": "gadgets", "visibility": "public" }),
+    )
+    .await);
+    assert_eq!(body["repo"]["owners"], json!([f.bob.did]));
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "repo/create",
+        json!({ "namespace": ns, "name": "sprockets", "visibility": "public", "owners": [f.carol.did] }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:escalation");
+}
+
+/// A single-admin community breaks the glass once for `git.repo.create`;
+/// what the admin creates on that record is theirs.
+#[tokio::test]
+async fn break_glass_repo_create_then_create_makes_the_creator_owner() {
+    let f = fixture().await;
+    let ns = bind_manual(&f).await;
+    ok(&break_glass(&f, &f.admin, "git.repo.create", "github.com/acme").await);
+    for name in ["gadgets", "sprockets"] {
+        let body = ok(&send(
+            &f.vtc.state,
+            &f.admin,
+            "repo/create",
+            json!({ "namespace": ns, "name": name, "visibility": "public" }),
+        )
+        .await);
+        assert_eq!(body["repo"]["owners"], json!([f.admin.did]), "{name}");
+    }
+}
+
+/// Fixed rule 5 of `git-ns/right/grant/0.3`: an elevated right goes only to a
+/// member with an ACL entry — a fresh `did:key` the actor controls is refused
+/// — and `maintain` and `commit.sign` stay policy's to decide.
+#[tokio::test]
+async fn elevated_rights_go_only_to_members() {
+    let f = fixture().await;
+    let res = active_repo(&f).await;
+    let sock_puppet = Party::new();
+    for (right, on) in [
+        ("git.repo.own", res.as_str()),
+        ("git.repo.create", "github.com/acme"),
+        ("git.ns.admin", "github.com/acme"),
+    ] {
+        let out = grant(&f, &f.admin, &sock_puppet.did, right, on).await;
+        assert_eq!(code(&out), "git-ns:membersOnly", "{right}");
+    }
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "repo/transfer",
+        json!({ "resource": res, "to": sock_puppet.did }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:membersOnly");
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/adopt",
+        json!({ "resource": "github.com/acme/gadgets", "owners": [sock_puppet.did] }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:membersOnly");
+}
+
 #[tokio::test]
 async fn adopt_activates_a_reservation_and_refuses_a_managed_repository() {
     let f = fixture_with(GitNsConfig {
@@ -1047,7 +1193,7 @@ async fn create_in_a_bridge_organisation_activates_on_the_result() {
         &f.vtc.state,
         &f.admin,
         "repo/create",
-        json!({ "namespace": ns, "name": "gadgets", "visibility": "public" }),
+        json!({ "namespace": ns, "name": "gadgets", "visibility": "public", "owners": [f.bob.did] }),
     )
     .await);
     assert_eq!(out["repo"]["state"], "pendingCreate");
@@ -2222,7 +2368,7 @@ async fn finding_9a_create_and_adopt_wait_for_an_old_names_withdrawal() {
         json!({ "type": "repoRenamed", "forgeId": "100", "from": "github.com/acme/widgets", "to": "github.com/acme/widgets-core" }),
     )
     .await);
-    let create = json!({ "namespace": ns, "name": "widgets", "visibility": "public" });
+    let create = json!({ "namespace": ns, "name": "widgets", "visibility": "public", "owners": [f.bob.did] });
     let out = send(&f.vtc.state, &f.admin, "repo/create", create.clone()).await;
     assert_eq!(code(&out), "unavailable");
     let out = send(
@@ -2271,7 +2417,7 @@ async fn finding_9c_a_result_racing_the_send_survives_the_write_back() {
         &f.vtc.state,
         &f.admin,
         "repo/create",
-        json!({ "namespace": ns, "name": "gadgets", "visibility": "public" }),
+        json!({ "namespace": ns, "name": "gadgets", "visibility": "public", "owners": [f.bob.did] }),
     )
     .await);
     *f.bridge.race.lock().unwrap() = Some(f.vtc.state.git_ns.jobs_ks.clone());
@@ -2914,7 +3060,7 @@ mod r1_probes {
             &f.vtc.state,
             &f.admin,
             "repo/create",
-            json!({ "namespace": ns, "name": "widgets", "visibility": "public" }),
+            json!({ "namespace": ns, "name": "widgets", "visibility": "public", "owners": [f.bob.did] }),
         )
         .await);
         let s = snap(&f).await;
@@ -2948,7 +3094,7 @@ mod r1_probes {
             &f.vtc.state,
             &f.admin,
             "repo/create",
-            json!({ "namespace": ns, "name": "widgets", "visibility": "public" }),
+            json!({ "namespace": ns, "name": "widgets", "visibility": "public", "owners": [f.bob.did] }),
         )
         .await);
         ok(&event(
@@ -3123,7 +3269,7 @@ mod r1_probes {
                 &f.vtc.state,
                 &f.admin,
                 "repo/create",
-                json!({ "namespace": ns, "name": "widgets", "visibility": "public" }),
+                json!({ "namespace": ns, "name": "widgets", "visibility": "public", "owners": [f.bob.did] }),
             )
             .await);
             let reps = 1 + rng(&mut seed) % 2;
@@ -3382,7 +3528,7 @@ mod r1_probes {
                         &f.vtc.state,
                         &f.admin,
                         "repo/create",
-                        json!({ "namespace": ns, "name": "widgets", "visibility": "public" }),
+                        json!({ "namespace": ns, "name": "widgets", "visibility": "public", "owners": [f.bob.did] }),
                     )
                     .await,
                 ),
