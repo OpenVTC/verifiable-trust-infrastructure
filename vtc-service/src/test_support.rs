@@ -1885,6 +1885,15 @@ mod didcomm_harness {
     pub struct TestTspPeer {
         atm: Arc<ATM>,
         did: String,
+        /// The peer's registered profile and mediator — what a send needs.
+        profile: Arc<ATMProfile>,
+        mediator_did: String,
+        /// `<did:peer>#key-1`, the key every document this peer sends is
+        /// signed with — as [`TestJoinClient`]'s is.
+        signing_secret: Secret,
+        /// Whether [`request_tsp`](Self::request_tsp) has formed the
+        /// relationship yet — once per peer; a second invite is refused.
+        related: std::sync::atomic::AtomicBool,
         docs: Mutex<tokio::sync::mpsc::UnboundedReceiver<Value>>,
         task: tokio::task::JoinHandle<()>,
     }
@@ -1981,6 +1990,7 @@ mod didcomm_harness {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let mut stream = service.subscribe();
             let task_atm = atm.clone();
+            let own_profile = profile.clone();
             let task = tokio::spawn(async move {
                 // Keep the service alive for as long as the loop reads from it.
                 let _service = service;
@@ -2009,8 +2019,63 @@ mod didcomm_harness {
             TestTspPeer {
                 atm,
                 did,
+                profile: own_profile,
+                mediator_did: mediator_did.to_string(),
+                signing_secret: secrets
+                    .iter()
+                    .find(|s| s.id.ends_with("#key-1"))
+                    .cloned()
+                    .expect("the peer's did:peer carries its Ed25519 authentication key first"),
+                related: std::sync::atomic::AtomicBool::new(false),
                 docs: Mutex::new(rx),
                 task,
+            }
+        }
+
+        /// Send a signed Trust Task to `vtc_did` **over TSP** and await the
+        /// reply threaded to it — the round trip a TSP client makes.
+        ///
+        /// The relationship is formed on the first call, as Rev 3 §7.2.2
+        /// requires. Other
+        /// documents that arrive meanwhile are dropped; a test that needs
+        /// pushes reads them with [`next_trust_task`](Self::next_trust_task).
+        /// `None` on timeout.
+        pub async fn request_tsp(
+            &self,
+            vtc_did: &str,
+            typ: &str,
+            payload: Value,
+            timeout: Duration,
+        ) -> Option<Value> {
+            if !self.related.swap(true, Ordering::SeqCst) {
+                self.atm
+                    .tsp()
+                    .form_relationship(&self.profile, vtc_did)
+                    .await
+                    .expect("form a TSP relationship with the VTC");
+            }
+            let doc = sign_trust_task(
+                wrap_trust_task(typ, &self.did, vtc_did, payload),
+                &self.signing_secret,
+            )
+            .await;
+            let id = doc["id"].clone();
+            let bytes = vta_sdk::tsp_binding::wrap_envelope(
+                &serde_json::to_vec(&doc).expect("serialise Trust Task document"),
+            );
+            let route = vec![self.mediator_did.clone(), vtc_did.to_string()];
+            self.atm
+                .tsp()
+                .send_routed(&self.profile, &route, &bytes)
+                .await
+                .expect("send the Trust Task over TSP via the mediator");
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let reply = self.next_trust_task(left).await?;
+                if reply["threadId"] == id {
+                    return Some(reply);
+                }
             }
         }
 

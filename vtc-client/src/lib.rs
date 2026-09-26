@@ -19,7 +19,8 @@
 //! The **admin verbs** are split by what the VTC serves (#1641):
 //!
 //! - Those whose tasks the VTC binds as signed documents — a join decision,
-//!   `members/{update,admin-remove,credentials}`, `backup/export` — go as
+//!   `members/{update,admin-remove,credentials}`, `backup/export`, the whole
+//!   `acl/*` family ([`acl`]) — go as
 //!   documents too: over the session when there is one, otherwise signed with
 //!   the operator's own key (the one [`VtcClient::connect`] authenticated with)
 //!   and posted to `POST {base}/trust-tasks`. A client holding that key never
@@ -99,6 +100,7 @@ pub use vta_sdk::trust_task_sign::HolderKey;
 #[cfg(feature = "didcomm")]
 const SESSION_TIMEOUT_SECS: u64 = 60;
 
+pub mod acl;
 pub mod git_ns;
 
 /// The `Trust-Task` URL each route this client calls is gated on, as declared

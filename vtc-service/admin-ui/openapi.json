@@ -50,6 +50,21 @@
             }
           },
           {
+            "name": "direction",
+            "in": "query",
+            "description": "How `scope` is read over the hierarchy: `acting-in` (the default)\nreturns entries that may act in it — scoped to it or to an ancestor;\n`subtree` returns entries holding a grant at or beneath it; `any` is the\nunion. Canonical `acl/list/0.1` `direction`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which way a context filter reads along the context hierarchy.\n\nA context id names a subtree, so \"entries relevant to context X\" is two\nquestions, not one, and an answer is only meaningful paired with the\ndirection being asked:\n\n| direction | question | predicate |\n|---|---|---|\n| [`ActingIn`](ContextDirection::ActingIn) | who may act **in** X? | scope is X or an ancestor of it |\n| [`Subtree`](ContextDirection::Subtree) | who holds a grant **beneath** X? | scope is X or a descendant of it |\n| [`Any`](ContextDirection::Any) | whose authority **touches** X's subtree? | either of the above |\n\nOnly [`ActingIn`](ContextDirection::ActingIn) existed until now, and a\ncaller sweeping a subtree to revoke it got back exactly the entries it was\n*not* revoking (the ancestors keeping their authority) while every\nleaf-scoped grant it existed to cut was silently absent — an incomplete\nanswer that looks like a complete one (#822).\n\n[`ActingIn`](ContextDirection::ActingIn) is the default, so an omitted\nparameter is today's behaviour exactly. An unparseable value is refused\nrather than defaulted: guessing which question an operator meant is how the\nsilent-wrong-answer failure returns.",
+              "enum": [
+                "acting-in",
+                "subtree",
+                "any"
+              ]
+            }
+          },
+          {
             "name": "pageSize",
             "in": "query",
             "description": "Page size. Clamped to `1..=200`. Defaults to 50.",
@@ -197,20 +212,49 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "scopes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "204": {
-            "description": "ACL entry deleted"
+          "200": {
+            "description": "Entry revoked: `entry` is null after a removal, the reduced entry after a scope reduction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AclRevokeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`scopes` present but empty"
           },
           "401": {
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not an admin, or does not administer every context the entry acts in"
           },
           "404": {
-            "description": "ACL entry not found"
+            "description": "ACL entry not found (`acl/revoke:subjectNotPresent`), or none of the named scopes are held"
+          },
+          "409": {
+            "description": "Own entry; a member's entry (use the leave ceremony); a reduction that would unscope the entry; or the last unrestricted admin (`acl/revoke:lastAuthorityProtected`)"
           }
         },
         "security": [
@@ -6020,6 +6064,22 @@
           "truncated": {
             "type": "boolean",
             "description": "True when more entries match beyond this page; `cursor` is then\npresent. Required by canonical `acl/list`."
+          }
+        }
+      },
+      "AclRevokeResponse": {
+        "type": "object",
+        "description": "Canonical `acl/revoke/0.1` response: the entry the maintainer now holds —\n`null` after a full removal, the reduced entry after a scope reduction.",
+        "properties": {
+          "entry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AclEntryResponse"
+              }
+            ]
           }
         }
       },
