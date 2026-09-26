@@ -587,6 +587,11 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nA link is answered only to the member who began it, and forgotten some days \
              after it finishes. Start again:\n  {bin} git link --forge <forge>"
         ),
+        "git-ns:selfGrantNotAllowed" => "\nThis would give you an elevated right (own, \
+             repo.create or ns.admin) on your own authority. Ask another community \
+             administrator to do it, or use break-glass (`cnm git break-glass`), which is \
+             audited and must be ratified."
+            .to_string(),
         "git-ns/namespace/reseat:notHeadless" => format!(
             "\nThe namespace still has an admin; its admins grant git.ns.admin:\n  {bin} git \
              grant --subject <did> --right git.ns.admin --resource <namespace>"
@@ -1366,6 +1371,19 @@ mod tests {
     fn a_not_revertible_refusal_explains_the_bridge_version() {
         let g = guidance("git-ns/drift/resolve:notRevertible", "refused", "did:key:z");
         assert!(g.contains("bridge/job 0.1"), "{g}");
+    }
+
+    #[test]
+    fn a_self_grant_refusal_gives_the_generic_separation_of_duties_help() {
+        let g = guidance("git-ns:selfGrantNotAllowed", "refused", "did:key:z");
+        assert!(
+            g.ends_with(
+                "\nThis would give you an elevated right (own, repo.create or ns.admin) on your \
+                 own authority. Ask another community administrator to do it, or use break-glass \
+                 (`cnm git break-glass`), which is audited and must be ratified."
+            ),
+            "{g}"
+        );
     }
 
     #[test]
