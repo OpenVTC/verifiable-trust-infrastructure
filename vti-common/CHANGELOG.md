@@ -2,6 +2,60 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.26.0...vti-common-v0.26.1) — 2026-09-26
+
+
+### Added
+
+- **vtc/git-ns**: Separation of duties and break-glass for elevated git rights ([#1745](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1745))
+
+* feat(vtc-service): re-project git roles, and use the bridge's reported role map
+
+  Implements two follow-ups to the configurable bridge role map (VGI #84),
+  spec-first in trustoverip/dtgwg-trust-tasks-tf#639.
+
+  git-ns/bridge/event 0.3 (roleMapReported)
+  - Served beside 0.1 and 0.2; all three are read as 0.3 by one handler.
+  - The report is refused malformedRequest when a map is unordered
+    (own >= maintain >= commit, commit <= write) or lists a repository
+    twice, and permissionDenied when a repos/stale resource lies outside
+    the namespace. Otherwise it is kept on the namespace (git_ns::role_map),
+    and only while the same bridge DID serves it.
+  - Each stale active or orphaned repository has its roles digest
+    forgotten, so the projector re-sends its complete desiredRoles without
+    anyone asking. A repository leaves `stale` when a projectRoles job
+    queued after the report succeeds.
+  - drift/resolve adopt derives the right from the map: the lowest right
+    whose role is the observed one. A revert weighs as revoking own when
+    the role is at or above the one own projects to. Without a report the
+    default map is assumed. A namespace admin gets no forge role under any
+    map.
+
+  git-ns/roles/reproject 0.1
+  - Open to a community administrator, or to git.ns.admin on the namespace
+    by explicit record. A repository owner is refused. Covers a namespace
+    (every active or orphaned repository) or one repository. Normal consent
+    class, policy action roles.reproject, audited as
+    gitNs.roles.reprojected. Refused with manualMode or noForgeAccess.
+  - `cnm git reproject <resource> [--reason]` and
+    vtc-client git_ns_reproject.
+
+  Console (Repos)
+  - The namespace and repository rows carry the effective role map
+    (roleMap, roleMapSource, roleMapStale).
+  - The people tables show each person's effective forge role, and "no
+    forge role" for a namespace admin.
+  - Drift adopt and revert use projectedRight / driftRevertImpact over the
+    repository's map. rightForForgeRole is removed.
+  - Stale repositories are flagged, and the namespace card and repository
+    header gain a "Re-project roles" button.
+
+  Behaviour change: on a personal account a revert of collaborator write
+  (or above) now weighs as revoking own, because write is the role own
+  projects to there. Before, it weighed as revoking maintain.
+
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.25.0...vti-common-v0.26.0) — 2026-09-26
 
 
