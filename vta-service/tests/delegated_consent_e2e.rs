@@ -1242,7 +1242,7 @@ async fn a_relayed_request_is_answered_through_the_sdk() {
     let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
     let ops = approver(0x31);
 
-    let (did, _scid) = create_did(&router, &ctx, &token).await;
+    let (did, _scid) = create_did(&router, &ctx, &token, &requester).await;
     {
         let mut cfg = ctx.config.write().await;
         cfg.policy.enforcement = true;
