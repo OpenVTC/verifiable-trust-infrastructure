@@ -1001,16 +1001,21 @@ new flow, update both this section and the relevant `docs/*.md`.
   `AuditSeverity::Critical`, and is announced to every other administrator —
   policy may disable, delay or tighten it, never quieten it. An unratified
   break-glass record never counts toward the last-owner/last-admin invariants.
+  A member who is no console user answers that step-up with a **step-up
+  passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.2` `purpose:
+  stepUp`), served only as Trust Tasks on the spine
+  (`trust_tasks::step_up_passkey_tasks`). It is enrolled only through a
+  community admin's single-use invite (signed, with a bound gesture) plus its
+  claim code, redeemed by a `redeem/start` **signed by the invited member**
+  (`cnm git enrol-step-up-passkey`); kept in its own keyspace login never
+  reads; accepted only by `acl::bound_step_up` for its own current member; and
+  never instead of a proof — every approve-response is signed by its subject
+  (the console hands a no-key member an answer code for `cnm` to sign).
   A namespace admin gets no forge role: role projection (`bridge::highest_repo_rights`) counts only rights held in the person's own
   name, sends an admin with none as `git.ns.admin` (no role), one entry per
   account, and never a namespace-level `projectRoles` job. Jobs are
   `git-ns/bridge/job` 0.4 only, sent only to a bridge that lists 0.4 in
   `trust-task-discovery` (`bridge::send_v0_4`); never downgrade.
-  A member who is no console user answers that step-up with a **step-up
-  passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.2` `purpose:
-  stepUp`). It is enrolled only through a community admin's single-use invite
-  plus its claim code, is kept in its own keyspace that login never reads, and
-  is accepted only by `acl::bound_step_up` for its own subject.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
   `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.

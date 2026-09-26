@@ -3,9 +3,13 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { SigningUnavailableError } from "./api";
 import {
+  ANSWER_CODE_PREFIX,
+  answerCodeOf,
   answerStepUp,
   APPROVE_RESPONSE_URI,
+  runStepUpCeremony,
   decodeStepUpRequest,
   encodeStepUpRequest,
   stepUpRequestOf,
@@ -126,22 +130,28 @@ describe("answering a step-up", () => {
     expect(creds.get).not.toHaveBeenCalled();
   });
 
-  it("answers unsigned from a browser with no console key — a member's step-up passkey", async () => {
-    // No generateConsoleKey(): a member who is no console user.
+  it("never answers unsigned: with no console key it sends nothing", async () => {
+    // No generateConsoleKey(): a member who is no console user. Their answer
+    // is signed by `cnm`, from the answer code, never sent bare from here.
     const requests = mockFetch([
       { path: "/health", body: { status: "ok", version: "t", vtc_did: VTC_DID } },
-      {
-        method: "POST",
-        path: "/v1/trust-tasks",
-        body: { type: `${APPROVE_RESPONSE_URI}#response`, payload: { status: "recorded", boundTo: "zBoundDigest" } },
-      },
     ]);
-    const ack = await answerStepUp(REQUEST, fakeCredentials());
-    expect(ack.status).toBe("recorded");
-    const doc = requests.find((r) => r.url === "/v1/trust-tasks")!.body as Record<string, unknown>;
-    expect(doc).not.toHaveProperty("proof");
-    expect(doc.issuer).toBe(ADMIN);
-    expect(doc.recipient).toBe(VTC_DID);
+    await expect(answerStepUp(REQUEST, fakeCredentials())).rejects.toBeInstanceOf(
+      SigningUnavailableError,
+    );
+    expect(requests.find((r) => r.url === "/v1/trust-tasks")).toBeUndefined();
+  });
+
+  it("hands the assertion to cnm as one answer-code line", async () => {
+    const credential = await runStepUpCeremony(REQUEST, fakeCredentials());
+    const code = answerCodeOf(credential);
+    expect(code.startsWith(ANSWER_CODE_PREFIX)).toBe(true);
+    const parts = code.slice(ANSWER_CODE_PREFIX.length).split(".");
+    // rawId, authenticatorData, clientDataJSON, signature — no userHandle.
+    expect(parts).toHaveLength(4);
+    expect(parts.every((p) => /^[A-Za-z0-9_-]+$/.test(p))).toBe(true);
+    expect(parts[0]).toBe("AQID");
+    expect(code).not.toMatch(/\s/);
   });
 
   it("reports a gesture the VTC did not record", async () => {

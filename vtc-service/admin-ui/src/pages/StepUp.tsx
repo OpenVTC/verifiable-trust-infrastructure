@@ -12,18 +12,26 @@
 // Nothing here trusts the fragment for anything but display and the WebAuthn
 // options: what the gesture authorizes is the VTC's own record of the refusal,
 // keyed by the challenge, never this page's copy of it.
+//
+// Every answer is signed by the approver. A browser holding a console key
+// signs it here. One that holds none — a member answering with a step-up
+// passkey — runs the ceremony and shows an **answer code** instead, which the
+// member pastes back into `cnm` to be signed with their own key: the passkey
+// is in addition to that signature, never instead of it.
 
 import { useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Fingerprint } from "lucide-react";
 
-import { postSignedTrustTask } from "@/lib/api";
+import { postSignedTrustTask, signingAvailable } from "@/lib/api";
 import {
   answerableHere,
+  answerCodeOf,
   answerStepUp,
   APPROVE_RESPONSE_URI,
   decodeStepUpRequest,
+  runStepUpCeremony,
 } from "@/lib/bound-step-up";
 import { useViewerDid } from "@/lib/viewer";
 
@@ -41,7 +49,13 @@ export function StepUpPage() {
   const viewer = useViewerDid();
   const [declined, setDeclined] = useState(false);
 
+  const canSign = useQuery({ queryKey: ["console-signing"], queryFn: signingAvailable });
+  const signing = canSign.data === true;
   const approve = useMutation({ mutationFn: () => answerStepUp(request!) });
+  // No console key here: the gesture only, for `cnm` to sign.
+  const handOver = useMutation({
+    mutationFn: async () => answerCodeOf(await runStepUpCeremony(request!)),
+  });
   const decline = useMutation({
     mutationFn: () =>
       postSignedTrustTask(APPROVE_RESPONSE_URI, {
@@ -68,7 +82,8 @@ export function StepUpPage() {
   }
 
   const wrongPerson = !!viewer && viewer !== request.subject;
-  const done = approve.isSuccess || declined;
+  const done = approve.isSuccess || declined || handOver.isSuccess;
+  const pending = approve.isPending || decline.isPending || handOver.isPending;
 
   return (
     <section className="page">
@@ -128,37 +143,69 @@ export function StepUpPage() {
             </span>
           </div>
         )}
+        {handOver.isSuccess && (
+          <div className="finding ok" role="status">
+            <strong>Paste this answer code into your terminal</strong>
+            <span>
+              <code>cnm</code> is waiting for it. It signs the answer with your own key and
+              sends the same document again. The code is good for this one request only,
+              and useless without your signature.
+            </span>
+            <textarea
+              className="answer-code"
+              readOnly
+              rows={4}
+              value={handOver.data}
+              aria-label="Answer code"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(handOver.data)}
+            >
+              Copy
+            </button>
+          </div>
+        )}
         {declined && (
           <div className="finding ok" role="status">
             <strong>Declined</strong>
             <span>Nothing was authorized. If the document is sent again, the VTC asks again.</span>
           </div>
         )}
-        {(approve.isError || decline.isError) && (
+        {(approve.isError || decline.isError || handOver.isError) && (
           <div className="finding error" role="alert">
             <strong>That did not go through</strong>
-            <span>{message(approve.error ?? decline.error)}</span>
+            <span>{message(approve.error ?? decline.error ?? handOver.error)}</span>
           </div>
         )}
 
-        {!done && (
+        {!done && canSign.isSuccess && (
           <div className="form-actions">
-            <button
-              type="button"
-              className="secondary"
-              disabled={approve.isPending || decline.isPending}
-              onClick={() => decline.mutate()}
-            >
-              Decline
-            </button>
+            {signing ? (
+              <button
+                type="button"
+                className="secondary"
+                disabled={pending}
+                onClick={() => decline.mutate()}
+              >
+                Decline
+              </button>
+            ) : (
+              <p className="muted">
+                To decline, do not answer: the request lapses in a few minutes.
+              </p>
+            )}
             <button
               type="button"
               className="primary"
-              disabled={!answerableHere(request) || approve.isPending || decline.isPending}
-              onClick={() => approve.mutate()}
+              disabled={!answerableHere(request) || pending}
+              onClick={() => (signing ? approve.mutate() : handOver.mutate())}
             >
               <Fingerprint aria-hidden="true" size={14} />{" "}
-              {approve.isPending ? "Waiting for your passkey…" : "Confirm with passkey"}
+              {approve.isPending || handOver.isPending
+                ? "Waiting for your passkey…"
+                : "Confirm with passkey"}
             </button>
           </div>
         )}

@@ -268,14 +268,15 @@ pub async fn redeem_or_request_with_evidence(
     // any other principal's passkey answering for them would be exactly the
     // substitution the gate exists to stop. Their session passkeys, and their
     // step-up passkeys (`crate::step_up_passkey`) — a member who is no console
-    // user holds only the latter, and this is the one place they count.
+    // user holds only the latter, and this is the one place they count. Either
+    // way the answer must also carry the actor's own signature
+    // (`trust_tasks::handle_step_up_approve_response`): the passkey is beside
+    // the proof, never instead of it.
     let mut passkeys = get_passkey_user_by_did(&state.passkey_ks, admin_did)
         .await?
         .map(|u| u.credentials)
         .unwrap_or_default();
-    passkeys.extend(
-        crate::step_up_passkey::credentials_of(&state.step_up_passkeys_ks, admin_did).await?,
-    );
+    passkeys.extend(crate::step_up_passkey::credentials_of(state, admin_did).await?);
     if passkeys.is_empty() {
         return Err(AppError::StepUpRequired(format!(
             "this operation needs a passkey gesture from {admin_did}, who has no passkey \

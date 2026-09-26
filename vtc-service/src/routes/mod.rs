@@ -601,24 +601,14 @@ fn build_api_chain(
             routes!(admin::passkeys::revoke_finish),
             "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
         ))
-        // Members' step-up passkeys (`crate::step_up_passkey`): a community
-        // administrator invites a member to enrol one — a passkey that only
-        // ever answers that member's operation-bound step-ups — and revokes
-        // it for them. The listing is of other subjects' credentials, which no
-        // published task covers, so it carries no Trust-Task binding.
-        .routes(tt(
-            routes!(step_up_passkeys::invite),
-            "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
-        ))
+        // Members' step-up passkeys (`crate::step_up_passkey`). Issuing,
+        // redeeming and revoking one are Trust Tasks served only by the spine
+        // (`trust_tasks::step_up_passkey_tasks`), on every transport. This is
+        // the console's read of *another* subject's credentials, which no
+        // published task covers (`auth/passkey/list` lists only the signer's
+        // own), so it carries no Trust-Task binding, like the console-key
+        // listing.
         .routes(routes!(step_up_passkeys::list))
-        .routes(tt(
-            routes!(step_up_passkeys::revoke_start),
-            "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2",
-        ))
-        .routes(tt(
-            routes!(step_up_passkeys::revoke_finish),
-            "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2",
-        ))
         // Admin console signing keys (#1684) — the delegation that lets the
         // admin SPA author signed Trust Task documents at all.
         //
@@ -1243,18 +1233,6 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             routes!(auth::passkey_login_finish),
             "https://trusttasks.org/spec/auth/passkey/login/finish/0.2",
         ))
-        // Redeeming a step-up passkey invite: the token and the claim code are
-        // the authority, so it sits behind the governor, like the install
-        // claim it mirrors. The per-invite limit on wrong codes is the
-        // step-up passkey store's own.
-        .routes(tt(
-            routes!(step_up_passkeys::redeem_start),
-            "https://trusttasks.org/spec/auth/passkey/enroll/redeem/start/0.1",
-        ))
-        .routes(tt(
-            routes!(step_up_passkeys::redeem_finish),
-            "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",
-        ))
         .routes(tt(
             routes!(install::claim_start),
             "https://trusttasks.org/spec/vtc/install/claim/start/0.2",
@@ -1604,8 +1582,6 @@ mod openapi_tests {
         ("POST", "/v1/auth/recognise"),
         ("POST", "/v1/install/claim/start"),
         ("POST", "/v1/install/claim/finish"),
-        ("POST", "/v1/step-up-passkeys/redeem/start"),
-        ("POST", "/v1/step-up-passkeys/redeem/finish"),
         // The single Trust Task document endpoint — the holder-facing join
         // ceremony (submit/accept/manifest/status) dispatches internally by
         // document `type`.

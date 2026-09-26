@@ -510,14 +510,14 @@ export async function postSignedDocument<T>(signed: SignedTrustTaskDocument): Pr
 }
 
 /**
- * Post `payload` as an **unsigned** Trust Task document issued as `issuer`.
+ * Post `payload` as an **unsigned** Trust Task document naming `issuer`.
  *
- * For exactly one case: answering an operation-bound step-up with a passkey
- * (`auth/step-up/approve-response` with `evidence.kind = webauthn`) from a
- * browser that holds no key this community knows — a member who is no console
- * user, answering with a step-up passkey. The WebAuthn assertion is the gate;
- * the VTC reads nothing from the document's issuer (approve-response 0.4 makes
- * the proof optional for webauthn evidence).
+ * For exactly one case: finishing a step-up passkey redemption
+ * (`auth/passkey/enroll/redeem/finish/0.1`) from the browser that ran
+ * `navigator.credentials.create` — a member who is no console user, so holds
+ * no key here. Its authority is the ceremony the member's **signed**
+ * `redeem/start` opened (sent by `cnm`); the VTC reads nothing from this
+ * document's issuer. Never for an approval: every approve-response is signed.
  */
 export async function postUnsignedTrustTask<T>(
   typeUri: string,

@@ -1,29 +1,41 @@
 // A member's step-up passkeys, on their page (`crate::step_up_passkey`).
 //
 // A step-up passkey answers one thing only: an operation-bound step-up issued
-// to this member — the passkey gesture a git break-glass always needs. It
-// never signs anyone in. A member who is no console user can get one only
-// through a community administrator's invite, so this card is where it
-// starts: the administrator steps their own session up, issues the invite,
-// and delivers the URL and the claim code to the member **over two different
-// channels**. The administrator also revokes one here — verifying with their
-// own passkey — when the member has lost it.
+// to this member — the passkey gesture a git break-glass always needs — and
+// always beside the member's own signature. It never signs anyone in. A member
+// who is no console user can get one only through a community administrator's
+// invite, so this card is where it starts: the administrator signs the invite
+// (`auth/passkey/enroll/invite/0.2`), confirms it with a passkey gesture bound
+// to that one document, and delivers the URL and the claim code to the member
+// **over two different channels**. The administrator also revokes one here
+// (`auth/passkey/revoke/{start,finish}/0.2`) — verifying with their own
+// passkey — when the member has lost it.
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fingerprint } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
-import { stepUpSession } from "@/lib/step-up";
+import { SigningUnavailableError } from "@/lib/api";
+import { answerStepUp, stepUpRequestOf } from "@/lib/bound-step-up";
+import type { SignedTrustTaskDocument } from "@/lib/console-key";
 import {
   fetchStepUpPasskeys,
   inviteStepUpPasskey,
   revokeStepUpPasskey,
   stepUpPasskeyKeys,
+  type StepUpPasskeyInvite,
 } from "@/lib/step-up-passkeys";
-import type { StepUpPasskeyInvite } from "@/lib/wire-types";
+import { sendSigned, StepUpNeeded } from "@/plugins/repos/actions";
 
 import { formatDay, readErrorMessage } from "../repos/ui";
+
+/** A refusal that asks for a bound step-up, as `StepUpNeeded`. */
+function asStepUp(e: unknown): unknown {
+  const request = stepUpRequestOf(e);
+  const document = (e as { document?: SignedTrustTaskDocument } | null)?.document;
+  return request && document ? new StepUpNeeded(request, document) : e;
+}
 
 export function StepUpPasskeysCard({ did }: { did: string }) {
   const qc = useQueryClient();
@@ -34,17 +46,39 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
   });
   const [label, setLabel] = useState("");
   const [issued, setIssued] = useState<StepUpPasskeyInvite | null>(null);
+  // Set when the VTC asked for a passkey gesture bound to the signed invite.
+  // Confirming is its own click: the gesture is consent to the act the
+  // request names, taken with it on screen.
+  const [stepUp, setStepUp] = useState<StepUpNeeded | null>(null);
+  const issuedNow = (inv: StepUpPasskeyInvite) => {
+    setIssued(inv);
+    setStepUp(null);
+    setLabel("");
+  };
 
   const invite = useMutation({
     mutationFn: async () => {
-      // The gesture is tied to this click: issuing an invite lets someone
-      // bind a second factor to a member, which is an act of authority.
-      await stepUpSession();
-      return inviteStepUpPasskey(did, label.trim() || undefined);
+      try {
+        return await inviteStepUpPasskey(did, label.trim() || undefined);
+      } catch (e) {
+        throw asStepUp(e);
+      }
     },
-    onSuccess: (inv) => {
-      setIssued(inv);
-      setLabel("");
+    onSuccess: issuedNow,
+    onError: (e) => {
+      if (e instanceof StepUpNeeded) setStepUp(e);
+    },
+  });
+  // Answer the step-up, then send the *same* signed invite again: the gesture
+  // is bound to it, and a freshly signed one would be a second act.
+  const confirmInvite = useMutation({
+    mutationFn: async (needed: StepUpNeeded) => {
+      await answerStepUp(needed.request);
+      return sendSigned<StepUpPasskeyInvite>(needed.signed);
+    },
+    onSuccess: (inv) => issuedNow(inv as StepUpPasskeyInvite),
+    onError: (e) => {
+      if (e instanceof StepUpNeeded) setStepUp(e);
     },
   });
   const revoke = useMutation({
@@ -95,7 +129,7 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
                           const ok = await confirm({
                             title: "Revoke this step-up passkey?",
                             message:
-                              "You verify with your own passkey. The member can no longer answer a step-up with it — including one they have already been asked for — until they enrol another through a new invite.",
+                              "Signed by this browser's console key; you verify with your own passkey. The member can no longer answer a step-up with it — including one they have already been asked for — until they enrol another through a new invite.",
                             confirmLabel: "Revoke",
                             destructive: true,
                           });
@@ -155,16 +189,44 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
                   placeholder="Carol's laptop"
                 />
               </label>{" "}
-              <button type="submit" disabled={invite.isPending}>
-                <Fingerprint aria-hidden="true" size={14} /> Invite…
-              </button>
+              {stepUp ? (
+                <>
+                  <p>
+                    <q>{stepUp.request.reason}</q>
+                  </p>
+                  <button
+                    type="button"
+                    disabled={confirmInvite.isPending}
+                    onClick={() => confirmInvite.mutate(stepUp)}
+                  >
+                    <Fingerprint aria-hidden="true" size={14} />{" "}
+                    {confirmInvite.isPending ? "Waiting for your passkey…" : "Confirm with passkey"}
+                  </button>{" "}
+                  <button type="button" className="secondary" onClick={() => setStepUp(null)}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button type="submit" disabled={invite.isPending}>
+                  <Fingerprint aria-hidden="true" size={14} /> Invite…
+                </button>
+              )}
               <p className="muted">
-                Confirms with your passkey first. The member opens the link, types
-                the code and creates the passkey on their own device.
+                Signed by this browser&apos;s console key and confirmed with your passkey.
+                The member opens the link, runs the <code>cnm</code> command it shows with
+                the code, and creates the passkey on their own device.
               </p>
-              {invite.error && (
+              {invite.error && !(invite.error instanceof StepUpNeeded) && (
                 <p className="error" role="alert">
-                  Could not invite: {readErrorMessage(invite.error)}
+                  Could not invite:{" "}
+                  {invite.error instanceof SigningUnavailableError
+                    ? "this browser holds no console signing key; enrol one under Settings first."
+                    : readErrorMessage(invite.error)}
+                </p>
+              )}
+              {confirmInvite.error && !(confirmInvite.error instanceof StepUpNeeded) && (
+                <p className="error" role="alert">
+                  Could not invite: {readErrorMessage(confirmInvite.error)}
                 </p>
               )}
             </form>

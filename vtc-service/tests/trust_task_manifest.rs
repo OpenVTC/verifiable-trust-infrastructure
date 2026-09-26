@@ -711,12 +711,20 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
 ];
 
-/// Signed-document types the console sends that the *spine* dispatches rather
-/// than the git-ns family: the answer to an operation-bound step-up
+/// Document types the console sends that the *spine* dispatches rather than
+/// the git-ns family: the answer to an operation-bound step-up
 /// (`trust_tasks::handle_step_up_approve_response`), which the console sends
-/// when a break-glass is refused with `details.stepUpRequest`.
-const SPINE_DOCUMENT_TYPES: &[&str] =
-    &["https://trusttasks.org/spec/auth/step-up/approve-response/0.4"];
+/// when a break-glass is refused with `details.stepUpRequest`; and members'
+/// step-up passkeys (`trust_tasks::step_up_passkey_tasks`) — an
+/// administrator's invite and revocation, and the browser's finish of a
+/// redemption the member's `cnm` started.
+const SPINE_DOCUMENT_TYPES: &[&str] = &[
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
+    "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
+    "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",
+    "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2",
+    "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2",
+];
 
 #[test]
 fn every_admin_ui_task_is_enforced_by_a_route() {
@@ -776,7 +784,15 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
              it — remove it from SIGNED_DOCUMENT_TYPES"
         );
     }
+    let dispatched: BTreeSet<&str> = vtc_service::test_support::served_trust_task_uris()
+        .into_iter()
+        .collect();
     for uri in SPINE_DOCUMENT_TYPES {
+        assert!(
+            dispatched.contains(uri),
+            "the admin console sends `{uri}` as a document type, but the spine does not \
+             dispatch it — the console would send a document nobody serves"
+        );
         assert!(
             sent.contains(*uri),
             "`{uri}` is allowlisted as a console document type but the console no longer sends \

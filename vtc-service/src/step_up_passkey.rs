@@ -2,27 +2,48 @@
 //! `purpose: stepUp`, redeemed through `auth/passkey/enroll/redeem/{start,finish}/0.1`
 //! and revoked for the member with `auth/passkey/revoke/{start,finish}/0.2`.
 //!
+//! Every one of those is a Trust Task on the signed-document spine
+//! ([`crate::trust_tasks::step_up_passkey_tasks`]), so it reaches this module
+//! the same way over TSP, DIDComm or HTTPS. This module is the operation; the
+//! spine handler is the only door.
+//!
 //! ## Why
 //!
 //! An operation-bound step-up ([`crate::acl::bound_step_up`]) asks the actor
 //! of a signed document for a passkey gesture before the document may confer
 //! authority — a git break-glass always does. A namespace admin who is not a
 //! console user has no passkey this community knows, so without this they
-//! could never break the glass. The signing key alone must not be able to
-//! enrol one, or whoever stole the key would enrol their own passkey and the
-//! gesture would add nothing: the first binding is anchored in a **community
-//! administrator's single-use invite**, redeemed with a **claim code**
-//! delivered over another channel. A further one also needs a user-verified
-//! assertion from a step-up passkey the member already holds.
+//! could never break the glass.
+//!
+//! ## Who can bind one
+//!
+//! Two factors, held by two different parties, and neither is enough alone:
+//!
+//! - **A community administrator's invite.** Only a community administrator
+//!   issues one, from a signed document with a passkey gesture of their own
+//!   bound to it, and never to themselves. It names one member's DID, is
+//!   single use, and lapses (at most [`MAX_INVITE_TTL_SECS`]). The token rides
+//!   in the URL and the claim code is delivered separately; only hashes of
+//!   either are kept, and five wrong codes void it.
+//! - **The member's own signature.** `redeem/start` must be signed by the
+//!   very DID the invite names. The specification makes that proof optional;
+//!   this service does not, because without it whoever held the two messages —
+//!   another member, or the inviting administrator — could bind a passkey of
+//!   their own to someone else's DID.
+//!
+//! A further step-up passkey also needs a user-verified assertion from one the
+//! member already holds.
 //!
 //! ## What a step-up passkey can do
 //!
-//! Exactly one thing: answer an operation-bound step-up issued to its own
-//! subject ([`credentials_of`], read only by `bound_step_up`). It never opens
-//! or elevates a session, and that holds **by construction**: the credentials
-//! live in [`crate::store::keyspaces::STEP_UP_PASSKEYS`], and login and
-//! session step-up read only the `passkey` keyspace. It confers no role and no
-//! scope.
+//! Exactly one thing: be the passkey half of an operation-bound step-up issued
+//! to its own subject ([`credentials_of`], read only by `bound_step_up`). It is
+//! never a proof — the approve-response that carries its assertion must still
+//! be signed by the member's `assertionMethod` key (approve-response 0.5) — and
+//! it never opens or elevates a session, which holds **by construction**: the
+//! credentials live in [`crate::store::keyspaces::STEP_UP_PASSKEYS`], and login
+//! and session step-up read only the `passkey` keyspace. It confers no role and
+//! no scope.
 //!
 //! ## Storage (`step_up_passkeys`)
 //!
@@ -39,13 +60,20 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
+use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
+use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
+use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
+use trust_tasks_rs::specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
+use trust_tasks_rs::specs::auth::passkey::revoke::start::v0_2 as revoke_start;
 use uuid::Uuid;
 use vti_common::audit::{AuditEvent, StepUpPasskeyData};
 use vti_common::auth::passkey::store::{
-    PasskeyUser, get_passkey_user_by_did, store_credential_mapping, store_passkey_user,
+    PasskeyUser, get_passkey_user_by_cred, get_passkey_user_by_did, store_credential_mapping,
+    store_passkey_user,
 };
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -55,6 +83,7 @@ use webauthn_rs::prelude::{
 };
 
 use crate::auth::session::now_epoch;
+use crate::error::TaskError;
 use crate::install::claim_secret;
 use crate::server::AppState;
 
@@ -63,31 +92,12 @@ use crate::server::AppState;
 pub const MAX_WRONG_CODES: u32 = 5;
 /// How long a redemption or revocation ceremony waits for its gesture.
 pub const CEREMONY_TTL_SECS: u64 = 300;
-/// An invite's life when the administrator names none.
+/// An invite's life when the administrator names none (`enroll/invite` 0.2).
 pub const DEFAULT_INVITE_TTL_SECS: u64 = 3600;
 /// The longest an invite may live (`enroll/invite` 0.2 recommends ≤ 24 h).
 pub const MAX_INVITE_TTL_SECS: u64 = 24 * 3600;
-
-/// Refusal codes, as the specifications declare them. Carried at the head of
-/// the error message, where the console and `cnm` read them.
-pub mod codes {
-    pub const ROLE_NOT_PERMITTED: &str = "auth/passkey/enroll/invite:roleNotPermitted";
-    pub const SUBJECT_UNKNOWN: &str = "auth/passkey/enroll/invite:subjectUnknown";
-    pub const INVITE_INVALID: &str = "auth/passkey/enroll/redeem/start:inviteInvalid";
-    pub const TOO_MANY_ATTEMPTS: &str = "auth/passkey/enroll/redeem/start:tooManyAttempts";
-    pub const ENROLLMENT_NOT_FOUND: &str = "auth/passkey/enroll/redeem/finish:enrollmentNotFound";
-    pub const ENROLLMENT_EXPIRED: &str = "auth/passkey/enroll/redeem/finish:enrollmentExpired";
-    pub const USER_VERIFICATION_FAILED: &str =
-        "auth/passkey/enroll/redeem/finish:userVerificationFailed";
-    pub const ATTESTATION_INVALID: &str = "auth/passkey/enroll/redeem/finish:attestationInvalid";
-    pub const CREDENTIAL_NOT_FOUND: &str = "auth/passkey/revoke/start:credentialNotFound";
-    pub const NOT_AUTHORIZED: &str = "auth/passkey/revoke/start:notAuthorized";
-    pub const REAUTH_UNAVAILABLE: &str = "auth/passkey/revoke/start:reauthUnavailable";
-    pub const REVOCATION_NOT_FOUND: &str = "auth/passkey/revoke/finish:revocationNotFound";
-    pub const REVOCATION_EXPIRED: &str = "auth/passkey/revoke/finish:revocationExpired";
-    pub const REVOKE_UV_FAILED: &str = "auth/passkey/revoke/finish:userVerificationFailed";
-    pub const REVOKE_NOT_AUTHORIZED: &str = "auth/passkey/revoke/finish:notAuthorized";
-}
+/// Where the invite URL lands, under the console's mount.
+pub const ENROL_PATH: &str = "/admin/enrol-step-up";
 
 /// Serialises every mutation of this store, so a claim-code count, the
 /// consumption of an invite and the binding it authorises cannot interleave.
@@ -179,8 +189,9 @@ fn meta_key(cred_hex: &str) -> String {
     format!("meta:{cred_hex}")
 }
 
-fn refused(code: &str, message: &str) -> String {
-    format!("{code}: {message}")
+/// A refusal under one of the codes the task's specification declares.
+fn refused(code: trust_tasks_rs::DeclaredErrorCode, error: AppError) -> TaskError {
+    TaskError::declared(code.code, error)
 }
 
 fn cred_hex(p: &Passkey) -> String {
@@ -201,6 +212,45 @@ fn require_webauthn(state: &AppState) -> Result<&Webauthn, AppError> {
         })
 }
 
+/// A value built here as the generated response type, so what goes on the
+/// wire is held to the published schema's shape.
+fn as_response<T: serde::de::DeserializeOwned>(what: &str, value: Value) -> Result<T, AppError> {
+    serde_json::from_value(value)
+        .map_err(|e| AppError::Internal(format!("{what} response does not fit its schema: {e}")))
+}
+
+/// webauthn-rs options as the published `CredentialCreationOptions` /
+/// `CredentialRequestOptions`, which carry only what WebAuthn Level 2 names.
+fn webauthn_options(options: &impl Serialize) -> Result<Value, AppError> {
+    let mut v = serde_json::to_value(options)
+        .map_err(|e| AppError::Internal(format!("webauthn options: {e}")))?;
+    if let Some(obj) = v.as_object_mut() {
+        // Level 3 members the published schema does not name; this service
+        // never sets them, so dropping an unset one loses nothing.
+        for level3 in ["hints", "attestationFormats", "mediation"] {
+            if obj.get(level3).is_some_and(Value::is_null) {
+                obj.remove(level3);
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// A published WebAuthn result (`AttestationResponse`, `AssertionResponse`)
+/// as the webauthn-rs type that verifies it. The two describe the same
+/// browser object; webauthn-rs requires `extensions` where the published
+/// shape calls it `clientExtensionResults`.
+fn webauthn_result<T: serde::de::DeserializeOwned>(published: &impl Serialize) -> Option<T> {
+    let mut v = serde_json::to_value(published).ok()?;
+    let obj = v.as_object_mut()?;
+    let ext = obj
+        .remove("clientExtensionResults")
+        .unwrap_or_else(|| json!({}));
+    obj.insert("extensions".into(), ext);
+    obj.remove("authenticatorAttachment");
+    serde_json::from_value(v).ok()
+}
+
 async fn audit(state: &AppState, actor: &str, data: StepUpPasskeyData) -> Result<(), AppError> {
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
@@ -214,9 +264,13 @@ async fn audit(state: &AppState, actor: &str, data: StepUpPasskeyData) -> Result
 
 /// The member's step-up passkeys — what [`crate::acl::bound_step_up`] offers,
 /// beside their session passkeys, for an operation-bound step-up issued to
-/// them. Never read by login or session step-up.
-pub async fn credentials_of(ks: &KeyspaceHandle, did: &str) -> Result<Vec<Passkey>, AppError> {
-    Ok(get_passkey_user_by_did(ks, did)
+/// them. Never read by login or session step-up. Empty for a DID that is no
+/// longer a current member: a credential outlives nothing it was bound for.
+pub async fn credentials_of(state: &AppState, did: &str) -> Result<Vec<Passkey>, AppError> {
+    if !crate::git_ns::ops::standing(state, did).await?.member {
+        return Ok(Vec::new());
+    }
+    Ok(get_passkey_user_by_did(&state.step_up_passkeys_ks, did)
         .await?
         .map(|u| u.credentials)
         .unwrap_or_default())
@@ -253,87 +307,108 @@ pub async fn list(
             out.push(meta);
         }
     }
+    // Newest first, as `auth/passkey/list` asks: one enrolled a moment ago by
+    // someone else shows at the top rather than under the legitimate ones.
     out.sort_by(|a, b| {
         a.subject
             .cmp(&b.subject)
-            .then(a.registered_at.cmp(&b.registered_at))
+            .then(b.registered_at.cmp(&a.registered_at))
     });
     Ok(out)
 }
 
 // ── enroll/invite 0.2 ───────────────────────────────────────────────────────
 
-/// An issued invite, returned once. The token rides in `url`; the claim code
-/// is returned only here and is never in `url`.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-#[schema(as = StepUpPasskeyInvite)]
-pub struct IssuedInvite {
-    pub invite: InviteLink,
-    pub subject: String,
-    /// Always `stepUp`: this VTC issues no session credential by invite.
-    pub purpose: &'static str,
-    pub expires_at: DateTime<Utc>,
-    pub claim_code: String,
-}
+/// Every check that decides whether `admin_did` may issue `payload`, made
+/// before the administrator is asked for a gesture: a gesture must never be
+/// asked for an act that would be refused anyway. [`issue_invite`] makes them
+/// again at the moment of issue.
+pub async fn check_invite(
+    state: &AppState,
+    admin_did: &str,
+    payload: &invite::Payload,
+) -> Result<(), TaskError> {
+    use invite::error_codes as codes;
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[schema(as = StepUpPasskeyInviteLink)]
-pub struct InviteLink {
-    pub token: String,
-    pub url: String,
+    require_webauthn(state)?;
+    if state.public_url.is_none() {
+        return Err(AppError::Config(
+            "public_url is not configured; an invite has no URL to carry".into(),
+        )
+        .into());
+    }
+    if payload.purpose != invite::PayloadPurpose::StepUp {
+        return Err(refused(
+            codes::PURPOSE_NOT_SUPPORTED,
+            AppError::Forbidden(
+                "this community issues only step-up passkeys by invite (purpose `stepUp`); \
+                 console users enrol their own passkeys"
+                    .into(),
+            ),
+        ));
+    }
+    // A step-up credential confers nothing (invite 0.2, conformance item 3).
+    if payload.role.is_some() || !payload.scopes.is_empty() {
+        return Err(AppError::Validation(
+            "a `stepUp` invite carries no `role` and no `scopes`".into(),
+        )
+        .into());
+    }
+    let ttl = payload.ttl.map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
+    if ttl > MAX_INVITE_TTL_SECS {
+        return Err(AppError::Validation(format!(
+            "ttl must be at most {MAX_INVITE_TTL_SECS} seconds"
+        ))
+        .into());
+    }
+    if !crate::git_ns::ops::standing(state, admin_did)
+        .await?
+        .community_admin
+    {
+        return Err(refused(
+            codes::ROLE_NOT_PERMITTED,
+            AppError::Forbidden(
+                "only a community administrator invites a member to enrol a step-up passkey".into(),
+            ),
+        ));
+    }
+    // An administrator's own passkeys are enrolled behind their own gesture;
+    // an invite to oneself would let one stolen key mint a second factor for
+    // itself.
+    if payload.subject.as_str() == admin_did {
+        return Err(refused(
+            codes::ROLE_NOT_PERMITTED,
+            AppError::Forbidden(
+                "an administrator does not invite themselves: enrol your own passkeys under \
+                 Settings → Passkeys"
+                    .into(),
+            ),
+        ));
+    }
+    if !crate::git_ns::ops::standing(state, payload.subject.as_str())
+        .await?
+        .member
+    {
+        return Err(refused(
+            codes::SUBJECT_UNKNOWN,
+            AppError::NotFound("the subject is not a current member of this community".into()),
+        ));
+    }
+    Ok(())
 }
 
 /// `auth/passkey/enroll/invite/0.2`, `purpose: stepUp`, issued by
-/// `admin_did`. The caller has already established that the request is the
-/// administrator's own, at a stepped-up session.
+/// `admin_did`. The caller has verified the administrator's proof and the
+/// passkey gesture bound to this document.
 pub async fn issue_invite(
     state: &AppState,
     admin_did: &str,
-    subject: &str,
-    device_label: Option<String>,
-    ttl_secs: Option<u64>,
-) -> Result<IssuedInvite, AppError> {
-    require_webauthn(state)?;
-    let public_url = state.public_url.as_deref().ok_or_else(|| {
-        AppError::Config("public_url is not configured; an invite has no URL to carry".into())
-    })?;
-    let admin = crate::git_ns::ops::standing(state, admin_did).await?;
-    if !admin.community_admin {
-        return Err(AppError::Forbidden(refused(
-            codes::ROLE_NOT_PERMITTED,
-            "only a community administrator invites a member to enrol a step-up passkey",
-        )));
-    }
-    // An administrator's own passkeys are enrolled through
-    // `auth/passkey/enroll`, behind their own gesture; an invite to oneself
-    // would let one stolen session mint a second factor for itself.
-    if subject == admin_did {
-        return Err(AppError::Forbidden(refused(
-            codes::ROLE_NOT_PERMITTED,
-            "an administrator does not invite themselves: enrol your own passkeys under \
-             Settings → Passkeys",
-        )));
-    }
-    if !crate::git_ns::ops::standing(state, subject).await?.member {
-        return Err(AppError::NotFound(refused(
-            codes::SUBJECT_UNKNOWN,
-            "the subject is not a current member of this community",
-        )));
-    }
-    if let Some(label) = &device_label
-        && label.chars().count() > 256
-    {
-        return Err(AppError::Validation(
-            "deviceLabel is longer than 256 characters".into(),
-        ));
-    }
-    let ttl = ttl_secs.unwrap_or(DEFAULT_INVITE_TTL_SECS);
-    if ttl == 0 || ttl > MAX_INVITE_TTL_SECS {
-        return Err(AppError::Validation(format!(
-            "ttl must be between 1 and {MAX_INVITE_TTL_SECS} seconds"
-        )));
-    }
+    payload: &invite::Payload,
+) -> Result<invite::Response, TaskError> {
+    check_invite(state, admin_did, payload).await?;
+    let public_url = state.public_url.as_deref().unwrap_or_default();
+    let subject = payload.subject.to_string();
+    let ttl = payload.ttl.map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
 
     let mut raw = [0u8; 32];
     rand::rng().fill_bytes(&mut raw);
@@ -349,9 +424,9 @@ pub async fn issue_invite(
         .insert(
             invite_key(&token),
             &Invite {
-                subject: subject.to_string(),
+                subject: subject.clone(),
                 invited_by: admin_did.to_string(),
-                device_label,
+                device_label: payload.device_label.as_ref().map(|l| l.to_string()),
                 code_hash,
                 expires_at,
                 wrong_codes: 0,
@@ -363,7 +438,7 @@ pub async fn issue_invite(
         admin_did,
         StepUpPasskeyData {
             stage: "invited".into(),
-            subject: subject.to_string(),
+            subject: subject.clone(),
             invited_by: Some(admin_did.to_string()),
             credential_id: None,
             expires_at: Some(epoch_to_utc(expires_at)),
@@ -375,38 +450,37 @@ pub async fn issue_invite(
     // The token rides in the fragment, which a browser never sends: it stays
     // out of every access log between here and the member.
     let url = format!(
-        "{}/admin/enrol-step-up#token={token}",
+        "{}{ENROL_PATH}#token={token}",
         public_url.trim_end_matches('/')
     );
-    Ok(IssuedInvite {
-        invite: InviteLink { token, url },
-        subject: subject.to_string(),
-        purpose: "stepUp",
-        expires_at: epoch_to_utc(expires_at),
-        claim_code,
-    })
+    Ok(as_response(
+        "enroll/invite",
+        json!({
+            "invite": { "token": token, "url": url },
+            "subject": subject,
+            "purpose": "stepUp",
+            "expiresAt": epoch_to_utc(expires_at),
+            "claimCode": claim_code,
+        }),
+    )?)
 }
 
 // ── enroll/redeem/start 0.1 ─────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-#[schema(as = StepUpPasskeyRedeemStarted)]
-pub struct RedeemStarted {
-    pub enrollment_id: String,
-    pub subject: String,
-    pub purpose: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_label: Option<String>,
-    /// For `navigator.credentials.create({ publicKey })`.
-    #[schema(value_type = Object)]
-    pub options: webauthn_rs_proto::PublicKeyCredentialCreationOptions,
-    /// For `navigator.credentials.get({ publicKey })`, over the member's
-    /// existing step-up passkeys — present exactly when they hold one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
-    pub uv_options: Option<webauthn_rs_proto::PublicKeyCredentialRequestOptions>,
-    pub expires_at: DateTime<Utc>,
+/// What the member's authenticator shows the passkey as. WebAuthn's `user.name`
+/// is at most 64 characters in the published options, and a `did:peer` or
+/// `did:webvh` is often far longer, so a long DID is shown by its two ends.
+/// Display only: the credential is bound to the DID by this service's record,
+/// never by this name.
+fn authenticator_name(did: &str) -> String {
+    const MAX: usize = 64;
+    let chars: Vec<char> = did.chars().collect();
+    if chars.len() <= MAX {
+        return did.to_string();
+    }
+    let head: String = chars[..40].iter().collect();
+    let tail: String = chars[chars.len() - 16..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 /// Claim codes are typed by people: case and separators do not matter.
@@ -419,21 +493,32 @@ fn normalise_code(code: &str) -> String {
         .collect()
 }
 
-/// `auth/passkey/enroll/redeem/start/0.1`.
+/// `auth/passkey/enroll/redeem/start/0.1`, signed by `signer`.
+///
+/// The invite, the claim code **and** the signer must agree: the signer must be
+/// the member the invite names. A signer who is not is answered exactly as a
+/// wrong code is, and counted as one — holding someone else's invite is the
+/// case the count exists for.
 pub async fn redeem_start(
     state: &AppState,
-    token: &str,
-    claim_code: &str,
-) -> Result<RedeemStarted, AppError> {
+    signer: &str,
+    payload: &redeem_start::Payload,
+) -> Result<redeem_start::Response, TaskError> {
+    use redeem_start::error_codes as codes;
+
     let webauthn = require_webauthn(state)?;
     let ks = &state.step_up_passkeys_ks;
     let invalid = || {
-        AppError::Unauthorized(refused(
+        refused(
             codes::INVITE_INVALID,
-            "this invite cannot be redeemed with that code — it may be wrong, used or expired",
-        ))
+            AppError::Unauthorized(
+                "this invite cannot be redeemed with that code by this DID — it may be wrong, \
+                 used, expired, or issued to someone else"
+                    .into(),
+            ),
+        )
     };
-    let key = invite_key(token);
+    let key = invite_key(payload.token.as_str());
 
     let (subject, invited_by, device_label) = {
         let _guard = LOCK.lock().await;
@@ -447,13 +532,22 @@ pub async fn redeem_start(
             ks.remove(key).await?;
             return Err(invalid());
         }
-        let supplied = normalise_code(claim_code);
+        let supplied = normalise_code(payload.claim_code.as_str());
         let stored = invite.code_hash.clone();
-        let ok = tokio::task::spawn_blocking(move || claim_secret::verify(&supplied, &stored))
+        let code_ok = tokio::task::spawn_blocking(move || claim_secret::verify(&supplied, &stored))
             .await
             .map_err(|e| AppError::Internal(format!("claim-code verify task failed: {e}")))??;
-        if !ok {
+        if !code_ok || signer != invite.subject {
             invite.wrong_codes += 1;
+            if !code_ok {
+                warn!(subject = %invite.subject, "step-up passkey invite: wrong claim code");
+            } else {
+                warn!(
+                    subject = %invite.subject,
+                    %signer,
+                    "step-up passkey invite presented by a DID it was not issued to"
+                );
+            }
             if invite.wrong_codes >= MAX_WRONG_CODES {
                 ks.remove(key).await?;
                 audit(
@@ -468,12 +562,15 @@ pub async fn redeem_start(
                     },
                 )
                 .await?;
-                warn!(subject = %invite.subject, "step-up passkey invite invalidated after wrong claim codes");
-                return Err(AppError::Forbidden(refused(
+                warn!(subject = %invite.subject, "step-up passkey invite invalidated after wrong attempts");
+                return Err(refused(
                     codes::TOO_MANY_ATTEMPTS,
-                    "too many wrong claim codes: this invite is no longer valid; ask the \
-                     administrator for a new one",
-                )));
+                    AppError::Forbidden(
+                        "too many wrong attempts: this invite is no longer valid; ask the \
+                         administrator for a new one"
+                            .into(),
+                    ),
+                ));
             }
             ks.insert(key, &invite).await?;
             return Err(invalid());
@@ -492,11 +589,12 @@ pub async fn redeem_start(
     let user_uuid = existing.as_ref().map_or_else(Uuid::new_v4, |u| u.user_uuid);
     let held: Vec<Passkey> = existing.map(|u| u.credentials).unwrap_or_default();
     let exclude = held.iter().map(|p| p.cred_id().clone()).collect::<Vec<_>>();
+    let name = authenticator_name(&subject);
     let (ccr, reg_state) = crate::webauthn::start_passkey_registration(
         webauthn,
         user_uuid,
-        &subject,
-        &subject,
+        &name,
+        &name,
         Some(exclude),
     )?;
     let (uv_options, uv_state) = if held.is_empty() {
@@ -505,7 +603,7 @@ pub async fn redeem_start(
         let (rcr, st) = webauthn
             .start_passkey_authentication(&held)
             .map_err(|e| AppError::Internal(format!("webauthn UV start failed: {e}")))?;
-        (Some(rcr.public_key), Some(st))
+        (Some(webauthn_options(&rcr.public_key)?), Some(st))
     };
 
     let enrollment_id = Uuid::new_v4().to_string();
@@ -513,7 +611,7 @@ pub async fn redeem_start(
     ks.insert(
         redeem_key(&enrollment_id),
         &RedeemCeremony {
-            invite_key: invite_key(token),
+            invite_key: key,
             subject: subject.clone(),
             invited_by,
             user_uuid,
@@ -524,101 +622,95 @@ pub async fn redeem_start(
         },
     )
     .await?;
-    Ok(RedeemStarted {
-        enrollment_id,
-        subject,
-        purpose: "stepUp",
-        device_label,
-        options: ccr.public_key,
-        uv_options,
-        expires_at: epoch_to_utc(expires_at),
-    })
+    let mut response = json!({
+        "enrollmentId": enrollment_id,
+        "subject": subject,
+        "purpose": "stepUp",
+        "options": webauthn_options(&ccr.public_key)?,
+        "expiresAt": epoch_to_utc(expires_at),
+    });
+    if let Some(label) = device_label {
+        response["deviceLabel"] = json!(label);
+    }
+    if let Some(uv) = uv_options {
+        response["uvOptions"] = uv;
+    }
+    Ok(as_response("enroll/redeem/start", response)?)
 }
 
 // ── enroll/redeem/finish 0.1 ────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-#[schema(as = StepUpPasskeyRedeemed)]
-pub struct Redeemed {
-    pub credential_id: String,
-    pub subject: String,
-    pub purpose: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_label: Option<String>,
-    pub registered_at: DateTime<Utc>,
-}
-
-/// `auth/passkey/enroll/redeem/finish/0.1`. The ceremony is spent whatever
-/// happens: a failed finish starts again from `redeem/start` while the invite
-/// lasts.
+/// `auth/passkey/enroll/redeem/finish/0.1`. The authority is the ceremony a
+/// signed `redeem/start` opened; the finish may come unsigned from the browser
+/// that ran `navigator.credentials.create`. A signed one must be signed by the
+/// invite's subject.
+///
+/// The ceremony is spent whatever happens: a failed finish starts again from
+/// `redeem/start` while the invite lasts.
 pub async fn redeem_finish(
     state: &AppState,
-    enrollment_id: &str,
-    credential: &RegisterPublicKeyCredential,
-    uv_credential: Option<&PublicKeyCredential>,
-    device_label: Option<String>,
-) -> Result<Redeemed, AppError> {
+    signer: Option<&str>,
+    payload: &redeem_finish::Payload,
+) -> Result<redeem_finish::Response, TaskError> {
+    use redeem_finish::error_codes as codes;
+
     let webauthn = require_webauthn(state)?;
     let ks = &state.step_up_passkeys_ks;
-    if let Some(label) = &device_label
-        && label.chars().count() > 256
-    {
-        return Err(AppError::Validation(
-            "deviceLabel is longer than 256 characters".into(),
-        ));
-    }
+    let not_found =
+        |why: &str| refused(codes::ENROLLMENT_NOT_FOUND, AppError::NotFound(why.into()));
     let _guard = LOCK.lock().await;
 
+    let enrollment_id = payload.enrollment_id.as_str();
     let Some(c) = ks.get::<RedeemCeremony>(redeem_key(enrollment_id)).await? else {
-        return Err(AppError::NotFound(refused(
-            codes::ENROLLMENT_NOT_FOUND,
-            "no redemption in progress with this id",
-        )));
+        return Err(not_found("no redemption in progress with this id"));
     };
+    if signer.is_some_and(|s| s != c.subject) {
+        // Not the member's ceremony. Left for the member to finish.
+        return Err(not_found("no redemption in progress with this id"));
+    }
     ks.remove(redeem_key(enrollment_id)).await?;
     if now_epoch() >= c.expires_at {
-        return Err(AppError::Gone(refused(
+        return Err(refused(
             codes::ENROLLMENT_EXPIRED,
-            "this redemption lapsed; start again while the invite is valid",
-        )));
+            AppError::Gone("this redemption lapsed; start again while the invite is valid".into()),
+        ));
     }
     let Some(invite) = ks.get::<Invite>(c.invite_key.clone()).await? else {
-        return Err(AppError::NotFound(refused(
-            codes::ENROLLMENT_NOT_FOUND,
+        return Err(not_found(
             "the invite this redemption was started for is no longer valid",
-        )));
+        ));
     };
     if now_epoch() >= invite.expires_at || invite.subject != c.subject {
-        return Err(AppError::NotFound(refused(
-            codes::ENROLLMENT_NOT_FOUND,
+        return Err(not_found(
             "the invite this redemption was started for is no longer valid",
-        )));
+        ));
     }
 
     // A further step-up passkey needs a gesture from one already held; a
     // missing assertion is a failure, never consent.
+    let uv_failed = |why: &str| {
+        refused(
+            codes::USER_VERIFICATION_FAILED,
+            AppError::Unauthorized(why.into()),
+        )
+    };
     let mut existing = get_passkey_user_by_did(ks, &c.subject).await?;
     if let Some(uv_state) = &c.uv_state {
-        let uv = uv_credential.ok_or_else(|| {
-            AppError::Unauthorized(refused(
-                codes::USER_VERIFICATION_FAILED,
-                "a gesture from a step-up passkey you already hold is required",
-            ))
+        let uv = payload.uv_credential.as_ref().ok_or_else(|| {
+            uv_failed("a gesture from a step-up passkey you already hold is required")
+        })?;
+        let uv: PublicKeyCredential = webauthn_result(uv).ok_or_else(|| {
+            uv_failed("the assertion from your existing step-up passkey does not parse")
         })?;
         let result = webauthn
-            .finish_passkey_authentication(uv, uv_state)
+            .finish_passkey_authentication(&uv, uv_state)
             .map_err(|_| {
-                AppError::Unauthorized(refused(
-                    codes::USER_VERIFICATION_FAILED,
-                    "the assertion from your existing step-up passkey did not verify",
-                ))
+                uv_failed("the assertion from your existing step-up passkey did not verify")
             })?;
         if !result.user_verified() {
-            return Err(AppError::Unauthorized(refused(
-                codes::USER_VERIFICATION_FAILED,
+            return Err(uv_failed(
                 "the existing step-up passkey did not verify the user",
-            )));
+            ));
         }
         if let Some(user) = existing.as_mut() {
             for cred in &mut user.credentials {
@@ -627,29 +719,42 @@ pub async fn redeem_finish(
         }
     }
 
-    let passkey = crate::webauthn::finish_passkey_registration(webauthn, credential, &c.reg_state)
-        .map_err(|_| {
-            AppError::Unauthorized(refused(
-                codes::ATTESTATION_INVALID,
-                "the new passkey's attestation did not verify",
-            ))
-        })?;
+    let attestation_invalid = |why: &str| {
+        refused(
+            codes::ATTESTATION_INVALID,
+            AppError::Unauthorized(why.into()),
+        )
+    };
+    let credential: RegisterPublicKeyCredential = webauthn_result(&payload.credential)
+        .ok_or_else(|| attestation_invalid("the new passkey's attestation does not parse"))?;
+    let passkey = crate::webauthn::finish_passkey_registration(webauthn, &credential, &c.reg_state)
+        .map_err(|_| attestation_invalid("the new passkey's attestation did not verify"))?;
+    let hex_id = cred_hex(&passkey);
+    // A credential id names one credential to this relying party. One already
+    // bound — as anyone's session passkey or step-up passkey — would make
+    // "whose passkey answered" ambiguous, and `bound_step_up` answers that
+    // question by id.
+    if get_passkey_user_by_cred(&state.passkey_ks, &hex_id)
+        .await?
+        .is_some()
+        || get_passkey_user_by_cred(ks, &hex_id).await?.is_some()
+    {
+        return Err(attestation_invalid(
+            "that credential is already registered with this community",
+        ));
+    }
     if !crate::git_ns::ops::standing(state, &c.subject)
         .await?
         .member
     {
         ks.remove(c.invite_key).await?;
-        return Err(AppError::NotFound(refused(
-            codes::ENROLLMENT_NOT_FOUND,
-            "the invite's subject is no longer a member",
-        )));
+        return Err(not_found("the invite's subject is no longer a member"));
     }
 
     // Consumed before the credential is bound: were the write to fail after
     // this, the member asks for another invite — never a second credential on
     // the same one.
     ks.remove(c.invite_key).await?;
-    let hex_id = cred_hex(&passkey);
     let mut user = existing.unwrap_or(PasskeyUser {
         user_uuid: c.user_uuid,
         did: c.subject.clone(),
@@ -659,7 +764,11 @@ pub async fn redeem_finish(
     user.credentials.push(passkey);
     store_passkey_user(ks, &user).await?;
     store_credential_mapping(ks, &hex_id, user.user_uuid).await?;
-    let label = device_label.or(c.device_label);
+    let label = payload
+        .device_label
+        .as_ref()
+        .map(|l| l.to_string())
+        .or(c.device_label);
     let registered_at = Utc::now();
     ks.insert(
         meta_key(&hex_id),
@@ -686,65 +795,81 @@ pub async fn redeem_finish(
     )
     .await?;
     info!(subject = %c.subject, credential_id = %hex_id, "step-up passkey registered");
-    Ok(Redeemed {
-        credential_id: hex_id,
-        subject: c.subject,
-        purpose: "stepUp",
-        device_label: label,
-        registered_at,
-    })
+    let mut response = json!({
+        "credentialId": hex_id,
+        "subject": c.subject,
+        "purpose": "stepUp",
+        "registeredAt": registered_at,
+    });
+    if let Some(label) = label {
+        response["deviceLabel"] = json!(label);
+    }
+    Ok(as_response("enroll/redeem/finish", response)?)
 }
 
 // ── revoke/start + finish 0.2, an administrator for the member ──────────────
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-#[schema(as = StepUpPasskeyRevokeStarted)]
-pub struct RevokeStarted {
-    pub revocation_id: String,
-    /// Over the **administrator's own** passkeys: the person acting verifies.
-    #[schema(value_type = Object)]
-    pub uv_options: webauthn_rs_proto::PublicKeyCredentialRequestOptions,
-}
-
 /// `auth/passkey/revoke/start/0.2` with `subject`: a community administrator
-/// begins revoking a member's step-up passkey.
+/// begins revoking a member's step-up passkey. The ceremony is over the
+/// **administrator's own** passkeys: the person acting verifies.
 pub async fn revoke_start(
     state: &AppState,
     admin_did: &str,
-    subject: &str,
-    credential_id: &str,
-) -> Result<RevokeStarted, AppError> {
+    payload: &revoke_start::Payload,
+) -> Result<revoke_start::Response, TaskError> {
+    use revoke_start::error_codes as codes;
+
     let webauthn = require_webauthn(state)?;
+    // Revoking one's own step-up passkey takes a gesture from it, answered
+    // from a browser that holds no key of theirs; it is not offered yet, and a
+    // community administrator revokes on the member's behalf.
+    let Some(subject) = payload
+        .subject
+        .as_ref()
+        .map(|s| s.to_string())
+        .filter(|s| s != admin_did)
+    else {
+        return Err(refused(
+            codes::NOT_AUTHORIZED,
+            AppError::Forbidden(
+                "revoking your own step-up passkey is not offered here yet; a community \
+                 administrator revokes it for you"
+                    .into(),
+            ),
+        ));
+    };
     if !crate::git_ns::ops::standing(state, admin_did)
         .await?
         .community_admin
     {
-        return Err(AppError::Forbidden(refused(
+        return Err(refused(
             codes::NOT_AUTHORIZED,
-            "only a community administrator revokes a member's step-up passkey",
-        )));
+            AppError::Forbidden(
+                "only a community administrator revokes a member's step-up passkey".into(),
+            ),
+        ));
     }
+    let credential_id = payload.credential_id.to_string();
     let ks = &state.step_up_passkeys_ks;
     let owned = ks
-        .get::<CredentialMeta>(meta_key(credential_id))
+        .get::<CredentialMeta>(meta_key(&credential_id))
         .await?
         .is_some_and(|m| m.subject == subject);
     if !owned {
-        return Err(AppError::NotFound(refused(
+        return Err(refused(
             codes::CREDENTIAL_NOT_FOUND,
-            "no such step-up passkey for that member",
-        )));
+            AppError::NotFound("no such step-up passkey for that member".into()),
+        ));
     }
     let own = get_passkey_user_by_did(&state.passkey_ks, admin_did)
         .await?
         .map(|u| u.credentials)
         .unwrap_or_default();
     if own.is_empty() {
-        return Err(AppError::Forbidden(refused(
+        return Err(refused(
             codes::REAUTH_UNAVAILABLE,
-            "you hold no passkey to verify this revocation with",
-        )));
+            AppError::Forbidden("you hold no passkey to verify this revocation with".into()),
+        ));
     }
     let (rcr, uv_state) = webauthn
         .start_passkey_authentication(&own)
@@ -754,83 +879,82 @@ pub async fn revoke_start(
         revoke_key(&revocation_id),
         &Revocation {
             admin_did: admin_did.to_string(),
-            subject: subject.to_string(),
-            credential_id: credential_id.to_string(),
+            subject,
+            credential_id,
             uv_state,
             expires_at: now_epoch().saturating_add(CEREMONY_TTL_SECS),
         },
     )
     .await?;
-    Ok(RevokeStarted {
-        revocation_id,
-        uv_options: rcr.public_key,
-    })
+    Ok(as_response(
+        "revoke/start",
+        json!({
+            "revocationId": revocation_id,
+            "uvOptions": webauthn_options(&rcr.public_key)?,
+        }),
+    )?)
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-#[schema(as = StepUpPasskeyRevoked)]
-pub struct Revoked {
-    pub credential_id: String,
-    pub subject: String,
-    pub purpose: &'static str,
-    pub revoked_at: DateTime<Utc>,
-    /// The member's step-up passkeys left. May be zero: losing one costs a
-    /// gesture, not an account.
-    pub remaining: usize,
-}
-
-/// `auth/passkey/revoke/finish/0.2`.
+/// `auth/passkey/revoke/finish/0.2`, by the administrator who started it.
 pub async fn revoke_finish(
     state: &AppState,
     admin_did: &str,
-    revocation_id: &str,
-    uv: &PublicKeyCredential,
-) -> Result<Revoked, AppError> {
+    payload: &revoke_finish::Payload,
+) -> Result<revoke_finish::Response, TaskError> {
+    use revoke_finish::error_codes as codes;
+
     let webauthn = require_webauthn(state)?;
     let ks = &state.step_up_passkeys_ks;
+    let revocation_id = payload.revocation_id.as_str();
+    let not_found = || {
+        refused(
+            codes::REVOCATION_NOT_FOUND,
+            AppError::NotFound("no revocation in progress with this id".into()),
+        )
+    };
+    let uv_failed = |why: &str| {
+        refused(
+            codes::USER_VERIFICATION_FAILED,
+            AppError::Unauthorized(why.into()),
+        )
+    };
     let _guard = LOCK.lock().await;
     let Some(r) = ks.get::<Revocation>(revoke_key(revocation_id)).await? else {
-        return Err(AppError::NotFound(refused(
-            codes::REVOCATION_NOT_FOUND,
-            "no revocation in progress with this id",
-        )));
+        return Err(not_found());
     };
     if r.admin_did != admin_did {
-        return Err(AppError::NotFound(refused(
-            codes::REVOCATION_NOT_FOUND,
-            "no revocation in progress with this id",
-        )));
+        return Err(not_found());
     }
     ks.remove(revoke_key(revocation_id)).await?;
     if now_epoch() >= r.expires_at {
-        return Err(AppError::Gone(refused(
+        return Err(refused(
             codes::REVOCATION_EXPIRED,
-            "this revocation lapsed; start again",
-        )));
+            AppError::Gone("this revocation lapsed; start again".into()),
+        ));
     }
+    let uv: PublicKeyCredential = webauthn_result(&payload.uv_credential)
+        .ok_or_else(|| uv_failed("your passkey assertion does not parse"))?;
     let result = webauthn
-        .finish_passkey_authentication(uv, &r.uv_state)
-        .map_err(|_| {
-            AppError::Unauthorized(refused(
-                codes::REVOKE_UV_FAILED,
-                "your passkey assertion did not verify",
-            ))
-        })?;
+        .finish_passkey_authentication(&uv, &r.uv_state)
+        .map_err(|_| uv_failed("your passkey assertion did not verify"))?;
     if !result.user_verified() {
-        return Err(AppError::Unauthorized(refused(
-            codes::REVOKE_UV_FAILED,
-            "your passkey did not verify the user",
-        )));
+        return Err(uv_failed("your passkey did not verify the user"));
+    }
+    // WebAuthn's replay defence is the signature counter.
+    if let Some(mut own) = get_passkey_user_by_did(&state.passkey_ks, admin_did).await? {
+        for cred in &mut own.credentials {
+            cred.update_credential(&result);
+        }
+        store_passkey_user(&state.passkey_ks, &own).await?;
     }
     if !crate::git_ns::ops::standing(state, admin_did)
         .await?
         .community_admin
     {
-        return Err(AppError::Forbidden(refused(
-            codes::REVOKE_NOT_AUTHORIZED,
-            "you are no longer a community administrator",
-        )));
+        return Err(refused(
+            codes::NOT_AUTHORIZED,
+            AppError::Forbidden("you are no longer a community administrator".into()),
+        ));
     }
 
     let mut remaining = 0;
@@ -858,11 +982,66 @@ pub async fn revoke_finish(
     )
     .await?;
     info!(admin = %admin_did, subject = %r.subject, credential_id = %r.credential_id, "step-up passkey revoked");
-    Ok(Revoked {
-        credential_id: r.credential_id,
-        subject: r.subject,
-        purpose: "stepUp",
-        revoked_at: Utc::now(),
-        remaining,
-    })
+    Ok(as_response(
+        "revoke/finish",
+        json!({
+            "credentialId": r.credential_id,
+            "subject": r.subject,
+            "purpose": "stepUp",
+            "revokedAt": Utc::now(),
+            "remaining": remaining,
+        }),
+    )?)
+}
+
+// ── retention ───────────────────────────────────────────────────────────────
+
+/// Remove every invite and ceremony whose life has ended. A storage bound:
+/// every read above already treats an expired row as absent.
+pub async fn sweep_expired(ks: &KeyspaceHandle, now: DateTime<Utc>) -> Result<usize, AppError> {
+    #[derive(Deserialize)]
+    struct Expiring {
+        expires_at: u64,
+    }
+    let now = now.timestamp().max(0) as u64;
+    let mut removed = 0;
+    for prefix in [&b"invite:"[..], b"redeem:", b"revoke:"] {
+        for (key, value) in ks.prefix_iter_raw(prefix.to_vec()).await? {
+            let lapsed = serde_json::from_slice::<Expiring>(&value)
+                .map(|e| now >= e.expires_at)
+                // A row this build cannot read authorizes nothing either.
+                .unwrap_or(true);
+            if lapsed {
+                ks.remove(key).await?;
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_claim_code_is_read_as_people_type_it() {
+        assert_eq!(normalise_code(" abcd-efgh "), "ABCDEFGH");
+    }
+
+    #[test]
+    fn a_long_did_is_named_by_its_two_ends_within_webauthns_limit() {
+        assert_eq!(authenticator_name("did:key:z6Mkshort"), "did:key:z6Mkshort");
+        let long = format!("did:peer:2.{}", "V".repeat(900));
+        let name = authenticator_name(&long);
+        assert!(name.chars().count() <= 64, "{name}");
+        assert!(name.starts_with("did:peer:2."));
+    }
+
+    #[test]
+    fn the_invite_key_is_a_hash_and_never_the_token() {
+        let key = invite_key("sup_secret");
+        assert!(key.starts_with("invite:"));
+        assert!(!key.contains("sup_secret"));
+    }
 }

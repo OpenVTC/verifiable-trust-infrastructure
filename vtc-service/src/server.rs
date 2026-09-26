@@ -1241,6 +1241,7 @@ pub async fn run(
         state.accepted_ids_ks.clone(),
         state.step_up_marks_ks.clone(),
         state.task_consent_ks.clone(),
+        state.step_up_passkeys_ks.clone(),
         state.backup_bundles_ks.clone(),
         crate::trust_tasks::backup_tasks::blob_dir(&boot_cfg.store.data_dir),
         boot_cfg.join_requests.clone(),

@@ -69,6 +69,18 @@ mod acl_tasks;
 // retention sweeper needs.
 pub(crate) mod backup_tasks;
 
+// Members' step-up passkeys: `auth/passkey/enroll/invite/0.2` (`purpose:
+// stepUp`), `enroll/redeem/{start,finish}/0.1` and `revoke/{start,finish}/0.2`.
+// The operations are `crate::step_up_passkey`'s; this is their only door.
+pub(crate) mod step_up_passkey_tasks;
+
+// The integration tests' soft WebAuthn authenticator, for the spine tests that
+// drive a real passkey ceremony.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../tests/common/webauthn_harness.rs"]
+mod soft_authenticator;
+
 // The schema-conformance sweep (#1059): every bound, published `spec/vtc/*`
 // URI must speak that URI's wire shape. Lives in `src` rather than `tests`
 // because its census is derived from `DISPATCHED_URIS` below, which no
@@ -528,8 +540,16 @@ async fn dispatch_trust_task_validated(
     // - **Failed** → release. A document refused downstream of the claim would
     //   otherwise burn its `id`, and a corrected resend under the same `id`
     //   would come back `idConflict` for as long as the record is retained.
+    //
+    // A response that carries a bearer secret (an invite's claim code) is
+    // recorded as completed **without** its body, so the secret is not kept
+    // for the acceptance window; a redelivery is then answered `204`.
     if outcome.status.is_success() {
-        let recorded = serde_json::from_slice::<serde_json::Value>(&outcome.body).ok();
+        let recorded = if step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri.as_str()) {
+            None
+        } else {
+            serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
+        };
         claim.completed(recorded.as_ref()).await;
     } else {
         claim.release().await;
@@ -780,6 +800,15 @@ async fn dispatch_typed(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("backup_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
+        uri if step_up_passkey_tasks::URIS.contains(&uri) => {
+            match step_up_passkey_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("step_up_passkey_tasks::URIS names {uri}, which it does not route")
+                }
             }
         }
         uri if crate::git_ns::tasks::serves(uri) => {
@@ -1685,6 +1714,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // Another admin's consent to an unrestricted grant (VTI-APV-014). The
     // request it answers is pushed by this service, never dispatched here.
     crate::acl::admin_consent::DECISION_TYPE,
+    // Members' step-up passkeys: the invite, its redemption, and an
+    // administrator's revocation for the member. No REST route serves them.
+    step_up_passkey_tasks::INVITE_TYPE,
+    step_up_passkey_tasks::REDEEM_START_TYPE,
+    step_up_passkey_tasks::REDEEM_FINISH_TYPE,
+    step_up_passkey_tasks::REVOKE_START_TYPE,
+    step_up_passkey_tasks::REVOKE_FINISH_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,
@@ -2647,6 +2683,37 @@ async fn admin_signer(
     resolve_admin_claims(state, doc, &signer).await
 }
 
+/// Who an approver's own decision (a step-up `approve-response`) is from: the
+/// document's verified signer, or — for a console key — the administrator it
+/// acts for, resolved exactly as [`admin_signer`] resolves it. Unlike
+/// [`admin_signer`] it asks for no role: an approval authorizes nothing by
+/// itself, and the question it answers is only *who* approved, which the
+/// caller then holds to the subject the step-up was asked of.
+async fn approver_of(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<String, TrustTaskOutcome> {
+    let Some(signer) = ctx.verified_signer.clone() else {
+        return Err(reject_with(doc, RejectReason::ProofRequired));
+    };
+    let has_own_row = crate::acl::get_acl_entry(&state.acl_ks, &signer)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?
+        .is_some();
+    if !has_own_row
+        && let Some(delegation) =
+            crate::acl::console_key::resolve_delegated_admin(&state.console_keys_ks, &signer)
+                .await
+                .map_err(|e| app_error_to_reject(doc, &e))?
+    {
+        let claims = resolve_admin_claims(state, doc, &delegation.admin_did).await?;
+        crate::acl::console_key::touch_last_used(&state.console_keys_ks, &delegation).await;
+        return Ok(claims.did);
+    }
+    Ok(signer)
+}
+
 /// Read `did`'s ACL row and shape it into the claims the admin verbs take.
 ///
 /// Split out of [`admin_signer`] because the delegated arm needs the identical
@@ -3379,13 +3446,15 @@ async fn handle_acl_change_role(
 /// `auth/step-up/approve-response/0.4` — the passkey gesture an
 /// operation-bound step-up asked for.
 ///
-/// The gate is the WebAuthn assertion, which only the acting admin's own
-/// authenticator can produce over this service's challenge. The document is
-/// still the approver's attestation, so it must carry the approver's proof: an
-/// `assertionMethod` proof ([`verify_approval_proof`], checked by the spine)
-/// by the subject admin or a console key acting for them ([`admin_signer`]).
-/// Both are checked before the pending mark is consulted, so nobody else can
-/// spend an admin's challenge. What the gesture authorizes is read from this
+/// Two gates, by one approver. The WebAuthn assertion, which only the actor's
+/// own authenticator — a session passkey, or a member's step-up passkey
+/// (`crate::step_up_passkey`) — can produce over this service's challenge. And
+/// the document's own proof, because the document is the approver's
+/// attestation: an `assertionMethod` proof ([`verify_approval_proof`], checked
+/// by the spine) by the subject, or by a console key acting for them
+/// ([`approver_of`]). The passkey is in addition to the proof, never instead
+/// of it (approve-response 0.5). Both are checked before the pending mark is
+/// consulted, so nobody else can spend the actor's challenge. What the gesture authorizes is read from this
 /// service's record of the refusal, never from this document. See
 /// [`crate::acl::bound_step_up::approve`].
 ///
@@ -3411,14 +3480,15 @@ async fn handle_step_up_approve_response(
             hint.map(|h| serde_json::json!({ "reason": h })),
         )
     };
-    // No proof, no approval: `admin_signer` refuses a document without a
-    // verified signer. The signer, or the admin its console key acts for, must
-    // be the subject the step-up was asked of.
-    let approver = match admin_signer(state, ctx, &doc).await {
+    // No proof, no approval. The signer, or the admin its console key acts
+    // for, must be the subject the step-up was asked of — and it need not be
+    // an administrator: a member answers the step-ups asked of them (a
+    // break-glass) with a step-up passkey, signing the answer themselves.
+    let approver = match approver_of(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    if approver.did != payload.subject.as_str() {
+    if approver != payload.subject.as_str() {
         return refuse(
             codes::SUBJECT_MISMATCH,
             "the approve-response is not signed by the subject of the step-up",
