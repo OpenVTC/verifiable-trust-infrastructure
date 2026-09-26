@@ -855,7 +855,21 @@ async fn note_job_failure(state: &AppState, job: &BridgeJob) -> Result<(), AppEr
 
 // ── forge accounts ──────────────────────────────────────────────────────────
 
-/// Every member's linked forge accounts: DID → forge host → account.
+/// Does `m` hold the account `id` on `forge` — linked to a row that has not
+/// been removed? A member whose access lapsed but whose row stands still
+/// holds it: the account is theirs until they unlink or leave, and giving it
+/// to someone else in the meantime would hand them the forge roles back.
+pub(crate) fn holds_account(m: &crate::members::Member, forge: &str, id: &str) -> bool {
+    m.removed_at.is_none()
+        && m.extensions
+            .get("forges")
+            .and_then(|f| f.get(forge))
+            .and_then(|a| a.get("id"))
+            .and_then(Value::as_str)
+            == Some(id)
+}
+
+/// Every current member's linked forge accounts: DID → forge host → account.
 ///
 /// Stored on the member row, `extensions.forges[<host>] = {id, login}`
 /// (design §4.4), so the binding is erased with the member.
@@ -870,6 +884,12 @@ pub async fn linked_accounts(
         let Some(forges) = m.extensions.get("forges").and_then(Value::as_object) else {
             continue;
         };
+        // Only a current member's accounts are projected or adopted: one whose
+        // access lapsed keeps the link (and the account stays theirs, see
+        // [`holds_account`]) but gets no forge role through it.
+        if !super::ops::standing(state, &m.did).await?.member {
+            continue;
+        }
         let mut map = BTreeMap::new();
         for (host, acct) in forges {
             let (Some(id), Some(login)) = (
@@ -2432,35 +2452,35 @@ async fn complete_account_link(
         ));
     }
 
-    // Item 4 — a forge account links to one member at most.
-    let taken_by_other = linked_accounts(state)
-        .await?
-        .into_iter()
-        .any(|(did, forges)| {
-            did != attempt.member && forges.get(&forge).is_some_and(|a| a.id == id)
-        });
-    let linked = if taken_by_other {
-        None
-    } else {
-        let entry = json!({ "id": id, "login": login, "linkedAt": wire::timestamp(t) });
-        crate::members::storage::edit_member(&state.members_ks, &attempt.member, |m| {
-            if m.removed_at.is_some() {
-                return false;
-            }
-            if !m.extensions.is_object() {
-                m.extensions = json!({});
-            }
-            if let Some(o) = m.extensions.as_object_mut() {
-                let forges = o.entry("forges").or_insert_with(|| json!({}));
-                if !forges.is_object() {
-                    *forges = json!({});
+    // Item 4 — a forge account links to one member at most. The check and
+    // the write are one step under the member-row lock, which every writer
+    // of a member row holds (`members::storage::edit_lock`); this handler
+    // also holds the git-ns store lock, which serialises every link. So no
+    // second member can take the account between the check and the write.
+    let entry = json!({ "id": id, "login": login, "linkedAt": wire::timestamp(t) });
+    let linked = {
+        let _rows = crate::members::storage::edit_lock().await;
+        let taken_by_other = crate::members::list_members(&state.members_ks)
+            .await?
+            .iter()
+            .any(|m| m.did != attempt.member && holds_account(m, &forge, &id));
+        match crate::members::get_member(&state.members_ks, &attempt.member).await? {
+            Some(mut m) if !taken_by_other && m.removed_at.is_none() => {
+                if !m.extensions.is_object() {
+                    m.extensions = json!({});
                 }
-                forges[&forge] = entry.clone();
+                if let Some(o) = m.extensions.as_object_mut() {
+                    let forges = o.entry("forges").or_insert_with(|| json!({}));
+                    if !forges.is_object() {
+                        *forges = json!({});
+                    }
+                    forges[&forge] = entry.clone();
+                }
+                crate::members::store_member(&state.members_ks, &m).await?;
+                Some(m)
             }
-            true
-        })
-        .await?
-        .filter(|m| m.removed_at.is_none())
+            _ => None,
+        }
     };
     match linked {
         Some(_) => {

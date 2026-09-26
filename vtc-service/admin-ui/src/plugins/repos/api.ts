@@ -123,9 +123,13 @@ export async function fetchMembersPage(
 /** DID → forge host → linked account. */
 export type ForgeAccounts = Map<string, Map<string, { id: string; login: string }>>;
 
+/** Current members' accounts only: one whose member's access lapsed is still
+ *  theirs (nobody else may link it) but projects no role and cannot be
+ *  adopted, so no screen offers either for it. */
 export function indexAccounts(list: GitNsAccountList | undefined): ForgeAccounts {
   const out: ForgeAccounts = new Map();
   for (const a of list?.accounts ?? []) {
+    if (!a.memberCurrent) continue;
     const byHost = out.get(a.member) ?? new Map<string, { id: string; login: string }>();
     byHost.set(a.forge, { id: a.id, login: a.login });
     out.set(a.member, byHost);

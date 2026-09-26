@@ -52,6 +52,7 @@ const LINK_MEMORY_DAYS: i64 = 7;
 pub async fn sweep(state: &AppState) -> Result<bool, AppError> {
     let mut changed = false;
     changed |= sweep_departures(state).await?;
+    changed |= sweep_departed_links(state).await?;
     changed |= sweep_expiry(state).await?;
     changed |= sweep_pending(state).await?;
     Ok(changed)
@@ -180,8 +181,18 @@ pub async fn sweep_departures(state: &AppState) -> Result<bool, AppError> {
         }
     }
 
-    // A departed member's forge accounts go with them (git-ns/account/link,
-    // *Consent/purpose*: "MUST delete it when the member leaves").
+    Ok(changed)
+}
+
+/// A departed member's forge accounts go with them (git-ns/account/link,
+/// *Consent/purpose*: "MUST delete it when the member leaves").
+///
+/// Its own pass, not part of [`sweep_departures`]: that one returns early when
+/// no departed member held a right, and a member who linked an account and
+/// held no right would then keep the link for good.
+pub async fn sweep_departed_links(state: &AppState) -> Result<bool, AppError> {
+    let _guard = store::write_lock().await;
+    let mut changed = false;
     for m in crate::members::list_members(&state.members_ks).await? {
         if m.removed_at.is_some() && m.extensions.get("forges").is_some_and(|f| !f.is_null()) {
             crate::members::storage::edit_member(&state.members_ks, &m.did, |m| {
