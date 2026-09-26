@@ -49,7 +49,7 @@
 use tracing::{info, warn};
 
 use vta_sdk::protocols::members::{MEMBER_REMOVAL_NOTICE_TYPE, RemovalCode, RemovalNoticeBody};
-use vti_common::capability_client::{TRUST_TASK_ENVELOPE_TYPE, build_document};
+use vti_common::capability_client::build_document;
 
 use crate::error::AppError;
 use crate::server::AppState;
@@ -140,22 +140,16 @@ async fn try_send(
         .map_err(|e| AppError::Internal(format!("serialise removal-notice document: {e}")))?;
     signer.sign_doc(&mut doc_value).await?;
 
-    let envelope = affinidi_messaging_didcomm::Message::build(
-        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        TRUST_TASK_ENVELOPE_TYPE.to_string(),
+    // Over whichever transport the removed member speaks — TSP, DIDComm or
+    // REST — with escalation to the next when one yields no evidence of
+    // delivery (`crate::member_push`).
+    crate::member_push::push_trust_task(
+        state,
+        target_did,
         doc_value,
+        crate::server::REMOVAL_NOTICE_DELIVER_BY,
     )
-    .from(vtc_did)
-    .to(target_did.to_string())
-    .finalize();
-
-    state
-        .send_to_member_by(
-            target_did,
-            envelope,
-            crate::server::REMOVAL_NOTICE_DELIVER_BY,
-        )
-        .await?;
+    .await?;
 
     info!(
         target = target_did,

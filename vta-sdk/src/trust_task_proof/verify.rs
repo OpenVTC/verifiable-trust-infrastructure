@@ -163,9 +163,22 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
     // the proof declares, not merely a key its DID document lists.
     let bound = PurposeBound::for_proof(resolver, &di)
         .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
-    di.verify(&unsigned, &bound, VerifyOptions::new())
-        .await
-        .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
+    if let Err(first) = di.verify(&unsigned, &bound, VerifyOptions::new()).await {
+        // Checked against a cached document, a failure may only mean the
+        // signer rotated since it was cached — the key id kept, its material
+        // replaced. Re-resolve once, fresh, and verify again; fail closed on
+        // whatever that says (VTI-KEY-134). A document fetched for this call is
+        // not fetched again, and the refresh is rate-limited per DID
+        // (`FRESH_RESOLVE_MIN_INTERVAL`), so a stream of bad proofs cannot turn
+        // this verifier into a fetch amplifier. The retry stays bound to the
+        // proof's purpose.
+        if !resolver.refresh_if_cached(&signer_did).await {
+            return Err(DiProofError::VerifyFailed(first.to_string()));
+        }
+        di.verify(&unsigned, &bound, VerifyOptions::new())
+            .await
+            .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
+    }
 
     Ok(signer_did)
 }

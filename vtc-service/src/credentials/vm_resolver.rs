@@ -123,11 +123,16 @@ impl DidVmResolver {
                     .to_string(),
             )
         })?;
-        let resolved = resolver.resolve(base_did).await.map_err(|e| {
-            AppError::Validation(format!(
-                "the verification method's DID did not resolve: {e}"
-            ))
-        })?;
+        // A cached document that does not list `vm` is re-resolved once,
+        // fresh, before the method is refused: the signer may have rotated
+        // since it was cached (VTI-KEY-134).
+        let resolved = vta_sdk::trust_task_proof::resolve_for_vm(resolver, base_did, vm)
+            .await
+            .map_err(|e| {
+                AppError::Validation(format!(
+                    "the verification method's DID did not resolve: {e}"
+                ))
+            })?;
         let entry = authorised_method(&resolved.doc, base_did, vm, purpose).map_err(refused)?;
         let multibase = entry
             .property_set

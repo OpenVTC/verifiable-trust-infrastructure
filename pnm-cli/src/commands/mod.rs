@@ -17,6 +17,7 @@ pub(crate) mod auth_credential;
 pub(crate) mod backup;
 pub(crate) mod bootstrap;
 pub(crate) mod config;
+pub(crate) mod consent;
 pub(crate) mod contexts;
 pub(crate) mod cred_vault;
 pub(crate) mod device;
