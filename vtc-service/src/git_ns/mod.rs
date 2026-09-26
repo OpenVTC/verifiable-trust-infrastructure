@@ -34,7 +34,6 @@ pub mod ops;
 pub mod policy;
 pub mod projection;
 pub mod reproject;
-pub mod reseat_v0_3;
 pub mod role_map;
 pub mod rules;
 pub mod store;

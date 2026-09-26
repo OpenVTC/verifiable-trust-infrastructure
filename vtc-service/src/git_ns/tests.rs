@@ -12,7 +12,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_3 as job_wire;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_4 as job_wire;
+use trust_tasks_rs::specs::git_ns::namespace::reseat::v0_3 as reseat3;
 use vti_rooms_dtg::test_support::Party;
 
 use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
@@ -28,9 +29,27 @@ use super::projection::{self, Backoff};
 use super::store::{self, Snapshot};
 
 const URI: &str = "https://trusttasks.org/spec/git-ns";
+/// `git-ns/namespace/reseat/0.3`, the only reseat version served.
+const RESEAT_URI: &str = <reseat3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 fn uri(task: &str) -> String {
     format!("{URI}/{task}/0.1")
+}
+
+#[test]
+fn reseat_0_3_requires_a_proof_and_a_did_core_subject() {
+    const { assert!(<reseat3::Payload as trust_tasks_rs::Payload>::IS_PROOF_REQUIRED) };
+    let p: reseat3::Payload = serde_json::from_value(json!({
+        "namespace": "ns_1", "subject": "did:key:z6Mkcarol", "statement": "why"
+    }))
+    .unwrap();
+    assert_eq!(p.subject.to_string(), "did:key:z6Mkcarol");
+    assert!(
+        serde_json::from_value::<reseat3::Payload>(json!({
+            "namespace": "ns_1", "subject": "did:key:z6Mk#frag", "statement": "why"
+        }))
+        .is_err()
+    );
 }
 
 /// A bridge that accepts every job and remembers them.
@@ -1286,10 +1305,7 @@ fn every_git_ns_task_is_served() {
     ] {
         assert!(served.contains(&uri(task).as_str()), "{task} is not served");
     }
-    assert!(
-        served.contains(&super::reseat_v0_3::TYPE_URI),
-        "reseat 0.3 is not served"
-    );
+    assert!(served.contains(&RESEAT_URI), "reseat 0.3 is not served");
     assert!(
         !served.contains(&uri("namespace/reseat").as_str()),
         "reseat 0.1 is still served"
@@ -3570,7 +3586,7 @@ async fn reseat(f: &Fixture, who: &Party, ns: &str, subject: &str) -> TrustTaskO
     send_v(
         &f.vtc.state,
         who,
-        super::reseat_v0_3::TYPE_URI,
+        RESEAT_URI,
         json!({ "namespace": ns, "subject": subject, "statement": "Alice left; Carol owns most repositories" }),
     )
     .await
@@ -4336,7 +4352,7 @@ async fn every_git_ns_task_that_takes_a_did_refuses_one_that_is_not_did_core() {
     let out = send_v(
         &f.vtc.state,
         &f.admin,
-        super::reseat_v0_3::TYPE_URI,
+        RESEAT_URI,
         json!({ "namespace": ns, "subject": SHELL_DID, "statement": "x" }),
     )
     .await;
@@ -4584,7 +4600,7 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
     ok(&send_v(
         &f.vtc.state,
         &dana,
-        super::reseat_v0_3::TYPE_URI,
+        RESEAT_URI,
         json!({ "namespace": ns, "subject": f.bob.did, "statement": "the only admin left" }),
     )
     .await);

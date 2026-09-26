@@ -39,7 +39,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_3 as event_wire, job::v0_3 as job_wire, result::v0_1 as result_wire,
+    event::v0_3 as event_wire, job::v0_4 as job_wire, result::v0_1 as result_wire,
 };
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities, select_protocol};
 use vti_common::error::AppError;
@@ -60,11 +60,8 @@ use super::rules;
 use super::store::{self, Snapshot};
 use super::wire;
 
-/// `git-ns/bridge/job/0.4`, the only version the VTC sends. Spelled out
-/// until a `trust-tasks-rs` release carries the generated `job::v0_4` type;
-/// the payload is 0.3's shape, with `repo` required for `projectRoles`, and
-/// the acknowledgement is 0.3's.
-pub const JOB_TYPE: &str = "https://trusttasks.org/spec/git-ns/bridge/job/0.4";
+/// `git-ns/bridge/job/0.4`, the only version the VTC sends.
+pub const JOB_TYPE: &str = <job_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `trust-task-discovery/0.2`: the VTC asks a bridge whether it takes
 /// [`JOB_TYPE`] before sending it a job.
 pub const DISCOVERY_TYPE: &str = "https://trusttasks.org/spec/trust-task-discovery/0.2";
