@@ -267,7 +267,7 @@ profile's connection offers.
 Both `pnm consent` and `cnm consent` (the VTC's unrestricted-admin consent, see
 `docs/03-vtc/bootstrap-runbook.md`) are built on `vta_sdk::task_consent`:
 `match_code` (which every surface, requester and approver, must use),
-`ConsentRequest::verify` (proof, signer = issuer = the expected node, addressed
+`ConsentRequest::verify` (proof under `authentication`, signer = issuer = the expected node, addressed
 to this approver, not expired), and `VerifiedConsentRequest::decision`. What
 they show and the code comparison live in `vta_cli_common::consent_approve`.
 

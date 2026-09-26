@@ -300,6 +300,19 @@ pub async fn run_open(
                 "Load these platform secrets into the messaging-bridge connector's secret store."
             );
         }
+        SealedPayloadV1::SeedMnemonic(m) => {
+            println!("Payload: SeedMnemonic");
+            if let Some(ref did) = m.vta_did {
+                println!("  VTA DID: {did}");
+            }
+            println!();
+            println!(
+                "\x1b[1;33m⚠ This is the VTA's root seed. Write it down offline, then clear this \
+                 terminal. It will not be shown again.\x1b[0m"
+            );
+            println!();
+            println!("  {}", m.mnemonic);
+        }
     }
 
     if let Some(path) = out {
@@ -895,6 +908,7 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::AdminRotation(_) => "AdminRotation",
         SealedPayloadV1::IssuedCredential(_) => "IssuedCredential",
         SealedPayloadV1::MessagingBridgeCredentials(_) => "MessagingBridgeCredentials",
+        SealedPayloadV1::SeedMnemonic(_) => "SeedMnemonic",
     }
 }
 

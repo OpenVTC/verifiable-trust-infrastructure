@@ -28,3 +28,4 @@ pub use vta_sdk::trust_task_proof::{
     DiProofError, verify_approval_proof, verify_approval_proof_with, verify_trust_task_proof,
     verify_trust_task_proof_with,
 };
+pub use vta_sdk::trust_task_proof::{ProofPurpose, PurposeBound, PurposeVmResolver};

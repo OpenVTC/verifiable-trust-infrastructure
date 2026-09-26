@@ -952,6 +952,7 @@ async fn resolver_knowing_the_vtc(fix: &Fixture) -> vta_sdk::trust_task_proof::T
             "publicKeyMultibase": multikey,
         }],
         "assertionMethod": [vm],
+        "authentication": [vm],
     });
     let mut client = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
         .await

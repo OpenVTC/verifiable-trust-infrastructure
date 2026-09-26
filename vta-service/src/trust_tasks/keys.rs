@@ -246,7 +246,7 @@ pub(super) async fn handle_export_secret(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match operations::keys::get_key_secret(
+    match operations::keys::export_key_secret(
         &state.keys_ks,
         &state.imported_ks,
         &state.contexts_ks,
@@ -260,7 +260,17 @@ pub(super) async fn handle_export_secret(
     .await
     {
         Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
+        // The two refusals about the key carry the codes the task declares.
+        // Only reachable once key-export, the channel and scope have all
+        // passed, so they are said only to a caller entitled to the key.
+        Err(operations::keys::KeyExportError::Refused(refusal, message)) => {
+            match trust_tasks_rs::TrustTaskCode::new_extended("keys/export-secret", refusal.code())
+            {
+                Ok(code) => super::helpers::reject_with_code(&doc, code, message, None),
+                Err(_) => app_error_to_reject(&doc, crate::error::AppError::Forbidden(message)),
+            }
+        }
+        Err(operations::keys::KeyExportError::Other(e)) => app_error_to_reject(&doc, e),
     }
 }
 
@@ -625,6 +635,72 @@ mod key_export_tests {
             "an admin derives KeyExport and must reach the key lookup: {body}"
         );
         assert!(body.contains("not within the caller's scope"), "{body}");
+    }
+
+    /// The two refusals about the key answer with the codes
+    /// `keys/export-secret/0.1` declares, to a caller entitled to the key.
+    #[tokio::test]
+    async fn refusals_about_the_key_carry_the_declared_codes() {
+        use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+        let (state, _dir) = build_signing_test_app_state().await;
+        for (id, origin, exportable, code) in [
+            (
+                "k-locked",
+                KeyOrigin::Derived,
+                Some(false),
+                "keys/export-secret:notExportable",
+            ),
+            (
+                "k-inside",
+                KeyOrigin::Internal,
+                None,
+                "keys/export-secret:neverExportable",
+            ),
+        ] {
+            let now = chrono::Utc::now();
+            state
+                .keys_ks
+                .insert(
+                    crate::keys::store_key(id),
+                    &KeyRecord {
+                        key_id: id.into(),
+                        derivation_path: "m/26'/0'/0'/0'".into(),
+                        key_type: KeyType::Ed25519,
+                        status: KeyStatus::Active,
+                        public_key: "z6MkUnused".into(),
+                        label: None,
+                        context_id: None,
+                        seed_id: None,
+                        exportable,
+                        origin,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                )
+                .await
+                .unwrap();
+            let uri: TypeUri = vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1
+                .parse()
+                .unwrap();
+            let doc = TrustTask::new(
+                format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                uri,
+                json!({ "keyId": id }),
+            );
+            let mut super_admin = claims("did:key:zRootAdmin", Role::Admin);
+            super_admin.allowed_contexts.clear();
+            let out = super::super::transport::with_confidentiality(
+                super::super::transport::TransportConfidentiality::EndToEnd,
+                handle_export_secret(&state, &super_admin, doc),
+            )
+            .await;
+            let body: Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(
+                body.pointer("/payload/code").and_then(Value::as_str),
+                Some(code),
+                "{body}"
+            );
+        }
     }
 
     /// `keys/export-secret/0.1` over the HTTPS binding is refused even for an

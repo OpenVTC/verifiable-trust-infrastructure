@@ -208,18 +208,21 @@ pub const TEST_ADMIN_SEED: [u8; 32] = [0x7A; 32];
 ///
 /// `VtaClient` verifies replies now
 /// (OpenVTC/verifiable-trust-infrastructure#1341), and production has always
-/// signed them with `{vta_did}#key-0` for every DID method that is not
-/// `did:peer` (`server.rs`). A mock that cannot sign is therefore not a cheap
+/// signed them with its own key for every DID method that is not `did:peer`
+/// (`server.rs`). A mock that cannot sign is therefore not a cheap
 /// stand-in any more — it is a VTA that behaves in a way no real one does, and
 /// every test through it fails with the client blaming the reply.
 pub const TEST_VTA_SEED: [u8; 32] = [0x5A; 32];
 
-/// The mock VTA's `did:key` and its `#key-0` verification method.
+/// The mock VTA's `did:key` and its verification method,
+/// `did:key:<id>#<id>` — the one method a did:key has, and the one production
+/// signs as (`server.rs`, the did:key branch of `AuthInit`). A did:key has no
+/// `#key-0`, and a verifier refuses a proof naming one (VTI-KEY-022).
 ///
 /// Derived, not written down: a literal here is what the sentinel was.
 pub fn test_vta_did() -> (String, String) {
     let (did, _vm) = did_for_seed(TEST_VTA_SEED[0]);
-    let vm = format!("{did}#key-0");
+    let vm = crate::operations::credentials::vta_signing_vm(&did);
     (did, vm)
 }
 
@@ -326,6 +329,15 @@ pub fn sign_as_test_admin(doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>
 /// and signs with another is refused for that rather than for whatever it meant
 /// to check.
 pub fn sign_as(seed: u8, doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>) {
+    sign_as_for(seed, "assertionMethod", doc)
+}
+
+/// As [`sign_as`], with the proof made for `purpose`.
+pub fn sign_as_for(
+    seed: u8,
+    purpose: &str,
+    doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>,
+) {
     use affinidi_data_integrity::DataIntegrityProof;
     use affinidi_data_integrity::crypto_suites::CryptoSuite;
     use affinidi_data_integrity::prepare_sign_input;
@@ -336,7 +348,7 @@ pub fn sign_as(seed: u8, doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>)
     let mut di = DataIntegrityProof::new(
         CryptoSuite::EddsaJcs2022,
         vm,
-        "assertionMethod".to_string(),
+        purpose.to_string(),
         None,
         Some(
             chrono::Utc::now()
@@ -531,7 +543,7 @@ async fn provision_vta_signing_identity(
     // The same key, as a `Secret` the response signer can use.
     //
     // Production sets `signing_vm_id` to `{vta_did}#key-0` for did:webvh and
-    // did:key alike (`server.rs`, the non-`did:peer` branch of `AuthInit`), so
+    // to `did:key:<id>#<id>` for did:key (`server.rs`, `AuthInit`), so
     // a REST-only VTA signs its answers with its own key and needs no transport
     // identity to do it. This harness never ran that path — it populated the
     // signer only from `build_transport_state`, which requires a `did:peer:2` —
@@ -553,11 +565,11 @@ async fn provision_vta_signing_identity(
             None,
         )
         .expect("construct the VTA's own signing secret");
-        secret.id = key_id.clone();
-        VtaOwnSigner {
-            vm_id: key_id.clone(),
-            secret,
-        }
+        // The record is stored under `#key-0` whatever the method; the proof
+        // names the method the DID document lists.
+        let vm_id = crate::operations::credentials::vta_signing_vm(&vta_did);
+        secret.id = vm_id.clone();
+        VtaOwnSigner { vm_id, secret }
     };
 
     save_key_record(
@@ -1009,8 +1021,9 @@ pub struct VtaTransportIdentity {
 
 /// The VTA's own response-signing key, as production wires it.
 ///
-/// `{vta_did}#key-0` — the same verification method `server.rs` puts in
-/// `signing_vm_id` for every DID method that is not `did:peer`. Carried out of
+/// The same verification method `server.rs` puts in `signing_vm_id` for every
+/// DID method that is not `did:peer`: `{vta_did}#key-0`, or
+/// `did:key:<id>#<id>` for a did:key. Carried out of
 /// [`provision_vta_signing_identity`] rather than re-derived, so the harness
 /// signs with the key it actually provisioned.
 pub(crate) struct VtaOwnSigner {
@@ -1403,6 +1416,16 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        trust_task_pushes_ks: store
+            .keyspace(crate::keyspaces::TRUST_TASK_PUSHES)
+            .expect("trust_task_pushes keyspace"),
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        outbox_ks: store
+            .keyspace(crate::keyspaces::OUTBOX)
+            .expect("outbox keyspace"),
+        #[cfg(all(test, any(feature = "didcomm", feature = "tsp")))]
+        push_log: Default::default(),
         // Not feature-gated, in test scaffolding as in `build_app_state`: reply
         // correlation is a document concern, so the spine consults it on every
         // transport. A test agent with no registry would dispatch a reply as a
@@ -2144,6 +2167,7 @@ impl MockVta {
             &vta_did,
             &mediator_did,
             ctx.outbox_ks.clone(),
+            ctx.state.trust_task_pushes_ks.clone(),
             ctx.relationships_ks.clone(),
             std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ctx.state.did_resolver.as_ref(),

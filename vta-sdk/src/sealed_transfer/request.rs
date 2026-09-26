@@ -21,6 +21,8 @@ use super::error::SealedTransferError;
 ///
 /// JSON-serialized for offline transport. Contains no secret material.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = SealedBootstrapRequest))]
 #[serde(deny_unknown_fields)]
 pub struct BootstrapRequest {
     /// Wire-format version. Currently 1.

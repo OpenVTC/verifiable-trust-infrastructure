@@ -343,6 +343,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         step_up_marks_ks,
         task_consent_ks,
         member_pushes_ks,
+        tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),
         backup_bundles_ks,
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
