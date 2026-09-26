@@ -70,7 +70,12 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
             // parse as a Trust Task document". Here the document may be
             // perfectly good and merely unwrapped, so that message would send
             // the sender to inspect the wrong thing.
-            return wrap_envelope(&crate::trust_tasks::malformed_request_response(reason).body);
+            let refusal = crate::trust_tasks::sign_response(
+                app_state,
+                crate::trust_tasks::malformed_request_response(reason),
+            )
+            .await;
+            return wrap_envelope(&refusal.body);
         }
     };
     let payload = document.as_slice();

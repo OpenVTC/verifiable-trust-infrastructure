@@ -52,10 +52,10 @@ use vti_common::auth::{AdminAuth, SuperAdminAuth};
 use vti_common::error::AppError;
 
 use crate::git_ns::bridge::{self, BridgeJob};
-use crate::git_ns::model::{Resource, Right, RightRow, Scope};
+use crate::git_ns::model::{RepoState, Resource, Right, RightRow, Scope};
 use crate::git_ns::ops::{now, standing};
 use crate::git_ns::store::Snapshot;
-use crate::git_ns::{lifecycle, projection, rules, view, wire};
+use crate::git_ns::{lifecycle, projection, role_map, rules, view, wire};
 use crate::server::AppState;
 
 // ── query parameters ────────────────────────────────────────────────────────
@@ -138,6 +138,42 @@ pub struct GitNsNamespaceRow {
     pub role_drift: String,
     /// The active policy's `cascade_on_departure` setting in effect.
     pub cascade_on_departure: bool,
+    /// The forge role each right projects to on a repository without a map
+    /// of its own, as the bridge serving the namespace reported it
+    /// (`git-ns/bridge/event/0.3` `roleMapReported`). Absent while it has not
+    /// reported: no map, the default included, is assumed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<GitNsRoleMap>,
+    /// `reported` — the bridge serving the namespace said so; `unknown` — it
+    /// has not reported since the namespace was bound or came to be served by
+    /// it (or it predates event 0.3). While unknown, drift adoption is
+    /// refused (`git-ns:roleMapUnknown`) and every role revert is weighed as
+    /// revoking `git.repo.own`.
+    pub role_map_source: String,
+    /// The `issuedAt` of the report held, on the bridge's clock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_map_reported_at: Option<String>,
+}
+
+/// Which forge role `git.repo.own`, `git.repo.maintain` and
+/// `git.commit.sign` project to — `none`, `read`, `triage`, `write`,
+/// `maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to
+/// no forge role under any map.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct GitNsRoleMap {
+    pub own: String,
+    pub maintain: String,
+    pub commit: String,
+}
+
+impl From<crate::git_ns::role_map::RoleMap> for GitNsRoleMap {
+    fn from(m: crate::git_ns::role_map::RoleMap) -> Self {
+        GitNsRoleMap {
+            own: m.own.as_str().to_string(),
+            maintain: m.maintain.as_str().to_string(),
+            commit: m.commit.as_str().to_string(),
+        }
+    }
 }
 
 /// The bridge's report of its standing on a namespace's forge owner, carried
@@ -230,6 +266,14 @@ pub struct GitNsRepoRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub last_check: Option<Value>,
+    /// The forge role each right projects to on this repository, under the
+    /// bridge's reported map. Absent while the namespace's map is unknown
+    /// (`roleMapSource`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<GitNsRoleMap>,
+    /// The bridge last projected this repository's roles under an earlier
+    /// role map; a re-projection is queued and has not yet succeeded.
+    pub role_map_stale: bool,
 }
 
 /// One bootstrap step's outcome, as the bridge reported it.
@@ -422,6 +466,7 @@ pub async fn namespaces_list(
         .iter()
         .map(|ns| {
             let v = wire::namespace(ns);
+            let ns_map_source = role_map::source(ns);
             GitNsNamespaceRow {
                 id: ns.id.clone(),
                 forge: ns.forge.clone(),
@@ -457,6 +502,10 @@ pub async fn namespaces_list(
                 }),
                 role_drift: role_drift.to_string(),
                 cascade_on_departure: settings.cascade_on_departure,
+                role_map: role_map::for_namespace(ns).map(Into::into),
+                role_map_source: ns_map_source.as_str().to_string(),
+                role_map_reported_at: role_map::current_report(ns)
+                    .map(|r| wire::timestamp(r.issued_at)),
             }
         })
         .collect();
@@ -527,6 +576,14 @@ pub async fn repos_list(
                     })
                     .collect(),
                 last_check: r.forge_report.last_check.clone(),
+                role_map: snap
+                    .namespace(&r.namespace_id)
+                    .and_then(|ns| role_map::for_repo(ns, &r.resource))
+                    .map(Into::into),
+                role_map_stale: matches!(r.state, RepoState::Active | RepoState::Orphaned)
+                    && snap
+                        .namespace(&r.namespace_id)
+                        .is_some_and(|ns| role_map::is_stale(ns, &r.resource)),
             }
         })
         .collect();

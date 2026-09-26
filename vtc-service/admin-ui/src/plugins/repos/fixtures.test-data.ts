@@ -39,6 +39,9 @@ export const ACME: GitNsNamespaceRow = {
   installationRemoved: false,
   roleDrift: "report",
   cascadeOnDeparture: false,
+  roleMap: { own: "admin", maintain: "maintain", commit: "none" },
+  roleMapSource: "reported",
+  roleMapReportedAt: "2026-09-25T00:00:00Z",
 };
 
 export const PERSONAL: GitNsNamespaceRow = {
@@ -58,6 +61,7 @@ export const PERSONAL: GitNsNamespaceRow = {
   installationRemoved: false,
   roleDrift: "report",
   cascadeOnDeparture: false,
+  roleMapSource: "unknown",
 };
 
 const BOOT_ALL = { workflow: true, keyring: true, variables: true, requiredCheck: true };
@@ -79,6 +83,8 @@ export const WIDGETS: GitNsRepoRow = {
   createdBy: ALICE,
   createdAt: "2026-08-02T00:00:00Z",
   steps: [],
+  roleMap: { own: "admin", maintain: "maintain", commit: "none" },
+  roleMapStale: false,
 };
 
 export const DOCS: GitNsRepoRow = {

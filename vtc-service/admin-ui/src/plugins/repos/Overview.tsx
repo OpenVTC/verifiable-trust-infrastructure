@@ -17,7 +17,7 @@ import type {
   GitNsRightRow,
 } from "@/lib/wire-types";
 
-import { type SignedTask, unbindTask } from "./actions";
+import { reprojectTask, type SignedTask, unbindTask } from "./actions";
 import {
   fetchIssuedByDeparted,
   fetchNamespaces,
@@ -114,6 +114,7 @@ function NamespaceCard({
   policyVersion,
   onUnbind,
   onReseat,
+  onReproject,
 }: {
   ns: GitNsNamespaceRow;
   repos: GitNsRepoRow[];
@@ -125,6 +126,7 @@ function NamespaceCard({
   policyVersion: number | null | undefined;
   onUnbind: () => void;
   onReseat: () => void;
+  onReproject: () => void;
 }) {
   const book = useNameBook();
   // Reseat is signed with the community-administrator capability alone, so
@@ -137,6 +139,8 @@ function NamespaceCard({
   ).length;
   const service = rights?.find((r) => isServiceGrant(r, ns));
   const findings = namespaceFindings(ns);
+  const stale = repos.filter((r) => r.roleMapStale).length;
+  const bridgeBound = ns.mode === "bridge" && ns.state === "bound";
   const headingId = `gitns-ns-${ns.id}`;
 
   return (
@@ -201,6 +205,40 @@ function NamespaceCard({
         <b>{ns.cascadeOnDeparture ? "revoked with them" : "kept for review"}</b>
       </p>
 
+      {bridgeBound && ns.roleMap && (
+        <p className="muted gitns-small" aria-label="Forge role map">
+          Forge roles: owner <b>{ns.roleMap.own}</b> · maintainer <b>{ns.roleMap.maintain}</b> ·
+          committer <b>{ns.roleMap.commit === "none" ? "no role" : ns.roleMap.commit}</b> ·
+          namespace admin <b>no role</b>
+          {" — "}
+          {`as the bridge reported it${ns.roleMapReportedAt ? ` on ${new Date(ns.roleMapReportedAt).toLocaleDateString()}` : ""}; a repository may have its own.`}
+        </p>
+      )}
+      {bridgeBound && !ns.roleMap && (
+        <div className="finding warn">
+          <strong>Role map unknown</strong>
+          <span>
+            The bridge serving this namespace has not reported which forge role each right
+            projects to, so the VTC assumes none — not even the default. Until it does, drift
+            cannot be adopted (the VTC cannot tell which right a forge role stands for), and every
+            role revert weighs as revoking ownership. A bridge reports its map when it starts
+            serving the namespace and whenever it reconnects to the VTC; one older than
+            git-ns/bridge/event 0.3 never does.
+          </span>
+        </div>
+      )}
+      {stale > 0 && (
+        <div className="finding warn">
+          <strong>
+            {stale} {stale === 1 ? "repository" : "repositories"} projected under an earlier role map
+          </strong>
+          <span>
+            The bridge's role map changed. The VTC has queued their re-projection; this clears
+            as the bridge confirms each one.
+          </span>
+        </div>
+      )}
+
       {ns.forgeStatus && <ForgeStatusLine ns={ns} />}
 
       {ns.bridgeDid && (
@@ -249,6 +287,17 @@ function NamespaceCard({
               Reseat
             </button>
           </>
+        )}
+        {bridgeBound && !ns.installationRemoved && (
+          <button
+            type="button"
+            className="secondary sm"
+            onClick={onReproject}
+            aria-label={`Re-project roles on ${ns.resource}`}
+            title="Have the bridge re-apply every repository's forge roles under its current role map. No right changes."
+          >
+            Re-project roles
+          </button>
         )}
         <button
           type="button"
@@ -625,6 +674,9 @@ export function Overview() {
                 setDialog({ kind: "sign", task: unbindTask(ns.id, ns.resource) })
               }
               onReseat={() => setDialog({ kind: "reseat", ns })}
+              onReproject={() =>
+                setDialog({ kind: "sign", task: reprojectTask(ns.resource) })
+              }
             />
           ))}
         </section>

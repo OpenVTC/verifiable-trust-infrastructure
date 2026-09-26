@@ -175,8 +175,61 @@ whose resources — its drift items' included — lies outside the namespace is
 refused whole, before anything is applied; a transfer's `to` alone is exempt,
 recorded as where the repository went. This is `git-ns/bridge/event/0.2`
 ([trust-tasks #627](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/627)).
-The VTC serves 0.1 and 0.2 — the payloads are wire-identical — and applies
-0.2's rules to both.
+The VTC serves 0.1, 0.2 and 0.3 — 0.3 only adds `roleMapReported` (below) —
+and applies 0.2's rules to all three.
+
+### The bridge's role map, and re-projecting roles
+
+Which forge role `own`, `maintain` and `commit.sign` get is the bridge's
+**role map**, configurable per bridge, forge, namespace and repository; a
+namespace admin gets no forge role under any map. The bridge reports the map
+it applies — as the forge applies it, rounded onto the forge's ladder — with
+`git-ns/bridge/event/0.3` `roleMapReported`, whenever it starts serving a
+namespace, whenever it (re)establishes its link to the VTC, and whenever the
+map changes: the namespace's map, each repository
+whose own map differs, and each repository whose roles it last projected
+under a different map (`stale`), with the forge's `ladder` for the namespace.
+The VTC refuses an unordered map (`own ≥ maintain ≥ commit`,
+`commit ≤ write`), a map with a role that is not on the ladder, a ladder
+that is not the one it knows for the namespace (a GitHub organisation, a
+GitHub personal account — `write` only — or Codeberg's Forgejo), and any
+resource outside the namespace. Reports are ordered by `issuedAt`: one issued
+before the report held from the same bridge is acknowledged and ignored. The
+VTC keeps the report on the namespace, only while the same bridge serves it,
+drops from `stale` any repository it does not record active or orphaned,
+and uses the map for the console's effective forge role of each right, for
+the right a drift adoption records, for the weight of a drift revert, and
+for whether a right is elevated (a right the map projects to `admin` is).
+
+**No map is assumed.** Until the bridge serving the namespace reports —
+after binding, after another bridge DID comes to serve it, or for good with a
+bridge older than event 0.3 — the map is *unknown*, shown as such on the
+namespace card (`roleMapSource: "unknown"`, no `roleMap`). Meanwhile drift
+adoption is refused with `git-ns:roleMapUnknown`, every role revert weighs as
+revoking `own`, and `git.repo.maintain` counts as elevated. The default map
+(`admin` / `maintain` / none; `write` / `write` / none on a personal account)
+holds only when the bridge reports it.
+
+A role map change reaches a repository only when its roles are next
+projected. The VTC therefore **re-projects every stale repository by itself**
+on receiving the report — it forgets the digest of what it last sent, so the
+projector sends the complete `desiredRoles` again — and a repository leaves
+`stale` when a `projectRoles` job queued after the report succeeds.
+Re-projecting changes no right: the bridge would apply the map at the next
+projection anyway. To re-project on demand — a bridge too old to report, a
+forge suspected of drifting — a community administrator or a namespace admin
+(by explicit record) sends `git-ns/roles/reproject/0.1` for a namespace or
+one repository, and a repository's owner (`git.repo.own`, explicit or
+implied) for that repository:
+
+```sh
+cnm git reproject github.com/acme --reason "maintainers now get admin"
+cnm git reproject github.com/acme/widgets
+```
+
+It is normal-class, audited as `gitNs.roles.reprojected`, and refused in
+manual mode (`manualMode`) and while the bridge has lost its access
+(`noForgeAccess`). The shipped policy evaluates it as `roles.reproject`.
 
 Every job goes out as `git-ns/bridge/job/0.4`
 ([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635)),
@@ -212,20 +265,25 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   the resolver after console-key delegation, and a match is refused
   `git-ns:selfGrantNotAllowed`: another owner adopts it, or the resolver uses
   `git-ns/right/break-glass`. Adopting `maintain` or `commit.sign` for oneself
-  is allowed. The inverse
-  of the bridge's default role map is used: `admin` is `git.repo.own`,
-  `maintain` is `git.repo.maintain`, and on a personal account collaborator
-  `write` is `git.repo.maintain`; `write` on an organisation, `triage` and
-  `read` project nothing here (the VTC is not told whether committers get
-  `write`).
+  is allowed. The right is the **lowest** whose role in the bridge's reported role map (the
+  repository's own entry where it has one) is the observed role — under the
+  default map `admin` is `git.repo.own`, `maintain` is `git.repo.maintain`,
+  and on a personal account collaborator `write` is `git.repo.maintain`.
+  With no report the right is unknown and adoption is refused
+  (`git-ns:roleMapUnknown`). So where maintainers get `admin`, a forge `admin` is
+  adopted as `git.repo.maintain`; where committers get `write`, `write` is
+  `git.commit.sign`; a role no right's is (`triage`, `read`, `none`) projects
+  nothing.
 - **revert** changes no right and has the bridge undo the change: a
   `roleAdded` role is removed with `removeAccounts`, sent in-line so that a
   bridge that refuses it is answered `notRevertible` instead of a revert that
   does nothing (a namespace admin at no role may be named there too); a
   `roleChanged` or `roleRemoved` role re-sends the complete `desiredRoles`;
   protection items re-run the `requiredCheck` bootstrap step, and
-  `bootstrapMissing` the whole plan. Reverting an `admin` role has the impact
-  of revoking `own`, and is elevated.
+  `bootstrapMissing` the whole plan. Reverting a role at or above the one
+  `own` projects to (`admin` under the default map; `write` on a personal
+  account) has the impact of revoking `own`, and is elevated; with no map
+  reported, so does reverting any role.
 
 The item is selected by type, account (role items) and — required to adopt —
 the `observed` value the owner read, and a resolution is followed by an
@@ -293,8 +351,8 @@ defines, and carry no Trust-Task URL.
 | Route | Body |
 |---|---|
 | `GET /v1/git-ns/view?resource=` | `git-ns/view/0.1#response`, every record and reason |
-| `GET /v1/git-ns/namespaces` | namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure` |
-| `GET /v1/git-ns/repos?namespace=` | repositories with owners, bootstrap, sync, guard in force, step outcomes, last check |
+| `GET /v1/git-ns/namespaces` | namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure`, role map (`roleMap`, absent while unknown; `roleMapSource`: `reported` or `unknown`) |
+| `GET /v1/git-ns/repos?namespace=` | repositories with owners, bootstrap, sync, guard in force, step outcomes, last check, effective role map, `roleMapStale` |
 | `GET /v1/git-ns/rights?resource=&subject=` | recorded and role-derived rights |
 | `GET /v1/git-ns/rights/issued-by-departed` | grants whose granter left |
 | `GET /v1/git-ns/drift` | repositories with outstanding drift |
@@ -336,8 +394,11 @@ bootstrap and sync state, a repository's people and rights, bootstrap
 checklist and step outcomes, the guard in force (or, unreported, the one
 design §9 expects, labelled so), the last check, the registry records it puts
 in public, its drift and activity, and the grants departed members issued.
-Each change it offers — bind, create, grant, revoke, adopt, transfer,
-archive — is signed with the browser's console key and sent where one is
+Each person's forge account shows the forge role their right projects to
+under the repository's role map ("no forge role" for a namespace admin); a
+namespace card shows the map and whether the bridge reported it; a stale
+repository says so. Each change it offers — bind, create, grant, revoke,
+adopt, transfer, archive, re-project roles — is signed with the browser's console key and sent where one is
 enrolled, and otherwise handed to the administrator as the `cnm git …`
 command that signs it, with the document itself.
 

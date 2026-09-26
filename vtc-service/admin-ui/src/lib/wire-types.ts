@@ -200,6 +200,7 @@ export type RegistryRecordRow = Schemas["VtcRegistryRecordsListV0_1Record"];
 // The administrator's read surface over `git-ns/*`. Every write is a signed
 // Trust Task and has no REST shape here — see `plugins/repos/actions.ts`.
 export type GitNsNamespaceRow = Schemas["GitNsNamespaceRow"];
+export type GitNsRoleMap = Schemas["GitNsRoleMap"];
 export type GitNsNamespaceList = Schemas["GitNsNamespaceList"];
 export type GitNsRepoRow = Schemas["GitNsRepoRow"];
 export type GitNsRepoList = Schemas["GitNsRepoList"];

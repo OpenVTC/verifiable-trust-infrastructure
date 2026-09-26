@@ -21,7 +21,11 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { useNameBook } from "@/lib/names";
 import { useViewerDid } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
-import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
+import type {
+  GitNsDriftItem,
+  GitNsRight,
+  GitNsRoleMap,
+} from "@/lib/wire-types";
 
 import {
   adoptTask,
@@ -694,7 +698,7 @@ export function ReseatDialog({
  */
 export function DriftResolveDialog({
   resource,
-  ns,
+  roleMap,
   item,
   label,
   adopt,
@@ -702,7 +706,9 @@ export function DriftResolveDialog({
   onBuilt,
 }: {
   resource: string;
-  ns: GitNsNamespaceRow;
+  /** The repository's role map (`GitNsRepoRow.roleMap`); absent while the
+   *  bridge has not reported it. */
+  roleMap?: GitNsRoleMap | null;
   item: GitNsDriftItem;
   /** The item as the drift list names it. */
   label: string;
@@ -721,7 +727,7 @@ export function DriftResolveDialog({
     onBuilt(
       adopt
         ? driftAdoptTask(resource, item, adopt.member, adopt.right, reason)
-        : driftRevertTask(resource, ns, item, reason),
+        : driftRevertTask(resource, item, reason, roleMap),
     );
   };
   const verb = adopt ? "Adopt" : "Revert";

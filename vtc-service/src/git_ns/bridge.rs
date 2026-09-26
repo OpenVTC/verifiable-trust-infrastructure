@@ -39,7 +39,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_1 as event_wire, job::v0_3 as job_wire, result::v0_1 as result_wire,
+    event::v0_3 as event_wire, job::v0_4 as job_wire, result::v0_1 as result_wire,
 };
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities, select_protocol};
 use vti_common::error::AppError;
@@ -60,11 +60,8 @@ use super::rules;
 use super::store::{self, Snapshot};
 use super::wire;
 
-/// `git-ns/bridge/job/0.4`, the only version the VTC sends. Spelled out
-/// until a `trust-tasks-rs` release carries the generated `job::v0_4` type;
-/// the payload is 0.3's shape, with `repo` required for `projectRoles`, and
-/// the acknowledgement is 0.3's.
-pub const JOB_TYPE: &str = "https://trusttasks.org/spec/git-ns/bridge/job/0.4";
+/// `git-ns/bridge/job/0.4`, the only version the VTC sends.
+pub const JOB_TYPE: &str = <job_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `trust-task-discovery/0.2`: the VTC asks a bridge whether it takes
 /// [`JOB_TYPE`] before sending it a job.
 pub const DISCOVERY_TYPE: &str = "https://trusttasks.org/spec/trust-task-discovery/0.2";
@@ -668,7 +665,7 @@ impl MessagingBridgeClient {
         let mut value = serde_json::to_value(&doc)
             .map_err(|e| BridgeSendError::Transient(format!("serialise job: {e}")))?;
         signer
-            .sign_doc(&mut value)
+            .sign_operational_doc(&mut value)
             .await
             .map_err(|e| BridgeSendError::Transient(format!("sign job: {e}")))?;
         let doc: TrustTask<Value> = serde_json::from_value(value)
@@ -1417,6 +1414,8 @@ pub async fn handle_result(
                     error = ?job.last_error,
                     "a git-ns bridge job did not succeed"
                 );
+            } else if job.kind == JobKind::ProjectRoles {
+                clear_stale(state, &job).await?;
             }
         }
     }
@@ -1444,6 +1443,30 @@ pub async fn handle_result(
     }
     put_job(&state.git_ns.jobs_ks, &job).await?;
     Ok(ack)
+}
+
+/// A repository's roles were projected: it is no longer projected under an
+/// earlier role map (`git-ns/bridge/event/0.3`, request step 5.4). Only a job
+/// queued after the report counts — one queued before it may have run on the
+/// bridge before its map changed, and its result can arrive late.
+async fn clear_stale(state: &AppState, job: &BridgeJob) -> Result<(), AppError> {
+    let Some(repo_id) = job.repo_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(repo) = store::get_repo(&state.git_ns.ks, repo_id).await? else {
+        return Ok(());
+    };
+    let Some(mut ns) = store::get_namespace(&state.git_ns.ks, &job.namespace_id).await? else {
+        return Ok(());
+    };
+    let Some(report) = ns.role_map.as_mut() else {
+        return Ok(());
+    };
+    if job.created_at < report.received_at || !report.stale.contains(&repo.resource) {
+        return Ok(());
+    }
+    report.stale.retain(|r| *r != repo.resource);
+    store::put_namespace(&state.git_ns.ks, &ns).await
 }
 
 /// The bridge's `ext` report ([`FORGE_REPORT_EXT`]) on a result or event.
@@ -1561,15 +1584,18 @@ async fn detach(state: &AppState, actor: &str, repo: &mut Repo, why: &str) -> Re
     Ok(())
 }
 
-// ── git-ns/bridge/event/0.1 ─────────────────────────────────────────────────
+// ── git-ns/bridge/event (0.1, 0.2 and 0.3, read as 0.3) ─────────────────────
 
 fn s(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+/// `issued_at` is the event document's `issuedAt`, which orders role-map
+/// reports (`git-ns/bridge/event/0.3`, request step 5.2).
 pub async fn handle_event(
     state: &AppState,
     issuer: &str,
+    issued_at: DateTime<Utc>,
     p: event_wire::Payload,
 ) -> OpResult<event_wire::Response> {
     let ns_id = p.namespace.to_string();
@@ -1995,6 +2021,81 @@ pub async fn handle_event(
         "bindCompleted" => {
             let job_id = s(&event, "jobId").unwrap_or_default();
             complete_binding(state, issuer, &ns, &job_id, &event).await?;
+        }
+        "roleMapReported" => {
+            // `git-ns/bridge/event` 0.3, request step 5.
+            let mut report =
+                super::role_map::read_report(&event, &ns, issuer, issued_at, t, inside)?
+                    .map_err(OpError::Malformed)?;
+            // 5.2: the newest report wins. One issued before the report held
+            // from this bridge is an earlier statement arriving late: it is
+            // acknowledged, so the bridge stops sending it, and applied in
+            // no part.
+            if let Some(held) = super::role_map::current_report(&ns)
+                && report.issued_at < held.issued_at
+            {
+                info!(
+                    namespace = %ns.id,
+                    issued_at = %report.issued_at,
+                    held = %held.issued_at,
+                    "ignoring a role-map report issued before the one held"
+                );
+                return Ok(ack);
+            }
+            // 5.3: only a repository the VTC re-projects stays stale — one it
+            // records active or orphaned here. Any other would be shown as
+            // stale for good.
+            report.stale.retain(|resource| {
+                snap.repos.iter().any(|r| {
+                    r.namespace_id == ns.id
+                        && r.resource == *resource
+                        && matches!(r.state, RepoState::Active | RepoState::Orphaned)
+                })
+            });
+            // 5.4: re-project each stale repository, without waiting for
+            // anyone. Forgetting what was sent makes the projector send its
+            // complete desiredRoles again on its next pass; the entry leaves
+            // `stale` when that job succeeds (`handle_result`).
+            for resource in &report.stale {
+                if let Some(mut repo) = snap
+                    .repos
+                    .iter()
+                    .find(|r| {
+                        r.namespace_id == ns.id
+                            && r.resource == *resource
+                            && matches!(r.state, RepoState::Active | RepoState::Orphaned)
+                    })
+                    .cloned()
+                {
+                    repo.roles_digest = None;
+                    store::put_repo(&state.git_ns.ks, &repo).await?;
+                }
+            }
+            if let Some(mut current) = store::get_namespace(&state.git_ns.ks, &ns.id).await? {
+                let changed = current
+                    .role_map
+                    .as_ref()
+                    .is_none_or(|old| old.role_map != report.role_map || old.repos != report.repos);
+                let stale = report.stale.len();
+                current.role_map = Some(report);
+                store::put_namespace(&state.git_ns.ks, &current).await?;
+                if changed || stale > 0 {
+                    audit(
+                        state,
+                        issuer,
+                        None,
+                        Audit {
+                            action: "gitNs.roleMap.reported",
+                            namespace: Some(&ns.id),
+                            resource: Some(ns_res.to_string()),
+                            right: None,
+                            policy_version: None,
+                            detail: Some(json!({ "changed": changed, "stale": stale }).to_string()),
+                        },
+                    )
+                    .await;
+                }
+            }
         }
         other => {
             // A newer bridge speaking a newer vocabulary: recorded in the log,

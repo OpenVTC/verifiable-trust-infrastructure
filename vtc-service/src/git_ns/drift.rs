@@ -34,7 +34,7 @@ use crate::server::AppState;
 use vti_common::error::AppError;
 
 use super::bridge::{self, BridgeSendError, JobKind, NewJob};
-use super::model::{Mode, Namespace, OwnerKind, Repo, RepoState, Resource, Right, SyncState};
+use super::model::{Mode, Namespace, Repo, RepoState, Resource, Right, SyncState};
 use super::ops::{
     self, Audit, OpError, OpResult, PolicyInput, audit, check_policy, consent_gate, declared, now,
     standing,
@@ -50,6 +50,11 @@ pub const NO_MATCHING_RIGHT: &str = resolve::error_codes::NO_MATCHING_RIGHT.code
 pub const NOT_REVERTIBLE: &str = resolve::error_codes::NOT_REVERTIBLE.code;
 pub const SUBJECT_CHANGED: &str = resolve::error_codes::SUBJECT_CHANGED.code;
 pub const SELF_GRANT_NOT_ALLOWED: &str = resolve::error_codes::SELF_GRANT_NOT_ALLOWED.code;
+/// `git-ns:roleMapUnknown`, a namespace-wide code. The 0.1 and 0.2 specs
+/// declare it; 0.3 (authored in parallel) does not re-declare it, so it is
+/// taken from 0.1's generated codes. An adopt under either version is refused
+/// with it while the bridge has not reported its role map.
+pub const ROLE_MAP_UNKNOWN: &str = resolve1::error_codes::ROLE_MAP_UNKNOWN.code;
 
 const ROLE_TYPES: [&str; 3] = ["roleAdded", "roleRemoved", "roleChanged"];
 
@@ -85,22 +90,32 @@ impl Selector {
     }
 }
 
-/// The right the namespace's forge adapter maps to `role` on a repository:
-/// the inverse of the mapping `desiredRoles` is projected with (the bridge's
-/// `RoleMap` default). On a GitHub or Forgejo organisation `admin` projects
-/// `git.repo.own` and `maintain` `git.repo.maintain`; `write` projects
-/// `git.commit.sign` only where committers are given `write`, which this VTC
-/// is not told, so it projects nothing here. On a personal account `own` and
-/// `maintain` both collapse to collaborator `write`, whose projected right is
-/// the lower one. `triage` and `read` project nothing.
-pub fn projected_right(kind: Option<OwnerKind>, role: &str) -> Option<Right> {
-    match (kind, role) {
-        (Some(OwnerKind::User), "write") => Some(Right::RepoMaintain),
-        (Some(OwnerKind::User), _) => None,
-        (_, "admin") => Some(Right::RepoOwn),
-        (_, "maintain") => Some(Right::RepoMaintain),
-        _ => None,
-    }
+/// The right the namespace's bridge maps to `role` on `repo`: the *projected
+/// right of a role* of `git-ns/drift/resolve`, the **lowest** right whose
+/// role in the role map the bridge reported (`git-ns/bridge/event/0.3`
+/// `roleMapReported`, see [`super::role_map`]) is `role`. With the default
+/// map on an organisation `admin` projects `git.repo.own` and `maintain`
+/// `git.repo.maintain`; on a personal account `own` and `maintain` both
+/// collapse to collaborator `write`, whose projected right is the lower one.
+/// `git.ns.admin` is never a projected right: a namespace admin projects to
+/// no forge role.
+///
+/// `Ok(None)`: no right projects to `role`. Refused with
+/// `git-ns:roleMapUnknown` while the serving bridge has not reported its
+/// map: no map, the default included, is assumed (request step 5.7).
+pub fn projected_right(ns: &Namespace, repo: &str, role: &str) -> OpResult<Option<Right>> {
+    super::role_map::projected_right(ns, repo, role).map_err(|_| {
+        declared(
+            ROLE_MAP_UNKNOWN,
+            format!(
+                "the bridge serving {} has not reported its role map yet, so this VTC cannot \
+                 tell which right a forge `{role}` projects; adopt once it has reported \
+                 (it does when it starts serving the namespace and whenever its link comes \
+                 up), or revert the role",
+                ns.resource()
+            ),
+        )
+    })
 }
 
 fn sync_json(repo: &Repo) -> Value {
@@ -370,7 +385,7 @@ async fn adopt(
     }
     // Step 4.
     let observed = item.get("observed").and_then(Value::as_str).unwrap_or("");
-    let Some(right) = projected_right(d.ns.kind, observed) else {
+    let Some(right) = projected_right(&d.ns, &d.repo.resource, observed)? else {
         return Err(declared(
             NO_MATCHING_RIGHT,
             format!(
@@ -498,11 +513,13 @@ async fn force_role_projection(state: &AppState, repo_id: &str) -> OpResult<()> 
 async fn revert(state: &AppState, actor: &ops::Standing, d: &Decided) -> OpResult<()> {
     let item = &d.items[0];
     let observed = item.get("observed").and_then(Value::as_str).unwrap_or("");
-    // Removing or lowering the role `own` projects to has the impact of
-    // revoking `own`; any other revert at most that of revoking `maintain`.
+    // Removing or lowering the role `own` projects to (or one above it) has
+    // the impact of revoking `own`; any other revert at most that of revoking
+    // `maintain`. While the map is unknown, any role but `none` might be
+    // `own`'s, so every such revert weighs as revoking `own`.
     let impact = if ROLE_TYPES.contains(&d.selector.kind.as_str())
         && d.selector.kind != "roleRemoved"
-        && projected_right(d.ns.kind, observed) == Some(Right::RepoOwn)
+        && super::role_map::revert_takes_ownership(&d.ns, &d.repo.resource, observed)
     {
         Right::RepoOwn
     } else {

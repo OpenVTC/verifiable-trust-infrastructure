@@ -200,9 +200,29 @@ pub(super) async fn handle_set_wake(
     }
 }
 
+/// The unsigned `push/provision/0.2` request [`provision_gateway`] signs and
+/// sends: `id`, `issuedAt`, `issuer` (this VTA), `recipient` (the gateway).
+#[cfg(feature = "didcomm")]
+pub(crate) fn push_provision_document(
+    vta_did: Option<&str>,
+    gateway: &str,
+    handle: &str,
+    allowed_triggers: Value,
+) -> Value {
+    serde_json::json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/push/provision/0.2",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": vta_did,
+        "recipient": gateway,
+        "payload": { "handle": handle, "policy": { "allowedTriggers": allowed_triggers } },
+    })
+}
+
 /// Send a `push/provision` to the gateway DID over DIDComm (spawned,
 /// best-effort) carrying the VTA-owned allowlist the set-wake just computed.
-/// The authcrypt sender authenticates the VTA to the gateway — no doc proof.
+/// The document carries this VTA's Data Integrity proof (`proofPurpose:
+/// authentication`); the gateway does not rely on the DIDComm sender.
 #[cfg(feature = "didcomm")]
 fn provision_gateway(
     state: &AppState,
@@ -229,17 +249,15 @@ fn provision_gateway(
     else {
         return;
     };
-    let provision = serde_json::json!({
-        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/push/provision/0.2",
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": vta_did,
-        "recipient": gateway,
-        "payload": { "handle": handle, "policy": { "allowedTriggers": triggers } },
-    });
-    let bridge = state.didcomm_bridge.clone();
+    let mut provision = push_provision_document(vta_did.as_deref(), &gateway, &handle, triggers);
+    let state = state.clone();
     tokio::spawn(async move {
-        match bridge
+        if !super::sign_outbound_request(&state, &mut provision).await {
+            tracing::warn!(gateway = %gateway, "gateway provision not sent: it could not be signed");
+            return;
+        }
+        match state
+            .didcomm_bridge
             .send_and_wait(
                 &gateway,
                 TRUST_TASK_ENVELOPE_TYPE,

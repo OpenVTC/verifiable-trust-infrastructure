@@ -565,7 +565,7 @@ pub async fn build_app_state(
         .audit_sink
         .unwrap_or_else(|| vta_audit::shared_chained_sink(audit_ks.clone(), audit_key_ks.clone()));
 
-    Ok(AppState {
+    let state = AppState {
         keys_ks,
         sessions_ks,
         acl_ks,
@@ -638,7 +638,14 @@ pub async fn build_app_state(
         restart_tx,
         #[cfg(feature = "rest")]
         metrics_handle: parts.metrics_handle,
-    })
+    };
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    if let (Some(resolver), Some(vm_id)) = (&state.secrets_resolver, &state.signing_vm_id) {
+        state
+            .didcomm_bridge
+            .set_document_signer(resolver.clone(), vm_id.clone());
+    }
+    Ok(state)
 }
 
 /// Whether this build can **receive** TSP. One definition, so the startup check

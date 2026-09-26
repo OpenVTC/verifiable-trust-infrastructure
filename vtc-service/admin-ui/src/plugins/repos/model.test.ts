@@ -11,7 +11,9 @@ import {
   namespaceFindings,
   projectedRight,
   repoStatus,
+  forgeRoleFor,
   revertStanding,
+  driftRevertImpact,
   adoptStanding,
   projectedRepoRank,
 } from "./model";
@@ -217,6 +219,15 @@ describe("namespace facts", () => {
       "Workflow, Keyring, Variables in place; required check missing",
     );
   });
+
+  it("shows the forge role a right projects to, and none for a namespace admin", () => {
+    const map = { own: "admin", maintain: "admin", commit: "write" };
+    expect(forgeRoleFor(map, "git.repo.own")).toBe("admin");
+    expect(forgeRoleFor(map, "git.repo.maintain")).toBe("admin");
+    expect(forgeRoleFor(map, "git.commit.sign")).toBe("write");
+    expect(forgeRoleFor(map, "git.ns.admin")).toBe("none");
+    expect(forgeRoleFor(map, "git.repo.create")).toBe("none");
+  });
 });
 
 describe("revertStanding — what git-ns/drift/resolve accepts", () => {
@@ -229,11 +240,22 @@ describe("revertStanding — what git-ns/drift/resolve accepts", () => {
   const admin = { ...maintain, observed: "admin" };
 
   it("mirrors projected_right, org and personal", () => {
-    expect(projectedRight("organization", "admin")).toBe("git.repo.own");
-    expect(projectedRight("organization", "maintain")).toBe("git.repo.maintain");
-    expect(projectedRight("organization", "write")).toBeNull();
-    expect(projectedRight("user", "write")).toBe("git.repo.maintain");
-    expect(projectedRight("user", "admin")).toBeNull();
+    const org = { own: "admin", maintain: "maintain", commit: "none" };
+    expect(projectedRight(org, "admin")).toBe("git.repo.own");
+    expect(projectedRight(org, "maintain")).toBe("git.repo.maintain");
+    expect(projectedRight(org, "write")).toBeNull();
+    const user = { own: "write", maintain: "write", commit: "none" };
+    expect(projectedRight(user, "write")).toBe("git.repo.maintain");
+    expect(projectedRight(user, "admin")).toBeNull();
+  });
+
+  it("derives the right from the bridge's map: the lowest right with that role", () => {
+    const forgejo = { own: "admin", maintain: "admin", commit: "none" };
+    expect(projectedRight(forgejo, "admin")).toBe("git.repo.maintain");
+    const branches = { own: "admin", maintain: "maintain", commit: "write" };
+    expect(projectedRight(branches, "write")).toBe("git.commit.sign");
+    expect(projectedRight(branches, "none")).toBeNull();
+    expect(projectedRight({ own: "maintain", maintain: "write", commit: "none" }, "admin")).toBeNull();
   });
 
   it("lets an owner or a namespace admin revert", () => {
@@ -254,6 +276,14 @@ describe("revertStanding — what git-ns/drift/resolve accepts", () => {
     expect(revertStanding(BOB, true, ACME, DOCS, admin).may).toBe(true);
     // Re-projecting a removed admin role is not a revocation of own.
     expect(revertStanding(BOB, false, ACME, DOCS, { ...admin, type: "roleRemoved" }).may).toBe(true);
+  });
+
+  it("weighs every role revert as revoking own while the map is unknown", () => {
+    const unknown = { ...DOCS, roleMap: undefined };
+    expect(revertStanding(BOB, false, ACME, unknown, maintain).may).toBe(false);
+    expect(revertStanding(BOB, true, ACME, unknown, maintain).may).toBe(true);
+    expect(driftRevertImpact({ ...maintain, observed: "read" }, undefined)).toBe("git.repo.own");
+    expect(driftRevertImpact({ ...maintain, observed: "none" }, undefined)).toBe("git.repo.maintain");
   });
 
   it("offers nothing in manual mode, or on a repository that is not active", () => {
@@ -278,8 +308,11 @@ describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
     expect(r).toEqual({ may: true, member: HANA, right: "git.repo.maintain" });
   });
 
-  it("projects write to maintainer on a personal account, and to nothing on an organisation", () => {
-    expect(adoptStanding(BOB, false, USER_NS, DOCS, added("write"), HANA, 0)).toEqual({
+  it("projects write to maintainer under a personal account's map, and to nothing on an organisation", () => {
+    // The bridge's default map on a personal account: own and maintain both
+    // collapse to `write`.
+    const personal = { ...DOCS, roleMap: { own: "write", maintain: "write", commit: "none" } };
+    expect(adoptStanding(BOB, false, USER_NS, personal, added("write"), HANA, 0)).toEqual({
       may: true,
       member: HANA,
       right: "git.repo.maintain",
@@ -288,7 +321,14 @@ describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
     expect(org.may).toBe(false);
     expect(!org.may && org.why).toMatch(/No git right projects to the forge role "write"/);
     // `admin` projects nothing on a personal account.
-    expect(adoptStanding(BOB, true, USER_NS, DOCS, added("admin"), HANA, 0).may).toBe(false);
+    expect(adoptStanding(BOB, true, USER_NS, personal, added("admin"), HANA, 0).may).toBe(false);
+  });
+
+  it("adopts nothing while the bridge has not reported its role map", () => {
+    const unknown = { ...DOCS, roleMap: undefined };
+    const r = adoptStanding(BOB, true, ACME, unknown, added("maintain"), HANA, 0);
+    expect(r.may).toBe(false);
+    expect(!r.may && !r.handOver && r.why).toMatch(/role map/);
   });
 
   it("refuses a lowering: a roleChanged no higher than what the member holds", () => {

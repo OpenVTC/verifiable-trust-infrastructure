@@ -124,6 +124,19 @@ pub enum GitCommands {
         #[arg(long)]
         statement: String,
     },
+    /// Have the bridge re-apply the forge roles of every repository in a
+    /// namespace, or of one repository, from the VTC's rights under the
+    /// bridge's current role map (`git-ns/roles/reproject`). No right changes.
+    /// Community administrators and the namespace's admins; a repository's
+    /// owner, for that repository.
+    Reproject {
+        /// `github.com/acme` (every active or orphaned repository in it) or
+        /// `github.com/acme/widgets`.
+        resource: String,
+        /// Why, for the audit record.
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// What this profile's DID may see (`git-ns/view`), with its linked forge
     /// accounts, or with `--admin` every record and reason (admin session).
     View {
@@ -564,6 +577,14 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nThis item records no right. Revert it instead:\n  {bin} git drift resolve \
              <repository> revert --type <type> [--account-id <id>]"
         ),
+        "git-ns:roleMapUnknown" => format!(
+            "\nThe bridge serving this namespace has not reported its role map, so the VTC \
+             cannot tell which right this forge role stands for, and assumes no default. It \
+             reports when it starts serving the namespace and whenever it reconnects; a bridge \
+             older than git-ns/bridge/event 0.3 never does. Adopt once it has reported, or \
+             revert the role:\n  {bin} git drift resolve <repository> revert --type <type> \
+             [--account-id <id>]"
+        ),
         "git-ns/drift/resolve:notRevertible" if message.contains("manual mode") => {
             "\nThe namespace is governed in manual mode: no bridge can change the forge. Undo \
              the change on the forge yourself."
@@ -591,6 +612,12 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
              repo.create or ns.admin) on your own authority. Ask another community \
              administrator to do it, or use break-glass (`cnm git break-glass`), which is \
              audited and must be ratified."
+            .to_string(),
+        "git-ns/roles/reproject:manualMode" => "\nThe namespace is governed in manual mode: \
+             no bridge projects its roles, so set them on the forge yourself."
+            .to_string(),
+        "git-ns/roles/reproject:noForgeAccess" => "\nThe bridge lost its access to the \
+             forge owner. Once an owner reinstalls the app (or restores the bot), run this again."
             .to_string(),
         "git-ns/namespace/reseat:notHeadless" => format!(
             "\nThe namespace still has an admin; its admins grant git.ns.admin:\n  {bin} git \
@@ -1188,6 +1215,30 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
+        }
+        GitCommands::Reproject { resource, reason } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let resp = anon()
+                .git_ns_reproject(&resource.to_lowercase(), reason.as_deref(), &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            if is_json_output() {
+                return show(&resp);
+            }
+            if resp.repos.is_empty() {
+                println!("No active or orphaned repository in {resource}: nothing to re-project.");
+            } else {
+                println!(
+                    "Queued a re-projection of {} repositor{}; the bridge applies its current \
+                     role map:",
+                    resp.repos.len(),
+                    if resp.repos.len() == 1 { "y" } else { "ies" }
+                );
+                for r in &resp.repos {
+                    println!("  {}", r.as_str());
+                }
+            }
+            Ok(())
         }
         GitCommands::Reseat {
             namespace,

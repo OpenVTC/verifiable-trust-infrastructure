@@ -92,6 +92,33 @@ describe("Repo detail", () => {
     expect(within(inherited).queryByRole("button", { name: /Revoke/ })).toBeNull();
   });
 
+  it("shows each person's forge role under the bridge's role map, and offers a re-projection", async () => {
+    const map = { own: "admin", maintain: "admin", commit: "none" };
+    mockFetch(
+      gitNsRoutes({
+        repos: [{ ...WIDGETS, roleMap: map, roleMapStale: true }, DOCS],
+      }),
+    );
+    mount(WIDGETS.resource);
+
+    const people = await screen.findByRole("region", { name: "People and rights" });
+    const table = await within(people).findByRole("table");
+    await within(table).findAllByText("Hana Sato");
+    const hana = within(table)
+      .getAllByRole("row")
+      .find((r) => r.querySelector("td")?.textContent?.includes("Hana Sato"))!;
+    // A maintainer gets `admin` under this map.
+    expect(within(hana).getByLabelText("Effective forge role").textContent).toMatch(/admin/);
+    expect(await screen.findByText("Forge roles projected under an earlier role map")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-project roles" }));
+    const sign = await screen.findByRole("dialog", { name: /Re-project roles on acme\/widgets/ });
+    expect(sign.textContent).toMatch(/Consent class: Normal/);
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      `cnm git reproject ${WIDGETS.resource}`,
+    );
+  });
+
   it("revokes a maintainer as a normal-class task and sends nothing itself", async () => {
     const requests = mockFetch(gitNsRoutes());
     mount(WIDGETS.resource);
@@ -251,6 +278,8 @@ describe("Repo detail", () => {
   it("adopts write on a personal account as maintainer, where the server projects it", async () => {
     const routes = gitNsRoutes({
       namespaces: [{ ...ACME, kind: "user" }],
+      // The bridge reports a personal account's default map.
+      repos: [{ ...DOCS, roleMap: { own: "write", maintain: "write", commit: "none" } }, WIDGETS],
       extra: [driftRoute([{ type: "roleAdded", resource: DOCS.resource, observed: "write", account: hsato }])],
     });
     mockFetch(routes);

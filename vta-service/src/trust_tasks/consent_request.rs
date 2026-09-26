@@ -74,9 +74,7 @@ pub(super) async fn mint_signed_requests(
             AppError::Internal("VTA DID not configured; cannot sign consent".into())
         })?;
 
-    let secret =
-        crate::operations::credentials::load_vta_issuer_secret(state, &vta_did, "task-consent")
-            .await?;
+    let secret = super::load_operational_secret(state, &vta_did, "task-consent").await?;
 
     let class_value = serde_json::to_value(class)
         .map_err(|e| AppError::Internal(format!("serialize task class: {e}")))?;
@@ -128,7 +126,7 @@ pub(super) async fn mint_signed_requests(
             &unsigned,
             &secret,
             SignOptions::new()
-                .with_proof_purpose("assertionMethod")
+                .with_proof_purpose("authentication")
                 .with_cryptosuite(CryptoSuite::EddsaJcs2022),
         )
         .await
