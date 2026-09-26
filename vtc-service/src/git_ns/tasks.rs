@@ -10,8 +10,9 @@
 //! # Who is acting
 //!
 //! The actor is the DID the dispatch spine verified the document's proof
-//! against — never a payload member. Eleven of these tasks declare the proof
-//! REQUIRED, and the spine refuses them without one; `git-ns/view` and
+//! against — never a payload member. Every task a member or an administrator
+//! sends declares the proof REQUIRED, and the spine refuses it without one,
+//! except two reads: `git-ns/view` and
 //! `git-ns/account/link-status` declare it RECOMMENDED ("a read … transport
 //! integrity suffices where the transport already authenticates the
 //! caller"), so for those two the transport's authenticated sender stands in
@@ -20,7 +21,7 @@
 
 use serde_json::Value;
 use trust_tasks_rs::specs::git_ns::account::{
-    link::v0_1 as link, link_status::v0_1 as link_status,
+    link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
 use trust_tasks_rs::specs::git_ns::bridge::{
     event::v0_1 as event, event::v0_2 as event2, event::v0_3 as event3, result::v0_1 as result,
@@ -120,6 +121,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_reproject)
         .on_async(handle_link)
         .on_async(handle_link_status)
+        .on_async(handle_unlink)
         .on_async(handle_result)
         .on_async(handle_event)
         .on_async(handle_event_v2)
@@ -276,6 +278,7 @@ signed_handler!(
     super::break_glass::right_ratify
 );
 signed_handler!(handle_link, link::Payload, ops::account_link);
+signed_handler!(handle_unlink, unlink::Payload, ops::account_unlink);
 bridge_handler!(handle_result, result::Payload, super::bridge::handle_result);
 signed_handler!(
     handle_drift_resolve,

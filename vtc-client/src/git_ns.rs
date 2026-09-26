@@ -26,7 +26,9 @@ use crate::{HolderKey, VtcClient, VtcError};
 /// The generated `git-ns/*` wire types.
 pub use trust_tasks_rs::specs::git_ns as specs;
 
-use specs::account::{link::v0_1 as link, link_status::v0_1 as link_status};
+use specs::account::{
+    link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
+};
 use specs::drift::resolve::{v0_1 as drift_resolve, v0_3 as drift_resolve3};
 use specs::namespace::{bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind};
 
@@ -417,6 +419,27 @@ impl VtcClient {
         let payload = serde_json::json!({ "linkId": link_id });
         self.git_ns_task(
             <link_status::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/account/unlink/0.1` — remove the account linked to `key`'s DID
+    /// on `forge`. With `account_id`, only if that is still the account
+    /// linked there (`git-ns/account/unlink:notLinked` otherwise).
+    pub async fn git_ns_unlink_account(
+        &self,
+        forge: &str,
+        account_id: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<unlink::Response, VtcError> {
+        let mut payload = serde_json::json!({ "forge": forge });
+        if let Some(id) = account_id {
+            payload["accountId"] = serde_json::json!(id);
+        }
+        self.git_ns_task(
+            <unlink::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             &payload,
             key,
         )

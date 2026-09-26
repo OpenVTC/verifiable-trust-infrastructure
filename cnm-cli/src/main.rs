@@ -2376,6 +2376,27 @@ mod tests {
     }
 
     #[test]
+    fn git_unlink_takes_a_forge_and_an_optional_account_id() {
+        for ok in [
+            vec!["cnm", "git", "unlink", "--forge", "github.com"],
+            vec![
+                "cnm",
+                "git",
+                "unlink",
+                "--forge",
+                "github.com",
+                "--account-id",
+                "9120045",
+            ],
+        ] {
+            if let Err(e) = Cli::try_parse_from(&ok) {
+                panic!("{ok:?} should parse: {e}");
+            }
+        }
+        assert!(Cli::try_parse_from(["cnm", "git", "unlink"]).is_err());
+    }
+
+    #[test]
     fn a_bare_origin_names_no_api_mount() {
         assert!(url_has_no_path("https://vtc.example.com"));
         assert!(url_has_no_path("https://vtc.example.com/"));
