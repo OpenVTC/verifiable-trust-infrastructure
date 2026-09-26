@@ -27,6 +27,12 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
   `vta_policy::consent`) and the VTC's unrestricted-admin gate (VTI-APV-014).
   What a node gates on, who its approvers are and how it pushes a request stay
   with the node.
+- **Trust Task push** (`trust_task_push`) — pushing a signed Trust Task to a
+  peer over TSP > DIDComm > REST by what its DID document advertises: a durable
+  record per push, one outbox attempt per transport, evidence-based settlement
+  and escalation (VTI-TRN-030/-040/-041/-042). The node lends its keyspace,
+  outbox, resolver and messaging through a `PushContext`. What a node pushes,
+  and when, stay with the node.
 - **Cryptographic primitives with no service-specific policy** — the HMAC
   pagination tokens, the audit-checkpoint signatures, and `slip10` (SLIP-0010
   Ed25519 derivation). See the note below on where the line falls.
@@ -51,7 +57,7 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
 |---------|---------|
 | `encryption` | AES-256-GCM encryption for `KeyspaceHandle.with_encryption()` |
 | `vsock-store` | `VsockStore` + `VsockKeyspaceHandle` (Linux only — requires `tokio-vsock`) |
-| `tsp` | `relationship_store` — the durable TSP relationship store (`KeyspaceRelationshipKv` + `maintenance_loop`) shared by the VTA and VTC for Rev 3 §7.2.2 recovery. Pulls `affinidi-messaging-sdk`, so only the TSP-speaking services enable it. |
+| `tsp` | `relationship_store` — the durable TSP relationship store (`KeyspaceRelationshipKv` + `maintenance_loop`) shared by the VTA and VTC for Rev 3 §7.2.2 recovery. Pulls `affinidi-messaging-sdk`, so only the TSP-speaking services enable it. Also enables `trust_task_push::TspPushTransport` (`affinidi-tdk/tsp`, `vta-sdk/tsp`). |
 
 ## Key modules
 

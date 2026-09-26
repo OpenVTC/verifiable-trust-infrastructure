@@ -179,6 +179,17 @@ impl Snapshot {
         })
     }
 
+    /// This snapshot with every unratified break-glass row left out — the
+    /// rights a ratifier's authority may be counted through
+    /// (`git-ns/right/ratify/0.1`, *Authorization*).
+    pub fn without_unratified_break_glass(&self) -> Snapshot {
+        let mut out = self.clone();
+        for set in out.rights.values_mut() {
+            set.rows.retain(|r| !r.is_unratified_break_glass());
+        }
+        out
+    }
+
     pub fn namespace(&self, id: &str) -> Option<&Namespace> {
         self.namespaces.iter().find(|n| n.id == id)
     }

@@ -111,6 +111,10 @@ fn digest_with(
     vti_common::task_consent::domain_digest(DIGEST_DOMAIN, type_uri, payload, challenge)
 }
 
+/// The inline `auth/step-up/approve-request/0.3` payload a gated operation
+/// refuses with.
+pub type ApproveRequest = approve_request::Payload;
+
 /// A parked WebAuthn ceremony for one refused operation, keyed by its
 /// challenge.
 #[derive(Serialize, Deserialize)]
@@ -146,6 +150,40 @@ impl std::fmt::Debug for PendingMark {
 #[derive(Debug, Serialize, Deserialize)]
 struct RedeemableMark {
     expires_at: u64,
+    /// Which passkey answered, and what it was shown — carried so an act that
+    /// must record its step-up evidence (a git break-glass,
+    /// `git-ns/right/break-glass/0.1` step 9) can. Absent on a mark written
+    /// before this was recorded; such a mark still authorizes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bound_to: Option<String>,
+}
+
+/// What a spent mark shows about the gesture behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepUpEvidence {
+    /// Credential id (hex) of the passkey that asserted user verification.
+    pub credential_id: String,
+    /// The salted digest the approver was shown.
+    pub bound_to: String,
+}
+
+impl From<StepUpEvidence> for vti_common::audit::StepUpEvidence {
+    fn from(e: StepUpEvidence) -> Self {
+        Self {
+            kind: "webauthn".into(),
+            credential_id: e.credential_id,
+            bound_to: e.bound_to,
+        }
+    }
+}
+
+/// [`Gate`], with the spent gesture's evidence.
+#[derive(Debug)]
+pub enum EvidencedGate {
+    Satisfied(StepUpEvidence),
+    Required(Box<approve_request::Payload>),
 }
 
 fn pending_key(challenge: &str) -> String {
@@ -184,6 +222,23 @@ pub async fn redeem_or_request(
     payload: &Value,
     reason: &str,
 ) -> Result<Gate, AppError> {
+    Ok(
+        match redeem_or_request_with_evidence(state, admin_did, type_uri, payload, reason).await? {
+            EvidencedGate::Satisfied(_) => Gate::Satisfied,
+            EvidencedGate::Required(r) => Gate::Required(r),
+        },
+    )
+}
+
+/// [`redeem_or_request`], returning the spent gesture's evidence — for an act
+/// whose audit record must carry it.
+pub async fn redeem_or_request_with_evidence(
+    state: &AppState,
+    admin_did: &str,
+    type_uri: &str,
+    payload: &Value,
+    reason: &str,
+) -> Result<EvidencedGate, AppError> {
     let ks = &state.step_up_marks_ks;
     let digest = operation_digest(type_uri, payload)?;
     let key = mark_key(admin_did, &digest);
@@ -195,7 +250,10 @@ pub async fn redeem_or_request(
         ks.remove(key).await?;
         if now_epoch() < mark.expires_at {
             info!(admin = %admin_did, task = %type_uri, "operation-bound step-up spent");
-            return Ok(Gate::Satisfied);
+            return Ok(EvidencedGate::Satisfied(StepUpEvidence {
+                credential_id: mark.credential_id.unwrap_or_default(),
+                bound_to: mark.bound_to.unwrap_or_default(),
+            }));
         }
     }
 
@@ -243,7 +301,7 @@ pub async fn redeem_or_request(
 
     let request = approve_request_payload(admin_did, &challenge, &bound_to, reason, &options)?;
     info!(admin = %admin_did, task = %type_uri, %bound_to, "operation-bound step-up requested");
-    Ok(Gate::Required(Box::new(request)))
+    Ok(EvidencedGate::Required(Box::new(request)))
 }
 
 /// Whether a recorded gesture for `(admin_did, this operation)` is waiting,
@@ -453,7 +511,11 @@ pub async fn approve(
     let expires_at = now_epoch().saturating_add(MARK_TTL_SECS);
     ks.insert(
         mark_key(&pending.admin_did, &pending.digest),
-        &RedeemableMark { expires_at },
+        &RedeemableMark {
+            expires_at,
+            credential_id: Some(cred_id_hex.clone()),
+            bound_to: Some(pending.bound_to.clone()),
+        },
     )
     .await?;
 
@@ -553,6 +615,30 @@ fn expiry_of<T: Expiring + serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<
     serde_json::from_slice::<T>(bytes)
         .ok()
         .map(|m| m.expires_at())
+}
+
+/// Record a spent-able gesture for `(admin_did, this operation)` as if the
+/// admin had answered the ceremony — for tests of the acts it gates, which
+/// have no authenticator.
+#[cfg(test)]
+pub async fn record_mark_for_test(
+    state: &AppState,
+    admin_did: &str,
+    type_uri: &str,
+    payload: &Value,
+) -> Result<(), AppError> {
+    let digest = operation_digest(type_uri, payload)?;
+    state
+        .step_up_marks_ks
+        .insert(
+            mark_key(admin_did, &digest),
+            &RedeemableMark {
+                expires_at: now_epoch().saturating_add(MARK_TTL_SECS),
+                credential_id: Some("c0ffee".into()),
+                bound_to: Some("zTestBound".into()),
+            },
+        )
+        .await
 }
 
 #[cfg(test)]

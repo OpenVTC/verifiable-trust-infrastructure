@@ -5,17 +5,31 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, ShieldAlert, SquareTerminal } from "lucide-react";
+import { Fingerprint, KeyRound, ShieldAlert, SquareTerminal, Siren } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
 import { signingAvailable, SigningUnavailableError } from "@/lib/api";
+import { answerableHere, answerStepUp } from "@/lib/bound-step-up";
 import { useNameBook } from "@/lib/names";
 import { useToast } from "@/lib/toast";
-import type { GitNsBootstrapStatus } from "@/lib/wire-types";
+import type { GitNsBootstrapStatus, GitNsBreakGlassMark } from "@/lib/wire-types";
 
-import { CONSENT_LABEL, documentPreview, sendTask, type SignedTask } from "./actions";
+import {
+  CONSENT_LABEL,
+  documentPreview,
+  sendSigned,
+  sendTask,
+  type SignedTask,
+  StepUpNeeded,
+} from "./actions";
 import { gitNsKeys } from "./api";
-import { bootstrapSteps, bootstrapSummary, type Tone } from "./model";
+import {
+  BREAK_GLASS_STATE_LABEL,
+  bootstrapSteps,
+  bootstrapSummary,
+  breakGlassState,
+  type Tone,
+} from "./model";
 
 /** Where the plugin is mounted (`src/plugins/index.ts`). */
 export const REPOS_PATH = "/repos";
@@ -28,6 +42,8 @@ export const namespacePath = (id: string) =>
   `${REPOS_PATH}?namespace=${encodeURIComponent(id)}`;
 export const BIND_PATH = `${REPOS_PATH}/bind`;
 export const DEPARTED_PATH = `${REPOS_PATH}/departed`;
+/** Every break-glass record, and what is waiting for a decision. */
+export const BREAK_GLASS_PATH = `${REPOS_PATH}/break-glass`;
 export const memberPath = (did: string) => `/members/${encodeURIComponent(did)}`;
 /** The ceremonies plugin opens a purpose's policy from `?purpose=`. */
 export const POLICY_PATH = "/ceremonies?purpose=gitNamespace";
@@ -54,6 +70,40 @@ export function ToneChip({
       {children}
     </span>
   );
+}
+
+/**
+ * The flag every self-granted right carries wherever it is shown
+ * (`git-ns/right/break-glass`): loud until another administrator ratifies or
+ * revokes it, quiet history after.
+ */
+export function BreakGlassChip({ mark }: { mark: GitNsBreakGlassMark | null | undefined }) {
+  const state = breakGlassState(mark);
+  if (!mark || !state) return null;
+  const title =
+    state === "ratified"
+      ? `Self-granted ${formatDay(mark.at)}, ratified ${formatDay(mark.ratifiedAt)}`
+      : `Self-granted ${formatDay(mark.at)} — awaiting another administrator's ratification or revocation. Justification: ${mark.justification}`;
+  return (
+    <span className={state === "ratified" ? "chip" : "chip danger gitns-breakglass"} title={title}>
+      <Siren aria-hidden="true" size={12} /> {BREAK_GLASS_STATE_LABEL[state]}
+    </span>
+  );
+}
+
+/** What the operator can do about a refusal the VTC gave, where the code says. */
+export function refusalHint(err: unknown): string | null {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === "git-ns:selfGrantNotAllowed") {
+    return "Separation of duties: nobody grants themselves namespace admin, repo creator or owner. Ask another administrator to grant it — or, if nobody else can, break the glass, which is recorded, announced to every administrator and flagged until one of them ratifies or revokes it.";
+  }
+  if (code === "git-ns/right/break-glass:disabled") {
+    return "This community's git-namespace policy does not allow break-glass here. Another administrator must grant the right.";
+  }
+  if (code === "git-ns/right/ratify:recordChanged") {
+    return "The break-glass changed since this page read it. Reload and read its justification again before ratifying.";
+  }
+  return null;
 }
 
 export function formatDay(iso: string | null | undefined): string {
@@ -217,18 +267,24 @@ export function SignTaskDialog({
   // holder can take; those stay on screen rather than vanish with the dialog.
   const [manualSteps, setManualSteps] = useState<string[] | null>(null);
   const canSign = useQuery({ queryKey: ["console-signing"], queryFn: signingAvailable });
+  // Set when the VTC asked for a passkey gesture bound to the document it was
+  // sent (`lib/bound-step-up.ts`). The confirmation is its own click: the
+  // gesture is consent to the act the request names, taken with it on screen.
+  const [stepUp, setStepUp] = useState<StepUpNeeded | null>(null);
+  const accepted = (response: Record<string, unknown>) => {
+    void queryClient.invalidateQueries({ queryKey: gitNsKeys.all });
+    toast.push("success", `${task.title}: accepted`);
+    const steps = (response as { manualSteps?: unknown }).manualSteps;
+    if (onSent) onSent(response);
+    else if (Array.isArray(steps) && steps.length > 0) {
+      setManualSteps(steps.filter((x): x is string => typeof x === "string"));
+    } else onClose();
+  };
   const send = useMutation({
     mutationFn: () => sendTask(task),
-    onSuccess: (response) => {
-      void queryClient.invalidateQueries({ queryKey: gitNsKeys.all });
-      toast.push("success", `${task.title}: accepted`);
-      const steps = (response as { manualSteps?: unknown }).manualSteps;
-      if (onSent) onSent(response);
-      else if (Array.isArray(steps) && steps.length > 0) {
-        setManualSteps(steps.filter((x): x is string => typeof x === "string"));
-      } else onClose();
-    },
+    onSuccess: accepted,
     onError: (e) => {
+      if (e instanceof StepUpNeeded) setStepUp(e);
       // The key went away between opening and sending (forgotten in another
       // tab, storage cleared). Not a refusal: say so, and fall back to the
       // hand-over, which is below.
@@ -237,12 +293,29 @@ export function SignTaskDialog({
       }
     },
   });
-  const dismiss = useModal(surfaceRef, onClose, send.isPending);
+  // Answer the step-up, then send the *same* signed document again: the
+  // gesture is bound to it, and a freshly signed one would be a second act.
+  const confirm = useMutation({
+    mutationFn: async (needed: StepUpNeeded) => {
+      await answerStepUp(needed.request);
+      return sendSigned(needed.signed);
+    },
+    onSuccess: accepted,
+    onError: (e) => {
+      // The gesture lapsed before the re-send, or was spent: the VTC has
+      // parked a fresh ceremony, so offer that one.
+      if (e instanceof StepUpNeeded) setStepUp(e);
+    },
+  });
+  const busy = send.isPending || confirm.isPending;
+  const dismiss = useModal(surfaceRef, onClose, busy);
 
   const doc = documentPreview(task);
   const signing = canSign.data === true;
   const destructive = task.consent === "destructive";
   const unavailable = send.error instanceof SigningUnavailableError;
+  const refusal = confirm.isError ? confirm.error : send.isError && !stepUp ? send.error : null;
+  const hint = refusal ? refusalHint(refusal) : null;
 
   return (
     <div
@@ -256,7 +329,7 @@ export function SignTaskDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="gitns-sign-title"
-        aria-busy={send.isPending || undefined}
+        aria-busy={busy || undefined}
         className="confirm-dialog gitns-sign"
       >
         <h3 id="gitns-sign-title">{task.title}</h3>
@@ -323,19 +396,46 @@ export function SignTaskDialog({
           </label>
         )}
 
-        {send.isError &&
+        {stepUp && !confirm.isSuccess && (
+          <div className="finding warn gitns-stepup" role="status">
+            <strong>
+              <Fingerprint aria-hidden="true" size={14} /> Confirm with your passkey
+            </strong>
+            <span>
+              The VTC checked this and will act on it once you confirm, with a passkey
+              registered to you, this one document. Nothing is elevated: the gesture is
+              spent by this operation and nothing else.
+            </span>
+            <span>
+              It asks: <q>{stepUp.request.reason}</q>
+            </span>
+            {stepUp.request.boundTo && (
+              <span className="muted gitns-small">
+                Bound to <code>{stepUp.request.boundTo}</code>
+              </span>
+            )}
+            {!answerableHere(stepUp.request) && (
+              <span>This console cannot answer that step-up with a passkey.</span>
+            )}
+          </div>
+        )}
+
+        {refusal &&
           (unavailable ? (
             <div className="finding warn" role="alert">
               <strong>This browser can no longer sign</strong>
               <span>
-                {errorMessage(send.error)}. Nothing was sent. Sign it from a terminal
+                {errorMessage(refusal)}. Nothing was sent. Sign it from a terminal
                 instead, below.
               </span>
             </div>
           ) : (
             <div className="finding error" role="alert">
-              <strong>The VTC refused it</strong>
-              <span>{errorMessage(send.error)}</span>
+              <strong>
+                {confirm.isError ? "The passkey confirmation did not go through" : "The VTC refused it"}
+              </strong>
+              <span>{errorMessage(refusal)}</span>
+              {hint && <span>{hint}</span>}
             </div>
           ))}
 
@@ -373,10 +473,19 @@ export function SignTaskDialog({
         )}
 
         <div className="form-actions">
-          <button type="button" className="secondary" onClick={onClose} disabled={send.isPending}>
+          <button type="button" className="secondary" onClick={onClose} disabled={busy}>
             Close
           </button>
-          {manualSteps ? null : signing && !unavailable ? (
+          {manualSteps ? null : stepUp && answerableHere(stepUp.request) ? (
+            <button
+              type="button"
+              className="primary"
+              disabled={busy}
+              onClick={() => confirm.mutate(stepUp)}
+            >
+              {confirm.isPending ? "Waiting for your passkey…" : "Confirm with passkey and send"}
+            </button>
+          ) : signing && !unavailable ? (
             <button
               type="button"
               className={destructive ? "secondary destructive" : "primary"}

@@ -30,4 +30,10 @@ pub mod store;
 pub mod task_consent;
 pub mod telemetry;
 pub mod trust_task;
+/// Push a signed Trust Task over TSP > DIDComm > REST, durably, with
+/// escalation — shared by the VTA and the VTC.
+pub mod trust_task_push;
+/// Which peers were recently seen sending over TSP, learned from inbound —
+/// how a node reaches over TSP a peer whose DID document advertises nothing.
+pub mod tsp_reach;
 pub mod vault;

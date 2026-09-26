@@ -2395,6 +2395,48 @@
         ]
       }
     },
+    "/v1/git-ns/break-glass": {
+      "get": {
+        "tags": [
+          "git-ns"
+        ],
+        "operationId": "gitNsBreakGlassList",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "query",
+            "description": "Only this namespace (its identifier).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Break-glass records in the namespaces the caller administers, unratified first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitNsBreakGlassList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "The caller administers no namespace (or not the one named)"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/git-ns/drift": {
       "get": {
         "tags": [
@@ -8062,6 +8104,101 @@
           }
         }
       },
+      "GitNsBreakGlassItem": {
+        "type": "object",
+        "description": "One break-glass record.",
+        "required": [
+          "namespace",
+          "namespaceResource",
+          "subject",
+          "right",
+          "resource",
+          "grantedAt",
+          "breakGlass",
+          "state"
+        ],
+        "properties": {
+          "breakGlass": {
+            "$ref": "#/components/schemas/GitNsBreakGlassMark"
+          },
+          "grantedAt": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "The namespace's identifier."
+          },
+          "namespaceResource": {
+            "type": "string",
+            "description": "The namespace's resource (`github.com/acme`)."
+          },
+          "resource": {
+            "type": "string"
+          },
+          "right": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`unratified` — live, flagged, awaiting another administrator;\n`pending` — unratified and not yet in effect (a policy delay);\n`ratified` — an ordinary grant now, kept here as history."
+          },
+          "subject": {
+            "type": "string"
+          }
+        }
+      },
+      "GitNsBreakGlassList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsBreakGlassItem"
+            }
+          }
+        }
+      },
+      "GitNsBreakGlassMark": {
+        "type": "object",
+        "description": "A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`).",
+        "required": [
+          "by",
+          "at",
+          "justification"
+        ],
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "effectiveAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "justification": {
+            "type": "string"
+          },
+          "ratifiedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ratifiedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "GitNsDepartedGranter": {
         "type": "object",
         "description": "The grants one departed member issued.",
@@ -8322,7 +8459,8 @@
           "headless",
           "installationRemoved",
           "roleDrift",
-          "cascadeOnDeparture"
+          "cascadeOnDeparture",
+          "roleMapSource"
         ],
         "properties": {
           "admins": {
@@ -8412,6 +8550,28 @@
           "roleDrift": {
             "type": "string",
             "description": "The active policy's `role_drift` setting in effect: `report` or\n`enforce`."
+          },
+          "roleMap": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsRoleMap",
+                "description": "The forge role each right projects to on a repository without a map\nof its own, as the bridge serving the namespace reported it\n(`git-ns/bridge/event/0.3` `roleMapReported`). Absent while it has not\nreported: no map, the default included, is assumed."
+              }
+            ]
+          },
+          "roleMapReportedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `issuedAt` of the report held, on the bridge's clock."
+          },
+          "roleMapSource": {
+            "type": "string",
+            "description": "`reported` — the bridge serving the namespace said so; `unknown` — it\nhas not reported since the namespace was bound or came to be served by\nit (or it predates event 0.3). While unknown, drift adoption is\nrefused (`git-ns:roleMapUnknown`) and every role revert is weighed as\nrevoking `git.repo.own`."
           },
           "state": {
             "type": "string",
@@ -8503,7 +8663,8 @@
           "syncState",
           "driftCount",
           "createdAt",
-          "steps"
+          "steps",
+          "roleMapStale"
         ],
         "properties": {
           "bootstrap": {
@@ -8584,6 +8745,21 @@
           "resource": {
             "type": "string"
           },
+          "roleMap": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsRoleMap",
+                "description": "The forge role each right projects to on this repository, under the\nbridge's reported map. Absent while the namespace's map is unknown\n(`roleMapSource`)."
+              }
+            ]
+          },
+          "roleMapStale": {
+            "type": "boolean",
+            "description": "The bridge last projected this repository's roles under an earlier\nrole map; a re-projection is queued and has not yet succeeded."
+          },
           "state": {
             "type": "string",
             "description": "`pendingCreate` | `active` | `archived` | `detached` | `orphaned` |\n`unmanaged`."
@@ -8631,6 +8807,17 @@
           "granterDeparted"
         ],
         "properties": {
+          "breakGlass": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsBreakGlassMark",
+                "description": "Present exactly when the subject gave themselves this right through\n`git-ns/right/break-glass/0.1`. Unratified while `ratifiedBy` is absent."
+              }
+            ]
+          },
           "expiresAt": {
             "type": [
               "string",
@@ -8675,6 +8862,26 @@
           "subjectMember": {
             "type": "boolean",
             "description": "Whether the subject is a current member (an external signer is not)."
+          }
+        }
+      },
+      "GitNsRoleMap": {
+        "type": "object",
+        "description": "Which forge role `git.repo.own`, `git.repo.maintain` and\n`git.commit.sign` project to — `none`, `read`, `triage`, `write`,\n`maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to\nno forge role under any map.",
+        "required": [
+          "own",
+          "maintain",
+          "commit"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "maintain": {
+            "type": "string"
+          },
+          "own": {
+            "type": "string"
           }
         }
       },

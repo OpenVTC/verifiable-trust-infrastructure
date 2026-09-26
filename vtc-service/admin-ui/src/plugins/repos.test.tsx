@@ -104,6 +104,25 @@ describe("Repos plugin — overview", () => {
     expect(screen.getByText("App uninstalled")).toBeTruthy();
   });
 
+  it("shows the bridge's role map, flags an unknown one, and offers a namespace re-projection", async () => {
+    mockFetch(gitNsRoutes({ namespaces: [ACME, PERSONAL] }));
+    const first = mount();
+    expect((await screen.findByLabelText("Forge role map")).textContent).toMatch(/namespace admin no role/);
+    expect(screen.queryByText("Role map unknown")).toBeNull();
+    first.unmount();
+
+    // Unreported: no map is shown or assumed, the default included.
+    mockFetch(
+      gitNsRoutes({ namespaces: [{ ...ACME, roleMap: undefined, roleMapSource: "unknown" }, PERSONAL] }),
+    );
+    mount();
+    expect(await screen.findByText("Role map unknown")).toBeTruthy();
+    expect(screen.queryByLabelText("Forge role map")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Re-project roles on github.com/acme" }));
+    const sign = await screen.findByRole("dialog", { name: /Re-project roles on github\.com\/acme/ });
+    expect(sign.textContent).toMatch(/owning some of its repositories is not enough/);
+  });
+
   it("warns on missing App permissions and a pending upgrade, and shows the drift settings", async () => {
     mockFetch(
       gitNsRoutes({
@@ -260,13 +279,34 @@ describe("Repos plugin — overview", () => {
       `cnm git reseat ns_acme --subject=${BOB} --statement='Alice left; Bob owns most repos'`,
     );
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent!)).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+      type: "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
       payload: { namespace: "ns_acme", subject: BOB, statement: "Alice left; Bob owns most repos" },
     });
     // No console key: nothing to sign with, so nothing is sent.
     await within(sign).findByRole("button", { name: "I have sent it — refresh" });
     expect(within(sign).queryByRole("button", { name: "Sign and send" })).toBeNull();
     expect(within(sign).queryByLabelText(/destructive and want to sign it/)).toBeNull();
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+    expect(requests.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it("does not build a reseat to the viewer themselves (separation of duties)", async () => {
+    const requests = mockFetch(
+      gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }] }),
+    );
+    // Bob is a member and a community administrator, reseating to himself.
+    mount("/repos", { ...COMMUNITY_ADMIN, session: { ...COMMUNITY_ADMIN.session, subject: BOB } });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reseat github.com/acme" }));
+    const form = await screen.findByRole("dialog", { name: "Reseat github.com/acme" });
+    await within(form).findByRole("option", { name: /Bob Mensah/ });
+    fireEvent.change(within(form).getByLabelText("New namespace admin"), { target: { value: BOB } });
+    fireEvent.change(within(form).getByLabelText("Statement"), { target: { value: "Alice left" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the reseat" }));
+
+    // The generic separation-of-duties refusal, which offers break-glass.
+    expect(form.textContent).toMatch(/cannot grant yourself this right: separation of duties/);
+    expect(within(form).queryByLabelText("Document")).toBeNull();
     expect(postSignedTrustTask).not.toHaveBeenCalled();
     expect(requests.every((r) => r.method === "GET")).toBe(true);
   });
@@ -294,7 +334,7 @@ describe("Repos plugin — overview", () => {
     fireEvent.click(send);
     await waitFor(() =>
       expect(postSignedTrustTask).toHaveBeenCalledWith(
-        "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+        "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
         { namespace: "ns_acme", subject: BOB, statement: "Alice left" },
       ),
     );
@@ -447,7 +487,7 @@ describe("Repos plugin — overview", () => {
     fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
     expect(await within(sign).findByText("gh repo create glenn-g/tool --public")).toBeTruthy();
     expect(postSignedTrustTask).toHaveBeenCalledWith(
-      "https://trusttasks.org/spec/git-ns/repo/create/0.1",
+      "https://trusttasks.org/spec/git-ns/repo/create/0.3",
       { namespace: "ns_glenn", name: "tool", visibility: "private" },
     );
   });

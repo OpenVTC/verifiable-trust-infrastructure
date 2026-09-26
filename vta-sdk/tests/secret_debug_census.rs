@@ -105,6 +105,8 @@ const NOT_SECRET_EXACT: &[&str] = &[
     "idempotency_key",
     "last_key",
     "record_key",
+    // A push attempt's outbox idempotency key.
+    "attempt_key",
 ];
 
 /// Words that, anywhere in a name, make it public material.

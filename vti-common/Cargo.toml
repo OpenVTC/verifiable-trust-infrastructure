@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.25.0"
+version = "0.26.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -18,7 +18,13 @@ vsock-store = ["dep:tokio-vsock", "dep:libc"]
 # and VTC to survive a restart without §7.2.2 dropping every peer's traffic.
 # Pulls `affinidi-messaging-sdk` (for `RelationshipKv`/`PersistentRelationshipStore`),
 # so it is off by default and only the TSP-speaking services turn it on.
-tsp = ["dep:affinidi-messaging-sdk"]
+tsp = [
+  "dep:affinidi-messaging-sdk",
+  # `trust_task_push::TspPushTransport`: `atm.tsp()` and the TSP binding
+  # envelope.
+  "affinidi-tdk/tsp",
+  "vta-sdk/tsp",
+]
 # Exposes `AuthClaims::unsafe_local_cli_super_admin` — a synthesizer that
 # produces a super-admin claim without any wire-level verification. Only
 # for the local/dev `vta` binary's CLI, where the trust boundary is the
@@ -64,7 +70,7 @@ openapi = ["dep:utoipa", "dep:utoipa-axum"]
 # `default-features = false` skips the optional client transports
 # (didcomm, sealed-transfer, etc.); we only consume the type
 # definitions in the default feature set.
-vta-sdk = { path = "../vta-sdk", version = "0.52", default-features = false, features = [
+vta-sdk = { path = "../vta-sdk", version = "0.53", default-features = false, features = [
   # The Trust-Task proof verifier lives there now; this crate re-exports it.
   "proof-verify",
 ] }
@@ -72,6 +78,11 @@ async-trait = "0.1"
 # Durable OutboxStore backend (`outbox_store::VtiOutboxStore`) for the D1
 # delivery layer — the Guaranteed-send outbox, persisted via `store::Store`.
 affinidi-messaging-delivery = { workspace = true }
+# `trust_task_push`: the transport trait its TSP and REST transports implement,
+# and the HTTP client the REST one posts with.
+affinidi-messaging-core = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
 # Durable TSP relationship store (`relationship_store::KeyspaceRelationshipKv`)
 # for the Rev 3 §7.2.2 recovery machinery — the `RelationshipKv`/
 # `PersistentRelationshipStore`/`EvictionPolicy` types the ATM is handed. Behind

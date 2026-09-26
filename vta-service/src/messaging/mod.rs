@@ -15,12 +15,12 @@ pub mod drain_store;
 pub mod drain_sweeper;
 #[cfg(feature = "didcomm")]
 pub mod handlers;
-#[cfg(all(feature = "webvh", feature = "didcomm"))]
-pub mod handlers_protocol;
 #[cfg(feature = "didcomm")]
 pub mod handshake;
 #[cfg(feature = "didcomm")]
 pub mod live_prover;
+/// Durable Trust Task pushes to peers, over `vti_common::trust_task_push`.
+pub mod push;
 /// Startup self-readiness gate for the mediator connection. Transport-neutral:
 /// the mediator authenticates us by resolving our DID whichever protocol we
 /// then speak on the socket.

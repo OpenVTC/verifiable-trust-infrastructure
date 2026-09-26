@@ -93,6 +93,33 @@ describe("Repo detail", () => {
     expect(within(inherited).queryByRole("button", { name: /Revoke/ })).toBeNull();
   });
 
+  it("shows each person's forge role under the bridge's role map, and offers a re-projection", async () => {
+    const map = { own: "admin", maintain: "admin", commit: "none" };
+    mockFetch(
+      gitNsRoutes({
+        repos: [{ ...WIDGETS, roleMap: map, roleMapStale: true }, DOCS],
+      }),
+    );
+    mount(WIDGETS.resource);
+
+    const people = await screen.findByRole("region", { name: "People and rights" });
+    const table = await within(people).findByRole("table");
+    await within(table).findAllByText("Hana Sato");
+    const hana = within(table)
+      .getAllByRole("row")
+      .find((r) => r.querySelector("td")?.textContent?.includes("Hana Sato"))!;
+    // A maintainer gets `admin` under this map.
+    expect(within(hana).getByLabelText("Effective forge role").textContent).toMatch(/admin/);
+    expect(await screen.findByText("Forge roles projected under an earlier role map")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-project roles" }));
+    const sign = await screen.findByRole("dialog", { name: /Re-project roles on acme\/widgets/ });
+    expect(sign.textContent).toMatch(/Consent class: Normal/);
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      `cnm git reproject ${WIDGETS.resource}`,
+    );
+  });
+
   it("revokes a maintainer as a normal-class task and sends nothing itself", async () => {
     const requests = mockFetch(gitNsRoutes());
     mount(WIDGETS.resource);
@@ -107,7 +134,7 @@ describe("Repo detail", () => {
     );
     const doc = JSON.parse(within(sign).getByLabelText("Document").textContent!);
     expect(doc).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
+      type: "https://trusttasks.org/spec/git-ns/right/revoke/0.3",
       payload: { subject: HANA, right: "git.repo.maintain", resource: WIDGETS.resource },
     });
     fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
@@ -222,13 +249,14 @@ describe("Repo detail", () => {
     expect(sign.textContent).toMatch(/Consent class: Normal/);
     expect(sign.textContent).toContain(HANA);
     expect(within(sign).getByLabelText("Command").textContent).toBe(
-      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --reason='Hana'"'"'s role'`,
+      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --subject=${HANA} --reason='Hana'"'"'s role'`,
     );
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent!)).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
       payload: {
         resource: DOCS.resource,
         action: "adopt",
+        subject: HANA,
         drift: {
           type: "roleAdded",
           account: { forge: "github.com", id: "1003", login: "hsato" },
@@ -251,6 +279,8 @@ describe("Repo detail", () => {
   it("adopts write on a personal account as maintainer, where the server projects it", async () => {
     const routes = gitNsRoutes({
       namespaces: [{ ...ACME, kind: "user" }],
+      // The bridge reports a personal account's default map.
+      repos: [{ ...DOCS, roleMap: { own: "write", maintain: "write", commit: "none" } }, WIDGETS],
       extra: [driftRoute([{ type: "roleAdded", resource: DOCS.resource, observed: "write", account: hsato }])],
     });
     mockFetch(routes);
@@ -337,7 +367,7 @@ describe("Repo detail", () => {
     await waitFor(() => expect(within(drift).getByLabelText("Adopt command")).toBeTruthy());
     expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
     expect(within(drift).getByLabelText("Adopt command").textContent).toBe(
-      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain`,
+      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --subject=${HANA}`,
     );
   });
 
@@ -385,7 +415,7 @@ describe("Repo detail", () => {
     );
     const doc = JSON.parse(within(sign).getByLabelText("Document").textContent!);
     expect(doc).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
       payload: {
         resource: DOCS.resource,
         action: "revert",

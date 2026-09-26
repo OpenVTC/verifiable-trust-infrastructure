@@ -99,3 +99,33 @@ pub fn right_record(row: &RightRow, resource: &Resource, with_reason: bool) -> V
 pub fn timestamp(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
+
+/// `RightRecord` of `git-ns/_shared/0.4`: [`right_record`], plus the record's
+/// `breakGlass` in full. Only for the task versions pinning `_shared/0.4`
+/// (grant 0.3, revoke 0.3, view 0.4, break-glass, ratify, the notice) — the
+/// older versions' records refuse the member.
+///
+/// The justification goes wherever the record goes: every caller entitled to
+/// see a break-glass record is either an administrator of its namespace, an
+/// owner of its resource, or its author.
+pub fn right_record_full(row: &RightRow, resource: &Resource, with_reason: bool) -> Value {
+    let mut v = right_record(row, resource, with_reason);
+    if let Some(bg) = &row.break_glass {
+        let mut b = json!({
+            "by": bg.by,
+            "at": timestamp(bg.at),
+            "justification": bg.justification,
+        });
+        if let Some(e) = bg.effective_at {
+            b["effectiveAt"] = json!(timestamp(e));
+        }
+        if let Some(r) = &bg.ratified_by {
+            b["ratifiedBy"] = json!(r);
+        }
+        if let Some(r) = bg.ratified_at {
+            b["ratifiedAt"] = json!(timestamp(r));
+        }
+        v["breakGlass"] = b;
+    }
+    v
+}
