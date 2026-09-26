@@ -39,7 +39,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_1 as event_wire, job::v0_1 as job_wire, result::v0_1 as result_wire,
+    event::v0_1 as event_wire, job::v0_3 as job_wire, result::v0_1 as result_wire,
 };
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities, select_protocol};
 use vti_common::error::AppError;
@@ -60,21 +60,20 @@ use super::rules;
 use super::store::{self, Snapshot};
 use super::wire;
 
-/// `git-ns/bridge/job/0.1`.
-pub const JOB_TYPE: &str = <job_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `git-ns/bridge/job/0.2` — sent only for a job that needs what 0.2 adds.
-pub const JOB_TYPE_V0_2: &str = <trust_tasks_rs::specs::git_ns::bridge::job::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `git-ns/bridge/job/0.4`, the only version the VTC sends. Spelled out
+/// until a `trust-tasks-rs` release carries the generated `job::v0_4` type;
+/// the payload is 0.3's shape, with `repo` required for `projectRoles`, and
+/// the acknowledgement is 0.3's.
+pub const JOB_TYPE: &str = "https://trusttasks.org/spec/git-ns/bridge/job/0.4";
+/// `trust-task-discovery/0.2`: the VTC asks a bridge whether it takes
+/// [`JOB_TYPE`] before sending it a job.
+pub const DISCOVERY_TYPE: &str = "https://trusttasks.org/spec/trust-task-discovery/0.2";
 
-/// The version a job payload is sent as. `git-ns/bridge/job` 0.2 adds only
-/// `removeAccounts`; every job without it is a 0.1 job and is sent as one, so
-/// a bridge that implements only 0.1 keeps working for everything else.
-pub fn job_type_for(payload: &Value) -> &'static str {
-    if payload.get("removeAccounts").is_some() {
-        JOB_TYPE_V0_2
-    } else {
-        JOB_TYPE
-    }
-}
+/// How long to wait for a bridge's `trust-task-discovery` answer.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a bridge's answer is trusted before it is asked again — so an
+/// upgraded bridge is noticed without a VTC restart.
+const DISCOVERY_TTL_MINUTES: i64 = 60;
 
 /// How long an in-line `begin*` job waits for the bridge's acknowledgement.
 const INLINE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -228,6 +227,12 @@ pub async fn enqueue(state: &AppState, new: NewJob) -> Result<Option<String>, Ap
     let (Mode::Bridge, Some(bridge_did)) = (ns.mode, ns.bridge_did.clone()) else {
         return Ok(None);
     };
+    // `git-ns/bridge/job` 0.4: there is no namespace-level `projectRoles`.
+    if new.kind == JobKind::ProjectRoles && new.payload.get("repo").is_none() {
+        return Err(AppError::Internal(
+            "a projectRoles job must name its repository".into(),
+        ));
+    }
     let job_id = new_id("job");
     let mut payload = new.payload;
     payload["jobId"] = json!(job_id);
@@ -334,6 +339,9 @@ pub enum BridgeSendError {
     /// The bridge answered with a `trust-task-error`. Not retried — the same
     /// document would be refused again.
     Rejected { code: String, message: String },
+    /// The bridge does not take `git-ns/bridge/job` 0.4, so nothing was sent.
+    /// A queued job waits for the bridge to be upgraded.
+    Outdated(String),
 }
 
 impl std::fmt::Display for BridgeSendError {
@@ -341,6 +349,7 @@ impl std::fmt::Display for BridgeSendError {
         match self {
             BridgeSendError::Transient(m) => write!(f, "transient: {m}"),
             BridgeSendError::Rejected { code, message } => write!(f, "{code}: {message}"),
+            BridgeSendError::Outdated(m) => write!(f, "{m}"),
         }
     }
 }
@@ -350,12 +359,121 @@ impl std::fmt::Display for BridgeSendError {
 /// substitute a fake bridge.
 #[async_trait]
 pub trait BridgeClient: Send + Sync {
+    /// Send `payload` as a job of `type_uri`.
     async fn send_job(
         &self,
         bridge_did: &str,
+        type_uri: &str,
         payload: &Value,
         timeout: Duration,
     ) -> Result<job_wire::Response, BridgeSendError>;
+
+    /// Ask the bridge, with `trust-task-discovery`, which
+    /// `git-ns/bridge/job` versions it takes: the bare type URIs it lists.
+    async fn discover_jobs(
+        &self,
+        bridge_did: &str,
+        timeout: Duration,
+    ) -> Result<Vec<String>, BridgeSendError>;
+}
+
+// ── the bridge's job version ────────────────────────────────────────────────
+
+/// What a bridge answered when asked which job versions it takes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeJobSupport {
+    pub takes_v0_4: bool,
+    pub checked_at: DateTime<Utc>,
+}
+
+fn support_key(bridge_did: &str) -> String {
+    format!("bridgever:{bridge_did}")
+}
+
+fn outdated(bridge_did: &str) -> BridgeSendError {
+    BridgeSendError::Outdated(format!(
+        "the git-ns bridge {bridge_did} does not take git-ns/bridge/job 0.4, the only version \
+         this VTC sends; upgrade the bridge"
+    ))
+}
+
+/// Whether `bridge_did` takes `git-ns/bridge/job` 0.4, asking it with
+/// `trust-task-discovery` when the last answer is missing or stale.
+///
+/// `git-ns/bridge/job` 0.4 forbids sending 0.4 to a bridge that has not
+/// shown it takes it: a bridge before 0.4 — including one that reads later
+/// minor versions forward-compatibly — would take a `git.ns.admin` entry as
+/// ownership. So a bridge that refuses discovery, or does not list 0.4, is
+/// sent nothing. Only a transient failure is passed on as one.
+pub async fn bridge_takes_v0_4(
+    state: &AppState,
+    bridge_did: &str,
+) -> Result<bool, BridgeSendError> {
+    let ks = &state.git_ns.jobs_ks;
+    let cached: Option<BridgeJobSupport> = ks.get(support_key(bridge_did)).await.ok().flatten();
+    if let Some(c) = &cached
+        && c.checked_at + chrono::Duration::minutes(DISCOVERY_TTL_MINUTES) > now()
+    {
+        return Ok(c.takes_v0_4);
+    }
+    let takes = match state
+        .git_ns
+        .bridge
+        .discover_jobs(bridge_did, DISCOVERY_TIMEOUT)
+        .await
+    {
+        Ok(types) => types.iter().any(|t| t == JOB_TYPE),
+        Err(BridgeSendError::Rejected { code, .. }) => {
+            debug!(bridge = %bridge_did, %code, "the bridge refused trust-task-discovery");
+            false
+        }
+        Err(e) => return Err(e),
+    };
+    if !takes && cached.as_ref().is_none_or(|c| c.takes_v0_4) {
+        warn!(
+            bridge = %bridge_did,
+            "the git-ns bridge does not take git-ns/bridge/job 0.4; no job is sent to it until \
+             it is upgraded"
+        );
+    } else if takes && cached.as_ref().is_some_and(|c| !c.takes_v0_4) {
+        info!(bridge = %bridge_did, "the git-ns bridge now takes git-ns/bridge/job 0.4");
+    }
+    let record = BridgeJobSupport {
+        takes_v0_4: takes,
+        checked_at: now(),
+    };
+    if let Err(e) = ks.insert(support_key(bridge_did), &record).await {
+        warn!(error = %e, "could not record the bridge's job versions");
+    }
+    Ok(takes)
+}
+
+/// Send one job as `git-ns/bridge/job` 0.4 — once the bridge has shown it
+/// takes 0.4.
+pub async fn send_v0_4(
+    state: &AppState,
+    bridge_did: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> Result<job_wire::Response, BridgeSendError> {
+    if !bridge_takes_v0_4(state, bridge_did).await? {
+        return Err(outdated(bridge_did));
+    }
+    let out = state
+        .git_ns
+        .bridge
+        .send_job(bridge_did, JOB_TYPE, payload, timeout)
+        .await;
+    // A bridge that listed 0.4 and then refuses it (downgraded since) is
+    // asked again next time rather than trusted for the rest of the hour.
+    if let Err(BridgeSendError::Rejected { code, .. }) = &out
+        && matches!(code.as_str(), "unsupportedType" | "unsupportedVersion")
+    {
+        let _ = state.git_ns.jobs_ks.remove(support_key(bridge_did)).await;
+        return Err(outdated(bridge_did));
+    }
+    out
 }
 
 /// Send a `begin*` job and wait for its acknowledgement, for a request that
@@ -365,12 +483,7 @@ pub async fn send_inline(
     bridge_did: &str,
     payload: &Value,
 ) -> OpResult<job_wire::Response> {
-    match state
-        .git_ns
-        .bridge
-        .send_job(bridge_did, payload, INLINE_TIMEOUT)
-        .await
-    {
+    match send_v0_4(state, bridge_did, payload, INLINE_TIMEOUT).await {
         Ok(ack) if ack.accepted => Ok(ack),
         Ok(_) => Err(OpError::Unavailable(
             "the bridge reports it already finished this job, which a fresh one cannot be; \
@@ -383,6 +496,7 @@ pub async fn send_inline(
         Err(BridgeSendError::Rejected { code, message }) => Err(OpError::Unavailable(format!(
             "the bridge {bridge_did} refused the job ({code}): {message}"
         ))),
+        Err(BridgeSendError::Outdated(m)) => Err(OpError::Unavailable(m)),
     }
 }
 
@@ -393,11 +507,7 @@ pub async fn send_job_inline(
     bridge_did: &str,
     payload: &Value,
 ) -> Result<job_wire::Response, BridgeSendError> {
-    state
-        .git_ns
-        .bridge
-        .send_job(bridge_did, payload, INLINE_TIMEOUT)
-        .await
+    send_v0_4(state, bridge_did, payload, INLINE_TIMEOUT).await
 }
 
 /// The production [`BridgeClient`]: resolves the bridge's DID, picks the
@@ -466,9 +576,79 @@ impl BridgeClient for MessagingBridgeClient {
     async fn send_job(
         &self,
         bridge_did: &str,
+        type_uri: &str,
         payload: &Value,
         timeout: Duration,
     ) -> Result<job_wire::Response, BridgeSendError> {
+        let reply = self
+            .exchange(bridge_did, type_uri, payload, timeout)
+            .await?;
+        classify_reply(&reply)
+    }
+
+    async fn discover_jobs(
+        &self,
+        bridge_did: &str,
+        timeout: Duration,
+    ) -> Result<Vec<String>, BridgeSendError> {
+        let reply = self
+            .exchange(
+                bridge_did,
+                DISCOVERY_TYPE,
+                &json!({ "patterns": ["git-ns/bridge/job"] }),
+                timeout,
+            )
+            .await?;
+        discovered_job_types(&reply, bridge_did)
+    }
+}
+
+/// The `git-ns/bridge/job` type URIs a `trust-task-discovery` answer lists.
+///
+/// The answer is acted on — it decides whether namespace admins are sent —
+/// so it must be the bridge's own (SPEC §10.5): issued by `bridge_did` and
+/// typed as a discovery response. Anything else is a refusal.
+pub fn discovered_job_types(
+    reply: &TrustTask<Value>,
+    bridge_did: &str,
+) -> Result<Vec<String>, BridgeSendError> {
+    if reply.type_uri.slug() == "trust-task-error" {
+        return classify_reply(reply).map(|_| Vec::new());
+    }
+    let from_bridge = reply.issuer.as_deref() == Some(bridge_did);
+    let is_answer = reply.type_uri.to_string() == format!("{DISCOVERY_TYPE}#response")
+        || (reply.type_uri.slug() == "trust-task-discovery" && reply.type_uri.is_response());
+    if !from_bridge || !is_answer {
+        return Err(BridgeSendError::Rejected {
+            code: "malformedResponse".into(),
+            message: "the discovery answer is not the bridge's own".into(),
+        });
+    }
+    Ok(reply
+        .payload
+        .get("supportedTypes")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|i| i.as_str().or_else(|| i.get("type").and_then(Value::as_str)))
+                .filter(|t| t.starts_with("https://trusttasks.org/spec/git-ns/bridge/job/"))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+impl MessagingBridgeClient {
+    /// Sign and send one document of `type_uri` to the bridge, and await its
+    /// correlated reply.
+    async fn exchange(
+        &self,
+        bridge_did: &str,
+        type_uri: &str,
+        payload: &Value,
+        timeout: Duration,
+    ) -> Result<TrustTask<Value>, BridgeSendError> {
         let messaging = self
             .didcomm
             .get()
@@ -482,7 +662,7 @@ impl BridgeClient for MessagingBridgeClient {
         let doc = vti_common::capability_client::build_document(
             &messaging.vtc_did,
             bridge_did,
-            job_type_for(payload),
+            type_uri,
             payload.clone(),
         );
         let mut value = serde_json::to_value(&doc)
@@ -537,7 +717,7 @@ impl BridgeClient for MessagingBridgeClient {
                 )));
             }
         };
-        classify_reply(&reply)
+        Ok(reply)
     }
 }
 
@@ -593,11 +773,23 @@ pub async fn dispatch_due(state: &AppState) -> Result<(), AppError> {
         if job.state != JobState::Pending || job.next_attempt_at > t {
             continue;
         }
-        let outcome = state
-            .git_ns
-            .bridge
-            .send_job(&job.bridge_did, &job.payload, QUEUED_TIMEOUT)
-            .await;
+        // `git-ns/bridge/job` 0.4 has no namespace-level `projectRoles`: one
+        // queued before it is dropped, never delivered.
+        if job.kind == JobKind::ProjectRoles && job.payload.get("repo").is_none() {
+            job.state = JobState::Cancelled;
+            job.last_error = Some(
+                "a namespace-level projectRoles job no longer exists (git-ns/bridge/job 0.4)"
+                    .into(),
+            );
+            let _guard = store::write_lock().await;
+            if let Some(current) = get_job(&state.git_ns.jobs_ks, &job.job_id).await?
+                && current.state == read_state
+            {
+                put_job(&state.git_ns.jobs_ks, &job).await?;
+            }
+            continue;
+        }
+        let outcome = send_v0_4(state, &job.bridge_did, &job.payload, QUEUED_TIMEOUT).await;
         job.attempts += 1;
         match outcome {
             Ok(_ack) => {
@@ -618,7 +810,7 @@ pub async fn dispatch_due(state: &AppState) -> Result<(), AppError> {
                 job.state = JobState::Failed;
                 job.last_error = Some(format!("{code}: {message}"));
             }
-            Err(BridgeSendError::Transient(m)) => {
+            Err(BridgeSendError::Transient(m) | BridgeSendError::Outdated(m)) => {
                 job.last_error = Some(m);
                 if !job.retry_forever && job.attempts >= MAX_ATTEMPTS {
                     job.state = JobState::Failed;
@@ -707,9 +899,17 @@ pub async fn linked_accounts(
 
 // ── role projection ─────────────────────────────────────────────────────────
 
-/// Each subject's highest right on a repository, from the namespace's rows
-/// and the repository's own. `own` > `maintain` > `commit.sign`; an
-/// `ns.admin` is an owner here, by implication.
+/// The right each subject is projected at on a repository: the one right per
+/// person that goes into its `desiredRoles`.
+///
+/// Counted only from rights recorded in the subject's own name — `own`,
+/// `maintain` or `commit.sign` on the repository, or `commit.sign` on its
+/// namespace — never from what `git.ns.admin` implies (`git-ns/bridge/job`,
+/// `desiredRoles`): a namespace admin gets no forge role. A namespace admin
+/// with no right of their own there is listed as `git.ns.admin`, which every
+/// adapter maps to no role, so the bridge takes off any role it manages that
+/// they still hold rather than leave it and report drift. One who is also an
+/// explicit owner is listed as the owner.
 pub fn highest_repo_rights(
     ns_res: &Resource,
     ns_rows: &[RightRow],
@@ -719,7 +919,10 @@ pub fn highest_repo_rights(
 ) -> BTreeMap<String, Right> {
     let mut out: BTreeMap<String, Right> = BTreeMap::new();
     let consider = |rows: &[RightRow], on: &Resource, out: &mut BTreeMap<String, Right>| {
-        for row in rows.iter().filter(|r| r.is_live(t)) {
+        for row in rows
+            .iter()
+            .filter(|r| r.is_live(t) && r.right != Right::NsAdmin)
+        {
             if let Some(best) = rules::conferred(row.right, on, repo_res)
                 .into_iter()
                 .filter(|r| matches!(r, Right::RepoOwn | Right::RepoMaintain | Right::CommitSign))
@@ -734,6 +937,14 @@ pub fn highest_repo_rights(
     };
     consider(ns_rows, ns_res, &mut out);
     consider(repo_rows, repo_res, &mut out);
+    // Admins with nothing of their own here: listed, at no role.
+    for row in ns_rows.iter().filter(|r| {
+        r.right == Right::NsAdmin
+            && r.is_live(t)
+            && !rules::conferred(r.right, ns_res, repo_res).is_empty()
+    }) {
+        out.entry(row.subject.clone()).or_insert(Right::NsAdmin);
+    }
     out
 }
 
@@ -804,20 +1015,55 @@ pub async fn desired_roles_now(
     Ok(render_roles(&rights, &ns.forge, &accounts))
 }
 
+/// Order by the forge role a right projects to, lowest first: `git.ns.admin`
+/// projects to none.
+fn role_order(r: Right) -> u8 {
+    match r {
+        Right::NsAdmin | Right::RepoCreate => 0,
+        Right::CommitSign => 1,
+        Right::RepoMaintain => 2,
+        Right::RepoOwn => 3,
+    }
+}
+
+/// The `desiredRoles` of a projection: one entry per linked forge account
+/// (`git-ns/bridge/job` 0.4). Should two subjects ever share an account, it
+/// is listed once, at the lower role — never the higher one by accident.
 fn render_roles(
     rights: &BTreeMap<String, Right>,
     forge: &str,
     accounts: &HashMap<String, BTreeMap<String, ForgeAccount>>,
 ) -> Vec<Value> {
-    rights
-        .iter()
-        .filter_map(|(subject, right)| {
-            accounts
-                .get(subject)
-                .and_then(|m| m.get(forge))
-                .map(|a| desired_role_json(subject, *right, a))
-        })
-        .collect()
+    let mut by_account: BTreeMap<(String, String), (&str, Right, &ForgeAccount)> = BTreeMap::new();
+    for (subject, right) in rights {
+        let Some(a) = accounts.get(subject).and_then(|m| m.get(forge)) else {
+            continue;
+        };
+        let key = (a.forge.clone(), a.id.clone());
+        match by_account.get(&key) {
+            Some((other, r, _)) => {
+                warn!(
+                    forge = %a.forge,
+                    account = %a.id,
+                    first = %other,
+                    second = %subject,
+                    "two subjects are linked to one forge account; projecting it once, at the lower role"
+                );
+                if role_order(*right) < role_order(*r) {
+                    by_account.insert(key, (subject.as_str(), *right, a));
+                }
+            }
+            None => {
+                by_account.insert(key, (subject.as_str(), *right, a));
+            }
+        }
+    }
+    let mut out: Vec<Value> = by_account
+        .into_values()
+        .map(|(subject, right, a)| desired_role_json(subject, right, a))
+        .collect();
+    out.sort_by(|a, b| a["subject"].as_str().cmp(&b["subject"].as_str()));
+    out
 }
 
 fn digest(roles: &[Value]) -> String {
@@ -843,35 +1089,9 @@ pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError
         let ns_scope = Scope::Namespace(ns.id.clone());
         let ns_res = ns.resource();
 
-        // The namespace itself: its admins, as owners of the organisation.
-        let admins: BTreeMap<String, Right> = snap
-            .rows(&ns_scope)
-            .iter()
-            .filter(|r| r.right == Right::NsAdmin && r.is_live(t))
-            .map(|r| (r.subject.clone(), Right::NsAdmin))
-            .collect();
-        let roles = render_roles(&admins, &ns.forge, &accounts);
-        let d = digest(&roles);
-        if force || ns.roles_digest.as_deref() != Some(d.as_str()) {
-            let mut updated = ns.clone();
-            updated.roles_digest = Some(d);
-            store::put_namespace(&state.git_ns.ks, &updated).await?;
-            enqueue(
-                state,
-                NewJob {
-                    namespace_id: ns.id.clone(),
-                    kind: JobKind::ProjectRoles,
-                    payload: json!({
-                        "namespace": ns.id,
-                        "kind": "projectRoles",
-                        "desiredRoles": roles,
-                    }),
-                    repo_id: None,
-                    link_id: None,
-                },
-            )
-            .await?;
-        }
+        // No namespace-level job: `git.ns.admin` projects to no forge role
+        // (`git-ns/bridge/job`, `desiredRoles`), so nothing projects to the
+        // organisation's own roles, and a bridge refuses one `notCapable`.
 
         for repo in snap.repos.iter().filter(|r| {
             r.namespace_id == ns.id && matches!(r.state, RepoState::Active | RepoState::Orphaned)
@@ -2131,4 +2351,121 @@ async fn complete_account_link(
     attempt.finished_at = Some(t);
     store::put_link(&state.git_ns.ks, &attempt).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ADMIN: &str = "did:key:admin";
+    const ADMIN_OWNER: &str = "did:key:admin-owner";
+    const OWNER: &str = "did:key:owner";
+    const MAINTAINER: &str = "did:key:maintainer";
+    const NS_SIGNER: &str = "did:key:ns-signer";
+    const ADMIN_SIGNER: &str = "did:key:admin-signer";
+
+    fn t() -> DateTime<Utc> {
+        "2026-09-25T12:00:00Z".parse().unwrap()
+    }
+
+    fn row(subject: &str, right: Right) -> RightRow {
+        RightRow {
+            subject: subject.into(),
+            right,
+            granted_by: ADMIN.into(),
+            granted_at: t(),
+            expires_at: None,
+            reason: None,
+            subject_was_member: true,
+            granter_was_member: true,
+        }
+    }
+
+    fn rights(ns_rows: &[RightRow], repo_rows: &[RightRow]) -> BTreeMap<String, Right> {
+        highest_repo_rights(
+            &Resource::parse("github.com/acme").unwrap(),
+            ns_rows,
+            &Resource::parse("github.com/acme/widgets").unwrap(),
+            repo_rows,
+            t(),
+        )
+    }
+
+    #[test]
+    fn a_namespace_admin_with_nothing_of_their_own_is_sent_as_ns_admin() {
+        let got = rights(&[row(ADMIN, Right::NsAdmin)], &[row(OWNER, Right::RepoOwn)]);
+        // Not `own` — which it implies — and not left out, so the bridge
+        // maps it to no role and takes off a stale one.
+        assert_eq!(got.get(ADMIN), Some(&Right::NsAdmin));
+        assert_eq!(got.get(OWNER), Some(&Right::RepoOwn));
+    }
+
+    #[test]
+    fn a_namespace_admin_keeps_the_rights_recorded_in_their_own_name() {
+        let got = rights(
+            &[
+                row(ADMIN_OWNER, Right::NsAdmin),
+                row(MAINTAINER, Right::NsAdmin),
+            ],
+            &[
+                row(ADMIN_OWNER, Right::RepoOwn),
+                row(MAINTAINER, Right::RepoMaintain),
+            ],
+        );
+        assert_eq!(got.get(ADMIN_OWNER), Some(&Right::RepoOwn));
+        assert_eq!(got.get(MAINTAINER), Some(&Right::RepoMaintain));
+    }
+
+    #[test]
+    fn a_namespace_commit_right_projects_as_before() {
+        let got = rights(
+            &[
+                row(NS_SIGNER, Right::CommitSign),
+                row(ADMIN_SIGNER, Right::NsAdmin),
+                row(ADMIN_SIGNER, Right::CommitSign),
+            ],
+            &[],
+        );
+        assert_eq!(got.get(NS_SIGNER), Some(&Right::CommitSign));
+        // Recorded in their own name, so it wins over the admin's no-role.
+        assert_eq!(got.get(ADMIN_SIGNER), Some(&Right::CommitSign));
+    }
+
+    #[test]
+    fn an_admin_whose_own_lapsed_falls_back_to_ns_admin() {
+        let mut own = row(ADMIN_OWNER, Right::RepoOwn);
+        own.expires_at = Some(t() - chrono::Duration::days(1));
+        let got = rights(&[row(ADMIN_OWNER, Right::NsAdmin)], &[own]);
+        assert_eq!(got.get(ADMIN_OWNER), Some(&Right::NsAdmin));
+    }
+
+    #[test]
+    fn one_account_is_listed_once_at_the_lower_role() {
+        let acct = ForgeAccount {
+            forge: "github.com".into(),
+            id: "1".into(),
+            login: "shared".into(),
+        };
+        let mut accounts = HashMap::new();
+        for did in [OWNER, ADMIN] {
+            accounts.insert(
+                did.to_string(),
+                BTreeMap::from([("github.com".to_string(), acct.clone())]),
+            );
+        }
+        let rights = BTreeMap::from([
+            (OWNER.to_string(), Right::RepoOwn),
+            (ADMIN.to_string(), Right::NsAdmin),
+        ]);
+        let roles = render_roles(&rights, "github.com", &accounts);
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0]["right"], "git.ns.admin");
+    }
+
+    #[test]
+    fn a_lapsed_admin_is_not_sent() {
+        let mut lapsed = row(ADMIN, Right::NsAdmin);
+        lapsed.expires_at = Some(t() - chrono::Duration::days(1));
+        assert!(rights(&[lapsed], &[]).is_empty());
+    }
 }
