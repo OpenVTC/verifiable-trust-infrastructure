@@ -43,8 +43,8 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 dialoguer = { workspace = true }
 # `pnm messaging console`: the mediator console and its engine.
-affinidi-messaging-mediator-admin = "0.2"
-affinidi-messaging-mediator-tui = "0.2.1"
+affinidi-messaging-mediator-admin = "0.3"
+affinidi-messaging-mediator-tui = "0.3"
 affinidi-secrets-resolver = { workspace = true }
 async-trait = "0.1"
 ratatui = { workspace = true }

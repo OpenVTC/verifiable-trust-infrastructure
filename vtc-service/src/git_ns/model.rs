@@ -307,7 +307,9 @@ pub struct Namespace {
     pub requested_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_at: Option<DateTime<Utc>>,
-    /// Digest of the last namespace-level role set sent to the bridge.
+    /// Digest of the last namespace-level role set sent to the bridge. No
+    /// longer written: `git.ns.admin` projects to no forge role, so no
+    /// namespace-level set is sent. Kept so stored records still read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles_digest: Option<String>,
     /// The bridge reported it lost access to the namespace.
