@@ -18,11 +18,15 @@
 //!
 //! The **admin verbs** are split by what the VTC serves (#1641):
 //!
+//! - A community backup ([`VtcClient::export_backup`],
+//!   [`VtcClient::import_backup`]) is the `backup/*` Trust Task family and goes
+//!   **only over the session**: the VTC refuses it over HTTPS, where the
+//!   password and the bundle would exist in plaintext wherever TLS terminates.
 //! - Those whose tasks the VTC binds as signed documents — a join decision,
-//!   `members/{update,admin-remove,credentials}`, `backup/export`, the whole
-//!   `acl/*` family ([`acl`]) — go as
-//!   documents too: over the session when there is one, otherwise signed with
-//!   the operator's own key (the one [`VtcClient::connect`] authenticated with)
+//!   `members/{update,admin-remove,credentials}`, the whole `acl/*` family
+//!   ([`acl`]) — go as documents too: over the session when there is one,
+//!   otherwise signed with the operator's own key (the one
+//!   [`VtcClient::connect`] authenticated with)
 //!   and posted to `POST {base}/trust-tasks`. A client holding that key never
 //!   falls back to the bearer route for them, even against a VTC too old to
 //!   serve the document. A client built from a token alone
@@ -132,8 +136,6 @@ pub mod task {
         "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1";
     pub const ENDORSEMENTS_REVOKE: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
-    pub const BACKUP_EXPORT: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
-    pub const BACKUP_IMPORT: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
     pub const MEMBERS_CREDENTIALS: &str =
         <super::members_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 }
@@ -188,6 +190,39 @@ const MAX_AUDIT_VERIFY_RESPONSE_BYTES: usize = 1024 * 1024;
 /// [`VtcClient::import_backup`] read. Matches the VTC's cap on a backup import
 /// request body, so an export larger than this could not be restored anyway.
 const MAX_BACKUP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+/// The `chunkedTrustTask` details [`VtcClient::export_backup`] and
+/// [`VtcClient::import_backup`] share.
+mod backup_chunks {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    pub const ALGORITHM: &str = vta_sdk::protocols::backup_management::chunked::ALGORITHM_CHUNKED;
+    /// The largest chunk the VTC accepts (its `MAX_CHUNK_SIZE`).
+    pub const CHUNK_SIZE: u64 = 32 * 1024;
+    const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    pub fn digest(bytes: &[u8]) -> String {
+        vta_sdk::protocols::backup_management::chunked::sha256_digest_multibase(
+            &sha2::Sha256::digest(bytes).into(),
+        )
+    }
+
+    pub fn sha256_hex(bytes: &[u8]) -> String {
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    pub fn encode(bytes: &[u8]) -> String {
+        B64.encode(bytes)
+    }
+
+    pub fn decode(text: &str) -> Option<Vec<u8>> {
+        B64.decode(text).ok()
+    }
+}
 
 /// The bound on any other `#response` document read from the document
 /// endpoint. Generous for every verb that goes there — the largest, a join
@@ -678,6 +713,20 @@ impl VtcClient {
             token: None,
             signer: None,
             documents: Some(documents),
+        }
+    }
+
+    /// Close the DIDComm or TSP session this client holds, if any.
+    ///
+    /// **Required for a client from [`connect_didcomm`](Self::connect_didcomm)
+    /// or [`connect_tsp`](Self::connect_tsp)**: the session is a live,
+    /// auto-reconnecting mediator connection that `Drop` cannot close, and a
+    /// leaked one fights the next session for the same DID on the mediator.
+    /// A no-op for an HTTPS client. Idempotent.
+    pub async fn shutdown(&self) {
+        #[cfg(feature = "didcomm")]
+        if let Some(documents) = &self.documents {
+            documents.shutdown().await;
         }
     }
 
@@ -1531,84 +1580,199 @@ impl VtcClient {
         read_json_capped(expect_success(resp).await?, MAX_AUDIT_VERIFY_RESPONSE_BYTES).await
     }
 
-    /// Export the community's state as an encrypted `vtc-backup-v1` envelope
-    /// (`vtc/backup/export/0.1`, over `POST /backup/export`). Super-admin
-    /// token.
+    /// Export the community's state as an encrypted `vtc-backup-v1` envelope.
+    /// Unrestricted administrator.
     ///
-    /// Returns the **envelope itself** — the object `import_backup` takes back
-    /// as `backup` — as opaque JSON, exactly as the VTC sent it: it carries the
-    /// community's signing key, and a caller only ever saves it or hands it
-    /// back. Opaque rather than typed because the ciphertext is only as good as
-    /// the bytes around it; nothing here re-serialises it.
+    /// **Over a DIDComm or TSP session only** (a client from
+    /// [`connect_didcomm`](Self::connect_didcomm) or
+    /// [`connect_tsp`](Self::connect_tsp)). The request carries the backup
+    /// password and the reply is the backup it opens, so the VTC refuses both
+    /// over REST, where they would exist in plaintext wherever TLS terminates
+    /// (trustoverip/dtgwg-trust-tasks-tf#646). The bundle moves with the
+    /// `backup/*` chunked transfer: `initiate-export`, one `get-chunk` per
+    /// chunk (each checked against its manifest digest), the whole checked
+    /// against the committed digest and size, then `complete-export`.
     ///
-    /// `vtc/backup/export/0.1` answers `{ "envelope": … }` (the VTC returned
-    /// the bare envelope before #1059). Both are accepted, and the wrapper is
-    /// removed, so a file saved from this is importable whichever VTC wrote it.
+    /// Returns the **envelope itself** — the object [`import_backup`](Self::import_backup)
+    /// takes back — as opaque JSON: it carries the community's signing key, and
+    /// a caller only ever saves it or hands it back.
     pub async fn export_backup(
         &self,
         password: &str,
         include_audit: bool,
     ) -> Result<serde_json::Value, VtcError> {
-        if let Some(mut payload) = self
-            .admin_document(
-                task::BACKUP_EXPORT,
-                serde_json::json!({ "password": password, "includeAudit": include_audit }),
-                trust_tasks_rs::specs::vtc::backup::export::v0_1::ERROR_CODES,
-                MAX_BACKUP_RESPONSE_BYTES,
-            )
-            .await?
-        {
-            return match payload.get_mut("envelope").map(serde_json::Value::take) {
-                Some(envelope @ serde_json::Value::Object(_)) => Ok(envelope),
-                _ => Err(VtcError::Http {
-                    status: 200,
-                    body: "the export response carries no backup envelope".into(),
+        use trust_tasks_rs::specs::backup::{
+            complete_export::v0_1 as complete, get_chunk::v0_1 as get_chunk,
+            initiate_export::v0_1 as initiate,
+        };
+        let bad = |why: String| VtcError::Http {
+            status: 200,
+            body: why,
+        };
+
+        let started = self
+            .backup_document(
+                <initiate::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                serde_json::json!({
+                    "password": password,
+                    "includeAudit": include_audit,
+                    "algorithm": backup_chunks::ALGORITHM,
+                    "maxChunkSize": backup_chunks::CHUNK_SIZE,
                 }),
-            };
+                initiate::ERROR_CODES,
+            )
+            .await?;
+        let d = &started["descriptor"];
+        let bundle_id = d["bundleId"]
+            .as_str()
+            .ok_or_else(|| bad("the export descriptor names no bundle".into()))?
+            .to_string();
+        let digests: Vec<String> = d["chunks"]["chunkDigests"]
+            .as_array()
+            .ok_or_else(|| bad("the export descriptor carries no chunk manifest".into()))?
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        let expected_sha = d["expectedSha256"].as_str().unwrap_or_default().to_string();
+        let expected_size = d["expectedSizeBytes"].as_u64().unwrap_or(0);
+        if expected_size as usize > MAX_BACKUP_RESPONSE_BYTES {
+            return Err(bad(format!(
+                "the export is {expected_size} bytes, over this client's {MAX_BACKUP_RESPONSE_BYTES}"
+            )));
         }
 
-        let url = self.api_url(&["backup", "export"])?;
-        let resp = self
-            .tt(reqwest::Method::POST, url, task::BACKUP_EXPORT)?
-            .json(&serde_json::json!({ "password": password, "includeAudit": include_audit }))
-            .send()
-            .await?;
-        let mut body =
-            read_json_capped(expect_success(resp).await?, MAX_BACKUP_RESPONSE_BYTES).await?;
-        match body.get_mut("envelope").map(serde_json::Value::take) {
-            Some(envelope @ serde_json::Value::Object(_)) => Ok(envelope),
-            _ if body.get("format").is_some() => Ok(body),
-            _ => Err(VtcError::Http {
-                status: 200,
-                body: "the export response carries no backup envelope".into(),
-            }),
+        let mut bytes = Vec::with_capacity(expected_size as usize);
+        for (index, digest) in digests.iter().enumerate() {
+            let chunk = self
+                .backup_document(
+                    <get_chunk::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                    serde_json::json!({ "bundleId": bundle_id, "index": index }),
+                    get_chunk::ERROR_CODES,
+                )
+                .await?;
+            let data = backup_chunks::decode(chunk["data"].as_str().unwrap_or_default())
+                .ok_or_else(|| bad(format!("chunk {index} is not base64url")))?;
+            if backup_chunks::digest(&data) != *digest {
+                return Err(bad(format!(
+                    "chunk {index} does not match the manifest the export committed to"
+                )));
+            }
+            bytes.extend_from_slice(&data);
+            if bytes.len() as u64 > expected_size {
+                return Err(bad("the chunks exceed the committed size".into()));
+            }
+        }
+        if bytes.len() as u64 != expected_size || backup_chunks::sha256_hex(&bytes) != expected_sha
+        {
+            return Err(bad(
+                "the assembled export does not match the committed digest and size".into(),
+            ));
+        }
+        self.backup_document(
+            <complete::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            serde_json::json!({ "bundleId": bundle_id }),
+            complete::ERROR_CODES,
+        )
+        .await?;
+
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(envelope @ serde_json::Value::Object(_)) => Ok(envelope),
+            _ => Err(bad("the exported bundle is not a backup envelope".into())),
         }
     }
 
-    /// Restore the community's state from a backup envelope
-    /// (`vtc/backup/import/0.1`, over `POST /backup/import`). Super-admin
-    /// token.
+    /// Restore the community's state from a backup envelope. Unrestricted
+    /// administrator. **Over a DIDComm or TSP session only**, as
+    /// [`export_backup`](Self::export_backup).
     ///
-    /// With `confirm` false this is a preview: the VTC decrypts and counts the
-    /// rows and changes nothing. With `confirm` true it **replaces** the
-    /// community's state.
+    /// The envelope is uploaded with the `backup/*` chunked transfer
+    /// (`initiate-import`, `put-chunk` per chunk) and applied by
+    /// `finalize-import`, which carries the password. With `confirm` false
+    /// this is a preview: the VTC decrypts and counts the rows and changes
+    /// nothing. With `confirm` true it **replaces** the community's state, and
+    /// the reply's `status` is `committed`.
     pub async fn import_backup(
         &self,
         backup: &serde_json::Value,
         password: &str,
         confirm: bool,
     ) -> Result<serde_json::Value, VtcError> {
-        let url = self.api_url(&["backup", "import"])?;
-        let resp = self
-            .tt(reqwest::Method::POST, url, task::BACKUP_IMPORT)?
-            .json(&serde_json::json!({
-                "backup": backup,
-                "password": password,
-                "confirm": confirm,
-            }))
-            .send()
+        use trust_tasks_rs::specs::backup::{
+            finalize_import::v0_1 as finalize, initiate_import::v0_1 as initiate,
+            put_chunk::v0_1 as put_chunk,
+        };
+        let bytes = serde_json::to_vec(backup).map_err(|e| VtcError::Http {
+            status: 0,
+            body: format!("serialise the backup: {e}"),
+        })?;
+        let chunks: Vec<&[u8]> = bytes.chunks(backup_chunks::CHUNK_SIZE as usize).collect();
+        let digests: Vec<String> = chunks.iter().map(|c| backup_chunks::digest(c)).collect();
+
+        let slot = self
+            .backup_document(
+                <initiate::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                serde_json::json!({
+                    "algorithm": backup_chunks::ALGORITHM,
+                    "expectedSha256": backup_chunks::sha256_hex(&bytes),
+                    "expectedSizeBytes": bytes.len(),
+                    "chunks": {
+                        "chunkSize": backup_chunks::CHUNK_SIZE,
+                        "chunkCount": chunks.len(),
+                        "chunkDigests": digests,
+                    },
+                }),
+                initiate::ERROR_CODES,
+            )
             .await?;
-        read_json_capped(expect_success(resp).await?, MAX_BACKUP_RESPONSE_BYTES).await
+        let bundle_id = slot["descriptor"]["bundleId"]
+            .as_str()
+            .ok_or_else(|| VtcError::Http {
+                status: 200,
+                body: "the import slot names no bundle".into(),
+            })?
+            .to_string();
+        for (index, chunk) in chunks.iter().enumerate() {
+            self.backup_document(
+                <put_chunk::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                serde_json::json!({
+                    "bundleId": bundle_id,
+                    "index": index,
+                    "digestMultibase": digests[index],
+                    "data": backup_chunks::encode(chunk),
+                }),
+                put_chunk::ERROR_CODES,
+            )
+            .await?;
+        }
+        self.backup_document(
+            <finalize::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            serde_json::json!({ "bundleId": bundle_id, "password": password, "confirm": confirm }),
+            finalize::ERROR_CODES,
+        )
+        .await
+    }
+
+    /// One `backup/*` document over this client's session, or a refusal when
+    /// the client has none: the VTC serves a backup only end to end.
+    async fn backup_document(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        declared: &[trust_tasks_rs::DeclaredErrorCode],
+    ) -> Result<serde_json::Value, VtcError> {
+        #[cfg(feature = "didcomm")]
+        if self.documents.is_some() {
+            return self
+                .admin_document(type_uri, payload, declared, MAX_BACKUP_RESPONSE_BYTES)
+                .await?
+                .ok_or_else(|| VtcError::Session("the session returned no reply".into()));
+        }
+        let _ = (type_uri, payload, declared);
+        Err(VtcError::Session(
+            "a community backup moves only over DIDComm or TSP: connect with connect_didcomm \
+             or connect_tsp (the VTC refuses a backup over REST)"
+                .into(),
+        ))
     }
 
     /// `{base}/<segments…>`, each segment percent-encoded.
@@ -2298,5 +2462,46 @@ mod tests {
                 "{status} {body} must stay Http"
             );
         }
+    }
+
+    /// A client with no session refuses a backup before anything is sent: the
+    /// VTC serves a backup only over DIDComm or TSP.
+    #[tokio::test]
+    async fn a_backup_needs_a_session() {
+        let client = VtcClient::with_token("https://vtc.example.com/v1", "did:web:vtc", "t");
+        for err in [
+            client
+                .export_backup("a-long-enough-password", false)
+                .await
+                .unwrap_err(),
+            client
+                .import_backup(&serde_json::json!({}), "a-long-enough-password", false)
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(
+                matches!(&err, VtcError::Session(m) if m.contains("DIDComm or TSP")),
+                "{err}"
+            );
+        }
+    }
+
+    /// The encoding round-trips, and the digests are those of the bytes.
+    #[test]
+    fn backup_chunks_encode_and_digest_consistently() {
+        let bytes = b"community backup bytes";
+        assert_eq!(
+            backup_chunks::decode(&backup_chunks::encode(bytes)).unwrap(),
+            bytes
+        );
+        assert_eq!(backup_chunks::digest(bytes), backup_chunks::digest(bytes));
+        assert_ne!(
+            backup_chunks::digest(bytes),
+            backup_chunks::digest(b"other bytes")
+        );
+        assert_eq!(
+            backup_chunks::sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 }

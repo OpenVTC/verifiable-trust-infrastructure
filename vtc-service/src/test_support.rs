@@ -2220,6 +2220,14 @@ mod didcomm_harness {
                 .vtc_did(vtc_did.clone())
                 .with_audit(true)
                 .with_signers(true)
+                // Sign as the key the VTC's DID document actually lists (the
+                // did:peer's Ed25519 verification key, minted first), so a
+                // client that verifies the VTC's reply proofs — as
+                // `vtc-client` over a session does — can check them.
+                .with_credential_signer(Arc::new(crate::credentials::LocalSigner::new(
+                    vtc_did.clone(),
+                    vtc_secrets[0].clone(),
+                )))
                 .with_did_resolver(true)
                 .with_public_url("https://vtc.test")
                 .messaging_mediator(mediator_did.clone())
@@ -2353,6 +2361,16 @@ mod didcomm_harness {
         /// The shared mediator's DID.
         pub fn mediator_did(&self) -> &str {
             self.mediator.did()
+        }
+
+        /// Register `did` as a local account on the shared mediator, so a
+        /// client the test builds itself (a `VtcClient` from
+        /// `connect_didcomm`, say) can open its inbound channel there.
+        pub async fn register_local_did(&self, did: &str) {
+            self.mediator
+                .register_local_did(did)
+                .await
+                .expect("register a local mediator account");
         }
 
         /// Stop the applicant's socket, the dispatch loop, and the mediator, and

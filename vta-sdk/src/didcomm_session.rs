@@ -711,6 +711,61 @@ impl DIDCommSession {
         expected_result_type: &str,
         timeout_secs: u64,
     ) -> Result<T, VtaError> {
+        self.send_and_wait_accepting(
+            msg_type,
+            body,
+            |typ, _| typ == expected_result_type,
+            expected_result_type,
+            timeout_secs,
+        )
+        .await
+    }
+
+    /// Send a Trust Task document in the DIDComm binding envelope and wait for
+    /// its reply document.
+    ///
+    /// The binding (§5) carries the reply in the envelope type, and the VTA
+    /// does. A VTC still types its reply as the reply document itself (the
+    /// document's `type`, either `<request type>#response` or a
+    /// `trust-task-error`), because a deployed consumer keys on that. Both are
+    /// accepted: the reply is thread-correlated and authcrypt-authenticated
+    /// either way, and a message typed as a document must *be* that document —
+    /// its body's `type` equal to the message type — answering this request.
+    pub async fn send_and_wait_trust_task(
+        &self,
+        envelope_type: &str,
+        document: serde_json::Value,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value, VtaError> {
+        let request_type = document
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let response_type = format!("{request_type}#response");
+        self.send_and_wait_accepting(
+            envelope_type,
+            document,
+            |typ, body| {
+                typ == envelope_type
+                    || ((typ == response_type
+                        || typ.starts_with("https://trusttasks.org/spec/trust-task-error/"))
+                        && body.get("type").and_then(serde_json::Value::as_str) == Some(typ))
+            },
+            envelope_type,
+            timeout_secs,
+        )
+        .await
+    }
+
+    async fn send_and_wait_accepting<T: serde::de::DeserializeOwned>(
+        &self,
+        msg_type: &str,
+        body: serde_json::Value,
+        accept: impl Fn(&str, &serde_json::Value) -> bool,
+        expected_result_type: &str,
+        timeout_secs: u64,
+    ) -> Result<T, VtaError> {
         let msg_id = uuid::Uuid::new_v4().to_string();
         // Pack the message; the delivery layer sends it (forward-wrapped via the
         // mediator) and awaits the reply the dispatcher demuxes to THIS waiter by
@@ -763,7 +818,7 @@ impl DIDCommSession {
         }
 
         // Verify expected type
-        if response_msg.typ != expected_result_type {
+        if !accept(&response_msg.typ, &response_msg.body) {
             return Err(VtaError::Protocol(format!(
                 "unexpected response type: expected {expected_result_type}, got {}",
                 response_msg.typ

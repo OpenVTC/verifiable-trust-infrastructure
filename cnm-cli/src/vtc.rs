@@ -135,6 +135,67 @@ async fn connect_as(
     })
 }
 
+/// Connect to `target` over a channel confidential end-to-end — TSP when the
+/// VTC advertises it, else DIDComm — as this community profile's identity.
+///
+/// For the verbs the VTC serves only end to end (a community backup, whose
+/// password and bundle would otherwise exist in plaintext wherever TLS
+/// terminates). There is no REST fallback: a VTC that advertises neither
+/// transport cannot be backed up from here, and the error says so.
+pub async fn connect_end_to_end(keyring_key: &str, target: &VtcTarget) -> CliResult<Connected> {
+    use vta_sdk::session::VtaEndpoint;
+    let session = auth::loaded_session(keyring_key).ok_or_else(|| {
+        format!(
+            "no stored identity for this community profile. Run `{} setup` first.",
+            bin_name()
+        )
+    })?;
+    let (did, key) = (&session.client_did, &session.private_key_multibase);
+    let endpoint = vta_sdk::session::resolve_vta_endpoint(&target.did)
+        .await
+        .map_err(|e| format!("could not resolve the VTC's DID {}: {e}", target.did))?;
+    let session_error = |e: VtcError| -> Box<dyn std::error::Error> {
+        format!("could not open a session to the VTC {}: {e}", target.did).into()
+    };
+    let client = match endpoint {
+        VtaEndpoint::Tsp {
+            mediator_did,
+            didcomm_mediator_did,
+            ..
+        } => match VtcClient::connect_tsp(did, key, &target.did, &mediator_did, Some(&target.base))
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let Some(m) = didcomm_mediator_did else {
+                    return Err(session_error(e));
+                };
+                eprintln!("warning: TSP to the VTC failed ({e}); using DIDComm via {m}");
+                VtcClient::connect_didcomm(did, key, &target.did, &m, Some(&target.base))
+                    .await
+                    .map_err(session_error)?
+            }
+        },
+        VtaEndpoint::DIDComm { mediator_did, .. } => {
+            VtcClient::connect_didcomm(did, key, &target.did, &mediator_did, Some(&target.base))
+                .await
+                .map_err(session_error)?
+        }
+        _ => {
+            return Err(format!(
+                "{} advertises no DIDComm or TSP service. A community backup moves only over \
+                 a channel confidential end-to-end, and the VTC refuses it over REST.",
+                target.did
+            )
+            .into());
+        }
+    };
+    Ok(Connected {
+        client,
+        client_did: did.to_string(),
+    })
+}
+
 /// What to tell the operator when the VTC does not accept the profile's DID.
 ///
 /// A VTC answers every authentication failure the same way, whether or not the

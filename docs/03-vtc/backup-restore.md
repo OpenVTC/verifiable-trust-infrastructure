@@ -3,10 +3,16 @@
 The VTC holds a community's irreplaceable social state — members, ACL,
 endorsements, relationships, policies, the audit log, and the bitstring
 **status lists** whose loss bricks every issued VMC's `credentialStatus`.
-`POST /v1/backup/export` and `POST /v1/backup/import` capture and restore that
-state in a single password-encrypted artifact.
+A backup captures and restores that state in a single password-encrypted
+artifact.
 
-Both endpoints are **super-admin only**.
+Backup and restore are **super-admin only**, and they travel **only over DIDComm
+or TSP**. The request carries the backup password, and the backup carries the
+community's signing key. Over REST both would exist in plaintext wherever TLS
+terminates. So `POST /v1/backup/export` and `POST /v1/backup/import` always
+answer 403, and the Trust Tasks are refused on the HTTPS binding. An export is
+recorded in the audit log **before** it is released, and a VTC with no audit
+trail refuses to export.
 
 ## What's in a backup
 
@@ -67,17 +73,11 @@ The file is created readable by its owner only (`0600` on Unix, an owner-only
 ACL on Windows). An existing file is never overwritten unless you pass
 `--force`.
 
-Under the hood this is `POST /v1/backup/export` (super-admin) — to script it
-directly:
-
-```sh
-curl -sS -X POST https://vtc.example.com/v1/backup/export \
-  -H "Authorization: Bearer $SUPER_ADMIN_JWT" \
-  -H 'Trust-Task: https://trusttasks.org/openvtc/vtc/backup/export/1.0' \
-  -H 'Content-Type: application/json' \
-  -d '{"password":"correct-horse-battery-staple","include_audit":true}' \
-  > vtc-backup.json
-```
+Under the hood `cnm` opens a TSP session to the VTC, or a DIDComm session when
+the VTC advertises no TSP. It then runs the `backup/*` chunked transfer:
+`initiate-export`, one `get-chunk` per chunk, and `complete-export`. Each chunk
+is checked against the manifest, and the whole against its committed digest. A
+VTC that advertises neither transport cannot be backed up this way.
 
 ## Restore
 
@@ -89,21 +89,10 @@ Restore is a two-step **preview → confirm** to prevent fat-finger overwrites.
 cnm backup import vtc-backup-<slug>-<timestamp>.vtcbak [--preview]
 ```
 
-Equivalent REST (the CLI just drives these two calls):
-
-```sh
-# 1. Preview — decrypts, checks identity, returns per-keyspace row counts.
-#    Mutates nothing.
-curl -sS -X POST https://vtc.example.com/v1/backup/import \
-  -H "Authorization: Bearer $SUPER_ADMIN_JWT" \
-  -H 'Trust-Task: https://trusttasks.org/openvtc/vtc/backup/import/1.0' \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -n --slurpfile b vtc-backup.json \
-        '{backup:$b[0], password:"correct-horse-battery-staple", confirm:false}')"
-
-# 2. Apply — clears the backed-up keyspaces and replays the backup.
-#    Same body with confirm:true.
-```
+Under the hood this is the `backup/*` chunked upload over the same session:
+`initiate-import`, then one `put-chunk` per chunk, then `finalize-import`.
+`finalize-import` carries the password, with `confirm: false` for the preview
+and `confirm: true` to apply.
 
 After a successful import, **restart the daemon** so it serves the restored
 identity.
@@ -131,20 +120,19 @@ backup to finish it.
 
 ## Signed documents: the chunked `backup/*` transfer
 
-The two routes above take a bearer token. The same export and restore are also
-served as signed Trust Task documents at `POST /v1/trust-tasks` (and over
-DIDComm and TSP), authorized by the signer's ACL entry — an unrestricted
+Export and restore are signed Trust Task documents, sent over DIDComm or TSP and
+authorized by the signer's ACL entry, which must be an unrestricted
 administrator's. A backup is too large for one document, so it moves as a
 **bundle**, in chunks (the node-neutral `backup/*` family, shared with the VTA):
 
 | step | task | what it does |
 |---|---|---|
-| export | `backup/initiate-export/0.1` | encrypts the community (as `/backup/export` does) and returns a manifest: chunk size, count, one digest per chunk, the whole bundle's SHA-256 |
+| export | `backup/initiate-export/0.1` | encrypts the community, records the export in the audit log, and returns a manifest: chunk size, count, one digest per chunk, the whole bundle's SHA-256 |
 | | `backup/get-chunk/0.1` | one chunk by index; repeatable until the bundle ends |
 | | `backup/complete-export/0.1` | releases the bundle and deletes its staged bytes |
 | restore | `backup/initiate-import/0.1` | commits to a manifest before any byte moves |
 | | `backup/put-chunk/0.1` | one chunk, checked against its committed digest; a repeat is `stored: false` |
-| | `backup/finalize-import/0.1` | checks every chunk is present and the assembled bytes are the committed ones, then previews (`confirm` absent) or applies (`confirm: true`) exactly as `/backup/import` does |
+| | `backup/finalize-import/0.1` | checks every chunk is present and the assembled bytes are the committed ones, then previews (`confirm` absent) or applies (`confirm: true`) |
 | either | `backup/abort/0.1` | cancels an open bundle |
 
 Every request asks for `algorithm: chunkedTrustTask`; `stream` needs an HTTPS
@@ -156,19 +144,21 @@ lives five minutes past its last use (never more than an hour), and at most thre
 may be open per administrator at once. Staged bytes live under
 `<data_dir>/backups`, owner-only, and are swept when a bundle ends or expires.
 
-**Over REST the transfer is rate-limited.** `/v1/trust-tasks` sits behind the
-per-IP limiter on the unauthenticated chain (a burst of 10, then one request
-every 5 s), which is roughly 12 chunks a minute — about 384 KiB a minute at full
-chunk size. DIDComm and TSP are not behind that limiter; chunk requests there are
-bounded per administrator (50 a second). For a large community, restore over a
-messaging transport or use the bearer route above.
+**The channel is end to end.** `initiate-export`, `initiate-import` and
+`finalize-import` carry the password, or open the bundle it unlocks, so the VTC
+refuses them with `permissionDenied` when they arrive on the HTTPS binding
+(`POST /v1/trust-tasks`). The refusal comes after the super-admin check and
+before any state is serialized, a slot is opened or a key is derived. The chunks
+themselves are ciphertext. Chunk requests are bounded per administrator (50 a
+second).
 
 ## Limits
 
-- Bearer import request body cap: **64 MiB**. A community with a very large
-  audit log may exceed it — export with `include_audit: false` (the community
-  state itself is far smaller), or use the chunked transfer above.
-- Crypto: Argon2id (64 MiB / t=3 / p=4) + AES-256-GCM. Wrong password or a
-  tampered envelope fails closed (401).
+- A bundle is at most 4096 chunks of 32 KiB, so 128 MiB, and `cnm` accepts an
+  export of at most 64 MiB. A community with a very large audit log may exceed
+  that; export with `include_audit: false` (the community state itself is far
+  smaller).
+- Crypto: Argon2id (64 MiB / t=3 / p=4) + AES-256-GCM. A wrong password or a
+  tampered envelope fails closed.
 
 Design rationale + the keyspace partition: `docs/05-design-notes/vtc-backup-restore.md`.

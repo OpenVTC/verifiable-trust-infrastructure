@@ -2102,13 +2102,8 @@ impl VtaClient {
 
                 const TRUST_TASK_ENVELOPE_TYPE: &str =
                     "https://trusttasks.org/binding/didcomm/0.1/envelope";
-                let response_doc: serde_json::Value = session
-                    .send_and_wait(
-                        TRUST_TASK_ENVELOPE_TYPE,
-                        doc,
-                        TRUST_TASK_ENVELOPE_TYPE,
-                        timeout,
-                    )
+                let response_doc = session
+                    .send_and_wait_trust_task(TRUST_TASK_ENVELOPE_TYPE, doc, timeout)
                     .await?;
                 self.finish_reply(response_doc).await
             }

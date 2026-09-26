@@ -1226,7 +1226,8 @@ const TRUST_TASK_SPEC_PREFIX: &str = "https://trusttasks.org/spec/";
 /// responses — `vetting::wire::open` requires `document.type == message.typ`),
 /// so switching here would silently drop its join verdicts. Changing this
 /// wants that consumer to read the envelope first; tracked with Keyring
-/// VTI-42.
+/// VTI-42. `vta-sdk` (and so `vtc-client` over a session) accepts either
+/// carriage (`DIDCommSession::send_and_wait_trust_task`).
 fn tt_didcomm_reply(outcome: TrustTaskOutcome, thid: String) -> Option<Reply> {
     let doc: serde_json::Value = match serde_json::from_slice(&outcome.body) {
         Ok(d) => d,

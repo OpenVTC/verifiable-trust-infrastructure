@@ -52,6 +52,9 @@ trust-tasks-rs = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The chunk digests and encoding of the `backup/*` chunked transfer.
+sha2 = { workspace = true }
+base64 = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 
