@@ -1303,7 +1303,7 @@ async fn a_relayed_request_is_answered_through_the_sdk() {
         &ctx.vta_did,
         serde_json::to_value(verified.decision(true, None).unwrap()).unwrap(),
     );
-    let (status, granted) = post(&router, &token, &decision).await;
+    let (status, granted) = post_as_approver(&router, &ctx, &ops, &decision).await;
     assert_eq!(status, StatusCode::OK, "{granted}");
     let response: vta_sdk::task_consent::decision::Response =
         serde_json::from_value(granted["payload"].clone())
