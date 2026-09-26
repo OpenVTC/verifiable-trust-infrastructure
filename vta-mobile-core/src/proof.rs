@@ -36,7 +36,7 @@ use affinidi_data_integrity::crypto_suites::CryptoSuite;
 use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions, prepare_sign_input};
 use multibase::Base;
 use serde::Serialize;
-use trust_tasks_proof::affinidi::CachedDidResolver;
+use trust_tasks_proof::affinidi::{CachedDidResolver, ProofPurpose, PurposeBound};
 use trust_tasks_rs::{Proof, TrustTask};
 
 use crate::error::FfiError;
@@ -441,7 +441,7 @@ async fn verify_signature(
     proof
         .verify(
             &unsigned,
-            &resolver,
+            &PurposeBound::new(&resolver, ProofPurpose::AssertionMethod),
             VerifyOptions::new().with_allowed_suites(vec![CryptoSuite::EddsaJcs2022]),
         )
         .await

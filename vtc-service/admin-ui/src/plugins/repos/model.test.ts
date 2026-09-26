@@ -11,8 +11,11 @@ import {
   namespaceFindings,
   projectedRight,
   repoStatus,
+  forgeRoleFor,
   revertStanding,
-  rightForForgeRole,
+  driftRevertImpact,
+  adoptStanding,
+  projectedRepoRank,
 } from "./model";
 import {
   ACME,
@@ -217,11 +220,13 @@ describe("namespace facts", () => {
     );
   });
 
-  it("maps a forge role back to the right that projects it", () => {
-    expect(rightForForgeRole("admin")).toBe("git.repo.own");
-    expect(rightForForgeRole("maintain")).toBe("git.repo.maintain");
-    expect(rightForForgeRole("write")).toBe("git.commit.sign");
-    expect(rightForForgeRole("triage")).toBeNull();
+  it("shows the forge role a right projects to, and none for a namespace admin", () => {
+    const map = { own: "admin", maintain: "admin", commit: "write" };
+    expect(forgeRoleFor(map, "git.repo.own")).toBe("admin");
+    expect(forgeRoleFor(map, "git.repo.maintain")).toBe("admin");
+    expect(forgeRoleFor(map, "git.commit.sign")).toBe("write");
+    expect(forgeRoleFor(map, "git.ns.admin")).toBe("none");
+    expect(forgeRoleFor(map, "git.repo.create")).toBe("none");
   });
 });
 
@@ -235,11 +240,22 @@ describe("revertStanding — what git-ns/drift/resolve accepts", () => {
   const admin = { ...maintain, observed: "admin" };
 
   it("mirrors projected_right, org and personal", () => {
-    expect(projectedRight("organization", "admin")).toBe("git.repo.own");
-    expect(projectedRight("organization", "maintain")).toBe("git.repo.maintain");
-    expect(projectedRight("organization", "write")).toBeNull();
-    expect(projectedRight("user", "write")).toBe("git.repo.maintain");
-    expect(projectedRight("user", "admin")).toBeNull();
+    const org = { own: "admin", maintain: "maintain", commit: "none" };
+    expect(projectedRight(org, "admin")).toBe("git.repo.own");
+    expect(projectedRight(org, "maintain")).toBe("git.repo.maintain");
+    expect(projectedRight(org, "write")).toBeNull();
+    const user = { own: "write", maintain: "write", commit: "none" };
+    expect(projectedRight(user, "write")).toBe("git.repo.maintain");
+    expect(projectedRight(user, "admin")).toBeNull();
+  });
+
+  it("derives the right from the bridge's map: the lowest right with that role", () => {
+    const forgejo = { own: "admin", maintain: "admin", commit: "none" };
+    expect(projectedRight(forgejo, "admin")).toBe("git.repo.maintain");
+    const branches = { own: "admin", maintain: "maintain", commit: "write" };
+    expect(projectedRight(branches, "write")).toBe("git.commit.sign");
+    expect(projectedRight(branches, "none")).toBeNull();
+    expect(projectedRight({ own: "maintain", maintain: "write", commit: "none" }, "admin")).toBeNull();
   });
 
   it("lets an owner or a namespace admin revert", () => {
@@ -262,10 +278,186 @@ describe("revertStanding — what git-ns/drift/resolve accepts", () => {
     expect(revertStanding(BOB, false, ACME, DOCS, { ...admin, type: "roleRemoved" }).may).toBe(true);
   });
 
+  it("weighs every role revert as revoking own while the map is unknown", () => {
+    const unknown = { ...DOCS, roleMap: undefined };
+    expect(revertStanding(BOB, false, ACME, unknown, maintain).may).toBe(false);
+    expect(revertStanding(BOB, true, ACME, unknown, maintain).may).toBe(true);
+    expect(driftRevertImpact({ ...maintain, observed: "read" }, undefined)).toBe("git.repo.own");
+    expect(driftRevertImpact({ ...maintain, observed: "none" }, undefined)).toBe("git.repo.maintain");
+  });
+
   it("offers nothing in manual mode, or on a repository that is not active", () => {
     const r = revertStanding(ALICE, true, PERSONAL, { ...DOCS, namespace: PERSONAL.id }, maintain);
     expect(!r.may && r.why).toMatch(/manual mode/);
     expect(revertStanding(ALICE, true, ACME, { ...DOCS, state: "archived" }, maintain).may).toBe(false);
     expect(revertStanding(ALICE, true, ACME, LEGACY, maintain).may).toBe(true);
+  });
+});
+
+describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
+  const added = (observed: string) => ({
+    type: "roleAdded" as const,
+    resource: DOCS.resource,
+    observed,
+    account: { forge: "github.com", id: "1003", login: "hsato" },
+  });
+  const USER_NS = { ...ACME, kind: "user" };
+
+  it("adopts a maintain role as maintainer for an owner, normal-class", () => {
+    const r = adoptStanding(BOB, false, ACME, DOCS, added("maintain"), HANA, 0);
+    expect(r).toEqual({ may: true, member: HANA, right: "git.repo.maintain" });
+  });
+
+  it("projects write to maintainer under a personal account's map, and to nothing on an organisation", () => {
+    // The bridge's default map on a personal account: own and maintain both
+    // collapse to `write`.
+    const personal = { ...DOCS, roleMap: { own: "write", maintain: "write", commit: "none" } };
+    expect(adoptStanding(BOB, false, USER_NS, personal, added("write"), HANA, 0)).toEqual({
+      may: true,
+      member: HANA,
+      right: "git.repo.maintain",
+    });
+    const org = adoptStanding(BOB, false, ACME, DOCS, added("write"), HANA, 0);
+    expect(org.may).toBe(false);
+    expect(!org.may && org.why).toMatch(/No git right projects to the forge role "write"/);
+    // `admin` projects nothing on a personal account.
+    expect(adoptStanding(BOB, true, USER_NS, personal, added("admin"), HANA, 0).may).toBe(false);
+  });
+
+  it("adopts nothing while the bridge has not reported its role map", () => {
+    const unknown = { ...DOCS, roleMap: undefined };
+    const r = adoptStanding(BOB, true, ACME, unknown, added("maintain"), HANA, 0);
+    expect(r.may).toBe(false);
+    expect(!r.may && !r.handOver && r.why).toMatch(/role map/);
+  });
+
+  it("refuses a lowering: a roleChanged no higher than what the member holds", () => {
+    const changed = { ...added("maintain"), type: "roleChanged" as const };
+    // Hana already maintains (rank 2): maintain is no raise.
+    const r = adoptStanding(BOB, true, ACME, DOCS, changed, HANA, 2);
+    expect(r.may).toBe(false);
+    expect(!r.may && !r.handOver && r.why).toMatch(/lowering/);
+    // From committer (rank 1) it is a raise.
+    expect(adoptStanding(BOB, true, ACME, DOCS, changed, HANA, 1).may).toBe(true);
+  });
+
+  it("refuses what records no right, and an account nobody linked", () => {
+    expect(
+      adoptStanding(BOB, true, ACME, DOCS, { ...added("admin"), type: "roleRemoved" }, HANA, 0).may,
+    ).toBe(false);
+    const unlinked = adoptStanding(BOB, true, ACME, DOCS, added("maintain"), undefined, 0);
+    expect(!unlinked.may && unlinked.why).toMatch(/No member has linked/);
+  });
+
+  it("hands over a self-adopt the role map makes elevated", () => {
+    // Where maintainers get forge admin, maintain is elevated (`rules::elevated_on`).
+    const maintainersAdmin = { ...DOCS, roleMap: { own: "admin", maintain: "admin", commit: "none" } };
+    const self = adoptStanding(BOB, true, ACME, maintainersAdmin, added("admin"), BOB, 0);
+    expect(self).toMatchObject({ may: false, handOver: true, member: BOB, right: "git.repo.maintain" });
+    expect(self.may === false && self.why).toMatch(/role map/);
+    expect(self.may === false && self.why).not.toMatch(/break the glass/);
+    // Under the default map maintain is not elevated: Bob adopts it himself.
+    expect(adoptStanding(BOB, false, ACME, DOCS, added("maintain"), BOB, 0)).toEqual({
+      may: true,
+      member: BOB,
+      right: "git.repo.maintain",
+    });
+  });
+
+  it("hands over to an owner, and an elevated adopt to a community administrator", () => {
+    const outsider = adoptStanding(HANA, true, ACME, DOCS, added("maintain"), HANA, 0);
+    expect(outsider).toMatchObject({ may: false, handOver: true, right: "git.repo.maintain" });
+    const owner = adoptStanding(BOB, false, ACME, DOCS, added("admin"), HANA, 0);
+    expect(owner).toMatchObject({ may: false, handOver: true, right: "git.repo.own" });
+    expect(adoptStanding(BOB, true, ACME, DOCS, added("admin"), HANA, 0)).toEqual({
+      may: true,
+      member: HANA,
+      right: "git.repo.own",
+    });
+    // A namespace admin owns every repository in it.
+    expect(adoptStanding(ALICE, false, ACME, DOCS, added("maintain"), HANA, 0).may).toBe(true);
+  });
+
+  it("never offers a viewer their own account as an elevated right (grant 0.3 rule 7)", () => {
+    // Alice, a namespace admin and community administrator, adopting the
+    // forge admin role on her own linked account would grant herself own.
+    const self = adoptStanding(ALICE, true, ACME, DOCS, added("admin"), ALICE, 0);
+    expect(self).toMatchObject({ may: false, handOver: true, right: "git.repo.own" });
+    expect(!self.may && self.why).toMatch(/separation of duties/);
+    // A normal right for oneself is no self-grant of an elevated right.
+    expect(adoptStanding(ALICE, true, ACME, DOCS, added("maintain"), ALICE, 0)).toEqual({
+      may: true,
+      member: ALICE,
+      right: "git.repo.maintain",
+    });
+  });
+
+  it("ranks the member's projected right: own-name rights only, unexpired", () => {
+    expect(projectedRepoRank(RIGHTS, BOB, DOCS, ACME)).toBe(3);
+    expect(projectedRepoRank(RIGHTS, HANA, WIDGETS, ACME)).toBe(2);
+    expect(projectedRepoRank(RIGHTS, HANA, DOCS, ACME)).toBe(0);
+    const lapsed = [{ ...RIGHTS[4]!, expiresAt: "2000-01-01T00:00:00Z" }];
+    expect(projectedRepoRank(lapsed, HANA, WIDGETS, ACME)).toBe(0);
+    // A namespace admin projects to no forge role: Alice, ACME's admin with
+    // nothing of her own on docs, is projected at nothing there…
+    expect(projectedRepoRank(RIGHTS, ALICE, DOCS, ACME)).toBe(0);
+    expect(projectedRepoRank([], ALICE, DOCS, ACME)).toBe(0);
+    // …and at maintain once she holds it in her own name.
+    const maintains = [...RIGHTS, { ...RIGHTS[4]!, subject: ALICE, resource: DOCS.resource }];
+    expect(projectedRepoRank(maintains, ALICE, DOCS, ACME)).toBe(2);
+    // A v0.1 hook-relay grant is not in the store the projector reads.
+    const derived = [{ ...RIGHTS[4]!, resource: DOCS.resource, origin: "roleDerived" }];
+    expect(projectedRepoRank(derived, HANA, DOCS, ACME)).toBe(0);
+  });
+
+  it("lets a namespace admin holding maintain adopt a forge admin as owner", () => {
+    const changed = {
+      type: "roleChanged" as const,
+      resource: DOCS.resource,
+      observed: "admin",
+      expected: "maintain",
+      account: { forge: "github.com", id: "1001", login: "alicew" },
+    };
+    // Alice (ACME's admin) is projected at maintain: admin is a raise,
+    // which another owner who is a community administrator may adopt.
+    expect(adoptStanding(BOB, true, ACME, DOCS, changed, ALICE, 2)).toEqual({
+      may: true,
+      member: ALICE,
+      right: "git.repo.own",
+    });
+  });
+
+  it("never offers a resolver an elevated right for themselves", () => {
+    const changed = {
+      type: "roleChanged" as const,
+      resource: DOCS.resource,
+      observed: "admin",
+      expected: "maintain",
+      account: { forge: "github.com", id: "1001", login: "alicew" },
+    };
+    // Alice adopting ownership for herself: handed over, naming break-glass,
+    // even as a community administrator.
+    const self = adoptStanding(ALICE, true, ACME, DOCS, changed, ALICE, 2);
+    expect(self).toMatchObject({ may: false, handOver: true, member: ALICE, right: "git.repo.own" });
+    expect(self.may === false && self.why).toMatch(/break-glass/);
+    // A lower right is not elevated: an owner adopts maintain for herself.
+    const added = {
+      type: "roleAdded" as const,
+      resource: DOCS.resource,
+      observed: "maintain",
+      account: { forge: "github.com", id: "1001", login: "alicew" },
+    };
+    expect(adoptStanding(ALICE, false, ACME, DOCS, added, ALICE, 0)).toEqual({
+      may: true,
+      member: ALICE,
+      right: "git.repo.maintain",
+    });
+    // Where the map gives maintainers `admin`, maintain is elevated too
+    // (`Right::is_elevated_in`): a forge admin adopts as maintain, handed over.
+    const maintainersAdmin = { ...DOCS, roleMap: { own: "admin", maintain: "admin", commit: "none" } };
+    const raised = adoptStanding(ALICE, true, ACME, maintainersAdmin, { ...added, observed: "admin" }, ALICE, 0);
+    expect(raised).toMatchObject({ may: false, handOver: true, member: ALICE, right: "git.repo.maintain" });
+    expect(raised.may === false && raised.why).toMatch(/role map/);
+    expect(raised.may === false && raised.why).not.toMatch(/break-glass/);
   });
 });

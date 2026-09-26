@@ -168,10 +168,12 @@ pub async fn authenticate(
         .as_ref()
         .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
 
-    let (msg, metadata) = atm
-        .unpack(&body)
-        .await
-        .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
+    // A sender that rotated its key-agreement key since its document was
+    // cached is re-resolved once before the message is refused (VTI-KEY-134).
+    let (msg, metadata) =
+        vta_sdk::did_refresh::unpack_refreshing_sender(atm, state.did_resolver.as_ref(), &body)
+            .await
+            .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
     let sender_base = vti_common::auth::bind_authcrypt_sender(&body, &msg, &metadata)
         .map_err(|e| AppError::Authentication(e.message("authenticate message")))?;
@@ -345,10 +347,12 @@ pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Resp
         .as_ref()
         .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
 
-    let (msg, metadata) = atm
-        .unpack(&body)
-        .await
-        .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
+    // A sender that rotated its key-agreement key since its document was
+    // cached is re-resolved once before the message is refused (VTI-KEY-134).
+    let (msg, metadata) =
+        vta_sdk::did_refresh::unpack_refreshing_sender(atm, state.did_resolver.as_ref(), &body)
+            .await
+            .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
     // The opaque refresh token is the credential, but `handle_refresh` still
     // binds `msg.from` to the session DID — so require the same authcrypt gate.

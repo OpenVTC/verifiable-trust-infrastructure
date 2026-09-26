@@ -2,7 +2,7 @@
 //! `update` submodule.
 //!
 //! `DerivedWebvhKey` is a phase-1 derive output — produced by
-//! [`crate::operations::did_webvh::update::keys::derive_webvh_keys`]
+//! [`crate::operations::did_webvh::update::keys::derive_webvh_keys_block`]
 //! before the consuming `didwebvh_rs::update_did` call has produced
 //! the new log-entry's `version_id`. The handle is installed via
 //! [`crate::operations::did_webvh::update::keys::install_derived_webvh_keys`]

@@ -45,6 +45,49 @@ pub(in crate::operations::did_webvh) fn validate_document_for_update(
         ));
     }
 
+    // Every method the document *defines* — in `verificationMethod` or
+    // embedded in a relationship — must be this DID's own (`{did}#…`, or a
+    // relative `#…`). A method id naming another DID is refused: key records
+    // are addressed by method id, so a document that defines
+    // `<other DID>#key-0` makes that DID's record — another context's key —
+    // look like one of this DID's, and rotate-keys would rewrite it. A
+    // relationship may still *reference* another DID's method by string.
+    let own_prefix = format!("{existing_did}#");
+    let mut defined: Vec<(&str, &Value)> = Vec::new();
+    for (field, value) in obj {
+        let Some(entries) = value.as_array() else {
+            continue;
+        };
+        let embeds = field == "verificationMethod"
+            || matches!(
+                field.as_str(),
+                "authentication"
+                    | "assertionMethod"
+                    | "keyAgreement"
+                    | "capabilityInvocation"
+                    | "capabilityDelegation"
+            );
+        if embeds {
+            defined.extend(
+                entries
+                    .iter()
+                    .filter(|e| e.is_object())
+                    .map(|e| (field.as_str(), e)),
+            );
+        }
+    }
+    for (field, entry) in &defined {
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !(id.starts_with('#') || id.starts_with(&own_prefix)) {
+            return Err(UpdateDidWebvhError::InvalidDocument(format!(
+                "{field} defines method `{id}`, which is not a method of {existing_did}; a \
+                 document may only define its own DID's verification methods"
+            )));
+        }
+    }
+
     if let Some(vm) = obj.get("verificationMethod") {
         let vms = vm.as_array().ok_or_else(|| {
             UpdateDidWebvhError::InvalidDocument("verificationMethod must be an array".into())

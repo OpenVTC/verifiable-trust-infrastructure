@@ -2,8 +2,8 @@
 //!
 //! Two kinds of command, and the difference is who is authorized:
 //!
-//! - **Changes** (`namespace bind|unbind`, `grant`, `revoke`, `adopt`, `view`)
-//!   are signed `git-ns/*` Trust Tasks, signed with this community profile's
+//! - **Changes** (`namespace bind|unbind`, `grant`, `revoke`, `adopt`, `view`,
+//!   `link`, `unlink`) are signed `git-ns/*` Trust Tasks, signed with this community profile's
 //!   key and authorized by *that DID's git rights* in the VTC's records. A
 //!   community administrator's role binds namespaces and nothing more: to
 //!   grant, this DID must hold a right that carries the authority.
@@ -69,8 +69,10 @@ pub enum GitCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Create a repository in a namespace, becoming its owner (needs
-    /// `git.repo.create`). Where no bot can create it, prints the steps.
+    /// Create a repository in a namespace (needs `git.repo.create`). You own
+    /// it only if you hold `git.repo.create` by explicit record; a namespace
+    /// admin names another member with `--owner`. Where no bot can create it,
+    /// prints the steps.
     Create {
         /// The namespace identifier (`namespace list`).
         #[arg(long)]
@@ -82,6 +84,10 @@ pub enum GitCommands {
         /// Shown by the forge; do not put anything here you would not publish.
         #[arg(long)]
         description: Option<String>,
+        /// An owner's DID, a current member. Repeat for several. Omitted, you
+        /// are the owner.
+        #[arg(long = "owner")]
+        owners: Vec<String>,
     },
     /// Hand this profile's ownership of a repository to someone else.
     Transfer {
@@ -124,13 +130,104 @@ pub enum GitCommands {
         #[arg(long)]
         statement: String,
     },
+    /// Break the glass: record for this profile's DID an elevated right it
+    /// may already grant but, under separation of duties, not to itself
+    /// (`git-ns/right/break-glass/0.1`). Needs a passkey gesture bound to this
+    /// one request, takes effect at once, never lapses, and is announced to
+    /// every other administrator until one ratifies or revokes it.
+    BreakGlass {
+        #[arg(long, value_enum)]
+        right: RightArg,
+        /// `github.com/acme` (git.ns.admin, git.repo.create) or
+        /// `github.com/acme/widgets` (git.repo.own).
+        #[arg(long)]
+        resource: String,
+        /// Why nobody else could grant it. Required; shown to every
+        /// administrator of the namespace and kept in the audit record.
+        #[arg(long)]
+        justification: String,
+    },
+    /// Ratify another member's break-glass, turning it into an ordinary grant
+    /// (`git-ns/right/ratify/0.1`).
+    Ratify {
+        /// Who broke the glass.
+        #[arg(long)]
+        subject: String,
+        #[arg(long, value_enum)]
+        right: RightArg,
+        /// The resource exactly as recorded.
+        #[arg(long)]
+        resource: String,
+        /// The record's `breakGlass.at`, as `break-glass-list` shows it: binds
+        /// the ratification to the break-glass you read.
+        #[arg(long)]
+        break_glass_at: String,
+        /// Why — kept in the audit record and sent to every administrator.
+        #[arg(long)]
+        statement: Option<String>,
+    },
+    /// Every break-glass record in the namespaces you administer, unratified
+    /// first (admin session).
+    BreakGlassList {
+        #[arg(long)]
+        namespace: Option<String>,
+    },
+    /// Have the bridge re-apply the forge roles of every repository in a
+    /// namespace, or of one repository, from the VTC's rights under the
+    /// bridge's current role map (`git-ns/roles/reproject`). No right changes.
+    /// Community administrators and the namespace's admins; a repository's
+    /// owner, for that repository.
+    Reproject {
+        /// `github.com/acme` (every active or orphaned repository in it) or
+        /// `github.com/acme/widgets`.
+        resource: String,
+        /// Why, for the audit record.
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// What this profile's DID may see (`git-ns/view`), with its linked forge
     /// accounts, or with `--admin` every record and reason (admin session).
+    /// Break-glass records are flagged, and every unratified one is listed.
     View {
         #[arg(long)]
         resource: Option<String>,
         #[arg(long)]
         admin: bool,
+    },
+    /// Link your account on a forge to this profile's DID
+    /// (`git-ns/account/link`), so the bridge can give it the forge roles
+    /// this DID's rights call for. With `--list`, show the linked accounts.
+    ///
+    /// One account per forge: linking again replaces the one linked there,
+    /// and `git unlink` removes it.
+    Link {
+        /// The forge host: `github.com`, `codeberg.org`, a GHES or Forgejo
+        /// host. It needs a bridge-mode namespace.
+        #[arg(long, required_unless_present_any = ["list", "status"])]
+        forge: Option<String>,
+        /// List the forge accounts linked to this profile's DID.
+        #[arg(long, conflicts_with_all = ["forge", "status", "no_wait"])]
+        list: bool,
+        /// Follow a link begun earlier, by the link id it printed.
+        #[arg(long, value_name = "LINK_ID", conflicts_with = "forge")]
+        status: Option<String>,
+        /// Print where to authorise (or, with `--status`, where the link
+        /// stands) and return, rather than waiting for the link to finish.
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Unlink your account on a forge from this profile's DID
+    /// (`git-ns/account/unlink`). The bridge withdraws the forge roles it gave
+    /// that account; your git rights, and what you may sign, are unchanged.
+    Unlink {
+        /// The forge host whose linked account to unlink.
+        #[arg(long)]
+        forge: String,
+        /// Unlink only if this is the account linked there (its forge id, as
+        /// `git link --list` shows it). Without it, the account linked now is
+        /// read first and named, so a re-link in between is never removed.
+        #[arg(long)]
+        account_id: Option<String>,
     },
 }
 
@@ -156,6 +253,12 @@ pub enum DriftCommands {
         /// is refused if the forge now shows something else.
         #[arg(long)]
         observed: Option<String>,
+        /// For `adopt`: the DID of the member who receives the right — the one
+        /// you read as linked to the account (`git view --admin`). Required to
+        /// adopt, refused on a revert. The VTC adopts nothing unless the
+        /// account is still linked to exactly this member.
+        #[arg(long)]
+        subject: Option<String>,
         #[arg(long)]
         reason: Option<String>,
     },
@@ -205,6 +308,7 @@ impl DriftTypeArg {
 
 /// The `git-ns/drift/resolve` payload for these arguments. The account's
 /// forge is the repository's; `login` is display only and defaults to the id.
+#[allow(clippy::too_many_arguments)]
 fn drift_payload(
     resource: &str,
     action: DriftAction,
@@ -212,6 +316,7 @@ fn drift_payload(
     account_id: Option<String>,
     account_login: Option<String>,
     observed: Option<String>,
+    subject: Option<String>,
     reason: Option<String>,
 ) -> CliResult<Value> {
     let resource = resource.to_lowercase();
@@ -248,6 +353,22 @@ fn drift_payload(
         );
     }
     let mut payload = json!({ "resource": resource, "drift": drift, "action": action });
+    match (action, subject) {
+        ("adopt", Some(s)) => payload["subject"] = json!(s.trim()),
+        ("adopt", None) => {
+            return Err(
+                "adopting records a right for the member linked to the account: pass --subject \
+                 with that member's DID, as `git view --admin` shows it"
+                    .into(),
+            );
+        }
+        (_, Some(_)) => {
+            return Err(
+                "a revert changes no right and has no recipient: leave --subject out".into(),
+            );
+        }
+        (_, None) => {}
+    }
     if let Some(r) = reason {
         payload["reason"] = json!(r);
     }
@@ -394,12 +515,53 @@ fn shell_word(s: &str) -> String {
     out
 }
 
-/// Text from elsewhere (the VTC's refusal message, a DID) made safe to print
-/// to a terminal: control characters, escapes included, are shown as `?`.
+/// Text from elsewhere (the VTC's refusal message, a DID, what a bridge
+/// returned) made safe to print to a terminal: control characters, escapes
+/// included, and format characters are shown as `?`.
+///
+/// Format characters (Unicode category Cf) print as nothing, yet the bidi
+/// ones among them — U+202A–202E, U+2066–2069 — reorder what follows, and
+/// the zero-width ones hide in plain sight, so a hostile value could make an
+/// authorisation URL read as another. Nothing here needs one.
 fn terminal_safe(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| {
+            if c.is_control() || is_format_char(c) {
+                '?'
+            } else {
+                c
+            }
+        })
         .collect()
+}
+
+/// Unicode general category Cf (Format), as of Unicode 16. `std` has no
+/// category lookup; the set is small and changes rarely.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x00AD
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x0890..=0x0891
+            | 0x08E2
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0001
+            | 0xE0020..=0xE007F
+    )
 }
 
 fn guidance(code: &str, message: &str, did: &str) -> String {
@@ -418,6 +580,9 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nA namespace always keeps an admin. Grant another first:\n  {bin} git grant \
              --subject <did> --right git.ns.admin --resource <namespace>"
         ),
+        "permissionDenied" if message.contains("for members of this community") => {
+            format!("\nOnly a current member links a forge account, and {did} is not one here.")
+        }
         "permissionDenied" if message.contains("elevated_requires_admin") => format!(
             "\nUnder the default `[git_ns] elevated_requires_admin`, an owner cannot transfer, \
              resign ownership, archive or name a co-owner without a community administrator: \
@@ -454,6 +619,10 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
         "git-ns/right/revoke:notGranted" => "\nNothing to revoke: no live record matches. \
              Implied rights (an owner's commit right, an admin's ownership) are not records."
             .to_string(),
+        "git-ns/drift/resolve:subjectChanged" => format!(
+            "{message}. The account was linked to someone else after you read it: run `cnm git \
+             view --admin --resource …` again and decide about the member it names now."
+        ),
         "git-ns/drift/resolve:driftNotFound" => format!(
             "\nNo outstanding item matches — resolved already, or the forge changed since you \
              read it. Read it again:\n  {bin} git view --resource <repository>"
@@ -470,6 +639,14 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nThis item records no right. Revert it instead:\n  {bin} git drift resolve \
              <repository> revert --type <type> [--account-id <id>]"
         ),
+        "git-ns:roleMapUnknown" => format!(
+            "\nThe bridge serving this namespace has not reported its role map, so the VTC \
+             cannot tell which right this forge role stands for, and assumes no default. It \
+             reports when it starts serving the namespace and whenever it reconnects; a bridge \
+             older than git-ns/bridge/event 0.3 never does. Adopt once it has reported, or \
+             revert the role:\n  {bin} git drift resolve <repository> revert --type <type> \
+             [--account-id <id>]"
+        ),
         "git-ns/drift/resolve:notRevertible" if message.contains("manual mode") => {
             "\nThe namespace is governed in manual mode: no bridge can change the forge. Undo \
              the change on the forge yourself."
@@ -480,9 +657,50 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
              would not remove it. Adopt the forge-side role, or revoke the member's right:\n  \
              {bin} git revoke --subject <did> --right <right> --resource <repository>"
         ),
-        "git-ns/drift/resolve:notRevertible" => "\nThe bridge cannot undo this change: one \
-             that implements only git-ns/bridge/job 0.1 cannot take a role it does not manage \
-             off a repository. Remove it on the forge, or upgrade the bridge."
+        "git-ns/drift/resolve:notRevertible" => "\nThe bridge cannot undo this change: it \
+             refused the job, or does not take git-ns/bridge/job 0.4, the only version this VTC \
+             sends. Remove it on the forge, or upgrade the bridge."
+            .to_string(),
+        "git-ns/account/link:unsupportedForge" => format!(
+            "\nA link is completed by a bridge, so it needs a bridge-mode namespace on that \
+             forge; a manual-mode namespace gives nobody a forge role. A community \
+             administrator can see what is bound:\n  {bin} git namespace list"
+        ),
+        "git-ns/account/unlink:notLinked" => {
+            format!("\nSee what is linked to {did}:\n  {bin} git link --list")
+        }
+        "git-ns/account/link-status:unknownLink" => format!(
+            "\nA link is answered only to the member who began it, and forgotten some days \
+             after it finishes. Start again:\n  {bin} git link --forge <forge>"
+        ),
+        "git-ns:selfGrantNotAllowed" => "\nThis would give you an elevated right (own, \
+             repo.create or ns.admin) on your own authority. Ask another community \
+             administrator to do it, or use break-glass (`cnm git break-glass`), which is \
+             audited and must be ratified."
+            .to_string(),
+        "git-ns/right/break-glass:disabled" => "\nThis community's policy has turned \
+             break-glass off: another administrator must grant the right."
+            .to_string(),
+        "git-ns/right/break-glass:notHeadless" => format!(
+            "\nThe namespace still has an admin; ask them to grant it:\n  {bin} git grant \
+             --subject {did} --right git.ns.admin --resource <namespace>"
+        ),
+        "git-ns/right/ratify:recordChanged" => format!(
+            "\nThe break-glass on record is not the one you read. Read it again:\n  {bin} git \
+             break-glass-list"
+        ),
+        "git-ns/right/ratify:selfRatification" => "\nA break-glass is ratified by another \
+             administrator, or not at all."
+            .to_string(),
+        "git-ns/right/ratify:notBreakGlass" => format!(
+            "\nNothing to ratify: no unratified break-glass record matches. See:\n  {bin} git \
+             break-glass-list"
+        ),
+        "git-ns/roles/reproject:manualMode" => "\nThe namespace is governed in manual mode: \
+             no bridge projects its roles, so set them on the forge yourself."
+            .to_string(),
+        "git-ns/roles/reproject:noForgeAccess" => "\nThe bridge lost its access to the \
+             forge owner. Once an owner reinstalls the app (or restores the bot), run this again."
             .to_string(),
         "git-ns/namespace/reseat:notHeadless" => format!(
             "\nThe namespace still has an admin; its admins grant git.ns.admin:\n  {bin} git \
@@ -528,6 +746,337 @@ async fn announce_then<T>(
 ) -> T {
     let _ = writeln!(out, "{DIM}{notice}{RESET}");
     send.await
+}
+
+/// How often `git link` asks where a link stands. `git-ns/account/link-status`:
+/// a client SHOULD poll no faster than every five seconds.
+const LINK_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long past its `expiresAt` a pending link is still polled: the VTC
+/// marks it expired on the first poll after that, so this only bounds a VTC
+/// that never answers with a final state.
+const LINK_GRACE: chrono::Duration = chrono::Duration::seconds(30);
+
+/// A string member of a response, safe to print.
+fn field(v: &Value, pointer: &str) -> String {
+    terminal_safe(
+        v.pointer(pointer)
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+}
+
+/// The `url` of a `git-ns/account/link` response, parsed and held to what
+/// the specification allows (`^https://`) before anything is printed. What
+/// is printed is the parsed form: its host is IDNA-encoded and its path and
+/// query percent-encoded, so no character in it can disguise it.
+fn authorisation_url(v: &Value) -> Result<url::Url, String> {
+    let raw = v.get("url").and_then(Value::as_str).unwrap_or_default();
+    let refused = |why: &str| {
+        format!(
+            "the community returned an authorisation URL this client will not show ({why}): {}",
+            terminal_safe(raw)
+        )
+    };
+    let url = url::Url::parse(raw).map_err(|e| refused(&e.to_string()))?;
+    if url.scheme() != "https" {
+        return Err(refused("not https"));
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(refused("no host"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(refused("it carries credentials"));
+    }
+    Ok(url)
+}
+
+/// What the member does next, from a `git-ns/account/link` response. The
+/// device code is shown to the member and nowhere else (the specification's
+/// *Data carried*): it is never logged.
+fn link_instructions(forge: &str, v: &Value) -> Result<String, String> {
+    let url = authorisation_url(v)?;
+    let bin = shell_word(bin_name());
+    let link_id = v.get("linkId").and_then(Value::as_str).unwrap_or_default();
+    let mut out = format!(
+        "Authorise the link on {}:\n  {}\n",
+        terminal_safe(forge),
+        terminal_safe(url.as_str())
+    );
+    if v.get("userCode").and_then(Value::as_str).is_some() {
+        out.push_str(&format!(
+            "and enter the code {BOLD}{}{RESET}\n",
+            field(v, "/userCode")
+        ));
+    }
+    out.push_str(&format!(
+        "{DIM}The link lapses at {}. Follow it later with:\n  {bin} git link --status {}{RESET}",
+        field(v, "/expiresAt"),
+        shell_word(&terminal_safe(link_id))
+    ));
+    Ok(out)
+}
+
+/// How a link ended, as far as this command saw it.
+#[derive(Debug, PartialEq, Eq)]
+enum LinkEnd {
+    /// Linked: the line to print.
+    Linked(String),
+    /// Not linked, and no longer worth waiting for (expired, failed, a state
+    /// this client does not know), or still pending when this command
+    /// stopped waiting: why, for the error.
+    NotLinked(String),
+}
+
+/// A `git-ns/account/link-status` answer as a [`LinkEnd`]. A `pending`
+/// answer is only ever the last one when waiting stopped (`--no-wait`, or
+/// the deadline passed), so it is not a success.
+fn link_end(v: &Value, did: &str, link_id: &str) -> LinkEnd {
+    let bin = shell_word(bin_name());
+    let did = terminal_safe(did);
+    match v.get("state").and_then(Value::as_str) {
+        Some("linked") => LinkEnd::Linked(format!(
+            "Linked {} account {BOLD}{}{RESET} (id {}) to {did}.",
+            field(v, "/account/forge"),
+            field(v, "/account/login"),
+            field(v, "/account/id"),
+        )),
+        Some("pending") => LinkEnd::NotLinked(format!(
+            "the link is still pending: it has not been authorised on the forge yet. Follow \
+             it with:\n  {bin} git link --status {}",
+            shell_word(&terminal_safe(link_id))
+        )),
+        Some("expired") => LinkEnd::NotLinked(format!(
+            "the link lapsed before it was authorised. Start again:\n  {bin} git link --forge \
+             <forge>"
+        )),
+        Some("failed") => LinkEnd::NotLinked(format!(
+            "the link failed: the forge refused it (the authorisation was declined, or the \
+             bridge could not complete it), or the account is already linked to another \
+             member. See what is linked to {did}:\n  {bin} git link --list\nand start again \
+             with:\n  {bin} git link --forge <forge>"
+        )),
+        other => LinkEnd::NotLinked(format!(
+            "the community answered a link state this client does not know: {}",
+            terminal_safe(other.unwrap_or("(none)"))
+        )),
+    }
+}
+
+/// Report the last link-status answer: as JSON on `out` in JSON mode, as a
+/// line otherwise. Either way, anything but `linked` is an error, so the
+/// exit status says the same thing in both modes.
+fn finish_link(
+    out: &mut impl std::io::Write,
+    json_mode: bool,
+    v: &Value,
+    did: &str,
+    link_id: &str,
+) -> CliResult {
+    let end = link_end(v, did, link_id);
+    if json_mode {
+        writeln!(out, "{}", serde_json::to_string_pretty(v)?)?;
+    }
+    match end {
+        LinkEnd::Linked(line) => {
+            if !json_mode {
+                writeln!(out, "{line}")?;
+            }
+            Ok(())
+        }
+        LinkEnd::NotLinked(why) => Err(why.into()),
+    }
+}
+
+/// `git-ns/view/0.2`'s `accounts`, one line each.
+fn account_lines(accounts: &Value) -> Vec<String> {
+    accounts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| {
+            format!(
+                "{BOLD}{}{RESET}  {}  id {}  {DIM}linked {}{RESET}",
+                field(a, "/account/forge"),
+                field(a, "/account/login"),
+                field(a, "/account/id"),
+                field(a, "/linkedAt"),
+            )
+        })
+        .collect()
+}
+
+/// The forge id of the account linked on `forge`, from `git-ns/view/0.2`'s
+/// `accounts`.
+fn linked_account_id(accounts: &Value, forge: &str) -> Option<String> {
+    accounts
+        .as_array()?
+        .iter()
+        .find(|a| a.pointer("/account/forge").and_then(Value::as_str) == Some(forge))?
+        .pointer("/account/id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// A `git-ns/account/unlink` response, as the line to print.
+fn unlink_line(v: &Value, did: &str) -> String {
+    format!(
+        "Unlinked {} account {BOLD}{}{RESET} (id {}) from {}. The bridge withdraws the forge \
+         roles it gave that account; your git rights are unchanged.",
+        field(v, "/unlinked/forge"),
+        field(v, "/unlinked/login"),
+        field(v, "/unlinked/id"),
+        terminal_safe(did),
+    )
+}
+
+/// Ask `poll` until it answers a state other than `pending`, or `deadline`
+/// plus [`LINK_GRACE`] has passed by `now`, sleeping with `sleep` between
+/// asks. Returns the last answer. Without a deadline it asks until a final
+/// state: the VTC marks a lapsed link expired on the next ask.
+async fn follow<P, PF, S, SF>(
+    mut poll: P,
+    deadline: Option<chrono::DateTime<chrono::Utc>>,
+    now: impl Fn() -> chrono::DateTime<chrono::Utc>,
+    mut sleep: S,
+) -> CliResult<Value>
+where
+    P: FnMut() -> PF,
+    PF: std::future::Future<Output = CliResult<Value>>,
+    S: FnMut() -> SF,
+    SF: std::future::Future<Output = ()>,
+{
+    loop {
+        let v = poll().await?;
+        if v.get("state").and_then(Value::as_str) != Some("pending") {
+            return Ok(v);
+        }
+        if deadline.is_some_and(|d| now() > d + LINK_GRACE) {
+            return Ok(v);
+        }
+        sleep().await;
+    }
+}
+
+/// [`follow`] against the VTC, every [`LINK_POLL`]. `link_id` is sent as the
+/// VTC returned it; it is sanitised only where it is shown.
+async fn follow_link(
+    client: &VtcClient,
+    key: &HolderKey,
+    did: &str,
+    link_id: &str,
+    deadline: Option<chrono::DateTime<chrono::Utc>>,
+) -> CliResult<Value> {
+    follow(
+        || async {
+            Ok(serde_json::to_value(
+                client
+                    .git_ns_link_status(link_id, key)
+                    .await
+                    .map_err(|e| explain(e, did))?,
+            )?)
+        },
+        deadline,
+        chrono::Utc::now,
+        || tokio::time::sleep(LINK_POLL),
+    )
+    .await
+}
+
+/// Unpadded base64url, for the console link's fragment.
+fn base64url(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        let chars = chunk.len() + 1;
+        for i in 0..chars {
+            out.push(A[((n >> (18 - 6 * i)) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+/// Where the admin console answers an operation-bound step-up: the console
+/// is the WebAuthn relying party, so the passkey gesture happens there.
+fn step_up_url(base: &str, request: &Value) -> String {
+    let json = serde_json::to_vec(request).unwrap_or_default();
+    format!(
+        "{}/admin/step-up#request={}",
+        base.trim_end_matches('/'),
+        base64url(&json)
+    )
+}
+
+/// Send a signed document; when it is refused for want of an operation-bound
+/// passkey gesture (`details.stepUpRequest`), show where to make it, wait,
+/// and send the **identical** document again.
+async fn send_with_step_up(
+    client: &VtcClient,
+    base: &str,
+    type_uri: &str,
+    doc: &str,
+    did: &str,
+) -> CliResult<Value> {
+    for _ in 0..3 {
+        match client.git_ns_send_signed::<Value>(type_uri, doc).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let Some(req) = vtc_client::git_ns::step_up_request(&e) else {
+                    return Err(explain(e, did));
+                };
+                let reason = terminal_safe(req["reason"].as_str().unwrap_or_default());
+                let bound = terminal_safe(req["boundTo"].as_str().unwrap_or_default());
+                eprintln!(
+                    "{BOLD}This needs a passkey gesture bound to this one request.{RESET}\n  \
+                     {reason}\n  bound to: {bound}\nOpen this in the admin console, where your \
+                     passkey is registered, and confirm:\n  {}\nThen press Enter to send the \
+                     same request again (within five minutes).",
+                    step_up_url(base, &req)
+                );
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+            }
+        }
+    }
+    Err("the step-up was not completed; nothing was changed".into())
+}
+
+/// A break-glass record's flag, for a listing line.
+fn break_glass_flag(record: &Value) -> String {
+    let Some(bg) = record.get("breakGlass").filter(|v| v.is_object()) else {
+        return String::new();
+    };
+    match bg.get("ratifiedBy").and_then(Value::as_str) {
+        Some(by) => format!("  [break-glass, ratified by {}]", terminal_safe(by)),
+        None => format!(
+            "  {BOLD}[BREAK-GLASS, UNRATIFIED since {}]{RESET}",
+            terminal_safe(bg["at"].as_str().unwrap_or_default())
+        ),
+    }
+}
+
+/// The ratify command for one unratified break-glass record, quoted so it
+/// pastes as it stands in sh, bash, zsh and fish.
+fn ratify_command(record: &Value) -> String {
+    format!(
+        "{} git ratify --subject={} --right={} --resource={} --break-glass-at={}",
+        shell_word(bin_name()),
+        shell_word(record["subject"].as_str().unwrap_or_default()),
+        shell_word(record["right"].as_str().unwrap_or_default()),
+        shell_word(record["resource"].as_str().unwrap_or_default()),
+        shell_word(
+            record
+                .pointer("/breakGlass/at")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        ),
+    )
 }
 
 pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
@@ -633,7 +1182,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             if let Some(r) = reason {
                 payload["reason"] = json!(r);
             }
-            let payload: specs::right::grant::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::right::grant::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that grant is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_grant(&payload, &key)
@@ -657,7 +1206,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             if let Some(r) = reason {
                 payload["reason"] = json!(r);
             }
-            let payload: specs::right::revoke::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::right::revoke::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that revocation is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_revoke(&payload, &key)
@@ -670,7 +1219,11 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             name,
             visibility,
             description,
+            owners,
         } => {
+            for o in &owners {
+                did_arg("--owner", o)?;
+            }
             let (did, key) = signing_key(keyring_key)?;
             let mut payload = json!({
                 "namespace": namespace,
@@ -683,7 +1236,10 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             if let Some(d) = description {
                 payload["description"] = json!(d);
             }
-            let payload: specs::repo::create::v0_1::Payload = serde_json::from_value(payload)
+            if !owners.is_empty() {
+                payload["owners"] = json!(owners);
+            }
+            let payload: specs::repo::create::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that repository is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_create_repo(&payload, &key)
@@ -744,10 +1300,316 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             }
             let (did, key) = signing_key(keyring_key)?;
             let resp = anon()
-                .git_ns_view_v2(resource.as_deref(), &key)
+                .git_ns_view_v4(resource.as_deref(), &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            let v = serde_json::to_value(&resp)?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            let rights = v["rights"].as_array().cloned().unwrap_or_default();
+            let unratified: Vec<&Value> = rights
+                .iter()
+                .filter(|r| {
+                    r.get("breakGlass")
+                        .is_some_and(|b| b.get("ratifiedBy").is_none())
+                        && r["subject"].as_str() != Some(did.as_str())
+                })
+                .collect();
+            if !unratified.is_empty() {
+                println!(
+                    "{BOLD}{} break-glass grant(s) await ratification or revocation:{RESET}",
+                    unratified.len()
+                );
+                for r in &unratified {
+                    println!(
+                        "  {} holds {} on {} — {}\n    ratify: {}",
+                        terminal_safe(r["subject"].as_str().unwrap_or_default()),
+                        terminal_safe(r["right"].as_str().unwrap_or_default()),
+                        terminal_safe(r["resource"].as_str().unwrap_or_default()),
+                        terminal_safe(
+                            r.pointer("/breakGlass/justification")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                        ),
+                        ratify_command(r),
+                    );
+                }
+                println!();
+            }
+            for ns in v["namespaces"].as_array().into_iter().flatten() {
+                println!(
+                    "{BOLD}{}/{}{RESET}  {}  {} {}",
+                    terminal_safe(ns["forge"].as_str().unwrap_or_default()),
+                    terminal_safe(ns["owner"].as_str().unwrap_or_default()),
+                    terminal_safe(ns["id"].as_str().unwrap_or_default()),
+                    ns["mode"].as_str().unwrap_or_default(),
+                    ns["state"].as_str().unwrap_or_default(),
+                );
+            }
+            for r in &rights {
+                println!(
+                    "  {}  {}  {}{}",
+                    terminal_safe(r["resource"].as_str().unwrap_or_default()),
+                    terminal_safe(r["right"].as_str().unwrap_or_default()),
+                    terminal_safe(r["subject"].as_str().unwrap_or_default()),
+                    break_glass_flag(r),
+                );
+            }
+            for a in v["accounts"].as_array().into_iter().flatten() {
+                println!(
+                    "  linked: {} {} ({})",
+                    terminal_safe(
+                        a.pointer("/account/forge")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    terminal_safe(
+                        a.pointer("/account/login")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    terminal_safe(
+                        a.pointer("/account/id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+            Ok(())
+        }
+        GitCommands::BreakGlass {
+            resource,
+            right,
+            justification,
+        } => {
+            if !matches!(
+                right,
+                RightArg::NsAdmin | RightArg::RepoCreate | RightArg::RepoOwn
+            ) {
+                return Err(format!(
+                    "{} is not elevated: grant it to yourself with `{} git grant`",
+                    right.as_str(),
+                    shell_word(bin_name())
+                )
+                .into());
+            }
+            if justification.trim().is_empty() {
+                return Err("a break-glass needs a justification".into());
+            }
+            let (did, key) = signing_key(keyring_key)?;
+            let payload = json!({
+                "right": right.as_str(),
+                "resource": resource.to_lowercase(),
+                "justification": justification,
+            });
+            let payload: specs::right::break_glass::v0_1::Payload = serde_json::from_value(payload)
+                .map_err(|e| format!("that break-glass is not well formed: {e}"))?;
+            let client = anon();
+            let type_uri = vtc_client::git_ns::GIT_NS_BREAK_GLASS_TYPE;
+            let doc = client.git_ns_sign(type_uri, &payload, &key).await?;
+            eprintln!(
+                "{DIM}Every community administrator and every admin of this namespace will be \
+                     told, with your justification, and the grant stays flagged until one of \
+                     them ratifies or revokes it.{RESET}"
+            );
+            let v = send_with_step_up(&client, &target.base, type_uri, &doc, &did).await?;
+            show(&v)
+        }
+        GitCommands::Ratify {
+            resource,
+            subject,
+            right,
+            break_glass_at,
+            statement,
+        } => {
+            let subject = did_arg("--subject", &subject)?;
+            let (did, key) = signing_key(keyring_key)?;
+            let mut payload = json!({
+                "subject": subject,
+                "right": right.as_str(),
+                "resource": resource.to_lowercase(),
+                "breakGlassAt": break_glass_at,
+            });
+            if let Some(s) = statement {
+                payload["statement"] = json!(s);
+            }
+            let payload: specs::right::ratify::v0_1::Payload = serde_json::from_value(payload)
+                .map_err(|e| format!("that ratification is not well formed: {e}"))?;
+            let resp = anon()
+                .git_ns_ratify(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
+        }
+        GitCommands::Link {
+            forge,
+            list,
+            status,
+            no_wait,
+        } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let client = anon();
+            let json_mode = is_json_output();
+            if list {
+                let resp = client
+                    .git_ns_view_v2(None, &key)
+                    .await
+                    .map_err(|e| explain(e, &did))?;
+                let accounts = serde_json::to_value(&resp)?["accounts"].take();
+                if json_mode {
+                    return Ok(print_json(&json!({ "accounts": accounts }))?);
+                }
+                let lines = account_lines(&accounts);
+                if lines.is_empty() {
+                    println!(
+                        "No forge account is linked to {}. Link one:\n  {} git link --forge <forge>",
+                        terminal_safe(&did),
+                        shell_word(bin_name())
+                    );
+                }
+                for line in lines {
+                    println!("{line}");
+                }
+                return Ok(());
+            }
+            let (link_id, deadline) = match (status, forge) {
+                (Some(id), _) => (id, None),
+                (None, Some(forge)) => {
+                    let forge = forge.to_lowercase();
+                    let v = serde_json::to_value(
+                        client
+                            .git_ns_link_account(&forge, &key)
+                            .await
+                            .map_err(|e| explain(e, &did))?,
+                    )?;
+                    // Refuse a URL this client will not show before anything
+                    // is printed, JSON included.
+                    let text = link_instructions(&forge, &v)?;
+                    if no_wait && json_mode {
+                        return Ok(print_json(&v)?);
+                    }
+                    // With JSON output, stdout carries only the final answer.
+                    if json_mode {
+                        eprintln!("{text}");
+                    } else {
+                        println!("{text}");
+                    }
+                    if no_wait {
+                        return Ok(());
+                    }
+                    let deadline = v
+                        .get("expiresAt")
+                        .and_then(Value::as_str)
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                        .map(|t| t.with_timezone(&chrono::Utc));
+                    let link_id = v
+                        .get("linkId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    (link_id, deadline)
+                }
+                (None, None) => return Err("name the forge to link: --forge <host>".into()),
+            };
+            let v = if no_wait {
+                serde_json::to_value(
+                    client
+                        .git_ns_link_status(&link_id, &key)
+                        .await
+                        .map_err(|e| explain(e, &did))?,
+                )?
+            } else {
+                eprintln!(
+                    "{DIM}Waiting for the forge to confirm (Ctrl-C stops waiting; the link \
+                     continues){RESET}"
+                );
+                follow_link(&client, &key, &did, &link_id, deadline).await?
+            };
+            finish_link(&mut std::io::stdout(), json_mode, &v, &did, &link_id)
+        }
+        GitCommands::Unlink { forge, account_id } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let client = anon();
+            let forge = forge.to_lowercase();
+            // Name the account being unlinked: the one linked now, unless the
+            // operator named it. Either way the request carries the guard.
+            let account_id = match account_id {
+                Some(id) => id,
+                None => {
+                    // `git view` answers current members only; a member whose
+                    // access lapsed may still unlink, naming the account.
+                    let resp = client.git_ns_view_v2(None, &key).await.map_err(|e| {
+                        format!(
+                            "{}\nIf you are no longer a current member you can still unlink, \
+                             naming the account:\n  {} git unlink --forge {} --account-id <id>",
+                            explain(e, &did),
+                            shell_word(bin_name()),
+                            shell_word(&terminal_safe(&forge))
+                        )
+                    })?;
+                    let accounts = serde_json::to_value(&resp)?["accounts"].take();
+                    linked_account_id(&accounts, &forge).ok_or_else(|| {
+                        format!(
+                            "no account is linked to {} on {}. See what is linked:\n  {} git \
+                             link --list",
+                            terminal_safe(&did),
+                            terminal_safe(&forge),
+                            shell_word(bin_name())
+                        )
+                    })?
+                }
+            };
+            let v = serde_json::to_value(
+                client
+                    .git_ns_unlink_account(&forge, Some(&account_id), &key)
+                    .await
+                    .map_err(|e| explain(e, &did))?,
+            )?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            println!("{}", unlink_line(&v, &did));
+            Ok(())
+        }
+        GitCommands::BreakGlassList { namespace } => {
+            let vtc = vtc_target::connect(keyring_key, target).await?;
+            let v = vtc
+                .client
+                .git_ns_break_glass_list(namespace.as_deref())
+                .await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            let items = v["items"].as_array().cloned().unwrap_or_default();
+            if items.is_empty() {
+                println!("No break-glass records.");
+            }
+            for it in &items {
+                println!(
+                    "{BOLD}{}{RESET}  {}  {}  {} — {}",
+                    terminal_safe(it["state"].as_str().unwrap_or_default()),
+                    terminal_safe(it["resource"].as_str().unwrap_or_default()),
+                    terminal_safe(it["right"].as_str().unwrap_or_default()),
+                    terminal_safe(it["subject"].as_str().unwrap_or_default()),
+                    terminal_safe(
+                        it.pointer("/breakGlass/justification")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                );
+                if it["state"] != "ratified" {
+                    println!("    ratify: {}", ratify_command(it));
+                    println!(
+                        "    revoke: {} git revoke --subject {} --right {} --resource {}",
+                        shell_word(bin_name()),
+                        shell_word(it["subject"].as_str().unwrap_or_default()),
+                        shell_word(it["right"].as_str().unwrap_or_default()),
+                        shell_word(it["resource"].as_str().unwrap_or_default()),
+                    );
+                }
+            }
+            Ok(())
         }
         GitCommands::Drift {
             command:
@@ -758,9 +1620,13 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                     account_id,
                     account_login,
                     observed,
+                    subject,
                     reason,
                 },
         } => {
+            let subject = subject
+                .map(|s| did_arg("--subject", s.trim()))
+                .transpose()?;
             let (did, key) = signing_key(keyring_key)?;
             let payload = drift_payload(
                 &resource,
@@ -769,15 +1635,40 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 account_id,
                 account_login,
                 observed,
+                subject,
                 reason,
             )?;
-            let payload: specs::drift::resolve::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::drift::resolve::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that resolution is not well formed: {e}"))?;
             let resp = anon()
-                .git_ns_drift_resolve(&payload, &key)
+                .git_ns_drift_resolve_v3(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
+        }
+        GitCommands::Reproject { resource, reason } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let resp = anon()
+                .git_ns_reproject(&resource.to_lowercase(), reason.as_deref(), &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            if is_json_output() {
+                return show(&resp);
+            }
+            if resp.repos.is_empty() {
+                println!("No active or orphaned repository in {resource}: nothing to re-project.");
+            } else {
+                println!(
+                    "Queued a re-projection of {} repositor{}; the bridge applies its current \
+                     role map:",
+                    resp.repos.len(),
+                    if resp.repos.len() == 1 { "y" } else { "ies" }
+                );
+                for r in &resp.repos {
+                    println!("  {}", r.as_str());
+                }
+            }
+            Ok(())
         }
         GitCommands::Reseat {
             namespace,
@@ -851,6 +1742,7 @@ mod tests {
 
     #[test]
     fn drift_resolve_arguments_become_the_specifications_selector() {
+        const BOB: &str = "did:webvh:QmBobScid2:acme-vtc.example:bob";
         let p = drift_payload(
             "GitHub.com/Acme/Widgets",
             DriftAction::Revert,
@@ -858,6 +1750,7 @@ mod tests {
             Some("5550123".into()),
             Some("eve-dev".into()),
             Some("write".into()),
+            None,
             None,
         )
         .unwrap();
@@ -873,51 +1766,105 @@ mod tests {
                 }
             })
         );
-        let _: specs::drift::resolve::v0_1::Payload = serde_json::from_value(p).unwrap();
+        let _: specs::drift::resolve::v0_3::Payload = serde_json::from_value(p).unwrap();
+
+        // An adopt names its recipient (drift/resolve 0.3).
+        let p = drift_payload(
+            "github.com/acme/widgets",
+            DriftAction::Adopt,
+            DriftTypeArg::RoleAdded,
+            Some("9120045".into()),
+            Some("bob-builds".into()),
+            Some("maintain".into()),
+            Some(BOB.into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(p["subject"], json!(BOB));
+        assert_eq!(p["action"], "adopt");
+        let _: specs::drift::resolve::v0_3::Payload = serde_json::from_value(p).unwrap();
+
+        let err =
+            |action, kind, id: Option<&str>, observed: Option<&str>, subject: Option<&str>| {
+                drift_payload(
+                    "github.com/a/b",
+                    action,
+                    kind,
+                    id.map(str::to_string),
+                    None,
+                    observed.map(str::to_string),
+                    subject.map(str::to_string),
+                    None,
+                )
+                .is_err()
+            };
         // A role item needs its account; a protection item has none; adopt
-        // needs what was observed.
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Revert,
-                DriftTypeArg::RoleAdded,
-                None,
-                None,
-                None,
-                None
-            )
-            .is_err()
+        // needs what was observed and whom it grants to; a revert has no
+        // recipient.
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::RoleAdded,
+            None,
+            None,
+            None
+        ));
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::BootstrapMissing,
+            Some("1"),
+            None,
+            None
+        ));
+        assert!(err(
+            DriftAction::Adopt,
+            DriftTypeArg::RoleChanged,
+            Some("1"),
+            None,
+            Some(BOB)
+        ));
+        assert!(err(
+            DriftAction::Adopt,
+            DriftTypeArg::RoleAdded,
+            Some("1"),
+            Some("maintain"),
+            None
+        ));
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::RoleAdded,
+            Some("1"),
+            Some("write"),
+            Some(BOB)
+        ));
+    }
+
+    #[test]
+    fn a_subject_changed_refusal_says_to_read_the_link_again() {
+        let g = guidance(
+            "git-ns/drift/resolve:subjectChanged",
+            "linked to another member",
+            "did:key:z",
         );
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Revert,
-                DriftTypeArg::BootstrapMissing,
-                Some("1".into()),
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Adopt,
-                DriftTypeArg::RoleChanged,
-                Some("1".into()),
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
+        assert!(g.contains("view --admin"), "{g}");
     }
 
     #[test]
     fn a_not_revertible_refusal_explains_the_bridge_version() {
         let g = guidance("git-ns/drift/resolve:notRevertible", "refused", "did:key:z");
-        assert!(g.contains("bridge/job 0.1"), "{g}");
+        assert!(g.contains("bridge/job 0.4"), "{g}");
+    }
+
+    #[test]
+    fn a_self_grant_refusal_gives_the_generic_separation_of_duties_help() {
+        let g = guidance("git-ns:selfGrantNotAllowed", "refused", "did:key:z");
+        assert!(
+            g.ends_with(
+                "\nThis would give you an elevated right (own, repo.create or ns.admin) on your \
+                 own authority. Ask another community administrator to do it, or use break-glass \
+                 (`cnm git break-glass`), which is audited and must be ratified."
+            ),
+            "{g}"
+        );
     }
 
     #[test]
@@ -1062,6 +2009,333 @@ mod tests {
             "did:key:z",
         );
         assert!(g.contains("git revoke"), "{g}");
+    }
+
+    #[test]
+    fn link_instructions_show_the_code_and_how_to_follow_the_link() {
+        let device = json!({
+            "linkId": "lnk_4Tq9Xw2P",
+            "url": "https://github.com/login/device",
+            "userCode": "WDJB-MJHT",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("github.com", &device).unwrap();
+        assert!(t.contains("https://github.com/login/device"), "{t}");
+        assert!(t.contains("WDJB-MJHT"), "{t}");
+        assert!(t.contains("git link --status lnk_4Tq9Xw2P"), "{t}");
+        // Forgejo has no device flow: a URL and no code.
+        let pkce = json!({
+            "linkId": "lnk_8Rm3Kd7Q",
+            "url": "https://codeberg.org/login/oauth/authorize?client_id=acme-vgi&state=Zp4v",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("codeberg.org", &pkce).unwrap();
+        assert!(!t.contains("enter the code"), "{t}");
+        // What the bridge returns reaches the terminal without control bytes,
+        // and a link id that is not one shell word is quoted.
+        let hostile = json!({
+            "linkId": "lnk_1; rm -rf ~",
+            "url": "https://x.example/\u{1b}]0;pwned\u{7}",
+            "userCode": "AB\u{1b}[2J",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("github.com", &hostile).unwrap();
+        assert!(!t.contains('\u{7}') && !t.contains("\u{1b}]"), "{t:?}");
+        assert!(t.contains("--status 'lnk_1; rm -rf ~'"), "{t}");
+    }
+
+    /// A bidi override or a zero-width character in what the bridge returned
+    /// cannot make the printed URL read as another.
+    #[test]
+    fn bidi_and_zero_width_characters_never_reach_the_terminal() {
+        for c in [
+            '\u{202A}',
+            '\u{202B}',
+            '\u{202C}',
+            '\u{202D}',
+            '\u{202E}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{200B}',
+            '\u{200C}',
+            '\u{200D}',
+            '\u{200E}',
+            '\u{200F}',
+            '\u{FEFF}',
+            '\u{00AD}',
+            '\u{2060}',
+            '\u{E0041}',
+        ] {
+            assert_eq!(
+                terminal_safe(&format!("a{c}b")),
+                "a?b",
+                "U+{:04X}",
+                u32::from(c)
+            );
+        }
+        // Printable text is untouched, the non-ASCII included.
+        assert_eq!(terminal_safe("ünïcödé \u{1f980}"), "ünïcödé \u{1f980}");
+        let v = json!({
+            "linkId": "lnk_\u{202E}x",
+            "url": "https://github.com/login/device\u{202E}moc.live",
+            "userCode": "WD\u{2066}JB",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("github.com", &v).unwrap();
+        assert!(
+            !t.chars()
+                .any(|c| is_format_char(c) || (c.is_control() && c != '\n' && c != '\x1b')),
+            "{t:?}"
+        );
+        // In the URL they arrive percent-encoded, as the parsed URL writes them.
+        assert!(
+            t.contains("https://github.com/login/device%E2%80%AEmoc.live"),
+            "{t}"
+        );
+        // And a refusal's text is held to the same rule.
+        let g = guidance("git-ns:lastOwner", "evil\u{202E}txt", "did:key:z");
+        assert!(!g.chars().any(is_format_char), "{g:?}");
+    }
+
+    #[test]
+    fn an_authorisation_url_that_is_not_https_is_refused_before_printing() {
+        for bad in [
+            "http://github.com/login/device",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://",
+            "https://user:pass@github.com/login/device",
+            "not a url",
+            "",
+        ] {
+            let v = json!({ "linkId": "lnk_1", "url": bad, "expiresAt": "2026-09-23T10:15:00Z" });
+            let e = link_instructions("github.com", &v).unwrap_err();
+            assert!(e.contains("will not show"), "{bad}: {e}");
+        }
+        let v = json!({ "linkId": "lnk_1", "expiresAt": "2026-09-23T10:15:00Z" });
+        assert!(link_instructions("github.com", &v).is_err());
+        // A lookalike host is shown in its IDNA form, not as the glyphs.
+        let v = json!({
+            "linkId": "lnk_1",
+            "url": "https://gіthub.com/login/device",
+            "expiresAt": "2026-09-23T10:15:00Z",
+        });
+        let t = link_instructions("github.com", &v).unwrap();
+        assert!(t.contains("https://xn--"), "{t}");
+    }
+
+    #[test]
+    fn link_states_other_than_linked_are_errors_in_both_modes() {
+        let did = "did:webvh:QmBobScid2:acme-vtc.example:bob";
+        let linked = json!({
+            "state": "linked",
+            "account": { "forge": "github.com", "id": "9120045", "login": "bob-builds" },
+        });
+        for json_mode in [false, true] {
+            let mut out = Vec::new();
+            finish_link(&mut out, json_mode, &linked, did, "lnk_1").unwrap();
+            let text = String::from_utf8(out).unwrap();
+            if json_mode {
+                // stdout is exactly the JSON document, nothing else.
+                let back: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(back, linked);
+            } else {
+                assert!(
+                    text.contains("bob-builds") && text.contains("9120045"),
+                    "{text}"
+                );
+            }
+            for (state, hint) in [
+                ("expired", "git link --forge"),
+                ("failed", "git link --list"),
+                ("pending", "git link --status lnk_1"),
+                ("odd", "does not know"),
+            ] {
+                let v = json!({ "state": state });
+                let mut out = Vec::new();
+                let e = finish_link(&mut out, json_mode, &v, did, "lnk_1")
+                    .unwrap_err()
+                    .to_string();
+                assert!(e.contains(hint), "{state}: {e}");
+                let text = String::from_utf8(out).unwrap();
+                if json_mode {
+                    let back: Value = serde_json::from_str(&text)
+                        .unwrap_or_else(|e| panic!("{state}: stdout is not JSON ({e}): {text}"));
+                    assert_eq!(back, v);
+                } else {
+                    assert!(text.is_empty(), "{state}: {text}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_link_names_both_causes() {
+        let LinkEnd::NotLinked(e) = link_end(&json!({ "state": "failed" }), "did:key:z", "l")
+        else {
+            panic!("failed is not linked");
+        };
+        assert!(e.contains("the forge refused it"), "{e}");
+        assert!(e.contains("already linked to another member"), "{e}");
+    }
+
+    /// Answers `states` in turn (repeating the last), counting the asks, on a
+    /// clock that advances one poll interval per sleep.
+    async fn follow_states(
+        states: &[&str],
+        deadline: Option<chrono::DateTime<chrono::Utc>>,
+        start: chrono::DateTime<chrono::Utc>,
+    ) -> (Value, usize) {
+        use std::cell::Cell;
+        let asks = Cell::new(0usize);
+        let clock = Cell::new(start);
+        let v = follow(
+            || {
+                let i = asks.get();
+                asks.set(i + 1);
+                let state = states[i.min(states.len() - 1)];
+                async move { Ok(json!({ "state": state })) }
+            },
+            deadline,
+            || clock.get(),
+            || {
+                clock.set(clock.get() + chrono::Duration::seconds(5));
+                async {}
+            },
+        )
+        .await
+        .unwrap();
+        (v, asks.get())
+    }
+
+    #[tokio::test]
+    async fn following_a_link_stops_at_a_final_state_or_past_the_deadline() {
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-09-23T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        // A final state ends it at once.
+        let (v, asks) = follow_states(&["pending", "pending", "linked"], None, t0).await;
+        assert_eq!((v["state"].as_str(), asks), (Some("linked"), 3));
+        let (v, asks) = follow_states(&["failed"], Some(t0), t0).await;
+        assert_eq!((v["state"].as_str(), asks), (Some("failed"), 1));
+        // Pending for ever: it stops once the deadline and the grace have
+        // passed — 60 s of deadline plus 30 s of grace, at 5 s a poll: the
+        // 20th ask, the first made at t0 + 95 s, is the last.
+        let (v, asks) =
+            follow_states(&["pending"], Some(t0 + chrono::Duration::seconds(60)), t0).await;
+        assert_eq!(v["state"].as_str(), Some("pending"));
+        assert_eq!(asks, 20);
+        // A deadline already long past: one ask, then stop.
+        let (_, asks) =
+            follow_states(&["pending"], Some(t0 - chrono::Duration::hours(1)), t0).await;
+        assert_eq!(asks, 1);
+    }
+
+    #[test]
+    fn linked_accounts_are_listed_one_per_line() {
+        let accounts = json!([
+            {
+                "account": { "forge": "github.com", "id": "9120045", "login": "bob-builds" },
+                "linkedAt": "2026-09-23T10:02:14Z",
+            },
+            {
+                "account": { "forge": "codeberg.org", "id": "311", "login": "bob" },
+                "linkedAt": "2026-09-24T08:00:00Z",
+            },
+        ]);
+        let lines = account_lines(&accounts);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("github.com") && lines[0].contains("bob-builds"));
+        assert!(lines[1].contains("codeberg.org") && lines[1].contains("311"));
+        assert!(account_lines(&json!([])).is_empty());
+    }
+
+    #[test]
+    fn unlink_names_the_account_linked_on_that_forge() {
+        let accounts = json!([
+            { "account": { "forge": "codeberg.org", "id": "77", "login": "bob-cb" }, "linkedAt": "x" },
+            { "account": { "forge": "github.com", "id": "9120045", "login": "bob-builds" }, "linkedAt": "x" },
+        ]);
+        assert_eq!(
+            linked_account_id(&accounts, "github.com").as_deref(),
+            Some("9120045")
+        );
+        assert_eq!(linked_account_id(&accounts, "gitlab.com"), None);
+        assert_eq!(linked_account_id(&json!([]), "github.com"), None);
+        let line = unlink_line(
+            &json!({
+                "unlinked": { "forge": "github.com", "id": "9120045", "login": "bob\u{202E}evil" },
+                "unlinkedAt": "2026-09-25T09:30:01Z",
+            }),
+            "did:key:z",
+        );
+        assert!(
+            line.contains("9120045") && line.contains("bob?evil"),
+            "{line}"
+        );
+        let g = guidance("git-ns/account/unlink:notLinked", "no account", "did:key:z");
+        assert!(g.contains("git link --list"), "{g}");
+    }
+
+    #[test]
+    fn link_refusals_name_the_fix() {
+        let g = guidance(
+            "git-ns/account/link:unsupportedForge",
+            "this VTC has no bridge-mode namespace on gitlab.com to complete a link",
+            "did:key:z",
+        );
+        assert!(g.contains("git namespace list"), "{g}");
+        let g = guidance(
+            "permissionDenied",
+            "linking a forge account is for members of this community",
+            "did:key:z",
+        );
+        assert!(g.contains("not one here") && !g.contains("git view"), "{g}");
+        let g = guidance(
+            "git-ns/account/link-status:unknownLink",
+            "no link",
+            "did:key:z",
+        );
+        assert!(g.contains("git link --forge"), "{g}");
+    }
+
+    #[test]
+    fn the_step_up_link_carries_the_request_as_unpadded_base64url() {
+        assert_eq!(base64url(b"hi"), "aGk");
+        assert_eq!(base64url(b"\xff\xfe\xfd"), "__79");
+        assert_eq!(base64url(b"abcd"), "YWJjZA");
+        let url = step_up_url("https://vtc.example/", &json!({ "challenge": "c" }));
+        assert!(
+            url.starts_with("https://vtc.example/admin/step-up#request="),
+            "{url}"
+        );
+        assert!(
+            !url.split("request=").nth(1).unwrap().contains('='),
+            "{url}"
+        );
+    }
+
+    #[test]
+    fn the_printed_ratify_command_is_shell_safe() {
+        let record = json!({
+            "subject": "did:key:z6MkAbc",
+            "right": "git.repo.own",
+            "resource": "github.com/acme/widgets",
+            "breakGlass": { "at": "2026-09-25T02:10:31Z" },
+        });
+        let cmd = ratify_command(&record);
+        assert!(
+            cmd.contains("git ratify --subject=did:key:z6MkAbc --right=git.repo.own"),
+            "{cmd}"
+        );
+        assert!(
+            cmd.ends_with("--break-glass-at=2026-09-25T02:10:31Z"),
+            "{cmd}"
+        );
+        let evil = json!({ "subject": "did:key:z'; rm -rf ~", "right": "git.repo.own", "resource": "x", "breakGlass": { "at": "t" } });
+        assert!(ratify_command(&evil).contains("'did:key:z'\"'\"'; rm -rf ~'"));
     }
 
     #[test]

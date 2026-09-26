@@ -24,6 +24,10 @@
 // `memberVmcBound`, and where it is false the Credentials card lays out the
 // evidence — which grant is on record, which digest the acknowledgement names —
 // so the operator can see why before reaching for "Request member VMC".
+//
+// The list and the detail view also show each member's git rights and linked
+// forge accounts (design §7.1, `members/MemberGit.tsx`), read from the Repos
+// plugin's console projections under its query keys.
 
 import { useState } from "react";
 import {
@@ -100,6 +104,8 @@ const VETTER_ROLE = "vetter";
 // The endorsement list has no subject filter; walking it stops here.
 const MAX_ENDORSEMENT_PAGES = 50;
 
+import { MemberGitCard, MemberGitCell, useMemberGit } from "@/plugins/members/MemberGit";
+import { readErrorMessage } from "@/plugins/repos/ui";
 import {
   claimedDigest,
   credentialDocuments,
@@ -389,6 +395,13 @@ function MembersList() {
     placeholderData: (prev) => prev,
   });
 
+  // Git rights and linked forge accounts (design §7.1). Read once for the
+  // whole community and indexed by DID, rather than once per row; a failure
+  // (a scoped administrator cannot read them) drops the column and says why.
+  const git = useMemberGit();
+  const showGit = !git.error;
+  const columns = showGit ? 6 : 5;
+
   return (
     <section className="page">
       <h2>Members</h2>
@@ -418,6 +431,11 @@ function MembersList() {
       )}
 
       <section className="card">
+        {git.error && (
+          <p className="muted">
+            Git rights are not shown: {readErrorMessage(git.error)}.
+          </p>
+        )}
         <table className="data-table">
           <thead>
             <tr>
@@ -430,17 +448,18 @@ function MembersList() {
               <th>Role</th>
               <th>Joined</th>
               <th>Personhood</th>
+              {showGit && <th>Git</th>}
             </tr>
           </thead>
           <tbody>
             {query.isPending && (
               <tr>
-                <td colSpan={5}>Loading…</td>
+                <td colSpan={columns}>Loading…</td>
               </tr>
             )}
             {query.data?.items.length === 0 && (
               <tr>
-                <td colSpan={5}>
+                <td colSpan={columns}>
                   <div className="empty-state">
                     <span className="empty-icon" aria-hidden="true">
                       <UsersIcon />
@@ -496,6 +515,15 @@ function MembersList() {
                     />
                   )}
                 </td>
+                {showGit && (
+                  <td>
+                    {git.isPending ? (
+                      <span className="muted">…</span>
+                    ) : (
+                      <MemberGitCell did={m.did} index={git.index} />
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -932,6 +960,8 @@ function MemberDetail() {
                 </ul>
               ))}
           </section>
+
+          <MemberGitCard did={decoded} />
 
           <section className="card">
             <h3>Disposition + consent</h3>

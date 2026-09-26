@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod admin_consent;
 pub mod bound_step_up;
 pub mod console_key;
 pub mod elevation;

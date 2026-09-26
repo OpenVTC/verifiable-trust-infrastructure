@@ -1,13 +1,15 @@
 //! `cnm backup …` — encrypted full-state backup / restore of the VTC
-//! community (the P3.9 REST surface).
+//! community.
 //!
-//! Mirrors `pnm backup` but targets the VTC's `/v1/backup/{export,
-//! import}` endpoints, which return a `vtc-backup-v1` envelope. The CLI
-//! treats the envelope as **opaque JSON** — it never needs the typed
+//! Mirrors `pnm backup` but targets the VTC, whose backup is a `vtc-backup-v1`
+//! envelope. The CLI treats the envelope as **opaque JSON** — it never needs the typed
 //! struct, just save/load/forward — so this stays decoupled from the
 //! vtc-service crate.
 //!
-//! Backup is REST-only and super-admin, so it authenticates to the VTC itself —
+//! Backup is super-admin, and it moves only over a channel confidential
+//! end-to-end: the VTC refuses it over REST, where the password and the bundle
+//! would exist in plaintext wherever TLS terminates. So it opens a TSP or
+//! DIDComm session to the VTC itself ([`crate::vtc::connect_end_to_end`]) —
 //! with the VTC's DID as the audience, as [`crate::vtc`] explains — rather than
 //! riding the profile's VTA session.
 
@@ -48,13 +50,11 @@ pub(crate) async fn cmd_export(
         .interact()?;
     validate_backup_password(&password)?;
 
-    let vtc = vtc::connect(keyring_key, target).await?;
+    let vtc = vtc::connect_end_to_end(keyring_key, target).await?;
     println!("Exporting community backup...");
-    let envelope = vtc
-        .client
-        .export_backup(&password, include_audit)
-        .await
-        .map_err(|e| backup_error(&vtc, e))?;
+    let exported = vtc.client.export_backup(&password, include_audit).await;
+    vtc.client.shutdown().await;
+    let envelope = exported.map_err(|e| backup_error(&vtc, e))?;
 
     let source_did = envelope.get("sourceDid").and_then(Value::as_str);
     let path = output.unwrap_or_else(|| {
@@ -117,14 +117,27 @@ pub(crate) async fn cmd_import(
         .interact()?;
     validate_backup_password(&password)?;
 
+    let vtc = vtc::connect_end_to_end(keyring_key, target).await?;
+    // The session is closed on every path out, success or not.
+    let outcome = import_over(&vtc, &envelope, &password, preview_only).await;
+    vtc.client.shutdown().await;
+    outcome
+}
+
+/// The preview, the confirmation and the import, over an open session.
+async fn import_over(
+    vtc: &Connected,
+    envelope: &Value,
+    password: &str,
+    preview_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Preview first (confirm=false) — no mutation, just row counts.
-    let vtc = vtc::connect(keyring_key, target).await?;
     println!("Validating backup...");
     let preview = vtc
         .client
-        .import_backup(&envelope, &password, false)
+        .import_backup(envelope, password, false)
         .await
-        .map_err(|e| backup_error(&vtc, e))?;
+        .map_err(|e| backup_error(vtc, e))?;
     print_counts(&preview);
 
     if preview_only {
@@ -146,9 +159,9 @@ pub(crate) async fn cmd_import(
     println!("Importing...");
     let result = vtc
         .client
-        .import_backup(&envelope, &password, true)
+        .import_backup(envelope, password, true)
         .await
-        .map_err(|e| backup_error(&vtc, e))?;
+        .map_err(|e| backup_error(vtc, e))?;
     println!(
         "{GREEN}✓{RESET} {}",
         result
@@ -156,7 +169,7 @@ pub(crate) async fn cmd_import(
             .and_then(Value::as_str)
             .unwrap_or("Import complete")
     );
-    if result.get("status").and_then(Value::as_str) == Some("imported") {
+    if result.get("status").and_then(Value::as_str) == Some("committed") {
         println!("  Restart the VTC daemon to serve the restored identity.");
         println!("  Browser passkeys are not restored — re-enrol via your admin DID.");
     }

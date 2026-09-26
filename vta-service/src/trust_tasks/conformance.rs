@@ -279,6 +279,14 @@ enum Conformance {
     KnownDrift(&'static str),
 }
 
+/// The response side of a fire-and-forget task's witness: the SPEC §4.4.2
+/// courtesy acknowledgement, whose payload **MUST** be exactly `{}`. The spec
+/// declares no response schema to parse against, so this accepts the empty
+/// object and nothing else.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Acknowledgement {}
+
 macro_rules! checked {
     ($p:ty, $r:ty, $req:expr, $resp:expr) => {
         Conformance::Checked(Witness {
@@ -1328,6 +1336,68 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         }
                     })),
                 })
+            ),
+        ),
+        // ─── credential-exchange: the holder's steps ─────────────
+        //
+        // Fire-and-forget: none defines a response, and the handler answers
+        // with the empty acknowledgement (its real answer is the next step,
+        // pushed). Requests are what a VTC sends, parsed through the SDK's
+        // body types and re-serialised.
+        (
+            credx::OFFER,
+            checked!(
+                specs::credential_exchange::offer::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::OfferBody>(json!({
+                        "credential_offer": {
+                            "credential_issuer": "did:web:vtc.example",
+                            "credential_configuration_ids": ["VIC"],
+                            "grants": {
+                                "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
+                                    "pre-authorized_code": "code-1"
+                                }
+                            }
+                        }
+                    }))
+                    .expect("an offer body")
+                ),
+                json!({})
+            ),
+        ),
+        (
+            credx::ISSUE,
+            checked!(
+                specs::credential_exchange::issue::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::IssueBody>(json!({
+                        "credential_response": { "credential": "eyJhbGciOiJFZERTQSJ9.e30.c2ln~" }
+                    }))
+                    .expect("an issue body")
+                ),
+                json!({})
+            ),
+        ),
+        (
+            credx::QUERY,
+            checked!(
+                specs::credential_exchange::query::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::QueryBody>(json!({
+                        "dcql_query": { "credentials": [{
+                            "id": "membership",
+                            "format": "dc+sd-jwt",
+                            "meta": { "vct_values": ["https://openvtc.org/credentials/MembershipCredential"] }
+                        }]},
+                        "nonce": "nonce-1",
+                        "purpose": "join: present a membership credential"
+                    }))
+                    .expect("a query body")
+                ),
+                json!({})
             ),
         ),
         // ─── credential-exchange: deferred presentations ─────────
@@ -2965,6 +3035,32 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::provision::integration::v0_3::Response,
                 request,
                 response
+            ),
+        ));
+    }
+
+    // ─── vta/attestation/mnemonic-export (tee-gated like its dispatch arm) ─
+    #[cfg(feature = "tee")]
+    {
+        use vta_sdk::protocols::attestation_management::MnemonicExportResultBody;
+        // Serialised from the types the service reads and answers with. The
+        // response carries the root seed sealed to the caller, so what this
+        // pins is that the sealed shape matches the published schema exactly.
+        t.push((
+            uris::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+            checked!(
+                specs::vta::attestation::mnemonic_export::v1_0::Payload,
+                specs::vta::attestation::mnemonic_export::v1_0::Response,
+                json!({
+                    "clientDid": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+                    "label": "first boot",
+                }),
+                to_v(MnemonicExportResultBody {
+                    bundle: "-----BEGIN VTA SEALED BUNDLE-----".into(),
+                    digest: "0".repeat(64),
+                    window_remaining_secs: 42,
+                })
             ),
         ));
     }

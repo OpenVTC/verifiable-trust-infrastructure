@@ -158,10 +158,19 @@ pub(crate) async fn verify_attached_proof(
     if let Some(map) = unsigned.as_object_mut() {
         map.remove("proof");
     }
+    // The key must be listed under the purpose the proof declares (checked
+    // equal to `expected_purpose` above), not merely in the document.
+    let bound =
+        crate::trust_task_proof::PurposeBound::for_proof(resolver, &proof).map_err(|e| {
+            VettingError::Proof {
+                what,
+                detail: e.to_string(),
+            }
+        })?;
     proof
         .verify(
             &unsigned,
-            resolver,
+            &bound,
             affinidi_data_integrity::VerifyOptions::new(),
         )
         .await

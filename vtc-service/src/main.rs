@@ -529,6 +529,17 @@ async fn run_invite_cli(
             expires_at: None,
         };
         store_acl_entry(&acl_ks, &entry).await?;
+        // An unrestricted admin made offline, without the consent the daemon
+        // requires (VTI-APV-014) — audited as the break-glass on the next boot.
+        vtc_service::install::record_offline_acl_write(
+            &store,
+            "vtc admin invite",
+            "grant",
+            &entry.did,
+            Some(&entry.role),
+            &entry.allowed_contexts,
+        )
+        .await?;
     }
 
     let minted = mint_install_token(&signer, &vtc_did, &admin_did, ttl_seconds)?;

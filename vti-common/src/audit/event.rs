@@ -207,6 +207,24 @@ pub enum AuditEvent {
     /// row follows under the same actor when the document is re-sent.
     OperationStepUpRecorded(OperationStepUpData),
 
+    /// A step of the second-party consent that unrestricted admin authority
+    /// needs (VTI-APV-014): asked for, approved or declined by another admin,
+    /// granted once enough have approved, or spent by the operation it names.
+    ///
+    /// The actor is whoever took the step — the requester for `requested` and
+    /// `consumed`, the approver for `approved` and `declined`. `payload_digest`
+    /// is the salted digest the approvers were shown, never the unsalted one.
+    TaskConsentRecorded(TaskConsentData),
+
+    /// An ACL row was written or removed by an **offline** command, with the
+    /// daemon stopped — the break-glass. It did not pass the checks the daemon
+    /// makes on the same change: the step-up, another admin's consent to an
+    /// unrestricted grant (VTI-APV-014), the attrition rules (VTI-APV-009).
+    /// That is what it is for, and this row says it happened. Written by the
+    /// daemon on its next boot, from what the command left behind; the actor
+    /// is `did:key:vtc-break-glass`.
+    AclBreakGlassWritten(BreakGlassAclData),
+
     /// `POST /v1/join-requests` (REST or DIDComm) accepted a
     /// well-formed submission and persisted it as `Pending`. The
     /// actor on this event is the applicant DID — they're the
@@ -617,6 +635,32 @@ pub enum AuditEvent {
     /// `reason` is never recorded here, because the audit log outlives the
     /// right and the reason is the granter's, not the community's.
     GitNsOperation(GitNsOperationData),
+
+    /// A **break-glass** on a git right (`git-ns/right/break-glass/0.1`): a
+    /// member recorded an elevated right for themselves, bypassing separation
+    /// of duties — or another administrator ratified or revoked such a record.
+    ///
+    /// [`AuditSeverity::Critical`], the highest severity this log has: it is
+    /// the one way a single person widens their own authority. Unlike
+    /// [`Self::GitNsOperation`] it carries the actor's free-text justification
+    /// and the step-up evidence, because the specification requires both in
+    /// the record (step 9). Written alongside the ordinary `GitNsOperation`
+    /// row, which is what wakes the projector and feeds the activity view.
+    GitNsBreakGlass(GitNsBreakGlassData),
+}
+
+/// How much an audit event matters to someone reviewing the log. Ordered:
+/// a consumer filtering for "at least `Notice`" compares with `>=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AuditSeverity {
+    /// The ordinary record of an operation.
+    Info,
+    /// The highest severity: an act that bypasses a control another person
+    /// would ordinarily have to take part in — the emergency bootstrap, a git
+    /// break-glass. Surfaces that show the log SHOULD make these impossible
+    /// to miss.
+    Critical,
 }
 
 impl AuditEvent {
@@ -648,6 +692,8 @@ impl AuditEvent {
             Self::AdminPromoted(..) => "AdminPromoted",
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
+            Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
+            Self::AclBreakGlassWritten(..) => "AclBreakGlassWritten",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
@@ -721,6 +767,19 @@ impl AuditEvent {
             // shape a SIEM already has to handle for any event carrying a
             // subtype.
             Self::VtaOperation(..) => "VtaOperation",
+            Self::GitNsBreakGlass(..) => "GitNsBreakGlass",
+        }
+    }
+
+    /// The event's severity. Everything is [`AuditSeverity::Info`] except the
+    /// acts that bypass a second person: the emergency bootstrap, and a git
+    /// break-glass with its ratification or revocation.
+    pub fn severity(&self) -> AuditSeverity {
+        match self {
+            Self::EmergencyBootstrapInvoked(..) | Self::GitNsBreakGlass(..) => {
+                AuditSeverity::Critical
+            }
+            _ => AuditSeverity::Info,
         }
     }
 }
@@ -884,6 +943,63 @@ pub struct GitNsOperationData {
     /// member wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+/// Payload for [`AuditEvent::GitNsBreakGlass`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsBreakGlassData {
+    /// `breakGlass`, `ratified` or `revoked` — the
+    /// `git-ns/right/break-glass-notice` event names.
+    pub event: String,
+    /// The namespace, by the VTC's identifier for it.
+    pub namespace: String,
+    /// The forge-qualified resource (`github.com/acme/widgets`).
+    pub resource: String,
+    /// The elevated right (`git.repo.own`).
+    pub right: String,
+    /// The record's `breakGlass.at` — which break-glass this row is about.
+    pub break_glass_at: DateTime<Utc>,
+    /// The subject's justification, verbatim. Required by
+    /// `git-ns/right/break-glass/0.1` step 9 to be in the audit record.
+    pub justification: String,
+    /// The ratifier's statement or the revoker's reason, where given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<String>,
+    /// When the right takes effect, where policy deferred it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_at: Option<DateTime<Utc>>,
+    /// Which entitlement the break-glass relied on: `grantAuthority` or
+    /// `communityAdministratorHeadless`. Absent on ratify and revoke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entitlement: Option<String>,
+    /// The authentication step the VTC required for this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up: Option<StepUpEvidence>,
+    /// The git-namespace policy version that governed the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+    /// How many administrators a notice was queued for.
+    #[serde(default)]
+    pub notified: u32,
+    /// The administrators whose notice could not be queued
+    /// (`git-ns/right/break-glass-notice/0.1`, producer requirement 5). A
+    /// break-glass nobody could be told about has `notified == 0`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undeliverable: Vec<String>,
+}
+
+/// The evidence of an operation-bound step-up, as recorded against the act it
+/// authorized.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUpEvidence {
+    /// `webauthn` — a user-verified passkey assertion.
+    pub kind: String,
+    /// Credential id (hex) of the passkey that answered.
+    pub credential_id: String,
+    /// The salted operation digest the approver was shown.
+    pub bound_to: String,
 }
 
 /// Payload for [`AuditEvent::SchemaRegistered`] / [`AuditEvent::SchemaDeleted`].
@@ -1201,6 +1317,47 @@ pub struct OperationStepUpData {
     pub credential_id: String,
     /// When the unspent authorization lapses.
     pub expires_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::AclBreakGlassWritten`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BreakGlassAclData {
+    /// The command that made the change, e.g. `vtc acl add`.
+    pub command: String,
+    /// `grant` or `remove`.
+    pub action: String,
+    pub did: String,
+    /// The role written; empty for a removal.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contexts: Vec<String>,
+    /// The host the command ran on, and when.
+    pub operator_hostname: String,
+    pub invoked_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::TaskConsentRecorded`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskConsentData {
+    /// `requested`, `approved`, `declined`, `granted` or `consumed`.
+    pub stage: String,
+    /// Type URI of the operation consented to.
+    pub task: String,
+    /// The DID that asked for the operation.
+    pub requester: String,
+    /// The DID the operation acts on.
+    pub subject: String,
+    /// The digest salted with the ceremony's challenge — what the approvers
+    /// were shown.
+    pub payload_digest: String,
+    /// Approvals needed, and those recorded so far (on `granted` and
+    /// `consumed`, the approvers whose consent the grant carries).
+    pub min_approvals: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1995,6 +2152,34 @@ mod tests {
         assert_eq!(v["type"], "EmergencyBootstrapInvoked");
         assert_eq!(v["data"]["operatorHostname"], "ops-01.example.com");
         round_trip(&e);
+    }
+
+    #[test]
+    fn git_ns_break_glass_is_critical_and_round_trips() {
+        let e = AuditEvent::GitNsBreakGlass(GitNsBreakGlassData {
+            event: "breakGlass".into(),
+            namespace: "ns_1".into(),
+            resource: "github.com/acme/widgets".into(),
+            right: "git.repo.own".into(),
+            break_glass_at: chrono::Utc::now(),
+            justification: "owners unreachable".into(),
+            statement: None,
+            effective_at: None,
+            entitlement: Some("grantAuthority".into()),
+            step_up: Some(StepUpEvidence {
+                kind: "webauthn".into(),
+                credential_id: "c0ffee".into(),
+                bound_to: "zBound".into(),
+            }),
+            policy_version: Some(1),
+            notified: 2,
+            undeliverable: vec![],
+        });
+        round_trip(&e);
+        assert_eq!(e.variant_name(), "GitNsBreakGlass");
+        assert_eq!(wire_value(&e)["type"], "GitNsBreakGlass");
+        assert_eq!(e.severity(), AuditSeverity::Critical);
+        assert!(AuditSeverity::Critical > AuditSeverity::Info);
     }
 
     #[test]

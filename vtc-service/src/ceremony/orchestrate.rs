@@ -76,6 +76,7 @@ pub async fn role_change_via_pipeline(
     subject_did: &str,
     current_role: &str,
     target_role: &str,
+    op: Option<crate::acl::admin_consent::Operation<'_>>,
 ) -> Result<RoleChangeResult, AppError> {
     match run_role_change(
         state,
@@ -83,7 +84,7 @@ pub async fn role_change_via_pipeline(
         subject_did,
         current_role,
         target_role,
-        StepUpSource::Session,
+        StepUpSource::Session { op },
     )
     .await?
     {
@@ -101,7 +102,15 @@ pub async fn role_change_via_pipeline(
 #[derive(Debug, Clone, Copy)]
 pub enum StepUpSource<'a> {
     /// The actor's live session elevation — the bearer route.
-    Session,
+    ///
+    /// `op` is the operation another admin's consent is bound to, should the
+    /// promotion make the subject an unrestricted admin (VTI-APV-014). `None`
+    /// from a caller that never promotes (`vtc/members/update` refuses the admin
+    /// role outright); a promotion that needs consent and has no operation to
+    /// bind it to is refused rather than let through.
+    Session {
+        op: Option<crate::acl::admin_consent::Operation<'a>>,
+    },
     /// A gesture bound to this one operation by a digest of its type and
     /// payload — the signed-document door, which has no session
     /// ([`crate::acl::bound_step_up`]).
@@ -167,8 +176,12 @@ async fn run_role_change(
     // taken before it, so an interleaved role write could have landed since —
     // which is exactly the compare-and-swap `acl/change-role` promises and the
     // already-an-admin re-check `members/update` used to do by hand.
-    if promoting
-        && let Some(live) = get_acl_entry(&state.acl_ks, subject_did).await?
+    let live = if promoting {
+        get_acl_entry(&state.acl_ks, subject_did).await?
+    } else {
+        None
+    };
+    if let Some(live) = live.as_ref()
         && live.role.to_string() != current_role
     {
         return Err(AppError::Conflict(format!(
@@ -176,6 +189,19 @@ async fn run_role_change(
             live.role
         )));
     }
+    // A promotion keeps the entry's scopes, so it lands an unrestricted admin
+    // exactly when those scopes read as unrestricted under the admin role —
+    // which a scopeless member's do (VTI-APV-014). Decided from the row read
+    // under the lock, the one the write will replace.
+    let unrestricted = promoting
+        && crate::acl::admin_consent::confers_unrestricted(
+            live.as_ref(),
+            &crate::acl::VtcRole::Admin,
+            live.as_ref()
+                .map(|e| e.allowed_contexts.as_slice())
+                .unwrap_or_default(),
+            crate::auth::session::now_epoch(),
+        );
 
     // The fact the host invariant reads, resolved from host state rather than
     // taken on trust. Only promotions need it, and reading it only for them
@@ -189,7 +215,7 @@ async fn run_role_change(
     // never asks a human for a passkey gesture it could not use.
     let step_up = promoting
         && match source {
-            StepUpSource::Session => {
+            StepUpSource::Session { .. } => {
                 crate::acl::elevation::verified(actor, &state.sessions_ks).await
             }
             StepUpSource::BoundTo { .. } => true,
@@ -258,7 +284,46 @@ async fn run_role_change(
     // Spend the bound gesture now — after the decision, before the write — or
     // park the ceremony that asks for one. Still under `PROMOTE_LOCK`, so the
     // re-read above is what the gesture is spent against.
-    if promoting && let StepUpSource::BoundTo { type_uri, payload } = source {
+    //
+    // A promotion to *unrestricted* admin also needs another admin's consent
+    // (VTI-APV-014), and on the signed door the two are one gate: gesture
+    // first, then consent, and neither spent while the other is missing.
+    if unrestricted {
+        use crate::acl::admin_consent::{self, Operation, SignedGate};
+        let summary = format!(
+            "Promote {subject_did} from {current_role} to unrestricted administrator of this \
+             community"
+        );
+        let ready = match source {
+            StepUpSource::Session { op: Some(op) } => {
+                admin_consent::require(state, actor_did, subject_did, op, &summary).await?
+            }
+            StepUpSource::Session { op: None } => {
+                return Err(AppError::Forbidden(format!(
+                    "promoting {subject_did} to unrestricted admin needs another admin's consent, \
+                     which only acl/change-role (PATCH /v1/acl/{subject_did}) can carry"
+                )));
+            }
+            StepUpSource::BoundTo { type_uri, payload } => {
+                match admin_consent::gesture_then_consent(
+                    state,
+                    actor_did,
+                    subject_did,
+                    Operation { type_uri, payload },
+                    &format!("Promote {subject_did} from {current_role} to administrator"),
+                    &summary,
+                )
+                .await?
+                {
+                    SignedGate::Ready(ready) => ready,
+                    SignedGate::StepUpRequired(request) => {
+                        return Ok(RoleChangeOutcome::StepUpRequired(request));
+                    }
+                }
+            }
+        };
+        ready.spend(state).await?;
+    } else if promoting && let StepUpSource::BoundTo { type_uri, payload } = source {
         let reason = format!("Promote {subject_did} from {current_role} to administrator");
         match crate::acl::bound_step_up::redeem_or_request(
             state, actor_did, type_uri, payload, &reason,
@@ -836,6 +901,53 @@ mod p0_14_role_change_policy_tests {
         vtc
     }
 
+    /// A promotion through the session source, carrying the operation a consent
+    /// would be bound to — what the bearer `acl/change-role` route passes.
+    async fn promote(
+        vtc: &TestVtc,
+        actor: &AuthClaims,
+        subject: &str,
+    ) -> Result<RoleChangeResult, AppError> {
+        let payload =
+            serde_json::json!({ "subject": subject, "fromRole": "member", "toRole": "admin" });
+        role_change_via_pipeline(
+            &vtc.state,
+            actor,
+            subject,
+            "member",
+            "admin",
+            Some(crate::acl::admin_consent::Operation {
+                type_uri: crate::trust_tasks::ACL_CHANGE_ROLE_TYPE,
+                payload: &payload,
+            }),
+        )
+        .await
+    }
+
+    /// A member whose entry is scoped, so promoting it lands a *scoped* admin —
+    /// which needs the step-up and no second party.
+    async fn seed_scoped(vtc: &TestVtc, did: &str) {
+        store_acl_entry(
+            &vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: did.into(),
+                role: VtcRole::Member,
+                label: None,
+                allowed_contexts: vec!["ctx-a".into()],
+                created_at: crate::auth::session::now_epoch(),
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        store_member(&vtc.state.members_ks, &Member::fresh(did))
+            .await
+            .unwrap();
+    }
+
     async fn seed(vtc: &TestVtc, did: &str, role: VtcRole) {
         store_acl_entry(
             &vtc.state.acl_ks,
@@ -865,7 +977,7 @@ mod p0_14_role_change_policy_tests {
     async fn admin_promotion_without_a_live_step_up_is_refused() {
         let vtc = build().await;
         let actor = caller(&vtc, ADMIN, false).await;
-        let err = role_change_via_pipeline(&vtc.state, &actor, SUBJECT, "member", "admin")
+        let err = promote(&vtc, &actor, SUBJECT)
             .await
             .expect_err("an un-elevated session must not confer admin");
         assert!(
@@ -889,7 +1001,7 @@ mod p0_14_role_change_policy_tests {
         let mut actor = actor;
         actor.did = "did:key:zSelf".into();
 
-        let err = role_change_via_pipeline(&vtc.state, &actor, "did:key:zSelf", "member", "admin")
+        let err = promote(&vtc, &actor, "did:key:zSelf")
             .await
             .expect_err("nobody promotes themselves");
         match err {
@@ -916,7 +1028,7 @@ mod p0_14_role_change_policy_tests {
         // The caller read "member"; the row now says moderator.
         seed(&vtc, "did:key:zRaced", VtcRole::Moderator).await;
 
-        let err = role_change_via_pipeline(&vtc.state, &actor, "did:key:zRaced", "member", "admin")
+        let err = promote(&vtc, &actor, "did:key:zRaced")
             .await
             .expect_err("a stale current_role must not promote");
         assert!(
@@ -928,18 +1040,58 @@ mod p0_14_role_change_policy_tests {
     #[tokio::test]
     async fn admin_promotion_with_step_up_is_allowed_by_default_policy() {
         let vtc = build().await;
+        // Scoped, so the promotion lands a scoped admin: the step-up is the
+        // whole gate. An unrestricted one also needs consent (below).
+        seed_scoped(&vtc, "did:key:zScoped").await;
         let actor = caller(&vtc, ADMIN, true).await;
-        let granted = role_change_via_pipeline(&vtc.state, &actor, SUBJECT, "member", "admin")
+        let granted = promote(&vtc, &actor, "did:key:zScoped")
             .await
             .expect("default policy allows admin promotion with a verified step-up");
         assert_eq!(granted.new_role, "admin");
         assert_eq!(granted.previous_role, "member");
         // The Remint executor wrote the new role.
-        let acl = get_acl_entry(&vtc.state.acl_ks, SUBJECT)
+        let acl = get_acl_entry(&vtc.state.acl_ks, "did:key:zScoped")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(acl.role, VtcRole::Admin);
+        assert!(!acl.is_super_admin());
+    }
+
+    /// VTI-APV-014: promoting a scopeless member lands an unrestricted admin,
+    /// and the step-up alone does not buy that. With nobody else to consent the
+    /// refusal names the break-glass; nothing is written.
+    #[tokio::test]
+    async fn vti_apv_014_promotion_to_unrestricted_admin_needs_a_second_party() {
+        let vtc = build().await;
+        let actor = caller(&vtc, ADMIN, true).await;
+        let err = promote(&vtc, &actor, SUBJECT)
+            .await
+            .expect_err("a sole admin cannot make another unrestricted admin alone");
+        match err {
+            AppError::Forbidden(msg) => assert!(msg.contains("vtc acl add"), "{msg}"),
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
+        let acl = get_acl_entry(&vtc.state.acl_ks, SUBJECT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acl.role, VtcRole::Member);
+    }
+
+    /// A caller that brings no operation to bind a consent to cannot promote to
+    /// unrestricted admin at all — it is refused, not waved through.
+    #[tokio::test]
+    async fn a_promotion_with_no_operation_to_consent_to_is_refused() {
+        let vtc = build().await;
+        let actor = caller(&vtc, ADMIN, true).await;
+        let err = role_change_via_pipeline(&vtc.state, &actor, SUBJECT, "member", "admin", None)
+            .await
+            .expect_err("no operation, no consent, no promotion");
+        match err {
+            AppError::Forbidden(msg) => assert!(msg.contains("acl/change-role"), "{msg}"),
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -975,7 +1127,7 @@ mod p0_14_role_change_policy_tests {
             .unwrap();
 
         let actor = caller(&vtc, ADMIN, true).await;
-        let err = role_change_via_pipeline(&vtc.state, &actor, SUBJECT, "member", "admin")
+        let err = promote(&vtc, &actor, SUBJECT)
             .await
             .expect_err("a deny policy must block the promotion even after a valid UV");
         assert!(

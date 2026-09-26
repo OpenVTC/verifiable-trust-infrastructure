@@ -124,6 +124,11 @@ pub struct AppConfig {
     /// sidecar on the parent, bridged via vsock.
     #[serde(default)]
     pub resolver_url: Option<String>,
+    /// The DID-document cache (`[did_cache]`): how long a mutable DID's
+    /// document is trusted before it is resolved again. Bounded — see
+    /// [`vti_common::config::DidCacheConfig`].
+    #[serde(default)]
+    pub did_cache: vti_common::config::DidCacheConfig,
     #[serde(default = "default_server_config")]
     pub server: ServerConfig,
     #[serde(default)]
@@ -1317,6 +1322,7 @@ impl AppConfig {
                     .into(),
             );
         }
+        errors.extend(self.did_cache.validation_errors());
         // retention_days = 0 would silently disable audit retention; the
         // sweeper assumes a positive window. (Mirrors the setup-time rule.)
         if self.audit.retention_days == 0 {
@@ -1406,6 +1412,23 @@ mod validate_tests {
             .validate()
             .expect_err("whitespace-only resolver_url must be rejected");
         assert!(format!("{err:?}").contains("resolver_url"), "{err:?}");
+    }
+
+    /// The DID-document cache TTL bounds how long a revoked key keeps
+    /// verifying; a value past the bound is refused, not honoured.
+    #[test]
+    fn a_did_cache_ttl_past_the_bound_is_rejected() {
+        assert_eq!(
+            cfg("").did_cache.ttl_secs,
+            vti_common::config::DID_CACHE_TTL_DEFAULT_SECS
+        );
+        let err = cfg("[did_cache]\nttl_secs = 3600\n")
+            .validate()
+            .expect_err("a one-hour DID cache must be rejected");
+        assert!(format!("{err:?}").contains("did_cache.ttl_secs"), "{err:?}");
+        cfg("[did_cache]\nttl_secs = 30\n")
+            .validate()
+            .expect("a shorter TTL is fine");
     }
 
     #[test]

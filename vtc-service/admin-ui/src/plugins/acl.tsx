@@ -72,10 +72,35 @@ async function createAcl(req: CreateAclRequest): Promise<AclEntry> {
   if (req.entry.role.trim() === "admin") {
     await stepUpSession();
   }
-  const body = await postJson<AclEntryEnvelope>("/v1/acl", req, {
-    trustTask: TRUST_TASK_GRANT,
-  });
+  const body = await explainConsent(
+    postJson<AclEntryEnvelope>("/v1/acl", req, {
+      trustTask: TRUST_TASK_GRANT,
+    }),
+  );
   return body.entry;
+}
+
+/**
+ * Making someone an unrestricted admin — an admin grant with no scopes, or an
+ * invite — also needs another unrestricted admin's consent (VTI-APV-014). The
+ * daemon refuses with `auth:consent_required` and sends the request to the
+ * other admins; there is nothing for this browser to do but wait and try again.
+ * Say that, rather than toasting the code.
+ */
+async function explainConsent<T>(call: Promise<T>): Promise<T> {
+  try {
+    return await call;
+  } catch (err) {
+    if (
+      (err as { message?: string } | null)?.message === "auth:consent_required"
+    ) {
+      throw new Error(
+        "Another unrestricted administrator has to approve this first. They have " +
+          "been sent the request — once one of them approves, do this again.",
+      );
+    }
+    throw err;
+  }
 }
 
 async function deleteAcl(subject: string): Promise<void> {
@@ -128,6 +153,19 @@ async function createInvite(
   return postJson<CreateInviteResponse>("/v1/admin/invites", req, {
     trustTask: TRUST_TASK_INVITES_CREATE,
   });
+}
+
+/**
+ * Invite someone who is not an admin yet. The entry the invite writes is an
+ * unrestricted admin, so it costs what `acl/grant` of one costs: a live step-up
+ * — taken first, so the gesture is tied to this click — and another admin's
+ * consent (VTI-APV-014).
+ */
+async function inviteNewAdmin(
+  req: CreateInviteRequest,
+): Promise<CreateInviteResponse> {
+  await stepUpSession();
+  return explainConsent(createInvite(req));
 }
 
 async function revokeInvite(jti: string): Promise<void> {
@@ -547,7 +585,7 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient();
 
   const mutation = useMutation({
-    mutationFn: createInvite,
+    mutationFn: inviteNewAdmin,
     onSuccess: (resp) => {
       // Refresh the list + ACL tables in the background so the new
       // row shows up after the operator dismisses the success card.

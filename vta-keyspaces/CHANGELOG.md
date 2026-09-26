@@ -2,6 +2,69 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.3...vta-keyspaces-v0.3.4) — 2026-09-26
+
+
+### Added
+
+- **vta**: Device pushes go through the durable Trust Task push engine ([#1767](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1767))
+
+* feat(vtc): push to a member over TSP once it has spoken TSP here, when its DID document says nothing
+
+  A member whose DID document advertises no transport — a `did:key` wallet,
+  which cannot carry services — was always pushed to over DIDComm, even when it
+  was demonstrably listening on TSP. The VTA already solved this for device
+  push by learning from inbound (`tsp_reach`): a verified TSP frame proves the
+  sender is on TSP now. The VTC had no equivalent.
+
+  - `TspReachability` moves from vta-service to `vti_common::tsp_reach` so both
+    nodes share one. The VTA re-exports it at its old path, unchanged.
+  - The shared push engine (`vti_common::trust_task_push`) takes it through
+    `PushContext::learned_tsp`. A recipient whose document advertises nothing
+    is tried over TSP first while fresh, with DIDComm behind it. A peer that
+    switched back gives no error on TSP, only silence, and escalation on
+    missing evidence is what recovers. What a document does advertise still
+    wins: learning only fills in for one that says nothing.
+  - The VTC records the verified sender of every inbound TSP frame
+    (`handle_tsp`) in `AppState::tsp_reach`, and `member_push` passes it to the
+    engine.
+
+
+
+## [0.3.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.2...vta-keyspaces-v0.3.3) — 2026-09-26
+
+
+### Changed
+
+- **vti-common**: Move the task-consent core out of vta-policy so the VTC can share it (VTI-APV-014) ([#1730](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1730))
+
+VTI-APV-014 requires consent from a party other than the requester before
+  anyone is granted unrestricted act scope. The VTC is to meet it with the same
+  `task-consent/*` ceremony the VTA runs (VTI-VTC-020: one model, not a parallel
+  one), but the ceremony's data layer lived in `vta-policy`, which the VTC cannot
+  depend on. This moves it to `vti-common` first, so the VTC work that follows
+  reuses it rather than copying it.
+
+  - `vta-policy/src/consent.rs` -> `vti_common::task_consent` and
+    `vta-policy/src/effects.rs` -> `vti_common::task_consent::effects`, moved
+    with their history. `vta_policy::{consent, effects}` re-export them, so
+    every existing path still resolves and the VTA's behaviour is unchanged.
+  - `domain_digest(domain, type_uri, payload, salt)` exposes the digest
+    construction for another domain tag. The VTC's operation-bound step-up
+    carried a byte-for-byte copy of it under `vtc/step-up/v1\0`; it now calls
+    this instead.
+  - `digest_matches_its_pinned_vectors` pins both domains against vectors
+    computed independently of this code, so the move provably changed no
+    digest: a stored pending or grant, and a mark in flight, still resolve
+    after an upgrade.
+  - The `vta/task-consent/v1\0` tag is kept, since it keys the pendings and
+    grants in flight. It separates this digest from others, not one node from
+    another, because a pending never leaves the node that minted it.
+
+  No wire change and no behaviour change.
+
+
+
 ## [0.3.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.1...vta-keyspaces-v0.3.2) — 2026-09-24
 
 

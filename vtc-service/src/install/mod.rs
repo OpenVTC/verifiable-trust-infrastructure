@@ -30,7 +30,8 @@ pub mod state_machine;
 pub mod token;
 
 pub use state_machine::{
-    InstallTokenState, InstallTokenStore, PendingEmergencyBootstrap, StartClaimOutcome,
+    InstallTokenState, InstallTokenStore, PendingBreakGlassAcl, PendingEmergencyBootstrap,
+    StartClaimOutcome,
 };
 pub use token::{
     INSTALL_AUDIENCE, INSTALL_SESSION_AUDIENCE, INSTALL_SESSION_DEFAULT_TTL_SECS, INSTALL_SUBJECT,
@@ -52,3 +53,36 @@ pub static INSTALL_TOKEN_LOCK: Mutex<()> = Mutex::const_new(());
 // migrate.
 #[doc(hidden)]
 pub use INSTALL_TOKEN_LOCK as INSTALL_CARVEOUT_LOCK;
+
+/// Queue the audit of an ACL write an offline command just made — the
+/// break-glass — for the daemon to record on its next boot.
+///
+/// An offline command runs with the daemon stopped, holds no audit writer,
+/// and by design skips what the daemon enforces on the same change: the
+/// step-up, another admin's consent to an unrestricted grant (VTI-APV-014),
+/// the attrition rules (VTI-APV-009). It is the way out when those rules
+/// have nobody left to satisfy them. So it must leave a trace: this writes the
+/// fact into the `install` keyspace, and the daemon turns each into an
+/// `AclBreakGlassWritten` row when it next starts. Call it in the same store
+/// session as the write, before `persist`.
+pub async fn record_offline_acl_write(
+    store: &vti_common::store::Store,
+    command: &str,
+    action: &str,
+    did: &str,
+    role: Option<&crate::acl::VtcRole>,
+    contexts: &[String],
+) -> Result<(), vti_common::error::AppError> {
+    let install = InstallTokenStore::new(store.keyspace(crate::store::keyspaces::INSTALL)?);
+    install
+        .record_break_glass(&PendingBreakGlassAcl {
+            command: command.to_string(),
+            action: action.to_string(),
+            did: did.to_string(),
+            role: role.map(|r| r.to_string()).unwrap_or_default(),
+            contexts: contexts.to_vec(),
+            operator_hostname: gethostname::gethostname().to_string_lossy().into_owned(),
+            invoked_at: chrono::Utc::now(),
+        })
+        .await
+}

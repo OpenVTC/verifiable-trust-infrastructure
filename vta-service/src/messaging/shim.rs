@@ -4,8 +4,7 @@
 //! The D2 P2a cut-over removed the `affinidi-messaging-didcomm-service`
 //! framework (its type-routed `Router` + middleware) in favour of the
 //! reliable-messaging delivery layer (`MessagingService`), exactly as the VTC
-//! pilot did. The handler *bodies* in [`super::handlers`] /
-//! [`super::handlers_protocol`] are unchanged: they still take
+//! pilot did. The handler *bodies* in [`super::handlers`] are unchanged: they still take
 //! `(HandlerContext, Message, Extension<T>)` and return
 //! `Result<Option<DIDCommResponse>, DIDCommServiceError>`. This module supplies
 //! those four types locally so the bodies compile verbatim, while
@@ -26,9 +25,8 @@ use serde_json::Value;
 /// builds this from the neutral `Inbound`; `sender_did` is the
 /// **cryptographically-authenticated** sender (the `#620` verified-sender-or-
 /// none rule — see [`super::router::dispatch`]), i.e. the same value the loop
-/// stamps onto `Message::from`. Only [`super::handlers::handle_credential_query`]
-/// reads it; every other handler re-derives auth via `auth_from_message`
-/// (which reads that same `from`).
+/// stamps onto `Message::from`. No handler authorises on it: over DIDComm it is
+/// a claim, and the Trust-Task envelope requires a document proof bound to it.
 #[derive(Clone, Default)]
 pub struct HandlerContext {
     /// The authenticated sender DID, or `None` for an anonymous / spoofed

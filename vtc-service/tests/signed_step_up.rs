@@ -143,8 +143,11 @@ async fn post(fix: &Fixture, doc: &Value) -> (StatusCode, Value) {
     (status, body["payload"].clone())
 }
 
+/// A grant of *scoped* admin authority. These tests are about the gesture; a
+/// grant of unrestricted admin also needs another admin's consent
+/// (VTI-APV-014), which `unrestricted_admin_consent.rs` drives.
 fn grant_admin(subject: &str) -> Value {
-    json!({ "entry": { "subject": subject, "role": "admin", "scopes": [] } })
+    json!({ "entry": { "subject": subject, "role": "admin", "scopes": ["ctx-a"] } })
 }
 
 /// The inline approve-request a refusal carries, checked for the shape
@@ -485,6 +488,37 @@ async fn another_admins_passkey_is_refused() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+/// The approve-response is the subject admin's own attestation: signed by
+/// another admin, it is refused before the challenge is consulted, and the
+/// admin can still answer it.
+#[tokio::test]
+async fn an_approve_response_signed_by_another_admin_is_refused() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let colleague = admin_with_passkey(&mut fix).await;
+    let subject = Party::new();
+
+    let grant = signed(&admin, GRANT, grant_admin(&subject.did)).await;
+    let (_, refusal) = post(&fix, &grant).await;
+    let request = step_up_request(&refusal);
+    let cred = fix
+        .authenticator
+        .authenticate(&options(&request), RP_ORIGIN);
+
+    let (status, reply) = approve(&fix, &colleague, &request, &cred).await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(
+        reply["code"], "auth/step-up/approve-response:subjectMismatch",
+        "{reply}"
+    );
+
+    // The challenge was not spent by the refused document.
+    let (status, ack) = approve(&fix, &admin, &request, &cred).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    let (status, reply) = post(&fix, &grant).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+}
+
 /// A grant that confers nothing new asks for no gesture — the console's label
 /// edit, on this door as on the bearer route.
 #[tokio::test]
@@ -535,10 +569,14 @@ async fn a_refused_grant_never_asks_for_a_gesture() {
 
 // ─── acl/change-role ─────────────────────────────────────────────────────
 
-/// A plain member, ready to promote.
+/// A plain member, ready to promote — scoped, so the promotion lands a scoped
+/// admin and the gesture is the whole gate. A scopeless member would become an
+/// unrestricted admin, which also needs another admin's consent (VTI-APV-014).
 async fn member(fix: &Fixture) -> Party {
     let party = Party::new();
-    store_acl_entry(&fix.vtc.state.acl_ks, &row(&party.did, VtcRole::Member))
+    let mut entry = row(&party.did, VtcRole::Member);
+    entry.allowed_contexts = vec!["ctx-a".into()];
+    store_acl_entry(&fix.vtc.state.acl_ks, &entry)
         .await
         .unwrap();
     vtc_service::members::store_member(

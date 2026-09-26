@@ -16,9 +16,16 @@ import type {
   GitNsRepoRow,
   GitNsRight,
   GitNsRightRow,
+  GitNsRoleMap,
 } from "@/lib/wire-types";
 
-import { archiveTask, driftRevertTask, grantTask, type SignedTask } from "./actions";
+import {
+  archiveTask,
+  driftAdoptTask,
+  driftRevertTask,
+  reprojectTask,
+  type SignedTask,
+} from "./actions";
 import {
   fetchAccounts,
   fetchActivity,
@@ -35,15 +42,17 @@ import {
 import {
   AdoptDialog,
   GrantDialog,
-  RevertDriftDialog,
+  DriftResolveDialog,
   RevokeDialog,
   TransferDialog,
 } from "./dialogs";
 import {
   activityVerb,
   bootstrapSteps,
+  countsTowardInvariant,
   desiredTuples,
   expiresWithin,
+  forgeRoleFor,
   guardFor,
   inheritedRights,
   isRight,
@@ -51,13 +60,17 @@ import {
   lastCheckOf,
   REPO_RIGHTS,
   repoRights,
+  type AdoptStanding,
+  adoptStanding,
+  projectedRepoRank,
+  isAdoptableKind,
   repoStatus,
   revertStanding,
-  rightForForgeRole,
   rightLabel,
   shortName,
 } from "./model";
 import {
+  BreakGlassChip,
   errorMessage,
   readErrorMessage,
   errorStatus,
@@ -74,7 +87,7 @@ type Dialog =
   | { kind: "transfer" }
   | { kind: "revoke"; row: GitNsRightRow }
   | { kind: "adopt" }
-  | { kind: "revert"; item: GitNsDriftItem }
+  | { kind: "drift"; item: GitNsDriftItem; adopt?: { member: string; right: GitNsRight } }
   | { kind: "sign"; task: SignedTask };
 
 const RIGHT_TONE: Record<string, "accent" | "success" | "neutral" | "danger"> = {
@@ -89,21 +102,35 @@ function ForgeAccountCell({
   forge,
   forges,
   right,
+  roleMap,
 }: {
   did: string;
   forge: string;
   forges: ForgeAccounts | undefined;
   right: string;
+  /** The repository's role map, when the row is about one repository. */
+  roleMap?: GitNsRoleMap | null;
 }) {
   const acct = forges?.get(did)?.get(forge);
+  const role = roleMap ? forgeRoleFor(roleMap, right) : undefined;
   if (!acct) {
     return (
       <span className="muted">
-        Not linked{right === "git.commit.sign" ? " · fork pull requests" : ""}
+        Not linked{role === "none" || (!roleMap && right === "git.commit.sign") ? " · fork pull requests" : ""}
       </span>
     );
   }
-  return <span title={`${forge} id ${acct.id}`}>@{acct.login}</span>;
+  return (
+    <span title={`${forge} id ${acct.id}`}>
+      @{acct.login}
+      {role !== undefined && (
+        <span className="muted gitns-small" aria-label="Effective forge role">
+          {" · "}
+          {role === "none" ? "no forge role" : role}
+        </span>
+      )}
+    </span>
+  );
 }
 
 function GrantedBy({
@@ -137,11 +164,15 @@ function PeopleTable({
   onRevoke,
   readOnlyNote,
   vtcDid,
+  roleMap,
 }: {
   rows: GitNsRightRow[];
   vtcDid: string | undefined;
   forge: string;
   forges: ForgeAccounts | undefined;
+  /** The repository's role map: each row then shows the forge role its right
+   *  projects to. */
+  roleMap?: GitNsRoleMap | null;
   onRevoke?: (row: GitNsRightRow) => void;
   readOnlyNote?: (row: GitNsRightRow) => string | null;
 }) {
@@ -182,9 +213,20 @@ function PeopleTable({
                   <ToneChip tone={RIGHT_TONE[r.right] ?? "neutral"} title={r.right}>
                     {rightLabel(r.right)}
                   </ToneChip>
+                  {r.breakGlass && (
+                    <div>
+                      <BreakGlassChip mark={r.breakGlass} />
+                    </div>
+                  )}
                 </td>
                 <td>
-                  <ForgeAccountCell did={r.subject} forge={forge} forges={forges} right={r.right} />
+                  <ForgeAccountCell
+                    did={r.subject}
+                    forge={forge}
+                    forges={forges}
+                    right={r.right}
+                    roleMap={roleMap}
+                  />
                 </td>
                 <td>
                   <GrantedBy row={r} vtcDid={vtcDid} />
@@ -198,6 +240,11 @@ function PeopleTable({
                     {r.granterDeparted && " · review"}
                   </div>
                   {r.reason && <div className="muted gitns-small">“{r.reason}”</div>}
+                  {r.breakGlass && (
+                    <div className="muted gitns-small gitns-justification">
+                      Break-glass: “{r.breakGlass.justification}”
+                    </div>
+                  )}
                 </td>
                 <td>
                   {note ? (
@@ -238,6 +285,7 @@ function DriftList({
   forges,
   ns,
   repo,
+  rights,
   onAdopt,
   onRevert,
 }: {
@@ -245,7 +293,11 @@ function DriftList({
   forges: ForgeAccounts | undefined;
   ns: GitNsNamespaceRow;
   repo: GitNsRepoRow;
-  onAdopt: (subject: string, right: ReturnType<typeof rightForForgeRole>) => void;
+  /** `null` until the rights listing has answered: adopting a `roleChanged`
+   *  depends on what the member already holds, so nothing is offered until
+   *  that is known. */
+  rights: GitNsRightRow[] | null;
+  onAdopt: (item: GitNsDriftItem, member: string, right: GitNsRight) => void;
   onRevert: (item: GitNsDriftItem) => void;
 }) {
   const book = useNameBook();
@@ -256,7 +308,23 @@ function DriftList({
       {items.map((d, i) => {
         const member =
           d.account && forges ? memberForAccount(forges, d.account.forge, d.account.id) : undefined;
-        const right = d.type === "roleAdded" ? rightForForgeRole(d.observed) : null;
+        const adopt: AdoptStanding | null = !isAdoptableKind(d)
+          ? null
+          : rights === null
+            ? {
+                may: false,
+                handOver: false,
+                why: "Reading who holds what here before offering to adopt…",
+              }
+            : adoptStanding(
+                viewer,
+                superAdmin,
+                ns,
+                repo,
+                d,
+                member,
+                member ? projectedRepoRank(rights, member, repo, ns) : 0,
+              );
         const protection = d.type === "requiredCheckMissing" || d.type === "protectionWeakened";
         const standing = revertStanding(viewer, superAdmin, ns, repo, d);
         const label = DRIFT_LABEL[d.type] ?? d.type;
@@ -306,24 +374,35 @@ function DriftList({
                     <>
                       {" "}
                       <code aria-label="Revert command">
-                        {driftRevertTask(repo.resource, ns, d).command}
+                        {driftRevertTask(repo.resource, d, undefined, repo.roleMap).command}
                       </code>
                     </>
                   )}
                 </span>
               )}
-              {d.type === "roleAdded" &&
-                (member && right ? (
-                  <button type="button" className="secondary sm" onClick={() => onAdopt(member, right)}>
-                    Adopt into VTC as {rightLabel(right).toLowerCase()}
-                  </button>
-                ) : (
-                  <span className="muted">
-                    {member
-                      ? `No git right corresponds to the forge role "${d.observed}".`
-                      : "No member has linked this forge account, so there is nobody to grant it to."}
-                  </span>
-                ))}
+              {adopt?.may && (
+                <button
+                  type="button"
+                  className="secondary sm"
+                  aria-label={`Adopt: ${label}${d.account ? ` @${d.account.login}` : ""}`}
+                  onClick={() => onAdopt(d, adopt.member, adopt.right)}
+                >
+                  Adopt into VTC as {rightLabel(adopt.right).toLowerCase()}
+                </button>
+              )}
+              {adopt && !adopt.may && (
+                <span className="muted">
+                  {adopt.why}
+                  {adopt.handOver && (
+                    <>
+                      {" "}
+                      <code aria-label="Adopt command">
+                        {driftAdoptTask(repo.resource, d, adopt.member, adopt.right).command}
+                      </code>
+                    </>
+                  )}
+                </span>
+              )}
               {d.type === "roleAdded" && ns.roleDrift !== "enforce" && (
                 <span className="muted">
                   Or set <code>role_drift = "enforce"</code> in the git namespace policy and
@@ -683,8 +762,21 @@ export function RepoDetail() {
   const vtcDid = inherited.find((r) => isServiceGrant(r, ns))?.grantedBy ?? undefined;
   const governed = repo.state !== "unmanaged" && repo.state !== "detached";
   const archived = repo.state === "archived";
+  // Fixed rule 3 of `git-ns/right/grant` 0.3 counts only owners with no
+  // expiry that are not an unratified break-glass: revoking one of those is
+  // never refused, and the last one of the rest is.
+  const countingOwners = people.filter(
+    (r) => r.right === "git.repo.own" && r.origin === "recorded" && countsTowardInvariant(r),
+  );
+  const reprojectable =
+    ns.state === "bound" &&
+    !ns.installationRemoved &&
+    (repo.state === "active" || repo.state === "orphaned");
   const lastOwner = (r: GitNsRightRow) =>
-    r.right === "git.repo.own" && owners.length === 1 && owners[0] === r.subject
+    r.right === "git.repo.own" &&
+    countsTowardInvariant(r) &&
+    countingOwners.length === 1 &&
+    countingOwners[0]!.subject === r.subject
       ? "Last owner — name another first"
       : null;
 
@@ -721,6 +813,17 @@ export function RepoDetail() {
               >
                 Transfer ownership
               </button>
+              {ns.mode === "bridge" && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!reprojectable}
+                  title="Have the bridge re-apply this repository's forge roles under its current role map. No right changes."
+                  onClick={() => setDialog({ kind: "sign", task: reprojectTask(repo.resource) })}
+                >
+                  Re-project roles
+                </button>
+              )}
               <button
                 type="button"
                 className="secondary destructive"
@@ -733,6 +836,28 @@ export function RepoDetail() {
           )}
         </div>
       </header>
+
+      {repo.roleMapStale && repo.roleMap && (
+        <div className="finding warn">
+          <strong>Forge roles projected under an earlier role map</strong>
+          <span>
+            The bridge now gives owners {repo.roleMap.own}, maintainers {repo.roleMap.maintain} and
+            committers {repo.roleMap.commit === "none" ? "no role" : repo.roleMap.commit} here. The
+            VTC has queued a re-projection; this clears once the bridge confirms it.
+          </span>
+          {reprojectable && (
+            <span>
+              <button
+                type="button"
+                className="secondary sm"
+                onClick={() => setDialog({ kind: "sign", task: reprojectTask(repo.resource) })}
+              >
+                Re-project now
+              </button>
+            </span>
+          )}
+        </div>
+      )}
 
       {repo.state === "orphaned" && (
         <div className="finding error">
@@ -790,6 +915,7 @@ export function RepoDetail() {
                 forge={ns.forge}
                 forges={forges}
                 vtcDid={vtcDid}
+                roleMap={repo.roleMap}
                 readOnlyNote={(r) =>
                   r.origin === "roleDerived"
                     ? "Managed in configuration"
@@ -812,13 +938,16 @@ export function RepoDetail() {
               <h3 id="gitns-inherited">Through the namespace</h3>
               <p className="muted gitns-small">
                 Rights on {ns.resource} that reach this repository. Change them from the
-                namespace.
+                namespace. <code>git.ns.admin</code> gives no role on the forge; a
+                namespace-level <code>git.commit.sign</code> is projected here as a committer
+                right on this repository would be.
               </p>
               <PeopleTable
                 rows={inherited}
                 forge={ns.forge}
                 forges={forges}
                 vtcDid={vtcDid}
+                roleMap={repo.roleMap}
                 readOnlyNote={(r) =>
                   isServiceGrant(r, ns)
                     ? "Bridge service grant · Dependabot re-sign"
@@ -839,18 +968,10 @@ export function RepoDetail() {
                 forges={forges}
                 ns={ns}
                 repo={repo}
-                onRevert={(item) => setDialog({ kind: "revert", item })}
-                onAdopt={(subject, right) =>
-                  right &&
-                  setDialog({
-                    kind: "sign",
-                    task: grantTask({
-                      subject,
-                      right,
-                      resource: repo.resource,
-                      reason: "Adopted from a role added on the forge",
-                    }),
-                  })
+                rights={rightsQ.isSuccess ? allRights : null}
+                onRevert={(item) => setDialog({ kind: "drift", item })}
+                onAdopt={(item, member, right) =>
+                  setDialog({ kind: "drift", item, adopt: { member, right } })
                 }
               />
             </section>
@@ -906,11 +1027,12 @@ export function RepoDetail() {
           onBuilt={(task) => setDialog({ kind: "sign", task })}
         />
       )}
-      {dialog?.kind === "revert" && (
-        <RevertDriftDialog
+      {dialog?.kind === "drift" && (
+        <DriftResolveDialog
           resource={repo.resource}
-          ns={ns}
+          roleMap={repo.roleMap}
           item={dialog.item}
+          adopt={dialog.adopt}
           label={DRIFT_LABEL[dialog.item.type] ?? dialog.item.type}
           onClose={() => setDialog(null)}
           onBuilt={(task) => setDialog({ kind: "sign", task })}

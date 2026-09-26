@@ -80,8 +80,45 @@ pub struct AppConfig {
     /// key from being read as if it said nothing.
     #[serde(default)]
     pub trust_tasks: TrustTasksConfig,
+    /// Authority settings for the community's ACL (VTI-APV-014).
+    #[serde(default)]
+    pub acl: AclConfig,
+    /// The DID-document cache (`[did_cache]`): how long a member's or peer's
+    /// document is trusted before it is resolved again. One cache serves the
+    /// REST, Trust Task, DIDComm and TSP paths alike. Bounded — see
+    /// [`vti_common::config::DidCacheConfig`].
+    #[serde(default)]
+    pub did_cache: vti_common::config::DidCacheConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// Authority settings for the community's ACL.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AclConfig {
+    /// How many **other** unrestricted admins must consent before anyone is
+    /// granted unrestricted admin authority, or has an entry widened to it
+    /// (VTI-APV-014). The requester never counts (VTI-APV-007).
+    ///
+    /// At least 1: a second party is the requirement, so there is no value that
+    /// switches it off. A value the community cannot meet — more than its
+    /// unrestricted admins other than the requester — is refused when it is
+    /// written at runtime (VTI-APV-009); see `crate::acl::admin_consent`.
+    #[serde(default = "default_unrestricted_admin_consent_threshold")]
+    pub unrestricted_admin_consent_threshold: u64,
+}
+
+impl Default for AclConfig {
+    fn default() -> Self {
+        Self {
+            unrestricted_admin_consent_threshold: default_unrestricted_admin_consent_threshold(),
+        }
+    }
+}
+
+pub(crate) fn default_unrestricted_admin_consent_threshold() -> u64 {
+    1
 }
 
 /// Trust Task document-dispatch settings. **Empty of live settings**: every
@@ -1209,6 +1246,10 @@ impl AppConfig {
         }
 
         config.validate_routing_and_cors()?;
+        let did_cache_errors = config.did_cache.validation_errors();
+        if !did_cache_errors.is_empty() {
+            return Err(AppError::Config(did_cache_errors.join("; ")));
+        }
         Ok((config, unknown_keys))
     }
 
@@ -1531,6 +1572,27 @@ mod tests {
         std::fs::write(&path, contents).expect("write config");
         let config = AppConfig::load_with_unknown_keys(Some(path)).expect("load config");
         (config, dir)
+    }
+
+    /// The DID-document cache is bounded by default, and a TTL past the
+    /// bound is refused at load rather than honoured: it is how long a key
+    /// revoked from a member's document keeps verifying here.
+    #[test]
+    fn the_did_cache_ttl_is_bounded() {
+        let ((config, _), _dir) = load("");
+        assert_eq!(
+            config.did_cache.ttl_secs,
+            vti_common::config::DID_CACHE_TTL_DEFAULT_SECS
+        );
+
+        let ((config, _), _dir) = load("[did_cache]\nttl_secs = 30\n");
+        assert_eq!(config.did_cache.ttl_secs, 30);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[did_cache]\nttl_secs = 3600\n").expect("write config");
+        let err = AppConfig::load_with_unknown_keys(Some(path)).expect_err("3600 s is refused");
+        assert!(format!("{err}").contains("did_cache.ttl_secs"), "{err}");
     }
 
     /// Keyring VTI-06: a key appended below the last table header is filed

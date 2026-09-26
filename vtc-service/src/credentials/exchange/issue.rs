@@ -182,12 +182,12 @@ pub async fn verify_oid4vci_proof_resolved(
 ) -> Result<ProvenHolderProof, AppError> {
     let parts = proof_parts(proof_jwt)?;
     let verifying_key = resolver
-        .resolve_verifying_key(&parts.kid)
+        // A key-binding proof demonstrates control of the holder DID.
+        .resolve_verifying_key(&parts.kid, vti_common::auth::ProofPurpose::Authentication)
         .await
         .map_err(|e| {
             AppError::Validation(format!(
-                "key-binding proof `kid` {} did not resolve to a key: {e}",
-                parts.kid
+                "key-binding proof `kid` did not resolve to an authentication key: {e}"
             ))
         })?;
     verify_with_key(parts, &verifying_key, expected_aud, now)

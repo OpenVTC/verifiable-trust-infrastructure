@@ -7,30 +7,34 @@ member:
 - a **role `EndorsementCredential`** (`endorsement.type = "CommunityRole"`), for
   the role admission granted.
 
-It then **delivers each one as its own message**. A client that waits only for
-the answer to its submit can miss them. This page covers what arrives, where,
+It then **delivers each one as its own Trust Task**. A client that waits only
+for the answer to its submit can miss them. This page covers what arrives, where,
 and what a client has to handle. The last section is the migration note for
 clients written against the earlier behaviour.
 
 ## What arrives
 
 After an `allow` verdict (auto-admit), and after an admin approves a pending
-request, the VTC sends the applicant **two DIDComm messages**, one per
-credential (`vtc-service/src/credentials/delivery.rs`):
+request, the VTC pushes the applicant **two `credential-exchange/issue/0.1`
+Trust Task documents**, one per credential
+(`vtc-service/src/credentials/delivery.rs`):
 
 | | |
 |---|---|
-| DIDComm `type` | `https://trusttasks.org/spec/credential-exchange/issue/0.1` — the task URI itself, **not** the Trust Task binding envelope |
-| Thread | A **new thread per credential**. An `issue` is a one-way deposit, not a reply to your submit |
-| Body | An OID4VCI credential response, verbatim: `{ "credential_response": { "credential": { …the signed VC… } } }` |
+| Document `type` | `https://trusttasks.org/spec/credential-exchange/issue/0.1` |
+| Carriage | Whichever transport you speak, **TSP > DIDComm > REST**, by the service types your DID document advertises (and TSP when you have recently spoken TSP to the community). Over DIDComm, in the binding envelope; over TSP, in the `{type, document}` binding |
+| Proof | Signed by the community's operational key, `proofPurpose: authentication`, `issuer` = the community DID |
+| Thread | No `threadId`: an unprompted `issue` answers nothing and starts its own thread |
+| Payload | An OID4VCI credential response, verbatim: `{ "credential_response": { "credential": { …the signed VC… } } }` |
 | Order | **Not guaranteed.** The role endorsement can arrive before the membership credential |
-| Sender / recipient | Authcrypt from the community DID to the **proven applicant**, never to a relayer |
+| Recipient | The **proven applicant**, never a relayer |
 
-Delivery goes through the VTC's durable outbox. The send is queued, then
-retried until acknowledged, for up to 24 hours. So a client that is offline at
-admission still receives the credentials when it reconnects, within that
-window. The same path delivers a re-minted role endorsement after a role change
-and a vetter role credential after a vetter grant.
+Delivery goes through the VTC's durable push engine. The push is queued, then
+escalated to the next transport you offer if an attempt yields no evidence of
+collection, for up to 24 hours. So a client that is offline at admission still
+receives the credentials when it reconnects, within that window. The same path
+delivers a re-minted role endorsement after a role change and a vetter role
+credential after a vetter grant.
 
 Delivery needs the community to have messaging configured. A VTC without a
 mediator issues the credentials but cannot push them. That failure is logged,
@@ -60,20 +64,18 @@ REST convenience.
    `credential-exchange/issue/0.1` messages that are not replies to anything,
    read `credential_response.credential`, and store it. Expect two after an
    admission, in either order.
-3. **Send in the envelope; accept replies typed as the document.** Over
-   DIDComm the VTC accepts a Trust Task **only** in the binding envelope
+3. **Send and receive in the envelope.** Over DIDComm the VTC accepts a Trust
+   Task **only** in the binding envelope
    (`https://trusttasks.org/binding/didcomm/0.1/envelope`, the document as the
-   message body) — `bindings/didcomm/0.2` §2–§4. A submit (or any other task)
-   whose DIDComm `type` is the task URI itself is refused with a DIDComm
-   problem-report that names the envelope type, and never reaches the
-   dispatcher; there is no `trust-task-error` for it. The VTC still sends its
-   reply, and the `issue` deposits, typed as the document itself rather than
-   in the envelope, so a client that only unwraps the envelope keeps nothing
-   and sees no error. (Replies moving into the envelope, as binding §5
-   requires, is a later change; read the document's own `type` either way.)
-4. **Verify what you store.** Check the proof, check that the issuer is the
-   community's DID, and check that the subject is you. A deposit is authcrypt
-   from the community, but the credential is what you will later present.
+   message body) — `bindings/didcomm/0.2` §2–§4. A task whose DIDComm `type` is
+   the task URI itself is refused with a DIDComm problem-report that names the
+   envelope type, and never reaches the dispatcher. The `issue` deposits
+   arrive the same way: open the envelope and read the document's own `type`.
+4. **Verify what you store.** Check the document's proof and that its
+   `issuer` is the community's DID; then check the credential's own proof,
+   that its issuer is the community, and that its subject is you. The document
+   proof attributes the delivery; the credential is what you will later
+   present.
 
 A deposit still undelivered after 24 hours is abandoned. A vetter can ask for
 its grant credential again with `vtc/vetting/vetters/resend/0.1`
@@ -115,6 +117,35 @@ only one.
 **What does not change:** the REST admin decision still returns both
 credentials inline, and the verdict's `effect`, `role` and `requestId` are
 unchanged.
+
+## Migration note — every credential-exchange step is a Trust Task
+
+**Who this is for:** a client that received the `issue` deposits, the
+invitation `offer`, the join `query`, the reciprocal-VMC request
+(`vtc/members/request-vmc`) or the `join-requests/submit-receipt` as bare
+DIDComm messages typed as their task URI, or that sent `credential-exchange/
+request` or `present` that way.
+
+**What changes for you:** each of those is now a signed Trust Task document.
+The VTC **pushes** the ones it originates through the push engine (above), and
+**serves** `request` and `present` on its Trust Task dispatcher, reachable
+over TSP, DIDComm (in the binding envelope) and HTTPS alike. A `request` or
+`present` typed as itself is refused, naming the envelope. None of the steps
+defines a response document: what comes back on the transport is at most the
+empty `#response` acknowledgement (SPEC §4.4.2), which you must not rely on.
+The real answer is the next step, pushed to you on the same thread — `issue`
+after your `request` (threaded on the offer), `join-requests/submit-receipt`
+after your `present` (threaded on the query).
+
+**Why:** a bare message typed as its task URI is exactly the carriage
+`bindings/didcomm/0.2` §2 requires a consumer to refuse. It skipped every
+document check the dispatcher applies — proof, freshness, recipient, replay —
+and no transport but DIDComm could carry it at all.
+
+**What to change:** unwrap the envelope (or the TSP binding) before routing on
+type; verify the document proof; send `request` and `present` as signed
+documents carrying the step's `threadId`; and wait for the next step, not for a
+reply.
 
 ## See also
 

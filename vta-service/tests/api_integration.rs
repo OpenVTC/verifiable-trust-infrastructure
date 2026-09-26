@@ -129,8 +129,28 @@ impl TestContext {
 }
 
 impl TestContext {
+    /// Store the ACL row a token stands for, when there is none.
+    ///
+    /// A real token is only minted for a DID with an entry, and an ACL write
+    /// is bounded by the writer's own entry (VTI-ACL-053), so a token with no
+    /// row behind it describes a caller that cannot exist. A row a test seeded
+    /// itself is left as it is.
+    async fn ensure_token_entry(&self, did: &str, role: &str, contexts: &[String]) {
+        let Ok(role) = Role::parse(role) else {
+            return;
+        };
+        if vti_common::acl::get_acl_entry(self.acl_ks(), did)
+            .await
+            .expect("read acl")
+            .is_none()
+        {
+            self.create_acl(did, role, contexts.to_vec()).await;
+        }
+    }
+
     /// Create an authenticated session and return a Bearer token.
     async fn auth_token(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
+        self.ensure_token_entry(did, role, &contexts).await;
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {
             session_id: session_id.clone(),
@@ -169,6 +189,7 @@ impl TestContext {
     /// through; a plain `auth_token` is AAL1, which the gate answers with a
     /// step-up `403`.
     async fn auth_token_aal2(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
+        self.ensure_token_entry(did, role, &contexts).await;
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {
             session_id: session_id.clone(),
@@ -376,7 +397,11 @@ async fn trust_tasks_require_auth() {
 async fn trust_task_discovery_reports_dispatched_tasks() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx
-        .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            "reader",
+            vec!["any".into()],
+        )
         .await;
     let (status, body) = app
         .request(post_auth(
@@ -414,7 +439,11 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
 async fn trust_task_discovery_defaults_to_everything() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx
-        .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            "reader",
+            vec!["any".into()],
+        )
         .await;
     let (status, body) = app
         .request(post_auth(
@@ -907,7 +936,7 @@ async fn acl_mutation_requires_step_up() {
     // reason the approver renders is attributable to this relying party.
     assert_eq!(ar["proof"]["type"], "DataIntegrityProof", "{body}");
     assert_eq!(ar["proof"]["cryptosuite"], "eddsa-jcs-2022", "{body}");
-    assert_eq!(ar["proof"]["proofPurpose"], "assertionMethod", "{body}");
+    assert_eq!(ar["proof"]["proofPurpose"], "authentication", "{body}");
 }
 
 /// A rule that names one task gates that task and no other.
@@ -1184,54 +1213,67 @@ async fn backup_export_requires_super_admin() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+/// A backup is never exported over REST, even to a super-admin with the
+/// key-export capability: the sealing password would exist in plaintext
+/// wherever TLS terminates.
 #[tokio::test]
-async fn backup_export_rejects_short_password() {
+async fn backup_export_is_refused_over_rest() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
     let (status, body) = app
         .request(post_auth(
             "/backup/export",
             &token,
-            json!({"password": "short", "include_audit": false}),
-        ))
-        .await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "should reject short password: {body}"
-    );
-}
-
-#[tokio::test]
-async fn backup_export_and_import_preview() {
-    let (app, ctx) = TestApp::new().await;
-    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
-
-    // Export
-    let (status, envelope) = app
-        .request(post_auth(
-            "/backup/export",
-            &token,
             json!({"password": "test-password-12!!", "include_audit": false}),
         ))
         .await;
-    assert_eq!(status, StatusCode::OK, "export: {envelope}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("REST"), "{body}");
+}
+
+/// A backup envelope minted in process — the REST route no longer exports.
+async fn export_envelope(ctx: &TestContext, password: &str) -> Value {
+    let state = &ctx.inner.state;
+    let config = state.config.read().await;
+    let envelope = vta_service::operations::backup::export_backup(
+        &state.backup_access().target(),
+        &*state.seed_store,
+        &config,
+        &vta_service::test_support::super_admin_claims(),
+        password,
+        false,
+    )
+    .await
+    .expect("export");
+    serde_json::to_value(envelope).unwrap()
+}
+
+/// A backup is never imported over REST, even a valid one with its right
+/// password, to a super-admin: the backup and its password together are every
+/// key it holds, and both would exist in plaintext wherever TLS terminates.
+#[tokio::test]
+async fn backup_import_is_refused_over_rest() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+
+    let envelope = export_envelope(&ctx, "test-password-12!!").await;
     assert_eq!(envelope["format"], "vta-backup-v2");
 
-    // Import preview (confirm=false)
-    let (status, preview) = app
-        .request(post_auth(
-            "/backup/import",
-            &token,
-            json!({
-                "backup": envelope,
-                "password": "test-password-12!!",
-                "confirm": false
-            }),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::OK, "preview: {preview}");
-    assert_eq!(preview["status"], "preview");
+    for confirm in [false, true] {
+        let (status, body) = app
+            .request(post_auth(
+                "/backup/import",
+                &token,
+                json!({
+                    "backup": envelope,
+                    "password": "test-password-12!!",
+                    "confirm": confirm
+                }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "confirm={confirm}: {body}");
+        assert!(body.to_string().contains("REST"), "{body}");
+    }
 }
 
 // ── Cache ──────────────────────────────────────────────────────────
@@ -1585,38 +1627,6 @@ async fn audit_retention_get_and_update() {
         ))
         .await;
     assert!(status.is_success(), "update retention: {status} {body}");
-}
-
-// ── Backup wrong password ──────────────────────────────────────────
-
-#[tokio::test]
-async fn backup_import_wrong_password_returns_auth_error() {
-    let (app, ctx) = TestApp::new().await;
-    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
-
-    // Export with one password
-    let (status, envelope) = app
-        .request(post_auth(
-            "/backup/export",
-            &token,
-            json!({"password": "correct-password!!", "include_audit": false}),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Import with wrong password
-    let (status, body) = app
-        .request(post_auth(
-            "/backup/import",
-            &token,
-            json!({"backup": envelope, "password": "wrong-password!!!", "confirm": false}),
-        ))
-        .await;
-    assert_eq!(
-        status,
-        StatusCode::UNAUTHORIZED,
-        "wrong password should → 401: {body}"
-    );
 }
 
 // ── ACL CRUD full lifecycle ────────────────────────────────────────
@@ -2321,7 +2331,11 @@ async fn create_did_webvh_set_primary_true() {
 async fn keys_import_trust_task_refuses_cleartext_over_rest() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx
-        .auth_token("did:key:z6MkSuperAdmin", "admin", vec![])
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            "admin",
+            vec![],
+        )
         .await;
 
     let (status, body) = app

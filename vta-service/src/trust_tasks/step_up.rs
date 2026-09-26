@@ -11,13 +11,20 @@
 //!   the bound challenge (handled by the approve-response handler reusing
 //!   `verify_passkey_login`).
 //!
+//! Every approve-response, approved or denied and whichever gate it carries,
+//! is the approver's own attestation: its proof must be made for
+//! `assertionMethod` with a key the approver lists under `assertionMethod`
+//! ([`crate::auth::verify_approval_proof`]), as the did-hosting RP's
+//! `verify_approval` requires. A proof made for `authentication` is refused.
+//!
 //! This module is the did-signed verifier; the handler that consumes the
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
 //!
 //! The *request* leg (`auth/step-up/approve-request/0.2`, minted by
 //! [`mint_pending_step_up`]) is **signed by this VTA** — `eddsa-jcs-2022`,
-//! `assertionMethod`, issuer DID == the proof's `verificationMethod` DID —
+//! `authentication` by its operational key, issuer DID == the proof's
+//! `verificationMethod` DID —
 //! the same shape as `task-consent` ([`super::consent_request`]) and the
 //! spec's REQUIRED proof. Both request legs put prose (`reason`) in front of
 //! a human, so the request must be attributable to its issuer, and the signed
@@ -26,7 +33,7 @@
 //! authenticates the ask, the challenge scopes the approval.
 
 // Only the DIDComm send below bounds its delivery window.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 use std::time::Duration;
 
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
@@ -83,6 +90,10 @@ pub(super) enum GateError {
 /// identity: the proof's `verificationMethod` DID MUST equal the signer, and the
 /// `eddsa-jcs-2022` signature MUST verify under that `did:key`.
 ///
+/// The proof must be made for `assertionMethod`, with a key listed under the
+/// signer's `assertionMethod` relationship: the approval is an attestation by
+/// the approver, not an operational message.
+///
 /// `did:key` resolution is local (no I/O); the mobile holder key is always a
 /// `did:key`, matching the engine's signing side.
 pub(super) async fn verify_did_signed_gate(
@@ -93,16 +104,16 @@ pub(super) async fn verify_did_signed_gate(
 
     // Verify the eddsa-jcs-2022 proof via the single shared verifier (P1.4),
     // which returns the cryptographically-proven signer DID.
-    let signer_did = crate::auth::verify_trust_task_proof(doc)
+    let signer_did = crate::auth::verify_approval_proof(doc)
         .await
         .map_err(|e| match e {
             DiProofError::NoProof => GateError::NoGate,
             DiProofError::NotDataIntegrity => {
                 GateError::ProofInvalid("not a Data Integrity proof".to_string())
             }
-            DiProofError::NoDid | DiProofError::VerifyFailed(_) => {
-                GateError::ProofInvalid(e.to_string())
-            }
+            DiProofError::NoDid
+            | DiProofError::VerifyFailed(_)
+            | DiProofError::WrongPurpose { .. } => GateError::ProofInvalid(e.to_string()),
         })?;
 
     // Bind identity: the proven signer must be the expected signer (the document
@@ -403,6 +414,19 @@ pub(super) async fn handle_approve_response(
             "did"
         }
         Some(approve_response::Evidence::Webauthn(assertion)) => {
+            // The passkey assertion is the gate, but the document is still the
+            // approver's attestation: its proof must be an `assertionMethod`
+            // proof by the approver, like every approve-response. A missing
+            // proof here is an invalid document, not a missing gate.
+            if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
+                let e = match e {
+                    GateError::NoGate => GateError::ProofInvalid(
+                        "an approve-response must carry the approver's proof".to_string(),
+                    ),
+                    other => other,
+                };
+                return reject_with(&doc, gate_err_to_reject(e));
+            }
             match verify_webauthn_gate(state, &issuer, &challenge, assertion).await {
                 Ok(()) => "passkey",
                 Err(reason) => return reject_with(&doc, reason),
@@ -604,13 +628,13 @@ fn reason_and_context(payload: &Value) -> (&str, Option<&Value>) {
     (reason, ctx)
 }
 
-/// Load the VTA's `{vta_did}#key-0` issuer key for signing a step-up
-/// approve-request. Thin wrapper over
-/// [`crate::operations::credentials::load_vta_issuer_secret`] (the same key
-/// task-consent requests are signed with) that logs the failure and flattens
+/// Load the VTA's operational key for signing a step-up approve-request
+/// (`proofPurpose: authentication`, VTI-KEY-106). Thin wrapper over
+/// [`super::load_operational_secret`] (the same key task-consent requests are
+/// signed with) that logs the failure and flattens
 /// the error to `Err(())` for the gate surfaces' internal-error mapping.
 async fn load_step_up_signing_secret(state: &AppState, vta_did: &str) -> Result<Secret, ()> {
-    crate::operations::credentials::load_vta_issuer_secret(state, vta_did, "step-up")
+    super::load_operational_secret(state, vta_did, "step-up")
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to load VTA issuer key for step-up approve-request");
@@ -632,7 +656,7 @@ async fn load_step_up_signing_secret(state: &AppState, vta_did: &str) -> Result<
 /// that used to share it are gone.
 ///
 /// The document carries the spec's REQUIRED Data-Integrity proof
-/// (`eddsa-jcs-2022`, `assertionMethod`), signed with `secret` — the VTA's
+/// (`eddsa-jcs-2022`, `authentication`), signed with `secret` — the VTA's
 /// `{vta_did}#key-0` issuer key — so the `reason` a human reads is attributable
 /// to this VTA and the request is retainable evidence of what was asked (see
 /// the module doc). Signing happens *last*, over the complete document
@@ -730,7 +754,7 @@ async fn mint_pending_step_up(
         &doc,
         secret,
         SignOptions::new()
-            .with_proof_purpose("assertionMethod")
+            .with_proof_purpose("authentication")
             .with_cryptosuite(CryptoSuite::EddsaJcs2022),
     )
     .await
@@ -870,59 +894,94 @@ pub(super) async fn approver_mediator(
     route_for(approver_did, advertised.as_deref(), configured)
 }
 
-/// Deliver a signed Trust-Task document to `recipient` over **TSP** when we have
-/// fresh learn-from-inbound proof it's listening on TSP (a `did:key` device
-/// can't advertise `#tsp`, so its inbound TSP frames are the only signal — see
-/// [`crate::messaging::tsp_reach`]). Routes the document, wrapped in the TSP
-/// binding envelope ([`vta_sdk::tsp_binding`]), through the shared
-/// mediator; §3 resolved to 3c (relationship-free routed send — see
-/// `docs/05-design-notes/tsp-outbound-send.md`), so no relationship setup is
-/// needed. Returns `true` if delivered over TSP, `false` to fall back to DIDComm
-/// (not TSP-reachable, TSP transport not connected on this node, or a send error).
+/// What became of a push to a device ([`push_to_device`]).
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(super) enum DevicePush {
+    /// Queued durably; the push engine now owns delivery and escalation.
+    Queued { push: String, mediator: String },
+    /// No mediator route to the recipient ([`approver_mediator`]); nothing was
+    /// sent, and the relay copy is the only way it learns of the document.
+    NoRoute { configured_mediator: Option<String> },
+    /// A route, but the push engine would not queue it (no transport both sides
+    /// speak, or messaging down); logged by [`push_to_device`].
+    Refused,
+}
+
+/// Push a signed Trust Task document to a device — an approver, a requester —
+/// durably, then ring its doorbell.
 ///
-/// The mediator is not a parameter: it is a property of the profile that seals
-/// the frame, and [`TspTransport`](crate::messaging::tsp_transport::TspTransport)
-/// reads it from there. The caller's `approver_mediator` decision still gates
-/// whether a push is attempted at all — it also picks the route for the DIDComm
-/// fallback, which has no profile to read.
-#[cfg(feature = "tsp")]
-pub(super) async fn try_push_over_tsp(state: &AppState, recipient: &str, doc: &Value) -> bool {
-    if !state.tsp_reach.fresh(recipient) {
-        return false;
-    }
-    let Some(transport) = state.tsp_transport() else {
-        return false; // TSP transport not connected on this node
+/// The route decision is unchanged: [`approver_mediator`] still decides
+/// whether the recipient can be reached at all, and a routable DID is never
+/// sent through a mediator it is not registered with. Delivery is the push
+/// engine's (`crate::messaging::push`, over `vti_common::trust_task_push`): the
+/// transport both sides speak — TSP first for a device recently seen on it
+/// (`tsp_reach`) — durably queued, and escalated to the next transport when an
+/// attempt produces no evidence of collection. The document is carried
+/// unchanged on every attempt, so the recipient deduplicates by its `id`.
+///
+/// The doorbell rings once, when the first attempt is queued: a backgrounded
+/// device is roused to collect whatever is waiting, and a later escalation
+/// finds it awake or not at all.
+///
+/// Best-effort for the caller: every push here has a relay copy in the task's
+/// own answer, so nothing that goes wrong here fails the task.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(super) async fn push_to_device(
+    state: &AppState,
+    recipient: &str,
+    document: &Value,
+    deliver_by: Duration,
+) -> DevicePush {
+    // Cloned out so the config read-lock is released before the route decision:
+    // resolving a routable recipient's DID document is network I/O, and holding
+    // the lock across it stalls every config writer for that long.
+    let configured_mediator = {
+        let cfg = state.config.read().await;
+        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
     };
-    let body = match serde_json::to_vec(doc) {
-        Ok(b) => b,
+    let Some(mediator) = approver_mediator(
+        recipient,
+        configured_mediator.as_deref(),
+        state.did_resolver.as_ref(),
+    )
+    .await
+    else {
+        return DevicePush::NoRoute {
+            configured_mediator,
+        };
+    };
+
+    let push = match crate::messaging::push::push_trust_task(
+        state,
+        recipient,
+        document.clone(),
+        deliver_by,
+    )
+    .await
+    {
+        Ok(push) => push,
         Err(e) => {
-            tracing::warn!(error = %e, recipient = %recipient, "serialising TSP push failed; DIDComm fallback");
-            return false;
+            tracing::warn!(
+                error = %e, recipient = %recipient, mediator = %mediator,
+                "could not queue the push to the device; relay fallback applies"
+            );
+            return DevicePush::Refused;
         }
     };
-    // Wrapped in the binding envelope, like everything else this service puts
-    // on a TSP wire. A push is still a Trust Task travelling over TSP; that it
-    // expects no reply changes nothing about how it is carried, and sending
-    // this one bare would leave exactly one frame in the system speaking the
-    // old dialect — the hardest kind to find later.
-    let body = vta_sdk::tsp_binding::wrap_envelope(&body);
-    match transport.send_to(recipient, &body).await {
-        Ok(_) => {
-            tracing::debug!(recipient = %recipient, "delivered Trust-Task over TSP (learn-from-inbound)");
-            true
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, recipient = %recipient, "TSP push failed; falling back to DIDComm");
-            false
-        }
-    }
+
+    // Ring the doorbell so a backgrounded device rouses now rather than on its
+    // next voluntary pickup. Contentless by design — the wake says only "you
+    // have mail", never what the task is or who is asking.
+    #[cfg(feature = "didcomm")]
+    trigger_gateway_wake(state, recipient, &mediator).await;
+    DevicePush::Queued { push, mediator }
 }
 
 /// Best-effort proactive delivery of a delegated step-up approve-request to the
-/// approver's device over DIDComm, by buffering a forward through the resolved
-/// mediator. No-op for self-approval (`recipient == caller`). Failures are
-/// swallowed — the `403`/reject still carries the approve-request as a relay
-/// fallback, so the proxied push is an enhancement, never a hard dependency.
+/// approver's device ([`push_to_device`]). No-op for self-approval
+/// (`recipient == caller`). Failures are swallowed — the `403`/reject still
+/// carries the approve-request as a relay fallback, so the push is an
+/// enhancement, never a hard dependency.
 async fn maybe_push_step_up(
     state: &AppState,
     recipient: &str,
@@ -933,126 +992,58 @@ async fn maybe_push_step_up(
     if recipient == caller_did {
         return; // self mode — the caller satisfies its own step-up.
     }
-    // Cloned out so the config read-lock is released before the route decision:
-    // resolving a routable approver's DID document is network I/O, and holding
-    // the lock across it stalls every config writer for that long.
-    let configured_mediator = {
-        let cfg = state.config.read().await;
-        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
-    };
-    let mediator_did = approver_mediator(
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    match push_to_device(
+        state,
         recipient,
-        configured_mediator.as_deref(),
-        state.did_resolver.as_ref(),
+        approve_request,
+        Duration::from_secs(STEP_UP_TTL_SECS),
     )
-    .await;
-    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
-    let Some(mediator_did) = mediator_did else {
-        tracing::debug!(
+    .await
+    {
+        DevicePush::Queued { push, mediator } => tracing::info!(
+            approver = %recipient, mediator = %mediator, push = %push,
+            "delegated step-up approve-request queued for the approver"
+        ),
+        DevicePush::NoRoute { .. } => tracing::debug!(
             approver = %recipient,
             "no mediator route for delegated approver; relying on the relay fallback"
-        );
-        return;
-    };
-    // Prefer TSP when the device was recently seen on it (learn-from-inbound);
-    // a fresh hit delivers over TSP and rings the doorbell, otherwise fall
-    // through to the DIDComm path below.
-    #[cfg(feature = "tsp")]
-    if try_push_over_tsp(state, recipient, approve_request).await {
-        #[cfg(feature = "didcomm")]
-        trigger_gateway_wake(state, recipient, &mediator_did).await;
-        return;
+        ),
+        DevicePush::Refused => {}
     }
-    #[cfg(feature = "didcomm")]
-    {
-        // `webvh`, not `didcomm`: `AppState::mediator_registry` only exists
-        // under `webvh`, while `PendingResponse`'s module needs only
-        // `didcomm`. The comment below is explicit that this buffer never
-        // reaches the device on its own — the send that follows is the
-        // delivery path, and it stays on `didcomm`.
-        #[cfg(feature = "webvh")]
-        {
-            let pending = crate::messaging::registry::PendingResponse {
-                recipient_did: recipient.to_string(),
-                // The DIDComm binding's envelope type, NOT the task type. A
-                // conformant approver unwraps `ENVELOPE_TYPE` and reads the
-                // `TrustTask` from the body; anything else it rejects, and
-                // rejects *silently* — "not an envelope" is indistinguishable
-                // from "not addressed to me". This path had the same defect as
-                // the consent request (#900) and nobody noticed, because the
-                // relay fallback below hides it: the reject still carries the
-                // approveRequest, so the flow completes via the slow path and
-                // only the proactive push is dead.
-                //
-                // `STEP_UP_APPROVE_REQUEST_TYPE` remains the document's own
-                // `type` — it moved into the envelope, it did not disappear.
-                // TSP is untouched above: it carries the document bytes
-                // directly, so the wrapper belongs to the DIDComm binding, not
-                // to the task.
-                message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
-                body: approve_request.clone(),
-                thread_id: approve_request
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-            };
-            if let Err(e) = state
-                .mediator_registry
-                .buffer_outbound(&mediator_did, pending)
-                .await
-            {
-                tracing::warn!(
-                    error = %e, approver = %recipient, mediator = %mediator_did,
-                    "failed to buffer delegated step-up push; relay fallback applies"
-                );
-            }
-        }
+}
 
-        // Actually deliver it: send the approve-request straight to the
-        // approver's device over the mediator. `buffer_outbound` alone never
-        // reaches the device (nothing drains it in steady state); this is the
-        // send. The device replies later with a separate approve-response, so
-        // it's fire-and-forget from this thread. Delivery-critical, so it goes
-        // Guaranteed: durably queued + retried across websocket reconnects
-        // (a bare send silently dropped the frame mid-reconnect — R1.1), keyed
-        // by the approve-request id so retries dedup. The reject still carries
-        // the approveRequest as the relay fallback if the window elapses.
-        if let Err(e) = state
-            .didcomm_bridge
-            .send_guaranteed(
-                "vta-main",
-                recipient,
-                // Envelope type, per the DIDComm binding — see the buffer above.
-                TRUST_TASK_ENVELOPE_TYPE,
-                approve_request.clone(),
-                approve_request
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                Duration::from_secs(STEP_UP_TTL_SECS),
-            )
-            .await
-        {
-            tracing::warn!(
-                error = %e, approver = %recipient,
-                "delegated step-up push enqueue failed; relay fallback applies"
-            );
-        }
-    }
-
-    // VTA-trigger: wake the approver's device via its push gateway so a
-    // backgrounded device is roused now, rather than only finding the queued
-    // approve-request on its next voluntary pickup. Best-effort.
-    #[cfg(feature = "didcomm")]
-    trigger_gateway_wake(state, recipient, &mediator_did).await;
+/// The unsigned `push/wake/0.2` request [`trigger_gateway_wake`] signs and
+/// sends: `id`, `issuedAt`, `issuer` (this VTA), `recipient` (the gateway).
+#[cfg(feature = "didcomm")]
+pub(crate) fn push_wake_document(
+    vta_did: Option<&str>,
+    gateway: &str,
+    handle: &str,
+    approver_mediator: &str,
+) -> serde_json::Value {
+    json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/push/wake/0.2",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": vta_did,
+        "recipient": gateway,
+        "payload": {
+            "handle": handle,
+            "v": 1,
+            "mediator": approver_mediator,
+            "urgency": "interactive",
+        },
+    })
 }
 
 /// Send a `push/wake` to the approver device's push gateway over DIDComm
 /// (spawned, best-effort): a contentless doorbell telling the device to connect
 /// to `approver_mediator` and drain the queued `approve-request`. No-op if the
 /// approver has no wake channel (set via `device/set-wake`) or its gateway isn't
-/// a DID. The VTA authenticates to the gateway as the authcrypt sender (it is on
-/// the handle's allowlist, provisioned at set-wake).
+/// a DID. The document carries this VTA's Data Integrity proof (`proofPurpose:
+/// authentication`), which is what identifies it to the gateway as a party on
+/// the handle's allowlist (provisioned at set-wake).
 #[cfg(feature = "didcomm")]
 pub(super) async fn trigger_gateway_wake(
     state: &AppState,
@@ -1070,19 +1061,16 @@ pub(super) async fn trigger_gateway_wake(
         return; // URL gateway → HTTPS path (follow-up).
     }
     let vta_did = state.config.read().await.vta_did.clone();
-    let wake_doc = json!({
-        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/push/wake/0.2",
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": vta_did,
-        "recipient": wake.gateway,
-        "payload": {
-            "handle": wake.handle,
-            "v": 1,
-            "mediator": approver_mediator,
-            "urgency": "interactive",
-        },
-    });
+    let mut wake_doc = push_wake_document(
+        vta_did.as_deref(),
+        &wake.gateway,
+        &wake.handle,
+        approver_mediator,
+    );
+    if !super::sign_outbound_request(state, &mut wake_doc).await {
+        tracing::warn!(gateway = %wake.gateway, "push/wake not sent: it could not be signed");
+        return;
+    }
     let bridge = state.didcomm_bridge.clone();
     let gateway = wake.gateway.clone();
     let approver = recipient.to_string();
@@ -1486,12 +1474,12 @@ mod tests {
         );
 
         // The approve-request is signed (spec: proof REQUIRED) — an
-        // eddsa-jcs-2022 assertionMethod proof whose verificationMethod DID is
+        // eddsa-jcs-2022 authentication proof whose verificationMethod DID is
         // the issuer, and the signature verifies over the served document.
         let proof = &v["approveRequest"]["proof"];
         assert_eq!(proof["type"], "DataIntegrityProof", "{v}");
         assert_eq!(proof["cryptosuite"], "eddsa-jcs-2022", "{v}");
-        assert_eq!(proof["proofPurpose"], "assertionMethod", "{v}");
+        assert_eq!(proof["proofPurpose"], "authentication", "{v}");
         let task: TrustTask<Value> = serde_json::from_value(v["approveRequest"].clone()).unwrap();
         let signer = crate::auth::verify_trust_task_proof(&task)
             .await
@@ -1623,6 +1611,11 @@ mod tests {
     /// Build an approve-response-shaped TrustTask and attach a did-signed
     /// eddsa-jcs-2022 proof from `sk` (mirrors the engine's signing side).
     fn signed_doc(sk: &SigningKey, subject: &str, vm: &str) -> TrustTask<Value> {
+        signed_doc_for(sk, subject, vm, "assertionMethod")
+    }
+
+    /// [`signed_doc`] with the proof made for `purpose`.
+    fn signed_doc_for(sk: &SigningKey, subject: &str, vm: &str, purpose: &str) -> TrustTask<Value> {
         // Build a TrustTask<Value> by deserialization (for_payload needs
         // P: Payload, which Value isn't) — proofless, ready to sign.
         let doc_json = json!({
@@ -1644,7 +1637,7 @@ mod tests {
         let mut di = DataIntegrityProof::new(
             CryptoSuite::EddsaJcs2022,
             vm.to_string(),
-            "assertionMethod".to_string(),
+            purpose.to_string(),
             None,
             Some("2026-05-31T00:00:00Z".to_string()),
             None,
@@ -1692,6 +1685,22 @@ mod tests {
         );
     }
 
+    /// The approval is the approver's attestation: a valid proof by the right
+    /// key, made for `authentication`, is refused.
+    #[tokio::test]
+    async fn rejects_an_approval_signed_for_authentication() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let (did, mb) = did_key(&sk);
+        let vm = format!("{did}#{mb}");
+        let doc = signed_doc_for(&sk, &did, &vm, "authentication");
+        match verify_did_signed_gate(&doc, &did).await {
+            Err(GateError::ProofInvalid(reason)) => {
+                assert!(reason.contains("assertionMethod"), "{reason}");
+            }
+            other => panic!("expected ProofInvalid, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn rejects_a_tampered_document() {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
@@ -1725,7 +1734,7 @@ mod envelope_push_tests {
     /// ceremony completes by the slow route while the proactive push lands in a
     /// void — delivered, acked, unreadable.
     #[tokio::test]
-    async fn delegated_step_up_push_is_an_envelope() {
+    async fn delegated_step_up_is_pushed_to_the_approver() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
 
         state
@@ -1758,13 +1767,8 @@ mod envelope_push_tests {
 
         super::maybe_push_step_up(&state, APPROVER, CALLER, &approve_request).await;
 
-        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        let pushed = crate::messaging::push::take_pushes(&state);
         assert_eq!(pushed.len(), 1, "the approver is pushed exactly once");
-        assert_eq!(
-            pushed[0].message_type,
-            trust_tasks_didcomm::ENVELOPE_TYPE,
-            "the DIDComm message must carry the binding's envelope type"
-        );
         assert_eq!(
             pushed[0].body.get("type").and_then(|t| t.as_str()),
             Some(super::STEP_UP_APPROVE_REQUEST_TYPE),

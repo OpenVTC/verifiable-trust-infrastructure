@@ -51,7 +51,7 @@ use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::task_context::{self, TaskContextBinding};
 use crate::credentials::witness::{self, WitnessBinding};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
-use affinidi_data_integrity::VerificationMethodResolver;
+use vti_common::auth::PurposeVmResolver;
 
 use crate::credentials::vm_resolver::DidVmResolver;
 use crate::join::JoinTransport;
@@ -279,17 +279,11 @@ pub async fn send_query(
     }))
 }
 
-/// Push a `credential-exchange/query` to `holder_did` over DIDComm: pack it
-/// authcrypt to the holder, wrap it in a mediator forward, and send. The query
-/// message id **is** `thread_id` (the thread root), so the holder's `present`
-/// reply threads back to the single-use challenge the VTC just issued.
-///
-/// The forward is addressed to the **holder's own mediator** (resolved from the
-/// holder's DID document) and sent through the **VTC's own mediator** — the
-/// mediator the VTC has a connection to. The VTC's mediator routes the forward
-/// onward to the holder's mediator, which delivers it. When the holder
-/// advertises no mediator, the VTC's own mediator is used as the forward target
-/// (the shared-mediator deployment).
+/// Push a signed `credential-exchange/query` to `holder_did`, over whichever
+/// transport it speaks ([`crate::credentials::delivery::push_document`]). The
+/// query document's `id` **is** `thread_id` (the thread root), so the holder's
+/// `present` carries it as `threadId` and threads back to the single-use
+/// challenge the VTC just issued.
 async fn push_credential_query(
     state: &AppState,
     holder_did: &str,
@@ -298,15 +292,15 @@ async fn push_credential_query(
 ) -> Result<(), AppError> {
     let body = serde_json::to_value(query)
         .map_err(|e| AppError::Internal(format!("query serialise: {e}")))?;
-    // The message id is the thread root; the holder replies with `thid = thread_id`.
-    crate::credentials::delivery::push_to_holder(
+    crate::credentials::delivery::push_document(
         state,
         holder_did,
-        thread_id,
         CREDENTIAL_QUERY_TYPE,
         body,
+        crate::credentials::delivery::Thread::Root(thread_id),
     )
     .await
+    .map(|_| ())
 }
 
 /// Project a [`VerifiedPresentationSet`] into the verified ceremony
@@ -341,7 +335,7 @@ async fn presentation_from_verified_set(
     // hide a revocation. Built once for the whole set.
     let status_fetcher = match state.did_resolver.clone() {
         Some(resolver) => {
-            let key_resolver: Arc<dyn VerificationMethodResolver> =
+            let key_resolver: Arc<dyn PurposeVmResolver> =
                 Arc::new(DidVmResolver::new(Some(resolver)));
             HttpStatusListFetcher::with_issuer_verification(key_resolver)
         }

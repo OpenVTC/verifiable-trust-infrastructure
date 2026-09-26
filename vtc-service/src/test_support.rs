@@ -278,6 +278,12 @@ impl TestVtcBuilder {
         let step_up_marks_ks = store
             .keyspace(crate::store::keyspaces::STEP_UP_MARKS)
             .expect("step_up_marks ks");
+        let task_consent_ks = store
+            .keyspace(crate::store::keyspaces::TASK_CONSENT)
+            .expect("task_consent ks");
+        let member_pushes_ks = store
+            .keyspace(crate::store::keyspaces::MEMBER_PUSHES)
+            .expect("member_pushes ks");
         let backup_bundles_ks = store
             .keyspace(crate::store::keyspaces::BACKUP_BUNDLES)
             .expect("backup_bundles ks");
@@ -443,6 +449,9 @@ impl TestVtcBuilder {
             invitations_ks,
             console_keys_ks,
             step_up_marks_ks,
+            task_consent_ks,
+            member_pushes_ks,
+            tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
             backup_bundles_ks,
             registry_client: None,
             registry_health: crate::registry::RegistryHealth::new(),
@@ -520,8 +529,37 @@ impl TestVtc {
     /// Mint a bearer token for `did` with `role`, creating the backing
     /// `Authenticated` session row so the `AuthClaims` extractor (which
     /// re-checks session state on every request) accepts it.
+    ///
+    /// Also writes the ACL row the token stands for, when there is none. A
+    /// real token is only ever minted for a DID with an entry, and the ACL
+    /// write paths bound what a caller may grant by that entry (VTI-ACL-053),
+    /// so a token with no row behind it would describe a caller that cannot
+    /// exist. A row a test seeded itself is left as it is.
     pub async fn token(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
         use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
+        if crate::acl::get_acl_entry(&self.state.acl_ks, did)
+            .await
+            .expect("read ACL row")
+            .is_none()
+            && let Ok(vtc_role) = role.parse::<crate::acl::VtcRole>()
+        {
+            crate::acl::store_acl_entry(
+                &self.state.acl_ks,
+                &crate::acl::VtcAclEntry {
+                    did: did.to_string(),
+                    role: vtc_role,
+                    label: None,
+                    allowed_contexts: contexts.clone(),
+                    created_at: now_epoch(),
+                    created_by: "test-support".into(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("seed the token's ACL row");
+        }
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {
             session_id: session_id.clone(),
@@ -729,6 +767,8 @@ pub fn served_trust_task_uris() -> Vec<&'static str> {
 pub use didcomm_harness::Carriage;
 #[cfg(feature = "didcomm-harness")]
 pub use didcomm_harness::{MockVtcDidcomm, ProblemReport, ReplyOutcome, TestJoinClient};
+#[cfg(all(feature = "didcomm-harness", feature = "tsp"))]
+pub use didcomm_harness::{PendingTspPeer, TestTspPeer};
 
 /// In-process DIDComm join-requests harness (#436).
 ///
@@ -1148,6 +1188,43 @@ mod didcomm_harness {
             .map(|r| r.body)
         }
 
+        /// `document` as this peer would really send it to `to`: `issuer` is
+        /// this peer, `recipient` is `to`, `issuedAt` is now, and the proof is
+        /// this peer's own authentication key.
+        ///
+        /// For a peer that *answers* the VTC — a trust registry — rather than
+        /// drives it. The VTC releases a reply to its waiting caller only when
+        /// the reply's proof verifies as its `issuer` and that issuer is the
+        /// peer the request went to, so an unsigned reply is dropped as if it
+        /// never arrived. Set every other field (`threadId` included) first:
+        /// the proof covers the whole document.
+        pub async fn sign_as_peer(&self, to: &str, mut document: Value) -> Value {
+            let obj = document
+                .as_object_mut()
+                .expect("a Trust Task document is a JSON object");
+            obj.insert("issuer".into(), json!(self.did));
+            obj.insert("recipient".into(), json!(to));
+            obj.insert(
+                "issuedAt".into(),
+                json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            );
+            obj.remove("proof");
+            // `authentication`, not the `assertionMethod` of
+            // [`sign_trust_task`]: a reply is this peer acting in its own
+            // name, the same purpose the registry demands on a write.
+            let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+                &document,
+                &self.signing_secret,
+                affinidi_data_integrity::SignOptions::new()
+                    .with_proof_purpose("authentication")
+                    .with_created(chrono::Utc::now()),
+            )
+            .await
+            .expect("sign the reply as this peer");
+            document["proof"] = serde_json::to_value(&proof).expect("a proof serialises");
+            document
+        }
+
         /// Send `document` back to `to` as a Trust-Task envelope.
         ///
         /// Correlation is by the document's own `threadId` (the VTC's inbound
@@ -1199,6 +1276,71 @@ mod didcomm_harness {
             .finalize();
             self.send(&msg, vtc_did).await;
             self.await_outcome(&req_id, timeout).await
+        }
+
+        /// As [`try_request_enveloped`](Self::try_request_enveloped), for a step
+        /// of an exchange: the document carries `thread_id` as its `threadId`
+        /// (a `request` answering an offer, a `present` answering a query).
+        /// The outcome is whatever the VTC put on the transport — for a
+        /// credential-exchange step, the empty `#response` acknowledgement; its
+        /// real answer arrives as the next pushed task.
+        pub async fn try_request_in_thread(
+            &self,
+            vtc_did: &str,
+            typ: &str,
+            body: Value,
+            thread_id: &str,
+            timeout: Duration,
+        ) -> ReplyOutcome {
+            let req_id = Uuid::new_v4().to_string();
+            let mut doc = wrap_trust_task(typ, &self.did, vtc_did, body);
+            doc["threadId"] = json!(thread_id);
+            let doc = sign_trust_task(doc, &self.signing_secret).await;
+            let msg = Message::build(
+                req_id.clone(),
+                vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
+                doc,
+            )
+            .from(self.did.clone())
+            .to(vtc_did.to_string())
+            .finalize();
+            self.send(&msg, vtc_did).await;
+            self.await_outcome(&req_id, timeout).await
+        }
+
+        /// A `credential-exchange/request` payload redeeming the offer
+        /// `pre_authorized_code` made by `issuer` for `vct`, with an
+        /// `openid4vci-proof+jwt` key-binding proof by **this client's own DID
+        /// key** — the key the credential is bound to.
+        pub fn credential_request(
+            &self,
+            issuer: &str,
+            pre_authorized_code: &str,
+            vct: &str,
+        ) -> Value {
+            use base64::Engine;
+            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            use ed25519_dalek::Signer;
+            let seed: [u8; 32] = self
+                .signing_secret
+                .get_private_bytes()
+                .try_into()
+                .expect("the applicant's signing key is a 32-byte Ed25519 seed");
+            let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+            let header = json!({ "typ": "openid4vci-proof+jwt", "alg": "EdDSA",
+                                 "kid": self.signing_secret.id });
+            let payload = json!({ "iss": self.did, "aud": issuer,
+                                  "iat": chrono::Utc::now().timestamp(),
+                                  "nonce": pre_authorized_code });
+            let h = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("header"));
+            let p = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("payload"));
+            let sig = key.sign(format!("{h}.{p}").as_bytes());
+            json!({ "credential_request": {
+                "format": "vc+sd-jwt",
+                "vct": vct,
+                "proof": { "proof_type": "jwt",
+                           "jwt": format!("{h}.{p}.{}", URL_SAFE_NO_PAD.encode(sig.to_bytes())) },
+            }})
         }
 
         /// Send `body` as a `typ` DIDComm message to `vtc_did` (authcrypt,
@@ -1395,11 +1537,31 @@ mod didcomm_harness {
         }
 
         /// Await the next unsolicited inbound message (no thread correlation),
-        /// e.g. a pushed `credential-exchange/issue`. `None` on timeout.
+        /// e.g. a pushed `credential-exchange/issue`, as `(type, payload)`.
+        /// `None` on timeout.
+        ///
+        /// A pushed Trust Task arrives in the DIDComm binding envelope, so this
+        /// reads the task's own type and payload out of the document; see
+        /// [`Self::next_pushed_document`] for the whole document.
         pub async fn next_pushed(&self, timeout: Duration) -> Option<(String, Value)> {
-            self.recv_matching(|r| r.thid.is_none(), timeout)
-                .await
-                .map(|r| (r.typ, r.body))
+            let doc = self.next_pushed_document(timeout).await?;
+            let typ = doc["type"].as_str().unwrap_or_default().to_string();
+            Some((typ, doc["payload"].clone()))
+        }
+
+        /// As [`Self::next_pushed`], but the whole Trust Task document — for a
+        /// test that asserts on its proof, addressing or thread. Panics on a
+        /// push that is not in the binding envelope: every task the VTC pushes
+        /// is a signed document, and a bare one is the regression.
+        pub async fn next_pushed_document(&self, timeout: Duration) -> Option<Value> {
+            let r = self.recv_matching(|r| r.thid.is_none(), timeout).await?;
+            assert_eq!(
+                r.typ,
+                vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE,
+                "a pushed task must arrive in the binding envelope, not typed as itself: {}",
+                r.body
+            );
+            Some(r.body)
         }
 
         async fn send(&self, msg: &Message, to: &str) {
@@ -1705,6 +1867,239 @@ mod didcomm_harness {
         }
     }
 
+    /// A peer the VTC reaches **over TSP**: a `did:peer` advertising only
+    /// `TSPTransport` on the shared mediator, which receives the way the VTC
+    /// itself does.
+    ///
+    /// It runs the delivery layer over its own mediator socket — a
+    /// `DidCommTransport`, which classifies every frame by protocol — accepts
+    /// the relationship invite a first TSP send carries (Rev 3 §7.2.2), and
+    /// hands each TSP application frame's document to
+    /// [`next_trust_task`](Self::next_trust_task), with the binding envelope
+    /// taken off. So a test sees exactly what a TSP peer would.
+    ///
+    /// Advertising TSP alone is deliberate: a peer that also offered DIDComm
+    /// would let a push that silently fell back to DIDComm pass a test meant to
+    /// prove TSP.
+    #[cfg(feature = "tsp")]
+    pub struct TestTspPeer {
+        atm: Arc<ATM>,
+        did: String,
+        /// The peer's registered profile and mediator — what a send needs.
+        profile: Arc<ATMProfile>,
+        mediator_did: String,
+        /// `<did:peer>#key-1`, the key every document this peer sends is
+        /// signed with — as [`TestJoinClient`]'s is.
+        signing_secret: Secret,
+        /// Whether [`request_tsp`](Self::request_tsp) has formed the
+        /// relationship yet — once per peer; a second invite is refused.
+        related: std::sync::atomic::AtomicBool,
+        docs: Mutex<tokio::sync::mpsc::UnboundedReceiver<Value>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    /// A [`TestTspPeer`] with its DID registered and its socket not yet open.
+    #[cfg(feature = "tsp")]
+    pub struct PendingTspPeer {
+        did: String,
+        secrets: Vec<Secret>,
+        mediator_did: String,
+    }
+
+    #[cfg(feature = "tsp")]
+    impl PendingTspPeer {
+        /// The peer's DID — what the VTC resolves and pushes to.
+        pub fn did(&self) -> &str {
+            &self.did
+        }
+
+        /// Open the socket and start receiving.
+        pub async fn connect(self) -> TestTspPeer {
+            TestTspPeer::connect(self.did, &self.secrets, &self.mediator_did).await
+        }
+    }
+
+    #[cfg(feature = "tsp")]
+    impl TestTspPeer {
+        /// Mint the peer's identity. Separate from [`connect`](Self::connect)
+        /// because the DID has to be a local mediator account before its
+        /// socket can authenticate.
+        fn mint(mediator_did: &str) -> (String, Vec<Secret>) {
+            Self::mint_with(Some(mediator_did))
+        }
+
+        /// Mint the identity, advertising `TSPTransport` at `mediator_did`, or
+        /// no service at all when `None` — a peer the VTC can only reach over
+        /// TSP once it has seen it there, as it would a `did:key` wallet.
+        fn mint_with(mediator_did: Option<&str>) -> (String, Vec<Secret>) {
+            use affinidi_tdk::dids::{
+                OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+            };
+
+            // `TSPTransport` naming the mediator DID — the workspace convention
+            // for `#tsp`, and what makes the VTC route through its own mediator
+            // rather than nest.
+            let services = mediator_did.map(|mediator_did| {
+                vec![PeerService {
+                    type_: "TSPTransport".into(),
+                    endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                        uri: mediator_did.to_string(),
+                        accept: vec![],
+                        routing_keys: vec![],
+                    })),
+                    id: None,
+                }]
+            });
+            let (did, secrets) = DID::generate_did_peer_with_services(peer_key_roles(), services)
+                .expect("mint the TSP peer's did:peer");
+            assert!(
+                did.len() < 1_000,
+                "TSP peer did:peer is {} bytes, over the stock resolver's 1000-byte limit",
+                did.len()
+            );
+            (did, secrets)
+        }
+
+        async fn connect(did: String, secrets: &[Secret], mediator_did: &str) -> Self {
+            use affinidi_messaging_core::{InboundKind, Protocol as CoreProtocol};
+            use affinidi_messaging_delivery::{InMemoryOutboxStore, MessagingService};
+            use affinidi_tdk::messaging::DidCommTransport;
+            use futures_util::StreamExt as _;
+
+            let atm = Arc::new(build_atm(secrets).await);
+            let profile = ATMProfile::new(&atm, None, did.clone(), Some(mediator_did.to_string()))
+                .await
+                .expect("TSP peer profile");
+            let profile = atm
+                .profile_add(&profile, false)
+                .await
+                .expect("register TSP peer profile");
+            atm.profile_enable_websocket(&profile)
+                .await
+                .expect("TSP peer websocket");
+
+            let transport: Arc<dyn affinidi_messaging_core::MessageTransport> = Arc::new(
+                DidCommTransport::new((*atm).clone(), profile.clone())
+                    .await
+                    .expect("bind the TSP peer's transport"),
+            );
+            let service = Arc::new(MessagingService::new(
+                transport,
+                Arc::new(InMemoryOutboxStore::default()),
+            ));
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut stream = service.subscribe();
+            let task_atm = atm.clone();
+            let own_profile = profile.clone();
+            let task = tokio::spawn(async move {
+                // Keep the service alive for as long as the loop reads from it.
+                let _service = service;
+                while let Some(inbound) = stream.next().await {
+                    if inbound.message.protocol != CoreProtocol::TSP {
+                        continue;
+                    }
+                    let Some(sender) = inbound.message.sender.clone() else {
+                        continue;
+                    };
+                    if let InboundKind::RelationshipControl { thread_digest, .. } = inbound.kind {
+                        // Accept, as the VTC's own `handle_tsp_control` does.
+                        let _ = task_atm
+                            .tsp()
+                            .accept_relationship(&profile, &sender, thread_digest)
+                            .await;
+                        continue;
+                    }
+                    let body = vta_sdk::tsp_binding::open_envelope(&inbound.message.payload)
+                        .unwrap_or_else(|_| inbound.message.payload.clone());
+                    if let Ok(doc) = serde_json::from_slice::<Value>(&body) {
+                        let _ = tx.send(doc);
+                    }
+                }
+            });
+            TestTspPeer {
+                atm,
+                did,
+                profile: own_profile,
+                mediator_did: mediator_did.to_string(),
+                signing_secret: secrets
+                    .iter()
+                    .find(|s| s.id.ends_with("#key-1"))
+                    .cloned()
+                    .expect("the peer's did:peer carries its Ed25519 authentication key first"),
+                related: std::sync::atomic::AtomicBool::new(false),
+                docs: Mutex::new(rx),
+                task,
+            }
+        }
+
+        /// Send a signed Trust Task to `vtc_did` **over TSP** and await the
+        /// reply threaded to it — the round trip a TSP client makes.
+        ///
+        /// The relationship is formed on the first call, as Rev 3 §7.2.2
+        /// requires. Other
+        /// documents that arrive meanwhile are dropped; a test that needs
+        /// pushes reads them with [`next_trust_task`](Self::next_trust_task).
+        /// `None` on timeout.
+        pub async fn request_tsp(
+            &self,
+            vtc_did: &str,
+            typ: &str,
+            payload: Value,
+            timeout: Duration,
+        ) -> Option<Value> {
+            if !self.related.swap(true, Ordering::SeqCst) {
+                self.atm
+                    .tsp()
+                    .form_relationship(&self.profile, vtc_did)
+                    .await
+                    .expect("form a TSP relationship with the VTC");
+            }
+            let doc = sign_trust_task(
+                wrap_trust_task(typ, &self.did, vtc_did, payload),
+                &self.signing_secret,
+            )
+            .await;
+            let id = doc["id"].clone();
+            let bytes = vta_sdk::tsp_binding::wrap_envelope(
+                &serde_json::to_vec(&doc).expect("serialise Trust Task document"),
+            );
+            let route = vec![self.mediator_did.clone(), vtc_did.to_string()];
+            self.atm
+                .tsp()
+                .send_routed(&self.profile, &route, &bytes)
+                .await
+                .expect("send the Trust Task over TSP via the mediator");
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let reply = self.next_trust_task(left).await?;
+                if reply["threadId"] == id {
+                    return Some(reply);
+                }
+            }
+        }
+
+        /// The peer's DID — what the VTC resolves and pushes to.
+        pub fn did(&self) -> &str {
+            &self.did
+        }
+
+        /// The next Trust Task document this peer received over TSP, with the
+        /// binding envelope off. `None` on timeout.
+        pub async fn next_trust_task(&self, timeout: Duration) -> Option<Value> {
+            tokio::time::timeout(timeout, self.docs.lock().await.recv())
+                .await
+                .ok()
+                .flatten()
+        }
+
+        /// Stop the peer's receive loop and its socket.
+        pub async fn shutdown(&self) {
+            self.task.abort();
+            self.atm.graceful_shutdown().await;
+        }
+    }
+
     /// A mock VTC serving the join-requests protocol over DIDComm, plus a
     /// connected applicant client. See module docs.
     pub struct MockVtcDidcomm {
@@ -1825,6 +2220,14 @@ mod didcomm_harness {
                 .vtc_did(vtc_did.clone())
                 .with_audit(true)
                 .with_signers(true)
+                // Sign as the key the VTC's DID document actually lists (the
+                // did:peer's Ed25519 verification key, minted first), so a
+                // client that verifies the VTC's reply proofs — as
+                // `vtc-client` over a session does — can check them.
+                .with_credential_signer(Arc::new(crate::credentials::LocalSigner::new(
+                    vtc_did.clone(),
+                    vtc_secrets[0].clone(),
+                )))
                 .with_did_resolver(true)
                 .with_public_url("https://vtc.test")
                 .messaging_mediator(mediator_did.clone())
@@ -1894,6 +2297,52 @@ mod didcomm_harness {
         ///
         /// The caller owns the returned client's shutdown — [`shutdown`](Self::shutdown)
         /// only knows about the applicant.
+        /// Connect a peer that advertises only `TSPTransport` and receives over
+        /// TSP. See [`TestTspPeer`]. The caller owns its shutdown.
+        #[cfg(feature = "tsp")]
+        pub async fn connect_tsp_peer(&self) -> TestTspPeer {
+            self.register_tsp_peer().await.connect().await
+        }
+
+        /// A TSP peer registered on the mediator but **not yet connected**, so
+        /// what is sent to it waits at the mediator until
+        /// [`PendingTspPeer::connect`]. For a test that needs to observe a
+        /// message queued before it is collected — the delivery layer only
+        /// counts a collection it saw the message waiting for.
+        #[cfg(feature = "tsp")]
+        pub async fn register_tsp_peer(&self) -> PendingTspPeer {
+            self.register_tsp_peer_with(TestTspPeer::mint(self.mediator.did()))
+                .await
+        }
+
+        /// A peer that receives over TSP but whose DID document advertises no
+        /// transport at all — reachable over TSP only once the VTC has learned
+        /// it is listening there (`tsp_reach`). Connected; the caller owns its
+        /// shutdown.
+        #[cfg(feature = "tsp")]
+        pub async fn connect_silent_tsp_peer(&self) -> TestTspPeer {
+            self.register_tsp_peer_with(TestTspPeer::mint_with(None))
+                .await
+                .connect()
+                .await
+        }
+
+        #[cfg(feature = "tsp")]
+        async fn register_tsp_peer_with(
+            &self,
+            (did, secrets): (String, Vec<Secret>),
+        ) -> PendingTspPeer {
+            self.mediator
+                .register_local_did(&did)
+                .await
+                .expect("register the TSP peer as a local mediator account");
+            PendingTspPeer {
+                did,
+                secrets,
+                mediator_did: self.mediator.did().to_string(),
+            }
+        }
+
         pub async fn connect_registry_peer(&self) -> TestJoinClient {
             let (did, secrets) = mint_didcomm_peer(self.mediator.did());
             self.mediator
@@ -1912,6 +2361,16 @@ mod didcomm_harness {
         /// The shared mediator's DID.
         pub fn mediator_did(&self) -> &str {
             self.mediator.did()
+        }
+
+        /// Register `did` as a local account on the shared mediator, so a
+        /// client the test builds itself (a `VtcClient` from
+        /// `connect_didcomm`, say) can open its inbound channel there.
+        pub async fn register_local_did(&self, did: &str) {
+            self.mediator
+                .register_local_did(did)
+                .await
+                .expect("register a local mediator account");
         }
 
         /// Stop the applicant's socket, the dispatch loop, and the mediator, and

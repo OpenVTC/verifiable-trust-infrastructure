@@ -6,6 +6,13 @@
 //! Front-end binaries import this library and call `server::run()`
 //! with the appropriate store backend and TEE context.
 
+// The spawned inbound handler's future nests the whole Trust Task dispatch
+// spine — policy gate, planner, webvh update, the SDK's TSP send — and proving
+// it `Send` walks that nesting. It sat at the default limit of 128; moving the
+// device pushes onto `messaging::push` changed the order the compiler explores
+// it in and took it over, on a path that does not pass through the pushes.
+#![recursion_limit = "256"]
+
 // Re-exported so front-end binaries (e.g. `vta-enclave`, which only depends
 // on this crate) can install the rustls aws-lc-rs CryptoProvider at startup
 // without taking a direct `vta-sdk` dependency.

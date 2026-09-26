@@ -442,12 +442,6 @@ fn witnesses() -> Vec<Witness> {
             "the_export_task_answers_with_the_code_its_spec_declares"
         ),
         witness!(
-            s::backup::import::v0_1::error_codes::DECRYPTION_FAILED,
-            crate::backup::IMPORT_ERR_DECRYPTION_FAILED,
-            "backup.rs",
-            "the_import_task_answers_with_the_code_its_spec_declares"
-        ),
-        witness!(
             s::community::profile::update::v0_1::error_codes::VALIDATION_FAILED,
             crate::routes::community::profile::PROFILE_UPDATE_ERR_VALIDATION_FAILED,
             "community_profile.rs",

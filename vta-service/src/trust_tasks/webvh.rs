@@ -593,6 +593,7 @@ pub(super) async fn handle_dids_rotate_keys(
         &req.did,
         options,
         vta_did.as_deref(),
+        state.secrets_resolver.as_deref(),
         TRANSPORT_TRUST_TASK,
     )
     .await

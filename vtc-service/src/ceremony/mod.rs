@@ -70,6 +70,7 @@ pub mod verify;
 pub use assemble::{FactsInputs, assemble_facts, load_actor_role, member_state};
 pub use effects::{EffectPlan, plan};
 pub use evaluate::evaluate;
+pub(crate) use execute::lock_admin_set;
 pub use execute::{AdmitOutcome, DepartOutcome, EffectOutcome, RemintOutcome, apply};
 pub use facts::{
     Actor, Context, Credential, CredentialStatus, Evidence, Facts, Invitation, MemberState,

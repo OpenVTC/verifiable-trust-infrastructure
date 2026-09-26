@@ -380,9 +380,19 @@ pub(super) fn encode_path_segment(s: &str) -> String {
 #[cfg(feature = "tsp")]
 fn unsupported_over_tsp(msg_type: &str) -> VtaError {
     VtaError::UnsupportedTransport(format!(
-        "'{msg_type}' is a DIDComm protocol message, which TSP does not carry \
-         (TSP carries Trust Tasks). Reach this operation over DIDComm:\n  \
-         <cli> --transport didcomm <command>"
+        "'{msg_type}' is a REST-only operation: TSP carries only Trust Tasks. \
+         Reach this operation over REST:\n  <cli> --transport rest <command>"
+    ))
+}
+
+/// The DIDComm leg of [`VtaClient::rpc`]. The VTA serves only signed Trust
+/// Tasks over DIDComm; a bare protocol message would be refused as an
+/// unsupported type, so say what to do instead of sending it.
+#[cfg(feature = "session")]
+fn unsupported_over_didcomm(msg_type: &str) -> VtaError {
+    VtaError::UnsupportedTransport(format!(
+        "'{msg_type}' is a REST-only operation: over DIDComm the VTA serves only signed \
+         Trust Tasks. Reach this operation over REST:\n  <cli> --transport rest <command>"
     ))
 }
 
@@ -1650,10 +1660,9 @@ impl VtaClient {
                 Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => {
-                session
-                    .send_and_wait(msg_type, body, result_type, timeout)
-                    .await
+            Transport::DIDComm { .. } => {
+                let _ = (body, result_type, timeout);
+                Err(unsupported_over_didcomm(msg_type))
             }
             #[cfg(feature = "tsp")]
             Transport::Tsp { .. } => Err(unsupported_over_tsp(msg_type)),
@@ -2093,13 +2102,8 @@ impl VtaClient {
 
                 const TRUST_TASK_ENVELOPE_TYPE: &str =
                     "https://trusttasks.org/binding/didcomm/0.1/envelope";
-                let response_doc: serde_json::Value = session
-                    .send_and_wait(
-                        TRUST_TASK_ENVELOPE_TYPE,
-                        doc,
-                        TRUST_TASK_ENVELOPE_TYPE,
-                        timeout,
-                    )
+                let response_doc = session
+                    .send_and_wait_trust_task(TRUST_TASK_ENVELOPE_TYPE, doc, timeout)
                     .await?;
                 self.finish_reply(response_doc).await
             }
@@ -2278,7 +2282,9 @@ impl VtaClient {
     /// document carries `payload`; a rejection does not — surface its
     /// `reason`/`comment` (or the whole document) as a protocol error so the
     /// DIDComm path (which drops the HTTP status) still fails loudly.
-    fn extract_trust_task_payload(doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
+    pub(crate) fn extract_trust_task_payload(
+        doc: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
         if let Some(payload) = doc.get("payload") {
             // A failed task still carries a `payload` — the error envelope goes
             // *inside* it (`{ code, message, retryable }`). Treating "a payload
@@ -3342,6 +3348,7 @@ mod tests {
             approve_contexts: vec![],
             allowed_keys: None,
             capabilities: Vec::new(),
+            handoff: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         // The builder API is unchanged; only what it serialises moved. The wire

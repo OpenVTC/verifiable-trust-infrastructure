@@ -35,6 +35,27 @@ async fn build() -> (TestVtc, String) {
         .build()
         .await;
     let token = vtc.admin_token().await;
+    // The invitee already holds a (scoped) admin entry, so these mints take the
+    // path that writes no ACL entry. A mint that *creates* one confers
+    // unrestricted admin and needs a step-up and another admin's consent
+    // (VTI-APV-014) — `unrestricted_admin_consent.rs` covers that. These tests
+    // are about the error codes.
+    vtc_service::acl::store_acl_entry(
+        &vtc.state.acl_ks,
+        &vtc_service::acl::VtcAclEntry {
+            did: "did:key:z6MkInvitee".into(),
+            role: vtc_service::acl::VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec!["ctx-a".into()],
+            created_at: 0,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
     (vtc, token)
 }
 
@@ -162,5 +183,36 @@ async fn the_revoke_task_answers_with_the_code_its_spec_declares() {
         rest_error_code(&body),
         REVOKE_INVITE_ERR_NOT_FOUND,
         "{body}"
+    );
+}
+
+/// An invite grants community-wide admin authority, so only a caller that
+/// already holds it may send one (VTI-ACL-022, VTI-ACL-053). An administrator
+/// of one context used to pass `AdminAuth` and could invite a DID it controls
+/// into an unrestricted admin entry.
+#[tokio::test]
+async fn a_context_scoped_admin_cannot_invite_a_community_wide_admin() {
+    let (vtc, _) = build().await;
+    let scoped = vtc
+        .token("did:key:z6MkScopedInviter", "admin", vec!["ctx-a".into()])
+        .await;
+    const INVITEE: &str = "did:key:z6MkWouldBeSuperAdmin";
+
+    let (status, body) = call(
+        &vtc,
+        &scoped,
+        "POST",
+        "/v1/admin/invites",
+        CREATE_TASK,
+        Some(json!({ "did": INVITEE, "ttlSeconds": 600 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        vtc_service::acl::get_acl_entry(&vtc.state.acl_ks, INVITEE)
+            .await
+            .unwrap()
+            .is_none(),
+        "no admin entry may be written for the invitee"
     );
 }
