@@ -1416,6 +1416,16 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        trust_task_pushes_ks: store
+            .keyspace(crate::keyspaces::TRUST_TASK_PUSHES)
+            .expect("trust_task_pushes keyspace"),
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        outbox_ks: store
+            .keyspace(crate::keyspaces::OUTBOX)
+            .expect("outbox keyspace"),
+        #[cfg(all(test, any(feature = "didcomm", feature = "tsp")))]
+        push_log: Default::default(),
         // Not feature-gated, in test scaffolding as in `build_app_state`: reply
         // correlation is a document concern, so the spine consults it on every
         // transport. A test agent with no registry would dispatch a reply as a
@@ -2157,6 +2167,7 @@ impl MockVta {
             &vta_did,
             &mediator_did,
             ctx.outbox_ks.clone(),
+            ctx.state.trust_task_pushes_ks.clone(),
             ctx.relationships_ks.clone(),
             std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ctx.state.did_resolver.as_ref(),

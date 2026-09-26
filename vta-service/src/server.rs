@@ -290,6 +290,16 @@ pub struct AppState {
     /// Populated by the inbound TSP dispatcher from the proven `sender_vid`.
     #[cfg(feature = "tsp")]
     pub tsp_reach: Arc<crate::messaging::tsp_reach::TspReachability>,
+    /// Trust Task pushes in flight or recently finished
+    /// (`crate::messaging::push`). Encrypted at rest.
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    pub trust_task_pushes_ks: KeyspaceHandle,
+    /// The delivery layer's outbox, read by the push sweep for evidence.
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    pub outbox_ks: KeyspaceHandle,
+    /// What each push site handed to `crate::messaging::push` (unit tests).
+    #[cfg(all(test, any(feature = "didcomm", feature = "tsp")))]
+    pub push_log: crate::messaging::push::PushLog,
 
     /// Waiters for replies to Trust Tasks this agent sent.
     ///
@@ -503,6 +513,11 @@ pub async fn build_app_state(
     let persona_correlation_key = crate::restore::persona_correlation_key(storage_encryption_key);
     let policy_ks = apply_encryption(store.keyspace(crate::keyspaces::POLICY)?);
     let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    let trust_task_pushes_ks =
+        apply_encryption(store.keyspace(crate::keyspaces::TRUST_TASK_PUSHES)?);
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    let outbox_ks = apply_encryption(store.keyspace(crate::keyspaces::OUTBOX)?);
     #[cfg(feature = "webvh")]
     let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
     #[cfg(feature = "webvh")]
@@ -627,6 +642,12 @@ pub async fn build_app_state(
             .unwrap_or_else(|| Arc::new(DIDCommBridge::placeholder())),
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        trust_task_pushes_ks,
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        outbox_ks,
+        #[cfg(all(test, any(feature = "didcomm", feature = "tsp")))]
+        push_log: Default::default(),
         pending_replies: crate::trust_tasks::pending_replies::PendingReplies::new(),
         #[cfg(feature = "tsp")]
         tsp_recovery: Arc::new(affinidi_messaging_sdk::RecoveryCoordinator::new(
@@ -1327,6 +1348,9 @@ pub async fn run(
                             ),
                         );
                     }
+                    // Durable Trust Task pushes: one sweep for the life of the
+                    // process, reading the current session each pass.
+                    tokio::spawn(crate::messaging::push::sweep_loop(app_state.clone()));
                     let supervisor = MessagingConnect {
                         app_state: app_state.clone(),
                         vta_did: vta_did.clone(),
@@ -2681,6 +2705,7 @@ impl MessagingConnect {
                 vta_did,
                 &messaging_config.mediator_did,
                 self.outbox_ks.clone(),
+                app_state.trust_task_pushes_ks.clone(),
                 self.relationships_ks.clone(),
                 self.relationship_drop_counter.clone(),
                 app_state.did_resolver.as_ref(),

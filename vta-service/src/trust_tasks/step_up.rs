@@ -33,7 +33,7 @@
 //! authenticates the ask, the challenge scopes the approval.
 
 // Only the DIDComm send below bounds its delivery window.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 use std::time::Duration;
 
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
@@ -894,59 +894,94 @@ pub(super) async fn approver_mediator(
     route_for(approver_did, advertised.as_deref(), configured)
 }
 
-/// Deliver a signed Trust-Task document to `recipient` over **TSP** when we have
-/// fresh learn-from-inbound proof it's listening on TSP (a `did:key` device
-/// can't advertise `#tsp`, so its inbound TSP frames are the only signal — see
-/// [`crate::messaging::tsp_reach`]). Routes the document, wrapped in the TSP
-/// binding envelope ([`vta_sdk::tsp_binding`]), through the shared
-/// mediator; §3 resolved to 3c (relationship-free routed send — see
-/// `docs/05-design-notes/tsp-outbound-send.md`), so no relationship setup is
-/// needed. Returns `true` if delivered over TSP, `false` to fall back to DIDComm
-/// (not TSP-reachable, TSP transport not connected on this node, or a send error).
+/// What became of a push to a device ([`push_to_device`]).
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(super) enum DevicePush {
+    /// Queued durably; the push engine now owns delivery and escalation.
+    Queued { push: String, mediator: String },
+    /// No mediator route to the recipient ([`approver_mediator`]); nothing was
+    /// sent, and the relay copy is the only way it learns of the document.
+    NoRoute { configured_mediator: Option<String> },
+    /// A route, but the push engine would not queue it (no transport both sides
+    /// speak, or messaging down); logged by [`push_to_device`].
+    Refused,
+}
+
+/// Push a signed Trust Task document to a device — an approver, a requester —
+/// durably, then ring its doorbell.
 ///
-/// The mediator is not a parameter: it is a property of the profile that seals
-/// the frame, and [`TspTransport`](crate::messaging::tsp_transport::TspTransport)
-/// reads it from there. The caller's `approver_mediator` decision still gates
-/// whether a push is attempted at all — it also picks the route for the DIDComm
-/// fallback, which has no profile to read.
-#[cfg(feature = "tsp")]
-pub(super) async fn try_push_over_tsp(state: &AppState, recipient: &str, doc: &Value) -> bool {
-    if !state.tsp_reach.fresh(recipient) {
-        return false;
-    }
-    let Some(transport) = state.tsp_transport() else {
-        return false; // TSP transport not connected on this node
+/// The route decision is unchanged: [`approver_mediator`] still decides
+/// whether the recipient can be reached at all, and a routable DID is never
+/// sent through a mediator it is not registered with. Delivery is the push
+/// engine's (`crate::messaging::push`, over `vti_common::trust_task_push`): the
+/// transport both sides speak — TSP first for a device recently seen on it
+/// (`tsp_reach`) — durably queued, and escalated to the next transport when an
+/// attempt produces no evidence of collection. The document is carried
+/// unchanged on every attempt, so the recipient deduplicates by its `id`.
+///
+/// The doorbell rings once, when the first attempt is queued: a backgrounded
+/// device is roused to collect whatever is waiting, and a later escalation
+/// finds it awake or not at all.
+///
+/// Best-effort for the caller: every push here has a relay copy in the task's
+/// own answer, so nothing that goes wrong here fails the task.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(super) async fn push_to_device(
+    state: &AppState,
+    recipient: &str,
+    document: &Value,
+    deliver_by: Duration,
+) -> DevicePush {
+    // Cloned out so the config read-lock is released before the route decision:
+    // resolving a routable recipient's DID document is network I/O, and holding
+    // the lock across it stalls every config writer for that long.
+    let configured_mediator = {
+        let cfg = state.config.read().await;
+        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
     };
-    let body = match serde_json::to_vec(doc) {
-        Ok(b) => b,
+    let Some(mediator) = approver_mediator(
+        recipient,
+        configured_mediator.as_deref(),
+        state.did_resolver.as_ref(),
+    )
+    .await
+    else {
+        return DevicePush::NoRoute {
+            configured_mediator,
+        };
+    };
+
+    let push = match crate::messaging::push::push_trust_task(
+        state,
+        recipient,
+        document.clone(),
+        deliver_by,
+    )
+    .await
+    {
+        Ok(push) => push,
         Err(e) => {
-            tracing::warn!(error = %e, recipient = %recipient, "serialising TSP push failed; DIDComm fallback");
-            return false;
+            tracing::warn!(
+                error = %e, recipient = %recipient, mediator = %mediator,
+                "could not queue the push to the device; relay fallback applies"
+            );
+            return DevicePush::Refused;
         }
     };
-    // Wrapped in the binding envelope, like everything else this service puts
-    // on a TSP wire. A push is still a Trust Task travelling over TSP; that it
-    // expects no reply changes nothing about how it is carried, and sending
-    // this one bare would leave exactly one frame in the system speaking the
-    // old dialect — the hardest kind to find later.
-    let body = vta_sdk::tsp_binding::wrap_envelope(&body);
-    match transport.send_to(recipient, &body).await {
-        Ok(_) => {
-            tracing::debug!(recipient = %recipient, "delivered Trust-Task over TSP (learn-from-inbound)");
-            true
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, recipient = %recipient, "TSP push failed; falling back to DIDComm");
-            false
-        }
-    }
+
+    // Ring the doorbell so a backgrounded device rouses now rather than on its
+    // next voluntary pickup. Contentless by design — the wake says only "you
+    // have mail", never what the task is or who is asking.
+    #[cfg(feature = "didcomm")]
+    trigger_gateway_wake(state, recipient, &mediator).await;
+    DevicePush::Queued { push, mediator }
 }
 
 /// Best-effort proactive delivery of a delegated step-up approve-request to the
-/// approver's device over DIDComm, by buffering a forward through the resolved
-/// mediator. No-op for self-approval (`recipient == caller`). Failures are
-/// swallowed — the `403`/reject still carries the approve-request as a relay
-/// fallback, so the proxied push is an enhancement, never a hard dependency.
+/// approver's device ([`push_to_device`]). No-op for self-approval
+/// (`recipient == caller`). Failures are swallowed — the `403`/reject still
+/// carries the approve-request as a relay fallback, so the push is an
+/// enhancement, never a hard dependency.
 async fn maybe_push_step_up(
     state: &AppState,
     recipient: &str,
@@ -957,118 +992,25 @@ async fn maybe_push_step_up(
     if recipient == caller_did {
         return; // self mode — the caller satisfies its own step-up.
     }
-    // Cloned out so the config read-lock is released before the route decision:
-    // resolving a routable approver's DID document is network I/O, and holding
-    // the lock across it stalls every config writer for that long.
-    let configured_mediator = {
-        let cfg = state.config.read().await;
-        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
-    };
-    let mediator_did = approver_mediator(
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    match push_to_device(
+        state,
         recipient,
-        configured_mediator.as_deref(),
-        state.did_resolver.as_ref(),
+        approve_request,
+        Duration::from_secs(STEP_UP_TTL_SECS),
     )
-    .await;
-    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
-    let Some(mediator_did) = mediator_did else {
-        tracing::debug!(
+    .await
+    {
+        DevicePush::Queued { push, mediator } => tracing::info!(
+            approver = %recipient, mediator = %mediator, push = %push,
+            "delegated step-up approve-request queued for the approver"
+        ),
+        DevicePush::NoRoute { .. } => tracing::debug!(
             approver = %recipient,
             "no mediator route for delegated approver; relying on the relay fallback"
-        );
-        return;
-    };
-    // Prefer TSP when the device was recently seen on it (learn-from-inbound);
-    // a fresh hit delivers over TSP and rings the doorbell, otherwise fall
-    // through to the DIDComm path below.
-    #[cfg(feature = "tsp")]
-    if try_push_over_tsp(state, recipient, approve_request).await {
-        #[cfg(feature = "didcomm")]
-        trigger_gateway_wake(state, recipient, &mediator_did).await;
-        return;
+        ),
+        DevicePush::Refused => {}
     }
-    #[cfg(feature = "didcomm")]
-    {
-        // `webvh`, not `didcomm`: `AppState::mediator_registry` only exists
-        // under `webvh`, while `PendingResponse`'s module needs only
-        // `didcomm`. The comment below is explicit that this buffer never
-        // reaches the device on its own — the send that follows is the
-        // delivery path, and it stays on `didcomm`.
-        #[cfg(feature = "webvh")]
-        {
-            let pending = crate::messaging::registry::PendingResponse {
-                recipient_did: recipient.to_string(),
-                // The DIDComm binding's envelope type, NOT the task type. A
-                // conformant approver unwraps `ENVELOPE_TYPE` and reads the
-                // `TrustTask` from the body; anything else it rejects, and
-                // rejects *silently* — "not an envelope" is indistinguishable
-                // from "not addressed to me". This path had the same defect as
-                // the consent request (#900) and nobody noticed, because the
-                // relay fallback below hides it: the reject still carries the
-                // approveRequest, so the flow completes via the slow path and
-                // only the proactive push is dead.
-                //
-                // `STEP_UP_APPROVE_REQUEST_TYPE` remains the document's own
-                // `type` — it moved into the envelope, it did not disappear.
-                // TSP is untouched above: it carries the document bytes
-                // directly, so the wrapper belongs to the DIDComm binding, not
-                // to the task.
-                message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
-                body: approve_request.clone(),
-                thread_id: approve_request
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-            };
-            if let Err(e) = state
-                .mediator_registry
-                .buffer_outbound(&mediator_did, pending)
-                .await
-            {
-                tracing::warn!(
-                    error = %e, approver = %recipient, mediator = %mediator_did,
-                    "failed to buffer delegated step-up push; relay fallback applies"
-                );
-            }
-        }
-
-        // Actually deliver it: send the approve-request straight to the
-        // approver's device over the mediator. `buffer_outbound` alone never
-        // reaches the device (nothing drains it in steady state); this is the
-        // send. The device replies later with a separate approve-response, so
-        // it's fire-and-forget from this thread. Delivery-critical, so it goes
-        // Guaranteed: durably queued + retried across websocket reconnects
-        // (a bare send silently dropped the frame mid-reconnect — R1.1), keyed
-        // by the approve-request id so retries dedup. The reject still carries
-        // the approveRequest as the relay fallback if the window elapses.
-        if let Err(e) = state
-            .didcomm_bridge
-            .send_guaranteed(
-                "vta-main",
-                recipient,
-                // Envelope type, per the DIDComm binding — see the buffer above.
-                TRUST_TASK_ENVELOPE_TYPE,
-                approve_request.clone(),
-                approve_request
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                Duration::from_secs(STEP_UP_TTL_SECS),
-            )
-            .await
-        {
-            tracing::warn!(
-                error = %e, approver = %recipient,
-                "delegated step-up push enqueue failed; relay fallback applies"
-            );
-        }
-    }
-
-    // VTA-trigger: wake the approver's device via its push gateway so a
-    // backgrounded device is roused now, rather than only finding the queued
-    // approve-request on its next voluntary pickup. Best-effort.
-    #[cfg(feature = "didcomm")]
-    trigger_gateway_wake(state, recipient, &mediator_did).await;
 }
 
 /// The unsigned `push/wake/0.2` request [`trigger_gateway_wake`] signs and
@@ -1792,7 +1734,7 @@ mod envelope_push_tests {
     /// ceremony completes by the slow route while the proactive push lands in a
     /// void — delivered, acked, unreadable.
     #[tokio::test]
-    async fn delegated_step_up_push_is_an_envelope() {
+    async fn delegated_step_up_is_pushed_to_the_approver() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
 
         state
@@ -1825,13 +1767,8 @@ mod envelope_push_tests {
 
         super::maybe_push_step_up(&state, APPROVER, CALLER, &approve_request).await;
 
-        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        let pushed = crate::messaging::push::take_pushes(&state);
         assert_eq!(pushed.len(), 1, "the approver is pushed exactly once");
-        assert_eq!(
-            pushed[0].message_type,
-            trust_tasks_didcomm::ENVELOPE_TYPE,
-            "the DIDComm message must carry the binding's envelope type"
-        );
         assert_eq!(
             pushed[0].body.get("type").and_then(|t| t.as_str()),
             Some(super::STEP_UP_APPROVE_REQUEST_TYPE),

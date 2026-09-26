@@ -23,11 +23,6 @@
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-// Carries the same gate as `CONSENT_APPROVE_REQUEST_TYPE` below: its only use is
-// the mediator-registry buffer, which needs the `webvh`-gated
-// `AppState::mediator_registry`. From the binding crate, never copied (#900).
-#[cfg(all(feature = "didcomm", feature = "webvh"))]
-use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
 
@@ -410,18 +405,21 @@ pub(super) async fn handle_request(
     )
 }
 
-/// DIDComm message type carrying a consent prompt to a `wake`-routed approver's
+/// Trust Task type of the consent prompt pushed to a `wake`-routed approver's
 /// device, which renders it and replies with a signed `consent/decision`.
-// `webvh` as well as `didcomm`: its only consumer is the mediator-registry
-// buffer below, which needs the `webvh`-gated `AppState::mediator_registry`.
-#[cfg(all(feature = "didcomm", feature = "webvh"))]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 const CONSENT_APPROVE_REQUEST_TYPE: &str =
     "https://trusttasks.org/spec/consent/approve-request/0.1";
 
-/// Rouse a `wake`-routed approver: buffer the consent prompt to their mediator
-/// and ring the push-gateway doorbell. Best-effort; mirrors the step-up wake
-/// path (`maybe_push_step_up` + `trigger_gateway_wake`).
-#[cfg(feature = "didcomm")]
+/// Rouse a `wake`-routed approver: push the signed consent prompt to their
+/// device (`step_up::push_to_device`) and ring its doorbell. Best-effort — the
+/// bridge-relay card remains the fallback.
+///
+/// Until this moved onto the durable push, the prompt was only placed in the
+/// mediator registry's in-memory buffer, which nothing in production drains,
+/// and the doorbell then woke the device to collect a document that had never
+/// been sent.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 #[allow(clippy::too_many_arguments)]
 async fn maybe_wake_consent_approver(
     state: &AppState,
@@ -432,79 +430,36 @@ async fn maybe_wake_consent_approver(
     display_hint: Option<&str>,
     first_message_digest: Option<&str>,
 ) {
-    // Lock released before the route decision — see `maybe_push_step_up`.
-    let configured_mediator = {
-        let cfg = state.config.read().await;
-        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
-    };
-    let mediator_did = super::step_up::approver_mediator(
-        approver,
-        configured_mediator.as_deref(),
-        state.did_resolver.as_ref(),
-    )
-    .await;
-    let Some(mediator_did) = mediator_did else {
-        tracing::debug!(
+    // Built member-by-member so an unset hint is *absent*, not `null`.
+    // `json!` with an `Option` writes the null, and the approver's renderer has
+    // to tell "no label supplied" from "the label is null" — only the first is
+    // a thing that can happen.
+    let mut prompt_payload = serde_json::Map::new();
+    prompt_payload.insert("subject".into(), subject);
+    prompt_payload.insert("scope".into(), serde_json::json!(scope));
+    prompt_payload.insert("challenge".into(), serde_json::json!(challenge));
+    if let Some(h) = display_hint {
+        prompt_payload.insert("displayHint".into(), serde_json::json!(h));
+    }
+    if let Some(d) = first_message_digest {
+        prompt_payload.insert("firstMessageDigest".into(), serde_json::json!(d));
+    }
+    // Signed, like every other document this stack pushes to a human's device,
+    // with the operational key under `authentication`: a prompt asking a person
+    // to approve something must be authenticated by something the device can
+    // check. `issuer` and `recipient` come with it, not as decoration: SPEC
+    // §7.2 item 5b makes `recipient` REQUIRED and item 6 requires the in-band
+    // issuer to match the transport identity. A proof over a document naming
+    // neither party can be replayed at a different approver.
+    let Some(vta_did) = state.config.read().await.vta_did.clone() else {
+        tracing::warn!(
             approver = %approver,
-            "no mediator route for wake approver; mediator pickup / relay fallback applies"
+            "VTA DID not configured; cannot sign consent approve-request, skipping wake"
         );
         return;
     };
-    // Buffering into the mediator registry is `webvh`-gated, not `didcomm`-gated:
-    // `AppState::mediator_registry` only exists under `webvh` (server.rs), even
-    // though `PendingResponse`'s module only needs `didcomm`. Naming the type
-    // therefore compiles in a didcomm-without-webvh build while the field does
-    // not exist — which is exactly how this broke that feature combination.
-    //
-    // Skipping it there is the correct behaviour, not a degradation: without
-    // `webvh` there is no registry to buffer into, and the approver still gets
-    // the request by mediator pickup — the same fallback the error arm below
-    // already relies on.
-    #[cfg(feature = "webvh")]
-    {
-        // Built member-by-member so an unset hint is *absent*, not `null`.
-        // `json!` with an `Option` writes the null, and the approver's renderer
-        // has to tell "no label supplied" from "the label is null" — only the
-        // first is a thing that can happen.
-        let mut prompt_payload = serde_json::Map::new();
-        prompt_payload.insert("subject".into(), subject);
-        prompt_payload.insert("scope".into(), serde_json::json!(scope));
-        prompt_payload.insert("challenge".into(), serde_json::json!(challenge));
-        if let Some(h) = display_hint {
-            prompt_payload.insert("displayHint".into(), serde_json::json!(h));
-        }
-        if let Some(d) = first_message_digest {
-            prompt_payload.insert("firstMessageDigest".into(), serde_json::json!(d));
-        }
-        // Signed, like every other document this stack pushes to a human's
-        // device. It was not, and that was the whole of its protection: a
-        // prompt asking a person to approve something, authenticated by
-        // nothing the device could check.
-        //
-        // The sibling task-consent request (`consent_request.rs`) already
-        // signs with this key and cryptosuite, and the step-up prompt's mobile
-        // parser refuses to render without a verified proof from an enrolled
-        // issuer (`vta-mobile-core::task::parse_step_up_request`). This is the
-        // odd one out rather than a deliberate exception.
-        //
-        // `issuer` and `recipient` come with it, not as decoration: SPEC §7.2
-        // item 5b makes `recipient` REQUIRED and item 6 requires the in-band
-        // issuer to match the transport identity. A proof over a document
-        // naming neither party can be replayed at a different approver.
-        let Some(vta_did) = state.config.read().await.vta_did.clone() else {
-            tracing::warn!(
-                approver = %approver,
-                "VTA DID not configured; cannot sign consent approve-request, skipping wake"
-            );
-            return;
-        };
-        let secret = match super::load_operational_secret(
-            state,
-            &vta_did,
-            "consent-approve-request",
-        )
-        .await
-        {
+    let secret =
+        match super::load_operational_secret(state, &vta_did, "consent-approve-request").await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
@@ -514,91 +469,65 @@ async fn maybe_wake_consent_approver(
                 return;
             }
         };
-
-        let unsigned = serde_json::json!({
-            "id": format!("urn:uuid:{}", Uuid::new_v4()),
-            "type": CONSENT_APPROVE_REQUEST_TYPE,
-            "issuer": vta_did,
-            "recipient": approver,
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": prompt_payload,
-        });
-
-        // Fail closed. The existing buffer-failure arm below warns and leaves
-        // the approver to mediator pickup, and an unsignable prompt takes the
-        // same route — a document that cannot be authenticated must not be the
-        // one that reaches the phone, and "no prompt" is recoverable in a way
-        // that "unverifiable prompt" is not.
-        let proof = match DataIntegrityProof::sign(
-            &unsigned,
-            &secret,
-            SignOptions::new()
-                .with_proof_purpose("authentication")
-                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e, approver = %approver,
-                    "failed to sign consent approve-request, skipping wake"
-                );
-                return;
-            }
-        };
-        let mut approve_request = unsigned;
-        match serde_json::to_value(&proof) {
-            Ok(v) => approve_request["proof"] = v,
-            Err(e) => {
-                tracing::warn!(error = %e, approver = %approver, "could not serialize proof");
-                return;
-            }
-        }
-        let pending = crate::messaging::registry::PendingResponse {
-            recipient_did: approver.to_string(),
-            // Envelope type, not the task type. `approve_request` above is a
-            // Trust Task document (`id`/`type`/`payload`) and the DIDComm
-            // binding requires it in the body of an `ENVELOPE_TYPE` message; a
-            // conformant approver silently rejects anything else. Same defect,
-            // same fix as the task-consent request (#900) and the step-up push.
-            //
-            // `CONSENT_APPROVE_REQUEST_TYPE` is still the document's own `type`
-            // — it belongs to the `spec/consent/*` family (the conversation
-            // consent protocol: request / decision / revoke / list), not to the
-            // `spec/task-consent/*` family that `consent_request.rs` serves.
-            // Neither family puts its task type on the DIDComm envelope.
-            message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
-            body: approve_request.clone(),
-            thread_id: approve_request
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        };
-        if let Err(e) = state
-            .mediator_registry
-            .buffer_outbound(&mediator_did, pending)
-            .await
-        {
+    let unsigned = serde_json::json!({
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "type": CONSENT_APPROVE_REQUEST_TYPE,
+        "issuer": vta_did,
+        "recipient": approver,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": prompt_payload,
+    });
+    // Fail closed: a document that cannot be authenticated must not be the one
+    // that reaches the phone, and "no prompt" is recoverable in a way that
+    // "unverifiable prompt" is not.
+    let proof = match DataIntegrityProof::sign(
+        &unsigned,
+        &secret,
+        SignOptions::new()
+            .with_proof_purpose("authentication")
+            .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
             tracing::warn!(
-                error = %e, approver = %approver, mediator = %mediator_did,
-                "failed to buffer consent approve-request; mediator pickup applies"
+                error = %e, approver = %approver,
+                "failed to sign consent approve-request, skipping wake"
             );
+            return;
+        }
+    };
+    let mut approve_request = unsigned;
+    match serde_json::to_value(&proof) {
+        Ok(v) => approve_request["proof"] = v,
+        Err(e) => {
+            tracing::warn!(error = %e, approver = %approver, "could not serialize proof");
+            return;
         }
     }
-    #[cfg(not(feature = "webvh"))]
-    let _ = (
-        &subject,
-        &scope,
-        challenge,
-        display_hint,
-        first_message_digest,
-    );
 
-    super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
+    match super::step_up::push_to_device(
+        state,
+        approver,
+        &approve_request,
+        std::time::Duration::from_secs(PENDING_TTL_SECS),
+    )
+    .await
+    {
+        super::step_up::DevicePush::Queued { push, mediator } => tracing::info!(
+            approver = %approver, mediator = %mediator, push = %push,
+            "consent approve-request queued for the wake approver"
+        ),
+        super::step_up::DevicePush::NoRoute { .. } => tracing::debug!(
+            approver = %approver,
+            "no mediator route for wake approver; relay fallback applies"
+        ),
+        super::step_up::DevicePush::Refused => {}
+    }
 }
 
-#[cfg(not(feature = "didcomm"))]
+#[cfg(not(any(feature = "didcomm", feature = "tsp")))]
 #[allow(clippy::too_many_arguments)]
 async fn maybe_wake_consent_approver(
     _state: &AppState,
@@ -1079,7 +1008,7 @@ mod envelope_push_tests {
     /// consent), not `spec/task-consent/*`. Neither family puts its task type on
     /// the DIDComm envelope — the envelope belongs to the binding, not the task.
     #[tokio::test]
-    async fn consent_approve_request_is_pushed_as_an_envelope() {
+    async fn consent_approve_request_is_pushed_to_the_approver() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
 
         state
@@ -1117,13 +1046,8 @@ mod envelope_push_tests {
         )
         .await;
 
-        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        let pushed = crate::messaging::push::take_pushes(&state);
         assert_eq!(pushed.len(), 1, "the approver is roused exactly once");
-        assert_eq!(
-            pushed[0].message_type,
-            trust_tasks_didcomm::ENVELOPE_TYPE,
-            "the DIDComm message must carry the binding's envelope type"
-        );
         assert_eq!(
             pushed[0].body.get("type").and_then(|t| t.as_str()),
             Some(super::CONSENT_APPROVE_REQUEST_TYPE),
