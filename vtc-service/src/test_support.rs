@@ -737,6 +737,8 @@ pub fn served_trust_task_uris() -> Vec<&'static str> {
 pub use didcomm_harness::Carriage;
 #[cfg(feature = "didcomm-harness")]
 pub use didcomm_harness::{MockVtcDidcomm, ProblemReport, ReplyOutcome, TestJoinClient};
+#[cfg(all(feature = "didcomm-harness", feature = "tsp"))]
+pub use didcomm_harness::{PendingTspPeer, TestTspPeer};
 
 /// In-process DIDComm join-requests harness (#436).
 ///
@@ -1713,6 +1715,167 @@ mod didcomm_harness {
         }
     }
 
+    /// A peer the VTC reaches **over TSP**: a `did:peer` advertising only
+    /// `TSPTransport` on the shared mediator, which receives the way the VTC
+    /// itself does.
+    ///
+    /// It runs the delivery layer over its own mediator socket — a
+    /// `DidCommTransport`, which classifies every frame by protocol — accepts
+    /// the relationship invite a first TSP send carries (Rev 3 §7.2.2), and
+    /// hands each TSP application frame's document to
+    /// [`next_trust_task`](Self::next_trust_task), with the binding envelope
+    /// taken off. So a test sees exactly what a TSP peer would.
+    ///
+    /// Advertising TSP alone is deliberate: a peer that also offered DIDComm
+    /// would let a push that silently fell back to DIDComm pass a test meant to
+    /// prove TSP.
+    #[cfg(feature = "tsp")]
+    pub struct TestTspPeer {
+        atm: Arc<ATM>,
+        did: String,
+        docs: Mutex<tokio::sync::mpsc::UnboundedReceiver<Value>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    /// A [`TestTspPeer`] with its DID registered and its socket not yet open.
+    #[cfg(feature = "tsp")]
+    pub struct PendingTspPeer {
+        did: String,
+        secrets: Vec<Secret>,
+        mediator_did: String,
+    }
+
+    #[cfg(feature = "tsp")]
+    impl PendingTspPeer {
+        /// The peer's DID — what the VTC resolves and pushes to.
+        pub fn did(&self) -> &str {
+            &self.did
+        }
+
+        /// Open the socket and start receiving.
+        pub async fn connect(self) -> TestTspPeer {
+            TestTspPeer::connect(self.did, &self.secrets, &self.mediator_did).await
+        }
+    }
+
+    #[cfg(feature = "tsp")]
+    impl TestTspPeer {
+        /// Mint the peer's identity. Separate from [`connect`](Self::connect)
+        /// because the DID has to be a local mediator account before its
+        /// socket can authenticate.
+        fn mint(mediator_did: &str) -> (String, Vec<Secret>) {
+            use affinidi_tdk::dids::{
+                OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+            };
+
+            // `TSPTransport` naming the mediator DID — the workspace convention
+            // for `#tsp`, and what makes the VTC route through its own mediator
+            // rather than nest.
+            let (did, secrets) = DID::generate_did_peer_with_services(
+                peer_key_roles(),
+                Some(vec![PeerService {
+                    type_: "TSPTransport".into(),
+                    endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                        uri: mediator_did.to_string(),
+                        accept: vec![],
+                        routing_keys: vec![],
+                    })),
+                    id: None,
+                }]),
+            )
+            .expect("mint a TSP-advertising did:peer");
+            assert!(
+                did.len() < 1_000,
+                "TSP peer did:peer is {} bytes, over the stock resolver's 1000-byte limit",
+                did.len()
+            );
+            (did, secrets)
+        }
+
+        async fn connect(did: String, secrets: &[Secret], mediator_did: &str) -> Self {
+            use affinidi_messaging_core::{InboundKind, Protocol as CoreProtocol};
+            use affinidi_messaging_delivery::{InMemoryOutboxStore, MessagingService};
+            use affinidi_tdk::messaging::DidCommTransport;
+            use futures_util::StreamExt as _;
+
+            let atm = Arc::new(build_atm(secrets).await);
+            let profile = ATMProfile::new(&atm, None, did.clone(), Some(mediator_did.to_string()))
+                .await
+                .expect("TSP peer profile");
+            let profile = atm
+                .profile_add(&profile, false)
+                .await
+                .expect("register TSP peer profile");
+            atm.profile_enable_websocket(&profile)
+                .await
+                .expect("TSP peer websocket");
+
+            let transport: Arc<dyn affinidi_messaging_core::MessageTransport> = Arc::new(
+                DidCommTransport::new((*atm).clone(), profile.clone())
+                    .await
+                    .expect("bind the TSP peer's transport"),
+            );
+            let service = Arc::new(MessagingService::new(
+                transport,
+                Arc::new(InMemoryOutboxStore::default()),
+            ));
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut stream = service.subscribe();
+            let task_atm = atm.clone();
+            let task = tokio::spawn(async move {
+                // Keep the service alive for as long as the loop reads from it.
+                let _service = service;
+                while let Some(inbound) = stream.next().await {
+                    if inbound.message.protocol != CoreProtocol::TSP {
+                        continue;
+                    }
+                    let Some(sender) = inbound.message.sender.clone() else {
+                        continue;
+                    };
+                    if let InboundKind::RelationshipControl { thread_digest, .. } = inbound.kind {
+                        // Accept, as the VTC's own `handle_tsp_control` does.
+                        let _ = task_atm
+                            .tsp()
+                            .accept_relationship(&profile, &sender, thread_digest)
+                            .await;
+                        continue;
+                    }
+                    let body = vta_sdk::tsp_binding::open_envelope(&inbound.message.payload)
+                        .unwrap_or_else(|_| inbound.message.payload.clone());
+                    if let Ok(doc) = serde_json::from_slice::<Value>(&body) {
+                        let _ = tx.send(doc);
+                    }
+                }
+            });
+            TestTspPeer {
+                atm,
+                did,
+                docs: Mutex::new(rx),
+                task,
+            }
+        }
+
+        /// The peer's DID — what the VTC resolves and pushes to.
+        pub fn did(&self) -> &str {
+            &self.did
+        }
+
+        /// The next Trust Task document this peer received over TSP, with the
+        /// binding envelope off. `None` on timeout.
+        pub async fn next_trust_task(&self, timeout: Duration) -> Option<Value> {
+            tokio::time::timeout(timeout, self.docs.lock().await.recv())
+                .await
+                .ok()
+                .flatten()
+        }
+
+        /// Stop the peer's receive loop and its socket.
+        pub async fn shutdown(&self) {
+            self.task.abort();
+            self.atm.graceful_shutdown().await;
+        }
+    }
+
     /// A mock VTC serving the join-requests protocol over DIDComm, plus a
     /// connected applicant client. See module docs.
     pub struct MockVtcDidcomm {
@@ -1902,6 +2065,32 @@ mod didcomm_harness {
         ///
         /// The caller owns the returned client's shutdown — [`shutdown`](Self::shutdown)
         /// only knows about the applicant.
+        /// Connect a peer that advertises only `TSPTransport` and receives over
+        /// TSP. See [`TestTspPeer`]. The caller owns its shutdown.
+        #[cfg(feature = "tsp")]
+        pub async fn connect_tsp_peer(&self) -> TestTspPeer {
+            self.register_tsp_peer().await.connect().await
+        }
+
+        /// A TSP peer registered on the mediator but **not yet connected**, so
+        /// what is sent to it waits at the mediator until
+        /// [`PendingTspPeer::connect`]. For a test that needs to observe a
+        /// message queued before it is collected — the delivery layer only
+        /// counts a collection it saw the message waiting for.
+        #[cfg(feature = "tsp")]
+        pub async fn register_tsp_peer(&self) -> PendingTspPeer {
+            let (did, secrets) = TestTspPeer::mint(self.mediator.did());
+            self.mediator
+                .register_local_did(&did)
+                .await
+                .expect("register the TSP peer as a local mediator account");
+            PendingTspPeer {
+                did,
+                secrets,
+                mediator_did: self.mediator.did().to_string(),
+            }
+        }
+
         pub async fn connect_registry_peer(&self) -> TestJoinClient {
             let (did, secrets) = mint_didcomm_peer(self.mediator.did());
             self.mediator

@@ -80,6 +80,12 @@ use crate::server::AppState;
 /// not hold a removal notice for its whole thirty-day window.
 pub const ATTEMPT_WINDOW: Duration = Duration::from_secs(60 * 60);
 
+/// How long an attempt may be missing from the outbox before the sweep
+/// concludes it was never queued. The record is written before the entry, so a
+/// sweep landing between the two sees no entry — which means "not queued yet",
+/// never "delivered" or "failed".
+const ENQUEUE_GRACE: Duration = Duration::from_secs(30);
+
 /// How long a finished push's record is kept, as the record of which evidence
 /// its delivery rests on (VTI-TRN-041), before the sweep removes it.
 const FINISHED_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -112,6 +118,9 @@ struct PushRecord {
     rest_base: Option<String>,
     /// Overall deadline, epoch milliseconds.
     deadline_ms: u64,
+    /// When the attempt in flight was queued, epoch milliseconds.
+    #[serde(default)]
+    queued_at_ms: u64,
     #[serde(default)]
     outcome: Option<PushOutcome>,
 }
@@ -320,6 +329,7 @@ pub async fn push_trust_task(
         peer_tsp_mediator: reach.tsp_mediator,
         rest_base: reach.rest_base,
         deadline_ms: now_ms().saturating_add(deliver_by.as_millis() as u64),
+        queued_at_ms: 0,
         outcome: None,
     };
     // An attempt that cannot even be queued moves straight on; only when no
@@ -375,6 +385,7 @@ async fn queue_attempt(state: &AppState, record: &mut PushRecord) -> Result<(), 
     };
     let window = Duration::from_millis(window_ms);
     record.attempt_key = format!("{}:{}:{}", record.id, record.attempt, record.current);
+    record.queued_at_ms = now;
     // The record is written before the attempt is queued, so a transport that
     // drains the entry at once finds what it has to send.
     store_record(state, record).await?;
@@ -483,7 +494,9 @@ pub async fn sweep(state: &AppState) -> Result<(), AppError> {
         // evidence in its window. Treated here, rather than after the delivery
         // layer's own settle pass, so escalation is not held for it.
         let expired = entry.as_ref().is_some_and(|e| now >= e.deliver_by_ms);
-        match entry.map(|e| e.state) {
+        let observed = entry.as_ref().is_some_and(|e| e.outbox_observed);
+        let entry_state = entry.map(|e| e.state);
+        match entry_state {
             Some(OutboxState::Delivered) => {
                 finish(state, &mut record, true, "collected").await?;
             }
@@ -494,9 +507,34 @@ pub async fn sweep(state: &AppState) -> Result<(), AppError> {
                 finish(state, &mut record, true, "reply").await?;
             }
             Some(OutboxState::Queued | OutboxState::Sent) if !expired => {}
+            // Not in the outbox. Just queued, and the entry is not written yet:
+            // wait. Long past that: the enqueue never happened (the process
+            // died between the record and the entry), so queue this same
+            // attempt again rather than give up on a transport never tried.
+            None if now.saturating_sub(record.queued_at_ms) < ENQUEUE_GRACE.as_millis() as u64 => {}
+            None => {
+                warn!(
+                    push = %record.id,
+                    attempt = %record.attempt_key,
+                    "member push attempt was never queued; queuing it again"
+                );
+                if let Err(e) = queue_attempt(state, &mut record).await {
+                    warn!(push = %record.id, error = %e, "could not re-queue the member push");
+                    escalate(state, &mut record).await?;
+                }
+            }
             Some(OutboxState::Queued | OutboxState::Sent)
-            | Some(OutboxState::Failed | OutboxState::Unconfirmed)
-            | None => {
+            | Some(OutboxState::Failed | OutboxState::Unconfirmed) => {
+                // Why this attempt is being given up on — the one fact needed
+                // to tell a lost message from a slow one afterwards.
+                debug!(
+                    push = %record.id,
+                    attempt = %record.attempt_key,
+                    state = ?entry_state,
+                    expired,
+                    observed,
+                    "member push attempt ended without delivery evidence"
+                );
                 escalate(state, &mut record).await?;
             }
             // A state this build does not know yet: wait rather than escalate,
