@@ -27,9 +27,14 @@ const TRUST_TASK_ENVELOPE_TYPE: &str = "https://trusttasks.org/binding/didcomm/0
 #[derive(uniffi::Object)]
 pub struct MediatorSession {
     inner: DIDCommSession,
+    /// The holder this session sends as. Every document sent must name it as
+    /// `issuer` ([`crate::reply::require_signed_request`]), and every reply
+    /// must be addressed to it.
+    holder_did: String,
     /// The peer this session converses with. `DIDCommSession` knows it too, but
     /// only `pub(crate)` to `vta-sdk`; `send_one_way` needs it as an explicit
-    /// recipient, so keep the copy the constructor already has in hand.
+    /// recipient, and replies are verified as its word, so keep the copy the
+    /// constructor already has in hand.
     vta_did: String,
 }
 
@@ -57,7 +62,11 @@ impl MediatorSession {
             .map_err(|e| FfiError::Transport {
                 reason: e.to_string(),
             })?;
-        Ok(Arc::new(Self { inner, vta_did }))
+        Ok(Arc::new(Self {
+            inner,
+            holder_did,
+            vta_did,
+        }))
     }
 
     /// Wait up to `timeout_secs` for the next inbound DIDComm message from the
@@ -85,10 +94,18 @@ impl MediatorSession {
     /// `messaging::handlers::handle_trust_task` unwraps it into the same
     /// `dispatch_trust_task_core` the REST route calls.
     ///
-    /// **No bearer token.** The message is authcrypt-packed, so the VTA proves
-    /// the sender DID cryptographically and derives authorization from it
-    /// (intrinsic-sender auth) — this is what lets a device operate with no VTA
-    /// REST API at all.
+    /// **The document authenticates the request, not the transport.** The VTA
+    /// accepts it only when its Data Integrity proof verifies as its `issuer`
+    /// and that issuer is the authcrypt sender. So the document must be signed
+    /// by this session's holder, name it as `issuer` and name the VTA as
+    /// `recipient`; anything else is refused before it is sent
+    /// ([`crate::reply::require_signed_request`]). There is no bearer token.
+    ///
+    /// **The reply is verified before it is returned**
+    /// ([`crate::reply::verify_trust_task_reply`]): it must carry a proof by the
+    /// VTA under `authentication`, be threaded to this document's `id`, and be
+    /// addressed to this holder. A reply that is not is
+    /// [`FfiError::UnverifiedReply`] and its content is never returned.
     ///
     /// Safe to call while a [`receive_next`](Self::receive_next) loop is
     /// running: the reply is demuxed to this caller by `thid`, so it can't be
@@ -102,12 +119,13 @@ impl MediatorSession {
             serde_json::from_str(&doc_json).map_err(|e| FfiError::Transport {
                 reason: format!("trust task document is not valid JSON: {e}"),
             })?;
+        crate::reply::require_signed_request(&doc, &self.holder_did, &self.vta_did)?;
 
         let response: serde_json::Value = self
             .inner
             .send_and_wait(
                 TRUST_TASK_ENVELOPE_TYPE,
-                doc,
+                doc.clone(),
                 TRUST_TASK_ENVELOPE_TYPE,
                 timeout_secs,
             )
@@ -115,6 +133,8 @@ impl MediatorSession {
             .map_err(|e| FfiError::Transport {
                 reason: e.to_string(),
             })?;
+
+        crate::proof::verify_reply(&doc, &response, &self.vta_did).await?;
 
         serde_json::to_string(&response).map_err(|e| FfiError::Transport {
             reason: format!("could not re-serialize the VTA response: {e}"),
@@ -125,11 +145,15 @@ impl MediatorSession {
     /// fire-and-forget counterpart to
     /// [`send_trust_task`](Self::send_trust_task), for documents whose outcome
     /// the caller doesn't need (or will pick up off the inbox itself).
+    ///
+    /// The same outbound rule as `send_trust_task` applies: only a document
+    /// signed by this session's holder and addressed to the VTA is sent.
     pub async fn send_trust_task_one_way(&self, doc_json: String) -> Result<(), FfiError> {
         let doc: serde_json::Value =
             serde_json::from_str(&doc_json).map_err(|e| FfiError::Transport {
                 reason: format!("trust task document is not valid JSON: {e}"),
             })?;
+        crate::reply::require_signed_request(&doc, &self.holder_did, &self.vta_did)?;
 
         self.inner
             .send_one_way(&self.vta_did, TRUST_TASK_ENVELOPE_TYPE, doc)
@@ -197,8 +221,9 @@ mod tests {
     /// does, minus Swift.
     ///
     /// Proves in one shot: the mediator round-trips, `send_trust_task`'s `thid`
-    /// correlation works, and the VTA authorizes purely from the authcrypt
-    /// sender DID (intrinsic-sender auth) with no bearer token anywhere.
+    /// correlation works, the VTA accepts the holder-signed document from its
+    /// authcrypt sender with no bearer token anywhere, and its reply verifies
+    /// as the VTA's (`send_trust_task` refuses one that does not).
     ///
     /// Ignored by default (network + a real VTA). Run:
     /// `cargo test -p vta-mobile-core -- --ignored whoami_over_didcomm --nocapture`
