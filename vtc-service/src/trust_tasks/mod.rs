@@ -139,9 +139,10 @@ use helpers::{
 
 /// The transport-resolved caller identity threaded into the dispatcher.
 ///
-/// `sender_did` is the DIDComm authcrypt sender (already cryptographically
-/// authenticated); it is `None` over REST, where the holder is recovered
-/// from the document proof instead.
+/// `sender_did` is the transport-reported sender (DIDComm, TSP): a claim the
+/// spine accepts only once the document's own proof binds it (step 3a of
+/// [`dispatch_trust_task_core`]). It is `None` over REST,
+/// where the holder is recovered from the document proof instead.
 pub(crate) struct JoinAuthCtx {
     pub transport: JoinTransport,
     pub sender_did: Option<String>,
@@ -164,7 +165,8 @@ pub(crate) struct JoinAuthCtx {
 }
 
 impl JoinAuthCtx {
-    /// The DIDComm context: the authcrypt sender is the proven holder.
+    /// The DIDComm context. The sender is only a claim until the spine binds
+    /// it to the document proof.
     ///
     /// The envelope arm builds its context field by field, because an
     /// unauthenticated sender there is `None` rather than a refusal; this
@@ -362,6 +364,41 @@ pub(crate) async fn dispatch_trust_task_core(
     } else {
         ctx
     };
+
+    // 3a. Over DIDComm and TSP the transport-reported sender is a claim, not
+    //     proof of who composed the document (VTI-OPS-021/093). Every document
+    //     arriving that way must carry a proof (verified above against its
+    //     `issuer`), and that issuer must be the sender: the proof VM's
+    //     controller, the issuer and the sender are one DID. Handlers that read
+    //     `sender_did` then read a DID the document proves, whatever the task's
+    //     own proof requirement.
+    if matches!(ctx.transport, JoinTransport::DIDComm | JoinTransport::Tsp) {
+        let base = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+        match (ctx.verified_signer.as_deref(), ctx.sender_did.as_deref()) {
+            (Some(signer), Some(sender)) if base(signer) == base(sender) => {}
+            (None, _) => {
+                tracing::warn!(type_uri, "messaging document carries no proof — refused");
+                return reject_with(&doc, RejectReason::ProofRequired);
+            }
+            (Some(signer), sender) => {
+                tracing::warn!(
+                    type_uri,
+                    %signer,
+                    sender = ?sender,
+                    "messaging document is signed by a DID other than its sender — refused"
+                );
+                return reject_with(
+                    &doc,
+                    RejectReason::IdentityMismatch(
+                        trust_tasks_rs::ConsistencyError::IssuerMismatch {
+                            in_band: signer.to_string(),
+                            transport: sender.unwrap_or_default().to_string(),
+                        },
+                    ),
+                );
+            }
+        }
+    }
 
     // 3b. SPEC §7.2 item 11 — the duplicate-execution record.
     //
@@ -3699,11 +3736,16 @@ mod tests {
             .expect("seed member ACL");
         }
 
+        /// The fixture leaves `vtc_did` unset, so `validate_basic`'s
+        /// recipient binding is skipped — these tests are about the per-verb
+        /// auth the handlers add. Every document here is signed: over DIDComm
+        /// the spine accepts a document only when its proof binds it to the
+        /// sender, whatever the task's own proof requirement.
+        ///
         /// A document issued by `from` and carrying `from`'s Data-Integrity
         /// proof — what a producer sends for a task that declares `proof`
         /// REQUIRED. Both `vtc/members/personhood/challenge/0.1` (since
-        /// trust-tasks 0.23) and `assert/0.1` do, and since #1672 there is no
-        /// setting that makes an unsigned one acceptable.
+        /// trust-tasks 0.23) and `assert/0.1` do.
         ///
         /// `from` is a real `did:key` with the secret behind it, because the
         /// spine verifies the proof against the document's own `issuer`

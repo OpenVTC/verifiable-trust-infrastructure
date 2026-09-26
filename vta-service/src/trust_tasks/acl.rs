@@ -239,8 +239,9 @@ pub(super) async fn handle_delete(
 /// the shared dispatcher (so it works over REST, DIDComm, and TSP identically).
 ///
 /// No `require_manage()`: the caller only moves their own grant. The
-/// transport-authenticated sender (REST bearer / DIDComm authcrypt / TSP VID)
-/// is bound to `currentSubject`; the `link_proof` VP-JWT proves control of
+/// authenticated caller (REST bearer, TSP VID, or over DIDComm the document
+/// proof bound to the sender) and the document `issuer` are both bound to
+/// `currentSubject`; the `link_proof` VP-JWT proves control of
 /// `newSubject`.
 pub(super) async fn handle_swap_key(
     state: &AppState,
@@ -279,6 +280,20 @@ pub(super) async fn handle_swap_key(
                     req.current_subject, auth.did
                 ),
             },
+        );
+    }
+
+    // `acl/swap-key/0.1` §6: the document's `issuer` MUST equal
+    // `currentSubject` (and its REQUIRED proof, verified by the spine, is bound
+    // to that issuer). Held here as well as by the spine's issuer == caller
+    // rule, because it is this task's own requirement.
+    if doc.issuer.as_deref() != Some(req.current_subject.as_str()) {
+        return reject_with(
+            &doc,
+            RejectReason::IdentityMismatch(trust_tasks_rs::ConsistencyError::IssuerMismatch {
+                in_band: doc.issuer.clone().unwrap_or_default(),
+                transport: req.current_subject.clone(),
+            }),
         );
     }
 

@@ -90,7 +90,7 @@ uniffi = "0.32"
 # the floor is now structural rather than a specific patch: do not move this
 # back below 0.9, and do not drop to a bare major.
 # 0.11 re-exports `affinidi-mdoc` 0.3 — see the coupling note on `coset` below.
-affinidi-tdk = "0.17"
+affinidi-tdk = "0.18"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -180,7 +180,7 @@ affinidi-messaging-core = "0.1"
 # 0.27.1 is a FLOOR: it is the release in which `record_incoming_control`
 # answers a mutual §7.3 cancellation itself (Keyring VTI-38), which is what the
 # VTA's and VTC's `handle_tsp_control` rely on when they stop answering it.
-affinidi-messaging-sdk = { version = "0.27.2", default-features = false }
+affinidi-messaging-sdk = { version = "0.28", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.

@@ -376,7 +376,11 @@ async fn trust_tasks_require_auth() {
 async fn trust_task_discovery_reports_dispatched_tasks() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx
-        .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            "reader",
+            vec!["any".into()],
+        )
         .await;
     let (status, body) = app
         .request(post_auth(
@@ -414,7 +418,11 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
 async fn trust_task_discovery_defaults_to_everything() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx
-        .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            "reader",
+            vec!["any".into()],
+        )
         .await;
     let (status, body) = app
         .request(post_auth(
@@ -2302,7 +2310,11 @@ async fn create_did_webvh_set_primary_true() {
 async fn keys_import_trust_task_refuses_cleartext_over_rest() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx
-        .auth_token("did:key:z6MkSuperAdmin", "admin", vec![])
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            "admin",
+            vec![],
+        )
         .await;
 
     let (status, body) = app

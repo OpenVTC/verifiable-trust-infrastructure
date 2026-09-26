@@ -1,32 +1,8 @@
-use affinidi_tdk::didcomm::Message;
-
 use crate::acl::check_acl_full;
 use crate::auth::AuthClaims;
 use crate::auth::session::{now_epoch, resolve_did_session};
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
-
-/// Extract sender DID from a DIDComm message and look up their ACL entry,
-/// returning unified `AuthClaims`.
-///
-/// Routes through [`check_acl_full`] (rather than the lower-level
-/// `get_acl_entry`) so that `expires_at` is enforced identically to the
-/// REST path. A time-bounded ACL grant must stop working over both
-/// transports the moment it lapses; previously the DIDComm-side lookup
-/// skipped the expiry check, leaving expired credentials live for any
-/// caller still talking via DIDComm.
-pub async fn auth_from_message(
-    msg: &Message,
-    acl_ks: &KeyspaceHandle,
-    sessions_ks: &KeyspaceHandle,
-) -> Result<AuthClaims, AppError> {
-    let did = msg
-        .from
-        .as_deref()
-        .ok_or_else(|| AppError::Authentication("message has no sender (from)".into()))?;
-
-    auth_from_did(did, acl_ks, sessions_ks).await
-}
 
 /// Resolve claims for a **Trust-Task envelope** arriving on an intrinsic-sender
 /// transport (DIDComm authcrypt, raw TSP).
@@ -138,12 +114,11 @@ pub async fn auth_for_trust_task_envelope(
 /// Resolve an envelope-authenticated sender DID into unified `AuthClaims`.
 ///
 /// This is the DID-based core shared by every intrinsic-sender transport
-/// (DIDComm authcrypt via [`auth_from_message`], raw-TSP via
-/// `messaging::tsp_inbound`). The caller has *already* proven the sender
-/// DID cryptographically — by unpacking an authcrypt envelope, or by
-/// TSP unpack returning the verified `sender_vid` — so this function only
-/// performs ACL lookup + session resolution + claim construction, never
-/// signature verification.
+/// (DIDComm, raw TSP). It performs ACL lookup + session resolution + claim
+/// construction, never signature verification: the caller must already have
+/// proven `did`. For TSP that is the verified `sender_vid`; for DIDComm it is
+/// the document proof `trust_tasks::bind_document_to_sender` binds to the
+/// sender — the DIDComm sender alone is not proof.
 ///
 /// Routes through [`check_acl_full`] (rather than the lower-level
 /// `get_acl_entry`) so that `expires_at` is enforced identically to the
@@ -200,18 +175,6 @@ mod tests {
     use crate::store::Store;
     use vti_common::config::StoreConfig;
 
-    fn message_from(did: &str) -> Message {
-        // Builds the minimal message shape `auth_from_message` consumes —
-        // only `from` is read by the function under test.
-        Message::build(
-            "test-id".to_string(),
-            "https://example.com/test/1.0/ping".to_string(),
-            serde_json::json!({}),
-        )
-        .from(did.to_string())
-        .finalize()
-    }
-
     async fn fresh_acl_ks() -> (Store, KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
@@ -241,10 +204,7 @@ mod tests {
         .await
         .unwrap();
 
-        let msg = message_from(did);
-        let err = auth_from_message(&msg, &acl_ks, &sessions_ks)
-            .await
-            .unwrap_err();
+        let err = auth_from_did(did, &acl_ks, &sessions_ks).await.unwrap_err();
         assert!(
             matches!(err, AppError::Forbidden(ref m) if m.contains("expired")),
             "expected Forbidden(expired), got {err:?}"
@@ -266,10 +226,7 @@ mod tests {
         .await
         .unwrap();
 
-        let msg = message_from(did);
-        let claims = auth_from_message(&msg, &acl_ks, &sessions_ks)
-            .await
-            .unwrap();
+        let claims = auth_from_did(did, &acl_ks, &sessions_ks).await.unwrap();
         assert_eq!(claims.did, did);
         assert_eq!(claims.role, Role::Admin);
         assert_eq!(claims.allowed_contexts, vec!["ctx-a", "ctx-b"]);
@@ -285,8 +242,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg = message_from(&format!("{base}#zBase"));
-        let claims = auth_from_message(&msg, &acl_ks, &sessions_ks)
+        let claims = auth_from_did(&format!("{base}#zBase"), &acl_ks, &sessions_ks)
             .await
             .unwrap();
         assert_eq!(claims.did, base);
@@ -344,17 +300,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(claims.did, base);
-    }
-
-    #[tokio::test]
-    async fn missing_sender_is_authentication_error() {
-        let (_store, acl_ks, sessions_ks, _dir) = fresh_acl_ks().await;
-        let mut msg = message_from("did:key:zAnything");
-        msg.from = None;
-        let err = auth_from_message(&msg, &acl_ks, &sessions_ks)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AppError::Authentication(_)), "got {err:?}");
     }
 
     // ── The ceremony carve-out ───────────────────────────────────────────
