@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(protected_json["typ"], "application/didcomm-encrypted+json");
 
         // Decrypt round-trip via the same crate the server uses.
-        let decrypted = affinidi_messaging_didcomm::jwe::decrypt::decrypt(
+        let decrypted = affinidi_messaging_didcomm::jwe::decrypt::decrypt_bound(
             &jwe_str,
             "did:key:test#key-1",
             &recipient_private,

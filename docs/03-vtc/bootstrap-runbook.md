@@ -201,6 +201,20 @@ You cannot promote *yourself*, with or without a passkey: admin elevation
 takes a second person, not a second factor. If you are the only admin and have
 lost your passkey, the offline `vtc … acl add` above is the break-glass.
 
+Making someone an **unrestricted** admin — an admin grant with no scopes,
+promoting a member who has none, or an admin invite — takes a second person
+in a stronger sense too: another unrestricted admin has to consent
+(VTI-APV-014). The request is sent to them, and you send the same operation
+again once one has approved. A community with a single unrestricted admin has
+nobody to ask, which is why `vtc setup` takes an optional `co_admin_did`. If
+you installed without one, add the second offline with `vtc acl add`, daemon
+stopped.
+
+Every offline ACL change — `vtc acl add` and `remove`, `vtc create-did-key
+--admin`, `vtc admin invite` — skips these checks by design, and each is
+recorded: the daemon writes an `AclBreakGlassWritten` audit row for it when it
+next starts, naming the command, the DID and the host it ran on.
+
 ## Part 2 — the first vetter
 
 ### Why the order matters

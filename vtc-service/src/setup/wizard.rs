@@ -275,8 +275,20 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     // either daemon's auth. The install URL attaches a passkey to this
     // DID for browser-based admin UI access.
     let admin_did = provision.admin_did().to_string();
-    let (install_url, claim_code) =
-        mint_initial_install_token(&app_config, &bundle, &admin_did, &inputs.base_url).await?;
+    if inputs.co_admin_did.as_deref() == Some(admin_did.as_str()) {
+        return Err(AppError::Config(format!(
+            "the second administrator ({admin_did}) is the first one; name a different DID, \
+             or leave it out"
+        )));
+    }
+    let (install_url, claim_code) = mint_initial_install_token(
+        &app_config,
+        &bundle,
+        &admin_did,
+        inputs.co_admin_did.as_deref(),
+        &inputs.base_url,
+    )
+    .await?;
 
     // Surface the long-term admin key material so the operator can
     // save it for CLI use (the wizard doesn't yet write it to a
@@ -384,6 +396,15 @@ pub(crate) struct WizardInputs {
     /// — but that is a second, manual step, so setup is the moment to say how
     /// this community can be reached.
     pub(crate) transports: Vec<Transport>,
+    /// A second unrestricted admin to install beside the first (VTI-APV-014).
+    ///
+    /// Making anyone an unrestricted admin needs another unrestricted admin's
+    /// consent, and a community installed with one has nobody to give it — it
+    /// could only add a second through the offline break-glass. Naming one here
+    /// lets the community grant remotely from its first day. The install
+    /// bootstrap writes it alongside the first admin; it needs no passkey to
+    /// consent, since a decision is a document its DID signs.
+    pub(crate) co_admin_did: Option<String>,
 }
 
 /// A messaging transport a community can advertise.
@@ -557,6 +578,21 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
         .map_err(prompt_err)?;
     let registry_did = normalize_registry_did(&registry_did)?;
 
+    println!();
+    println!("Making anyone an unrestricted administrator of this community needs");
+    println!("the consent of another unrestricted administrator. With only one, there");
+    println!("is nobody to give it: a second could then only be added offline, with");
+    println!("the daemon stopped. Name a second administrator's DID here to install");
+    println!("both. They need no passkey to approve — an approval is a document their");
+    println!("DID signs. Leave blank to install one.");
+    println!();
+    let co_admin_did: String = Input::new()
+        .with_prompt("Second administrator DID (blank for none)")
+        .allow_empty(true)
+        .interact_text()
+        .map_err(prompt_err)?;
+    let co_admin_did = normalize_co_admin_did(&co_admin_did)?;
+
     // The VTC DID's hosting target (did-hosting server, domain, path) is
     // collected later, in `select_webvh_target`, after the ACL grant — at
     // that point the ephemeral key can authenticate to the VTA and
@@ -564,6 +600,7 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
     // live list rather than typing blind.
 
     Ok(WizardInputs {
+        co_admin_did,
         base_url,
         vta_did,
         context,
@@ -581,6 +618,20 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
 /// later. A referral's `uri` is tested for a `did:` prefix by consumers, so an
 /// https URL here would render an entry that reads as this community serving
 /// TRQP itself.
+/// A co-admin DID as entered: blank is none, anything else must be a DID.
+pub(crate) fn normalize_co_admin_did(raw: &str) -> Result<Option<String>, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if !trimmed.starts_with("did:") {
+        return Err(AppError::Config(format!(
+            "the second administrator must be named by DID, got '{trimmed}'"
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
 pub(crate) fn normalize_registry_did(raw: &str) -> Result<Option<String>, AppError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1736,6 +1787,7 @@ async fn mint_initial_install_token(
     config: &AppConfig,
     bundle: &VtcKeyBundle,
     admin_did: &str,
+    co_admin_did: Option<&str>,
     base_url: &str,
 ) -> Result<(String, String), AppError> {
     let ed25519 = bundle.ed25519_private_bytes()?;
@@ -1767,6 +1819,11 @@ async fn mint_initial_install_token(
             Some(admin_did.to_string()),
         )
         .await?;
+    // The install bootstrap writes the co-admin beside the first admin, in
+    // the same step, so the community never has one without the other.
+    if let Some(co_admin) = co_admin_did {
+        install_store.record_co_admin(co_admin).await?;
+    }
 
     // `/admin/install` so the embedded admin SPA picks the request
     // up and runs the install-claim ceremony in-browser. The bare

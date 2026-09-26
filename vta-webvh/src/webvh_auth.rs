@@ -192,7 +192,9 @@ pub fn build_refresh_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use affinidi_tdk::didcomm::message::unpack::{UnpackResult, unpack};
+    use affinidi_tdk::didcomm::SignerKey;
+    use affinidi_tdk::didcomm::jws::verify::VerifyKey;
+    use affinidi_tdk::didcomm::message::unpack::{UnpackResult, unpack_bound};
     use ed25519_dalek::SigningKey;
 
     /// Mint a deterministic test signing identity from a seed byte.
@@ -209,8 +211,18 @@ mod tests {
         (private, public, vta_did, kid)
     }
 
-    fn unpack_with(jws: &str, verifying_key: &[u8; 32]) -> Message {
-        match unpack(jws, None, None, None, Some(verifying_key)).expect("unpack must succeed") {
+    /// Verify `jws` as signed by `kid` with `verifying_key`, as the daemon does.
+    fn unpack_signed(
+        jws: &str,
+        kid: &str,
+        verifying_key: &[u8; 32],
+    ) -> Result<UnpackResult, affinidi_tdk::didcomm::DIDCommError> {
+        let key = VerifyKey::Ed25519(*verifying_key);
+        unpack_bound(jws, None, None, None, Some(SignerKey::new(kid, &key)))
+    }
+
+    fn unpack_with(jws: &str, kid: &str, verifying_key: &[u8; 32]) -> Message {
+        match unpack_signed(jws, kid, verifying_key).expect("unpack must succeed") {
             UnpackResult::Signed { message, .. } => message,
             UnpackResult::Plaintext(_) => panic!("expected Signed result, got Plaintext"),
             UnpackResult::Encrypted { .. } => panic!("expected Signed result, got Encrypted"),
@@ -236,7 +248,7 @@ mod tests {
             server_did: "did:web:daemon.example",
         };
         let jws = build_authenticate_message(&identity, &ctx, 1_700_000_000).unwrap();
-        let msg = unpack_with(&jws, &public);
+        let msg = unpack_with(&jws, &kid, &public);
 
         assert_eq!(msg.typ, AUTHENTICATE_TYPE);
         assert_eq!(msg.from.as_deref(), Some(vta_did.as_str()));
@@ -267,7 +279,7 @@ mod tests {
             server_did: "did:web:daemon-A.example",
         };
         let jws = build_authenticate_message(&identity, &ctx, 1).unwrap();
-        let msg = unpack_with(&jws, &public);
+        let msg = unpack_with(&jws, &kid, &public);
         assert_eq!(
             msg.to,
             Some(vec!["did:web:daemon-A.example".to_string()]),
@@ -306,7 +318,7 @@ mod tests {
             private_key: &private,
         };
         let jws = build_refresh_message(&identity, "did:web:daemon.example", "rt-abc", 42).unwrap();
-        let msg = unpack_with(&jws, &public);
+        let msg = unpack_with(&jws, &kid, &public);
         assert_eq!(msg.typ, REFRESH_TYPE);
         assert_eq!(msg.from.as_deref(), Some(vta_did.as_str()));
         assert_eq!(
@@ -343,7 +355,7 @@ mod tests {
             server_did: "did:web:daemon.example",
         };
         let jws = build_authenticate_message(&identity, &ctx, 1).unwrap();
-        let result = unpack(&jws, None, None, None, Some(&public_b));
+        let result = unpack_signed(&jws, &kid, &public_b);
         assert!(
             result.is_err(),
             "JWS signed by A must not verify under B's key"
