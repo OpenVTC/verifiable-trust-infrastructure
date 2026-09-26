@@ -60,6 +60,10 @@ pub(crate) mod helpers;
 pub(crate) mod accepted_ids;
 mod credential_exchange;
 
+// The canonical `acl/{show,list,update,revoke}` tasks, and the operation-bound
+// gate `acl/grant` shares with `acl/update`.
+mod acl_tasks;
+
 // The node-neutral `backup/*` family (#1641): a backup too large for one
 // document moves as a chunked bundle. `pub(crate)` for `blob_dir`, which the
 // retention sweeper needs.
@@ -108,6 +112,12 @@ use trust_tasks_rs::specs::vtc::backup::export::v0_1 as backup_export;
 // `vtc-operation-bound-step-up.md`).
 use trust_tasks_rs::specs::acl::change_role::v0_1 as acl_change_role;
 use trust_tasks_rs::specs::acl::grant::v0_1 as acl_grant;
+// The rest of the canonical family: reading and amending an entry, and taking
+// authority away — which until these were bound here existed only on bearer REST.
+use trust_tasks_rs::specs::acl::{
+    list::v0_1 as acl_list, revoke::v0_1 as acl_revoke, show::v0_1 as acl_show,
+    update::v0_1 as acl_update,
+};
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as step_up_approve_response;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
@@ -799,6 +809,10 @@ async fn dispatch_typed(
         BACKUP_EXPORT_TYPE => handle_backup_export(state, ctx, doc).await,
         ACL_GRANT_TYPE => handle_acl_grant(state, ctx, doc).await,
         ACL_CHANGE_ROLE_TYPE => handle_acl_change_role(state, ctx, doc).await,
+        ACL_SHOW_TYPE => acl_tasks::handle_show(state, ctx, doc).await,
+        ACL_LIST_TYPE => acl_tasks::handle_list(state, ctx, doc).await,
+        ACL_UPDATE_TYPE => acl_tasks::handle_update(state, ctx, doc).await,
+        ACL_REVOKE_TYPE => acl_tasks::handle_revoke(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, ctx, doc).await,
         crate::acl::admin_consent::DECISION_TYPE => {
             handle_task_consent_decision(state, ctx, doc).await
@@ -1287,7 +1301,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            46,
+            48,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1297,7 +1311,10 @@ mod spine_proof_tests {
              `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014) \
              + the 3 trust-tasks 0.23 made proof-REQUIRED (`vetting/vetters/profile`, \
              `vetting/vetters/resend`, `members/personhood/challenge`) + the 2 \
-             credential-exchange steps a holder sends (`request`, `present`). \
+             credential-exchange steps a holder sends (`request`, `present`) + \
+             `acl/update` and `acl/revoke` (`acl/show` and `acl/list` declare no \
+             proof; their handlers authorize from the signer's ACL row, so an \
+             unsigned one is refused regardless). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries (its handler still requires the approver's \
@@ -1656,6 +1673,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_GRANT_TYPE,
     // A role transition; promotion to admin takes the same bound gesture.
     ACL_CHANGE_ROLE_TYPE,
+    // The rest of the canonical family. Each bearer route (`GET /v1/acl`,
+    // `GET` / `DELETE /v1/acl/{did}`) is a thin adapter over the same
+    // operation; `acl/update` has no bearer route at all.
+    ACL_SHOW_TYPE,
+    ACL_LIST_TYPE,
+    ACL_UPDATE_TYPE,
+    ACL_REVOKE_TYPE,
     // The gesture that operation-bound step-up asks for.
     STEP_UP_APPROVE_RESPONSE_TYPE,
     // Another admin's consent to an unrestricted grant (VTI-APV-014). The
@@ -1735,6 +1759,18 @@ pub(crate) const ACL_GRANT_TYPE: &str = <acl_grant::Payload as trust_tasks_rs::P
 /// `fromRole`.
 pub(crate) const ACL_CHANGE_ROLE_TYPE: &str =
     <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/show/0.1` — one entry, as the caller may see it.
+pub(crate) const ACL_SHOW_TYPE: &str = <acl_show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/list/0.1` — the entries the caller may see, filtered and paged.
+pub(crate) const ACL_LIST_TYPE: &str = <acl_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/update/0.1` — amend an existing entry's non-role attributes.
+pub(crate) const ACL_UPDATE_TYPE: &str = <acl_update::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/revoke/0.1` — remove an entry, or reduce its scopes.
+pub(crate) const ACL_REVOKE_TYPE: &str = <acl_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `auth/step-up/approve-response/0.4` — the passkey gesture an
 /// operation-bound step-up asks for.
@@ -3231,9 +3267,6 @@ async fn handle_acl_grant(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::acl::bound_step_up::{self, Gate};
-    use trust_tasks_rs::{StandardCode, TrustTaskCode};
-
     let actor = match admin_signer(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
@@ -3258,67 +3291,9 @@ async fn handle_acl_grant(
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-
-    // After every check, before any write: a gesture must never be asked for
-    // an act that would be refused anyway, and one that has been spent must
-    // not be spent on a write that then fails a check.
-    let step_up_refusal =
-        |request: &trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload| {
-            reject_with_code(
-                &doc,
-                TrustTaskCode::Standard(StandardCode::PermissionDenied),
-                "a passkey gesture bound to this grant is required",
-                Some(bound_step_up::refusal_details(request)),
-            )
-        };
-    if plan.confers_unrestricted {
-        // Unrestricted authority needs the gesture *and* another admin's
-        // consent (VTI-APV-014), both bound to this document's payload.
-        use crate::acl::admin_consent::{self, Operation, SignedGate};
-        let gate = admin_consent::gesture_then_consent(
-            state,
-            &actor.did,
-            &plan.entry.did,
-            Operation {
-                type_uri: ACL_GRANT_TYPE,
-                payload: &doc.payload,
-            },
-            &format!(
-                "Grant community-wide administrator authority to {}",
-                plan.entry.did
-            ),
-            &crate::routes::acl::unrestricted_grant_summary(&plan.entry.did),
-        )
-        .await;
-        let ready = match gate {
-            Ok(SignedGate::Ready(ready)) => ready,
-            Ok(SignedGate::StepUpRequired(request)) => return step_up_refusal(&request),
-            Err(e) => return app_error_to_reject(&doc, &e),
-        };
-        if let Err(e) = ready.spend(state).await {
-            return app_error_to_reject(&doc, &e);
-        }
-    } else if plan.confers_admin {
-        let reason = format!(
-            "Grant administrator authority over {} to {}",
-            plan.entry.allowed_contexts.join(", "),
-            plan.entry.did
-        );
-        match bound_step_up::redeem_or_request(
-            state,
-            &actor.did,
-            ACL_GRANT_TYPE,
-            &doc.payload,
-            &reason,
-        )
-        .await
-        {
-            Ok(Gate::Satisfied) => {}
-            Ok(Gate::Required(request)) => return step_up_refusal(&request),
-            Err(e) => return app_error_to_reject(&doc, &e),
-        }
+    if let Err(refusal) = acl_tasks::settle_signed_gate(state, &actor, &doc, &plan).await {
+        return refusal;
     }
-
     match crate::routes::acl::commit_grant(state, &actor, plan).await {
         Ok((_status, envelope)) => success_response(&doc, envelope),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -3882,6 +3857,10 @@ mod tests {
             <backup_export::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <acl_show::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <acl_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <acl_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <acl_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             crate::acl::admin_consent::DECISION_TYPE,
             backup_tasks::INITIATE_EXPORT_TYPE,

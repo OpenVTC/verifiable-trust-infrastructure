@@ -23,8 +23,10 @@
 //!   **only over the session**: the VTC refuses it over HTTPS, where the
 //!   password and the bundle would exist in plaintext wherever TLS terminates.
 //! - Those whose tasks the VTC binds as signed documents — a join decision,
-//!   `members/{update,admin-remove,credentials}` — go as documents too: over
-//!   the session when there is one, otherwise signed with the operator's own key (the one [`VtcClient::connect`] authenticated with)
+//!   `members/{update,admin-remove,credentials}`, the whole `acl/*` family
+//!   ([`acl`]) — go as documents too: over the session when there is one,
+//!   otherwise signed with the operator's own key (the one
+//!   [`VtcClient::connect`] authenticated with)
 //!   and posted to `POST {base}/trust-tasks`. A client holding that key never
 //!   falls back to the bearer route for them, even against a VTC too old to
 //!   serve the document. A client built from a token alone
@@ -102,6 +104,7 @@ pub use vta_sdk::trust_task_sign::HolderKey;
 #[cfg(feature = "didcomm")]
 const SESSION_TIMEOUT_SECS: u64 = 60;
 
+pub mod acl;
 pub mod git_ns;
 
 /// The `Trust-Task` URL each route this client calls is gated on, as declared
