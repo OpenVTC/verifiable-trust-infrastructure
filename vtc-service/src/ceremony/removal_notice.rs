@@ -138,7 +138,7 @@ async fn try_send(
     let doc = build_document(&vtc_did, target_did, MEMBER_REMOVAL_NOTICE_TYPE, payload);
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise removal-notice document: {e}")))?;
-    signer.sign_doc(&mut doc_value).await?;
+    signer.sign_operational_doc(&mut doc_value).await?;
 
     // Over whichever transport the removed member speaks — TSP, DIDComm or
     // REST — with escalation to the next when one yields no evidence of

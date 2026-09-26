@@ -12,5 +12,6 @@ pub use vti_common::auth::session;
 /// re-exports that, so `crate::auth::verify_trust_task_proof` still resolves for
 /// the step-up gate, task consent, and the REST auth route.
 pub use vti_common::auth::{
-    DiProofError, TrustTaskVmResolver, verify_trust_task_proof, verify_trust_task_proof_with,
+    DiProofError, TrustTaskVmResolver, verify_approval_proof, verify_approval_proof_with,
+    verify_trust_task_proof, verify_trust_task_proof_with,
 };

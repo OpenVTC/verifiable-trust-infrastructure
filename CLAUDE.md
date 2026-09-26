@@ -992,7 +992,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   new repository at the old name inherits nothing); the projection withdraws
   before it publishes, and publishes the implied `git.commit.sign` of every
   `own`, `maintain` and `ns.admin`; a grant's `reason` is never published or
-  audited.
+  audited. A namespace admin gets no forge role: role projection
+  (`bridge::highest_repo_rights`) counts only rights held in the person's own
+  name, sends an admin with none as `git.ns.admin` (no role), one entry per
+  account, and never a namespace-level `projectRoles` job. Jobs are
+  `git-ns/bridge/job` 0.4 only, sent only to a bridge that lists 0.4 in
+  `trust-task-discovery` (`bridge::send_v0_4`); never downgrade.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
   `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.

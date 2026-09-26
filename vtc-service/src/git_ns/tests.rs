@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_1 as job_wire;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_3 as job_wire;
 use vti_rooms_dtg::test_support::Party;
 
 use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
@@ -40,29 +40,51 @@ struct FakeBridge {
     /// When set, the bridge reports each job's result *while* its send is
     /// still in flight — the race the dispatcher's write-back must survive.
     race: Mutex<Option<vti_common::store::KeyspaceHandle>>,
-    /// When set, the bridge implements only `git-ns/bridge/job` 0.1 and
-    /// refuses a job carrying `removeAccounts`.
-    v0_1_only: Mutex<bool>,
+    /// When set, the bridge predates `git-ns/bridge/job` 0.4: it answers
+    /// `trust-task-discovery` with `unsupportedType`, as a bridge that
+    /// handles only jobs does, and refuses a 0.4 job the same way.
+    pre_v0_4: Mutex<bool>,
+    /// The type URI each job in `jobs` was sent as.
+    types: Mutex<Vec<String>>,
+    /// Discovery requests answered.
+    discoveries: Mutex<u32>,
 }
 
 #[async_trait]
 impl BridgeClient for FakeBridge {
+    async fn discover_jobs(
+        &self,
+        _bridge_did: &str,
+        _timeout: Duration,
+    ) -> Result<Vec<String>, BridgeSendError> {
+        *self.discoveries.lock().unwrap() += 1;
+        if *self.pre_v0_4.lock().unwrap() {
+            return Err(BridgeSendError::Rejected {
+                code: "unsupportedType".into(),
+                message: "this bridge handles git-ns/bridge/job only".into(),
+            });
+        }
+        Ok(vec![super::bridge::JOB_TYPE.into()])
+    }
+
     async fn send_job(
         &self,
         bridge_did: &str,
+        type_uri: &str,
         payload: &Value,
         _timeout: Duration,
     ) -> Result<job_wire::Response, BridgeSendError> {
+        if *self.pre_v0_4.lock().unwrap() {
+            return Err(BridgeSendError::Rejected {
+                code: "unsupportedType".into(),
+                message: "this bridge handles git-ns/bridge/job 0.1 and 0.2".into(),
+            });
+        }
         self.jobs
             .lock()
             .unwrap()
             .push((bridge_did.to_string(), payload.clone()));
-        if *self.v0_1_only.lock().unwrap() && payload.get("removeAccounts").is_some() {
-            return Err(BridgeSendError::Rejected {
-                code: "malformedRequest".into(),
-                message: "unknown member `removeAccounts`".into(),
-            });
-        }
+        self.types.lock().unwrap().push(type_uri.to_string());
         let racing = self.race.lock().unwrap().clone();
         if let Some(ks) = racing
             && let Some(id) = payload["jobId"].as_str()
@@ -170,6 +192,13 @@ async fn send(state: &AppState, who: &Party, task: &str, payload: Value) -> Trus
 fn payload(out: &TrustTaskOutcome) -> Value {
     let doc: Value = serde_json::from_slice(&out.body).unwrap();
     doc["payload"].clone()
+}
+
+fn message(out: &TrustTaskOutcome) -> String {
+    payload(out)["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn code(out: &TrustTaskOutcome) -> String {
@@ -1253,10 +1282,17 @@ fn every_git_ns_task_is_served() {
         "bridge/result",
         "bridge/event",
         "drift/resolve",
-        "namespace/reseat",
     ] {
         assert!(served.contains(&uri(task).as_str()), "{task} is not served");
     }
+    assert!(
+        served.contains(&super::reseat_v0_3::TYPE_URI),
+        "reseat 0.3 is not served"
+    );
+    assert!(
+        !served.contains(&uri("namespace/reseat").as_str()),
+        "reseat 0.1 is still served"
+    );
     for task in ["view", "bridge/event"] {
         assert!(
             served.contains(&format!("{URI}/{task}/0.2").as_str()),
@@ -3525,13 +3561,13 @@ async fn view_0_2_returns_only_the_callers_own_linked_accounts() {
     assert_eq!(code(&out), "permissionDenied");
 }
 
-// ── follow-ups: git-ns/namespace/reseat 0.1 ─────────────────────────────────
+// ── follow-ups: git-ns/namespace/reseat 0.3 ─────────────────────────────────
 
 async fn reseat(f: &Fixture, who: &Party, ns: &str, subject: &str) -> TrustTaskOutcome {
-    send(
+    send_v(
         &f.vtc.state,
         who,
-        "namespace/reseat",
+        super::reseat_v0_3::TYPE_URI,
         json!({ "namespace": ns, "subject": subject, "statement": "Alice left; Carol owns most repositories" }),
     )
     .await
@@ -3604,7 +3640,30 @@ async fn reseat_restores_an_admin_to_a_headless_namespace_and_answers_every_code
     // Step 2.
     let out = reseat(&f, &dana, "ns_nope", &f.carol.did).await;
     assert_eq!(code(&out), "git-ns:unknownNamespace");
-    // Step 4.
+    // Step 4 — separation of duties: reseating to yourself is a self-grant
+    // of git.ns.admin, refused with a pointer to break-glass, and nothing is
+    // recorded.
+    let out = reseat(&f, &dana, &ns, &dana.did).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(String::from_utf8_lossy(&out.body).contains("git-ns/right/break-glass"));
+    // A console key acting for Dana is Dana: it cannot reseat to her either.
+    let console = Party::new();
+    crate::acl::console_key::enrol_delegation(
+        &f.vtc.state.console_keys_ks,
+        &f.vtc.state.acl_ks,
+        &console.did,
+        &dana.did,
+        Some("browser".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    let out = reseat(&f, &console, &ns, &dana.did).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(String::from_utf8_lossy(&out.body).contains("git-ns/right/break-glass"));
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert!(!super::rules::admins(&snap, &ns, super::ops::now()).contains(&dana.did));
+    // Step 4 — members only.
     let out = reseat(&f, &dana, &ns, &f.stranger.did).await;
     assert_eq!(code(&out), "git-ns:membersOnly");
     // Step 5.
@@ -3951,29 +4010,25 @@ async fn reverting_a_role_added_on_the_forge_sends_bridge_job_0_2_with_remove_ac
     assert_eq!(job["kind"], "projectRoles");
     assert_eq!(job["repo"], RES);
     assert_eq!(job["removeAccounts"], json!([eve_acct()]));
-    assert_eq!(
-        super::bridge::job_type_for(job),
-        "https://trusttasks.org/spec/git-ns/bridge/job/0.2"
+    // A bridge that takes 0.4 gets every job as 0.4.
+    assert!(
+        f.bridge
+            .types
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|t| t == super::bridge::JOB_TYPE)
     );
-    // Every other job is still 0.1.
-    for (_, p) in sent
-        .iter()
-        .filter(|(_, p)| p.get("removeAccounts").is_none())
-    {
-        assert_eq!(
-            super::bridge::job_type_for(p),
-            "https://trusttasks.org/spec/git-ns/bridge/job/0.1"
-        );
-    }
 }
 
 #[tokio::test]
-async fn a_bridge_that_implements_only_job_0_1_cannot_revert_a_role_added() {
+async fn a_bridge_before_job_0_4_is_sent_nothing_and_cannot_revert() {
     let (f, _ns) = drift_fixture(json!([
         { "type": "roleAdded", "resource": RES, "account": eve_acct(), "observed": "write" }
     ]))
     .await;
-    *f.bridge.v0_1_only.lock().unwrap() = true;
+    make_pre_v0_4(&f).await;
+    let before = f.bridge.jobs.lock().unwrap().len();
     let out = resolve(
         &f,
         &f.bob,
@@ -3982,13 +4037,123 @@ async fn a_bridge_that_implements_only_job_0_1_cannot_revert_a_role_added() {
     )
     .await;
     assert_eq!(code(&out), "git-ns/drift/resolve:notRevertible");
-    // Nothing was resolved: the item is still outstanding.
+    assert!(
+        message(&out).contains("upgrade the bridge"),
+        "{}",
+        message(&out)
+    );
+    // Nothing was sent, and nothing was resolved.
+    assert_eq!(f.bridge.jobs.lock().unwrap().len(), before);
     let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
     assert_eq!(snap.repo_at(RES).unwrap().sync.drift.len(), 1);
 }
 
+/// Turn the fake into a bridge that predates `git-ns/bridge/job` 0.4, and
+/// make the VTC forget it ever answered discovery.
+async fn make_pre_v0_4(f: &Fixture) {
+    *f.bridge.pre_v0_4.lock().unwrap() = true;
+    f.vtc
+        .state
+        .git_ns
+        .jobs_ks
+        .remove(format!("bridgever:{}", f.bridge_party.did))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
-async fn other_reverts_reuse_bridge_job_0_1() {
+async fn a_queued_job_waits_for_a_bridge_before_0_4_to_be_upgraded() {
+    let (f, _ns) = drift_fixture(json!([])).await;
+    make_pre_v0_4(&f).await;
+    let before = f.bridge.jobs.lock().unwrap().len();
+    super::bridge::project_roles(&f.vtc.state, true)
+        .await
+        .unwrap();
+    super::bridge::dispatch_due(&f.vtc.state).await.unwrap();
+    assert_eq!(
+        f.bridge.jobs.lock().unwrap().len(),
+        before,
+        "nothing is sent"
+    );
+    let jobs = super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap();
+    let job = jobs
+        .iter()
+        .rev()
+        .find(|j| j.kind == super::bridge::JobKind::ProjectRoles)
+        .unwrap();
+    assert_eq!(
+        job.state,
+        super::bridge::JobState::Pending,
+        "kept for the upgrade"
+    );
+    assert!(
+        job.last_error
+            .as_deref()
+            .unwrap()
+            .contains("upgrade the bridge")
+    );
+}
+
+#[tokio::test]
+async fn a_queued_namespace_level_job_is_dropped_not_delivered() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    let bridge_did = f.bridge_party.did.clone();
+    let t = super::ops::now();
+    super::bridge::put_job(
+        &f.vtc.state.git_ns.jobs_ks,
+        &super::bridge::BridgeJob {
+            job_id: "job_old_ns_level".into(),
+            namespace_id: ns.clone(),
+            bridge_did,
+            kind: super::bridge::JobKind::ProjectRoles,
+            payload: json!({ "jobId": "job_old_ns_level", "namespace": ns, "kind": "projectRoles", "desiredRoles": [] }),
+            repo_id: None,
+            link_id: None,
+            state: super::bridge::JobState::Pending,
+            attempts: 0,
+            retry_forever: true,
+            created_at: t,
+            next_attempt_at: t,
+            accepted_at: None,
+            last_error: None,
+            result: None,
+        },
+    )
+    .await
+    .unwrap();
+    super::bridge::dispatch_due(&f.vtc.state).await.unwrap();
+    assert!(
+        f.bridge
+            .jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, p)| p["jobId"] != "job_old_ns_level")
+    );
+    let job = super::bridge::get_job(&f.vtc.state.git_ns.jobs_ks, "job_old_ns_level")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, super::bridge::JobState::Cancelled);
+    // And none can be queued.
+    let refused = super::bridge::enqueue(
+        &f.vtc.state,
+        super::bridge::NewJob {
+            namespace_id: ns.clone(),
+            kind: super::bridge::JobKind::ProjectRoles,
+            payload: json!({ "namespace": ns, "kind": "projectRoles", "desiredRoles": [] }),
+            repo_id: None,
+            link_id: None,
+        },
+    )
+    .await;
+    assert!(refused.is_err());
+}
+
+#[tokio::test]
+async fn other_reverts_queue_their_jobs() {
     let (f, _ns) = drift_fixture(json!([
         { "type": "roleChanged", "resource": RES, "account": carol_acct(), "expected": "maintain", "observed": "admin" },
         { "type": "protectionWeakened", "resource": RES },
@@ -4152,16 +4317,19 @@ async fn every_git_ns_task_that_takes_a_did_refuses_one_that_is_not_did_core() {
             "repo/adopt",
             json!({ "resource": "github.com/acme/gadgets", "owners": [f.carol.did, SHELL_DID] }),
         ),
-        (
-            &f.admin,
-            "namespace/reseat",
-            json!({ "namespace": ns, "subject": SHELL_DID, "statement": "x" }),
-        ),
     ];
     for (who, task, payload) in cases {
         let out = send(&f.vtc.state, who, task, payload).await;
         assert_eq!(code(&out), "malformedRequest", "{task}");
     }
+    let out = send_v(
+        &f.vtc.state,
+        &f.admin,
+        super::reseat_v0_3::TYPE_URI,
+        json!({ "namespace": ns, "subject": SHELL_DID, "statement": "x" }),
+    )
+    .await;
+    assert_eq!(code(&out), "malformedRequest", "namespace/reseat");
     // Nothing was recorded for it anywhere.
     let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
     assert!(
@@ -4402,10 +4570,10 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
         .await
         .unwrap();
 
-    ok(&send(
+    ok(&send_v(
         &f.vtc.state,
         &dana,
-        "namespace/reseat",
+        super::reseat_v0_3::TYPE_URI,
         json!({ "namespace": ns, "subject": f.bob.did, "statement": "the only admin left" }),
     )
     .await);
@@ -4454,4 +4622,359 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
         "{evidence:?}"
     );
     assert!(!detail.to_string().contains(&f.carol.did));
+}
+
+// ── a namespace admin gets no forge role (decision 2026-09-25) ──────────────
+
+fn admin_acct() -> Value {
+    json!({ "forge": "github.com", "id": "5550777", "login": "admin-a" })
+}
+
+/// The `projectRoles` jobs queued so far, newest last.
+async fn role_jobs(f: &Fixture) -> Vec<Value> {
+    super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.kind == super::bridge::JobKind::ProjectRoles)
+        .map(|j| j.payload)
+        .collect()
+}
+
+fn desired_right(job: &Value, did: &str) -> Option<String> {
+    job["desiredRoles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["subject"] == did)
+        .map(|r| r["right"].as_str().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn a_namespace_admin_is_projected_at_no_role_and_an_explicit_owner_as_owner() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
+    link_account(&f, &ns, &f.bob, "9120045", "bob-builds").await;
+    super::bridge::project_roles(&f.vtc.state, true)
+        .await
+        .unwrap();
+    let jobs = role_jobs(&f).await;
+    // No namespace-level job: nothing projects to the organisation's roles.
+    assert!(jobs.iter().all(|j| j.get("repo").is_some()), "{jobs:?}");
+    let job = &current_role_job(&f).await;
+    // The admin, with no right of their own on `widgets`: `git.ns.admin`,
+    // which the bridge maps to no role — not the `own` it implies.
+    assert_eq!(
+        desired_right(job, &f.admin.did).as_deref(),
+        Some("git.ns.admin")
+    );
+    assert_eq!(
+        desired_right(job, &f.bob.did).as_deref(),
+        Some("git.repo.own")
+    );
+    // Carol holds nothing here, so she is not listed.
+    assert_eq!(desired_right(job, &f.carol.did), None);
+
+    // Bob made a namespace admin as well: still sent as the owner he is.
+    ok(&grant(&f, &f.admin, &f.bob.did, "git.ns.admin", "github.com/acme").await);
+    super::bridge::project_roles(&f.vtc.state, true)
+        .await
+        .unwrap();
+    let jobs = role_jobs(&f).await;
+    assert!(jobs.iter().all(|j| j.get("repo").is_some()));
+    let job = &current_role_job(&f).await;
+    assert_eq!(
+        desired_right(job, &f.bob.did).as_deref(),
+        Some("git.repo.own")
+    );
+    assert_eq!(
+        desired_right(job, &f.admin.did).as_deref(),
+        Some("git.ns.admin")
+    );
+    // One entry per account.
+    let n = job["desiredRoles"].as_array().unwrap().len();
+    assert_eq!(n, 2, "{job}");
+}
+
+#[tokio::test]
+async fn a_namespace_commit_right_is_projected_as_commit_sign() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.commit.sign",
+        "github.com/acme",
+    )
+    .await);
+    let _ = ns;
+    assert_eq!(
+        projected(&f, &f.carol.did).await.as_deref(),
+        Some("git.commit.sign")
+    );
+}
+
+fn carol_is_admin_acct() -> Value {
+    carol_acct()
+}
+
+/// The latest `desiredRoles` right for `did` on `widgets`, after a forced
+/// projection.
+async fn projected(f: &Fixture, did: &str) -> Option<String> {
+    super::bridge::project_roles(&f.vtc.state, true)
+        .await
+        .unwrap();
+    desired_right(&current_role_job(f).await, did)
+}
+
+/// The one queued `projectRoles` job for `widgets` that a newer one has not
+/// superseded (jobs queued in the same instant do not sort by age).
+async fn current_role_job(f: &Fixture) -> Value {
+    let open: Vec<Value> = super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|j| {
+            j.kind == super::bridge::JobKind::ProjectRoles
+                && j.state == super::bridge::JobState::Pending
+                && j.payload["repo"] == RES
+        })
+        .map(|j| j.payload)
+        .collect();
+    assert_eq!(open.len(), 1, "{open:?}");
+    open.into_iter().next().unwrap()
+}
+
+#[tokio::test]
+async fn an_admin_whose_own_is_revoked_falls_back_to_no_role() {
+    // Carol (account linked by the fixture) is a namespace admin; the
+    // community administrator makes her an explicit owner too, then revokes
+    // it. (Not a self-grant: whether an admin may grant themselves `own` is
+    // a separate question.)
+    let (f, _ns) = drift_fixture(json!([])).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.ns.admin",
+        "github.com/acme",
+    )
+    .await);
+    ok(&grant(&f, &f.admin, &f.carol.did, "git.repo.own", RES).await);
+    assert_eq!(
+        projected(&f, &f.carol.did).await.as_deref(),
+        Some("git.repo.own")
+    );
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "right/revoke",
+        json!({ "subject": f.carol.did, "right": "git.repo.own", "resource": RES }),
+    )
+    .await);
+    assert_eq!(
+        projected(&f, &f.carol.did).await.as_deref(),
+        Some("git.ns.admin")
+    );
+}
+
+#[tokio::test]
+async fn an_admin_whose_own_lapses_falls_back_to_no_role() {
+    let (f, _ns) = drift_fixture(json!([])).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.ns.admin",
+        "github.com/acme",
+    )
+    .await);
+    ok(&grant(&f, &f.admin, &f.carol.did, "git.repo.own", RES).await);
+    // Lapsed, unswept.
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let scope = Scope::Repo(snap.repo_at(RES).unwrap().id.clone());
+    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+        .await
+        .unwrap();
+    for r in set.rows.iter_mut().filter(|r| r.subject == f.carol.did) {
+        r.expires_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
+    }
+    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+        .await
+        .unwrap();
+    assert_eq!(
+        projected(&f, &f.carol.did).await.as_deref(),
+        Some("git.ns.admin")
+    );
+}
+
+#[tokio::test]
+async fn a_departed_admin_is_not_projected() {
+    let (f, _ns) = drift_fixture(json!([])).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.ns.admin",
+        "github.com/acme",
+    )
+    .await);
+    assert_eq!(
+        projected(&f, &f.carol.did).await.as_deref(),
+        Some("git.ns.admin")
+    );
+    crate::acl::delete_acl_entry(&f.vtc.state.acl_ks, &f.carol.did)
+        .await
+        .unwrap();
+    assert!(super::lifecycle::sweep(&f.vtc.state).await.unwrap());
+    assert_eq!(projected(&f, &f.carol.did).await, None);
+}
+
+#[tokio::test]
+async fn a_forge_role_held_by_a_namespace_admin_can_be_reverted() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": admin_acct(), "observed": "admin" }]),
+    )
+    .await;
+    ok(&resolve(
+        &f,
+        &f.admin,
+        json!({ "type": "roleAdded", "account": admin_acct(), "observed": "admin" }),
+        "revert",
+    )
+    .await);
+    let sent = f.bridge.jobs.lock().unwrap().clone();
+    let job = sent
+        .iter()
+        .map(|(_, p)| p)
+        .find(|p| p.get("removeAccounts").is_some())
+        .expect("a projectRoles job with removeAccounts");
+    assert_eq!(job["removeAccounts"], json!([admin_acct()]));
+    // Still in the complete projection, at no role: 0.4 lets both lists
+    // name an account listed at git.ns.admin.
+    assert_eq!(
+        desired_right(job, &f.admin.did).as_deref(),
+        Some("git.ns.admin"),
+        "{job}"
+    );
+}
+
+#[tokio::test]
+async fn a_revert_is_refused_for_an_admin_who_is_also_an_explicit_owner() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.ns.admin",
+        "github.com/acme",
+    )
+    .await);
+    ok(&grant(&f, &f.admin, &f.carol.did, "git.repo.own", RES).await);
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "write" }]),
+    )
+    .await;
+    let out = resolve(
+        &f,
+        &f.admin,
+        json!({ "type": "roleAdded", "account": carol_acct(), "observed": "write" }),
+        "revert",
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns/drift/resolve:notRevertible");
+}
+
+#[tokio::test]
+async fn a_namespace_admin_adopts_their_own_forge_admin_role_as_ownership() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": admin_acct(), "observed": "admin" }]),
+    )
+    .await;
+    let body = ok(&resolve(
+        &f,
+        &f.admin,
+        json!({ "type": "roleAdded", "account": admin_acct(), "observed": "admin" }),
+        "adopt",
+    )
+    .await);
+    assert_eq!(body["right"]["subject"], json!(f.admin.did));
+    assert_eq!(body["right"]["right"], "git.repo.own");
+    // Now recorded in their own name, it is projected.
+    assert_eq!(
+        projected(&f, &f.admin.did).await.as_deref(),
+        Some("git.repo.own")
+    );
+}
+
+#[tokio::test]
+async fn someone_else_adopts_a_namespace_admins_forge_admin_role() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&grant(
+        &f,
+        &f.admin,
+        &f.carol.did,
+        "git.ns.admin",
+        "github.com/acme",
+    )
+    .await);
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": carol_is_admin_acct(), "observed": "admin" }]),
+    )
+    .await;
+    // Bob owns `widgets`, but an owner-level adoption is elevated: under the
+    // default configuration a community administrator does it.
+    let out = resolve(
+        &f,
+        &f.bob,
+        json!({ "type": "roleAdded", "account": carol_is_admin_acct(), "observed": "admin" }),
+        "adopt",
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+    let body = ok(&resolve(
+        &f,
+        &f.admin,
+        json!({ "type": "roleAdded", "account": carol_is_admin_acct(), "observed": "admin" }),
+        "adopt",
+    )
+    .await);
+    assert_eq!(body["right"]["subject"], json!(f.carol.did));
+    assert_eq!(body["right"]["right"], "git.repo.own");
+    assert_eq!(body["right"]["grantedBy"], json!(f.admin.did));
+}
+
+#[tokio::test]
+async fn a_role_change_is_measured_against_implied_rights_as_drift_resolve_0_2_says() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
+    ok(&grant(&f, &f.bob, &f.admin.did, "git.repo.maintain", RES).await);
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleChanged", "resource": RES, "account": admin_acct(), "expected": "maintain", "observed": "admin" }]),
+    )
+    .await;
+    // `own` is implied by `ns.admin`, so `admin` is "no higher than the
+    // member's highest effective right" (git-ns/drift/resolve 0.2, step 4).
+    let out = resolve(
+        &f,
+        &f.admin,
+        json!({ "type": "roleChanged", "account": admin_acct(), "observed": "admin" }),
+        "adopt",
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns/drift/resolve:notAdoptable");
 }

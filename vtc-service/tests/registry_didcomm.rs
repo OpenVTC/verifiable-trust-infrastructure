@@ -61,7 +61,8 @@ fn client_for(mock: &MockVtcDidcomm, registry_did: &str) -> MessagingRegistryCli
 }
 
 /// Stand in for the registry: await the VTC's task, hand it to `answer`, and
-/// send whatever that returns back on the request's thread.
+/// send whatever that returns back on the request's thread, signed by the
+/// registry as a real one signs every reply.
 ///
 /// Returns the request document so the test can assert on what was actually
 /// put on the wire — the bytes the registry would verify, not a re-serialised
@@ -77,6 +78,9 @@ async fn serve_once(
         .expect("the VTC's task reached the registry peer");
     let mut reply = answer(&request);
     reply["threadId"] = json!(request["id"].as_str().expect("request carries an id"));
+    // Signed as the registry, to the VTC: the VTC releases a waiter only to a
+    // reply whose proof verifies as its `issuer`, the peer the request went to.
+    let reply = registry.sign_as_peer(vtc_did, reply).await;
     registry.send_trust_task(vtc_did, reply).await;
     request
 }
@@ -84,7 +88,8 @@ async fn serve_once(
 const RECORD_PUT: &str = "https://trusttasks.org/spec/registry/record/put/0.1";
 const RECORD_QUERY: &str = "https://trusttasks.org/spec/registry/record/query/0.1";
 
-/// The `#response` to `request_type`, carrying `payload`.
+/// The `#response` to `request_type`, carrying `payload`. Unsigned and
+/// unaddressed: [`serve_once`] makes it the registry's.
 ///
 /// Takes the whole request URI rather than interpolating a slug into a
 /// `trusttasks.org/spec/…` template: the canonical-task census scans source
@@ -94,17 +99,16 @@ fn response(request_type: &str, payload: Value) -> Value {
     json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         "type": format!("{request_type}#response"),
-        "issuedAt": "2026-01-01T00:00:00Z",
         "payload": payload,
     })
 }
 
-/// A `trust-task-error` with `code`.
+/// A `trust-task-error` with `code`. Signed by [`serve_once`] like any reply:
+/// an unsigned rejection is exactly what a forger would send.
 fn rejection(code: &str) -> Value {
     json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         "type": "https://trusttasks.org/spec/trust-task-error/0.1",
-        "issuedAt": "2026-01-01T00:00:00Z",
         "payload": { "code": code, "message": "not on the admin list" },
     })
 }
@@ -266,8 +270,9 @@ async fn health_follows_the_round_trip_not_a_url() {
     let registry = mock.connect_registry_peer().await;
     let client = client_for(&mock, registry.did());
 
-    // A registry that answers is healthy. The probe is a read, so it carries
-    // no proof — the registry serves it without consulting its admin list.
+    // A registry that answers is healthy. The probe is a read, and like every
+    // registry task it is signed with the operational key: the registry gates
+    // `record/query` as it gates writes.
     let (result, request) = tokio::join!(
         client.health(),
         serve_once(&registry, mock.vtc_did(), |_| response(
@@ -280,14 +285,14 @@ async fn health_follows_the_round_trip_not_a_url() {
         request["type"],
         "https://trusttasks.org/spec/registry/record/query/0.1"
     );
-    assert!(
-        request["proof"].is_null(),
-        "the health probe must not need a proof, or it stops working on a \
-         registry that refuses our writes: {request}",
+    assert_eq!(
+        request["proof"]["proofPurpose"], "authentication",
+        "the health probe is signed with the operational key: {request}",
     );
 
     // A registry that *rejects* is still answering, and answering is what the
-    // signal reports on.
+    // signal reports on — so a registry that refuses our signed probe (not on
+    // its admin list) still reads as alive.
     let (result, _) = tokio::join!(
         client.health(),
         serve_once(&registry, mock.vtc_did(), |_| rejection("permissionDenied")),

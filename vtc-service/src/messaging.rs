@@ -469,6 +469,7 @@ pub async fn run_didcomm_service(
         }
         let rest: Arc<dyn MessageTransport> = Arc::new(crate::member_push::RestPushTransport::new(
             state.member_pushes_ks.clone(),
+            crate::recognition::verify::foreign_fetch_client(),
         ));
         service.add_transport(crate::member_push::REST_TRANSPORT_ID.into(), rest.clone());
         tokio::spawn(affinidi_messaging_delivery::drain_loop_via(
@@ -719,7 +720,11 @@ async fn handle_tsp(
     // before the envelope comes off.
     if let Some(doc) = tsp_reply_document(&inbound.message.payload) {
         let thread_id = doc.thread_id.clone().unwrap_or_default();
-        if !state.pending_replies.complete(doc) {
+        if !state
+            .pending_replies
+            .complete_verified(doc, &state.trust_task_vm_resolver())
+            .await
+        {
             debug!(%thread_id, sender = %sender_vid, "TSP reply had no waiter — dropping");
         }
         return;
@@ -995,7 +1000,10 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
     if msg.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE
         && let Some((_thid, doc)) =
             vti_common::capability_client::parse_envelope_document(&msg.body)
-        && state.pending_replies.complete(doc)
+        && state
+            .pending_replies
+            .complete_verified(doc.clone(), &state.trust_task_vm_resolver())
+            .await
     {
         return None;
     }

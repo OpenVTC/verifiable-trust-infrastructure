@@ -903,7 +903,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "id": "urn:uuid:00000000-0000-0000-0000-000000000001",
             "type": type_uri,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "recipient": "did:example:vta",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "contextId": "default" }

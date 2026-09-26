@@ -509,6 +509,17 @@ pub async fn build_app_state(
     let snapshot_ks =
         apply_encryption(store.keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)?);
 
+    // Finish any key rotation a crash interrupted between its log write and its
+    // promotion — before the VTA loads its own keys, which a rotation of its own
+    // DID may have replaced. A failure here must not become a boot loop: the
+    // staging records are inert and the next boot retries.
+    #[cfg(feature = "webvh")]
+    match crate::operations::did_webvh::recover_staged_rotations(&keys_ks, &webvh_ks).await {
+        Ok(report) if report == Default::default() => {}
+        Ok(report) => warn!(?report, "recovered interrupted did:webvh key rotations"),
+        Err(e) => warn!(error = %e, "could not recover interrupted did:webvh key rotations"),
+    }
+
     let auth = init_auth(
         &config,
         &*seed_store,
@@ -554,7 +565,7 @@ pub async fn build_app_state(
         .audit_sink
         .unwrap_or_else(|| vta_audit::shared_chained_sink(audit_ks.clone(), audit_key_ks.clone()));
 
-    Ok(AppState {
+    let state = AppState {
         keys_ks,
         sessions_ks,
         acl_ks,
@@ -627,7 +638,14 @@ pub async fn build_app_state(
         restart_tx,
         #[cfg(feature = "rest")]
         metrics_handle: parts.metrics_handle,
-    })
+    };
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    if let (Some(resolver), Some(vm_id)) = (&state.secrets_resolver, &state.signing_vm_id) {
+        state
+            .didcomm_bridge
+            .set_document_signer(resolver.clone(), vm_id.clone());
+    }
+    Ok(state)
 }
 
 /// Whether this build can **receive** TSP. One definition, so the startup check
@@ -2351,6 +2369,7 @@ async fn find_vta_key_paths(
         .get(crate::keys::store_key(&signing_key_id))
         .await?
         .ok_or_else(|| AppError::NotFound("VTA signing key not found".into()))?;
+    require_active(&signing)?;
 
     let ka_path = if vta_did.starts_with("did:key:") {
         None
@@ -2360,11 +2379,25 @@ async fn find_vta_key_paths(
             .get(crate::keys::store_key(&ka_key_id))
             .await?
             .ok_or_else(|| AppError::NotFound("VTA key-agreement key not found".into()))?;
+        require_active(&ka)?;
         Some(ka.derivation_path)
     };
 
     debug!(signing_path = %signing.derivation_path, ka_path = ?ka_path, "VTA key paths resolved");
     Ok((signing.derivation_path, ka_path, signing.seed_id))
+}
+
+/// The VTA loads only active records as its own identity: a revoked record
+/// (retired by a rotation, or revoked outright) or a rotation's inert staging
+/// record must never become the key it signs or decrypts with.
+fn require_active(record: &KeyRecord) -> Result<(), AppError> {
+    if record.status != vta_sdk::keys::KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "VTA key `{}` is not active; refusing to load it",
+            record.key_id
+        )));
+    }
+    Ok(())
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.

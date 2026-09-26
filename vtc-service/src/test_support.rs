@@ -1158,6 +1158,43 @@ mod didcomm_harness {
             .map(|r| r.body)
         }
 
+        /// `document` as this peer would really send it to `to`: `issuer` is
+        /// this peer, `recipient` is `to`, `issuedAt` is now, and the proof is
+        /// this peer's own authentication key.
+        ///
+        /// For a peer that *answers* the VTC — a trust registry — rather than
+        /// drives it. The VTC releases a reply to its waiting caller only when
+        /// the reply's proof verifies as its `issuer` and that issuer is the
+        /// peer the request went to, so an unsigned reply is dropped as if it
+        /// never arrived. Set every other field (`threadId` included) first:
+        /// the proof covers the whole document.
+        pub async fn sign_as_peer(&self, to: &str, mut document: Value) -> Value {
+            let obj = document
+                .as_object_mut()
+                .expect("a Trust Task document is a JSON object");
+            obj.insert("issuer".into(), json!(self.did));
+            obj.insert("recipient".into(), json!(to));
+            obj.insert(
+                "issuedAt".into(),
+                json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            );
+            obj.remove("proof");
+            // `authentication`, not the `assertionMethod` of
+            // [`sign_trust_task`]: a reply is this peer acting in its own
+            // name, the same purpose the registry demands on a write.
+            let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+                &document,
+                &self.signing_secret,
+                affinidi_data_integrity::SignOptions::new()
+                    .with_proof_purpose("authentication")
+                    .with_created(chrono::Utc::now()),
+            )
+            .await
+            .expect("sign the reply as this peer");
+            document["proof"] = serde_json::to_value(&proof).expect("a proof serialises");
+            document
+        }
+
         /// Send `document` back to `to` as a Trust-Task envelope.
         ///
         /// Correlation is by the document's own `threadId` (the VTC's inbound

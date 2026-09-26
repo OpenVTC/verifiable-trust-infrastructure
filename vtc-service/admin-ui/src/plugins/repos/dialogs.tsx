@@ -19,6 +19,7 @@ import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { useNameBook } from "@/lib/names";
+import { useViewerDid } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
 
@@ -612,6 +613,10 @@ export function CreateDialog({
  * the fixed rules give `git.ns.admin` to no one else — and the statement is
  * required.
  */
+/** Why a reseat to the viewer is not built. */
+const SELF_RESEAT_ERROR =
+  "You cannot reseat a namespace to yourself: separation of duties. Choose another member, or ask another community administrator to reseat it to you.";
+
 export function ReseatDialog({
   namespaceId,
   namespaceResource,
@@ -630,8 +635,17 @@ export function ReseatDialog({
     statement: null,
   });
 
+  const viewer = useViewerDid();
+
   const submit = () => {
-    const next = { subject: didError(subject), statement: statementError(statement) };
+    // Reseating to yourself is a self-grant of `git.ns.admin`, which
+    // `git-ns/namespace/reseat` 0.3 refuses (`git-ns:selfGrantNotAllowed`,
+    // separation of duties) — so the form does not build it.
+    const self = viewer !== null && subject.trim() === viewer;
+    const next = {
+      subject: self ? SELF_RESEAT_ERROR : didError(subject),
+      statement: statementError(statement),
+    };
     setErrors(next);
     if (next.subject || next.statement) return;
     onBuilt(reseatTask(namespaceId, namespaceResource, subject.trim(), statement));
