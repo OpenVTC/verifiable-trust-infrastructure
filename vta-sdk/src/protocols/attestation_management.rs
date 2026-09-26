@@ -27,6 +27,9 @@ pub struct MnemonicExportBody {
     /// Operator-visible label. Never part of what is sealed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
 }
 
 /// Response to `spec/vta/attestation/mnemonic-export/1.0`

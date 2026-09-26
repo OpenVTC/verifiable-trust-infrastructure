@@ -468,7 +468,11 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        6,
+        // 6 -> 7: `vta/attestation/mnemonic-export/1.0` is bound here ahead of the
+        // trust-tasks-rs this workspace takes. It is specified upstream
+        // (dtgwg-trust-tasks-tf#649, trust-tasks-rs 0.23), so it comes back to 6
+        // when the workspace moves to 0.23 (#1764).
+        7,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
