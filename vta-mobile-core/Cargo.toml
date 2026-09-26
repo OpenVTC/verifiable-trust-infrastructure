@@ -41,9 +41,6 @@ chrono = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 # Multibase (base58btc) encoding of the signature into `proofValue`.
 multibase = { workspace = true }
-# The match code is hex over the decoded digest bytes, not over the multibase
-# string — see `consent::match_code_from_digest`.
-hex = { workspace = true }
 # `CachedDidResolver` — the VerificationMethodResolver that resolves a request
 # proof's verificationMethod through the crate's shared DID resolver cache, so
 # the device can verify a VTA-signed request no matter the issuer's DID method.
@@ -72,7 +69,7 @@ affinidi-messaging-didcomm = "0.15.9"
 # lookup the approval sheets render through. Costs a DID resolution plus an
 # outbound fetch per claimed name, which is why the app resolves lazily and
 # caches; see `crate::display_name`.
-vta-sdk = { path = "../vta-sdk", version = "0.52", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.53", features = [
   "session",
   "tsp",
   "agent-names",

@@ -2,6 +2,31 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-dtg-v0.3.2...vti-rooms-dtg-v0.4.0) — 2026-09-26
+
+
+### Security
+
+- **vta-sdk**: Verify a proof's key against its proofPurpose (VTI-KEY-022) ([#1752](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1752))
+
+* security(vta-sdk)!: verify a proof's key against its proofPurpose (VTI-KEY-022)
+
+  A verifier accepted any key the signer's DID document listed under
+  verificationMethod, whatever the proof declared it was for. A key published
+  only for keyAgreement, or authorised only to authenticate, could make an
+  assertionMethod proof.
+
+  vta-sdk adds ProofPurpose, PurposeVmResolver and PurposeBound.
+  TrustTaskVmResolver now resolves a method only for one purpose, and only
+  when all of these hold:
+  - the resolved document is the DID's own;
+  - the method is listed under the relationship the purpose names, by
+    absolute DID URL, by relative fragment, or embedded. A reference resolves
+    only against the top-level verificationMethod set;
+  - the method's controller is the DID.
+
+
+
 ## [0.3.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-dtg-v0.3.1...vti-rooms-dtg-v0.3.2) — 2026-09-24
 
 

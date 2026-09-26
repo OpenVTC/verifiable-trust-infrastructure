@@ -1506,11 +1506,13 @@ pub(super) async fn handle_release(
     match crate::operations::vault::release::release_secret(
         atm,
         &state.vault_ks,
+        &state.audit_sink,
         &vta_did,
         &auth.did,
         stored,
         req.ttl_seconds_hint,
         super::wire_v0_2::current_wire_version(),
+        super::transport::audit_channel(),
     )
     .await
     {

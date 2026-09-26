@@ -51,7 +51,7 @@ use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::task_context::{self, TaskContextBinding};
 use crate::credentials::witness::{self, WitnessBinding};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
-use affinidi_data_integrity::VerificationMethodResolver;
+use vti_common::auth::PurposeVmResolver;
 
 use crate::credentials::vm_resolver::DidVmResolver;
 use crate::join::JoinTransport;
@@ -341,7 +341,7 @@ async fn presentation_from_verified_set(
     // hide a revocation. Built once for the whole set.
     let status_fetcher = match state.did_resolver.clone() {
         Some(resolver) => {
-            let key_resolver: Arc<dyn VerificationMethodResolver> =
+            let key_resolver: Arc<dyn PurposeVmResolver> =
                 Arc::new(DidVmResolver::new(Some(resolver)));
             HttpStatusListFetcher::with_issuer_verification(key_resolver)
         }

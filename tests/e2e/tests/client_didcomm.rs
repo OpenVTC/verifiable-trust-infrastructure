@@ -1168,8 +1168,16 @@ async fn backup_export_via_didcomm() {
     })
     .await;
 
-    let env = client.backup_export("hunter2hunter2", false).await.unwrap();
-    assert_eq!(env.version, 1);
+    // The deprecated inline export is a legacy protocol message, which the VTA
+    // no longer serves over DIDComm: the client refuses it before sending and
+    // names the transport that still carries it. Backups over DIDComm use the
+    // `vta/backup/initiate-export` Trust Task flow.
+    match client.backup_export("hunter2hunter2", false).await {
+        Err(vta_sdk::error::VtaError::UnsupportedTransport(msg)) => {
+            assert!(msg.contains("REST-only"), "names the transport: {msg}")
+        }
+        other => panic!("the inline export must be refused over DIDComm, got {other:?}"),
+    }
 
     shutdown_all(client, responder, mediator).await;
 }

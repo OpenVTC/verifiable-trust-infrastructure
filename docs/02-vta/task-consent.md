@@ -119,7 +119,10 @@ an approval for the benign one would authorize the destructive one.
 
 Six hex characters, UI-only, no wire field. It is derived from the **decoded
 digest bytes**, not from the multibase string
-(`vta-mobile-core/src/consent.rs:79`).
+(`vta_sdk::task_consent::match_code`, which the mobile approver, `pnm consent`,
+`cnm consent` and the `pnm`/`cnm` requester prompt all call — the requester prompt used to
+print the whole `zQm…` digest, leaving the operator nothing to compare against
+the device's six characters).
 
 That distinction is load-bearing. A `digestMultibase` always begins `zQm` — the
 base58btc marker plus the sha2-256 multihash prefix, identical for every digest
@@ -242,8 +245,31 @@ error. Use a DIDComm- or TSP-transport client.
 
 The decision signer lives in `vta-mobile-core/src/consent.rs`
 (`build_task_consent_decision_did_signed`) — a UniFFI crate built for the
-mobile bindings. **No CLI links it**, so `pnm` shows the code and waits for a
-device to answer.
+mobile bindings.
+
+An approver without a device answers from `pnm`, as long as its profile's DID
+is in the approver set. The requester relays the refusal it received (its
+`details.consentRequests` holds one VTA-signed request per approver), and the
+approver runs:
+
+```sh
+pnm consent show    refusal.json    # verify it and show what it asks
+pnm consent approve refusal.json    # asks you to type the requester's code
+pnm consent deny    refusal.json --reason "not expected"
+```
+
+`pnm` refuses a request this VTA did not sign, one addressed to another
+approver, and one that has expired. Approving needs the six-character code the
+requester's screen shows, typed or passed as `--match-code`. The decision is a
+Trust Task signed by the profile's key, so it goes over the transports the
+profile's connection offers.
+
+Both `pnm consent` and `cnm consent` (the VTC's unrestricted-admin consent, see
+`docs/03-vtc/bootstrap-runbook.md`) are built on `vta_sdk::task_consent`:
+`match_code` (which every surface, requester and approver, must use),
+`ConsentRequest::verify` (proof under `authentication`, signer = issuer = the expected node, addressed
+to this approver, not expired), and `VerifiedConsentRequest::decision`. What
+they show and the code comparison live in `vta_cli_common::consent_approve`.
 
 For a single-operator posture, set `exclude_requester = false` and put the
 CLI's own DID in the set.

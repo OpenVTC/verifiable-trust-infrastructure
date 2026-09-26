@@ -170,14 +170,27 @@ pub enum AgentControl {
 }
 
 /// A decoded inbound DIDComm message (a VTA-pushed wake, step-up request, …).
+///
+/// **The DIDComm sender is not authenticated here.** The plaintext `from` is
+/// kept as [`Self::claimed_from`] for routing a reply and for logs only; never
+/// authorise on it. The one sender this type vouches for is
+/// [`Self::verified_signer`]: the DID whose Data Integrity proof on the Trust
+/// Task document in `body` verified, and which that document names as its
+/// `issuer`. [`AgentSession::run`] fills it in; a message parsed with
+/// [`Self::parse`] alone has none until [`Self::verify`] runs.
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
     /// The message id.
     pub id: String,
     /// The message `type` URI (use this to route).
     pub typ: String,
-    /// The authenticated sender DID, if present.
-    pub from: Option<String>,
+    /// The plaintext DIDComm `from` header. **Untrusted** — whoever built the
+    /// message chose it.
+    pub claimed_from: Option<String>,
+    /// The proven composer of the Trust Task document in `body`: the base DID
+    /// of a verifying Data Integrity proof that is also the document's
+    /// `issuer`. `None` when the body carries no such proof.
+    pub verified_signer: Option<String>,
     /// The message body.
     pub body: Value,
 }
@@ -186,6 +199,7 @@ impl InboundMessage {
     /// Parse the serialized DIDComm message JSON yielded by
     /// [`VtaClient::receive_next`]. Lenient: missing fields default rather than
     /// failing, so an unusual envelope still routes on whatever it carries.
+    /// [`Self::verified_signer`] is `None`; call [`Self::verify`] to establish it.
     pub fn parse(json: &str) -> Result<Self, VtaError> {
         #[derive(Deserialize)]
         struct Wire {
@@ -202,10 +216,33 @@ impl InboundMessage {
         Ok(Self {
             id: w.id,
             typ: w.typ,
-            from: w.from,
+            claimed_from: w.from,
+            verified_signer: None,
             body: w.body,
         })
     }
+
+    /// Establish [`Self::verified_signer`] from the Data Integrity proof on the
+    /// Trust Task document carried in `body`. Leaves it `None` when the body is
+    /// not such a document, carries no proof, the proof does not verify, or it
+    /// verifies as a DID other than the document's `issuer`.
+    pub async fn verify(mut self, resolver: &crate::trust_task_proof::TrustTaskVmResolver) -> Self {
+        self.verified_signer = verified_issuer(&self.body, resolver).await;
+        self
+    }
+}
+
+async fn verified_issuer(
+    body: &Value,
+    resolver: &crate::trust_task_proof::TrustTaskVmResolver,
+) -> Option<String> {
+    let doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(body.clone()).ok()?;
+    doc.proof.as_ref()?;
+    let signer = crate::trust_task_proof::verify_trust_task_proof_with(&doc, resolver)
+        .await
+        .ok()?;
+    let signer = signer.split('#').next().unwrap_or(&signer).to_string();
+    (doc.issuer.as_deref() == Some(signer.as_str())).then_some(signer)
 }
 
 /// A connected, enrolled personal-AI-agent session.
@@ -296,6 +333,16 @@ impl AgentSession {
         // before the loop has even polled for inbound work.
         ticker.tick().await;
 
+        // Network resolution so a `did:webvh` VTA's proof verifies too; falls
+        // back to `did:key`/`did:peer` only when no resolver can be built.
+        let resolver = crate::trust_task_proof::TrustTaskVmResolver::from_optional(
+            affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+                affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+            )
+            .await
+            .ok(),
+        );
+
         let result = loop {
             tokio::select! {
                 _ = ticker.tick() => {
@@ -307,6 +354,7 @@ impl AgentSession {
                     match inbound {
                         Ok(Some(json)) => match InboundMessage::parse(&json) {
                             Ok(msg) => {
+                                let msg = msg.verify(&resolver).await;
                                 if handler(msg).await == AgentControl::Stop {
                                     break Ok(());
                                 }
@@ -381,8 +429,70 @@ mod tests {
         let msg = InboundMessage::parse(json).unwrap();
         assert_eq!(msg.id, "urn:uuid:abc");
         assert_eq!(msg.typ, "https://trusttasks.org/spec/push/wake/0.2");
-        assert_eq!(msg.from.as_deref(), Some("did:key:zVta"));
+        assert_eq!(msg.claimed_from.as_deref(), Some("did:key:zVta"));
+        assert!(
+            msg.verified_signer.is_none(),
+            "parse alone vouches for nobody"
+        );
         assert_eq!(msg.body["reason"], "work-available");
+    }
+
+    async fn signed_doc_by(seed: u8, issuer_override: Option<&str>) -> (String, Value) {
+        use affinidi_tdk::secrets_resolver::secrets::Secret;
+        let mut secret = Secret::generate_ed25519(None, Some(&[seed; 32]));
+        let mb = secret.get_public_keymultibase().unwrap();
+        let did = format!("did:key:{mb}");
+        secret.id = format!("{did}#{mb}");
+        let mut doc = json!({
+            "id": "urn:uuid:00000000-0000-0000-0000-00000000000a",
+            "type": "https://trusttasks.org/spec/push/wake/0.2",
+            "issuer": issuer_override.unwrap_or(&did),
+            "recipient": "did:key:zAgent",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": {},
+        });
+        let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+            &doc,
+            &secret,
+            affinidi_data_integrity::SignOptions::new(),
+        )
+        .await
+        .unwrap();
+        doc["proof"] = serde_json::to_value(proof).unwrap();
+        (did, doc)
+    }
+
+    fn envelope(from: &str, body: Value) -> String {
+        json!({ "id": "m", "type": "t", "from": from, "body": body }).to_string()
+    }
+
+    /// Only a proof bound to its document's issuer vouches for a sender — the
+    /// claimed `from` never does.
+    #[tokio::test]
+    async fn verified_signer_comes_from_the_document_proof_only() {
+        let resolver = crate::trust_task_proof::TrustTaskVmResolver::did_key_only();
+        let (did, doc) = signed_doc_by(0x11, None).await;
+        let msg = InboundMessage::parse(&envelope("did:key:zSomeoneElse", doc))
+            .unwrap()
+            .verify(&resolver)
+            .await;
+        assert_eq!(msg.verified_signer.as_deref(), Some(did.as_str()));
+        assert_eq!(msg.claimed_from.as_deref(), Some("did:key:zSomeoneElse"));
+
+        // Unsigned body: nobody is vouched for, whatever `from` says.
+        let msg = InboundMessage::parse(&envelope(&did, json!({ "type": "x", "payload": {} })))
+            .unwrap()
+            .verify(&resolver)
+            .await;
+        assert!(msg.verified_signer.is_none());
+
+        // A proof by one DID on a document naming another as issuer.
+        let (_did, doc) = signed_doc_by(0x12, Some("did:key:z6MkVictim")).await;
+        let msg = InboundMessage::parse(&envelope("did:key:z6MkVictim", doc))
+            .unwrap()
+            .verify(&resolver)
+            .await;
+        assert!(msg.verified_signer.is_none());
     }
 
     #[test]
@@ -391,7 +501,7 @@ mod tests {
         let msg = InboundMessage::parse(r#"{"type":"x/1.0"}"#).unwrap();
         assert_eq!(msg.typ, "x/1.0");
         assert!(msg.id.is_empty());
-        assert!(msg.from.is_none());
+        assert!(msg.claimed_from.is_none());
         assert!(msg.body.is_null());
     }
 

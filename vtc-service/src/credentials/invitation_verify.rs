@@ -25,12 +25,12 @@
 
 use std::sync::Arc;
 
-use affinidi_data_integrity::{VerificationMethodResolver, VerifyOptions};
 use affinidi_vc::{SubjectValue, VerifiableCredential};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::warn;
+use vti_common::auth::PurposeVmResolver;
 
 use vti_common::error::AppError;
 
@@ -188,8 +188,7 @@ pub async fn verify_presented_invitation(
     // and credential-exchange paths use.
     let fetcher = match state.did_resolver.clone() {
         Some(r) => {
-            let key_resolver: Arc<dyn VerificationMethodResolver> =
-                Arc::new(DidVmResolver::new(Some(r)));
+            let key_resolver: Arc<dyn PurposeVmResolver> = Arc::new(DidVmResolver::new(Some(r)));
             HttpStatusListFetcher::with_issuer_verification(key_resolver)
         }
         None => HttpStatusListFetcher::new(),
@@ -265,12 +264,17 @@ async fn verify_subject_linkage(
     // The linkage MUST be signed by a key under the VIC subject — a key
     // controlled by some other DID cannot authorize a presenter.
     if vm.split('#').next().unwrap_or(vm) != subject {
-        return Err(forbidden(format!(
-            "subjectLinkage verificationMethod `{vm}` is not under the invitation subject `{subject}`"
-        )));
+        return Err(forbidden(
+            "subjectLinkage verificationMethod is not under the invitation subject".into(),
+        ));
     }
 
-    let key = resolver.resolve_ed25519(vm).await?;
+    // The linkage is the subject's statement authorising a presenter, made
+    // with its assertionMethod key (as openvtc's producer documents), so the
+    // key must be one the subject lists under assertionMethod (VTI-KEY-022).
+    let key = resolver
+        .resolve_ed25519(vm, vti_common::auth::ProofPurpose::AssertionMethod)
+        .await?;
     let key: [u8; 32] = key
         .as_slice()
         .try_into()
@@ -323,7 +327,7 @@ async fn verify_invitation_inner(
     applicant_did: &str,
     own_did: Option<&str>,
     registry: Option<&dyn TrustRegistryClient>,
-    resolver: &dyn VerificationMethodResolver,
+    resolver: &dyn PurposeVmResolver,
     fetcher: &dyn StatusListFetcher,
     now: DateTime<Utc>,
     // True when the presenter is not the VIC subject but a verified subject
@@ -404,7 +408,7 @@ async fn verify_invitation_inner(
 async fn verify_invitation_proof(
     vic_json: &JsonValue,
     issuer_did: &str,
-    resolver: &dyn VerificationMethodResolver,
+    resolver: &dyn PurposeVmResolver,
 ) -> Result<(), AppError> {
     let proof_value = vic_json
         .get("proof")
@@ -433,14 +437,17 @@ async fn verify_invitation_proof(
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
     for proof in &proofs {
         let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
-        let r = proof
-            .verify(&unsigned, resolver, VerifyOptions::new())
-            .await
-            .map_err(|e| e.to_string());
+        let r = crate::credentials::proof_set::verify_one(
+            proof,
+            &unsigned,
+            resolver,
+            vti_common::auth::ProofPurpose::AssertionMethod,
+        )
+        .await;
         outcomes.push((did, r));
     }
 
-    crate::credentials::proof_set::accept_any(&outcomes)
+    crate::credentials::proof_set::accept_all(&outcomes)
         .map_err(|e| forbidden(format!("invitation signature did not verify: {e}")))?;
     Ok(())
 }
@@ -585,13 +592,7 @@ mod tests {
     /// [`DidVmResolver`]) to exactly the signing key — independent of how the
     /// secret derives its pubkey from the seed.
     fn signer(seed: &[u8; 32]) -> LocalSigner {
-        let tmp = LocalSigner::from_ed25519_seed("did:key:placeholder".into(), seed);
-        let pub_bytes: [u8; 32] = tmp
-            .public_bytes()
-            .try_into()
-            .expect("ed25519 pub is 32 bytes");
-        let dk = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);
-        LocalSigner::from_ed25519_seed(dk, seed)
+        LocalSigner::did_key_for_seed(seed)
     }
 
     /// Issue a VIC to `subject`, optionally revocable, valid for `validity`.
@@ -907,7 +908,7 @@ mod tests {
         let sig = sk.sign(&signed);
         let vp = serde_json::json!({
             "subjectLinkage": {
-                "verificationMethod": a_did,
+                "verificationMethod": format!("{a_did}#{}", a_did.trim_start_matches("did:key:")),
                 "signature": hex::encode(sig.to_bytes()),
             }
         });

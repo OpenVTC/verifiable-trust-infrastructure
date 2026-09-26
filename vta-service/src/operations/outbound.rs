@@ -284,7 +284,7 @@ impl TspSender {
     ) -> TspAttempt {
         // Registered before the frame leaves: a reply that arrived between
         // sending and registering would find nothing waiting.
-        let waiting = self.replies.register(thread);
+        let waiting = self.replies.register(thread, recipient);
         let sent = if reestablish {
             self.transport.send_reestablishing(recipient, framed).await
         } else {

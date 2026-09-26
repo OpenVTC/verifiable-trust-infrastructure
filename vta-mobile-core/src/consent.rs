@@ -45,54 +45,22 @@ use crate::proof::attach_did_signed_proof;
 const TASK_CONSENT_REQUEST_TYPE: &str = "https://trusttasks.org/spec/task-consent/request/0.1";
 
 /// Length of the human-checkable match code compared across the two screens.
-/// UI-only (there is no wire field); mirrors the browser approver's code.
-const MATCH_CODE_LEN: usize = 6;
+#[cfg(test)]
+const MATCH_CODE_LEN: usize = vta_sdk::task_consent::MATCH_CODE_LEN;
 
-/// Multihash prefix for SHA-256 with a 32-byte digest, as carried inside a
-/// `digestMultibase`. Stripped before deriving the match code because it is
-/// constant — see [`match_code_from_digest`].
+/// Multihash prefix for SHA-256 with a 32-byte digest.
+#[cfg(test)]
 const MULTIHASH_SHA2_256_32: [u8; 2] = [0x12, 0x20];
 
-/// The operator's comparison code: the first [`MATCH_CODE_LEN`] hex characters
-/// of the **digest bytes**, not of their multibase encoding.
-///
-/// This distinction is the whole point. `payloadDigest` is a multibase-encoded
-/// multihash, so its first three characters are always `zQm` — that is the
-/// base58btc marker plus the sha2-256 multihash prefix, and it is identical for
-/// every digest ever produced:
-///
-/// ```text
-/// zQmcdLJ…   zQmRTnb…   zQmb7oR…   zQmbu6r…      ← four different payloads
-/// ```
-///
-/// Slicing the encoded string would therefore spend half a six-character code on
-/// a constant, leaving ~17.6 bits where the operator believes they are comparing
-/// ~35 — and it would still *look* like six random characters, which is what
-/// makes it dangerous rather than merely wasteful. An attacker searching offline
-/// for a payload that renders the same code to the operator would face ~195k
-/// candidates instead of ~60 billion.
-///
-/// Decoding first restores the full entropy and, because the digest is still
-/// SHA-256, reproduces **exactly** the code this surface showed when the wire
-/// carried bare hex: `hex(digest)[..6]` either way. The encoding migration is
-/// therefore invisible on this screen.
+/// The operator's comparison code. Shared with every other approver and
+/// requester surface through [`vta_sdk::task_consent::match_code`], which
+/// explains why it reads the decoded digest bytes and never the multibase
+/// string: two screens that derive it differently show different codes for
+/// the same request.
 fn match_code_from_digest(payload_digest: &str) -> Result<String, FfiError> {
-    let (_base, bytes) = multibase::decode(payload_digest).map_err(|e| FfiError::Decode {
-        reason: format!("payloadDigest is not multibase: {e}"),
-    })?;
-    let digest = bytes
-        .strip_prefix(&MULTIHASH_SHA2_256_32)
-        .ok_or_else(|| FfiError::Decode {
-            reason: "payloadDigest is not a sha2-256 multihash".to_string(),
-        })?;
-    // Two hex characters per byte.
-    let need = MATCH_CODE_LEN.div_ceil(2);
-    if digest.len() < need {
-        return Err(FfiError::Decode {
-            reason: format!("payloadDigest carries {} bytes, need {need}", digest.len()),
-        });
-    }
-    Ok(hex::encode(&digest[..need])[..MATCH_CODE_LEN].to_string())
+    vta_sdk::task_consent::match_code(payload_digest).map_err(|e| FfiError::Decode {
+        reason: e.to_string(),
+    })
 }
 
 /// One consequence of executing the task, authored by the VTA by dry-running the

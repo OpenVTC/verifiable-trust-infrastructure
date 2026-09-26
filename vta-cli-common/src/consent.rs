@@ -64,10 +64,15 @@ pub enum ConsentOutcome {
 
 /// Print the approval prompt for a freshly raised consent request.
 fn announce(payload_digest: &str, approver_set: &str, min_approvals: u32, exclude_requester: bool) {
+    // The code the approving device shows: derived from the decoded digest,
+    // exactly as every approver surface derives it. Printing the digest itself
+    // left the operator comparing a `zQm…` string against six hex characters.
+    let code = vta_sdk::task_consent::match_code(payload_digest)
+        .unwrap_or_else(|_| payload_digest.to_string());
     eprintln!();
     eprintln!("  Approval required before this can run.");
     eprintln!();
-    eprintln!("      code: {payload_digest}");
+    eprintln!("      code: {code}");
     eprintln!();
     if exclude_requester {
         eprintln!(

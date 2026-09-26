@@ -43,9 +43,12 @@ use trust_tasks_rs::TrustTask;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::server::AppState;
+use vti_common::trust_task::envelope::EnvelopeRole;
 
 mod acl;
 mod app_state;
+#[cfg(feature = "tee")]
+mod attestation;
 mod audit;
 #[cfg(test)]
 mod audit_coverage;
@@ -172,6 +175,8 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
+    // The mnemonic export — requires `tee`.
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -417,11 +422,14 @@ pub async fn dispatch_trust_task(
 ) -> Result<Response, AppError> {
     // REST is hop-by-hop by construction: TLS terminates at whatever the
     // operator put in front of this process, and the plaintext exists there.
-    Ok(dispatch_trust_task_core(
-        &state,
-        &auth,
-        &body,
-        transport::TransportConfidentiality::HopByHop,
+    Ok(transport::with_binding(
+        "https",
+        dispatch_trust_task_core(
+            &state,
+            &auth,
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        ),
     )
     .await
     .into_response())
@@ -518,10 +526,11 @@ async fn validate_payload(
 ///
 /// # Scope
 ///
-/// Success responses only. An error response's `type` resolves to the
-/// framework's `trust-task-error` specification, whose requirement is
-/// RECOMMENDED rather than REQUIRED and whose variant §7.3 makes undeclarable
-/// by a task.
+/// Every response document — success **and** `trust-task-error` — is signed,
+/// with `proofPurpose: authentication` (VTI-KEY-106): a client that refuses
+/// unsigned replies must be able to attribute a refusal as well as a result.
+/// An empty body (the "no reply" outcome) is left alone. An error this agent
+/// cannot sign still goes out unsigned, since there is nothing better to say.
 ///
 /// # Two failures that look alike and mean opposite things
 ///
@@ -543,10 +552,11 @@ async fn validate_payload(
 ///
 /// So a misconfiguration is now an error naming itself. It is a 500 because it
 /// is this agent's fault and retrying the same call will not fix it.
-async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
-    if !outcome.status.is_success() {
+pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
+    if outcome.body.is_empty() {
         return outcome;
     }
+    let is_success = outcome.status.is_success();
     let (Some(resolver), Some(vm_id)) = (
         state.secrets_resolver.as_ref(),
         state.signing_vm_id.as_ref(),
@@ -556,7 +566,11 @@ async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> T
     use affinidi_tdk::secrets_resolver::SecretsResolver as _;
     let Some(secret) = resolver.get_secret(vm_id).await else {
         tracing::error!(%vm_id, "no resident secret for the signing key");
-        return cannot_sign(vm_id, "its signing key is not resident");
+        return if is_success {
+            cannot_sign(vm_id, "its signing key is not resident")
+        } else {
+            outcome
+        };
     };
 
     match attach_proof(&secret, &outcome.body).await {
@@ -564,9 +578,21 @@ async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> T
             status: outcome.status,
             body,
         },
-        None => {
+        None if is_success => {
             tracing::error!(%vm_id, "the signature would not attach");
-            cannot_sign(vm_id, "its signature would not attach")
+            let refusal = cannot_sign(vm_id, "its signature would not attach");
+            // The refusal itself is signed where it can be.
+            match attach_proof(&secret, &refusal.body).await {
+                Some(body) => TrustTaskOutcome {
+                    status: refusal.status,
+                    body,
+                },
+                None => refusal,
+            }
+        }
+        None => {
+            tracing::error!(%vm_id, "an error response could not be signed; sending it unsigned");
+            outcome
         }
     }
 }
@@ -634,18 +660,167 @@ pub(crate) async fn attach_proof_in_place(
     secret: &affinidi_secrets_resolver::secrets::Secret,
     doc: &mut serde_json::Value,
 ) -> bool {
+    sign_as_authentication(secret, doc, EnvelopeRole::Response).await
+}
+
+/// Sign a Trust Task document this VTA *originates* to a peer — a request, not
+/// a response — with its operational signing key (`signing_vm_id`) and
+/// `proofPurpose: authentication`, in place.
+///
+/// The peer must not rely on the DIDComm sender to learn who composed the
+/// document; the proof is what binds it to this VTA's `issuer`. The document
+/// must already carry `id`, `issuer`, `recipient` and `issuedAt`. `false` when
+/// this VTA has no resident signing key or the signature will not attach —
+/// the caller must then not send the document.
+pub(crate) async fn sign_outbound_request(state: &AppState, doc: &mut serde_json::Value) -> bool {
+    let (Some(resolver), Some(vm_id)) = (
+        state.secrets_resolver.as_ref(),
+        state.signing_vm_id.as_ref(),
+    ) else {
+        tracing::warn!("no signing key configured; an outbound request cannot be signed");
+        return false;
+    };
+    use affinidi_tdk::secrets_resolver::SecretsResolver as _;
+    let Some(secret) = resolver.get_secret(vm_id).await else {
+        tracing::error!(%vm_id, "no resident secret for the signing key");
+        return false;
+    };
+    sign_as_authentication(&secret, doc, EnvelopeRole::Request).await
+}
+
+/// The VTA's operational signing key — the resident secret named by
+/// `signing_vm_id` — for documents this VTA originates (VTI-KEY-106). Falls back
+/// to the `{vta_did}#key-0` issuer key when no resident key is configured, which
+/// is the same key on every standard deployment.
+pub(crate) async fn load_operational_secret(
+    state: &AppState,
+    vta_did: &str,
+    purpose: &'static str,
+) -> Result<affinidi_secrets_resolver::secrets::Secret, crate::error::AppError> {
+    if let (Some(resolver), Some(vm_id)) = (
+        state.secrets_resolver.as_ref(),
+        state.signing_vm_id.as_ref(),
+    ) {
+        use affinidi_tdk::secrets_resolver::SecretsResolver as _;
+        if let Some(secret) = resolver.get_secret(vm_id).await {
+            return Ok(secret);
+        }
+    }
+    crate::operations::credentials::load_vta_issuer_secret(state, vta_did, purpose).await
+}
+
+/// Sign `doc` in place with `secret` and `proofPurpose: authentication` — the
+/// purpose a VTA-originated request carries (the key-roles spec lists the
+/// operational key under `authentication`).
+///
+/// The envelope is sealed first (VTI-KEY-107): `issuer` is the secret's DID,
+/// `issuedAt` is whole seconds, and a request must carry `id` and `recipient`.
+/// A document that cannot be sealed is not signed.
+pub(crate) async fn sign_as_authentication(
+    secret: &affinidi_secrets_resolver::secrets::Secret,
+    doc: &mut serde_json::Value,
+    role: EnvelopeRole,
+) -> bool {
+    let signer_did = secret.id.split('#').next().unwrap_or_default();
+    if let Err(e) = vti_common::trust_task::envelope::seal_envelope(doc, signer_did, role) {
+        tracing::error!(error = %e, ?role, "refusing to sign a document with an incomplete envelope");
+        return false;
+    }
+    attach_proof_in_place_with(
+        secret,
+        doc,
+        affinidi_data_integrity::SignOptions::new().with_proof_purpose("authentication"),
+    )
+    .await
+}
+
+/// VTA-originated push requests carry a proof by this VTA, bound to their
+/// `issuer`, with `proofPurpose: authentication`.
+#[cfg(all(test, feature = "didcomm"))]
+mod outbound_request_signing {
+    use super::*;
+
+    async fn signed_and_verified(state: &AppState, mut doc: Value) -> Value {
+        assert!(sign_outbound_request(state, &mut doc).await, "must sign");
+        let typed: TrustTask<Value> = serde_json::from_value(doc.clone()).unwrap();
+        let signer =
+            vti_common::auth::verify_trust_task_proof_with(&typed, &state.trust_task_vm_resolver())
+                .await
+                .expect("the proof verifies");
+        let vta_did = state.config.read().await.vta_did.clone().unwrap();
+        assert_eq!(signer.split('#').next(), Some(vta_did.as_str()));
+        assert_eq!(doc["issuer"], Value::String(vta_did));
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
+        for member in ["id", "issuedAt", "recipient"] {
+            assert!(
+                doc.get(member).is_some_and(|v| !v.is_null()),
+                "{member}: {doc}"
+            );
+        }
+        doc
+    }
+
+    #[tokio::test]
+    async fn push_wake_is_signed_by_the_vta() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone();
+        let doc = step_up::push_wake_document(
+            vta_did.as_deref(),
+            "did:key:z6MkGateway",
+            "handle-1",
+            "did:web:mediator.example",
+        );
+        let a = signed_and_verified(&state, doc).await;
+        assert_eq!(a["recipient"], "did:key:z6MkGateway");
+        // Each request gets its own id.
+        let b = step_up::push_wake_document(vta_did.as_deref(), "did:key:z6MkGateway", "h", "m");
+        assert_ne!(a["id"], b["id"]);
+    }
+
+    #[tokio::test]
+    async fn push_provision_is_signed_by_the_vta() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone();
+        let doc = device::push_provision_document(
+            vta_did.as_deref(),
+            "did:key:z6MkGateway",
+            "handle-1",
+            serde_json::json!(["step-up"]),
+        );
+        let doc = signed_and_verified(&state, doc).await;
+        assert_eq!(doc["recipient"], "did:key:z6MkGateway");
+    }
+
+    /// Tampering after signing is caught — the proof covers the payload.
+    #[tokio::test]
+    async fn a_signed_push_request_cannot_be_retargeted() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone();
+        let mut doc = step_up::push_wake_document(vta_did.as_deref(), "did:key:z6MkGw", "h", "m");
+        assert!(sign_outbound_request(&state, &mut doc).await);
+        doc["payload"]["handle"] = Value::String("someone-else".into());
+        let typed: TrustTask<Value> = serde_json::from_value(doc).unwrap();
+        assert!(
+            vti_common::auth::verify_trust_task_proof_with(&typed, &state.trust_task_vm_resolver())
+                .await
+                .is_err()
+        );
+    }
+}
+
+async fn attach_proof_in_place_with(
+    secret: &affinidi_secrets_resolver::secrets::Secret,
+    doc: &mut serde_json::Value,
+    options: affinidi_data_integrity::SignOptions,
+) -> bool {
     // A proof never covers itself.
     let Some(obj) = doc.as_object_mut() else {
         return false;
     };
     obj.remove("proof");
 
-    let proof = match affinidi_data_integrity::DataIntegrityProof::sign(
-        &*doc,
-        secret,
-        affinidi_data_integrity::SignOptions::new(),
-    )
-    .await
+    let proof = match affinidi_data_integrity::DataIntegrityProof::sign(&*doc, secret, options)
+        .await
     {
         Ok(p) => p,
         Err(e) => {
@@ -731,10 +906,13 @@ pub(crate) async fn accept_from_proven_sender(
     // separately from the classification above because `complete` needs the
     // typed document; a response too malformed to type is one nobody can be
     // waiting on anyway.
-    let deliver = |state: &AppState, body: &[u8]| -> bool {
-        serde_json::from_slice::<TrustTask<Value>>(body)
-            .map(|d| state.pending_replies.complete(&d))
-            .unwrap_or(false)
+    //
+    // Released only to the peer the request went to: `deliver_reply` passes the
+    // DID the document's own proof verifies as.
+    let deliver = |state: &AppState, body: &[u8]| {
+        let body = body.to_vec();
+        let state = state.clone();
+        async move { deliver_reply(&state, &body).await }
     };
 
     match kind {
@@ -758,7 +936,7 @@ pub(crate) async fn accept_from_proven_sender(
                 "inbound trust-task error from a peer — terminal, not answered"
             );
             // A failed request should fail now rather than sit out its timeout.
-            deliver(state, body);
+            deliver(state, body).await;
             silent()
         }
         // Threaded, so it *may* answer something we sent — but threading alone
@@ -768,25 +946,113 @@ pub(crate) async fn accept_from_proven_sender(
         // them would strand every ceremony waiting on a human. So the waiter
         // decides. If one is holding this thread the document is its answer and
         // goes no further; if not, it is an ordinary request and falls through.
-        Inbound::Response if deliver(state, body) => {
+        Inbound::Response if deliver(state, body).await => {
             tracing::debug!(sender = %sender_vid, "inbound response delivered to a waiting request");
             silent()
         }
         Inbound::Response | Inbound::Request => {
+            // The transport's sender is treated as a claim, never as proof of
+            // who composed the document (VTI-OPS-021/093: a transport that
+            // authenticates its sender does not relieve a producer of signing).
+            // Before the sender resolves to any authority the document must
+            // prove its composer: a proof verifying as its `issuer`, that issuer
+            // being the sender. (A reply delivered to a waiter above answers a
+            // request we sent, under a thread id only we and the peer know; the
+            // waiter decides how far to trust it.)
+            if let Err(reason) = bind_document_to_sender(state, sender_vid, body).await {
+                tracing::warn!(
+                    sender = %sender_vid,
+                    ?reason,
+                    "trust-task document is not bound to its sender by a proof — refused"
+                );
+                return sign_response(state, reject_trust_task(body, reason)).await;
+            }
             match crate::messaging::auth::auth_for_trust_task_envelope(state, sender_vid, body)
                 .await
             {
                 Ok(auth) => dispatch_trust_task_core(state, &auth, body, confidentiality).await,
-                Err(e) => reject_trust_task(
-                    body,
-                    trust_tasks_rs::RejectReason::PermissionDenied {
-                        reason: e.to_string(),
-                    },
-                ),
+                Err(e) => {
+                    sign_response(
+                        state,
+                        reject_trust_task(
+                            body,
+                            trust_tasks_rs::RejectReason::PermissionDenied {
+                                reason: e.to_string(),
+                            },
+                        ),
+                    )
+                    .await
+                }
             }
         }
     }
 }
+/// The DID `doc`'s own Data Integrity proof verifies as, when that DID is also
+/// its in-band `issuer` (fragment ignored); `None` otherwise. What a reply
+/// waiter checks against the peer its request went to.
+pub(crate) async fn verified_issuer(state: &AppState, doc: &TrustTask<Value>) -> Option<String> {
+    doc.proof.as_ref()?;
+    let signer =
+        vti_common::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
+            .await
+            .ok()?;
+    let signer = signer.split('#').next().unwrap_or(&signer).to_string();
+    (doc.issuer.as_deref() == Some(signer.as_str())).then_some(signer)
+}
+
+/// Hand a reply to its waiter, if the peer the request went to signed it.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+async fn deliver_reply(state: &AppState, body: &[u8]) -> bool {
+    let Ok(doc) = serde_json::from_slice::<TrustTask<Value>>(body) else {
+        return false;
+    };
+    let signer = verified_issuer(state, &doc).await;
+    state.pending_replies.complete(&doc, signer.as_deref())
+}
+
+/// Require `body` to carry a Data Integrity proof that verifies as its in-band
+/// `issuer`, and that issuer to be `sender_vid` (fragment ignored): the proof
+/// VM's controller, the issuer and the transport-reported sender must be one
+/// DID. Applied to every document from an intrinsic-sender transport (DIDComm,
+/// TSP), whose sender is treated as a claim rather than a proof.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn bind_document_to_sender(
+    state: &AppState,
+    sender_vid: &str,
+    body: &[u8],
+) -> Result<(), RejectReason> {
+    let sender = sender_vid.split('#').next().unwrap_or(sender_vid);
+    let doc: TrustTask<Value> =
+        serde_json::from_slice(body).map_err(|e| RejectReason::MalformedRequest {
+            reason: format!("not a Trust Task document: {e}"),
+        })?;
+    if doc.proof.is_none() {
+        return Err(RejectReason::ProofRequired);
+    }
+    let signer =
+        vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
+            .await
+            .map_err(|e| RejectReason::ProofInvalid {
+                reason: e.to_string(),
+            })?;
+    let signer = signer.split('#').next().unwrap_or(&signer).to_string();
+    match doc.issuer.as_deref() {
+        Some(issuer) if issuer == signer && issuer == sender => Ok(()),
+        Some(issuer) if issuer != signer => Err(RejectReason::ProofInvalid {
+            reason: "the proof verifies as a DID other than the document's issuer".to_string(),
+        }),
+        Some(issuer) => Err(RejectReason::IdentityMismatch(
+            trust_tasks_rs::ConsistencyError::IssuerMismatch {
+                in_band: issuer.to_string(),
+                transport: sender.to_string(),
+            },
+        )),
+        None => Err(RejectReason::MalformedRequest {
+            reason: "a document carried over this transport must name its issuer".to_string(),
+        }),
+    }
+}
+
 pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     auth: &AuthClaims,
@@ -799,7 +1065,7 @@ pub(crate) async fn dispatch_trust_task_core(
     .await;
     // Before the conformance observation below, so what that layer sees is what
     // ships rather than a document one proof short of it.
-    let outcome = sign_success_response(state, outcome).await;
+    let outcome = sign_response(state, outcome).await;
     // Observe the real response against the schema its own `type` names. Here
     // rather than in the REST route because REST is one of three transports
     // through this function — DIDComm and TSP read `outcome.body` directly, and
@@ -855,7 +1121,10 @@ async fn dispatch_trust_task_inner(
     //
     // An empty body is the "nothing goes back" signal the transports already
     // understand: `handle_tsp` drops an empty reply rather than sealing one.
-    if state.pending_replies.complete(&doc) {
+    if state
+        .pending_replies
+        .complete(&doc, verified_issuer(state, &doc).await.as_deref())
+    {
         tracing::debug!(
             thread_id = ?doc.thread_id,
             "inbound document delivered to a waiting request"
@@ -1068,7 +1337,7 @@ mod lifecycle_mapping {}
 /// is consequential, which is exactly the set for which item 11 applies" — and
 /// this spine applies item 11 to **every** document it dispatches, `whoami`
 /// included, so the qualifying set here is all of them.
-fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
+pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
     trust_tasks_rs::FreshnessPolicy::default()
         .with_max_age(chrono::TimeDelta::minutes(10))
         .requiring_issued_at()
@@ -1442,6 +1711,29 @@ async fn dispatch_trust_task_validated(
         }
     }
 
+    // SPEC §7.2 item 6 / §4.8.1: an in-band `issuer` must be the party the
+    // request is authorised as. `auth` is who the transport (or the bearer
+    // token) says is asking; the proof above binds `issuer` to its signer. The
+    // handlers below authorise on `auth`, so a document whose issuer is anybody
+    // else would let one party's signature ride another party's authority.
+    if let Some(issuer) = doc.issuer.as_deref()
+        && issuer.split('#').next().unwrap_or(issuer) != auth.did
+    {
+        tracing::warn!(
+            type_uri,
+            issuer,
+            caller = %auth.did,
+            "document issuer is not the authenticated caller"
+        );
+        return reject_with(
+            &doc,
+            RejectReason::IdentityMismatch(trust_tasks_rs::ConsistencyError::IssuerMismatch {
+                in_band: issuer.to_string(),
+                transport: auth.did.clone(),
+            }),
+        );
+    }
+
     // Idempotency claim. Only bites when the document carries an
     // `idempotencyKey` *and* the task is one where a second execution leaves a
     // second durable artefact (`vta_sdk::retry_safety`) — everything else
@@ -1524,7 +1816,19 @@ async fn dispatch_trust_task_validated(
     {
         let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
         if outcome.status.is_success() {
-            let recorded = serde_json::from_slice::<serde_json::Value>(&outcome.body).ok();
+            // A response that discloses a secret (a key's private half, the
+            // sealed root mnemonic) is never kept: the record would hold it in
+            // memory for the whole retention window and hand it to whoever
+            // presents the same document again. A duplicate of such a task is
+            // absorbed with no body instead. The effect still happened once
+            // and the claim still stands, so §7.2 item 11 holds.
+            let discloses_secret = class_for(&type_uri)
+                .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
+            let recorded = if discloses_secret {
+                None
+            } else {
+                serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
+            };
             if let Err(e) = guard.record_response(&doc_id, recorded.as_ref()).await {
                 // Not fatal: the effect happened and the claim stands, so item
                 // 11 still holds. Only the *courtesy* of answering a retry with
@@ -1878,6 +2182,10 @@ dispatch_table! {
     // `vta/contexts/secrets`, for the same reason — the act is disclosure.
     vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1 => keys::handle_export_secret
         [ None Secret false ],
+    // ─── Attestation slice (the dispatched one; end-to-end only) ─
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0 => attestation::handle_mnemonic_export
+        [ Mutating Secret false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
@@ -2577,7 +2885,7 @@ mod tests {
         let end = body.find("\n}\n").expect("the spine has an end");
 
         assert!(
-            body[..end].contains("sign_success_response("),
+            body[..end].contains("sign_response("),
             "the dispatch spine no longer signs its responses. 265 published \
              specifications require a proof on the response (SPEC §7.3 item 7). \
              `VtaClient` verifies one since #1341, so dropping this would break \
@@ -2605,7 +2913,7 @@ mod tests {
         // than relying on.
         state.secrets_resolver = None;
         state.signing_vm_id = None;
-        let unsigned = super::sign_success_response(&state, outcome()).await;
+        let unsigned = super::sign_response(&state, outcome()).await;
         let doc: Value = serde_json::from_slice(&unsigned.body).expect("parses");
         assert!(doc.get("proof").is_none());
         assert!(
@@ -2621,13 +2929,53 @@ mod tests {
         state.secrets_resolver = Some(std::sync::Arc::new(resolver));
         state.signing_vm_id = Some(vm_id.clone());
 
-        let signed = super::sign_success_response(&state, outcome()).await;
+        let signed = super::sign_response(&state, outcome()).await;
         let doc: Value = serde_json::from_slice(&signed.body).expect("parses");
         assert_eq!(
             doc["proof"]["verificationMethod"].as_str(),
             Some(vm_id.as_str()),
             "signed by the wrong key, or not at all: {doc}"
         );
+    }
+
+    /// Refusals are signed too, for `authentication`: a client that refuses
+    /// unsigned replies must be able to attribute a `trust-task-error`.
+    #[tokio::test]
+    async fn an_error_response_is_signed_for_authentication() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let refused = super::sign_response(
+            &state,
+            super::reject_trust_task(
+                br#"{"id":"urn:uuid:y","type":"https://trusttasks.org/spec/vta/contexts/list/1.0","payload":{}}"#,
+                RejectReason::PermissionDenied {
+                    reason: "no".into(),
+                },
+            ),
+        )
+        .await;
+        assert!(!refused.status.is_success());
+        let doc: Value = serde_json::from_slice(&refused.body).expect("parses");
+        assert!(
+            doc["type"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("trust-task-error"),
+            "{doc}"
+        );
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
+        // The success path uses the same purpose.
+        let ok = super::sign_response(
+            &state,
+            TrustTaskOutcome {
+                status: axum::http::StatusCode::OK,
+                body:
+                    br#"{"id":"urn:uuid:z","type":"https://example.org/t#response","payload":{}}"#
+                        .to_vec(),
+            },
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&ok.body).expect("parses");
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
     }
 
     /// An Ed25519 `did:key` secret, which is what the agent's own signing key is
@@ -3107,7 +3455,7 @@ mod payload_validation_tests {
         serde_json::from_value(json!({
             "id": "urn:uuid:00000000-0000-0000-0000-000000000042",
             "type": WEBVH_UPDATE,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "recipient": "did:example:vta",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
@@ -3331,7 +3679,7 @@ mod superseded_task_dispatch_tests {
         let body = serde_json::to_vec(&json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
             "type": type_uri,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
@@ -3439,7 +3787,7 @@ mod freshness_bounds {
         let mut v = json!({
             "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
             "type": vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "payload": {},
         });
         // Previously always seeded a fresh default `issuedAt` here regardless
@@ -3596,7 +3944,7 @@ mod record_retention {
             "id": "urn:uuid:22222222-2222-2222-2222-222222222222",
             "type": vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
             "issuedAt": issued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "payload": {},
         });
         if let Some(e) = expires_at {
@@ -3676,7 +4024,7 @@ mod replay_guard {
         let body = serde_json::to_vec(&json!({
             "id": "urn:uuid:5eaf00d0-0000-4000-8000-00000000dead",
             "type": type_uri,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
@@ -3738,7 +4086,7 @@ mod replay_guard {
         //
         // And compared **without the proof**, which is the part that made this
         // test flaky: `record_response` is called inside
-        // `dispatch_trust_task_inner`, while `sign_success_response` runs in the
+        // `dispatch_trust_task_inner`, while `sign_response` runs in the
         // outer `dispatch_trust_task` — so the guard caches the *unsigned*
         // response and every delivery, first or duplicate, is signed afresh on
         // the way out. `proof.created` has one-second resolution, so two
@@ -3787,7 +4135,7 @@ mod replay_guard {
                 "id": "urn:uuid:5eaf00d0-0000-4000-8000-0000000c0nf1",
                 "type": vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0,
                 "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                "issuer": "did:key:zTestAdmin",
+                "issuer": crate::test_support::test_admin_did().0,
                 "recipient": vta_did,
                 // Differing only here is deliberate and is exactly §8.4's
                 // example: "a producer that 'retries' by re-signing,
@@ -5241,5 +5589,136 @@ mod response_coverage {
             json!({ "keyId": renamed, "reason": "coverage" }),
         )
         .await;
+    }
+}
+
+/// Over DIDComm the transport sender is a claim: a Trust Task document is
+/// accepted only when its own proof, its `issuer` and that sender are one DID.
+#[cfg(all(test, feature = "didcomm"))]
+mod didcomm_sender_binding {
+    use super::*;
+    use affinidi_tdk::secrets_resolver::secrets::Secret;
+
+    struct Party {
+        did: String,
+        secret: Secret,
+    }
+
+    fn party(seed: u8) -> Party {
+        let mut secret = Secret::generate_ed25519(None, Some(&[seed; 32]));
+        let mb = secret.get_public_keymultibase().unwrap();
+        let did = format!("did:key:{mb}");
+        secret.id = format!("{did}#{mb}");
+        Party { did, secret }
+    }
+
+    async fn document(issuer: &str, signer: Option<&Party>, vta_did: &str) -> Vec<u8> {
+        let mut doc = serde_json::json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0,
+            "issuer": issuer,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        });
+        if let Some(signer) = signer {
+            let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+                &doc,
+                &signer.secret,
+                affinidi_data_integrity::SignOptions::new(),
+            )
+            .await
+            .unwrap();
+            doc["proof"] = serde_json::to_value(proof).unwrap();
+        }
+        serde_json::to_vec(&doc).unwrap()
+    }
+
+    async fn setup() -> (AppState, tempfile::TempDir, Party, Party, String) {
+        let (state, dir) = crate::test_support::build_signing_test_app_state().await;
+        let victim = party(0x71);
+        let attacker = party(0x72);
+        crate::acl::store_acl_entry(
+            &state.acl_ks,
+            &crate::acl::AclEntry::new(&victim.did, crate::acl::Role::Admin, "test"),
+        )
+        .await
+        .unwrap();
+        let vta_did = state.config.read().await.vta_did.clone().unwrap();
+        (state, dir, victim, attacker, vta_did)
+    }
+
+    async fn over_didcomm(state: &AppState, sender: &str, body: &[u8]) -> Value {
+        let outcome = accept_from_proven_sender(
+            state,
+            sender,
+            body,
+            transport::TransportConfidentiality::EndToEnd,
+        )
+        .await;
+        serde_json::from_slice(&outcome.body).unwrap_or(Value::Null)
+    }
+
+    fn code(reply: &Value) -> Option<&str> {
+        reply.pointer("/payload/code").and_then(Value::as_str)
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_document_is_refused_whoever_the_sender_claims_to_be() {
+        let (state, _dir, victim, _attacker, vta_did) = setup().await;
+        let body = document(&victim.did, None, &vta_did).await;
+        let reply = over_didcomm(&state, &victim.did, &body).await;
+        assert_eq!(code(&reply), Some("proofRequired"), "{reply}");
+    }
+
+    /// The forged-sender shape: the sender claims the victim, the document is
+    /// the attacker's own, properly signed.
+    #[tokio::test]
+    async fn a_document_signed_by_another_party_is_refused() {
+        let (state, _dir, victim, attacker, vta_did) = setup().await;
+        let body = document(&attacker.did, Some(&attacker), &vta_did).await;
+        let reply = over_didcomm(&state, &victim.did, &body).await;
+        assert_eq!(code(&reply), Some("identityMismatch"), "{reply}");
+    }
+
+    /// Claiming the victim as issuer without the victim's key fails the proof.
+    #[tokio::test]
+    async fn a_document_naming_the_victim_but_signed_by_the_attacker_is_refused() {
+        let (state, _dir, victim, attacker, vta_did) = setup().await;
+        let body = document(&victim.did, Some(&attacker), &vta_did).await;
+        let reply = over_didcomm(&state, &victim.did, &body).await;
+        assert_eq!(code(&reply), Some("proofInvalid"), "{reply}");
+    }
+
+    #[tokio::test]
+    async fn a_document_bound_to_its_sender_is_dispatched() {
+        let (state, _dir, victim, _attacker, vta_did) = setup().await;
+        let body = document(&victim.did, Some(&victim), &vta_did).await;
+        let reply = over_didcomm(&state, &victim.did, &body).await;
+        assert!(
+            code(&reply).is_none(),
+            "a bound document must be served: {reply}"
+        );
+    }
+
+    /// The spine refuses an issuer other than the authorised caller on every
+    /// transport — here a caller authorised by a bearer token.
+    #[tokio::test]
+    async fn the_spine_refuses_an_issuer_other_than_the_caller() {
+        let (state, _dir, victim, attacker, vta_did) = setup().await;
+        let auth =
+            crate::messaging::auth::auth_from_did(&victim.did, &state.acl_ks, &state.sessions_ks)
+                .await
+                .unwrap();
+        let body = document(&attacker.did, Some(&attacker), &vta_did).await;
+        let outcome = dispatch_trust_task_core(
+            &state,
+            &auth,
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let reply: Value = serde_json::from_slice(&outcome.body).unwrap();
+        assert_eq!(code(&reply), Some("identityMismatch"), "{reply}");
     }
 }

@@ -13,8 +13,8 @@
 //! The challenge binding still carries each decision's freshness — the
 //! signature authenticates the ask, the challenge scopes the approval.
 
-// Only the DIDComm delivery paths below bound their sends.
-#[cfg(feature = "didcomm")]
+// Only the device pushes below bound their delivery.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 use std::time::Duration;
 
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
@@ -27,18 +27,13 @@ use vti_common::error::AppError;
 /// not the request's own validity (the mediator holds a hop-accepted push for
 /// the device to collect whenever it next connects). Matches the step-up push
 /// window (`STEP_UP_TTL_SECS`).
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 const CONSENT_PUSH_DELIVER_BY_SECS: u64 = 300;
 
-// Only the DIDComm sends below name this envelope type; TSP's binding has its
-// own (`vta_sdk::tsp_binding`, applied inside `step_up::try_push_over_tsp`), so
-// this import is unused when the DIDComm binding is compiled out.
 use crate::policy::consent::PendingTaskConsent;
 use crate::policy::effects::Effect;
 use crate::policy::types::TaskClass;
 use crate::server::AppState;
-#[cfg(feature = "didcomm")]
-use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 
 pub(super) const TASK_CONSENT_REQUEST_0_1: &str =
     "https://trusttasks.org/spec/task-consent/request/0.1";
@@ -46,7 +41,7 @@ pub(super) const TASK_CONSENT_REQUEST_0_1: &str =
 /// Fire-and-forget notice to the **requester** that its task is now approved and
 /// a grant is ready. Lets the requester re-submit the moment the approval lands
 /// instead of polling for it.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 pub(super) const TASK_CONSENT_GRANTED_0_1: &str =
     "https://trusttasks.org/spec/task-consent/granted/0.1";
 
@@ -74,9 +69,7 @@ pub(super) async fn mint_signed_requests(
             AppError::Internal("VTA DID not configured; cannot sign consent".into())
         })?;
 
-    let secret =
-        crate::operations::credentials::load_vta_issuer_secret(state, &vta_did, "task-consent")
-            .await?;
+    let secret = super::load_operational_secret(state, &vta_did, "task-consent").await?;
 
     let class_value = serde_json::to_value(class)
         .map_err(|e| AppError::Internal(format!("serialize task class: {e}")))?;
@@ -128,7 +121,7 @@ pub(super) async fn mint_signed_requests(
             &unsigned,
             &secret,
             SignOptions::new()
-                .with_proof_purpose("assertionMethod")
+                .with_proof_purpose("authentication")
                 .with_cryptosuite(CryptoSuite::EddsaJcs2022),
         )
         .await
@@ -171,30 +164,32 @@ async fn push_one(
     approver: &str,
     #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))] request: &Value,
 ) {
-    // Captured before the route decision so the log can say *why* it went the
-    // way it did. Diagnosing "the approver was never told" from the outside
-    // meant guessing between "no route" and "delivered, device asleep", and the
-    // two have opposite fixes.
-    let configured_mediator = {
-        let cfg = state.config.read().await;
-        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
-    };
-    let mediator_did = super::step_up::approver_mediator(
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    match super::step_up::push_to_device(
+        state,
         approver,
-        configured_mediator.as_deref(),
-        state.did_resolver.as_ref(),
+        request,
+        Duration::from_secs(CONSENT_PUSH_DELIVER_BY_SECS),
     )
-    .await;
-
-    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
-    let Some(mediator_did) = mediator_did else {
+    .await
+    {
+        // Said once the push is queued: beyond it the message is the push
+        // engine's to deliver and the device's to collect — but "we tried, to
+        // this DID, via this mediator" must be on the record either way, so a
+        // missing prompt can be attributed to a side rather than argued about.
+        super::step_up::DevicePush::Queued { push, mediator } => tracing::info!(
+            approver = %approver, mediator = %mediator, push = %push,
+            "consent request queued for approver"
+        ),
         // `warn`, not `debug`. This is the VTA deciding not to notify anybody
         // about a consent request it is now holding — the approver will never
         // learn of it unless the requester relays, and a CLI requester cannot.
         // At debug it is invisible on a normal deployment, so the symptom
         // ("nothing pops up") is indistinguishable from a sleeping device, and
         // the operator has no way to tell which. That is not routine.
-        tracing::warn!(
+        super::step_up::DevicePush::NoRoute {
+            configured_mediator,
+        } => tracing::warn!(
             approver = %approver,
             configured_mediator = ?configured_mediator,
             "no mediator route for consent approver — NOT notifying; the approver \
@@ -204,103 +199,8 @@ async fn push_one(
              mediator its own DID document advertises, so a document carrying no \
              DIDCommMessaging service — or one that would not resolve — produces \
              it too. The preceding log line says which."
-        );
-        return;
-    };
-
-    // Prefer TSP when the approver's device was recently seen on it
-    // (learn-from-inbound); otherwise fall through to DIDComm below.
-    #[cfg(feature = "tsp")]
-    if super::step_up::try_push_over_tsp(state, approver, request).await {
-        tracing::info!(
-            approver = %approver, mediator = %mediator_did, transport = "tsp",
-            "consent request pushed to approver"
-        );
-        #[cfg(feature = "didcomm")]
-        super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
-        return;
-    }
-
-    // Said before the send rather than after: the enqueue is the last thing we
-    // control. Beyond it the message is the mediator's to hold and the device's
-    // to collect, and silence there is not ours to report — but "we tried, to
-    // this DID, via this mediator" must be on the record either way, so a
-    // missing prompt can be attributed to a side rather than argued about.
-    tracing::info!(
-        approver = %approver, mediator = %mediator_did, transport = "didcomm",
-        "pushing consent request to approver"
-    );
-
-    #[cfg(feature = "didcomm")]
-    {
-        // `webvh`, not `didcomm` — see the note on the granted-notice buffer
-        // below. The Guaranteed send that follows is the delivery-critical
-        // path and stays on `didcomm`.
-        #[cfg(feature = "webvh")]
-        {
-            let pending = crate::messaging::registry::PendingResponse {
-                recipient_did: approver.to_string(),
-                // The DIDComm binding's envelope type, NOT the task type. A
-                // conformant peer unwraps `ENVELOPE_TYPE` and reads the
-                // `TrustTask` from the body; anything else it rejects — and
-                // rejects *silently*, because "not an envelope" is
-                // indistinguishable from "not addressed to me". That is what
-                // sent this request into a void: delivered, acked, discarded.
-                //
-                // TSP is untouched above because it has a wrapper of its
-                // own: `try_push_over_tsp` seals the same document in the TSP
-                // binding envelope. Carriage is a property of the binding, not
-                // of the task — which is why each binding names its own.
-                message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
-                body: request.clone(),
-                thread_id: request
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-            };
-            if let Err(e) = state
-                .mediator_registry
-                .buffer_outbound(&mediator_did, pending)
-                .await
-            {
-                tracing::warn!(
-                    error = %e, approver = %approver, mediator = %mediator_did,
-                    "failed to buffer task-consent request; relay fallback applies"
-                );
-            }
-        }
-
-        // Delivery-critical, so it goes Guaranteed: durably queued + retried
-        // across websocket reconnects (a bare send silently dropped the frame
-        // mid-reconnect — R1.1), keyed by the request id so retries dedup. The
-        // `deliver_by` bounds how long we retry the *hop* to the mediator (which
-        // then holds it for the device); the relay fallback covers a lapse.
-        if let Err(e) = state
-            .didcomm_bridge
-            .send_guaranteed(
-                "vta-main",
-                approver,
-                // Envelope type, per the DIDComm binding — see the buffer above.
-                TRUST_TASK_ENVELOPE_TYPE,
-                request.clone(),
-                request
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                Duration::from_secs(CONSENT_PUSH_DELIVER_BY_SECS),
-            )
-            .await
-        {
-            tracing::warn!(
-                error = %e, approver = %approver,
-                "task-consent request enqueue failed; relay fallback applies"
-            );
-        }
-
-        // Ring the doorbell so a backgrounded device rouses now rather than on
-        // its next voluntary pickup. Contentless by design — the wake says only
-        // "you have mail", never what the task is or who is asking.
-        super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
+        ),
+        super::step_up::DevicePush::Refused => {}
     }
 }
 
@@ -315,44 +215,21 @@ async fn push_one(
 /// mediator, send Guaranteed, ring the doorbell.
 pub(super) async fn push_granted(
     state: &AppState,
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))] requester: &str,
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))] wire_digest: &str,
+    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))] requester: &str,
+    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))] wire_digest: &str,
     // The ceremony's minted correlator, used as the notice's `threadId`.
     // Deliberately separate from `wire_digest`, which stays the payload digest
     // the notice carries in its body — see `PendingTaskConsent::correlator`.
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))] correlator: &str,
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))] type_uri: &str,
+    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))] correlator: &str,
+    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))] type_uri: &str,
 ) {
-    // Lock released before the route decision — see `notify_consent_approver`.
-    let configured_mediator = {
-        let cfg = state.config.read().await;
-        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
-    };
-    let mediator_did = super::step_up::approver_mediator(
-        requester,
-        configured_mediator.as_deref(),
-        state.did_resolver.as_ref(),
-    )
-    .await;
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))]
-    let Some(mediator_did) = mediator_did else {
-        tracing::debug!(
-            requester = %requester,
-            "no mediator route for consent requester; skipping granted notice (it will re-submit on its own)"
-        );
-        return;
-    };
-
-    #[cfg(feature = "didcomm")]
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     {
-        // A full Trust Task document, not a bare payload: the DIDComm binding
-        // deserialises the body as `TrustTask<P>`, and the request push above
-        // already sends complete documents. (The pre-spec shape was the bare
-        // `{status, payloadDigest, taskType}` object; the payload is unchanged,
-        // it just gained the envelope `task-consent/granted/0.1` requires.)
-        // Unsigned by design — the notice is non-load-bearing (the grant check
-        // at re-submit is the real gate) and the authcrypt sender is the only
-        // attribution the requester needs; the spec makes proof OPTIONAL.
+        // A full Trust Task document, not a bare payload: every binding carries
+        // a `TrustTask<P>`. Unsigned by design — the notice is non-load-bearing
+        // (the grant check at re-submit is the real gate), the spec makes proof
+        // OPTIONAL, and on DIDComm and TSP the transport authenticates this VTA
+        // as the sender.
         let mut body = serde_json::json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
             "type": TASK_CONSENT_GRANTED_0_1,
@@ -368,59 +245,25 @@ pub(super) async fn push_granted(
         if let Some(vta_did) = state.config.read().await.vta_did.clone() {
             body["issuer"] = serde_json::json!(vta_did);
         }
-        // `webvh`, not `didcomm`: `AppState::mediator_registry` exists only under
-        // `webvh`, while `PendingResponse`'s module needs only `didcomm`. The
-        // enclosing block gates on the latter, so this line compiled in a
-        // didcomm-without-webvh build against a field that was not there.
-        //
-        // The `send_guaranteed` below is the durable path and stays on
-        // `didcomm`; the registry buffer is a fast-path optimisation for a
-        // requester whose listener is already attached, so dropping it without
-        // `webvh` costs latency, not delivery.
-        #[cfg(feature = "webvh")]
+        match super::step_up::push_to_device(
+            state,
+            requester,
+            &body,
+            Duration::from_secs(CONSENT_PUSH_DELIVER_BY_SECS),
+        )
+        .await
         {
-            let pending = crate::messaging::registry::PendingResponse {
-                // Envelope type, not the task type — same binding rule as the
-                // request push above. `body` is already a full `TrustTask`
-                // document (it has to be: the binding deserialises the body as
-                // `TrustTask<P>`), so the only thing wrong here was the wrapper.
-                message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
-                recipient_did: requester.to_string(),
-                body: body.clone(),
-                thread_id: Some(correlator.to_string()),
-            };
-            if let Err(e) = state
-                .mediator_registry
-                .buffer_outbound(&mediator_did, pending)
-                .await
-            {
-                tracing::warn!(
-                    error = %e, requester = %requester, mediator = %mediator_did,
-                    "failed to buffer granted notice; requester falls back to re-submit"
-                );
-            }
+            super::step_up::DevicePush::Queued { push, .. } => tracing::debug!(
+                requester = %requester, push = %push,
+                "granted notice queued for the requester"
+            ),
+            super::step_up::DevicePush::NoRoute { .. } => tracing::debug!(
+                requester = %requester,
+                "no mediator route for consent requester; skipping granted notice \
+                 (it will re-submit on its own)"
+            ),
+            super::step_up::DevicePush::Refused => {}
         }
-
-        if let Err(e) = state
-            .didcomm_bridge
-            .send_guaranteed(
-                "vta-main",
-                requester,
-                // Envelope type, per the DIDComm binding — see the buffer above.
-                TRUST_TASK_ENVELOPE_TYPE,
-                body,
-                Some(format!("granted:{wire_digest}")),
-                Duration::from_secs(CONSENT_PUSH_DELIVER_BY_SECS),
-            )
-            .await
-        {
-            tracing::warn!(
-                error = %e, requester = %requester,
-                "granted notice enqueue failed; requester falls back to re-submit"
-            );
-        }
-
-        super::step_up::trigger_gateway_wake(state, requester, &mediator_did).await;
     }
 }
 
@@ -439,7 +282,7 @@ mod tests {
     /// silently, and the requester's fallback is to re-submit anyway — so the
     /// only symptom was a poll cycle nobody was measuring.
     #[tokio::test]
-    async fn granted_notice_is_pushed_as_an_envelope() {
+    async fn granted_notice_is_pushed_to_the_requester() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
 
         state
@@ -469,13 +312,8 @@ mod tests {
         )
         .await;
 
-        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        let pushed = crate::messaging::push::take_pushes(&state);
         assert_eq!(pushed.len(), 1, "the requester is notified exactly once");
-        assert_eq!(
-            pushed[0].message_type,
-            trust_tasks_didcomm::ENVELOPE_TYPE,
-            "the DIDComm message must carry the binding's envelope type"
-        );
         assert_eq!(
             pushed[0].body.get("type").and_then(|t| t.as_str()),
             Some(super::TASK_CONSENT_GRANTED_0_1),
@@ -532,16 +370,11 @@ mod tests {
         )
         .await;
 
-        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        let pushed = crate::messaging::push::take_pushes(&state);
         let one = pushed.first().expect("a notice was pushed");
         assert_eq!(
-            one.thread_id.as_deref(),
-            Some("urn:uuid:correlator-abc"),
-            "the envelope must thread on the minted correlator"
-        );
-        assert_eq!(
             one.body["threadId"], "urn:uuid:correlator-abc",
-            "and so must the document: {}",
+            "the document must thread on the minted correlator: {}",
             one.body
         );
         assert_eq!(

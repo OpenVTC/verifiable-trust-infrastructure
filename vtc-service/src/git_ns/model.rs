@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One of the five git rights (`git-ns/right/grant/0.1`, *The rights model*).
+/// One of the five git rights (`git-ns/right/grant/0.3`, *The rights model*).
 ///
 /// Each string is also the TRQP `action` the right is published under, so the
 /// spelling is the specification's, carried verbatim.
@@ -89,6 +89,14 @@ impl Right {
     pub fn is_namespace_right(self) -> bool {
         matches!(self, Right::NsAdmin | Right::RepoCreate)
     }
+
+    /// An *elevated* right (`git-ns/_shared/0.4` `ElevatedRight`): one that
+    /// carries authority over other people's rights. Separation of duties
+    /// (fixed rule 7 of `git-ns/right/grant/0.3`) forbids granting one to
+    /// oneself; the explicit self-grant is `git-ns/right/break-glass/0.1`.
+    pub fn is_elevated(self) -> bool {
+        matches!(self, Right::NsAdmin | Right::RepoCreate | Right::RepoOwn)
+    }
 }
 
 impl std::fmt::Display for Right {
@@ -98,7 +106,7 @@ impl std::fmt::Display for Right {
 }
 
 /// A forge-qualified resource: `<forge-host>/<owner>` or
-/// `<forge-host>/<owner>/<repo>`, lowercase (`git-ns/right/grant/0.1`,
+/// `<forge-host>/<owner>/<repo>`, lowercase (`git-ns/right/grant/0.3`,
 /// *Resources*).
 ///
 /// Parsed, never assumed: an unqualified `owner/repo` is refused, because the
@@ -307,7 +315,9 @@ pub struct Namespace {
     pub requested_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_at: Option<DateTime<Utc>>,
-    /// Digest of the last namespace-level role set sent to the bridge.
+    /// Digest of the last namespace-level role set sent to the bridge. No
+    /// longer written: `git.ns.admin` projects to no forge role, so no
+    /// namespace-level set is sent. Kept so stored records still read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles_digest: Option<String>,
     /// The bridge reported it lost access to the namespace.
@@ -317,6 +327,11 @@ pub struct Namespace {
     /// see [`NamespaceForgeStatus`]. Absent until the bridge says anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge_status: Option<NamespaceForgeStatus>,
+    /// The bridge's last `roleMapReported` (`git-ns/bridge/event/0.3`): the
+    /// forge role each right projects to here. Absent until it reports, and
+    /// no map is assumed meanwhile: the map is *unknown* ([`super::role_map`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<super::role_map::RoleMapReport>,
 }
 
 /// The bridge's report of its own standing on a namespace's forge owner.
@@ -591,11 +606,71 @@ pub struct RightRow {
     /// what `cascade_on_departure` revokes (design §5.4).
     #[serde(default)]
     pub granter_was_member: bool,
+    /// Present exactly when the subject gave themselves this right through
+    /// `git-ns/right/break-glass/0.1` (`git-ns/_shared/0.4` `BreakGlass`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub break_glass: Option<BreakGlassMark>,
+}
+
+/// How a self-granted right came to be, and whether another administrator has
+/// since ratified it (`git-ns/right/break-glass/0.1`, `git-ns/right/ratify/0.1`).
+///
+/// Kept on the row as its history after ratification. Never published to the
+/// Trust Registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BreakGlassMark {
+    /// Always the row's subject.
+    pub by: String,
+    pub at: DateTime<Utc>,
+    pub justification: String,
+    /// When the right takes effect, where the community's policy deferred it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratified_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratified_at: Option<DateTime<Utc>>,
 }
 
 impl RightRow {
+    /// The row has passed its `expiresAt`. A lapsed row is swept.
+    pub fn is_lapsed(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at.is_some_and(|e| e <= now)
+    }
+
+    /// The row is still on record: not lapsed. A break-glass row still waiting
+    /// for its `effectiveAt` is recorded — revocable and ratifiable — while
+    /// conferring nothing.
+    pub fn is_recorded(&self, now: DateTime<Utc>) -> bool {
+        !self.is_lapsed(now)
+    }
+
+    /// A break-glass row whose policy-imposed delay has not yet run out.
+    pub fn is_pending(&self, now: DateTime<Utc>) -> bool {
+        self.break_glass
+            .as_ref()
+            .and_then(|b| b.effective_at)
+            .is_some_and(|e| e > now)
+    }
+
+    /// The row confers its right now: recorded, and in effect.
     pub fn is_live(&self, now: DateTime<Utc>) -> bool {
-        self.expires_at.is_none_or(|e| e > now)
+        self.is_recorded(now) && !self.is_pending(now)
+    }
+
+    /// A break-glass row no other administrator has ratified yet.
+    pub fn is_unratified_break_glass(&self) -> bool {
+        self.break_glass
+            .as_ref()
+            .is_some_and(|b| b.ratified_by.is_none())
+    }
+
+    /// Whether the row counts toward the last-owner and last-admin invariants
+    /// (fixed rules 3 and 4 of `git-ns/right/grant/0.3`): no `expiresAt`, and
+    /// not an unratified break-glass record.
+    pub fn counts_for_invariants(&self, now: DateTime<Utc>) -> bool {
+        self.is_live(now) && self.expires_at.is_none() && !self.is_unratified_break_glass()
     }
 }
 

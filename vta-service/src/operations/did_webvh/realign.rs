@@ -107,8 +107,20 @@ pub async fn realign_did_key_records(
             continue;
         };
 
-        let Some(mut held) =
-            crate::operations::keys::find_key_by_public_multibase(keys_ks, public_key).await?
+        // Only this DID's own methods, and only active records of its own
+        // context. The document is the caller's to write: publishing another
+        // context's public key under `{did}#key-N` must not let this repair
+        // rekey (and delete) that context's record — the VTA's own included.
+        if !vm_id.starts_with(&format!("{did}#")) {
+            unmatched.push(vm_id.to_string());
+            continue;
+        }
+        let Some(mut held) = crate::operations::keys::find_key_by_public_multibase_in_context(
+            keys_ks,
+            public_key,
+            &record.context_id,
+        )
+        .await?
         else {
             unmatched.push(vm_id.to_string());
             continue;
@@ -647,6 +659,54 @@ mod tests {
                 .expect("lookup")
                 .is_none(),
         );
+    }
+
+    /// The cross-context vector from review: a document of the `rooms`
+    /// context that publishes another context's public key must not let the
+    /// repair rekey or delete that context's record.
+    #[tokio::test]
+    async fn another_contexts_key_is_never_moved() {
+        let ts = crate::test_support::open_test_store().await;
+        let (did, _, ka_pub) = published_room_did(&ts.keys_ks, &ts.webvh_ks).await;
+        // The rooms context no longer holds the key-agreement key; another
+        // context holds a record with the same public key.
+        ts.keys_ks
+            .remove(keys::store_key(&format!("{did}#key-1")))
+            .await
+            .expect("drop the rooms record");
+        let victim = "did:webvh:victim.example:abc#key-1";
+        keys::save_key_record(
+            &ts.keys_ks,
+            victim,
+            "m/26'/2'/49'/0'",
+            KeyType::X25519,
+            &ka_pub,
+            victim,
+            Some("ctx-b"),
+            Some(0),
+        )
+        .await
+        .expect("plant the other context's record");
+
+        let result = realign_did_key_records(
+            &ts.keys_ks,
+            &ts.webvh_ks,
+            &ts.audit,
+            &admin_of("rooms"),
+            &did,
+            false,
+            "test",
+        )
+        .await
+        .expect("realign");
+
+        assert_eq!(result.unmatched, vec![format!("{did}#key-2")]);
+        let after = held(&ts.keys_ks, victim)
+            .await
+            .expect("the record is still there");
+        assert_eq!(after.context_id.as_deref(), Some("ctx-b"));
+        assert_eq!(after.key_id, victim);
+        assert!(held(&ts.keys_ks, &format!("{did}#key-2")).await.is_none());
     }
 
     /// Two keys claiming one verification method is the confusion this

@@ -195,6 +195,13 @@ pub(crate) enum Commands {
         command: ApprovalsCommands,
     },
 
+    /// Answer a consent request as an approver: verify it, compare its code,
+    /// and sign the decision
+    Consent {
+        #[command(subcommand)]
+        command: ConsentCommands,
+    },
+
     /// Hand-authored Rego policy modules (power-user surface; for approval
     /// requirements use `pnm approvals`)
     Policy {
@@ -986,14 +993,12 @@ pub(crate) enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
-        /// Fall back to the legacy inline `/backup/export` REST route
-        /// instead of the descriptor-pattern trust-task flow.
+        /// Use the legacy inline backup export instead of the
+        /// descriptor-pattern trust-task flow.
         ///
-        /// The trust-task flow is the default as of rollout step 5
-        /// (`docs/05-design-notes/backup-descriptor-pattern.md`). This
-        /// escape hatch exists for an emergency where the descriptor
-        /// flow cannot complete — it is removed at step 6, along with
-        /// the legacy route itself.
+        /// Works only over DIDComm: the VTA refuses a backup export over
+        /// REST or HTTPS Trust Tasks, because the sealing password would
+        /// exist in plaintext wherever TLS terminates.
         #[arg(long)]
         use_rest_legacy: bool,
     },
@@ -1012,9 +1017,12 @@ pub(crate) enum BackupCommands {
         /// a DID of its own. Without it a backup of another DID is refused.
         #[arg(long)]
         replace_identity: bool,
-        /// Fall back to the legacy inline `/backup/import` REST route
-        /// instead of the descriptor-pattern trust-task flow. See
-        /// `Export::use_rest_legacy`; removed at rollout step 6.
+        /// Use the legacy inline backup import instead of the
+        /// descriptor-pattern trust-task flow.
+        ///
+        /// Works only over DIDComm: the VTA refuses a backup import over
+        /// REST or HTTPS Trust Tasks, because the backup and its password
+        /// would exist in plaintext wherever TLS terminates.
         #[arg(long)]
         use_rest_legacy: bool,
     },
@@ -2457,6 +2465,39 @@ pub(crate) enum AclCommands {
     Delete {
         /// DID of the entry to delete
         did: String,
+    },
+}
+
+/// `pnm consent …` — answer a consent request this VTA raised, as an approver.
+#[derive(Subcommand)]
+pub(crate) enum ConsentCommands {
+    /// Verify a consent request and show what it asks. Sends nothing.
+    Show {
+        /// The request: a request document, the requester's refusal body, or
+        /// its `details` (`-` reads stdin).
+        request: std::path::PathBuf,
+    },
+    /// Approve a consent request, after comparing its match code.
+    Approve {
+        /// The request: a request document, the requester's refusal body, or
+        /// its `details` (`-` reads stdin).
+        request: std::path::PathBuf,
+        /// The code the requester's screen shows. Without it you are asked to
+        /// type it; approval never proceeds on a code nobody compared.
+        #[arg(long)]
+        match_code: Option<String>,
+        /// A note recorded with the decision (at most 500 characters).
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Deny a consent request. The requester has to ask again.
+    Deny {
+        /// The request: a request document, the requester's refusal body, or
+        /// its `details` (`-` reads stdin).
+        request: std::path::PathBuf,
+        /// Why, recorded with the decision (at most 500 characters).
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 

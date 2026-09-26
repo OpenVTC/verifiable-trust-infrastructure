@@ -2,7 +2,7 @@
 name = "vta-persona"
 description = "VTA persona store — the holder's own identity attributes, the profiles that project over them, the bindings that assign a profile to a persona DID, and the contacts peers disclose"
 readme = "README.md"
-version = "0.8.1"
+version = "0.8.2"
 edition.workspace = true
 # Published for the same reason vta-vault is: `vta-service` is published, and a
 # crate cannot go to crates.io without its whole dependency closure. Nothing
@@ -18,7 +18,7 @@ repository.workspace = true
 # the service implements over the vault, so this crate need not depend on it.
 async-trait = "0.1"
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.3" }
-vti-common = { path = "../vti-common", version = "0.25", features = ["encryption"] }
+vti-common = { path = "../vti-common", version = "0.26", features = ["encryption"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

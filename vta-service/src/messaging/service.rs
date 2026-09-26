@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
 use affinidi_messaging_core::{Inbound, InboundKind, MessageTransport, Protocol, ReceivedMessage};
 #[cfg(feature = "didcomm")]
 use affinidi_messaging_delivery::Delivery;
@@ -80,6 +79,7 @@ pub async fn build_messaging(
     vta_did: &str,
     mediator_did: &str,
     outbox_ks: KeyspaceHandle,
+    pushes_ks: KeyspaceHandle,
     relationships_ks: KeyspaceHandle,
     relationship_drop_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
     did_resolver: Option<&DIDCacheClient>,
@@ -90,10 +90,16 @@ pub async fn build_messaging(
     let mut builder = TDKConfig::builder().with_load_environment(false);
     if let Some(dr) = did_resolver {
         builder = builder.with_did_resolver(dr.clone());
-    } else if let Some(url) = resolver_url {
-        let resolver_config = DIDCacheConfigBuilder::default()
-            .with_network_mode(url)
-            .build();
+    } else {
+        // No app resolver (auth init failed). Build one with the same bounds a
+        // configured node gets rather than the SDK's unbounded-by-us defaults,
+        // so this path cannot hold a peer's document longer than the rest of
+        // the node would.
+        let resolver_config = vta_sdk::resolver::build_verifier_did_cache_config(
+            resolver_url,
+            vti_common::config::DID_CACHE_TTL_DEFAULT_SECS,
+            vti_common::config::DID_CACHE_CAPACITY_DEFAULT,
+        );
         builder = builder.with_did_resolver_config(resolver_config);
     }
     let tdk_config = builder
@@ -225,6 +231,18 @@ pub async fn build_messaging(
         outbox.clone(),
         Duration::from_secs(30),
     ));
+    // Trust Task pushes over TSP and REST (`crate::messaging::push`), each a
+    // named transport with its own drain on the same durable outbox. The
+    // outbox poll above already confirms TSP collection, because the mediator
+    // lists TSP and DIDComm messages in one outbox.
+    crate::messaging::push::register_transports(
+        &service,
+        outbox.clone(),
+        pushes_ks,
+        &atm,
+        &profile,
+        mediator_did,
+    );
 
     Ok(VtaMessaging {
         service,
@@ -485,7 +503,7 @@ impl InboundGate {
 /// verified — so a plaintext frame (`encrypted == false`), an anonymous read
 /// (`sender == None`), or an unverified/forged sender (`verified == false`)
 /// is refused. Applied for ALL message types — not per-handler — so a handler
-/// that doesn't itself call `auth_from_message` (discovery, TEE status/
+/// that does not authorise at all (TEE status/
 /// attestation) still cannot be reached by an unauthenticated or anonymous
 /// sender, exactly as the removed middleware layer guaranteed. There is NO
 /// discovery exemption: the old policy layer required authcrypt for discovery
@@ -526,7 +544,7 @@ async fn handle_didcomm(
     // (`sender` filtered by `verified`, applied inside [`inbound_gate`]).
     // Capture the plaintext `from` first — solely as a best-effort *reply
     // address* for anoncrypt public reads (never for auth) — then overwrite
-    // `from` so every handler's `auth_from_message` / `ctx.sender_did` sees
+    // `from` so every handler's `ctx.sender_did` sees
     // only the proven sender (or `None`, which those reject).
     let plaintext_from = msg.from.clone();
     let gate = inbound_gate(&inbound.message);

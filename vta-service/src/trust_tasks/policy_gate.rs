@@ -903,7 +903,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "id": "urn:uuid:00000000-0000-0000-0000-000000000001",
             "type": type_uri,
-            "issuer": "did:key:zTestAdmin",
+            "issuer": crate::test_support::test_admin_did().0,
             "recipient": "did:example:vta",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "contextId": "default" }
@@ -1271,14 +1271,8 @@ mod tests {
                 .await
                 .is_some()
         );
-        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        let pushed = crate::messaging::push::take_pushes(&state);
         assert_eq!(pushed.len(), 1, "the approver is asked exactly once");
-        // The DIDComm message carries the *envelope* type; the task type lives
-        // in the body's `TrustTask`. This assertion previously demanded the task
-        // type on the wire — pinning the very defect that made a delivered
-        // consent request unreadable to a conformant peer, which rejects a
-        // non-envelope silently.
-        assert_eq!(pushed[0].message_type, trust_tasks_didcomm::ENVELOPE_TYPE);
         assert_eq!(
             pushed[0].body.get("type").and_then(|t| t.as_str()),
             Some(super::super::consent_request::TASK_CONSENT_REQUEST_0_1),

@@ -32,9 +32,13 @@
 //! A policy may also answer `data.vtc.git_namespace.settings`, an object of the
 //! community's choices the specification leaves to it: whether maintainers may
 //! grant `git.commit.sign`, whether a departed member's grants are revoked with
-//! them (`cascade_on_departure`), and how role drift is answered. An absent or
-//! unreadable settings object reads as every setting off — the conservative
-//! reading.
+//! them (`cascade_on_departure`), how role drift is answered, and how
+//! break-glass is tightened (`break_glass`, `break_glass_delay_seconds`,
+//! `break_glass_min_justification_chars`). An absent or unreadable settings
+//! object reads as every setting off — the conservative reading — except
+//! break-glass, which is on unless a policy says `"disabled"`: it exists for
+//! the moment nobody else is available, which is not the moment to discover a
+//! typo in a settings object turned it off.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -145,6 +149,34 @@ pub struct Settings {
     /// reporting it (design §5.6, `drift_mode` for roles). Off by default:
     /// "report" for roles.
     pub enforce_role_drift: bool,
+    /// How this community tightens break-glass (`git-ns/right/break-glass/0.1`,
+    /// *Policy*). It can disable or tighten it; it can never quieten it.
+    pub break_glass: BreakGlassSettings,
+}
+
+/// The community's break-glass choices. Enabled, with no delay, by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BreakGlassSettings {
+    /// `settings.break_glass == "disabled"` turns break-glass off:
+    /// `git-ns/right/break-glass:disabled`. Anything else, or nothing, is on.
+    pub enabled: bool,
+    /// `settings.break_glass_delay_seconds`: the right takes effect this long
+    /// after it is recorded (`breakGlass.effectiveAt`), so other administrators
+    /// have a window to revoke it before it confers anything.
+    pub delay_seconds: u64,
+    /// `settings.break_glass_min_justification_chars`: a justification with
+    /// fewer non-whitespace characters is refused `git-ns:policyDenied`.
+    pub min_justification_chars: usize,
+}
+
+impl Default for BreakGlassSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            delay_seconds: 0,
+            min_justification_chars: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -156,6 +188,12 @@ struct SettingsDoc {
     cascade_on_departure: bool,
     #[serde(default)]
     role_drift: Option<String>,
+    #[serde(default)]
+    break_glass: Option<String>,
+    #[serde(default)]
+    break_glass_delay_seconds: Option<u64>,
+    #[serde(default)]
+    break_glass_min_justification_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -247,6 +285,13 @@ pub fn settings(policy: &CompiledPolicy) -> Settings {
         },
         cascade_on_departure: doc.cascade_on_departure,
         enforce_role_drift: doc.role_drift.as_deref() == Some("enforce"),
+        break_glass: BreakGlassSettings {
+            enabled: doc.break_glass.as_deref() != Some("disabled"),
+            // A day at most: a longer delay is a disabled break-glass in all
+            // but name, and should say so.
+            delay_seconds: doc.break_glass_delay_seconds.unwrap_or(0).min(86_400),
+            min_justification_chars: doc.break_glass_min_justification_chars.unwrap_or(0),
+        },
     }
 }
 
