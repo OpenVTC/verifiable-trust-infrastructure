@@ -174,6 +174,36 @@ where
     response(result_type, &result)
 }
 
+/// [`dispatch`], plus the policy gate the Trust-Task spine applies to
+/// `task_uri` — for the protocol messages that are another transport's spelling
+/// of a gated task.
+///
+/// Without it a rule an operator wrote for, say, `keys/export-secret/0.1` (a
+/// step-up, a consent, a deny) bound the Trust Task and the REST route and not
+/// this surface, so the same operation was ungated one transport away. The gate
+/// digests the body as it arrived, so an approval is interchangeable between
+/// transports whose payloads share a shape.
+async fn dispatch_policy_gated<B, R>(
+    message: Message,
+    state: &Arc<VtaState>,
+    app_state: &AppState,
+    gate: Gate,
+    task_uri: &str,
+    result_type: &str,
+    op: impl AsyncFnOnce(crate::auth::AuthClaims, B) -> Result<R, AppError>,
+) -> HandlerResult
+where
+    B: serde::de::DeserializeOwned,
+    R: serde::Serialize,
+{
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
+    app_try!(gate.check(&auth));
+    app_try!(crate::trust_tasks::rest_gate(app_state, &auth, task_uri, &message.body).await);
+    let body: B = serde_json::from_value(message.body).map_err(handler_err)?;
+    let result = app_try!(op(auth, body).await);
+    response(result_type, &result)
+}
+
 /// [`dispatch`] for the handlers whose message carries no body — the op runs
 /// from the authenticated `auth` alone (e.g. `list-seeds`, `get-config`).
 async fn dispatch_no_body<R>(
@@ -320,11 +350,14 @@ pub async fn handle_trust_task(
         // envelope to the VTA's own key, so no intermediary — mediator included
         // — held the plaintext.
         Ok(sender) => {
-            crate::trust_tasks::accept_from_proven_sender(
-                &app_state,
-                sender,
-                &body,
-                crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+            crate::trust_tasks::transport::with_binding(
+                "didcomm",
+                crate::trust_tasks::accept_from_proven_sender(
+                    &app_state,
+                    sender,
+                    &body,
+                    crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+                ),
             )
             .await
         }
@@ -440,52 +473,84 @@ didcomm_handler!(
     .await
 );
 
-didcomm_handler!(
-    handle_get_key_secret,
-    Gate::Admin,
-    key_management::GET_KEY_SECRET_RESULT,
-    key_management::secret::GetKeySecretBody,
-    |s, auth, body| operations::keys::get_key_secret(
-        &s.keys_ks,
-        &s.imported_ks,
-        &s.contexts_ks,
-        &s.seed_store,
-        &s.audit_sink,
-        &auth,
-        &body.key_id,
-        "didcomm",
+/// `get-key-secret`: DIDComm's spelling of `keys/export-secret/0.1`. The
+/// `key-export` capability, scope, exportability and the durable audit row are
+/// the operation's; the policy gate is the task's, applied here as the spine
+/// applies it (see [`dispatch_policy_gated`]).
+pub async fn handle_get_key_secret(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+    Extension(app_state): Extension<AppState>,
+) -> HandlerResult {
+    dispatch_policy_gated(
+        message,
+        &state,
+        &app_state,
+        Gate::Admin,
+        vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1,
+        key_management::GET_KEY_SECRET_RESULT,
+        async |auth, body: key_management::secret::GetKeySecretBody| {
+            operations::keys::get_key_secret(
+                &state.keys_ks,
+                &state.imported_ks,
+                &state.contexts_ks,
+                &state.acl_ks,
+                &state.seed_store,
+                &state.audit_sink,
+                &auth,
+                &body.key_id,
+                // Authcrypt sealed this envelope to the VTA and the reply to
+                // the sender: end to end.
+                operations::keys::ExportChannel::EndToEnd("didcomm"),
+            )
+            .await
+        },
     )
     .await
-);
+}
 
-didcomm_handler!(
-    handle_sign_request,
-    Gate::Write,
-    key_management::SIGN_RESULT,
-    key_management::sign::SignRequestBody,
-    |s, auth, body| {
-        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&body.payload)
-            .map_err(|e| AppError::Validation(format!("invalid base64url payload: {e}")))?;
-        operations::keys::sign_payload(
-            &s.keys_ks,
-            &s.imported_ks,
-            &s.internal_ks,
-            &s.contexts_ks,
-            &s.acl_ks,
-            &s.seed_store,
-            &s.audit_sink,
-            &auth,
-            &body.key_id,
-            &payload,
-            &body.algorithm,
-            // A payload from a DIDComm caller: the VTA cannot parse it.
-            SigningDomain::Opaque,
-            "didcomm",
-        )
-        .await
-    }
-);
+/// `sign-request`: DIDComm's spelling of `keys/sign/0.1`, gated by policy as
+/// that task is (see [`dispatch_policy_gated`]); the `sign` capability and the
+/// rest of the oracle's gates are the operation's.
+pub async fn handle_sign_request(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+    Extension(app_state): Extension<AppState>,
+) -> HandlerResult {
+    dispatch_policy_gated(
+        message,
+        &state,
+        &app_state,
+        Gate::Write,
+        vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1,
+        key_management::SIGN_RESULT,
+        async |auth, body: key_management::sign::SignRequestBody| {
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&body.payload)
+                .map_err(|e| AppError::Validation(format!("invalid base64url payload: {e}")))?;
+            operations::keys::sign_payload(
+                &state.keys_ks,
+                &state.imported_ks,
+                &state.internal_ks,
+                &state.contexts_ks,
+                &state.acl_ks,
+                &state.seed_store,
+                &state.audit_sink,
+                &auth,
+                &body.key_id,
+                &payload,
+                &body.algorithm,
+                // A payload from a DIDComm caller: the VTA cannot parse it.
+                SigningDomain::Opaque,
+                "didcomm",
+            )
+            .await
+        },
+    )
+    .await
+}
 
 // ---------------------------------------------------------------------------
 // Seed management
@@ -697,7 +762,7 @@ pub async fn handle_swap_acl(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
     // The gate needs an `AppState` (policy, consent, planner, audit); a
-    // `VtaState` cannot reach it. This is the only handler on the legacy
+    // `VtaState` cannot reach it. One of the few handlers on the legacy
     // protocol-message surface that takes both — see the gate call below.
     Extension(app_state): Extension<AppState>,
 ) -> HandlerResult {
@@ -1309,16 +1374,28 @@ pub async fn handle_backup_export(
         )
         .await
     );
-    let _ = crate::audit::record(
-        &state.audit_sink,
-        "backup.export",
-        &auth.did,
-        None,
-        "success",
-        Some("didcomm"),
-        None,
-    )
-    .await;
+    // Durable before the envelope leaves, refusing on failure — see the REST
+    // route.
+    app_try!(
+        crate::audit::record(
+            &state.audit_sink,
+            "backup.export",
+            &auth.did,
+            None,
+            "success",
+            Some("didcomm"),
+            None,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(target: vta_audit::AUDIT_WRITE_FAILURE_TARGET, error = %e, actor = %auth.did, "backup export refused: its audit row could not be written");
+            AppError::Internal(
+                "the backup was not released: the export could not be recorded in the audit \
+                 trail, and an unrecorded export is not permitted (VTI-VTA-003)"
+                    .into(),
+            )
+        })
+    );
     info!(
         ciphertext_bytes = envelope.ciphertext.len(),
         "backup export DIDComm response size"

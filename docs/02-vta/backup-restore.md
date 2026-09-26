@@ -90,6 +90,10 @@ a committed restore; restore KMS reachability and boot again.
 
 ## Requirements
 
+- `pnm` must reach the VTA over DIDComm or TSP. A backup export or import is
+  refused over REST and over Trust Tasks on HTTPS, because the backup password
+  would exist in plaintext wherever TLS terminates, next to the bundle it opens.
+  Only the encrypted bundle bytes may move over HTTPS.
 - A plain or hardened VTA must keep its seed in a store that survives a restart
   (keyring, a cloud secret manager, Vault, Kubernetes). A restore into one that
   cannot is refused before anything changes.

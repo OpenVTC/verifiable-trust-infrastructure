@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use tracing::debug;
 
+use super::keys::ExportChannel;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::keys::seed_store::SeedStore;
@@ -31,7 +32,6 @@ use vta_sdk::context_provision::ProvisionedDid;
 use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry, select_secret_kid};
 use vta_sdk::keys::KeyStatus;
-use vti_common::acl::Capability;
 
 /// Dependencies for the offline state-assembly helpers.
 ///
@@ -62,7 +62,7 @@ pub struct ExportDeps<'a> {
 /// This is an export: the keys leave the VTA and stay with the caller after its authority
 /// is withdrawn. VTI-VTA-003 requires that such an export "MUST be gated by a capability
 /// distinct from the capability to use the key, and MUST be audited". So the gate is
-/// [`Capability::KeyExport`] — the same capability `keys/export-secret` requires — and not
+/// [`vti_common::acl::Capability::KeyExport`] — the same capability `keys/export-secret` requires — and not
 /// the `Application` role floor this task used to have (#1625), which let any principal
 /// that could *use* a context's keys also *take* them.
 ///
@@ -96,129 +96,18 @@ pub async fn get_context_secrets(
     deps: &ExportDeps<'_>,
     auth: &AuthClaims,
     context_id: &str,
-    channel: &str,
+    channel: ExportChannel<'_>,
 ) -> Result<DidSecretsBundle, AppError> {
-    ensure_may_export(deps.acl_ks, auth).await?;
+    super::keys::ensure_may_export(deps.acl_ks, auth, "vta/contexts/secrets").await?;
     let bundle = build_did_secrets_bundle(deps, auth, context_id, channel).await?;
     tracing::info!(
-        channel,
+        channel = channel.audit_channel(),
         context = %context_id,
         did = %bundle.did,
         keys = bundle.secrets.len(),
         "context secrets released to the service that operates them"
     );
     Ok(bundle)
-}
-
-/// The `vta/contexts/secrets` gate: the caller must hold `KeyExport` (VTI-VTA-003).
-///
-/// Reads the caller's **entry**, as `ensure_may_mint` does for `KeyMint`, so a narrowing
-/// binds the next call. With no entry the role decides; a store error refuses.
-///
-/// The refusal names the exact command that fixes it — the caller is usually a service
-/// logging at boot, and the person reading that log is the one who has to run it.
-async fn ensure_may_export(acl_ks: &KeyspaceHandle, auth: &AuthClaims) -> Result<(), AppError> {
-    use vti_common::acl::{entry_has_capability, get_acl_entry, role_has_capability};
-
-    let entry = match get_acl_entry(acl_ks, &auth.did).await {
-        Ok(entry) => entry,
-        // A store error must not become a grant.
-        Err(e) => {
-            tracing::error!(
-                error = %e, did = %auth.did,
-                "could not read the ACL entry for the KeyExport check; refusing"
-            );
-            return Err(AppError::Forbidden(format!(
-                "vta/contexts/secrets denied: could not confirm that {} carries the \
-                 key-export capability",
-                auth.did
-            )));
-        }
-    };
-    let may_export = match &entry {
-        Some(entry) => entry_has_capability(entry, Capability::KeyExport),
-        None => role_has_capability(&auth.role, Capability::KeyExport),
-    };
-    if may_export {
-        return Ok(());
-    }
-    Err(AppError::Forbidden(format!(
-        "vta/contexts/secrets denied: {} does not carry the key-export capability. \
-         Releasing a DID's private keys is an export, and VTI-VTA-003 gates export on a \
-         capability distinct from using the key; only an admin derives it, so the service \
-         operating a context's DID must be an admin scoped to that context. {}",
-        auth.did,
-        key_export_fix(entry.as_ref(), &auth.did)
-    )))
-}
-
-/// The command an operator runs so `did` may fetch its context's secrets.
-///
-/// Built from the caller's stored entry, because the right command depends on it:
-///
-/// - **no entry** — create one, as an admin of the context;
-/// - **a non-admin with a context scope** — `change-role` to admin, which keeps the scope
-///   (and, like any admin grant, confers the rest of what an admin of that context holds);
-/// - **a non-admin with no context** — scope it first: promoting an entry with no contexts
-///   would make it a *super*-admin, so that is never suggested;
-/// - **an admin narrowed without `key-export`** — re-state the narrowing with `key-export`
-///   added, rather than suggesting `--capabilities-all`, which would also undo whatever
-///   else the narrowing deliberately removed.
-fn key_export_fix(entry: Option<&vti_common::acl::AclEntry>, did: &str) -> String {
-    use vta_sdk::acl::ActScope;
-
-    let Some(entry) = entry else {
-        return format!(
-            "Grant it with: pnm acl create --did {did} --role admin --contexts <CONTEXT>"
-        );
-    };
-    if entry.role != crate::acl::Role::Admin {
-        let promote = format!(
-            "pnm acl change-role --did {did} --from {} --to admin",
-            entry.role
-        );
-        let narrowed = restated_narrowing(entry);
-        return match (entry.act_scope(), narrowed) {
-            (ActScope::Contexts(_), None) => format!("Grant it with: {promote}"),
-            (ActScope::Contexts(_), Some(caps)) => {
-                format!("Grant it with: {promote} && pnm acl update {did} --capabilities {caps}")
-            }
-            // Authorized nowhere (or, defensively, anything else): scope first.
-            _ => format!(
-                "Scope it to the context first, then promote it: \
-                 pnm acl update {did} --contexts <CONTEXT> && {promote}"
-            ),
-        };
-    }
-    match restated_narrowing(entry) {
-        Some(caps) => format!("Grant it with: pnm acl update {did} --capabilities {caps}"),
-        // An un-narrowed admin derives `KeyExport`, so reaching here means something other
-        // than the narrowing withheld it — say what to look at rather than guess a command.
-        None => format!("Inspect the entry with: pnm acl get {did}"),
-    }
-}
-
-/// The entry's stored capability list with `key-export` added, as the comma-separated
-/// value `pnm acl update --capabilities` takes — or `None` when the entry is not narrowed.
-///
-/// `--capabilities` *replaces* the list, so the command has to carry every name already
-/// there; a bare `--capabilities key-export` would narrow an admin to that one power.
-fn restated_narrowing(entry: &vti_common::acl::AclEntry) -> Option<String> {
-    if entry.capabilities.is_empty() {
-        return None;
-    }
-    let name = |c: &Capability| {
-        serde_json::to_value(c)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string))
-    };
-    let mut names: Vec<String> = entry.capabilities.iter().filter_map(name).collect();
-    if let Some(key_export) = name(&Capability::KeyExport)
-        && !names.contains(&key_export)
-    {
-        names.push(key_export);
-    }
-    Some(names.join(","))
 }
 
 /// Build a [`DidSecretsBundle`] for `context_id` by enumerating active
@@ -235,8 +124,9 @@ pub async fn build_did_secrets_bundle(
     deps: &ExportDeps<'_>,
     auth: &AuthClaims,
     context_id: &str,
-    channel: &str,
+    export_channel: ExportChannel<'_>,
 ) -> Result<DidSecretsBundle, AppError> {
+    let channel = export_channel.audit_channel();
     auth.require_context(context_id)?;
 
     let ctx = crate::contexts::get_context(deps.contexts_ks, context_id)
@@ -273,11 +163,12 @@ pub async fn build_did_secrets_bundle(
                 deps.keys_ks,
                 deps.imported_ks,
                 deps.contexts_ks,
+                deps.acl_ks,
                 deps.seed_store,
                 deps.audit,
                 auth,
                 &key.key_id,
-                channel,
+                export_channel,
             )
             .await?;
             // The kid a mediator matches inbound JWE recipients against MUST be
@@ -340,11 +231,13 @@ pub async fn credential_from_key_offline(
         deps.keys_ks,
         deps.imported_ks,
         deps.contexts_ks,
+        deps.acl_ks,
         deps.seed_store,
         deps.audit,
         auth,
         key_id,
-        channel,
+        // `_offline`: on-host, as the VTA's own OS user.
+        ExportChannel::Local(channel),
     )
     .await?;
     CredentialBundle::from_ed25519_seed_multibase(&secret.private_key_multibase, vta_did, vta_url)
@@ -440,7 +333,8 @@ async fn fetch_did_material_offline(
         .and_then(|log_str| serde_json::from_str::<serde_json::Value>(log_str).ok())
         .and_then(|v| v.get("state").cloned());
 
-    let secrets_bundle = build_did_secrets_bundle(deps, auth, context_id, channel).await?;
+    let secrets_bundle =
+        build_did_secrets_bundle(deps, auth, context_id, ExportChannel::Local(channel)).await?;
     Ok(ProvisionedDid {
         id: did.to_string(),
         did_document,
@@ -456,6 +350,7 @@ mod tests {
     use crate::keys::seed_store::PlaintextSeedStore;
     use crate::store::{KeyspaceHandle, Store};
     use std::path::PathBuf;
+    use vti_common::acl::Capability;
 
     struct TestEnv {
         _dir: tempfile::TempDir,
@@ -543,9 +438,10 @@ mod tests {
     async fn build_did_secrets_rejects_missing_context() {
         let env = open_env().await;
         let auth = super_admin();
-        let err = build_did_secrets_bundle(&deps_of(&env), &auth, "nope", "test")
-            .await
-            .unwrap_err();
+        let err =
+            build_did_secrets_bundle(&deps_of(&env), &auth, "nope", ExportChannel::Local("test"))
+                .await
+                .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "got: {err:?}");
         let msg = err.to_string();
         assert!(msg.contains("nope"), "got: {msg}");
@@ -560,9 +456,14 @@ mod tests {
             .await
             .expect("create context");
 
-        let err = build_did_secrets_bundle(&deps_of(&env), &auth, "no-did", "test")
-            .await
-            .unwrap_err();
+        let err = build_did_secrets_bundle(
+            &deps_of(&env),
+            &auth,
+            "no-did",
+            ExportChannel::Local("test"),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
         assert!(err.to_string().contains("no DID assigned"));
     }
@@ -713,9 +614,14 @@ mod tests {
         let env = open_env().await;
         let did = seed_context_with_keys(&env, "med-ctx").await;
 
-        let bundle = build_did_secrets_bundle(&deps_of(&env), &super_admin(), "med-ctx", "test")
-            .await
-            .expect("bundle builds");
+        let bundle = build_did_secrets_bundle(
+            &deps_of(&env),
+            &super_admin(),
+            "med-ctx",
+            ExportChannel::Local("test"),
+        )
+        .await
+        .expect("bundle builds");
 
         assert_eq!(bundle.did, did);
         let expect_0 = format!("{did}#key-0");
@@ -783,9 +689,14 @@ mod tests {
         let did = seed_context_with_keys(&env, "med-ctx").await;
         let auth = store_caller(&env, crate::acl::Role::Admin, &["med-ctx"], vec![]).await;
 
-        let bundle = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-            .await
-            .expect("a context admin derives KeyExport");
+        let bundle = get_context_secrets(
+            &deps_of(&env),
+            &auth,
+            "med-ctx",
+            ExportChannel::EndToEnd("test"),
+        )
+        .await
+        .expect("a context admin derives KeyExport");
 
         assert_eq!(bundle.did, did);
         let mut kids: Vec<&str> = bundle.secrets.iter().map(|s| s.key_id.as_str()).collect();
@@ -802,9 +713,14 @@ mod tests {
         let auth = store_caller(&env, crate::acl::Role::Application, &["med-ctx"], vec![]).await;
 
         let msg = forbidden_message(
-            get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-                .await
-                .expect_err("Application does not carry KeyExport"),
+            get_context_secrets(
+                &deps_of(&env),
+                &auth,
+                "med-ctx",
+                ExportChannel::EndToEnd("test"),
+            )
+            .await
+            .expect_err("Application does not carry KeyExport"),
         );
         assert!(msg.contains("key-export"), "{msg}");
         assert!(
@@ -825,9 +741,14 @@ mod tests {
         let auth = store_caller(&env, crate::acl::Role::Initiator, &["med-ctx"], vec![]).await;
 
         let msg = forbidden_message(
-            get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-                .await
-                .expect_err("Initiator does not carry KeyExport"),
+            get_context_secrets(
+                &deps_of(&env),
+                &auth,
+                "med-ctx",
+                ExportChannel::EndToEnd("test"),
+            )
+            .await
+            .expect_err("Initiator does not carry KeyExport"),
         );
         assert!(msg.contains("--from initiator --to admin"), "{msg}");
     }
@@ -848,9 +769,14 @@ mod tests {
         .await;
 
         let msg = forbidden_message(
-            get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-                .await
-                .expect_err("narrowed away, KeyExport is gone"),
+            get_context_secrets(
+                &deps_of(&env),
+                &auth,
+                "med-ctx",
+                ExportChannel::EndToEnd("test"),
+            )
+            .await
+            .expect_err("narrowed away, KeyExport is gone"),
         );
         assert!(
             msg.contains(&format!(
@@ -869,9 +795,14 @@ mod tests {
         seed_context_with_keys(&env, "med-ctx").await;
         let auth = store_caller(&env, crate::acl::Role::Admin, &["some-other-ctx"], vec![]).await;
 
-        let err = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-            .await
-            .expect_err("admin of another context is still not this context's service");
+        let err = get_context_secrets(
+            &deps_of(&env),
+            &auth,
+            "med-ctx",
+            ExportChannel::EndToEnd("test"),
+        )
+        .await
+        .expect_err("admin of another context is still not this context's service");
         assert!(matches!(err, AppError::Forbidden(_)), "got: {err:?}");
     }
 
@@ -884,9 +815,14 @@ mod tests {
         let auth = store_caller(&env, crate::acl::Role::Application, &[], vec![]).await;
 
         let msg = forbidden_message(
-            get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-                .await
-                .expect_err("no KeyExport"),
+            get_context_secrets(
+                &deps_of(&env),
+                &auth,
+                "med-ctx",
+                ExportChannel::EndToEnd("test"),
+            )
+            .await
+            .expect_err("no KeyExport"),
         );
         assert!(
             msg.contains(&format!(
@@ -905,9 +841,14 @@ mod tests {
         seed_context_with_keys(&env, "med-ctx").await;
         let auth = store_caller(&env, crate::acl::Role::Reader, &["med-ctx"], vec![]).await;
 
-        let err = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-            .await
-            .expect_err("a reader may see that keys exist, never hold one");
+        let err = get_context_secrets(
+            &deps_of(&env),
+            &auth,
+            "med-ctx",
+            ExportChannel::EndToEnd("test"),
+        )
+        .await
+        .expect_err("a reader may see that keys exist, never hold one");
         assert!(matches!(err, AppError::Forbidden(_)), "got: {err:?}");
     }
 
@@ -923,12 +864,22 @@ mod tests {
             (crate::acl::Role::Application, "med-ctx"),
         ] {
             let auth = store_caller(&env, role, &[ctx], vec![]).await;
-            let real = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
-                .await
-                .expect_err("exists, not yours");
-            let imaginary = get_context_secrets(&deps_of(&env), &auth, "no-such-ctx", "test")
-                .await
-                .expect_err("does not exist, and not yours either");
+            let real = get_context_secrets(
+                &deps_of(&env),
+                &auth,
+                "med-ctx",
+                ExportChannel::EndToEnd("test"),
+            )
+            .await
+            .expect_err("exists, not yours");
+            let imaginary = get_context_secrets(
+                &deps_of(&env),
+                &auth,
+                "no-such-ctx",
+                ExportChannel::EndToEnd("test"),
+            )
+            .await
+            .expect_err("does not exist, and not yours either");
 
             assert!(matches!(real, AppError::Forbidden(_)), "got: {real:?}");
             assert!(

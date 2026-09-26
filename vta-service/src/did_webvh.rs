@@ -276,16 +276,20 @@ pub async fn run_create_did_webvh(
         false
     };
     if want_export {
-        // Fetch key secrets via the operations layer
+        // Fetch key secrets via the operations layer — the same export gate
+        // as every transport. The CLI's synthesized super-admin has no ACL
+        // entry, so its role (admin) supplies `key-export`.
+        let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
         let signing_secret = crate::operations::keys::get_key_secret(
             &keys_ks,
             &imported_ks,
             &contexts_ks,
+            &acl_ks,
             &Arc::from(seed_store),
             &audit,
             &auth,
             &result.signing_key_id,
-            "cli",
+            crate::operations::keys::ExportChannel::Local("cli"),
         )
         .await
         .map_err(|e| format!("failed to fetch signing key secret: {e}"))?;
@@ -301,11 +305,12 @@ pub async fn run_create_did_webvh(
                 &keys_ks,
                 &imported_ks,
                 &contexts_ks,
+                &acl_ks,
                 &Arc::from(create_seed_store(&config)?),
                 &audit,
                 &auth,
                 &result.ka_key_id,
-                "cli",
+                crate::operations::keys::ExportChannel::Local("cli"),
             )
             .await
             .map_err(|e| format!("failed to fetch KA key secret: {e}"))?;
@@ -785,15 +790,17 @@ mod tests {
             .expect("DID id");
         let key_id = format!("{did}#key-0");
 
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
         let secret = crate::operations::keys::get_key_secret(
             &keys_ks,
             &imported_ks,
             &contexts_ks,
+            &acl_ks,
             &seed_store,
             &audit,
             &auth,
             &key_id,
-            "test",
+            crate::operations::keys::ExportChannel::Local("test"),
         )
         .await
         .expect("fetch key secret");
@@ -959,11 +966,12 @@ mod tests {
             &keys_ks,
             &imported_ks,
             &contexts_ks,
+            &store.keyspace(crate::keyspaces::ACL).unwrap(),
             &Arc::from(create_seed_store(&config).unwrap()),
             &audit,
             &cli_super_admin(),
             &format!("{}#key-0", result.did),
-            "test",
+            crate::operations::keys::ExportChannel::Local("test"),
         )
         .await
         .expect("fetch key secret");

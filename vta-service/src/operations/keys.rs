@@ -9,6 +9,8 @@ use p256::elliptic_curve::sec1::ToSec1Point;
 use tracing::info;
 use zeroize::Zeroize;
 
+use vti_common::acl::Capability;
+
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResultBody,
     derive_and_sign::DeriveAndSignResultBody,
@@ -758,7 +760,322 @@ pub async fn revoke_key(
     })
 }
 
+/// The caller's stored ACL entry, for a capability gate.
+///
+/// `Ok(None)` means the caller has no entry and its role decides — the
+/// process-local synthesized identities (the offline CLI's `cli:<channel>`
+/// sentinel) and nothing else reach here without one. A store error **refuses**:
+/// an unreadable entry must not become a grant, and the caller is told only that
+/// the capability could not be confirmed while the operator gets the reason.
+async fn entry_for_capability_gate(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+    capability: &str,
+) -> Result<Option<vti_common::acl::AclEntry>, AppError> {
+    vti_common::acl::get_acl_entry(acl_ks, &auth.did)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e, did = %auth.did, capability,
+                "could not read the ACL entry for a capability check; refusing"
+            );
+            AppError::Forbidden(format!(
+                "{what} denied: could not confirm that {} carries the {capability} capability",
+                auth.did
+            ))
+        })
+}
+
+/// Whether `entry` (or, with none, the caller's role) carries `cap` — the role's
+/// set narrowed by the entry's own list, as every capability gate reads it.
+fn entry_or_role_has(
+    entry: Option<&vti_common::acl::AclEntry>,
+    auth: &AuthClaims,
+    cap: Capability,
+) -> bool {
+    match entry {
+        Some(entry) => vti_common::acl::entry_has_capability(entry, cap),
+        None => vti_common::acl::role_has_capability(&auth.role, cap),
+    }
+}
+
+/// The export gate: the caller must hold [`Capability::KeyExport`] (VTI-VTA-003).
+///
+/// This is the one implementation of it, and it lives here — in the operation,
+/// not in a handler — because the export surface is reachable over REST, DIDComm
+/// and the Trust-Task spine (itself carried over HTTPS, DIDComm and TSP). It used
+/// to be applied by the `keys/export-secret` handler alone, so the same export
+/// over `GET /keys/{id}/secret` or DIDComm `get-key-secret` checked only the
+/// admin *role*: an admin narrowed without `key-export` could still take a key by
+/// choosing a different transport. Checked in the operation, a transport added
+/// later cannot be wired without it.
+///
+/// Reads the caller's **entry**, so a narrowing that removes `key-export` binds
+/// the very next export. Runs before the key or context is looked up, so a
+/// refused caller learns nothing about which ids exist.
+///
+/// The refusal names the exact command that fixes it — the caller is often a
+/// service logging at boot, and the person reading that log is the one who has
+/// to run it.
+pub(crate) async fn ensure_may_export(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+) -> Result<(), AppError> {
+    let entry = entry_for_capability_gate(acl_ks, auth, what, "key-export").await?;
+    if entry_or_role_has(entry.as_ref(), auth, Capability::KeyExport) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "{what} denied: {} does not carry the key-export capability. Releasing a \
+         private key is an export, and VTI-VTA-003 gates export on a capability \
+         distinct from using the key; only an admin derives it, so a service that \
+         holds a context's keys must be an admin scoped to that context. {}",
+        auth.did,
+        key_export_fix(entry.as_ref(), &auth.did)
+    )))
+}
+
+/// The generic signing-oracle gate: the caller must hold [`Capability::Sign`].
+///
+/// `Sign` is "the capability to use the key" VTI-VTA-003 distinguishes export
+/// from, and the capability VTI-VTA-007 distinguishes from the constrained
+/// signing grants (`sign-trust-task`, `room-present`, …). Every role that can
+/// reach the oracle derives it, so an un-narrowed entry loses nothing; what this
+/// adds is that an operator who narrowed `sign` away from an entry gets the
+/// refusal they asked for — before, the role floor was the only check, and the
+/// narrowing was silently ignored on every transport.
+pub(crate) async fn ensure_may_sign(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+) -> Result<(), AppError> {
+    let entry = entry_for_capability_gate(acl_ks, auth, what, "sign").await?;
+    if entry_or_role_has(entry.as_ref(), auth, Capability::Sign) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "{what} denied: {} does not carry the sign capability",
+        auth.did
+    )))
+}
+
+/// The command an operator runs so `did` may export.
+///
+/// Built from the caller's stored entry, because the right command depends on it:
+///
+/// - **no entry** — create one, as an admin of the context;
+/// - **a non-admin with a context scope** — `change-role` to admin, which keeps the scope
+///   (and, like any admin grant, confers the rest of what an admin of that context holds);
+/// - **a non-admin with no context** — scope it first: promoting an entry with no contexts
+///   would make it a *super*-admin, so that is never suggested;
+/// - **an admin narrowed without `key-export`** — re-state the narrowing with `key-export`
+///   added, rather than suggesting `--capabilities-all`, which would also undo whatever
+///   else the narrowing deliberately removed.
+fn key_export_fix(entry: Option<&vti_common::acl::AclEntry>, did: &str) -> String {
+    use vta_sdk::acl::ActScope;
+
+    let Some(entry) = entry else {
+        return format!(
+            "Grant it with: pnm acl create --did {did} --role admin --contexts <CONTEXT>"
+        );
+    };
+    if entry.role != crate::acl::Role::Admin {
+        let promote = format!(
+            "pnm acl change-role --did {did} --from {} --to admin",
+            entry.role
+        );
+        let narrowed = restated_narrowing(entry);
+        return match (entry.act_scope(), narrowed) {
+            (ActScope::Contexts(_), None) => format!("Grant it with: {promote}"),
+            (ActScope::Contexts(_), Some(caps)) => {
+                format!("Grant it with: {promote} && pnm acl update {did} --capabilities {caps}")
+            }
+            // Authorized nowhere (or, defensively, anything else): scope first.
+            _ => format!(
+                "Scope it to the context first, then promote it: \
+                 pnm acl update {did} --contexts <CONTEXT> && {promote}"
+            ),
+        };
+    }
+    match restated_narrowing(entry) {
+        Some(caps) => format!("Grant it with: pnm acl update {did} --capabilities {caps}"),
+        // An un-narrowed admin derives `KeyExport`, so reaching here means something other
+        // than the narrowing withheld it — say what to look at rather than guess a command.
+        None => format!("Inspect the entry with: pnm acl get {did}"),
+    }
+}
+
+/// The entry's stored capability list with `key-export` added, as the comma-separated
+/// value `pnm acl update --capabilities` takes — or `None` when the entry is not narrowed.
+///
+/// `--capabilities` *replaces* the list, so the command has to carry every name already
+/// there; a bare `--capabilities key-export` would narrow an admin to that one power.
+fn restated_narrowing(entry: &vti_common::acl::AclEntry) -> Option<String> {
+    if entry.capabilities.is_empty() {
+        return None;
+    }
+    let name = |c: &Capability| {
+        serde_json::to_value(c)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+    };
+    let mut names: Vec<String> = entry.capabilities.iter().filter_map(name).collect();
+    if let Some(key_export) = name(&Capability::KeyExport)
+        && !names.contains(&key_export)
+    {
+        names.push(key_export);
+    }
+    Some(names.join(","))
+}
+
+/// Load the record `key_id` names **for a caller**, answering "absent" and
+/// "not yours" identically.
+///
+/// A caller whose scope is restricted learns nothing about ids outside it: a
+/// key that does not exist and a key in a context it cannot act in get the same
+/// refusal, with a message that names neither the key's context nor whether it
+/// exists. Only a super-admin — who can reach every key — is told a key is
+/// absent. Without this, `keys/export-secret` and `keys/sign` were an existence
+/// oracle for every key id in the VTA, and their "no access to context: X"
+/// refusal also named the context the key lived in.
+pub(crate) async fn load_record_in_caller_scope(
+    keys_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    key_id: &str,
+) -> Result<KeyRecord, AppError> {
+    let out_of_reach =
+        || AppError::Forbidden(format!("key `{key_id}` is not within the caller's scope"));
+    let record: Option<KeyRecord> = keys_ks.get(keys::store_key(key_id)).await?;
+    let Some(record) = record else {
+        return Err(if auth.is_super_admin() {
+            AppError::NotFound(format!("key {key_id} not found"))
+        } else {
+            out_of_reach()
+        });
+    };
+    let reachable = match record.context_id.as_deref() {
+        Some(ctx) => auth.has_context_access(ctx),
+        None => auth.is_super_admin(),
+    };
+    if !reachable {
+        return Err(out_of_reach());
+    }
+    Ok(record)
+}
+
+/// How the channel a released private key travels over protects it — stated
+/// by the caller of [`get_key_secret`], because only the transport knows.
+///
+/// A type rather than a flag so that a new call site has to say which case it
+/// is in. The `&str` is the audit `channel` the export is recorded under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportChannel<'a> {
+    /// Encrypted by the transport to the requester alone: DIDComm authcrypt,
+    /// or TSP. No intermediary — mediator included — holds the plaintext.
+    EndToEnd(&'a str),
+    /// Sealed to the recipient before it leaves the VTA
+    /// (`vta_sdk::sealed_transfer`, HPKE), whatever carries the envelope.
+    Sealed(&'a str),
+    /// Never leaves this host: an on-host CLI running as the VTA's own OS user.
+    Local(&'a str),
+    /// Confidential in transit at best — REST, and Trust Tasks over HTTPS. TLS
+    /// terminates wherever the operator terminates it, so the plaintext key
+    /// would exist there. **Refused**: see [`get_key_secret`].
+    HopByHop(&'a str),
+}
+
+impl<'a> ExportChannel<'a> {
+    /// The audit `channel` this export is recorded under.
+    pub fn audit_channel(self) -> &'a str {
+        match self {
+            Self::EndToEnd(c) | Self::Sealed(c) | Self::Local(c) | Self::HopByHop(c) => c,
+        }
+    }
+}
+
+/// Release a key's private material to the caller — `keys/export-secret`, over
+/// every transport.
+///
+/// Every check a release needs, in the order the specification sets
+/// (`keys/export-secret/0.1` § Authorization: entitlement first, then the two
+/// refusals no authority satisfies, then the response):
+///
+/// 1. **`KeyExport`** ([`ensure_may_export`]), before the key is looked up;
+/// 2. **a confidential channel** — an [`ExportChannel::HopByHop`] export is
+///    refused. `keys/export-secret/0.1` requires the exchange to be "carried
+///    over a channel confidential to the two parties", and the response is a
+///    private key in the clear; over REST or HTTPS it would exist in plaintext
+///    wherever TLS terminates. `keys/import` refuses the cleartext carrier over
+///    the same transports for the same reason. Checked before the key is
+///    looked up, so the refusal says nothing about which ids exist;
+/// 3. **scope** — the key's context, or super-admin for an unscoped key;
+/// 4. **never an internal key**, to anybody;
+/// 5. **never a key marked non-exportable**;
+/// 6. a **durable audit row**, written before the material is returned — see
+///    [`release_key_secret`].
+///
+/// The transports are thin: `GET /keys/{id}/secret`, DIDComm `get-key-secret`
+/// and the `keys/export-secret/0.1` handler all call this and nothing else, so
+/// none of them carries a check the others lack.
+#[allow(clippy::too_many_arguments)]
 pub async fn get_key_secret(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    channel: ExportChannel<'_>,
+) -> Result<GetKeySecretResultBody, AppError> {
+    ensure_may_export(acl_ks, auth, "keys/export-secret").await?;
+    if let ExportChannel::HopByHop(_) = channel {
+        return Err(AppError::Forbidden(
+            "keys/export-secret refused: a private key is released only over a channel \
+             confidential end to end — DIDComm or TSP — or sealed to its recipient, and \
+             this request arrived over REST/HTTPS, where TLS terminates wherever the \
+             operator terminates it and the key would exist in plaintext there. Retry over \
+             DIDComm or TSP, or run the export on the VTA host."
+                .into(),
+        ));
+    }
+    release_key_secret(
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        channel.audit_channel(),
+    )
+    .await
+}
+
+/// Checks 3–6 of [`get_key_secret`]: scope, the internal-key and
+/// non-exportable refusals, and the durable audit row. The one place a private
+/// key leaves the VTA. Private: every caller goes through [`get_key_secret`]
+/// and so through the capability and channel gates.
+///
+/// `get_key_secret_internal` is deliberately NOT gated by exportability: it is
+/// the *use* surface, loading a key so the VTA can sign or decrypt with it, and
+/// a key that may not leave may still be used.
+///
+/// # The audit row is a precondition of the release
+///
+/// VTI-VTA-003 requires an export to be audited, and elsewhere in this module
+/// the row is best-effort, because a failed write must not fail an operation
+/// that has already happened — refusing to revoke a key because the log is full
+/// protects nobody. An export is the opposite case: nothing has happened until
+/// the material is returned, and once it has, it cannot be taken back. So the
+/// row is written first and a failed write **refuses the export**. The row
+/// carries who (`actor`), which key (`resource`), its context, and the
+/// transport (`channel`) — never the material.
+#[allow(clippy::too_many_arguments)]
+async fn release_key_secret(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
@@ -768,17 +1085,15 @@ pub async fn get_key_secret(
     key_id: &str,
     channel: &str,
 ) -> Result<GetKeySecretResultBody, AppError> {
-    let record: KeyRecord = keys_ks
-        .get(keys::store_key(key_id))
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
 
-    if let Some(ref ctx) = record.context_id {
-        auth.require_context(ctx)?;
-    } else if !auth.is_super_admin() {
-        return Err(AppError::Forbidden(
-            "only super admin can access keys without a context".into(),
-        ));
+    // A revoked key is refused like a missing one would be to its owner: its
+    // record is kept for history (and a rotation's retired and staging records
+    // are revoked by construction), not so its private half can still leave.
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is not active and its private half is not released"
+        )));
     }
 
     // Internal keys are refused here too. `InternalAuthority` bypasses the ACL,
@@ -793,21 +1108,22 @@ pub async fn get_key_secret(
     }
 
     // The exportability restriction, enforced at the one place a private key
-    // leaves the VTA. This function is the export surface — the callers are
-    // `seeds/export-mnemonic`, `build_did_secrets_bundle` (and so
-    // `vta/contexts/secrets`), and the operator's own CLI export prompt.
-    // `get_key_secret_internal` is deliberately NOT gated here: it is the *use*
-    // surface, loading a key so the VTA can sign or decrypt with it, and a key
-    // that may not leave may still be used. Gating it would break the VTA's own
-    // signing rather than protect anything, because nothing it returns reaches
-    // a caller.
+    // leaves the VTA — every export path (`keys/export-secret` on each
+    // transport, `vta/contexts/secrets`, the offline CLI exports, and
+    // provisioning's read-back) arrives here. `get_key_secret_internal` is
+    // deliberately NOT gated: it is the *use* surface, and gating it would break
+    // the VTA's own signing rather than protect anything, because nothing it
+    // returns reaches a caller.
     //
     // `None` means exportable — see `KeyRecord::exportable`. Only an explicit
     // `Some(false)` refuses, so records written before the member existed are
     // unaffected.
     if record.exportable == Some(false) {
         return Err(AppError::Forbidden(format!(
-            "key `{key_id}` is marked non-exportable and its private half is never              released; it can still be used for signing and key agreement. Changing              that needs `keys/set-exportability` with authority beyond the one that              set it"
+            "key `{key_id}` is marked non-exportable and its private half is never \
+             released; it can still be used for signing and key agreement. Changing \
+             that needs `keys/set-exportability` with authority beyond the one that \
+             set it"
         )));
     }
 
@@ -856,14 +1172,9 @@ pub async fn get_key_secret(
         }
     };
 
-    info!(channel, key_id = %key_id, "key secret retrieved");
-    audit!(
-        "key.secret_export",
-        actor = &auth.did,
-        resource = key_id,
-        outcome = "success"
-    );
-    audit::record_best_effort(
+    // Durable before the material is returned, and refusing on failure — see
+    // "The audit row is a precondition of the release" above.
+    if let Err(e) = audit::record(
         audit,
         "key.secret_export",
         &auth.did,
@@ -872,7 +1183,27 @@ pub async fn get_key_secret(
         Some(channel),
         record.context_id.as_deref(),
     )
-    .await;
+    .await
+    {
+        let mut private_key_multibase = private_key_multibase;
+        private_key_multibase.zeroize();
+        tracing::error!(
+            target: vta_audit::AUDIT_WRITE_FAILURE_TARGET,
+            error = %e, channel, key_id = %key_id, actor = %auth.did,
+            "key export refused: its audit row could not be written"
+        );
+        return Err(AppError::Internal(format!(
+            "key `{key_id}` was not released: the export could not be recorded in the \
+             audit trail, and an unrecorded export is not permitted (VTI-VTA-003)"
+        )));
+    }
+    info!(channel, key_id = %key_id, "key secret retrieved");
+    audit!(
+        "key.secret_export",
+        actor = &auth.did,
+        resource = key_id,
+        outcome = "success"
+    );
 
     Ok(GetKeySecretResultBody {
         key_id: record.key_id,
@@ -1166,10 +1497,21 @@ pub async fn sign_payload(
     domain: SigningDomain,
     channel: &str,
 ) -> Result<SignResultBody, AppError> {
-    let record: KeyRecord = keys_ks
-        .get(keys::store_key(key_id))
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
+    // Gate 0 — the generic oracle needs `Sign` (VTI-VTA-003, VTI-VTA-007).
+    // Only for `Opaque`: those bytes came from a caller, which is the generic
+    // signing request `Sign` names. `ProtocolDefined` input is built inside the
+    // VTA by an operation that has already applied the constrained capability
+    // its own task requires (`credential-write` for a room's credentials, for
+    // instance) — and VTI-VTA-007 is precisely that such a grant must not have
+    // to carry the general one. Before any lookup, so a refused caller learns
+    // nothing about which key ids exist.
+    if domain == SigningDomain::Opaque {
+        ensure_may_sign(acl_ks, auth, "keys/sign").await?;
+    }
+
+    // Scope before existence: an out-of-scope caller gets the same refusal for
+    // a key that exists and one that does not.
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
 
     if record.status != KeyStatus::Active {
         return Err(AppError::Validation(
@@ -1390,6 +1732,7 @@ pub async fn sign_payload(
 #[allow(clippy::too_many_arguments)]
 pub async fn derive_and_sign(
     keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
     audit: &vta_audit::SharedAuditSink,
@@ -1399,6 +1742,9 @@ pub async fn derive_and_sign(
     algorithm: &SignAlgorithm,
     channel: &str,
 ) -> Result<DeriveAndSignResultBody, AppError> {
+    // The same `Sign` gate as the stored-key oracle: this signs caller-supplied
+    // bytes too, and a super-admin narrowed without `sign` asked not to.
+    ensure_may_sign(acl_ks, auth, "keys/derive-and-sign").await?;
     let signing_bytes = super::key_custody::derive_delegated_identity(
         keys_ks,
         &**seed_store,
@@ -1463,6 +1809,7 @@ pub async fn derive_and_sign(
 #[allow(clippy::too_many_arguments)]
 pub async fn derive_and_sign_document(
     keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
     audit: &vta_audit::SharedAuditSink,
@@ -1472,6 +1819,9 @@ pub async fn derive_and_sign_document(
     proof_purpose: Option<&str>,
     channel: &str,
 ) -> Result<DeriveAndSignDocumentResultBody, AppError> {
+    // `Sign`, as for `derive_and_sign`: the document is the caller's, and any
+    // JSON object is accepted, so this is a general signing request.
+    ensure_may_sign(acl_ks, auth, "keys/derive-and-sign-document").await?;
     let signing_bytes = super::key_custody::derive_delegated_identity(
         keys_ks,
         &**seed_store,
@@ -1855,11 +2205,12 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &tenant,
             "planted",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await;
         assert!(
@@ -1897,6 +2248,7 @@ mod tests {
         let sign = async |auth: &AuthClaims, path: &str| {
             derive_and_sign(
                 &h.keys_ks,
+                &h.acl_ks,
                 &h.seed_store,
                 auth,
                 &h.audit,
@@ -2284,6 +2636,7 @@ mod tests {
 
         let result = derive_and_sign(
             &h.keys_ks,
+            &h.acl_ks,
             &h.seed_store,
             &auth,
             &h.audit,
@@ -2333,6 +2686,7 @@ mod tests {
         assert!(
             derive_and_sign(
                 &h.keys_ks,
+                &h.acl_ks,
                 &h.seed_store,
                 &non_admin,
                 &h.audit,
@@ -2359,6 +2713,7 @@ mod tests {
 
         let res = derive_and_sign_document(
             &h.keys_ks,
+            &h.acl_ks,
             &h.seed_store,
             &auth,
             &h.audit,
@@ -2396,6 +2751,7 @@ mod tests {
         // Deterministic: same path → same signer.
         let res2 = derive_and_sign_document(
             &h.keys_ks,
+            &h.acl_ks,
             &h.seed_store,
             &auth,
             &h.audit,
@@ -2417,6 +2773,7 @@ mod tests {
         assert!(
             derive_and_sign_document(
                 &h.keys_ks,
+                &h.acl_ks,
                 &h.seed_store,
                 &non_admin,
                 &h.audit,
@@ -3227,11 +3584,12 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
             "k-internal",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await
         .unwrap_err();
@@ -3263,11 +3621,12 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
             "k-open",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await
         .expect("absence must read as exportable");
@@ -3295,11 +3654,12 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
             "k-shut",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await
         .unwrap_err();
@@ -3386,11 +3746,12 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
             "k-reopen",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await
         .expect("and the key exports again");
@@ -3618,6 +3979,491 @@ mod tests {
         .unwrap_err();
         assert!(
             matches!(&err, AppError::Validation(m) if m.contains("explicit key_id")),
+            "{err:?}"
+        );
+    }
+
+    // ── the export and signing gates, on every channel ───────────────
+    //
+    // Phase 0 of the key-roles work: the `key-export` gate used to live in the
+    // `keys/export-secret` Trust-Task handler alone, so `GET /keys/{id}/secret`
+    // and DIDComm `get-key-secret` released keys to an admin narrowed without
+    // it; and `sign` was never checked anywhere. Both now live in the
+    // operation, and these tests hold them there for every channel a transport
+    // can state.
+
+    /// A sink that keeps what it is given — or refuses everything.
+    struct RecordingSink {
+        rows: Mutex<Vec<vta_sdk::protocols::audit_management::list::AuditLogEntry>>,
+        refuse: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl vta_audit::AuditSink for RecordingSink {
+        async fn record(
+            &self,
+            entry: &vta_sdk::protocols::audit_management::list::AuditLogEntry,
+        ) -> Result<(), AppError> {
+            if self.refuse {
+                return Err(AppError::Internal("audit sink unavailable".into()));
+            }
+            self.rows.lock().await.push(entry.clone());
+            Ok(())
+        }
+    }
+
+    fn recording_sink(refuse: bool) -> Arc<RecordingSink> {
+        Arc::new(RecordingSink {
+            rows: Mutex::new(Vec::new()),
+            refuse,
+        })
+    }
+
+    /// Every channel a caller can state, with the audit name each records.
+    fn every_channel() -> [ExportChannel<'static>; 4] {
+        [
+            ExportChannel::EndToEnd("didcomm"),
+            ExportChannel::Sealed("provision-integration"),
+            ExportChannel::Local("cli"),
+            ExportChannel::HopByHop("rest"),
+        ]
+    }
+
+    /// Store an ACL entry for `auth` — an admin of `test-ctx` narrowed to
+    /// `capabilities` — so the gates read it, as they do for every live caller.
+    async fn store_narrowed(h: &TestHarness, auth: &AuthClaims, capabilities: Vec<Capability>) {
+        vti_common::acl::store_acl_entry(
+            &h.acl_ks,
+            &vti_common::acl::AclEntry::new(&auth.did, auth.role.clone(), "did:key:zRoot")
+                .with_contexts(auth.allowed_contexts.clone())
+                .with_capabilities(capabilities),
+        )
+        .await
+        .expect("store the caller's entry");
+    }
+
+    async fn export(
+        h: &TestHarness,
+        audit: &vta_audit::SharedAuditSink,
+        auth: &AuthClaims,
+        key_id: &str,
+        channel: ExportChannel<'_>,
+    ) -> Result<GetKeySecretResultBody, AppError> {
+        get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            audit,
+            auth,
+            key_id,
+            channel,
+        )
+        .await
+    }
+
+    /// VTI-VTA-003: an admin narrowed without `key-export` is refused on every
+    /// channel — REST and DIDComm included, which is where it used to pass —
+    /// and the refusal names the capability and the fix. Nothing is recorded
+    /// as exported.
+    #[tokio::test]
+    async fn vti_vta_003_export_without_key_export_is_refused_on_every_channel() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-gated").await;
+        let auth = h.context_admin_auth();
+        store_narrowed(&h, &auth, vec![Capability::Sign, Capability::KeyMint]).await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+
+        for channel in every_channel() {
+            let err = export(&h, &audit, &auth, "k-gated", channel)
+                .await
+                .expect_err("narrowed away, key-export is gone on every transport");
+            assert!(
+                matches!(&err, AppError::Forbidden(m)
+                    if m.contains("key-export")
+                        && m.contains("--capabilities sign,key-mint,key-export")),
+                "{channel:?}: {err:?}"
+            );
+        }
+        assert!(
+            sink.rows.lock().await.is_empty(),
+            "a refused export must not be recorded as one"
+        );
+    }
+
+    /// The gate runs before the lookup: a caller without `key-export` gets the
+    /// same refusal for a key that exists and one that does not.
+    #[tokio::test]
+    async fn the_export_gate_does_not_reveal_which_keys_exist() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-real").await;
+        let auth = h.context_admin_auth();
+        store_narrowed(&h, &auth, vec![Capability::Sign]).await;
+        let real = export(&h, &h.audit, &auth, "k-real", ExportChannel::Local("t"))
+            .await
+            .unwrap_err()
+            .to_string();
+        let imaginary = export(&h, &h.audit, &auth, "k-none", ExportChannel::Local("t"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(real, imaginary);
+    }
+
+    /// `keys/export-secret/0.1`: the exchange must be confidential to the two
+    /// parties. An entitled caller asking over a hop-by-hop channel is refused,
+    /// told how to succeed, and nothing is released or recorded.
+    #[tokio::test]
+    async fn an_export_over_a_hop_by_hop_channel_is_refused_even_when_entitled() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-tls").await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+
+        let err = export(
+            &h,
+            &audit,
+            &h.super_admin_auth(),
+            "k-tls",
+            ExportChannel::HopByHop("rest"),
+        )
+        .await
+        .expect_err("REST never carries a private key");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("DIDComm or TSP")),
+            "the refusal must say which transports work: {err:?}"
+        );
+        assert!(sink.rows.lock().await.is_empty());
+
+        export(
+            &h,
+            &audit,
+            &h.super_admin_auth(),
+            "k-tls",
+            ExportChannel::EndToEnd("didcomm"),
+        )
+        .await
+        .expect("the same caller succeeds end to end");
+    }
+
+    /// A key marked non-exportable, and an internal key, are refused on every
+    /// channel that could otherwise release them — to a super-admin, with
+    /// `key-export`.
+    #[tokio::test]
+    async fn non_exportable_and_internal_keys_are_refused_on_every_channel() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-locked").await;
+        set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &h.context_admin_auth(),
+            "k-locked",
+            false,
+            "test",
+        )
+        .await
+        .expect("restrict");
+        mint_internal(&h, "k-inside").await;
+
+        for channel in every_channel() {
+            if matches!(channel, ExportChannel::HopByHop(_)) {
+                // Refused before the key is read at all — asserted above.
+                continue;
+            }
+            let err = export(&h, &h.audit, &h.super_admin_auth(), "k-locked", channel)
+                .await
+                .expect_err("non-exportable");
+            assert!(
+                matches!(&err, AppError::Forbidden(m) if m.contains("non-exportable")),
+                "{channel:?}: {err:?}"
+            );
+            let err = export(&h, &h.audit, &h.super_admin_auth(), "k-inside", channel)
+                .await
+                .expect_err("internal");
+            assert!(
+                matches!(&err, AppError::Forbidden(m) if m.contains("internal key")),
+                "{channel:?}: {err:?}"
+            );
+        }
+    }
+
+    /// VTI-VTA-003 "and MUST be audited": a successful export leaves one
+    /// durable `key.secret_export` row naming who, which key, its context and
+    /// the transport — and never the material.
+    #[tokio::test]
+    async fn vti_vta_003_a_successful_export_writes_a_durable_audit_row() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-audited").await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+        let auth = h.context_admin_auth();
+
+        let released = export(
+            &h,
+            &audit,
+            &auth,
+            "k-audited",
+            ExportChannel::EndToEnd("trust-task/tsp"),
+        )
+        .await
+        .expect("an admin of the key's context exports it end to end");
+
+        let rows = sink.rows.lock().await;
+        let exports: Vec<_> = rows
+            .iter()
+            .filter(|r| r.action == "key.secret_export")
+            .collect();
+        assert_eq!(exports.len(), 1, "exactly one export row: {rows:?}");
+        let row = exports[0];
+        assert_eq!(row.actor, auth.did);
+        assert_eq!(row.resource.as_deref(), Some("k-audited"));
+        assert_eq!(row.context_id.as_deref(), Some("test-ctx"));
+        assert_eq!(row.channel.as_deref(), Some("trust-task/tsp"));
+        assert_eq!(row.outcome, "success");
+        let serialized = serde_json::to_string(row).unwrap();
+        assert!(
+            !serialized.contains(&released.private_key_multibase),
+            "the audit row must never carry the key material"
+        );
+    }
+
+    /// The row is a precondition of the release: a sink that cannot record
+    /// means no key leaves.
+    #[tokio::test]
+    async fn an_export_that_cannot_be_audited_is_refused() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-unrecorded").await;
+        let audit: vta_audit::SharedAuditSink = recording_sink(true);
+
+        let err = export(
+            &h,
+            &audit,
+            &h.super_admin_auth(),
+            "k-unrecorded",
+            ExportChannel::Local("cli"),
+        )
+        .await
+        .expect_err("an unrecorded export is not permitted");
+        assert!(
+            matches!(&err, AppError::Internal(m) if m.contains("VTI-VTA-003")),
+            "{err:?}"
+        );
+    }
+
+    async fn sign_as(
+        h: &TestHarness,
+        auth: &AuthClaims,
+        key_id: &str,
+        domain: SigningDomain,
+    ) -> Result<SignResultBody, AppError> {
+        sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            auth,
+            key_id,
+            b"hello",
+            &SignAlgorithm::EdDSA,
+            domain,
+            "test",
+        )
+        .await
+    }
+
+    /// VTI-VTA-003 / VTI-VTA-007: `sign` is the capability to use a key through
+    /// the generic oracle. An entry narrowed without it is refused opaque
+    /// signing — which, before, the role floor let straight through.
+    #[tokio::test]
+    async fn vti_vta_007_opaque_signing_without_sign_is_refused() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-sign").await;
+        let auth = h.context_admin_auth();
+
+        sign_as(&h, &auth, "k-sign", SigningDomain::Opaque)
+            .await
+            .expect("an un-narrowed admin derives sign");
+
+        store_narrowed(&h, &auth, vec![Capability::KeyExport]).await;
+        let err = sign_as(&h, &auth, "k-sign", SigningDomain::Opaque)
+            .await
+            .expect_err("narrowed away, sign is gone");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("sign capability")),
+            "{err:?}"
+        );
+        // Before the lookup: an id that does not exist is refused the same way.
+        let absent = sign_as(&h, &auth, "k-none", SigningDomain::Opaque)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), absent.to_string());
+    }
+
+    /// VTI-VTA-007 the other way round: a constrained grant must not need the
+    /// general one. Protocol-defined input is built inside the VTA by an
+    /// operation that applied its own capability, so `sign` is not demanded.
+    #[tokio::test]
+    async fn vti_vta_007_protocol_defined_signing_does_not_need_sign() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-room").await;
+        let auth = h.context_admin_auth();
+        store_narrowed(&h, &auth, vec![Capability::CredentialWrite]).await;
+
+        sign_as(&h, &auth, "k-room", SigningDomain::ProtocolDefined)
+            .await
+            .expect("a credential-write grant signs its own documents without sign");
+    }
+
+    /// The ephemeral oracles take caller bytes too, so they need `sign` — even
+    /// from a super-admin, when its entry was narrowed without it.
+    #[tokio::test]
+    async fn derive_and_sign_without_sign_is_refused() {
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+        store_narrowed(&h, &auth, vec![Capability::KeyExport]).await;
+
+        let err = derive_and_sign(
+            &h.keys_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &auth,
+            &h.audit,
+            &KeyType::Ed25519,
+            "m/26'/9'/0'",
+            b"hello",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await
+        .expect_err("no sign");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("sign capability")),
+            "{err:?}"
+        );
+
+        let err = derive_and_sign_document(
+            &h.keys_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &auth,
+            &h.audit,
+            &KeyType::Ed25519,
+            "m/26'/9'/0'",
+            serde_json::json!({ "a": 1 }),
+            None,
+            "test",
+        )
+        .await
+        .expect_err("no sign");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("sign capability")),
+            "{err:?}"
+        );
+    }
+
+    /// Scope before existence: a caller restricted to `test-ctx` gets one
+    /// refusal for a key in another context and for a key that does not
+    /// exist — naming neither — on both the export and the signing oracle.
+    #[tokio::test]
+    async fn out_of_scope_and_absent_keys_are_indistinguishable() {
+        let h = TestHarness::new().await;
+        create_context(&h.contexts_ks, "other-ctx", "Other")
+            .await
+            .unwrap();
+        create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("k-elsewhere".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("other-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+        let auth = h.context_admin_auth();
+        let refuse = |id: &'static str| {
+            let h = &h;
+            let auth = auth.clone();
+            async move {
+                let e = export(h, &h.audit, &auth, id, ExportChannel::Local("t"))
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                let s = sign_as(h, &auth, id, SigningDomain::Opaque)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                (e.replace(id, "<id>"), s.replace(id, "<id>"))
+            }
+        };
+        let real = refuse("k-elsewhere").await;
+        let absent = refuse("k-nowhere").await;
+        assert_eq!(real, absent);
+        assert!(
+            !real.0.contains("other-ctx"),
+            "must not name the key's context: {real:?}"
+        );
+    }
+
+    /// A revoked key's private half is not released, and internal authority
+    /// does not load it for use either.
+    #[tokio::test]
+    async fn revoked_keys_are_neither_exported_nor_loaded() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-gone").await;
+        revoke_key(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-gone",
+            "test",
+        )
+        .await
+        .expect("revoke");
+        let err = export(
+            &h,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-gone",
+            ExportChannel::Local("t"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
+            "{err:?}"
+        );
+        let err = get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &*h.seed_store,
+            &h.audit,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-gone",
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
             "{err:?}"
         );
     }
