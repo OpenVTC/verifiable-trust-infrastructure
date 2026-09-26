@@ -139,9 +139,10 @@ use helpers::{
 
 /// The transport-resolved caller identity threaded into the dispatcher.
 ///
-/// `sender_did` is the DIDComm authcrypt sender (already cryptographically
-/// authenticated); it is `None` over REST, where the holder is recovered
-/// from the document proof instead.
+/// `sender_did` is the transport-reported sender (DIDComm, TSP): a claim the
+/// spine accepts only once the document's own proof binds it (step 3a of
+/// [`dispatch_trust_task_core`]). It is `None` over REST,
+/// where the holder is recovered from the document proof instead.
 pub(crate) struct JoinAuthCtx {
     pub transport: JoinTransport,
     pub sender_did: Option<String>,
@@ -164,7 +165,8 @@ pub(crate) struct JoinAuthCtx {
 }
 
 impl JoinAuthCtx {
-    /// The DIDComm context: the authcrypt sender is the proven holder.
+    /// The DIDComm context. The sender is only a claim until the spine binds
+    /// it to the document proof.
     ///
     /// The envelope arm builds its context field by field, because an
     /// unauthenticated sender there is `None` rather than a refusal; this
@@ -362,6 +364,41 @@ pub(crate) async fn dispatch_trust_task_core(
     } else {
         ctx
     };
+
+    // 3a. Over DIDComm and TSP the transport-reported sender is a claim, not
+    //     proof of who composed the document (VTI-OPS-021/093). Every document
+    //     arriving that way must carry a proof (verified above against its
+    //     `issuer`), and that issuer must be the sender: the proof VM's
+    //     controller, the issuer and the sender are one DID. Handlers that read
+    //     `sender_did` then read a DID the document proves, whatever the task's
+    //     own proof requirement.
+    if matches!(ctx.transport, JoinTransport::DIDComm | JoinTransport::Tsp) {
+        let base = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+        match (ctx.verified_signer.as_deref(), ctx.sender_did.as_deref()) {
+            (Some(signer), Some(sender)) if base(signer) == base(sender) => {}
+            (None, _) => {
+                tracing::warn!(type_uri, "messaging document carries no proof — refused");
+                return reject_with(&doc, RejectReason::ProofRequired);
+            }
+            (Some(signer), sender) => {
+                tracing::warn!(
+                    type_uri,
+                    %signer,
+                    sender = ?sender,
+                    "messaging document is signed by a DID other than its sender — refused"
+                );
+                return reject_with(
+                    &doc,
+                    RejectReason::IdentityMismatch(
+                        trust_tasks_rs::ConsistencyError::IssuerMismatch {
+                            in_band: signer.to_string(),
+                            transport: sender.unwrap_or_default().to_string(),
+                        },
+                    ),
+                );
+            }
+        }
+    }
 
     // 3b. SPEC §7.2 item 11 — the duplicate-execution record.
     //
@@ -3669,7 +3706,29 @@ mod tests {
         use vti_rooms_dtg::test_support::Party;
 
         const MEMBER: &str = "did:key:zPersonhoodMember";
-        const STRANGER: &str = "did:key:zNotAMember";
+
+        /// A member that can sign — over DIDComm a document must carry a proof
+        /// bound to its sender, so a placeholder DID cannot speak there.
+        async fn seed_member(vtc: &TestVtc) -> Party {
+            let member = Party::new();
+            store_acl_entry(
+                &vtc.state.acl_ks,
+                &VtcAclEntry {
+                    did: member.did.clone(),
+                    role: VtcRole::Member,
+                    label: None,
+                    allowed_contexts: vec![],
+                    created_at: 0,
+                    created_by: "did:key:vtc-install".into(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("seed the signing member");
+            member
+        }
 
         async fn fixture() -> TestVtc {
             let vtc = TestVtc::builder().with_signers(true).build().await;
@@ -3693,34 +3752,11 @@ mod tests {
         }
 
         /// The fixture leaves `vtc_did` unset, so `validate_basic`'s
-        /// recipient binding is skipped — these tests are about the
-        /// per-verb auth the handlers add, not the framework envelope
-        /// checks that run ahead of every verb alike.
+        /// recipient binding is skipped — these tests are about the per-verb
+        /// auth the handlers add. Every document here is signed: over DIDComm
+        /// the spine accepts a document only when its proof binds it to the
+        /// sender, whatever the task's own proof requirement.
         ///
-        /// The envelope is still the one a real producer sends. `issuedAt` and
-        /// `recipient` are both required of these specifications, and the spine
-        /// enforces them ahead of any handler since #1641; a bare
-        /// `TrustTask::new` was refused as `malformedRequest` before the verb
-        /// under test was ever reached.
-        ///
-        /// **No `proof`, and that is not leniency.**
-        /// `vtc/members/personhood/challenge/0.1` declares `proof` OPTIONAL, so
-        /// the spine asks for none and the authcrypt sender is the whole of the
-        /// caller's identity — which is exactly what these tests are about. Its
-        /// sibling `assert/0.1` *does* declare `proof` REQUIRED, and since
-        /// #1672 there is no setting that makes an unsigned one acceptable; the
-        /// one test that drives it uses [`signed_document`] instead.
-        fn document(type_uri: &str, payload: serde_json::Value) -> Vec<u8> {
-            let mut doc = TrustTask::new(
-                uuid::Uuid::new_v4().to_string(),
-                type_uri.parse().expect("dispatched URI parses as TypeUri"),
-                payload,
-            );
-            doc.recipient = Some(crate::test_support::TEST_VTC_DID.to_string());
-            doc.issued_at = Some(chrono::Utc::now());
-            serde_json::to_vec(&doc).expect("serialize document")
-        }
-
         /// The same envelope, issued by `from` and carrying `from`'s
         /// Data-Integrity proof — what a producer sends for a task that
         /// declares `proof` REQUIRED.
@@ -3763,10 +3799,16 @@ mod tests {
         #[tokio::test]
         async fn a_member_can_mint_a_challenge_over_messaging() {
             let vtc = fixture().await;
+            let member = seed_member(&vtc).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3795,10 +3837,16 @@ mod tests {
         #[tokio::test]
         async fn a_success_response_is_signed() {
             let vtc = fixture().await;
+            let member = seed_member(&vtc).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3847,10 +3895,16 @@ mod tests {
             .await
             .expect("seed the member");
 
+            let member = seed_member(&vtc).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3870,10 +3924,16 @@ mod tests {
         #[tokio::test]
         async fn a_stranger_cannot_mint_a_challenge() {
             let vtc = fixture().await;
+            let stranger = Party::new();
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(STRANGER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &signed_document(
+                    &stranger,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": stranger.did }),
+                )
+                .await,
             )
             .await;
 

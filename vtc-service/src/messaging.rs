@@ -720,7 +720,11 @@ async fn handle_tsp(
     // before the envelope comes off.
     if let Some(doc) = tsp_reply_document(&inbound.message.payload) {
         let thread_id = doc.thread_id.clone().unwrap_or_default();
-        if !state.pending_replies.complete(doc) {
+        if !state
+            .pending_replies
+            .complete_verified(doc, &state.trust_task_vm_resolver())
+            .await
+        {
             debug!(%thread_id, sender = %sender_vid, "TSP reply had no waiter — dropping");
         }
         return;
@@ -996,7 +1000,10 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
     if msg.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE
         && let Some((_thid, doc)) =
             vti_common::capability_client::parse_envelope_document(&msg.body)
-        && state.pending_replies.complete(doc)
+        && state
+            .pending_replies
+            .complete_verified(doc.clone(), &state.trust_task_vm_resolver())
+            .await
     {
         return None;
     }
