@@ -152,7 +152,7 @@ async fn acl_show_answers_alike_on_every_transport() {
 
         let missing = send(&h, t, SHOW, json!({ "subject": "did:key:z6MkNobody" })).await;
         assert!(is_error(&missing), "{t}: {missing}");
-        assert_eq!(missing["payload"]["details"]["reason"], "notFound", "{t}");
+        assert_eq!(missing["payload"]["details"]["reason"], "not_found", "{t}");
     }
     assert!(answers.windows(2).all(|w| w[0] == w[1]), "{answers:?}");
     h.tsp.shutdown().await;

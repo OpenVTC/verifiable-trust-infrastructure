@@ -1891,6 +1891,9 @@ mod didcomm_harness {
         /// `<did:peer>#key-1`, the key every document this peer sends is
         /// signed with — as [`TestJoinClient`]'s is.
         signing_secret: Secret,
+        /// Whether [`request_tsp`](Self::request_tsp) has formed the
+        /// relationship yet — once per peer; a second invite is refused.
+        related: std::sync::atomic::AtomicBool,
         docs: Mutex<tokio::sync::mpsc::UnboundedReceiver<Value>>,
         task: tokio::task::JoinHandle<()>,
     }
@@ -2023,6 +2026,7 @@ mod didcomm_harness {
                     .find(|s| s.id.ends_with("#key-1"))
                     .cloned()
                     .expect("the peer's did:peer carries its Ed25519 authentication key first"),
+                related: std::sync::atomic::AtomicBool::new(false),
                 docs: Mutex::new(rx),
                 task,
             }
@@ -2031,7 +2035,8 @@ mod didcomm_harness {
         /// Send a signed Trust Task to `vtc_did` **over TSP** and await the
         /// reply threaded to it — the round trip a TSP client makes.
         ///
-        /// The relationship is formed first, as Rev 3 §7.2.2 requires. Other
+        /// The relationship is formed on the first call, as Rev 3 §7.2.2
+        /// requires. Other
         /// documents that arrive meanwhile are dropped; a test that needs
         /// pushes reads them with [`next_trust_task`](Self::next_trust_task).
         /// `None` on timeout.
@@ -2042,11 +2047,13 @@ mod didcomm_harness {
             payload: Value,
             timeout: Duration,
         ) -> Option<Value> {
-            self.atm
-                .tsp()
-                .form_relationship(&self.profile, vtc_did)
-                .await
-                .expect("form a TSP relationship with the VTC");
+            if !self.related.swap(true, Ordering::SeqCst) {
+                self.atm
+                    .tsp()
+                    .form_relationship(&self.profile, vtc_did)
+                    .await
+                    .expect("form a TSP relationship with the VTC");
+            }
             let doc = sign_trust_task(
                 wrap_trust_task(typ, &self.did, vtc_did, payload),
                 &self.signing_secret,

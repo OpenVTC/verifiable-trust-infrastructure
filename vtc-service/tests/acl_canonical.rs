@@ -1278,7 +1278,7 @@ async fn acl_show_and_list_answer_the_same_on_both_doors() {
         &signed_doc(&admin, SHOW, json!({ "subject": "did:key:z6MkNobody" })).await,
     )
     .await;
-    assert_eq!(doc["payload"]["details"]["reason"], "notFound", "{doc}");
+    assert_eq!(doc["payload"]["details"]["reason"], "not_found", "{doc}");
 }
 
 #[tokio::test]
