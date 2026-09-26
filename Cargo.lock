@@ -2683,7 +2683,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.17.6"
+version = "0.17.7"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "chrono",
@@ -7598,7 +7598,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -11069,7 +11069,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keyspaces"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "vti-common",
 ]
@@ -11157,7 +11157,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.53.0"
+version = "0.53.1"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -11226,7 +11226,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.43.0"
+version = "0.44.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-bbs",
@@ -11468,7 +11468,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "chrono",
  "reqwest",
@@ -11573,7 +11573,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.26.0"
+version = "0.26.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-data-integrity",
