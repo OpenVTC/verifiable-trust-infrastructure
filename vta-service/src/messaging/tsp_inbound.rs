@@ -81,11 +81,14 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // `accept_from_proven_sender` explains why that is not the transport's call
     // to make, and what it cost when it was. TSP seals to the recipient VID,
     // same guarantee as authcrypt.
-    let outcome = crate::trust_tasks::accept_from_proven_sender(
-        app_state,
-        sender_vid,
-        payload,
-        crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+    let outcome = crate::trust_tasks::transport::with_binding(
+        "tsp",
+        crate::trust_tasks::accept_from_proven_sender(
+            app_state,
+            sender_vid,
+            payload,
+            crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+        ),
     )
     .await;
     info!(
