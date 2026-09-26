@@ -3725,6 +3725,17 @@ export interface components {
              *     `enforce`.
              */
             roleDrift: string;
+            roleMap?: null | components["schemas"]["GitNsRoleMap"];
+            /** @description The `issuedAt` of the report held, on the bridge's clock. */
+            roleMapReportedAt?: string | null;
+            /**
+             * @description `reported` — the bridge serving the namespace said so; `unknown` — it
+             *     has not reported since the namespace was bound or came to be served by
+             *     it (or it predates event 0.3). While unknown, drift adoption is
+             *     refused (`git-ns:roleMapUnknown`) and every role revert is weighed as
+             *     revoking `git.repo.own`.
+             */
+            roleMapSource: string;
             /** @description `pending` | `bound`. */
             state: string;
         };
@@ -3781,6 +3792,12 @@ export interface components {
             namespace: string;
             owners: string[];
             resource: string;
+            roleMap?: null | components["schemas"]["GitNsRoleMap"];
+            /**
+             * @description The bridge last projected this repository's roles under an earlier
+             *     role map; a re-projection is queued and has not yet succeeded.
+             */
+            roleMapStale: boolean;
             /**
              * @description `pendingCreate` | `active` | `archived` | `detached` | `orphaned` |
              *     `unmanaged`.
@@ -3816,6 +3833,17 @@ export interface components {
             subject: string;
             /** @description Whether the subject is a current member (an external signer is not). */
             subjectMember: boolean;
+        };
+        /**
+         * @description Which forge role `git.repo.own`, `git.repo.maintain` and
+         *     `git.commit.sign` project to — `none`, `read`, `triage`, `write`,
+         *     `maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to
+         *     no forge role under any map.
+         */
+        GitNsRoleMap: {
+            commit: string;
+            maintain: string;
+            own: string;
         };
         /** @description One bootstrap step's outcome, as the bridge reported it. */
         GitNsStepOutcome: {

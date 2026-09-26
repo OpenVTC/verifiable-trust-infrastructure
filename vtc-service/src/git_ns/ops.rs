@@ -18,9 +18,9 @@ use serde_json::json;
 use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status,
 };
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_3 as job_wire;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_4 as job_wire;
 use trust_tasks_rs::specs::git_ns::namespace::{
-    bind::v0_1 as bind, reseat::v0_2 as reseat, unbind::v0_1 as unbind,
+    bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind,
 };
 use trust_tasks_rs::specs::git_ns::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
@@ -569,6 +569,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
                 roles_digest: None,
                 installation_removed: false,
                 forge_status: None,
+                role_map: None,
             };
             store::put_namespace(&state.git_ns.ks, &ns).await?;
             let scope = Scope::Namespace(ns.id.clone());
@@ -673,6 +674,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
         roles_digest: None,
         installation_removed: false,
         forge_status: None,
+        role_map: None,
     };
     store::put_namespace(&state.git_ns.ks, &ns).await?;
     bridge::record_inline_job(
@@ -832,7 +834,7 @@ pub async fn unbind(
     }))?)
 }
 
-// ── git-ns/namespace/reseat/0.3 (0.2's payload types) ─────────────────────
+// ── git-ns/namespace/reseat/0.3 ───────────────────────────────────────────
 
 /// Recovery for a headless namespace: a community administrator grants
 /// `git.ns.admin` on it to a current member. The capability is worth nothing

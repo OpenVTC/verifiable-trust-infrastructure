@@ -335,6 +335,7 @@ async fn a_resource_inside_a_bound_git_namespace_is_left_to_the_projection() {
             roles_digest: None,
             installation_removed: false,
             forge_status: None,
+            role_map: None,
         },
     )
     .await

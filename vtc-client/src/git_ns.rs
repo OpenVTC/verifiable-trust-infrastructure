@@ -28,12 +28,10 @@ pub use trust_tasks_rs::specs::git_ns as specs;
 
 use specs::account::{link::v0_1 as link, link_status::v0_1 as link_status};
 use specs::drift::resolve::v0_1 as drift_resolve;
-use specs::namespace::{bind::v0_1 as bind, reseat::v0_2 as reseat, unbind::v0_1 as unbind};
+use specs::namespace::{bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind};
 
 /// `git-ns/namespace/reseat/0.3`, the only reseat version the VTC serves.
-/// TODO(trust-tasks release carrying trust-tasks #635): use the generated
-/// `reseat::v0_3` type URI.
-pub const RESEAT_TYPE_URI: &str = "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3";
+pub const RESEAT_TYPE_URI: &str = <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 use specs::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
     transfer::v0_1 as transfer,
@@ -42,6 +40,7 @@ use specs::right::{
     break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
     revoke::v0_3 as revoke,
 };
+use specs::roles::reproject::v0_1 as reproject;
 use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
 
 /// The `Trust-Task` URL every git-namespace admin read is gated on.
@@ -348,6 +347,27 @@ impl VtcClient {
             "statement": statement,
         });
         self.git_ns_task(RESEAT_TYPE_URI, &payload, key).await
+    }
+
+    /// `git-ns/roles/reproject/0.1` — a community administrator or namespace
+    /// admin has the bridge re-apply the forge roles of a namespace's
+    /// repositories, or of one repository. No right changes.
+    pub async fn git_ns_reproject(
+        &self,
+        resource: &str,
+        reason: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<reproject::Response, VtcError> {
+        let mut payload = serde_json::json!({ "resource": resource });
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
+        self.git_ns_task(
+            <reproject::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
     }
 
     /// `git-ns/account/link/0.1`.

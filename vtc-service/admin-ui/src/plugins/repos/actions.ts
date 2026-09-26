@@ -50,7 +50,7 @@ import {
 import { postSignedDocument, postSignedTrustTask } from "@/lib/api";
 import type { SignedTrustTaskDocument } from "@/lib/console-key";
 import { stepUpRequestOf, type StepUpRequest } from "@/lib/bound-step-up";
-import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
+import type { GitNsDriftItem, GitNsRight, GitNsRoleMap } from "@/lib/wire-types";
 
 // Document `type`s, not `Trust-Task` headers: each is dispatched by
 // `POST /v1/trust-tasks` from the document itself, and no REST route binds
@@ -72,6 +72,7 @@ export const TASK_URI: Record<GitNsAction, string> = {
   "repo.archive": "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
   "repo.create": "https://trusttasks.org/spec/git-ns/repo/create/0.3",
   "drift.resolve": "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+  "roles.reproject": "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
 };
 
 /** Someone a change is about, named in the dialog before it is signed. */
@@ -580,10 +581,14 @@ function driftResolve(
 
 export function driftRevertTask(
   resource: string,
-  ns: GitNsNamespaceRow,
   item: GitNsDriftItem,
   reason?: string,
+  /** The repository's role map (`GitNsRepoRow.roleMap`); absent while the
+   *  bridge has not reported it, when every role revert weighs as revoking
+   *  own. */
+  roleMap?: GitNsRoleMap | null,
 ): SignedTask {
+  const impact = driftRevertImpact(item, roleMap);
   const { payload, command } = driftResolve(resource, "revert", item, reason);
   return {
     action: "drift.resolve",
@@ -591,9 +596,9 @@ export function driftRevertTask(
     effect: `${driftRevertEffect(item)} The item leaves the outstanding drift and the bridge inspects the repository again to confirm it; refused if the forge no longer shows what was read here.`,
     taskUri: TASK_URI["drift.resolve"],
     payload,
-    consent: consentClass("drift.resolve", driftRevertImpact(item, ns)),
+    consent: consentClass("drift.resolve", impact),
     consentNote:
-      driftRevertImpact(item, ns) === "git.repo.own"
+      impact === "git.repo.own"
         ? "Taking an admin role off the forge weighs as revoking ownership, so this VTC gates it as that revocation: an elevated action it accepts only from a community administrator (`elevated_requires_admin`) who also holds git.repo.own here."
         : "Gated as the revocation it amounts to, which is normal-class: authorized by the signer's git.repo.own on the repository, explicit or implied by git.ns.admin.",
     resource,
@@ -716,3 +721,36 @@ export const CONSENT_LABEL: Record<ConsentClass, string> = {
   elevated: "Elevated — step-up",
   destructive: "Destructive — step-up and confirmation",
 };
+
+/**
+ * `git-ns/roles/reproject/0.1` — have the bridge re-apply the forge roles of
+ * every active or orphaned repository in a namespace, or of one repository,
+ * from the VTC's rights under the bridge's current role map. No right
+ * changes. Signed by a community administrator or a namespace admin, or —
+ * for one repository — its owner.
+ */
+export function reprojectTask(resource: string, reason?: string): SignedTask {
+  const payload: Record<string, unknown> = { resource };
+  const args: (Word | string | { opt: string })[] = [w("reproject"), resource];
+  const r = reason?.trim();
+  if (r) {
+    payload.reason = r;
+    args.push(o("reason", r));
+  }
+  const whole = resource.split("/").length === 2;
+  return {
+    action: "roles.reproject",
+    title: `Re-project roles on ${whole ? resource : shortName(resource)}`,
+    effect: `The VTC sends the bridge the complete forge roles of ${whole ? "every active or orphaned repository in the namespace" : "the repository"} again, and the bridge applies them under its current role map: roles are raised or lowered to what each person's rights call for, and a role it projected that no right calls for is taken off. No right changes and nothing is published.`,
+    taskUri: TASK_URI["roles.reproject"],
+    payload,
+    consent: consentClass("roles.reproject"),
+    consentNote:
+      whole
+        ? "Authorized by the community-administrator capability, or by git.ns.admin on the namespace by explicit record; owning some of its repositories is not enough."
+        : "Authorized by git.repo.own on the repository (explicit, or implied by git.ns.admin), git.ns.admin on its namespace, or the community-administrator capability.",
+    resource,
+    parties: [],
+    command: cnm(...args),
+  };
+}
