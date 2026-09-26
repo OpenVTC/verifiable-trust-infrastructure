@@ -1934,6 +1934,31 @@ async fn record_delegated_signature(
     .await;
 }
 
+/// Find an **active** key of context `context_id` by its multibase public key.
+///
+/// For a caller that acts on the record it finds (realign-keys rewrites and
+/// deletes it). A record of another context, an unscoped record, or a revoked
+/// one is never returned, so a public key someone copied into their own
+/// document cannot reach a record they do not own.
+pub async fn find_key_by_public_multibase_in_context(
+    keys_ks: &KeyspaceHandle,
+    public_key: &str,
+    context_id: &str,
+) -> Result<Option<KeyRecord>, AppError> {
+    for (_, value) in keys_ks.prefix_iter_raw("key:").await? {
+        let Ok(record) = serde_json::from_slice::<KeyRecord>(&value) else {
+            continue;
+        };
+        if record.public_key == public_key
+            && record.status == KeyStatus::Active
+            && record.context_id.as_deref() == Some(context_id)
+        {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
 /// Find a VTA key by its multibase public key.
 ///
 /// Used by the mdoc receive path to answer "do we hold the private half of this
@@ -3852,6 +3877,44 @@ mod tests {
 
         assert!(
             matches!(&err, AppError::Forbidden(m) if m.contains("internal key")),
+            "{err:?}"
+        );
+    }
+
+    /// A revoked record — a key a rotation retired, or a rotation's inert
+    /// staging record — is kept for history only: the VTA's own loads do not
+    /// release its private half. (The export surface refuses it too; that half
+    /// is tested with the export gate.)
+    #[tokio::test]
+    async fn a_revoked_key_is_not_loaded() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-retired").await;
+        let mut record: KeyRecord = h
+            .keys_ks
+            .get(keys::store_key("k-retired"))
+            .await
+            .unwrap()
+            .unwrap();
+        record.status = KeyStatus::Revoked;
+        h.keys_ks
+            .insert(keys::store_key("k-retired"), &record)
+            .await
+            .unwrap();
+
+        let err = get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &*h.seed_store,
+            &h.audit,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-retired",
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
             "{err:?}"
         );
     }

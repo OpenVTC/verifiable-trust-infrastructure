@@ -83,6 +83,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "webvh update keys at allocate/peek paths under the DID's base, and re-derivation from a VTA-written WebvhKeyHandle",
     ),
     (
+        "vta-service/src/operations/did_webvh/update/rotate.rs",
+        2,
+        "rotate-keys: replacement keys at paths allocated under the DID's own context base; only methods under the DID whose records are in its context are rotated (validate_document_for_update refuses foreign method ids)",
+    ),
+    (
         "vta-service/src/operations/provision_integration/mint.rs",
         1,
         "integration DID keys minted at paths allocated under the target context's base",
