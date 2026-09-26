@@ -1255,14 +1255,16 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            41,
+            44,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
              moved (`config/export`, `config/import`) + the 2 batch 4 moved \
              (`endorsement-types/register`, `endorsement-types/delete`) + batch \
              5's `backup/export` + `acl/grant` + `acl/change-role` + the 7 \
-             `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014). \
+             `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014) \
+             + the 3 trust-tasks 0.23 made proof-REQUIRED (`vetting/vetters/profile`, \
+             `vetting/vetters/resend`, `members/personhood/challenge`). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries; got {required:?}"
@@ -3707,35 +3709,19 @@ mod tests {
 
         const MEMBER: &str = "did:key:zPersonhoodMember";
 
-        /// A member that can sign — over DIDComm a document must carry a proof
-        /// bound to its sender, so a placeholder DID cannot speak there.
-        async fn seed_member(vtc: &TestVtc) -> Party {
-            let member = Party::new();
-            store_acl_entry(
-                &vtc.state.acl_ks,
-                &VtcAclEntry {
-                    did: member.did.clone(),
-                    role: VtcRole::Member,
-                    label: None,
-                    allowed_contexts: vec![],
-                    created_at: 0,
-                    created_by: "did:key:vtc-install".into(),
-                    updated_at: None,
-                    updated_by: None,
-                    expires_at: None,
-                },
-            )
-            .await
-            .expect("seed the signing member");
-            member
-        }
-
+        /// A community with signers and [`MEMBER`] seeded as a member.
         async fn fixture() -> TestVtc {
             let vtc = TestVtc::builder().with_signers(true).build().await;
+            seed_member(&vtc, MEMBER).await;
+            vtc
+        }
+
+        /// Seed `did` as a member of `vtc`.
+        async fn seed_member(vtc: &TestVtc, did: &str) {
             store_acl_entry(
                 &vtc.state.acl_ks,
                 &VtcAclEntry {
-                    did: MEMBER.into(),
+                    did: did.into(),
                     role: VtcRole::Member,
                     label: None,
                     allowed_contexts: vec![],
@@ -3748,7 +3734,6 @@ mod tests {
             )
             .await
             .expect("seed member ACL");
-            vtc
         }
 
         /// The fixture leaves `vtc_did` unset, so `validate_basic`'s
@@ -3757,9 +3742,10 @@ mod tests {
         /// the spine accepts a document only when its proof binds it to the
         /// sender, whatever the task's own proof requirement.
         ///
-        /// The same envelope, issued by `from` and carrying `from`'s
-        /// Data-Integrity proof — what a producer sends for a task that
-        /// declares `proof` REQUIRED.
+        /// A document issued by `from` and carrying `from`'s Data-Integrity
+        /// proof — what a producer sends for a task that declares `proof`
+        /// REQUIRED. Both `vtc/members/personhood/challenge/0.1` (since
+        /// trust-tasks 0.23) and `assert/0.1` do.
         ///
         /// `from` is a real `did:key` with the secret behind it, because the
         /// spine verifies the proof against the document's own `issuer`
@@ -3799,7 +3785,8 @@ mod tests {
         #[tokio::test]
         async fn a_member_can_mint_a_challenge_over_messaging() {
             let vtc = fixture().await;
-            let member = seed_member(&vtc).await;
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
                 &JoinAuthCtx::didcomm(member.did.clone()),
@@ -3837,7 +3824,8 @@ mod tests {
         #[tokio::test]
         async fn a_success_response_is_signed() {
             let vtc = fixture().await;
-            let member = seed_member(&vtc).await;
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
                 &JoinAuthCtx::didcomm(member.did.clone()),
@@ -3878,24 +3866,9 @@ mod tests {
         #[tokio::test]
         async fn a_community_with_no_signer_still_answers() {
             let vtc = TestVtc::builder().with_signers(false).build().await;
-            store_acl_entry(
-                &vtc.state.acl_ks,
-                &VtcAclEntry {
-                    did: MEMBER.into(),
-                    role: VtcRole::Member,
-                    label: None,
-                    allowed_contexts: vec![],
-                    created_at: 0,
-                    created_by: "did:key:vtc-install".into(),
-                    updated_at: None,
-                    updated_by: None,
-                    expires_at: None,
-                },
-            )
-            .await
-            .expect("seed the member");
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
 
-            let member = seed_member(&vtc).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
                 &JoinAuthCtx::didcomm(member.did.clone()),
@@ -3931,7 +3904,7 @@ mod tests {
                 &signed_document(
                     &stranger,
                     PERSONHOOD_CHALLENGE_TYPE,
-                    json!({ "did": stranger.did }),
+                    json!({ "did": MEMBER }),
                 )
                 .await,
             )
