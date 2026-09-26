@@ -4,7 +4,6 @@ use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::Cr
 use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine;
 use chrono::Utc;
-use multibase::Base;
 use p256::elliptic_curve::sec1::ToSec1Point;
 use tracing::info;
 use zeroize::Zeroize;
@@ -254,7 +253,12 @@ pub async fn create_key(
             let p256_secret = bip32.derive_p256(&derivation_path)?;
             let verifying_key = p256_secret.secret_key.public_key();
             let encoded = verifying_key.to_sec1_point(true);
-            multibase::encode(Base::Base58Btc, encoded.as_bytes())
+            // Multicodec-prefixed (`p256-pub`), exactly as key custody encodes
+            // the same key when it is exported — so the record, the export and
+            // any DID document built from the record all publish one form, and
+            // a verifier can read the algorithm off the key (VTI-KEY-012). The
+            // bare SEC1 point stored here before named no algorithm at all.
+            encode_public_multibase(&KeyType::P256, encoded.as_bytes())
         }
         KeyType::MlDsa44 => {
             let s = bip32.derive_ml_dsa_44(&derivation_path)?;
@@ -395,7 +399,9 @@ pub async fn import_key(
             let secret_bytes: [u8; 32] = private_bytes.as_slice().try_into().unwrap();
             let secret = x25519_dalek::StaticSecret::from(secret_bytes);
             let public = x25519_dalek::PublicKey::from(&secret);
-            let pub_multibase = multibase::encode(Base::Base58Btc, public.as_bytes());
+            // Multicodec-prefixed (`x25519-pub`), as every other published key
+            // is (VTI-KEY-012: a key names its own algorithm).
+            let pub_multibase = encode_public_multibase(&KeyType::X25519, public.as_bytes());
             (pub_multibase, "x25519")
         }
         KeyType::P256 => {
@@ -403,7 +409,7 @@ pub async fn import_key(
                 .map_err(|e| AppError::Validation(format!("invalid P-256 private key: {e}")))?;
             let public = secret_key.public_key();
             let encoded = public.to_sec1_point(true);
-            let pub_multibase = multibase::encode(Base::Base58Btc, encoded.as_bytes());
+            let pub_multibase = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
             (pub_multibase, "p256")
         }
         // `KeyType` is `#[non_exhaustive]`, so this arm is required. Import
@@ -1031,6 +1037,88 @@ pub async fn get_key_secret(
     key_id: &str,
     channel: ExportChannel<'_>,
 ) -> Result<GetKeySecretResultBody, AppError> {
+    export_key_secret(
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        acl_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        channel,
+    )
+    .await
+    .map_err(AppError::from)
+}
+
+/// Why a key's private half is refused **about the key rather than the
+/// caller** — the two refusals `keys/export-secret/0.1` gives codes of their
+/// own, because retrying with more authority changes neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyExportRefusal {
+    /// An internal key: generated inside this VTA, reproducible nowhere, never
+    /// released to anybody — `keys/export-secret:neverExportable`.
+    NeverExportable,
+    /// Marked non-exportable by `keys/set-exportability` — a decision that can
+    /// be reversed, by more authority than imposed it —
+    /// `keys/export-secret:notExportable`.
+    NotExportable,
+}
+
+impl KeyExportRefusal {
+    /// The local part of the task's extended error code.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NeverExportable => "neverExportable",
+            Self::NotExportable => "notExportable",
+        }
+    }
+}
+
+/// The error [`export_key_secret`] returns: a refusal about the key, typed so a
+/// transport that can name it (the Trust-Task spine) does, or any other error.
+#[derive(Debug)]
+pub enum KeyExportError {
+    Refused(KeyExportRefusal, String),
+    Other(AppError),
+}
+
+impl From<AppError> for KeyExportError {
+    fn from(e: AppError) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl From<KeyExportError> for AppError {
+    /// For transports with no code to carry: a refusal about the key is a 403
+    /// with the same message.
+    fn from(e: KeyExportError) -> Self {
+        match e {
+            KeyExportError::Refused(_, message) => AppError::Forbidden(message),
+            KeyExportError::Other(e) => e,
+        }
+    }
+}
+
+/// [`get_key_secret`] with the refusals about the key kept typed — what the
+/// `keys/export-secret/0.1` handler calls so it can answer `notExportable` /
+/// `neverExportable`. Same checks in the same order: the capability, the
+/// channel and the caller's scope are all established first, so those codes
+/// are only ever said to a caller already entitled to the key (the spec's
+/// "after establishing entitlement and before assembling a response").
+#[allow(clippy::too_many_arguments)]
+pub async fn export_key_secret(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    channel: ExportChannel<'_>,
+) -> Result<GetKeySecretResultBody, KeyExportError> {
     ensure_may_export(acl_ks, auth, "keys/export-secret").await?;
     if let ExportChannel::HopByHop(_) = channel {
         return Err(AppError::Forbidden(
@@ -1040,7 +1128,8 @@ pub async fn get_key_secret(
              operator terminates it and the key would exist in plaintext there. Retry over \
              DIDComm or TSP, or run the export on the VTA host."
                 .into(),
-        ));
+        )
+        .into());
     }
     release_key_secret(
         keys_ks,
@@ -1084,16 +1173,16 @@ async fn release_key_secret(
     auth: &AuthClaims,
     key_id: &str,
     channel: &str,
-) -> Result<GetKeySecretResultBody, AppError> {
+) -> Result<GetKeySecretResultBody, KeyExportError> {
     let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
 
     // A revoked key is refused like a missing one would be to its owner: its
     // record is kept for history (and a rotation's retired and staging records
     // are revoked by construction), not so its private half can still leave.
     if record.status != KeyStatus::Active {
-        return Err(AppError::Forbidden(format!(
+        return Err(KeyExportError::Other(AppError::Forbidden(format!(
             "key `{key_id}` is not active and its private half is not released"
-        )));
+        ))));
     }
 
     // Internal keys are refused here too. `InternalAuthority` bypasses the ACL,
@@ -1101,10 +1190,13 @@ async fn release_key_secret(
     // surface at all, and an internal caller wanting a signature must go
     // through the signing oracle like everyone else.
     if record.origin == KeyOrigin::Internal {
-        return Err(AppError::Forbidden(format!(
-            "key `{key_id}` is an internal key and is never exported, including \
-             under internal authority"
-        )));
+        return Err(KeyExportError::Refused(
+            KeyExportRefusal::NeverExportable,
+            format!(
+                "key `{key_id}` is an internal key and is never exported, including \
+                 under internal authority"
+            ),
+        ));
     }
 
     // The exportability restriction, enforced at the one place a private key
@@ -1119,12 +1211,15 @@ async fn release_key_secret(
     // `Some(false)` refuses, so records written before the member existed are
     // unaffected.
     if record.exportable == Some(false) {
-        return Err(AppError::Forbidden(format!(
-            "key `{key_id}` is marked non-exportable and its private half is never \
-             released; it can still be used for signing and key agreement. Changing \
-             that needs `keys/set-exportability` with authority beyond the one that \
-             set it"
-        )));
+        return Err(KeyExportError::Refused(
+            KeyExportRefusal::NotExportable,
+            format!(
+                "key `{key_id}` is marked non-exportable and its private half is never \
+                 released; it can still be used for signing and key agreement. Changing \
+                 that needs `keys/set-exportability` with authority beyond the one that \
+                 set it"
+            ),
+        ));
     }
 
     let (public_key_multibase, private_key_multibase) = match record.origin {
@@ -1132,9 +1227,10 @@ async fn release_key_secret(
         // second, local refusal so deleting that guard cannot quietly turn this
         // match into an export path for them.
         KeyOrigin::Internal => {
-            return Err(AppError::Forbidden(format!(
-                "key `{key_id}` is an internal key and is never exported"
-            )));
+            return Err(KeyExportError::Refused(
+                KeyExportRefusal::NeverExportable,
+                format!("key `{key_id}` is an internal key and is never exported"),
+            ));
         }
         KeyOrigin::Imported => {
             // Decrypt from imported_secrets keyspace
@@ -1192,10 +1288,10 @@ async fn release_key_secret(
             error = %e, channel, key_id = %key_id, actor = %auth.did,
             "key export refused: its audit row could not be written"
         );
-        return Err(AppError::Internal(format!(
+        return Err(KeyExportError::Other(AppError::Internal(format!(
             "key `{key_id}` was not released: the export could not be recorded in the \
              audit trail, and an unrecorded export is not permitted (VTI-VTA-003)"
-        )));
+        ))));
     }
     info!(channel, key_id = %key_id, "key secret retrieved");
     audit!(
@@ -1317,7 +1413,8 @@ pub async fn set_key_exportability(
     Ok(record)
 }
 
-/// Internal-authority variant of [`get_key_secret`] that bypasses the
+/// Internal-authority variant of [`get_key_secret`] — the **use** surface,
+/// audited as `key.internal_use` — that bypasses the
 /// `auth.require_context` / `auth.is_super_admin` gates.
 ///
 /// Required because the provision-integration flow needs to load the
@@ -1403,17 +1500,22 @@ pub async fn get_key_secret_internal(
         }
     };
 
+    // `key.internal_use`, not `key.secret_export`: nothing here leaves the VTA
+    // — the key is loaded so the VTA can sign or decrypt with it itself. Filed
+    // under the export action, every VC the VTA issued and every webvh publish
+    // it authenticated read as a key export, which buried the real exports an
+    // incident review is looking for under the VTA's own routine use.
     let actor = authority.audit_actor();
-    info!(channel, key_id = %key_id, actor = %actor, "key secret retrieved (internal)");
+    info!(channel, key_id = %key_id, actor = %actor, "key loaded for internal use");
     audit!(
-        "key.secret_export",
+        "key.internal_use",
         actor = &actor,
         resource = key_id,
         outcome = "success"
     );
     audit::record_best_effort(
         audit,
-        "key.secret_export",
+        "key.internal_use",
         &actor,
         Some(key_id),
         "success",
@@ -4370,6 +4472,83 @@ mod tests {
             matches!(&err, AppError::Forbidden(m) if m.contains("sign capability")),
             "{err:?}"
         );
+    }
+
+    /// The VTA's own use of a key is recorded as `key.internal_use`, never as
+    /// an export — so `key.secret_export` rows are exactly the keys that left.
+    #[tokio::test]
+    async fn internal_use_is_not_recorded_as_an_export() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-used").await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+        get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &*h.seed_store,
+            &audit,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-used",
+            "test",
+        )
+        .await
+        .expect("internal load");
+        let rows = sink.rows.lock().await;
+        assert!(
+            rows.iter().any(|r| r.action == "key.internal_use"),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.action == "key.secret_export"),
+            "internal use must not read as an export: {rows:?}"
+        );
+    }
+
+    /// A P-256 key's stored public key is the multicodec form (`p256-pub`),
+    /// identical to what custody publishes when the key is exported — one
+    /// encoding across record, export and document.
+    #[tokio::test]
+    async fn p256_record_and_export_agree_on_the_multicodec_public_key() {
+        let h = TestHarness::new().await;
+        let created = create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::P256,
+                derivation_path: None,
+                key_id: Some("k-p256".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("mint P-256");
+        let (_, bytes) = multibase::decode(&created.public_key).unwrap();
+        assert!(bytes.starts_with(KeyType::P256.multicodec_public()));
+        assert_eq!(bytes.len(), 2 + 33);
+
+        let exported = get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-p256",
+            ExportChannel::Local("test"),
+        )
+        .await
+        .expect("export");
+        assert_eq!(exported.public_key_multibase, created.public_key);
     }
 
     /// Scope before existence: a caller restricted to `test-ctx` gets one

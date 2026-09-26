@@ -382,6 +382,12 @@ pub fn extract_admin_credential(
              connector's secret store"
                 .into(),
         ),
+        SealedPayloadV1::SeedMnemonic(_) => Err(
+            "SeedMnemonic payloads carry a VTA's seed mnemonic for an offline backup, not an \
+             admin CredentialBundle — open via `pnm bootstrap open` without --out and write the \
+             words down offline"
+                .into(),
+        ),
     }
 }
 

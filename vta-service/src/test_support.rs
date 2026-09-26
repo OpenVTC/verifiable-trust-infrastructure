@@ -329,6 +329,15 @@ pub fn sign_as_test_admin(doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>
 /// and signs with another is refused for that rather than for whatever it meant
 /// to check.
 pub fn sign_as(seed: u8, doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>) {
+    sign_as_for(seed, "assertionMethod", doc)
+}
+
+/// As [`sign_as`], with the proof made for `purpose`.
+pub fn sign_as_for(
+    seed: u8,
+    purpose: &str,
+    doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>,
+) {
     use affinidi_data_integrity::DataIntegrityProof;
     use affinidi_data_integrity::crypto_suites::CryptoSuite;
     use affinidi_data_integrity::prepare_sign_input;
@@ -339,7 +348,7 @@ pub fn sign_as(seed: u8, doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>)
     let mut di = DataIntegrityProof::new(
         CryptoSuite::EddsaJcs2022,
         vm,
-        "assertionMethod".to_string(),
+        purpose.to_string(),
         None,
         Some(
             chrono::Utc::now()
