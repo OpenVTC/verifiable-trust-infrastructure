@@ -157,14 +157,30 @@ async fn build_messaging(
     mediator_did: &str,
     outbox_ks: KeyspaceHandle,
     tsp_relationships_ks: KeyspaceHandle,
+    did_resolver: Option<DIDCacheClient>,
+    did_cache: &vti_common::config::DidCacheConfig,
 ) -> Result<(Arc<MessagingService>, Arc<ATM>, Arc<ATMProfile>), String> {
-    let tdk = TDKSharedState::new(
-        TDKConfig::builder()
-            .build()
-            .map_err(|e| format!("build TDK config: {e}"))?,
-    )
-    .await
-    .map_err(|e| format!("create TDK shared state: {e}"))?;
+    // One DID-document cache for the whole node. This TDK used to build its
+    // own on the SDK defaults, so every DIDComm and TSP message on the mediator
+    // socket was checked against a second cache — one the REST and Trust Task
+    // paths could not see, refresh or evict, and whose TTL no setting reached.
+    // A rotation the app cache had already followed could still be refused
+    // here, and a revoked key accepted here after the app cache had dropped it.
+    let tdk_config = match did_resolver {
+        Some(resolver) => TDKConfig::builder().with_did_resolver(resolver),
+        None => TDKConfig::builder().with_did_resolver_config(
+            vta_sdk::resolver::build_verifier_did_cache_config(
+                None,
+                did_cache.ttl_secs,
+                did_cache.capacity,
+            ),
+        ),
+    }
+    .build()
+    .map_err(|e| format!("build TDK config: {e}"))?;
+    let tdk = TDKSharedState::new(tdk_config)
+        .await
+        .map_err(|e| format!("create TDK shared state: {e}"))?;
     for secret in secrets {
         tdk.secrets_resolver().insert(secret).await;
     }
@@ -384,6 +400,8 @@ pub async fn run_didcomm_service(
         &mediator_did,
         state.outbox_ks.clone(),
         state.tsp_relationships_ks.clone(),
+        state.did_resolver.clone(),
+        &config.did_cache,
     )
     .await
     {
