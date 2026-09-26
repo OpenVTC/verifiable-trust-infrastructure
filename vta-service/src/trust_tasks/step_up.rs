@@ -11,6 +11,12 @@
 //!   the bound challenge (handled by the approve-response handler reusing
 //!   `verify_passkey_login`).
 //!
+//! Every approve-response, approved or denied and whichever gate it carries,
+//! is the approver's own attestation: its proof must be made for
+//! `assertionMethod` with a key the approver lists under `assertionMethod`
+//! ([`crate::auth::verify_approval_proof`]), as the did-hosting RP's
+//! `verify_approval` requires. A proof made for `authentication` is refused.
+//!
 //! This module is the did-signed verifier; the handler that consumes the
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
@@ -84,6 +90,10 @@ pub(super) enum GateError {
 /// identity: the proof's `verificationMethod` DID MUST equal the signer, and the
 /// `eddsa-jcs-2022` signature MUST verify under that `did:key`.
 ///
+/// The proof must be made for `assertionMethod`, with a key listed under the
+/// signer's `assertionMethod` relationship: the approval is an attestation by
+/// the approver, not an operational message.
+///
 /// `did:key` resolution is local (no I/O); the mobile holder key is always a
 /// `did:key`, matching the engine's signing side.
 pub(super) async fn verify_did_signed_gate(
@@ -94,16 +104,16 @@ pub(super) async fn verify_did_signed_gate(
 
     // Verify the eddsa-jcs-2022 proof via the single shared verifier (P1.4),
     // which returns the cryptographically-proven signer DID.
-    let signer_did = crate::auth::verify_trust_task_proof(doc)
+    let signer_did = crate::auth::verify_approval_proof(doc)
         .await
         .map_err(|e| match e {
             DiProofError::NoProof => GateError::NoGate,
             DiProofError::NotDataIntegrity => {
                 GateError::ProofInvalid("not a Data Integrity proof".to_string())
             }
-            DiProofError::NoDid | DiProofError::VerifyFailed(_) => {
-                GateError::ProofInvalid(e.to_string())
-            }
+            DiProofError::NoDid
+            | DiProofError::VerifyFailed(_)
+            | DiProofError::WrongPurpose { .. } => GateError::ProofInvalid(e.to_string()),
         })?;
 
     // Bind identity: the proven signer must be the expected signer (the document
@@ -404,6 +414,19 @@ pub(super) async fn handle_approve_response(
             "did"
         }
         Some(approve_response::Evidence::Webauthn(assertion)) => {
+            // The passkey assertion is the gate, but the document is still the
+            // approver's attestation: its proof must be an `assertionMethod`
+            // proof by the approver, like every approve-response. A missing
+            // proof here is an invalid document, not a missing gate.
+            if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
+                let e = match e {
+                    GateError::NoGate => GateError::ProofInvalid(
+                        "an approve-response must carry the approver's proof".to_string(),
+                    ),
+                    other => other,
+                };
+                return reject_with(&doc, gate_err_to_reject(e));
+            }
             match verify_webauthn_gate(state, &issuer, &challenge, assertion).await {
                 Ok(()) => "passkey",
                 Err(reason) => return reject_with(&doc, reason),
@@ -1646,6 +1669,11 @@ mod tests {
     /// Build an approve-response-shaped TrustTask and attach a did-signed
     /// eddsa-jcs-2022 proof from `sk` (mirrors the engine's signing side).
     fn signed_doc(sk: &SigningKey, subject: &str, vm: &str) -> TrustTask<Value> {
+        signed_doc_for(sk, subject, vm, "assertionMethod")
+    }
+
+    /// [`signed_doc`] with the proof made for `purpose`.
+    fn signed_doc_for(sk: &SigningKey, subject: &str, vm: &str, purpose: &str) -> TrustTask<Value> {
         // Build a TrustTask<Value> by deserialization (for_payload needs
         // P: Payload, which Value isn't) — proofless, ready to sign.
         let doc_json = json!({
@@ -1667,7 +1695,7 @@ mod tests {
         let mut di = DataIntegrityProof::new(
             CryptoSuite::EddsaJcs2022,
             vm.to_string(),
-            "assertionMethod".to_string(),
+            purpose.to_string(),
             None,
             Some("2026-05-31T00:00:00Z".to_string()),
             None,
@@ -1713,6 +1741,22 @@ mod tests {
             verify_did_signed_gate(&doc, "did:key:zSomeoneElse").await,
             Err(GateError::SubjectMismatch)
         );
+    }
+
+    /// The approval is the approver's attestation: a valid proof by the right
+    /// key, made for `authentication`, is refused.
+    #[tokio::test]
+    async fn rejects_an_approval_signed_for_authentication() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let (did, mb) = did_key(&sk);
+        let vm = format!("{did}#{mb}");
+        let doc = signed_doc_for(&sk, &did, &vm, "authentication");
+        match verify_did_signed_gate(&doc, &did).await {
+            Err(GateError::ProofInvalid(reason)) => {
+                assert!(reason.contains("assertionMethod"), "{reason}");
+            }
+            other => panic!("expected ProofInvalid, got {other:?}"),
+        }
     }
 
     #[tokio::test]
