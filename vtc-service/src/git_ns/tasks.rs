@@ -10,14 +10,17 @@
 //! # Who is acting
 //!
 //! The actor is the DID the dispatch spine verified the document's proof
-//! against — never a payload member. Every task a member or an administrator
-//! sends declares the proof REQUIRED, and the spine refuses it without one,
-//! except two reads: `git-ns/view` and
-//! `git-ns/account/link-status` declare it RECOMMENDED ("a read … transport
-//! integrity suffices where the transport already authenticates the
-//! caller"), so for those two the transport's authenticated sender stands in
-//! when there is no proof. Over REST with neither, there is nobody to answer
-//! for, and the read is refused.
+//! against — never a payload member. Every task in this family declares the
+//! proof REQUIRED, and the spine refuses it without one. That now includes
+//! the two reads, `git-ns/view` (every served version) and
+//! `git-ns/account/link-status` (0.1, the only version), which once declared
+//! it RECOMMENDED ("a read … transport integrity suffices where the
+//! transport already authenticates the caller") and fell back to the
+//! transport's authenticated sender when there was no proof. Trust-tasks
+//! 0.23.1 closed that for `view`'s last RECOMMENDED version, 0.4; `caller`
+//! below still carries the fallback for `link-status`, which is unreachable
+//! now that the spine enforces the proof itself, but is left in place rather
+//! than removed here.
 
 use serde_json::Value;
 use trust_tasks_rs::specs::git_ns::account::{
@@ -75,8 +78,13 @@ pub(crate) struct GitNsCtx {
     pub state: AppState,
     /// The verified signer of the document's proof.
     pub signer: Option<String>,
-    /// The transport's authenticated sender, used only by the two tasks whose
-    /// proof is RECOMMENDED.
+    /// The transport's authenticated sender. Every task now declares its
+    /// proof REQUIRED, so the spine never lets a handler run without one and
+    /// no handler needs this to answer for the caller — `caller` below still
+    /// reads it as the fallback `view` and `account/link-status` once needed
+    /// while either declared the proof merely RECOMMENDED, but that fallback
+    /// is unreachable on both now. Kept rather than threaded out in this
+    /// change.
     pub sender: Option<String>,
 }
 
@@ -172,7 +180,14 @@ fn signer<P>(doc: &TrustTask<P>, ctx: &GitNsCtx) -> Result<String, TrustTaskOutc
         .ok_or_else(|| reject_with(doc, RejectReason::ProofRequired))
 }
 
-/// The caller, for a task whose proof is RECOMMENDED.
+/// The caller, for a task whose proof is RECOMMENDED rather than REQUIRED —
+/// used only by `handle_link_status` now that `handle_view*` call [`signer`]
+/// directly. No task this dispatcher serves is actually RECOMMENDED any
+/// more (trust-tasks 0.23.1 closed `view`'s last one, 0.4; `link-status` 0.1
+/// requires it too), so the `ctx.sender` fallback below never fires: the
+/// spine already refused an unsigned document before a handler runs. Left in
+/// place rather than folded into [`signer`], since removing it is
+/// `link-status`'s own cleanup, not this one's.
 fn caller<P>(doc: &TrustTask<P>, ctx: &GitNsCtx) -> Result<String, TrustTaskOutcome> {
     ctx.signer
         .clone()
@@ -372,7 +387,7 @@ event_handler!(
 
 /// `git-ns/view/0.1` — any member, what they may see.
 pub(crate) async fn handle_view(doc: TrustTask<view::Payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
-    let who = match caller(&doc, &ctx) {
+    let who = match signer(&doc, &ctx) {
         Ok(w) => w,
         Err(r) => return r,
     };
@@ -400,7 +415,7 @@ pub(crate) async fn handle_view_v2(
     doc: TrustTask<view2::Payload>,
     ctx: GitNsCtx,
 ) -> TrustTaskOutcome {
-    let who = match caller(&doc, &ctx) {
+    let who = match signer(&doc, &ctx) {
         Ok(w) => w,
         Err(r) => return r,
     };
@@ -435,7 +450,7 @@ pub(crate) async fn handle_view_v4(
     doc: TrustTask<view4::Payload>,
     ctx: GitNsCtx,
 ) -> TrustTaskOutcome {
-    let who = match caller(&doc, &ctx) {
+    let who = match signer(&doc, &ctx) {
         Ok(w) => w,
         Err(r) => return r,
     };

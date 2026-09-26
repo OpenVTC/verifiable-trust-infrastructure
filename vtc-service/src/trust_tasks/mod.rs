@@ -751,11 +751,13 @@ async fn dispatch_typed(
         // Every `git-ns/*` task, in one arm, read off that family's own
         // dispatcher as the rooms arm is. Authority there is the signer's git
         // rights, resolved from the VTC's records at execution time — never
-        // a bearer token, never a payload member. `view` and
-        // `account/link-status` declare the proof RECOMMENDED, so the
-        // transport's authenticated sender is passed for them to fall back
-        // on; every other task requires the proof, which the spine has
-        // already enforced.
+        // a bearer token, never a payload member. Every task in the family
+        // requires the proof, which the spine has already enforced —
+        // including `view` (every served version) and `account/link-status`,
+        // whose handlers once fell back to the transport's authenticated
+        // sender for a proof their spec allowed to be absent. The sender is
+        // still passed through for `account/link-status`'s now-dead fallback
+        // (see `git_ns::tasks::caller`); `view` no longer reads it.
         uri if backup_tasks::URIS.contains(&uri) => {
             match backup_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,

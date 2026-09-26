@@ -1813,6 +1813,29 @@ async fn a_proof_required_git_ns_task_is_refused_unsigned() {
     assert_eq!(code(&out), "proofRequired");
 }
 
+/// `git-ns/view/0.4` used to declare its proof RECOMMENDED and answer an
+/// unsigned read from the transport's authenticated sender; trust-tasks
+/// 0.23.1 made it REQUIRED like every other served version, and the spine
+/// now refuses it before `handle_view_v4` ever sees it.
+#[tokio::test]
+async fn view_0_4_is_refused_unsigned() {
+    let f = fixture().await;
+    let doc: TrustTask<Value> = vta_sdk::trust_task_sign::build_unsigned(
+        &format!("{URI}/view/0.4"),
+        json!({}),
+        &f.bob.did,
+        TEST_VTC_DID,
+    )
+    .unwrap();
+    let out = dispatch_trust_task_core(
+        &f.vtc.state,
+        &JoinAuthCtx::rest(),
+        &serde_json::to_vec(&doc).unwrap(),
+    )
+    .await;
+    assert_eq!(code(&out), "proofRequired");
+}
+
 // ── the bridge's service grant ──────────────────────────────────────────────
 
 #[tokio::test]
