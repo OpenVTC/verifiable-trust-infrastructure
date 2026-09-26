@@ -205,26 +205,25 @@ function NamespaceCard({
         <b>{ns.cascadeOnDeparture ? "revoked with them" : "kept for review"}</b>
       </p>
 
-      {bridgeBound && (
+      {bridgeBound && ns.roleMap && (
         <p className="muted gitns-small" aria-label="Forge role map">
           Forge roles: owner <b>{ns.roleMap.own}</b> · maintainer <b>{ns.roleMap.maintain}</b> ·
           committer <b>{ns.roleMap.commit === "none" ? "no role" : ns.roleMap.commit}</b> ·
           namespace admin <b>no role</b>
           {" — "}
-          {ns.roleMapSource === "reported"
-            ? `as the bridge reported it${ns.roleMapReportedAt ? ` on ${new Date(ns.roleMapReportedAt).toLocaleDateString()}` : ""}; a repository may have its own.`
-            : ns.roleMapSource === "unknown"
-              ? "unknown: shown and derived with the default map until the bridge now serving this namespace reports its own."
-              : "the default, assumed: the bridge has not reported its role map."}
+          {`as the bridge reported it${ns.roleMapReportedAt ? ` on ${new Date(ns.roleMapReportedAt).toLocaleDateString()}` : ""}; a repository may have its own.`}
         </p>
       )}
-      {bridgeBound && ns.roleMapSource === "unknown" && (
+      {bridgeBound && !ns.roleMap && (
         <div className="finding warn">
           <strong>Role map unknown</strong>
           <span>
-            A different bridge now serves this namespace and has not reported its role map yet.
-            Forge roles, drift adoption and revert weights use the default map until it does; it
-            reports when it next connects to the VTC.
+            The bridge serving this namespace has not reported which forge role each right
+            projects to, so the VTC assumes none — not even the default. Until it does, drift
+            cannot be adopted (the VTC cannot tell which right a forge role stands for), and every
+            role revert weighs as revoking ownership. A bridge reports its map when it starts
+            serving the namespace and whenever it reconnects to the VTC; one older than
+            git-ns/bridge/event 0.3 never does.
           </span>
         </div>
       )}

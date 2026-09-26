@@ -11,9 +11,9 @@ import {
   namespaceFindings,
   projectedRight,
   repoStatus,
-  defaultRoleMap,
   forgeRoleFor,
   revertStanding,
+  driftRevertImpact,
 } from "./model";
 import {
   ACME,
@@ -238,11 +238,11 @@ describe("revertStanding — what git-ns/drift/resolve accepts", () => {
   const admin = { ...maintain, observed: "admin" };
 
   it("mirrors projected_right, org and personal", () => {
-    const org = defaultRoleMap("organization");
+    const org = { own: "admin", maintain: "maintain", commit: "none" };
     expect(projectedRight(org, "admin")).toBe("git.repo.own");
     expect(projectedRight(org, "maintain")).toBe("git.repo.maintain");
     expect(projectedRight(org, "write")).toBeNull();
-    const user = defaultRoleMap("user");
+    const user = { own: "write", maintain: "write", commit: "none" };
     expect(projectedRight(user, "write")).toBe("git.repo.maintain");
     expect(projectedRight(user, "admin")).toBeNull();
   });
@@ -274,6 +274,14 @@ describe("revertStanding — what git-ns/drift/resolve accepts", () => {
     expect(revertStanding(BOB, true, ACME, DOCS, admin).may).toBe(true);
     // Re-projecting a removed admin role is not a revocation of own.
     expect(revertStanding(BOB, false, ACME, DOCS, { ...admin, type: "roleRemoved" }).may).toBe(true);
+  });
+
+  it("weighs every role revert as revoking own while the map is unknown", () => {
+    const unknown = { ...DOCS, roleMap: undefined };
+    expect(revertStanding(BOB, false, ACME, unknown, maintain).may).toBe(false);
+    expect(revertStanding(BOB, true, ACME, unknown, maintain).may).toBe(true);
+    expect(driftRevertImpact({ ...maintain, observed: "read" }, undefined)).toBe("git.repo.own");
+    expect(driftRevertImpact({ ...maintain, observed: "none" }, undefined)).toBe("git.repo.maintain");
   });
 
   it("offers nothing in manual mode, or on a repository that is not active", () => {

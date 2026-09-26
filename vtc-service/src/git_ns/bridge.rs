@@ -1208,7 +1208,7 @@ async fn clear_stale(state: &AppState, job: &BridgeJob) -> Result<(), AppError> 
     let Some(report) = ns.role_map.as_mut() else {
         return Ok(());
     };
-    if job.created_at < report.reported_at || !report.stale.contains(&repo.resource) {
+    if job.created_at < report.received_at || !report.stale.contains(&repo.resource) {
         return Ok(());
     }
     report.stale.retain(|r| *r != repo.resource);
@@ -1336,9 +1336,12 @@ fn s(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+/// `issued_at` is the event document's `issuedAt`, which orders role-map
+/// reports (`git-ns/bridge/event/0.3`, request step 5.2).
 pub async fn handle_event(
     state: &AppState,
     issuer: &str,
+    issued_at: DateTime<Utc>,
     p: event_wire::Payload,
 ) -> OpResult<event_wire::Response> {
     let ns_id = p.namespace.to_string();
@@ -1767,8 +1770,34 @@ pub async fn handle_event(
         }
         "roleMapReported" => {
             // `git-ns/bridge/event` 0.3, request step 5.
-            let report = super::role_map::read_report(&event, issuer, t, inside)?
-                .map_err(OpError::Malformed)?;
+            let mut report =
+                super::role_map::read_report(&event, &ns, issuer, issued_at, t, inside)?
+                    .map_err(OpError::Malformed)?;
+            // 5.2: the newest report wins. One issued before the report held
+            // from this bridge is an earlier statement arriving late: it is
+            // acknowledged, so the bridge stops sending it, and applied in
+            // no part.
+            if let Some(held) = super::role_map::current_report(&ns)
+                && report.issued_at < held.issued_at
+            {
+                info!(
+                    namespace = %ns.id,
+                    issued_at = %report.issued_at,
+                    held = %held.issued_at,
+                    "ignoring a role-map report issued before the one held"
+                );
+                return Ok(ack);
+            }
+            // 5.3: only a repository the VTC re-projects stays stale — one it
+            // records active or orphaned here. Any other would be shown as
+            // stale for good.
+            report.stale.retain(|resource| {
+                snap.repos.iter().any(|r| {
+                    r.namespace_id == ns.id
+                        && r.resource == *resource
+                        && matches!(r.state, RepoState::Active | RepoState::Orphaned)
+                })
+            });
             // 5.4: re-project each stale repository, without waiting for
             // anyone. Forgetting what was sent makes the projector send its
             // complete desiredRoles again on its next pass; the entry leaves

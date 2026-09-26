@@ -3691,6 +3691,14 @@ const RES: &str = "github.com/acme/widgets";
 /// A bridge namespace (an organisation), `widgets` owned by Bob with forge id
 /// 100, Carol's GitHub account linked, and `drift` reported on `widgets`.
 async fn drift_fixture(drift: Value) -> (Fixture, String) {
+    let (f, ns) = drift_fixture_unreported(drift).await;
+    // A 0.3 bridge reports its map once it serves the namespace.
+    report_default_map(&f, &ns).await;
+    (f, ns)
+}
+
+/// As [`drift_fixture`], before the bridge has reported its role map.
+async fn drift_fixture_unreported(drift: Value) -> (Fixture, String) {
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     adopt_with_forge_id(&f, RES, "100").await;
@@ -4465,14 +4473,53 @@ fn uri3(task: &str) -> String {
     format!("{URI}/{task}/0.3")
 }
 
-async fn report_role_map(f: &Fixture, ns: &str, event: Value) -> TrustTaskOutcome {
-    send_v(
-        &f.vtc.state,
-        &f.bridge_party,
+/// A GitHub organisation's ladder.
+fn org_ladder() -> Value {
+    json!(["read", "triage", "write", "maintain", "admin"])
+}
+
+/// `event` as `f`'s bridge reports it, with a GitHub organisation's ladder
+/// unless it names one, issued `ago` before now.
+async fn report_role_map_from(
+    f: &Fixture,
+    bridge: &Party,
+    ns: &str,
+    mut event: Value,
+    ago: chrono::TimeDelta,
+) -> TrustTaskOutcome {
+    if event.get("ladder").is_none() {
+        event["ladder"] = org_ladder();
+    }
+    let mut doc: TrustTask<Value> = vta_sdk::trust_task_sign::build_unsigned(
         &uri3("bridge/event"),
         json!({ "namespace": ns, "event": event }),
+        &bridge.did,
+        TEST_VTC_DID,
     )
-    .await
+    .unwrap();
+    doc.issued_at = doc.issued_at.map(|t| t - ago);
+    let key =
+        vta_sdk::trust_task_sign::HolderKey::from_did_key(&bridge.did, &bridge.secret_multibase)
+            .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    let body = serde_json::to_vec(&doc).unwrap();
+    dispatch_trust_task_core(&f.vtc.state, &JoinAuthCtx::rest(), &body).await
+}
+
+async fn report_role_map(f: &Fixture, ns: &str, event: Value) -> TrustTaskOutcome {
+    report_role_map_from(f, &f.bridge_party, ns, event, chrono::TimeDelta::zero()).await
+}
+
+/// The default map, as a bridge on a GitHub organisation reports it.
+async fn report_default_map(f: &Fixture, ns: &str) {
+    ok(&report_role_map(
+        f,
+        ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" } }),
+    )
+    .await);
 }
 
 /// The `projectRoles` jobs queued for `repo`, oldest first.
@@ -4515,11 +4562,14 @@ async fn a_role_map_report_is_kept_and_its_stale_repositories_are_reprojected() 
     )
     .await);
     let n = namespace_now(&f, &ns).await;
-    let (m, src) = super::role_map::for_repo(&n, RES);
-    assert_eq!(src, super::role_map::Source::Reported);
+    assert_eq!(
+        super::role_map::source(&n),
+        super::role_map::Source::Reported
+    );
+    let m = super::role_map::for_repo(&n, RES).unwrap();
     assert_eq!(m.commit, super::role_map::ForgeLevel::Write);
     assert!(super::role_map::is_stale(&n, RES));
-    let (nm, _) = super::role_map::for_namespace(&n);
+    let nm = super::role_map::for_namespace(&n).unwrap();
     assert_eq!(nm.commit, super::role_map::ForgeLevel::None);
 
     // Re-projected without anyone asking: the projector sends it again.
@@ -4573,14 +4623,24 @@ async fn a_role_map_report_is_refused_unordered_or_outside_its_namespace() {
     )
     .await;
     assert_eq!(code(&out), "permissionDenied");
-    // Nothing was kept: the default map still stands.
-    assert!(namespace_now(&f, &ns).await.role_map.is_none());
+    // Nothing was kept: the default map the bridge reported still stands.
+    assert_eq!(
+        super::role_map::for_namespace(&namespace_now(&f, &ns).await),
+        Some(
+            super::role_map::RoleMap::new(
+                super::role_map::ForgeLevel::Admin,
+                super::role_map::ForgeLevel::Maintain,
+                super::role_map::ForgeLevel::None
+            )
+            .unwrap()
+        )
+    );
     // Only the namespace's own bridge reports it.
     let out = send_v(
         &f.vtc.state,
         &f.stranger,
         &uri3("bridge/event"),
-        json!({ "namespace": ns, "event": { "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" } } }),
+        json!({ "namespace": ns, "event": { "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" }, "ladder": org_ladder() } }),
     )
     .await;
     assert_eq!(code(&out), "permissionDenied");
@@ -4757,4 +4817,142 @@ async fn reproject_is_an_owners_for_their_repository_only_and_refused_without_a_
     )
     .await;
     assert_eq!(code(&out), super::reproject::MANUAL_MODE);
+}
+
+// ── review of #1736: an unknown role map, report order, the ladder ──────────
+
+fn maintain_adopt() -> Value {
+    json!({ "type": "roleAdded", "account": carol_acct(), "observed": "maintain" })
+}
+
+fn maintain_drift() -> Value {
+    json!([{ "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "maintain" }])
+}
+
+#[tokio::test]
+async fn adopt_is_refused_after_binding_until_the_bridge_reports_its_map() {
+    let (f, ns) = drift_fixture_unreported(maintain_drift()).await;
+    // Bound, and no report yet: the default is not assumed.
+    let out = resolve(&f, &f.bob, maintain_adopt(), "adopt").await;
+    assert_eq!(code(&out), super::drift::ROLE_MAP_UNKNOWN);
+    let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/namespaces").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["namespaces"][0]["roleMapSource"], "unknown");
+    assert!(body["namespaces"][0].get("roleMap").is_none(), "{body}");
+    // The bridge reports the default: now it holds.
+    report_default_map(&f, &ns).await;
+    let body = ok(&resolve(&f, &f.bob, maintain_adopt(), "adopt").await);
+    assert_eq!(body["right"]["right"], "git.repo.maintain");
+}
+
+#[tokio::test]
+async fn adopt_is_refused_after_the_namespace_changes_bridge_until_the_new_one_reports() {
+    let (f, ns) = drift_fixture(maintain_drift()).await;
+    // Another bridge now serves the namespace (a reseat of its bridge).
+    let new_bridge = Party::new();
+    let mut n = namespace_now(&f, &ns).await;
+    n.bridge_did = Some(new_bridge.did.clone());
+    store::put_namespace(&f.vtc.state.git_ns.ks, &n)
+        .await
+        .unwrap();
+    let out = resolve(&f, &f.bob, maintain_adopt(), "adopt").await;
+    assert_eq!(code(&out), super::drift::ROLE_MAP_UNKNOWN);
+    // The old bridge's report is not the new one's, whatever its issuedAt.
+    let out = report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" } }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+    // The new bridge reports — earlier than the old report, which it is
+    // never compared with.
+    ok(&report_role_map_from(
+        &f,
+        &new_bridge,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" } }),
+        chrono::TimeDelta::seconds(30),
+    )
+    .await);
+    let body = ok(&resolve(&f, &f.bob, maintain_adopt(), "adopt").await);
+    assert_eq!(body["right"]["right"], "git.repo.maintain");
+}
+
+#[tokio::test]
+async fn a_role_map_report_issued_before_the_one_held_is_acknowledged_and_ignored() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    let admin_map = json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "admin", "commit": "none" } });
+    ok(&report_role_map(&f, &ns, admin_map.clone()).await);
+    // An earlier report, arriving late: acknowledged, applied in no part.
+    ok(&report_role_map_from(
+        &f,
+        &f.bridge_party,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "write", "maintain": "write", "commit": "none" }, "stale": [RES] }),
+        chrono::TimeDelta::seconds(60),
+    )
+    .await);
+    let n = namespace_now(&f, &ns).await;
+    let m = super::role_map::for_namespace(&n).unwrap();
+    assert_eq!(m.maintain, super::role_map::ForgeLevel::Admin);
+    assert!(!super::role_map::is_stale(&n, RES));
+    // A later one replaces it.
+    ok(&report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" } }),
+    )
+    .await);
+    let m = super::role_map::for_namespace(&namespace_now(&f, &ns).await).unwrap();
+    assert_eq!(m.maintain, super::role_map::ForgeLevel::Maintain);
+}
+
+#[tokio::test]
+async fn a_role_map_report_off_the_forges_ladder_is_refused() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    // A GitHub organisation has no ladder of `write` alone…
+    let out = report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "write", "maintain": "write", "commit": "none" }, "ladder": ["write"] }),
+    )
+    .await;
+    assert_eq!(code(&out), "malformedRequest");
+    // …and a map names only levels on the ladder it reports.
+    let out = report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "triage", "commit": "none" }, "ladder": ["read", "write", "maintain", "admin"] }),
+    )
+    .await;
+    assert_eq!(code(&out), "malformedRequest");
+}
+
+#[tokio::test]
+async fn a_stale_repository_the_vtc_does_not_reproject_is_not_kept() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "admin", "commit": "none" },
+                "stale": [RES, "github.com/acme/never-recorded"] }),
+    )
+    .await);
+    let n = namespace_now(&f, &ns).await;
+    assert_eq!(n.role_map.unwrap().stale, vec![RES.to_string()]);
+}
+
+#[tokio::test]
+async fn an_unknown_map_weighs_a_maintain_revert_as_revoking_own() {
+    // The console reads the impact from the map: with none reported, any
+    // role could be the one `own` projects to.
+    let (f, ns) = drift_fixture_unreported(maintain_drift()).await;
+    let n = namespace_now(&f, &ns).await;
+    assert!(super::role_map::revert_takes_ownership(&n, RES, "maintain"));
+    report_default_map(&f, &ns).await;
+    let n = namespace_now(&f, &ns).await;
+    assert!(!super::role_map::revert_takes_ownership(
+        &n, RES, "maintain"
+    ));
 }

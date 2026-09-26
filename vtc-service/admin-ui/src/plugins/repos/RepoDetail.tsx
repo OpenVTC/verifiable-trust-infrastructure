@@ -104,7 +104,7 @@ function ForgeAccountCell({
   forges: ForgeAccounts | undefined;
   right: string;
   /** The repository's role map, when the row is about one repository. */
-  roleMap?: GitNsRoleMap;
+  roleMap?: GitNsRoleMap | null;
 }) {
   const acct = forges?.get(did)?.get(forge);
   const role = roleMap ? forgeRoleFor(roleMap, right) : undefined;
@@ -167,7 +167,7 @@ function PeopleTable({
   forges: ForgeAccounts | undefined;
   /** The repository's role map: each row then shows the forge role its right
    *  projects to. */
-  roleMap?: GitNsRoleMap;
+  roleMap?: GitNsRoleMap | null;
   onRevoke?: (row: GitNsRightRow) => void;
   readOnlyNote?: (row: GitNsRightRow) => string | null;
 }) {
@@ -288,7 +288,8 @@ function DriftList({
       {items.map((d, i) => {
         const member =
           d.account && forges ? memberForAccount(forges, d.account.forge, d.account.id) : undefined;
-        const right = d.type === "roleAdded" ? projectedRight(repo.roleMap, d.observed) : null;
+        const right =
+          d.type === "roleAdded" && repo.roleMap ? projectedRight(repo.roleMap, d.observed) : null;
         const protection = d.type === "requiredCheckMissing" || d.type === "protectionWeakened";
         const standing = revertStanding(viewer, superAdmin, ns, repo, d);
         const label = DRIFT_LABEL[d.type] ?? d.type;
@@ -338,7 +339,7 @@ function DriftList({
                     <>
                       {" "}
                       <code aria-label="Revert command">
-                        {driftRevertTask(repo.resource, ns, d, undefined, repo.roleMap).command}
+                        {driftRevertTask(repo.resource, d, undefined, repo.roleMap).command}
                       </code>
                     </>
                   )}
@@ -351,9 +352,11 @@ function DriftList({
                   </button>
                 ) : (
                   <span className="muted">
-                    {member
-                      ? `No git right projects to the forge role "${d.observed}" here, under the bridge's role map.`
-                      : "No member has linked this forge account, so there is nobody to grant it to."}
+                    {!member
+                      ? "No member has linked this forge account, so there is nobody to grant it to."
+                      : !repo.roleMap
+                        ? "The bridge has not reported its role map, so which git right this forge role stands for is unknown: it cannot be adopted until the bridge reports."
+                        : `No git right projects to the forge role "${d.observed}" here, under the bridge's role map.`}
                   </span>
                 ))}
               {d.type === "roleAdded" && ns.roleDrift !== "enforce" && (
@@ -781,7 +784,7 @@ export function RepoDetail() {
         </div>
       </header>
 
-      {repo.roleMapStale && (
+      {repo.roleMapStale && repo.roleMap && (
         <div className="finding warn">
           <strong>Forge roles projected under an earlier role map</strong>
           <span>
@@ -980,7 +983,6 @@ export function RepoDetail() {
       {dialog?.kind === "revert" && (
         <RevertDriftDialog
           resource={repo.resource}
-          ns={ns}
           roleMap={repo.roleMap}
           item={dialog.item}
           label={DRIFT_LABEL[dialog.item.type] ?? dialog.item.type}

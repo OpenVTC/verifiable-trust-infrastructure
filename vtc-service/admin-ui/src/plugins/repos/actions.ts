@@ -40,7 +40,6 @@
 import {
   consentClass,
   type ConsentClass,
-  defaultRoleMap,
   driftRevertEffect,
   driftRevertImpact,
   type GitNsAction,
@@ -49,7 +48,7 @@ import {
   shortName,
 } from "./model";
 import { postSignedTrustTask } from "@/lib/api";
-import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight, GitNsRoleMap } from "@/lib/wire-types";
+import type { GitNsDriftItem, GitNsRight, GitNsRoleMap } from "@/lib/wire-types";
 
 // Document `type`s, not `Trust-Task` headers: each is dispatched by
 // `POST /v1/trust-tasks` from the document itself, and no REST route binds
@@ -456,12 +455,12 @@ export function createTask(c: CreateInput): SignedTask {
  */
 export function driftRevertTask(
   resource: string,
-  ns: GitNsNamespaceRow,
   item: GitNsDriftItem,
   reason?: string,
-  /** The repository's role map (`GitNsRepoRow.roleMap`); the default one
-   *  when not given. */
-  roleMap: GitNsRoleMap = defaultRoleMap(ns.kind),
+  /** The repository's role map (`GitNsRepoRow.roleMap`); absent while the
+   *  bridge has not reported it, when every role revert weighs as revoking
+   *  own. */
+  roleMap?: GitNsRoleMap | null,
 ): SignedTask {
   const drift: Record<string, unknown> = { type: item.type };
   const impact = driftRevertImpact(item, roleMap);

@@ -267,6 +267,7 @@ signed_handler!(
 async fn event_as_v3<P, R>(
     state: &crate::server::AppState,
     issuer: &str,
+    issued_at: chrono::DateTime<chrono::Utc>,
     p: P,
 ) -> Result<R, OpError>
 where
@@ -277,7 +278,7 @@ where
         serde_json::to_value(&p).map_err(vti_common::error::AppError::from)?,
     )
     .map_err(|e| OpError::Malformed(format!("bridge/event payload: {e}")))?;
-    let ack = super::bridge::handle_event(state, issuer, v3).await?;
+    let ack = super::bridge::handle_event(state, issuer, issued_at, v3).await?;
     Ok(serde_json::from_value(
         serde_json::to_value(&ack).map_err(vti_common::error::AppError::from)?,
     )
@@ -286,20 +287,43 @@ where
 async fn event_v1(
     state: &crate::server::AppState,
     issuer: &str,
+    issued_at: chrono::DateTime<chrono::Utc>,
     p: event::Payload,
 ) -> Result<event::Response, OpError> {
-    event_as_v3(state, issuer, p).await
+    event_as_v3(state, issuer, issued_at, p).await
 }
 async fn event_v2(
     state: &crate::server::AppState,
     issuer: &str,
+    issued_at: chrono::DateTime<chrono::Utc>,
     p: event2::Payload,
 ) -> Result<event2::Response, OpError> {
-    event_as_v3(state, issuer, p).await
+    event_as_v3(state, issuer, issued_at, p).await
 }
-bridge_handler!(handle_event, event::Payload, event_v1);
-bridge_handler!(handle_event_v2, event2::Payload, event_v2);
-bridge_handler!(
+
+/// As [`bridge_handler`], passing the document's `issuedAt` too: it orders
+/// role-map reports (`git-ns/bridge/event/0.3`, request step 5.2). The spine
+/// refuses a document without one before any handler runs.
+macro_rules! event_handler {
+    ($name:ident, $payload:ty, $op:path) => {
+        pub(crate) async fn $name(doc: TrustTask<$payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
+            let actor = match signer(&doc, &ctx) {
+                Ok(a) => a,
+                Err(r) => return r,
+            };
+            let r = match doc.issued_at {
+                Some(at) => $op(&ctx.state, &actor, at, doc.payload.clone()).await,
+                None => Err(OpError::Malformed(
+                    "a bridge event carries `issuedAt`".into(),
+                )),
+            };
+            respond(&doc, r)
+        }
+    };
+}
+event_handler!(handle_event, event::Payload, event_v1);
+event_handler!(handle_event_v2, event2::Payload, event_v2);
+event_handler!(
     handle_event_v3,
     event3::Payload,
     super::bridge::handle_event

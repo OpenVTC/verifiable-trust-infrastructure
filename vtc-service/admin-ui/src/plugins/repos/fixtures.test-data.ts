@@ -61,8 +61,7 @@ export const PERSONAL: GitNsNamespaceRow = {
   installationRemoved: false,
   roleDrift: "report",
   cascadeOnDeparture: false,
-  roleMap: { own: "write", maintain: "write", commit: "none" },
-  roleMapSource: "default",
+  roleMapSource: "unknown",
 };
 
 const BOOT_ALL = { workflow: true, keyring: true, variables: true, requiredCheck: true };

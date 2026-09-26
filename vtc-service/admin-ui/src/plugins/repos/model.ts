@@ -587,17 +587,6 @@ function level(role: string | undefined): number {
 }
 
 /**
- * The default role map, as the VTC assumes it until the bridge reports its
- * own — mirrors `git_ns::role_map::RoleMap::default_for`. A personal account
- * has only collaborator `write`.
- */
-export function defaultRoleMap(kind: string | null | undefined): GitNsRoleMap {
-  return kind === "user"
-    ? { own: "write", maintain: "write", commit: "none" }
-    : { own: "admin", maintain: "maintain", commit: "none" };
-}
-
-/**
  * The forge role `right` projects to under `map` — mirrors
  * `RoleMap::role_for`. A namespace admin (and a repo creator) gets no forge
  * role, whatever the map.
@@ -635,16 +624,17 @@ export function projectedRight(map: GitNsRoleMap, role: string | undefined): Git
  * The revocation a revert amounts to, which is what the VTC gates it as —
  * mirrors `git_ns::drift::revert`: taking off or lowering a forge role at or
  * above the one `own` projects to weighs as revoking `own`; any other revert
- * at most as revoking `maintain`.
+ * at most as revoking `maintain`. With no map reported (`map` absent) any
+ * role but `none` might be the one `own` projects to, so every such revert
+ * weighs as revoking `own` — mirrors `role_map::revert_takes_ownership`.
  */
 export function driftRevertImpact(
   item: GitNsDriftItem,
-  map: GitNsRoleMap,
+  map: GitNsRoleMap | null | undefined,
 ): "git.repo.own" | "git.repo.maintain" {
-  return isRoleDrift(item) &&
-    item.type !== "roleRemoved" &&
-    map.own !== "none" &&
-    level(item.observed) >= level(map.own)
+  if (!isRoleDrift(item) || item.type === "roleRemoved") return "git.repo.maintain";
+  if (!map) return level(item.observed) > 0 ? "git.repo.own" : "git.repo.maintain";
+  return map.own !== "none" && level(item.observed) >= level(map.own)
     ? "git.repo.own"
     : "git.repo.maintain";
 }

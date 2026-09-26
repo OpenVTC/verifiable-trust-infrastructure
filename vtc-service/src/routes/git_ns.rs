@@ -52,7 +52,7 @@ use vti_common::auth::{AdminAuth, SuperAdminAuth};
 use vti_common::error::AppError;
 
 use crate::git_ns::bridge::{self, BridgeJob};
-use crate::git_ns::model::{Resource, Right, RightRow, Scope};
+use crate::git_ns::model::{RepoState, Resource, Right, RightRow, Scope};
 use crate::git_ns::ops::{now, standing};
 use crate::git_ns::store::Snapshot;
 use crate::git_ns::{lifecycle, projection, role_map, rules, view, wire};
@@ -139,14 +139,18 @@ pub struct GitNsNamespaceRow {
     /// The active policy's `cascade_on_departure` setting in effect.
     pub cascade_on_departure: bool,
     /// The forge role each right projects to on a repository without a map
-    /// of its own: the bridge's report (`git-ns/bridge/event/0.3`
-    /// `roleMapReported`), or the default map while it has not reported.
-    pub role_map: GitNsRoleMap,
-    /// `reported` — the bridge serving the namespace said so; `default` — no
-    /// bridge has reported, and the default map is assumed; `unknown` — the
-    /// report held is from a bridge that no longer serves the namespace, so
-    /// the default map is derived with until the serving one reports.
+    /// of its own, as the bridge serving the namespace reported it
+    /// (`git-ns/bridge/event/0.3` `roleMapReported`). Absent while it has not
+    /// reported: no map, the default included, is assumed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<GitNsRoleMap>,
+    /// `reported` — the bridge serving the namespace said so; `unknown` — it
+    /// has not reported since the namespace was bound or came to be served by
+    /// it (or it predates event 0.3). While unknown, drift adoption is
+    /// refused (`git-ns:roleMapUnknown`) and every role revert is weighed as
+    /// revoking `git.repo.own`.
     pub role_map_source: String,
+    /// The `issuedAt` of the report held, on the bridge's clock.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role_map_reported_at: Option<String>,
 }
@@ -263,9 +267,10 @@ pub struct GitNsRepoRow {
     #[schema(value_type = Option<Object>)]
     pub last_check: Option<Value>,
     /// The forge role each right projects to on this repository, under the
-    /// bridge's reported map (or the default one, per the namespace's
-    /// `roleMapSource`).
-    pub role_map: GitNsRoleMap,
+    /// bridge's reported map. Absent while the namespace's map is unknown
+    /// (`roleMapSource`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<GitNsRoleMap>,
     /// The bridge last projected this repository's roles under an earlier
     /// role map; a re-projection is queued and has not yet succeeded.
     pub role_map_stale: bool,
@@ -461,7 +466,7 @@ pub async fn namespaces_list(
         .iter()
         .map(|ns| {
             let v = wire::namespace(ns);
-            let (ns_map, ns_map_source) = role_map::for_namespace(ns);
+            let ns_map_source = role_map::source(ns);
             GitNsNamespaceRow {
                 id: ns.id.clone(),
                 forge: ns.forge.clone(),
@@ -497,13 +502,10 @@ pub async fn namespaces_list(
                 }),
                 role_drift: role_drift.to_string(),
                 cascade_on_departure: settings.cascade_on_departure,
-                role_map: ns_map.into(),
+                role_map: role_map::for_namespace(ns).map(Into::into),
                 role_map_source: ns_map_source.as_str().to_string(),
-                role_map_reported_at: ns
-                    .role_map
-                    .as_ref()
-                    .filter(|_| ns_map_source == role_map::Source::Reported)
-                    .map(|r| wire::timestamp(r.reported_at)),
+                role_map_reported_at: role_map::current_report(ns)
+                    .map(|r| wire::timestamp(r.issued_at)),
             }
         })
         .collect();
@@ -576,12 +578,12 @@ pub async fn repos_list(
                 last_check: r.forge_report.last_check.clone(),
                 role_map: snap
                     .namespace(&r.namespace_id)
-                    .map(|ns| role_map::for_repo(ns, &r.resource).0)
-                    .unwrap_or_else(|| role_map::RoleMap::default_for(None))
-                    .into(),
-                role_map_stale: snap
-                    .namespace(&r.namespace_id)
-                    .is_some_and(|ns| role_map::is_stale(ns, &r.resource)),
+                    .and_then(|ns| role_map::for_repo(ns, &r.resource))
+                    .map(Into::into),
+                role_map_stale: matches!(r.state, RepoState::Active | RepoState::Orphaned)
+                    && snap
+                        .namespace(&r.namespace_id)
+                        .is_some_and(|ns| role_map::is_stale(ns, &r.resource)),
             }
         })
         .collect();

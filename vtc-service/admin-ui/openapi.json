@@ -8318,7 +8318,6 @@
           "installationRemoved",
           "roleDrift",
           "cascadeOnDeparture",
-          "roleMap",
           "roleMapSource"
         ],
         "properties": {
@@ -8411,18 +8410,26 @@
             "description": "The active policy's `role_drift` setting in effect: `report` or\n`enforce`."
           },
           "roleMap": {
-            "$ref": "#/components/schemas/GitNsRoleMap",
-            "description": "The forge role each right projects to on a repository without a map\nof its own: the bridge's report (`git-ns/bridge/event/0.3`\n`roleMapReported`), or the default map while it has not reported."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsRoleMap",
+                "description": "The forge role each right projects to on a repository without a map\nof its own, as the bridge serving the namespace reported it\n(`git-ns/bridge/event/0.3` `roleMapReported`). Absent while it has not\nreported: no map, the default included, is assumed."
+              }
+            ]
           },
           "roleMapReportedAt": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The `issuedAt` of the report held, on the bridge's clock."
           },
           "roleMapSource": {
             "type": "string",
-            "description": "`reported` — the bridge serving the namespace said so; `default` — no\nbridge has reported, and the default map is assumed; `unknown` — the\nreport held is from a bridge that no longer serves the namespace, so\nthe default map is derived with until the serving one reports."
+            "description": "`reported` — the bridge serving the namespace said so; `unknown` — it\nhas not reported since the namespace was bound or came to be served by\nit (or it predates event 0.3). While unknown, drift adoption is\nrefused (`git-ns:roleMapUnknown`) and every role revert is weighed as\nrevoking `git.repo.own`."
           },
           "state": {
             "type": "string",
@@ -8515,7 +8522,6 @@
           "driftCount",
           "createdAt",
           "steps",
-          "roleMap",
           "roleMapStale"
         ],
         "properties": {
@@ -8598,8 +8604,15 @@
             "type": "string"
           },
           "roleMap": {
-            "$ref": "#/components/schemas/GitNsRoleMap",
-            "description": "The forge role each right projects to on this repository, under the\nbridge's reported map (or the default one, per the namespace's\n`roleMapSource`)."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsRoleMap",
+                "description": "The forge role each right projects to on this repository, under the\nbridge's reported map. Absent while the namespace's map is unknown\n(`roleMapSource`)."
+              }
+            ]
           },
           "roleMapStale": {
             "type": "boolean",

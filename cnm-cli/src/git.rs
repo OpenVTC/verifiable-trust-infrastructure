@@ -483,6 +483,14 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nThis item records no right. Revert it instead:\n  {bin} git drift resolve \
              <repository> revert --type <type> [--account-id <id>]"
         ),
+        "git-ns:roleMapUnknown" => format!(
+            "\nThe bridge serving this namespace has not reported its role map, so the VTC \
+             cannot tell which right this forge role stands for, and assumes no default. It \
+             reports when it starts serving the namespace and whenever it reconnects; a bridge \
+             older than git-ns/bridge/event 0.3 never does. Adopt once it has reported, or \
+             revert the role:\n  {bin} git drift resolve <repository> revert --type <type> \
+             [--account-id <id>]"
+        ),
         "git-ns/drift/resolve:notRevertible" if message.contains("manual mode") => {
             "\nThe namespace is governed in manual mode: no bridge can change the forge. Undo \
              the change on the forge yourself."

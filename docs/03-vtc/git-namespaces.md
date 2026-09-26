@@ -176,15 +176,27 @@ it applies — as the forge applies it, rounded onto the forge's ladder — with
 namespace, whenever it (re)establishes its link to the VTC, and whenever the
 map changes: the namespace's map, each repository
 whose own map differs, and each repository whose roles it last projected
-under a different map (`stale`). The VTC refuses an unordered map
-(`own ≥ maintain ≥ commit`, `commit ≤ write`) and any resource outside the
-namespace, keeps the report on the namespace (only while the same bridge
-serves it — if another bridge DID comes to serve the namespace, the map is
-*unknown*, derived as the default and flagged on the namespace card, until
-that bridge reports), and uses it for the console's effective forge role of each right,
-for the right a drift adoption records, and for the weight of a drift revert.
-Until a bridge reports, the default map is assumed (`admin` / `maintain` /
-none; `write` / `write` / none on a personal account).
+under a different map (`stale`), with the forge's `ladder` for the namespace.
+The VTC refuses an unordered map (`own ≥ maintain ≥ commit`,
+`commit ≤ write`), a map with a role that is not on the ladder, a ladder
+that is not the one it knows for the namespace (a GitHub organisation, a
+GitHub personal account — `write` only — or Codeberg's Forgejo), and any
+resource outside the namespace. Reports are ordered by `issuedAt`: one issued
+before the report held from the same bridge is acknowledged and ignored. The
+VTC keeps the report on the namespace, only while the same bridge serves it,
+drops from `stale` any repository it does not record active or orphaned,
+and uses the map for the console's effective forge role of each right, for
+the right a drift adoption records, for the weight of a drift revert, and
+for whether a right is elevated (a right the map projects to `admin` is).
+
+**No map is assumed.** Until the bridge serving the namespace reports —
+after binding, after another bridge DID comes to serve it, or for good with a
+bridge older than event 0.3 — the map is *unknown*, shown as such on the
+namespace card (`roleMapSource: "unknown"`, no `roleMap`). Meanwhile drift
+adoption is refused with `git-ns:roleMapUnknown`, every role revert weighs as
+revoking `own`, and `git.repo.maintain` counts as elevated. The default map
+(`admin` / `maintain` / none; `write` / `write` / none on a personal account)
+holds only when the bridge reports it.
 
 A role map change reaches a repository only when its roles are next
 projected. The VTC therefore **re-projects every stale repository by itself**
@@ -230,10 +242,11 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   raises the member above what they hold) held by a forge account linked to a
   current member, at a role a right projects to, can be adopted. The right
   is the **lowest** whose role in the bridge's reported role map (the
-  repository's own entry where it has one) is the observed role; without a
-  report, the default map's inverse: `admin` is `git.repo.own`, `maintain`
-  is `git.repo.maintain`, and on a personal account collaborator `write` is
-  `git.repo.maintain`. So where maintainers get `admin`, a forge `admin` is
+  repository's own entry where it has one) is the observed role — under the
+  default map `admin` is `git.repo.own`, `maintain` is `git.repo.maintain`,
+  and on a personal account collaborator `write` is `git.repo.maintain`.
+  With no report the right is unknown and adoption is refused
+  (`git-ns:roleMapUnknown`). So where maintainers get `admin`, a forge `admin` is
   adopted as `git.repo.maintain`; where committers get `write`, `write` is
   `git.commit.sign`; a role no right's is (`triage`, `read`, `none`) projects
   nothing.
@@ -245,7 +258,8 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   protection items re-run the `requiredCheck` bootstrap step, and
   `bootstrapMissing` the whole plan. Reverting a role at or above the one
   `own` projects to (`admin` under the default map; `write` on a personal
-  account) has the impact of revoking `own`, and is elevated.
+  account) has the impact of revoking `own`, and is elevated; with no map
+  reported, so does reverting any role.
 
 The item is selected by type, account (role items) and — required to adopt —
 the `observed` value the owner read, and a resolution is followed by an
@@ -282,7 +296,7 @@ defines, and carry no Trust-Task URL.
 | Route | Body |
 |---|---|
 | `GET /v1/git-ns/view?resource=` | `git-ns/view/0.1#response`, every record and reason |
-| `GET /v1/git-ns/namespaces` | namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure`, role map (`roleMap`, `roleMapSource`: `reported` or `default`) |
+| `GET /v1/git-ns/namespaces` | namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure`, role map (`roleMap`, absent while unknown; `roleMapSource`: `reported` or `unknown`) |
 | `GET /v1/git-ns/repos?namespace=` | repositories with owners, bootstrap, sync, guard in force, step outcomes, last check, effective role map, `roleMapStale` |
 | `GET /v1/git-ns/rights?resource=&subject=` | recorded and role-derived rights |
 | `GET /v1/git-ns/rights/issued-by-departed` | grants whose granter left |

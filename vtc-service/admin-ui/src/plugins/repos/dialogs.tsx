@@ -22,7 +22,6 @@ import { useNameBook } from "@/lib/names";
 import { shortenDid } from "@/lib/format";
 import type {
   GitNsDriftItem,
-  GitNsNamespaceRow,
   GitNsRight,
   GitNsRoleMap,
 } from "@/lib/wire-types";
@@ -682,7 +681,6 @@ export function ReseatDialog({
  */
 export function RevertDriftDialog({
   resource,
-  ns,
   roleMap,
   item,
   label,
@@ -690,9 +688,9 @@ export function RevertDriftDialog({
   onBuilt,
 }: {
   resource: string;
-  ns: GitNsNamespaceRow;
-  /** The repository's role map (`GitNsRepoRow.roleMap`). */
-  roleMap?: GitNsRoleMap;
+  /** The repository's role map (`GitNsRepoRow.roleMap`); absent while the
+   *  bridge has not reported it. */
+  roleMap?: GitNsRoleMap | null;
   item: GitNsDriftItem;
   /** The item as the drift list names it. */
   label: string;
@@ -704,7 +702,7 @@ export function RevertDriftDialog({
   const submit = () => {
     const e = reasonError(reason);
     setError(e);
-    if (!e) onBuilt(driftRevertTask(resource, ns, item, reason, roleMap));
+    if (!e) onBuilt(driftRevertTask(resource, item, reason, roleMap));
   };
   return (
     <FormDialog

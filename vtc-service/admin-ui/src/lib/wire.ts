@@ -3679,18 +3679,15 @@ export interface components {
              *     `enforce`.
              */
             roleDrift: string;
-            /**
-             * @description The forge role each right projects to on a repository without a map
-             *     of its own: the bridge's report (`git-ns/bridge/event/0.3`
-             *     `roleMapReported`), or the default map while it has not reported.
-             */
-            roleMap: components["schemas"]["GitNsRoleMap"];
+            roleMap?: null | components["schemas"]["GitNsRoleMap"];
+            /** @description The `issuedAt` of the report held, on the bridge's clock. */
             roleMapReportedAt?: string | null;
             /**
-             * @description `reported` — the bridge serving the namespace said so; `default` — no
-             *     bridge has reported, and the default map is assumed; `unknown` — the
-             *     report held is from a bridge that no longer serves the namespace, so
-             *     the default map is derived with until the serving one reports.
+             * @description `reported` — the bridge serving the namespace said so; `unknown` — it
+             *     has not reported since the namespace was bound or came to be served by
+             *     it (or it predates event 0.3). While unknown, drift adoption is
+             *     refused (`git-ns:roleMapUnknown`) and every role revert is weighed as
+             *     revoking `git.repo.own`.
              */
             roleMapSource: string;
             /** @description `pending` | `bound`. */
@@ -3749,12 +3746,7 @@ export interface components {
             namespace: string;
             owners: string[];
             resource: string;
-            /**
-             * @description The forge role each right projects to on this repository, under the
-             *     bridge's reported map (or the default one, per the namespace's
-             *     `roleMapSource`).
-             */
-            roleMap: components["schemas"]["GitNsRoleMap"];
+            roleMap?: null | components["schemas"]["GitNsRoleMap"];
             /**
              * @description The bridge last projected this repository's roles under an earlier
              *     role map; a re-projection is queued and has not yet succeeded.
