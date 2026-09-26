@@ -79,6 +79,7 @@ pub async fn build_messaging(
     vta_did: &str,
     mediator_did: &str,
     outbox_ks: KeyspaceHandle,
+    pushes_ks: KeyspaceHandle,
     relationships_ks: KeyspaceHandle,
     relationship_drop_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
     did_resolver: Option<&DIDCacheClient>,
@@ -230,6 +231,18 @@ pub async fn build_messaging(
         outbox.clone(),
         Duration::from_secs(30),
     ));
+    // Trust Task pushes over TSP and REST (`crate::messaging::push`), each a
+    // named transport with its own drain on the same durable outbox. The
+    // outbox poll above already confirms TSP collection, because the mediator
+    // lists TSP and DIDComm messages in one outbox.
+    crate::messaging::push::register_transports(
+        &service,
+        outbox.clone(),
+        pushes_ks,
+        &atm,
+        &profile,
+        mediator_did,
+    );
 
     Ok(VtaMessaging {
         service,

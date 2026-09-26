@@ -133,6 +133,11 @@ pub struct AppState {
     pub task_consent_ks: KeyspaceHandle,
     /// Member pushes in flight (`crate::member_push`). Encrypted at rest.
     pub member_pushes_ks: KeyspaceHandle,
+    /// Which members were recently seen sending here over TSP, recorded from
+    /// the proven sender of each inbound TSP frame. A member whose DID
+    /// document advertises no transport (a `did:key` wallet) is pushed to over
+    /// TSP first while it is fresh (`crate::member_push`).
+    pub tsp_reach: Arc<vti_common::tsp_reach::TspReachability>,
     /// In-flight backup bundles for the chunked `backup/*` transfer — records
     /// and manifests; the bytes are staged under `<data_dir>/backups`. See
     /// [`vti_common::backup_transfer`].
@@ -833,6 +838,7 @@ pub async fn run(
         step_up_marks_ks,
         task_consent_ks,
         member_pushes_ks,
+        tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
         backup_bundles_ks,
         schemas_ks,
         endorsements_ks,

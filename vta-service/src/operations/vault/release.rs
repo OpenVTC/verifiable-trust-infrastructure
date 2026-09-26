@@ -38,14 +38,28 @@ pub struct ReleasedSecret {
 ///
 /// The caller has already gated capability + context scope + step-up and
 /// resolved `atm` / `vta_did`.
+///
+/// # The audit row is a precondition of the release
+///
+/// A released secret — a password, a TOTP seed, and for `passkey` and `ssh-key`
+/// entries a **private key** — stays with the holder once it has it. So, as for
+/// `keys/export-secret` (VTI-VTA-003, VTI-AUD-005), the release is recorded
+/// durably *before* the sealed secret is returned, and a row that cannot be
+/// written refuses the release. The row is `vault.secret_release`, shaped like
+/// `key.secret_export`: who (`actor`), which entry (`resource`), its context,
+/// the transport (`channel`), and the entry's kind in `detail` — never the
+/// secret, and never the entry's label or site, which can carry personal data.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn release_secret(
     atm: &ATM,
     vault_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     vta_did: &str,
     holder_did: &str,
     mut stored: StoredVaultEntry,
     ttl_hint: Option<u32>,
     wire: WireVersion,
+    channel: &str,
 ) -> Result<ReleasedSecret, AppError> {
     let ttl_seconds = ttl_hint
         .map(|t| t.min(TTL_CEILING_SECS))
@@ -68,6 +82,36 @@ pub(crate) async fn release_secret(
     .await?;
 
     let secret_kind = stored.entry.secret_kind;
+
+    // Durable before the sealed secret leaves, refusing on failure — see
+    // "The audit row is a precondition of the release".
+    let kind = serde_json::to_value(secret_kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    if let Err(e) = crate::audit::record_with_detail(
+        audit,
+        "vault.secret_release",
+        holder_did,
+        Some(&stored.entry.id),
+        "success",
+        Some(channel),
+        Some(&stored.entry.context_id),
+        Some(&format!("kind={kind}")),
+    )
+    .await
+    {
+        tracing::error!(
+            target: vta_audit::AUDIT_WRITE_FAILURE_TARGET,
+            error = %e, entry_id = %stored.entry.id, actor = %holder_did,
+            "vault release refused: its audit row could not be written"
+        );
+        return Err(AppError::Internal(
+            "the secret was not released: the release could not be recorded in the audit \
+             trail, and an unrecorded release is not permitted"
+                .into(),
+        ));
+    }
 
     // Persist failure isn't fatal — the secret has been sealed and is on its
     // way; log so an operator can see lastUsedAt drift if it ever happens.

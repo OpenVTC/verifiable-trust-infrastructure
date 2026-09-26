@@ -47,6 +47,8 @@ use vti_common::trust_task::envelope::EnvelopeRole;
 
 mod acl;
 mod app_state;
+#[cfg(feature = "tee")]
+mod attestation;
 mod audit;
 #[cfg(test)]
 mod audit_coverage;
@@ -173,6 +175,8 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
+    // The mnemonic export — requires `tee`.
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -1333,7 +1337,7 @@ mod lifecycle_mapping {}
 /// is consequential, which is exactly the set for which item 11 applies" — and
 /// this spine applies item 11 to **every** document it dispatches, `whoami`
 /// included, so the qualifying set here is all of them.
-fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
+pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
     trust_tasks_rs::FreshnessPolicy::default()
         .with_max_age(chrono::TimeDelta::minutes(10))
         .requiring_issued_at()
@@ -1812,7 +1816,19 @@ async fn dispatch_trust_task_validated(
     {
         let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
         if outcome.status.is_success() {
-            let recorded = serde_json::from_slice::<serde_json::Value>(&outcome.body).ok();
+            // A response that discloses a secret (a key's private half, the
+            // sealed root mnemonic) is never kept: the record would hold it in
+            // memory for the whole retention window and hand it to whoever
+            // presents the same document again. A duplicate of such a task is
+            // absorbed with no body instead. The effect still happened once
+            // and the claim still stands, so §7.2 item 11 holds.
+            let discloses_secret = class_for(&type_uri)
+                .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
+            let recorded = if discloses_secret {
+                None
+            } else {
+                serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
+            };
             if let Err(e) = guard.record_response(&doc_id, recorded.as_ref()).await {
                 // Not fatal: the effect happened and the claim stands, so item
                 // 11 still holds. Only the *courtesy* of answering a retry with
@@ -2166,6 +2182,10 @@ dispatch_table! {
     // `vta/contexts/secrets`, for the same reason — the act is disclosure.
     vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1 => keys::handle_export_secret
         [ None Secret false ],
+    // ─── Attestation slice (the dispatched one; end-to-end only) ─
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0 => attestation::handle_mnemonic_export
+        [ Mutating Secret false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign

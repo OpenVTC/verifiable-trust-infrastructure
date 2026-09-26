@@ -22,7 +22,7 @@
 //!    foreign issuer's `#key-0`. Verified through the DI
 //!    library's `proof.verify` with the shared
 //!    `credentials::vm_resolver::DidVmResolver`
-//!    (`VerificationMethodResolver`) — production wires
+//!    (`PurposeVmResolver`) — production wires
 //!    `DIDCacheClient`, tests inject a stub resolver.
 //! 2. **StatusList revocation.** Fetches the credential's
 //!    `credentialStatus.statusListCredential` URL, decodes the

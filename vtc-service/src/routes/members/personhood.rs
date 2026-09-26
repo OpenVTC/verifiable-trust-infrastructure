@@ -64,7 +64,6 @@
 
 use std::sync::Arc;
 
-use affinidi_data_integrity::VerifyOptions;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_vc::VerifiableCredential;
 use axum::Json;
@@ -763,41 +762,34 @@ async fn verify_vp_proof(
         obj.remove("proof");
     }
 
-    // The holder's DID document is resolved ONCE and each proof's own
-    // verificationMethod looked up in it — so a hybrid holder's two keys are
-    // both found, and neither proof can name a method belonging to some other
-    // DID, because the document searched is always the holder's.
-    let resolved = resolver
-        .resolve(holder_did)
-        .await
-        .map_err(|e| format!("DID resolve: {e}"))?;
-
+    // Each proof is bound to the holder, and its key resolved for the purpose
+    // the proof declares — a presentation proves control of the holder DID,
+    // so that purpose must be `authentication` (VTI-KEY-022). Looking the
+    // method up in `verificationMethod` alone would accept a key the holder
+    // published for key agreement, or authorised only for assertions.
+    let vm_resolver = crate::credentials::vm_resolver::DidVmResolver::new(Some(resolver.clone()));
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
     for proof in &proofs {
         let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
-        let r = (|| {
-            let vm = resolved
-                .doc
-                .verification_method
-                .iter()
-                .find(|m| m.id.as_str() == proof.verification_method)
-                .ok_or_else(|| {
-                    format!(
-                        "verificationMethod {} not on {holder_did}",
-                        proof.verification_method
-                    )
-                })?;
-            let pubkey = vm
-                .get_public_key_bytes()
-                .map_err(|e| format!("extract pubkey: {e}"))?;
-            proof
-                .verify_with_public_key(&vp_without_proof, &pubkey, VerifyOptions::new())
-                .map_err(|e| e.to_string())
-        })();
+        let r = match crate::credentials::vm_resolver::check_issuer_binding(
+            &proof.verification_method,
+            holder_did,
+        ) {
+            Err(e) => Err(e.to_string()),
+            Ok(()) => {
+                crate::credentials::proof_set::verify_one(
+                    proof,
+                    &vp_without_proof,
+                    &vm_resolver,
+                    vti_common::auth::ProofPurpose::Authentication,
+                )
+                .await
+            }
+        };
         outcomes.push((did, r));
     }
 
-    crate::credentials::proof_set::accept_any(&outcomes).map_err(|e| format!("verify: {e}"))?;
+    crate::credentials::proof_set::accept_all(&outcomes).map_err(|e| format!("verify: {e}"))?;
     Ok(())
 }
 

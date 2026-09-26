@@ -6,7 +6,7 @@ use crate::auth::SuperAdminAuth;
 use crate::error::{AppError, tee_attestation_error};
 use crate::operations;
 use crate::server::AppState;
-use crate::tee::mnemonic_guard::{MnemonicExportResponse, MnemonicExportStatus};
+use crate::tee::mnemonic_guard::MnemonicExportStatus;
 use crate::tee::types::{AttestationReport, AttestationRequest, TeeStatus};
 use vta_sdk::attestation_report::ConfigAttestationReport;
 
@@ -178,84 +178,78 @@ pub async fn mnemonic_status(
     Ok(Json(guard.status()))
 }
 
-/// POST /attestation/mnemonic — Export the BIP-39 mnemonic (super admin only, time-limited).
+/// POST /attestation/mnemonic — **refused**: the mnemonic export is served only
+/// as the Trust Task, over an end-to-end channel or signed by the caller.
 ///
-/// Requirements:
-/// - VTA must have been started with `VTA_MNEMONIC_EXPORT_WINDOW=<seconds>`
-/// - Must be within the export window since boot
-/// - Caller must be a super admin (JWT-authenticated)
-/// - One-time operation: after successful export, the entropy is zeroed
+/// Use `spec/vta/attestation/mnemonic-export/1.0` over DIDComm or TSP, or at
+/// first boot over Trust Tasks on HTTPS, signed by the caller with `clientDid`
+/// set to the caller's own DID. A bearer token alone never releases it. The
+/// mnemonic is the VTA's root derivation material (VTI-VTA-001, VTI-KEY-033);
+/// even sealed to the requester, a REST exchange carries the request and its
+/// answer in the clear wherever TLS terminates — for a TEE deployment, outside
+/// the enclave by definition. Checked after entitlement, like the backup export
+/// (`vta/backup/*` channel requirement), so a caller without the authority
+/// learns nothing about the channel rule.
 #[utoipa::path(
     post, path = "/attestation/mnemonic", tag = "attestation",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "Exported BIP-39 mnemonic (one-time)", body = MnemonicExportResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
-        (status = 503, description = "Mnemonic export not available or window closed"),
+        (status = 403, description = "Always: the caller is not a super admin with key-export, or \
+            the export was asked for over REST, which is hop-by-hop. Send \
+            spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP, or \
+            at first boot as a Trust Task signed by the caller with clientDid \
+            set to the caller's own DID"),
     ),
 )]
 pub async fn mnemonic_export(
     SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
-) -> Result<Json<MnemonicExportResponse>, AppError> {
-    // The root seed is the export of every key this VTA holds: the same
-    // capability as any other export (VTI-VTA-003), not only the role.
+) -> Result<Json<()>, AppError> {
     crate::operations::keys::ensure_may_export(&state.acl_ks, &auth, "attestation/mnemonic")
         .await?;
-    let guard = state
-        .tee
-        .as_ref()
-        .and_then(|tc| tc.mnemonic_guard.as_ref())
-        .ok_or_else(|| {
-            tee_attestation_error(
-                "mnemonic export not available (TEE mode not active or no KMS bootstrap)",
-            )
-        })?;
+    Err(AppError::Forbidden(
+        "the mnemonic export is refused over REST: a bearer token alone never releases it. \
+         Send spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP, or at first boot \
+         as a Trust Task signed by the caller with clientDid set to the caller's own DID"
+            .into(),
+    ))
+}
 
-    // The root mnemonic is the most consequential export this VTA has, and it
-    // used to leave only a tracing line. Recorded durably *before* the entropy
-    // is released, and a failed write refuses the export — the same rule as
-    // `keys/export-secret` (VTI-VTA-003): once the words are out they cannot be
-    // taken back, so an unrecorded release is not permitted. The row names the
-    // caller and the transport; never the words.
-    crate::audit::record(
-        &state.audit_sink,
-        "seed.mnemonic_export",
-        &auth.did,
-        None,
-        "success",
-        Some("rest"),
-        None,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(
-            target: vta_audit::AUDIT_WRITE_FAILURE_TARGET,
-            error = %e, actor = %auth.did,
-            "mnemonic export refused: its audit row could not be written"
-        );
-        AppError::Internal(
-            "the mnemonic was not released: the export could not be recorded in the audit \
-             trail, and an unrecorded export is not permitted (VTI-VTA-003)"
-                .into(),
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// REST is hop-by-hop, so the mnemonic export is refused there even for a
+    /// super admin holding `key-export`, and the guard is left untouched.
+    #[tokio::test]
+    async fn the_rest_mnemonic_export_is_refused() {
+        let (mut state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let guard = Arc::new(crate::tee::mnemonic_guard::MnemonicExportGuard::new(
+            [0x42; 32], 60,
+        ));
+        let tee = crate::tee::init_tee(&crate::config::TeeConfig {
+            mode: crate::config::TeeMode::Simulated,
+            ..Default::default()
+        })
+        .unwrap()
+        .unwrap();
+        state.tee = Some(crate::server::TeeContext {
+            state: tee,
+            mnemonic_guard: Some(guard.clone()),
+        });
+        let err = mnemonic_export(
+            SuperAdminAuth(crate::test_support::super_admin_claims()),
+            State(state),
         )
-    })?;
-    match guard.export() {
-        Ok(response) => Ok(Json(response)),
-        Err(e) => {
-            // The row above claimed a release that did not happen; say so.
-            crate::audit::record_best_effort(
-                &state.audit_sink,
-                "seed.mnemonic_export",
-                &auth.did,
-                None,
-                "failure:not_released",
-                Some("rest"),
-                None,
-            )
-            .await;
-            Err(e)
-        }
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("DIDComm or TSP")),
+            "{err:?}"
+        );
+        assert!(!guard.status().already_exported);
     }
 }

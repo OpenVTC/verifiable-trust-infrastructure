@@ -39,7 +39,11 @@
 
 use crate::did_refresh::{evict_for_fresh_resolve, resolve_for_vm};
 use affinidi_data_integrity::did_vm::resolve_did_key;
-use affinidi_data_integrity::{DataIntegrityError, ResolvedKey, VerificationMethodResolver};
+use affinidi_data_integrity::{DataIntegrityError, ResolvedKey};
+
+use super::purpose::{
+    ProofPurpose, PurposeVmResolver, authorised_method, check_did_key_method, split_vm,
+};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_secrets_resolver::secrets::KeyType;
 use std::collections::HashSet;
@@ -130,12 +134,26 @@ impl TrustTaskVmResolver {
         self.resolver.is_some()
     }
 
-    async fn resolve(&self, vm: &str) -> Result<ResolvedKey, DataIntegrityError> {
-        let base_did = vm.split('#').next().unwrap_or(vm);
+    async fn resolve(
+        &self,
+        vm: &str,
+        purpose: ProofPurpose,
+    ) -> Result<ResolvedKey, DataIntegrityError> {
+        let (base_did, _) = split_vm(vm)?;
 
-        // First, and unconditionally: the key is in the identifier.
+        // First, and unconditionally: the key is in the identifier. did:key's
+        // relationships are implicit — its one method signs for every purpose
+        // (VTI-KEY-022 is met by naming that method exactly) — and an X25519
+        // did:key is a key-agreement key that signs for nothing.
         if base_did.starts_with("did:key:") {
-            return resolve_did_key(vm);
+            check_did_key_method(vm)?;
+            let key = resolve_did_key(vm)?;
+            if key.key_type == KeyType::X25519 {
+                return Err(DataIntegrityError::Resolver(
+                    "a did:key X25519 key is authorised for keyAgreement only".to_string(),
+                ));
+            }
+            return Ok(key);
         }
 
         // So is a `did:peer`'s, and that matters more than it looks.
@@ -152,95 +170,85 @@ impl TrustTaskVmResolver {
         // a host wanting to serve such a room had to enable network resolution it does not
         // need, and accept the exposure that flag exists to gate.
         if base_did.starts_with("did:peer:") {
-            return resolve_did_peer(vm, base_did);
+            return resolve_did_peer(vm, base_did, purpose);
         }
 
         let resolver = self.resolver.as_ref().ok_or_else(|| {
+            DataIntegrityError::Resolver(
+                "resolving this verificationMethod needs a DID resolver, but this verifier is \
+                 configured for did:key only"
+                    .to_string(),
+            )
+        })?;
+        // VTI-KEY-134: a cached document that does not define the method is
+        // re-resolved once, fresh, before the method is refused.
+        let resolved = resolve_for_vm(resolver, base_did, vm).await.map_err(|e| {
             DataIntegrityError::Resolver(format!(
-                "resolving `{base_did}` needs a DID resolver, but this verifier is configured \
-                 for did:key only"
+                "the verificationMethod's DID did not resolve: {e}"
             ))
         })?;
-        let resolved = resolve_for_vm(resolver, base_did, vm).await.map_err(|e| {
-            DataIntegrityError::Resolver(format!("`{base_did}` did not resolve: {e}"))
-        })?;
+        // Recorded before the purpose check, so a refusal against a cached
+        // document (a key moved into this relationship since it was cached)
+        // can still be retried fresh by `refresh_if_cached`.
         if resolved.cache_hit {
             self.served_from_cache
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .insert(base_did.to_string());
         }
-
-        // A DID document may name its verification methods absolutely
-        // (`did:webvh:…:glenn#key-0`) or relatively (`#key-0`); the proof
-        // always names them absolutely. Accept both spellings of the same
-        // method rather than requiring the document to have chosen ours.
-        let relative = vm
-            .split_once('#')
-            .map(|(_, fragment)| format!("#{fragment}"))
-            .unwrap_or_default();
-        let entry = resolved
-            .doc
-            .verification_method
-            .iter()
-            .find(|m| m.id.as_str() == vm || m.id.as_str() == relative)
-            .ok_or_else(|| {
-                DataIntegrityError::Resolver(format!(
-                    "verificationMethod `{vm}` is not in the DID document for `{base_did}`"
-                ))
-            })?;
-
-        let bytes = entry.get_public_key_bytes().map_err(|e| {
-            DataIntegrityError::Resolver(format!(
-                "verificationMethod `{vm}` public key could not be extracted: {e}"
-            ))
-        })?;
-        Ok(ResolvedKey::new(declared_key_type(entry, vm)?, bytes))
+        // `authorised_method` accepts the method by absolute DID URL or by
+        // `#fragment`, in the relationship and in `verificationMethod` alike.
+        key_of(&resolved.doc, base_did, vm, purpose)
     }
 }
 
 /// Resolve a `did:peer` verification method with no I/O.
 ///
 /// The document is derived from the identifier and its keys expanded, then the method is
-/// looked up exactly as the network path looks one up — including accepting both the
-/// absolute and relative spellings of the same id, because a proof always names a method
-/// absolutely while a document may not.
-fn resolve_did_peer(vm: &str, base_did: &str) -> Result<ResolvedKey, DataIntegrityError> {
+/// checked exactly as the network path checks one.
+fn resolve_did_peer(
+    vm: &str,
+    base_did: &str,
+    purpose: ProofPurpose,
+) -> Result<ResolvedKey, DataIntegrityError> {
     use affinidi_did_common::DID;
     use affinidi_did_resolver_traits::{PeerResolver, Resolver};
 
     let did = DID::try_from(base_did).map_err(|e| {
-        DataIntegrityError::Resolver(format!("`{base_did}` is not a well-formed DID: {e}"))
+        DataIntegrityError::Resolver(format!(
+            "the verificationMethod's DID is not well-formed: {e}"
+        ))
     })?;
     let doc = PeerResolver
         .resolve(&did)
         .ok_or_else(|| {
-            DataIntegrityError::Resolver(format!(
-                "`{base_did}` is not a did:peer this build resolves"
-            ))
+            DataIntegrityError::Resolver(
+                "the verificationMethod's did:peer is not one this build resolves".to_string(),
+            )
         })?
-        .map_err(|e| DataIntegrityError::Resolver(format!("`{base_did}` did not resolve: {e}")))?;
-
-    let relative = vm
-        .split_once('#')
-        .map(|(_, fragment)| format!("#{fragment}"))
-        .unwrap_or_default();
-    let entry = doc
-        .verification_method
-        .iter()
-        .find(|m| m.id.as_str() == vm || m.id.as_str() == relative)
-        .ok_or_else(|| {
+        .map_err(|e| {
             DataIntegrityError::Resolver(format!(
-                "verificationMethod `{vm}` is not in the DID document for `{base_did}`"
+                "the verificationMethod's DID did not resolve: {e}"
             ))
         })?;
+    key_of(&doc, base_did, vm, purpose)
+}
 
+/// The key of the method `vm` names in `doc`, once [`authorised_method`] has
+/// established it is `did`'s own and listed under `purpose`.
+pub(crate) fn key_of(
+    doc: &affinidi_did_common::Document,
+    did: &str,
+    vm: &str,
+    purpose: ProofPurpose,
+) -> Result<ResolvedKey, DataIntegrityError> {
+    let entry = authorised_method(doc, did, vm, purpose)?;
     let bytes = entry.get_public_key_bytes().map_err(|e| {
         DataIntegrityError::Resolver(format!(
-            "verificationMethod `{vm}` public key could not be extracted: {e}"
+            "the verificationMethod's public key could not be extracted: {e}"
         ))
     })?;
-    Ok(ResolvedKey::new(declared_key_type(entry, vm)?, bytes))
+    Ok(ResolvedKey::new(declared_key_type(&entry, vm)?, bytes))
 }
 
 /// The key type a verification method actually declares, read from its
@@ -264,23 +272,24 @@ fn resolve_did_peer(vm: &str, base_did: &str) -> Result<ResolvedKey, DataIntegri
 /// multibase string is read directly.
 fn declared_key_type(
     entry: &affinidi_did_common::verification_method::VerificationMethod,
-    vm: &str,
+    _vm: &str,
 ) -> Result<KeyType, DataIntegrityError> {
     let multibase = entry
         .property_set
         .get("publicKeyMultibase")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            DataIntegrityError::Resolver(format!(
-                "verificationMethod `{vm}` has no `publicKeyMultibase`, so its algorithm cannot \
+            DataIntegrityError::Resolver(
+                "the verificationMethod has no `publicKeyMultibase`, so its algorithm cannot \
                  be read; a PQC key must be published as a Multikey (the JWK path does not \
                  express ML-DSA)"
-            ))
+                    .to_string(),
+            )
         })?;
 
     let (_base, bytes) = multibase::decode(multibase).map_err(|e| {
         DataIntegrityError::Resolver(format!(
-            "verificationMethod `{vm}` public key is not valid multibase: {e}"
+            "the verificationMethod's public key is not valid multibase: {e}"
         ))
     })?;
 
@@ -316,16 +325,23 @@ fn declared_key_type(
     // suite must say so, because the operator's next step is to publish a key
     // this build understands — and "signature did not verify" does not lead
     // there.
-    Err(DataIntegrityError::Resolver(format!(
-        "verificationMethod `{vm}` carries a key whose multicodec prefix this build does not \
+    Err(DataIntegrityError::Resolver(
+        "the verificationMethod carries a key whose multicodec prefix this build does not \
          recognise, so its signature suite cannot be determined"
-    )))
+            .to_string(),
+    ))
 }
 
+/// Deliberately **not** the upstream `VerificationMethodResolver`, which has no
+/// purpose to check: verify through [`PurposeBound`](super::purpose::PurposeBound).
 #[async_trait::async_trait]
-impl VerificationMethodResolver for TrustTaskVmResolver {
-    async fn resolve_vm(&self, vm: &str) -> Result<ResolvedKey, DataIntegrityError> {
-        self.resolve(vm).await
+impl PurposeVmResolver for TrustTaskVmResolver {
+    async fn resolve_vm_for_purpose(
+        &self,
+        vm: &str,
+        purpose: ProofPurpose,
+    ) -> Result<ResolvedKey, DataIntegrityError> {
+        self.resolve(vm, purpose).await
     }
 }
 
@@ -426,7 +442,7 @@ mod tests {
         let vm = format!("did:key:{mb}#{mb}");
 
         let key = TrustTaskVmResolver::did_key_only()
-            .resolve_vm(&vm)
+            .resolve_vm_for_purpose(&vm, ProofPurpose::AssertionMethod)
             .await
             .expect("did:key resolves with no cache client");
         assert_eq!(key.public_key_bytes, sk.verifying_key().to_bytes().to_vec());
@@ -459,7 +475,7 @@ mod tests {
 
         let vm = format!("{did}#key-1");
         let resolved = TrustTaskVmResolver::did_key_only()
-            .resolve_vm(&vm)
+            .resolve_vm_for_purpose(&vm, ProofPurpose::AssertionMethod)
             .await
             .expect("a did:peer carries its keys in its identifier, so this needs no network");
 
@@ -482,7 +498,10 @@ mod tests {
     #[tokio::test]
     async fn a_did_key_only_resolver_names_its_own_limit() {
         let err = TrustTaskVmResolver::did_key_only()
-            .resolve_vm("did:webvh:QmScid:example.com:glenn#key-0")
+            .resolve_vm_for_purpose(
+                "did:webvh:QmScid:example.com:glenn#key-0",
+                ProofPurpose::AssertionMethod,
+            )
             .await
             .expect_err("did:webvh needs a resolver");
         let msg = err.to_string();
@@ -526,6 +545,131 @@ mod tests {
             "the operator-facing cause must name the resolver's configuration, not the \
              signature, got: {cause}"
         );
+    }
+
+    fn ed25519_did_key(seed: u8) -> String {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mb = multibase::encode(
+            multibase::Base::Base58Btc,
+            [&[0xed, 0x01][..], &sk.verifying_key().to_bytes()[..]].concat(),
+        );
+        format!("did:key:{mb}")
+    }
+
+    /// VTI-KEY-022, did:key: its one key is authorised for every signing
+    /// purpose, and only that method URI names it.
+    #[tokio::test]
+    async fn a_did_key_resolves_for_every_signing_purpose_and_only_as_itself() {
+        let did = ed25519_did_key(0x21);
+        let id = did.strip_prefix("did:key:").unwrap();
+        let vm = format!("{did}#{id}");
+        let r = TrustTaskVmResolver::did_key_only();
+        for purpose in ProofPurpose::ALL {
+            r.resolve_vm_for_purpose(&vm, purpose)
+                .await
+                .unwrap_or_else(|e| panic!("did:key for {purpose}: {e}"));
+        }
+        let err = r
+            .resolve_vm_for_purpose(&format!("{did}#key-0"), ProofPurpose::Authentication)
+            .await
+            .expect_err("a did:key has no #key-0");
+        assert!(err.to_string().contains("fragment must repeat"), "{err}");
+    }
+
+    /// VTI-KEY-022, did:peer: a V key is listed under authentication and
+    /// assertionMethod only, and an E key under keyAgreement only — so the
+    /// E key signs for nothing and the V key cannot invoke a capability.
+    #[tokio::test]
+    async fn a_did_peer_key_resolves_only_for_its_relationships() {
+        use affinidi_tdk::dids::{DID, KeyType, PeerKeyRole};
+        let (did, _) = DID::generate_did_peer(
+            vec![
+                (PeerKeyRole::Verification, KeyType::Ed25519),
+                (PeerKeyRole::Encryption, KeyType::X25519),
+            ],
+            None,
+        )
+        .expect("mint a did:peer");
+        let r = TrustTaskVmResolver::did_key_only();
+        let v = format!("{did}#key-1");
+        let e = format!("{did}#key-2");
+
+        for purpose in [ProofPurpose::Authentication, ProofPurpose::AssertionMethod] {
+            r.resolve_vm_for_purpose(&v, purpose)
+                .await
+                .unwrap_or_else(|err| panic!("V key for {purpose}: {err}"));
+        }
+        let err = r
+            .resolve_vm_for_purpose(&v, ProofPurpose::CapabilityInvocation)
+            .await
+            .expect_err("a V key is not a capabilityInvocation key");
+        assert!(
+            err.to_string()
+                .contains("not listed under capabilityInvocation"),
+            "{err}"
+        );
+
+        for purpose in ProofPurpose::ALL {
+            let err = r
+                .resolve_vm_for_purpose(&e, purpose)
+                .await
+                .expect_err("a key-agreement key signs for nothing");
+            assert!(err.to_string().contains("not listed under"), "{err}");
+            assert!(
+                !err.to_string().contains(&did),
+                "no DID in the refusal: {err}"
+            );
+        }
+    }
+
+    /// End to end: a Trust Task proof declaring a purpose its key is not
+    /// listed under is refused, although the signature itself is genuine.
+    #[tokio::test]
+    async fn a_trust_task_proof_for_the_wrong_purpose_is_refused() {
+        use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+        use affinidi_tdk::dids::{DID, KeyType, PeerKeyRole};
+        use trust_tasks_rs::TrustTask;
+
+        let (did, secrets) =
+            DID::generate_did_peer(vec![(PeerKeyRole::Verification, KeyType::Ed25519)], None)
+                .expect("mint a did:peer");
+        let secret = secrets.into_iter().next().expect("the V key");
+        let unsigned = serde_json::json!({
+            "id": "urn:uuid:11111111-1111-4111-8111-111111111112",
+            "type": "https://trusttasks.org/spec/vta/contexts/create/1.0",
+            "issuer": did,
+            "recipient": "did:key:z6MkVta",
+            "payload": {},
+        });
+        let verify = |purpose: &'static str| {
+            let unsigned = unsigned.clone();
+            let secret = secret.clone();
+            async move {
+                let proof = DataIntegrityProof::sign(
+                    &unsigned,
+                    &secret,
+                    SignOptions::new().with_proof_purpose(purpose),
+                )
+                .await
+                .expect("sign");
+                let mut doc = unsigned;
+                doc["proof"] = serde_json::to_value(proof).unwrap();
+                let doc: TrustTask<serde_json::Value> = serde_json::from_value(doc).unwrap();
+                crate::trust_task_proof::verify::verify_trust_task_proof_with(
+                    &doc,
+                    &TrustTaskVmResolver::did_key_only(),
+                )
+                .await
+            }
+        };
+        verify("authentication")
+            .await
+            .expect("listed under authentication");
+        verify("assertionMethod")
+            .await
+            .expect("listed under assertionMethod");
+        assert!(verify("capabilityInvocation").await.is_err());
+        assert!(verify("keyAgreement").await.is_err());
     }
 
     #[test]

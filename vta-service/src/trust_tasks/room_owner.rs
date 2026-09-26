@@ -333,7 +333,7 @@ async fn anchor_inner(
         &req.host,
         &key,
         &vta_did,
-        &key,
+        &crate::operations::credentials::vta_signing_vm(&vta_did),
         vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
         &format!("{}#response", vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE),
         serde_json::json!({
@@ -495,7 +495,7 @@ pub(super) async fn handle_register(
         &req.host,
         &key,
         &vta_did,
-        &key,
+        &crate::operations::credentials::vta_signing_vm(&vta_did),
         vti_rooms::wire::ROOMS_CREATE_TYPE,
         &format!("{}#response", vti_rooms::wire::ROOMS_CREATE_TYPE),
         payload,

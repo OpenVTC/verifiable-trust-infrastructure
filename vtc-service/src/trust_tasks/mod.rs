@@ -134,7 +134,7 @@ pub(crate) use helpers::framework_error_type_uri;
 use helpers::{
     app_error_to_reject, body_parse_error_response, extended_code, parse_payload, reject_with,
     reject_with_code, reject_with_code_because, success_response, task_error_to_reject,
-    verdict_response, verify_trust_task_proof,
+    verdict_response, verify_approval_proof, verify_trust_task_proof,
 };
 
 /// The transport-resolved caller identity threaded into the dispatcher.
@@ -348,8 +348,18 @@ async fn dispatch_trust_task_validated(
     //    *other* DID is not a proof by the issuer, and without this check the
     //    signature would establish only that somebody signed something —
     //    which is not what `verified_signer` is read as downstream.
+    //
+    //    A human approver's own decision (a step-up `approve-response`, a
+    //    `task-consent/decision`) is an attestation, not an operational
+    //    message: its proof must be made for `assertionMethod` by a key the
+    //    approver lists under `assertionMethod` ([`verify_approval_proof`]).
     let ctx = if doc.proof.is_some() {
-        match verify_trust_task_proof(state, &doc).await {
+        let verified = if helpers::is_approval_type(&type_uri) {
+            verify_approval_proof(state, &doc).await
+        } else {
+            verify_trust_task_proof(state, &doc).await
+        };
+        match verified {
             Ok(signer) => {
                 if doc.issuer.as_deref() != Some(signer.as_str()) {
                     tracing::warn!(
@@ -780,7 +790,7 @@ async fn dispatch_typed(
         BACKUP_EXPORT_TYPE => handle_backup_export(state, ctx, doc).await,
         ACL_GRANT_TYPE => handle_acl_grant(state, ctx, doc).await,
         ACL_CHANGE_ROLE_TYPE => handle_acl_change_role(state, ctx, doc).await,
-        STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, doc).await,
+        STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, ctx, doc).await,
         crate::acl::admin_consent::DECISION_TYPE => {
             handle_task_consent_decision(state, ctx, doc).await
         }
@@ -1280,7 +1290,197 @@ mod spine_proof_tests {
              `vetting/vetters/resend`, `members/personhood/challenge`). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
-             assertion it carries; got {required:?}"
+             assertion it carries (its handler still requires the approver's \
+             assertionMethod proof); got {required:?}"
+        );
+    }
+
+    // ── An approver's decision is an attestation ────────────────────────────
+    //
+    // A `task-consent/decision` and a step-up `approve-response` are held to
+    // `verify_approval_proof`: a proof made for `assertionMethod`, by a key the
+    // signer lists under `assertionMethod`, from a DID that resolves.
+
+    /// A `did:peer:2` whose one Ed25519 key is published under
+    /// `purpose_code` (`A` = assertionMethod only, `D` = capabilityDelegation
+    /// only), and its signing secret. Resolved locally, no network.
+    fn peer(purpose_code: char, seed: u8) -> (String, affinidi_secrets_resolver::secrets::Secret) {
+        use affinidi_secrets_resolver::secrets::Secret;
+        let probe = Secret::generate_ed25519(None, Some(&[seed; 32]));
+        let mb = probe.get_public_keymultibase().expect("public key");
+        let did = format!("did:peer:2.{purpose_code}{mb}");
+        let secret = Secret::generate_ed25519(Some(&format!("{did}#key-1")), Some(&[seed; 32]));
+        (did, secret)
+    }
+
+    /// A `did:key` signer and its secret, the verification method named the
+    /// way a `did:key` names its own.
+    fn key_signer(seed: u8) -> (String, affinidi_secrets_resolver::secrets::Secret) {
+        use affinidi_secrets_resolver::secrets::Secret;
+        let mut secret = Secret::generate_ed25519(None, Some(&[seed; 32]));
+        let mb = secret.get_public_keymultibase().expect("public key");
+        let did = format!("did:key:{mb}");
+        secret.id = format!("{did}#{mb}");
+        (did, secret)
+    }
+
+    /// `uri` issued by `issuer`, signed by `secret` with `purpose`.
+    async fn approval(
+        uri: &str,
+        payload: Value,
+        issuer: &str,
+        secret: &affinidi_secrets_resolver::secrets::Secret,
+        purpose: &str,
+    ) -> TrustTask<Value> {
+        use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+        let doc = vta_sdk::trust_task_sign::build_unsigned(uri, payload, issuer, TEST_VTC_DID)
+            .expect("build the document");
+        let mut doc = serde_json::to_value(doc).unwrap();
+        doc.as_object_mut().unwrap().remove("proof");
+        let proof =
+            DataIntegrityProof::sign(&doc, secret, SignOptions::new().with_proof_purpose(purpose))
+                .await
+                .expect("sign the approval");
+        doc["proof"] = serde_json::to_value(proof).unwrap();
+        serde_json::from_value(doc).unwrap()
+    }
+
+    fn decision_payload() -> Value {
+        json!({
+            "challenge": "9c1f4b7a2e6d80f35a4c9b1e7d2f6083",
+            "payloadDigest": "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ",
+            "decision": "approve",
+        })
+    }
+
+    fn approve_response_payload(subject: &str) -> Value {
+        json!({
+            "subject": subject,
+            "challenge": "c2VjcmV0LWNoYWxsZW5nZS12YWx1ZQ",
+            "decision": "approved",
+        })
+    }
+
+    /// The refusal came from the proof check.
+    fn refused_at_the_proof(out: &TrustTaskOutcome) -> bool {
+        let body = String::from_utf8_lossy(&out.body);
+        error_code(out).as_deref() == Some("permissionDenied") && body.contains("proof")
+    }
+
+    #[tokio::test]
+    async fn an_approval_signed_for_authentication_is_refused() {
+        let tv = build_test_vtc().await;
+        let (did, secret) = key_signer(0x51);
+        for (uri, payload) in [
+            (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
+            (
+                STEP_UP_APPROVE_RESPONSE_TYPE,
+                approve_response_payload(&did),
+            ),
+        ] {
+            let doc = approval(uri, payload, &did, &secret, "authentication").await;
+            let out = dispatch(&tv.state, &doc).await;
+            let body = String::from_utf8_lossy(&out.body);
+            assert!(refused_at_the_proof(&out), "{uri}: {body}");
+            assert!(body.contains("assertionMethod"), "{uri}: {body}");
+        }
+    }
+
+    /// Declared `assertionMethod`, by a key the signer lists only under
+    /// `capabilityDelegation`: the signature is valid, but the key is not
+    /// authorised for the purpose the proof declares (VTI-KEY-022), so neither
+    /// the general verifier nor the approval path accepts it.
+    #[tokio::test]
+    async fn an_approval_by_a_key_not_listed_under_assertion_method_is_refused() {
+        let tv = build_test_vtc().await;
+        let (did, secret) = peer('D', 0x52);
+        for (uri, payload) in [
+            (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
+            (
+                STEP_UP_APPROVE_RESPONSE_TYPE,
+                approve_response_payload(&did),
+            ),
+        ] {
+            let doc = approval(uri, payload, &did, &secret, "assertionMethod").await;
+            let err = vti_common::auth::verify_trust_task_proof(&doc)
+                .await
+                .unwrap_err();
+            assert!(
+                err.cause().is_some_and(|c| c.contains("assertionMethod")),
+                "{uri}: {err:?}"
+            );
+            let out = dispatch(&tv.state, &doc).await;
+            assert!(
+                refused_at_the_proof(&out),
+                "{uri}: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+    }
+
+    /// A signer DID this service cannot resolve is refused, never passed
+    /// through to the handler.
+    #[tokio::test]
+    async fn an_approval_whose_signer_does_not_resolve_is_refused() {
+        use affinidi_secrets_resolver::secrets::Secret;
+        let tv = build_test_vtc().await;
+        let did = "did:web:approver.invalid";
+        let secret = Secret::generate_ed25519(Some(&format!("{did}#key-1")), Some(&[0x53; 32]));
+        for (uri, payload) in [
+            (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
+            (STEP_UP_APPROVE_RESPONSE_TYPE, approve_response_payload(did)),
+        ] {
+            let doc = approval(uri, payload, did, &secret, "assertionMethod").await;
+            let out = dispatch(&tv.state, &doc).await;
+            assert!(
+                refused_at_the_proof(&out),
+                "{uri}: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+    }
+
+    /// The same approvals made for `assertionMethod` by an assertion key get
+    /// past the proof, to be refused only by the handler (here the signer is
+    /// no admin of this community).
+    #[tokio::test]
+    async fn an_assertion_method_approval_passes_the_proof() {
+        let tv = build_test_vtc().await;
+        let signers = [key_signer(0x54), peer('A', 0x55)];
+        for (did, secret) in &signers {
+            for (uri, payload) in [
+                (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
+                (STEP_UP_APPROVE_RESPONSE_TYPE, approve_response_payload(did)),
+            ] {
+                let doc = approval(uri, payload, did, secret, "assertionMethod").await;
+                let out = dispatch(&tv.state, &doc).await;
+                let body = String::from_utf8_lossy(&out.body);
+                assert!(
+                    !body.contains("proof"),
+                    "{uri} by {did} passes the proof check: {body}"
+                );
+            }
+        }
+    }
+
+    /// The approve-response's gate is the passkey, but the document is still
+    /// the approver's: one with no proof is refused before any pending
+    /// step-up is consulted.
+    #[tokio::test]
+    async fn an_unsigned_approve_response_is_refused() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let doc = unsigned(
+            &h,
+            STEP_UP_APPROVE_RESPONSE_TYPE,
+            approve_response_payload(&h.did),
+        );
+        let out = dispatch(&tv.state, &doc).await;
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("proofRequired"),
+            "{}",
+            String::from_utf8_lossy(&out.body)
         );
     }
 }
@@ -3157,16 +3357,21 @@ async fn handle_acl_change_role(
 /// `auth/step-up/approve-response/0.4` — the passkey gesture an
 /// operation-bound step-up asked for.
 ///
-/// No ACL row is consulted and no signer is required to be anyone in
-/// particular: the gate is the WebAuthn assertion, which only the acting
-/// admin's own authenticator can produce over this service's challenge. What
-/// the gesture authorizes is read from this service's record of the refusal,
-/// never from this document. See [`crate::acl::bound_step_up::approve`].
+/// The gate is the WebAuthn assertion, which only the acting admin's own
+/// authenticator can produce over this service's challenge. The document is
+/// still the approver's attestation, so it must carry the approver's proof: an
+/// `assertionMethod` proof ([`verify_approval_proof`], checked by the spine)
+/// by the subject admin or a console key acting for them ([`admin_signer`]).
+/// Both are checked before the pending mark is consulted, so nobody else can
+/// spend an admin's challenge. What the gesture authorizes is read from this
+/// service's record of the refusal, never from this document. See
+/// [`crate::acl::bound_step_up::approve`].
 ///
 /// This service only issues bound step-ups on this door, so the answer is
 /// `recorded` or `rejected` — never `elevated`.
 async fn handle_step_up_approve_response(
     state: &AppState,
+    ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use crate::acl::bound_step_up::{self, ApproveError, Approved};
@@ -3184,6 +3389,20 @@ async fn handle_step_up_approve_response(
             hint.map(|h| serde_json::json!({ "reason": h })),
         )
     };
+    // No proof, no approval: `admin_signer` refuses a document without a
+    // verified signer. The signer, or the admin its console key acts for, must
+    // be the subject the step-up was asked of.
+    let approver = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    if approver.did != payload.subject.as_str() {
+        return refuse(
+            codes::SUBJECT_MISMATCH,
+            "the approve-response is not signed by the subject of the step-up",
+            None,
+        );
+    }
     match bound_step_up::approve(state, &payload).await {
         Ok(Approved::Recorded { bound_to }) => success_response(
             &doc,

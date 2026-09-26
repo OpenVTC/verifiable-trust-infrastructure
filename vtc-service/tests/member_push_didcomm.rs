@@ -178,6 +178,50 @@ async fn a_tsp_peer_gets_the_document_over_tsp_and_its_collection_is_recorded() 
     peer.shutdown().await;
 }
 
+/// A peer whose DID document advertises no transport — a `did:key` wallet, in
+/// production — is pushed to over TSP once the VTC has seen it sending over TSP
+/// (`tsp_reach`), rather than over DIDComm as its document alone would imply.
+/// The peer passes on only what arrives over TSP, so receiving the document is
+/// the proof.
+#[tokio::test]
+async fn a_silent_peer_seen_on_tsp_is_pushed_to_over_tsp() {
+    use affinidi_messaging_delivery::OutboxStore as _;
+
+    init_tracing();
+    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let peer = mock.connect_silent_tsp_peer().await;
+    // What `handle_tsp` records for every verified inbound TSP frame.
+    mock.vtc.state.tsp_reach.record(peer.did());
+    let doc = document(peer.did());
+
+    let id = member_push::push_trust_task(
+        &mock.vtc.state,
+        peer.did(),
+        doc.clone(),
+        Duration::from_secs(120),
+    )
+    .await
+    .expect("queued");
+
+    let got = peer
+        .next_trust_task(Duration::from_secs(30))
+        .await
+        .expect("the document reached the silent peer over TSP");
+    assert_eq!(got, doc);
+
+    // The first attempt was the TSP one.
+    let outbox = vti_common::outbox_store::VtiOutboxStore::new(mock.vtc.state.outbox_ks.clone());
+    assert!(
+        outbox
+            .get(&format!("{id}:0:tsp"))
+            .await
+            .expect("read outbox")
+            .is_some(),
+        "the push's first attempt was queued over TSP"
+    );
+    peer.shutdown().await;
+}
+
 /// A peer offering only `TrustTaskHTTPS` is pushed to by POST, and the push is
 /// recorded delivered on the recipient's own acknowledgement (class 2).
 #[tokio::test]
