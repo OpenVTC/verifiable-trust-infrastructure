@@ -33,6 +33,7 @@ pub mod model;
 pub mod ops;
 pub mod policy;
 pub mod projection;
+pub mod reseat_v0_3;
 pub mod rules;
 pub mod store;
 pub mod tasks;
