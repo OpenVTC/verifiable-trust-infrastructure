@@ -5764,8 +5764,11 @@ async fn a_revert_is_refused_for_an_admin_who_is_also_an_explicit_owner() {
     assert_eq!(code(&out), "git-ns/drift/resolve:notRevertible");
 }
 
+/// #1729's "a namespace admin adopts their own forge admin role", under
+/// drift/resolve 0.3: step 6 refuses the self-adoption of `own`, and another
+/// community administrator adopts it for them, after which it is projected.
 #[tokio::test]
-async fn a_namespace_admin_adopts_their_own_forge_admin_role_as_ownership() {
+async fn a_namespace_admins_own_forge_admin_role_is_adopted_by_someone_else() {
     let (f, ns) = drift_fixture(json!([])).await;
     link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
     report_drift(
@@ -5774,13 +5777,13 @@ async fn a_namespace_admin_adopts_their_own_forge_admin_role_as_ownership() {
         json!([{ "type": "roleAdded", "resource": RES, "account": admin_acct(), "observed": "admin" }]),
     )
     .await;
-    let body = ok(&resolve(
-        &f,
-        &f.admin,
-        json!({ "type": "roleAdded", "account": admin_acct(), "observed": "admin" }),
-        "adopt",
-    )
-    .await);
+    let sel = json!({ "type": "roleAdded", "account": admin_acct(), "observed": "admin" });
+    let out = resolve_naming(&f, &f.admin, sel.clone(), "adopt", Some(&f.admin.did)).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    ok(&grant(&f, &f.admin, &dana.did, "git.ns.admin", "github.com/acme").await);
+    let body = ok(&resolve_naming(&f, &dana, sel, "adopt", Some(&f.admin.did)).await);
     assert_eq!(body["right"]["subject"], json!(f.admin.did));
     assert_eq!(body["right"]["right"], "git.repo.own");
     // Now recorded in their own name, it is projected.
@@ -5829,8 +5832,12 @@ async fn someone_else_adopts_a_namespace_admins_forge_admin_role() {
     assert_eq!(body["right"]["grantedBy"], json!(f.admin.did));
 }
 
+/// #1729's implied-rights comparison, under drift/resolve 0.3: step 5
+/// compares a `roleChanged` with the *projected* right, so for a namespace
+/// admin holding `maintain` a forge `admin` is a raise, not `notAdoptable` —
+/// and adopting it for oneself is refused by step 6.
 #[tokio::test]
-async fn a_role_change_is_measured_against_implied_rights_as_drift_resolve_0_2_says() {
+async fn a_role_change_is_measured_against_the_projected_right_as_drift_resolve_0_3_says() {
     let (f, ns) = drift_fixture(json!([])).await;
     link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
     ok(&grant(&f, &f.bob, &f.admin.did, "git.repo.maintain", RES).await);
@@ -5840,14 +5847,13 @@ async fn a_role_change_is_measured_against_implied_rights_as_drift_resolve_0_2_s
         json!([{ "type": "roleChanged", "resource": RES, "account": admin_acct(), "expected": "maintain", "observed": "admin" }]),
     )
     .await;
-    // `own` is implied by `ns.admin`, so `admin` is "no higher than the
-    // member's highest effective right" (git-ns/drift/resolve 0.2, step 4).
-    let out = resolve(
+    let out = resolve_naming(
         &f,
         &f.admin,
         json!({ "type": "roleChanged", "account": admin_acct(), "observed": "admin" }),
         "adopt",
+        Some(&f.admin.did),
     )
     .await;
-    assert_eq!(code(&out), "git-ns/drift/resolve:notAdoptable");
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
 }
