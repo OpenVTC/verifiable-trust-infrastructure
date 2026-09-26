@@ -440,8 +440,8 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-proof",
- "trust-tasks-rs",
+ "trust-tasks-proof 0.22.7",
+ "trust-tasks-rs 0.22.7",
  "url",
  "uuid",
 ]
@@ -464,7 +464,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.22.7",
 ]
 
 [[package]]
@@ -574,8 +574,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
- "trust-tasks-proof",
- "trust-tasks-rs",
+ "trust-tasks-proof 0.22.7",
+ "trust-tasks-rs 0.22.7",
  "uuid",
 ]
 
@@ -8550,7 +8550,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-didcomm",
  "trust-tasks-https",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "uuid",
  "vta-sdk",
  "vtc-client",
@@ -10255,23 +10255,23 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-capability-client"
-version = "0.22.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b2f616d3def6497e758bbe99c914215ea4db074efa477ff9b741988bf2a67d1"
+checksum = "9bbbbff7ac8e65acc8736e93af1657d01a1fdb5e7242993c35fefc9f305a0303"
 dependencies = [
  "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "uuid",
 ]
 
 [[package]]
 name = "trust-tasks-didcomm"
-version = "0.22.6"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd94d821daaabb7b2958dd747cd86d8155fb619e3ffe35b572da3a2e7da3d909"
+checksum = "257b4902326017e1857b173d6b519eea371ff56e6e93ca1a37a0d902fb623157"
 dependencies = [
  "affinidi-messaging-didcomm",
  "base64 0.22.1",
@@ -10279,15 +10279,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "uuid",
 ]
 
 [[package]]
 name = "trust-tasks-https"
-version = "0.22.6"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79bd83c59c257accc19106e63235f5fd80a96283bd97d29a897655c0b341878c"
+checksum = "526dfc953d7f36c9ed5f97fe6d35ad3584ed39d6b093eeae9465bcdfb74a11c7"
 dependencies = [
  "axum",
  "chrono",
@@ -10298,15 +10298,15 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tower",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "uuid",
 ]
 
 [[package]]
 name = "trust-tasks-proof"
-version = "0.22.6"
+version = "0.22.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ba1c73351a93a71edbdaefa5f2045d3ae7c4fda6167f80e1071221f5fd9ac53"
+checksum = "aac140286713c51b460ba3c9f24b3cb4a82c6caa893ee86eb72b947324b4ce33"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -10317,7 +10317,25 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.22.7",
+]
+
+[[package]]
+name = "trust-tasks-proof"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c93f86fdcfffef174380586175a4d0ccf3498954039017e9071f6071f72f57d5"
+dependencies = [
+ "affinidi-crypto",
+ "affinidi-data-integrity",
+ "affinidi-did-common",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-encoding",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "trust-tasks-rs 0.23.0",
 ]
 
 [[package]]
@@ -10325,6 +10343,21 @@ name = "trust-tasks-rs"
 version = "0.22.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d7ba07576152893f350eec73a5421c2b89a3248536e78eae8987bb1070e1921"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "regress",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "trust-tasks-rs"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c62c76306e33b5f6fafb59013b8d30aeecb281b05292bdb075fabd2d423ad81f"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10338,16 +10371,16 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-tsp"
-version = "0.22.6"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78a15252f823344b92d20e196e8d072cb0aa6443a98904a28598d4109c6f66f7"
+checksum = "48e917b8762ca6a8b0dc5c0198f053463934f8ba893dce84f38ee409ef8a4a9a"
 dependencies = [
  "affinidi-tsp",
  "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
 ]
 
 [[package]]
@@ -10993,7 +11026,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "vta-sdk",
  "vtc-client",
  "vti-common",
@@ -11111,8 +11144,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing-subscriber",
- "trust-tasks-proof",
- "trust-tasks-rs",
+ "trust-tasks-proof 0.23.0",
+ "trust-tasks-rs 0.23.0",
  "uniffi",
  "vta-sdk",
 ]
@@ -11131,7 +11164,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "ulid",
  "vta-keyspaces",
  "vti-common",
@@ -11212,7 +11245,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "trust-tasks-tsp",
  "url",
  "utoipa",
@@ -11299,8 +11332,8 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-didcomm",
  "trust-tasks-https",
- "trust-tasks-proof",
- "trust-tasks-rs",
+ "trust-tasks-proof 0.23.0",
+ "trust-tasks-rs 0.23.0",
  "trust-tasks-tsp",
  "url",
  "urlencoding",
@@ -11476,7 +11509,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "vta-sdk",
  "vti-rooms",
 ]
@@ -11551,7 +11584,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-https",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "unicode-normalization",
  "url",
  "utoipa",
@@ -11617,7 +11650,7 @@ dependencies = [
  "tower_governor",
  "tracing",
  "trust-tasks-capability-client",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "url",
  "utoipa",
  "utoipa-axum",
@@ -11647,7 +11680,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "url",
  "uuid",
  "vta-sdk",
@@ -11678,7 +11711,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tls_codec",
  "tokio",
- "trust-tasks-rs",
+ "trust-tasks-rs 0.23.0",
  "vti-common",
 ]
 

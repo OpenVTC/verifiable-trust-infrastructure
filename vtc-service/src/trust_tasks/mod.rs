@@ -1218,14 +1218,16 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            41,
+            44,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
              moved (`config/export`, `config/import`) + the 2 batch 4 moved \
              (`endorsement-types/register`, `endorsement-types/delete`) + batch \
              5's `backup/export` + `acl/grant` + `acl/change-role` + the 7 \
-             `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014). \
+             `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014) \
+             + the 3 trust-tasks 0.23 made proof-REQUIRED (`vetting/vetters/profile`, \
+             `vetting/vetters/resend`, `members/personhood/challenge`). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries; got {required:?}"
@@ -3669,14 +3671,20 @@ mod tests {
         use vti_rooms_dtg::test_support::Party;
 
         const MEMBER: &str = "did:key:zPersonhoodMember";
-        const STRANGER: &str = "did:key:zNotAMember";
 
+        /// A community with signers and [`MEMBER`] seeded as a member.
         async fn fixture() -> TestVtc {
             let vtc = TestVtc::builder().with_signers(true).build().await;
+            seed_member(&vtc, MEMBER).await;
+            vtc
+        }
+
+        /// Seed `did` as a member of `vtc`.
+        async fn seed_member(vtc: &TestVtc, did: &str) {
             store_acl_entry(
                 &vtc.state.acl_ks,
                 &VtcAclEntry {
-                    did: MEMBER.into(),
+                    did: did.into(),
                     role: VtcRole::Member,
                     label: None,
                     allowed_contexts: vec![],
@@ -3689,41 +3697,13 @@ mod tests {
             )
             .await
             .expect("seed member ACL");
-            vtc
         }
 
-        /// The fixture leaves `vtc_did` unset, so `validate_basic`'s
-        /// recipient binding is skipped — these tests are about the
-        /// per-verb auth the handlers add, not the framework envelope
-        /// checks that run ahead of every verb alike.
-        ///
-        /// The envelope is still the one a real producer sends. `issuedAt` and
-        /// `recipient` are both required of these specifications, and the spine
-        /// enforces them ahead of any handler since #1641; a bare
-        /// `TrustTask::new` was refused as `malformedRequest` before the verb
-        /// under test was ever reached.
-        ///
-        /// **No `proof`, and that is not leniency.**
-        /// `vtc/members/personhood/challenge/0.1` declares `proof` OPTIONAL, so
-        /// the spine asks for none and the authcrypt sender is the whole of the
-        /// caller's identity — which is exactly what these tests are about. Its
-        /// sibling `assert/0.1` *does* declare `proof` REQUIRED, and since
-        /// #1672 there is no setting that makes an unsigned one acceptable; the
-        /// one test that drives it uses [`signed_document`] instead.
-        fn document(type_uri: &str, payload: serde_json::Value) -> Vec<u8> {
-            let mut doc = TrustTask::new(
-                uuid::Uuid::new_v4().to_string(),
-                type_uri.parse().expect("dispatched URI parses as TypeUri"),
-                payload,
-            );
-            doc.recipient = Some(crate::test_support::TEST_VTC_DID.to_string());
-            doc.issued_at = Some(chrono::Utc::now());
-            serde_json::to_vec(&doc).expect("serialize document")
-        }
-
-        /// The same envelope, issued by `from` and carrying `from`'s
-        /// Data-Integrity proof — what a producer sends for a task that
-        /// declares `proof` REQUIRED.
+        /// A document issued by `from` and carrying `from`'s Data-Integrity
+        /// proof — what a producer sends for a task that declares `proof`
+        /// REQUIRED. Both `vtc/members/personhood/challenge/0.1` (since
+        /// trust-tasks 0.23) and `assert/0.1` do, and since #1672 there is no
+        /// setting that makes an unsigned one acceptable.
         ///
         /// `from` is a real `did:key` with the secret behind it, because the
         /// spine verifies the proof against the document's own `issuer`
@@ -3763,10 +3743,17 @@ mod tests {
         #[tokio::test]
         async fn a_member_can_mint_a_challenge_over_messaging() {
             let vtc = fixture().await;
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3795,10 +3782,17 @@ mod tests {
         #[tokio::test]
         async fn a_success_response_is_signed() {
             let vtc = fixture().await;
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3830,27 +3824,18 @@ mod tests {
         #[tokio::test]
         async fn a_community_with_no_signer_still_answers() {
             let vtc = TestVtc::builder().with_signers(false).build().await;
-            store_acl_entry(
-                &vtc.state.acl_ks,
-                &VtcAclEntry {
-                    did: MEMBER.into(),
-                    role: VtcRole::Member,
-                    label: None,
-                    allowed_contexts: vec![],
-                    created_at: 0,
-                    created_by: "did:key:vtc-install".into(),
-                    updated_at: None,
-                    updated_by: None,
-                    expires_at: None,
-                },
-            )
-            .await
-            .expect("seed the member");
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
 
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3870,10 +3855,16 @@ mod tests {
         #[tokio::test]
         async fn a_stranger_cannot_mint_a_challenge() {
             let vtc = fixture().await;
+            let stranger = Party::new();
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(STRANGER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &signed_document(
+                    &stranger,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": MEMBER }),
+                )
+                .await,
             )
             .await;
 
