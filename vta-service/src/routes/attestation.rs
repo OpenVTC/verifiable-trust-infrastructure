@@ -179,9 +179,11 @@ pub async fn mnemonic_status(
 }
 
 /// POST /attestation/mnemonic — **refused**: the mnemonic export is served only
-/// over an end-to-end channel.
+/// as the Trust Task, over an end-to-end channel or signed by the caller.
 ///
-/// Use `spec/vta/attestation/mnemonic-export/1.0` over DIDComm or TSP. The
+/// Use `spec/vta/attestation/mnemonic-export/1.0` over DIDComm or TSP, or at
+/// first boot over Trust Tasks on HTTPS, signed by the caller with `clientDid`
+/// set to the caller's own DID. A bearer token alone never releases it. The
 /// mnemonic is the VTA's root derivation material (VTI-VTA-001, VTI-KEY-033);
 /// even sealed to the requester, a REST exchange carries the request and its
 /// answer in the clear wherever TLS terminates — for a TEE deployment, outside
@@ -195,7 +197,9 @@ pub async fn mnemonic_status(
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Always: the caller is not a super admin with key-export, or \
             the export was asked for over REST, which is hop-by-hop. Send \
-            spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP"),
+            spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP, or \
+            at first boot as a Trust Task signed by the caller with clientDid \
+            set to the caller's own DID"),
     ),
 )]
 pub async fn mnemonic_export(
@@ -205,8 +209,9 @@ pub async fn mnemonic_export(
     crate::operations::keys::ensure_may_export(&state.acl_ks, &auth, "attestation/mnemonic")
         .await?;
     Err(AppError::Forbidden(
-        "the mnemonic export is refused over REST: it is released only over an end-to-end \
-         channel. Send spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP"
+        "the mnemonic export is refused over REST: a bearer token alone never releases it. \
+         Send spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP, or at first boot \
+         as a Trust Task signed by the caller with clientDid set to the caller's own DID"
             .into(),
     ))
 }

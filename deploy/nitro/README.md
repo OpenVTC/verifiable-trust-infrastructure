@@ -1313,15 +1313,34 @@ TOKEN=$(curl -s -X POST http://localhost:8443/auth/challenge -H 'Content-Type: a
 curl -s http://localhost:8443/attestation/mnemonic \
     -H "Authorization: Bearer $JWT" | jq
 
-# Export (one-time, entropy zeroed after). Only over DIDComm or TSP: the
-# REST route POST /attestation/mnemonic refuses with 403. On the offline
-# machine that will hold the backup, mint an ephemeral key and nonce:
+# Export (one-time, entropy zeroed after) with the Trust Task
+# spec/vta/attestation/mnemonic-export/1.0. The REST route
+# POST /attestation/mnemonic refuses with 403: a bearer token alone never
+# releases the mnemonic. The request is always a document the super admin
+# signs (proofPurpose authentication, issuer = your DID, recipient = the VTA's
+# DID, a fresh issuedAt and a new id).
+#
+# Over DIDComm or TSP: on the offline machine that will hold the backup, mint
+# an ephemeral key and nonce, and send the payload
+# {"clientDid": <client_did from req.json>, "nonce": <nonce from req.json>}.
 pnm bootstrap request --out req.json
-# Send spec/vta/attestation/mnemonic-export/1.0 with the payload
-# {"clientDid": <client_did from req.json>, "nonce": <nonce from req.json>}
-# over DIDComm or TSP. The response carries a sealed `bundle` and its `digest`.
-# Open it on that same machine:
+#
+# At first boot, before the VTA is reachable over DIDComm or TSP, POST the
+# signed document to /trust-tasks over HTTPS instead. This path is allowed
+# only when clientDid is exactly your own did:key, the one that signed the
+# request. A TLS terminator holding your token then cannot change whom the
+# mnemonic is sealed to. It can still keep the sealed bundle, so use a
+# did:key kept for this backup, and retire it (remove its ACL entry, destroy
+# its key) once the words are written down.
+#
+# The response carries a sealed `bundle` and its `digest`. Confirm the digest
+# out of band, then open it on the machine that holds the key it was sealed
+# to. For the ephemeral key from `pnm bootstrap request`:
 pnm bootstrap open --bundle bundle.armor --expect-digest <digest>
+# For the first-boot path the bundle is sealed to your did:key's X25519
+# counterpart, which `pnm bootstrap open` does not hold: open it with
+# vta_sdk::sealed_transfer::open_bundle and that key's seed. There is no CLI
+# command for this path yet.
 ```
 
 After 5 minutes (or one successful export), the entropy is permanently zeroed.

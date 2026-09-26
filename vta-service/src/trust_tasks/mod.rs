@@ -1078,7 +1078,7 @@ mod lifecycle_mapping {}
 /// is consequential, which is exactly the set for which item 11 applies" — and
 /// this spine applies item 11 to **every** document it dispatches, `whoami`
 /// included, so the qualifying set here is all of them.
-fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
+pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
     trust_tasks_rs::FreshnessPolicy::default()
         .with_max_age(chrono::TimeDelta::minutes(10))
         .requiring_issued_at()
@@ -1534,7 +1534,19 @@ async fn dispatch_trust_task_validated(
     {
         let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
         if outcome.status.is_success() {
-            let recorded = serde_json::from_slice::<serde_json::Value>(&outcome.body).ok();
+            // A response that discloses a secret (a key's private half, the
+            // sealed root mnemonic) is never kept: the record would hold it in
+            // memory for the whole retention window and hand it to whoever
+            // presents the same document again. A duplicate of such a task is
+            // absorbed with no body instead. The effect still happened once
+            // and the claim still stands, so §7.2 item 11 holds.
+            let discloses_secret = class_for(&type_uri)
+                .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
+            let recorded = if discloses_secret {
+                None
+            } else {
+                serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
+            };
             if let Err(e) = guard.record_response(&doc_id, recorded.as_ref()).await {
                 // Not fatal: the effect happened and the claim stands, so item
                 // 11 still holds. Only the *courtesy* of answering a retry with
