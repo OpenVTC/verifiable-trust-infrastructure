@@ -217,6 +217,20 @@ pnm bootstrap provision-request  --template push-gateway --var URL=https://push.
 pnm bootstrap provision-integration --request <request.json> --out push-bundle.armor
 ```
 
+The gateway also serves Trust Tasks over TSP and HTTPS (transport-agnostic), so
+a gateway sharing a mediator with its VTA can advertise TSP alongside DIDComm —
+pass the whole `TSPTransport` entry as `SERVICE_TSP` (the same null-pruning
+slot `vtc-host` uses for its messaging transports):
+
+```bash
+pnm bootstrap provision-request --template push-gateway \
+  --var URL=https://push.example.com \
+  --var SERVICE_TSP='{"id":"{DID}#tsp","type":"TSPTransport","serviceEndpoint":"did:webvh:QmMED:mediator.example.com:mediator"}'
+```
+
+Omit `SERVICE_TSP` and the gateway advertises DIDComm alone, unchanged from
+before.
+
 The agent runtime then calls `device/set-wake/0.2` with its opaque `WakeHandle`;
 the VTA provisions the wake allowlist to the gateway over DIDComm
 (`operations/device.rs::provision_gateway`).
