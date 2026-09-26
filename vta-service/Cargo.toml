@@ -252,7 +252,7 @@ affinidi-openid4vci = { workspace = true }
 affinidi-status-list = { workspace = true }
 hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
-affinidi-messaging-didcomm = "0.15"
+affinidi-messaging-didcomm = "0.15.9"
 # D2 P2a cut-over: the reliable-messaging delivery layer replaces the old
 # `affinidi-messaging-didcomm-service` type-routed framework. `MessagingService`
 # (subscribe/send/request over a `DidCommTransport`) drives inbound + outbound;
@@ -345,7 +345,7 @@ tempfile = { version = "3", optional = true }
 # A real dependency rather than a dev-dependency: `test-support` exists to serve
 # *external* consumers, and a dev-dependency would not be available to them.
 # `tsp` so the mediator routes raw-TSP frames, not just DIDComm.
-affinidi-messaging-test-mediator = { version = "0.10", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.10.2", optional = true, features = [
     "tsp",
 ] }
 libc = { workspace = true, optional = true }

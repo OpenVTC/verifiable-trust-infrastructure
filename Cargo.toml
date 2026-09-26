@@ -180,7 +180,7 @@ affinidi-messaging-core = "0.1"
 # 0.27.1 is a FLOOR: it is the release in which `record_incoming_control`
 # answers a mutual §7.3 cancellation itself (Keyring VTI-38), which is what the
 # VTA's and VTC's `handle_tsp_control` rely on when they stop answering it.
-affinidi-messaging-sdk = { version = "0.27.1", default-features = false }
+affinidi-messaging-sdk = { version = "0.27.2", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
