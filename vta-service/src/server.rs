@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -290,6 +290,16 @@ pub struct AppState {
     /// Populated by the inbound TSP dispatcher from the proven `sender_vid`.
     #[cfg(feature = "tsp")]
     pub tsp_reach: Arc<crate::messaging::tsp_reach::TspReachability>,
+    /// Trust Task pushes in flight or recently finished
+    /// (`crate::messaging::push`). Encrypted at rest.
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    pub trust_task_pushes_ks: KeyspaceHandle,
+    /// The delivery layer's outbox, read by the push sweep for evidence.
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    pub outbox_ks: KeyspaceHandle,
+    /// What each push site handed to `crate::messaging::push` (unit tests).
+    #[cfg(all(test, any(feature = "didcomm", feature = "tsp")))]
+    pub push_log: crate::messaging::push::PushLog,
 
     /// Waiters for replies to Trust Tasks this agent sent.
     ///
@@ -503,11 +513,27 @@ pub async fn build_app_state(
     let persona_correlation_key = crate::restore::persona_correlation_key(storage_encryption_key);
     let policy_ks = apply_encryption(store.keyspace(crate::keyspaces::POLICY)?);
     let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    let trust_task_pushes_ks =
+        apply_encryption(store.keyspace(crate::keyspaces::TRUST_TASK_PUSHES)?);
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    let outbox_ks = apply_encryption(store.keyspace(crate::keyspaces::OUTBOX)?);
     #[cfg(feature = "webvh")]
     let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
     #[cfg(feature = "webvh")]
     let snapshot_ks =
         apply_encryption(store.keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)?);
+
+    // Finish any key rotation a crash interrupted between its log write and its
+    // promotion — before the VTA loads its own keys, which a rotation of its own
+    // DID may have replaced. A failure here must not become a boot loop: the
+    // staging records are inert and the next boot retries.
+    #[cfg(feature = "webvh")]
+    match crate::operations::did_webvh::recover_staged_rotations(&keys_ks, &webvh_ks).await {
+        Ok(report) if report == Default::default() => {}
+        Ok(report) => warn!(?report, "recovered interrupted did:webvh key rotations"),
+        Err(e) => warn!(error = %e, "could not recover interrupted did:webvh key rotations"),
+    }
 
     let auth = init_auth(
         &config,
@@ -554,7 +580,7 @@ pub async fn build_app_state(
         .audit_sink
         .unwrap_or_else(|| vta_audit::shared_chained_sink(audit_ks.clone(), audit_key_ks.clone()));
 
-    Ok(AppState {
+    let state = AppState {
         keys_ks,
         sessions_ks,
         acl_ks,
@@ -616,6 +642,12 @@ pub async fn build_app_state(
             .unwrap_or_else(|| Arc::new(DIDCommBridge::placeholder())),
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        trust_task_pushes_ks,
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        outbox_ks,
+        #[cfg(all(test, any(feature = "didcomm", feature = "tsp")))]
+        push_log: Default::default(),
         pending_replies: crate::trust_tasks::pending_replies::PendingReplies::new(),
         #[cfg(feature = "tsp")]
         tsp_recovery: Arc::new(affinidi_messaging_sdk::RecoveryCoordinator::new(
@@ -627,7 +659,14 @@ pub async fn build_app_state(
         restart_tx,
         #[cfg(feature = "rest")]
         metrics_handle: parts.metrics_handle,
-    })
+    };
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    if let (Some(resolver), Some(vm_id)) = (&state.secrets_resolver, &state.signing_vm_id) {
+        state
+            .didcomm_bridge
+            .set_document_signer(resolver.clone(), vm_id.clone());
+    }
+    Ok(state)
 }
 
 /// Whether this build can **receive** TSP. One definition, so the startup check
@@ -1309,6 +1348,9 @@ pub async fn run(
                             ),
                         );
                     }
+                    // Durable Trust Task pushes: one sweep for the life of the
+                    // process, reading the current session each pass.
+                    tokio::spawn(crate::messaging::push::sweep_loop(app_state.clone()));
                     let supervisor = MessagingConnect {
                         app_state: app_state.clone(),
                         vta_did: vta_did.clone(),
@@ -1985,16 +2027,35 @@ async fn init_auth(
     };
 
     // 1. DID resolver (network mode if resolver_url is set, local mode otherwise)
+    //
+    // The cache TTL is explicit and bounded (`[did_cache]`, default 60 s, at
+    // most 300 s): it is how long a key revoked from a peer's document keeps
+    // verifying here. A proof that fails against a cached document re-resolves
+    // it once before it is refused (`vta_sdk::trust_task_proof`), so a
+    // rotation does not wait for the TTL.
     let resolver_config = {
-        let mut builder = DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy());
         if let Some(ref url) = config.resolver_url {
-            info!(url = %url, "DID resolver using network mode (remote resolver)");
-            builder = builder.with_network_mode(url);
+            // The remote keeps its own cache, which this node can neither read
+            // nor evict: a revoked key keeps verifying for up to our TTL plus
+            // the remote's (`DidCacheConfig::ttl_secs`).
+            info!(
+                url = %url,
+                "DID resolver using network mode (remote resolver); a revoked key may keep \
+                 verifying for did_cache.ttl_secs plus the remote resolver's own cache expiry"
+            );
         } else {
             info!("DID resolver using local mode");
         }
-        builder.build()
+        info!(
+            ttl_secs = config.did_cache.ttl_secs,
+            capacity = config.did_cache.capacity,
+            "DID document cache bounds"
+        );
+        vta_sdk::resolver::build_verifier_did_cache_config(
+            config.resolver_url.as_deref(),
+            config.did_cache.ttl_secs,
+            config.did_cache.capacity,
+        )
     };
     let mut did_resolver = match DIDCacheClient::new(resolver_config).await {
         Ok(r) => r,
@@ -2332,6 +2393,7 @@ async fn find_vta_key_paths(
         .get(crate::keys::store_key(&signing_key_id))
         .await?
         .ok_or_else(|| AppError::NotFound("VTA signing key not found".into()))?;
+    require_active(&signing)?;
 
     let ka_path = if vta_did.starts_with("did:key:") {
         None
@@ -2341,11 +2403,25 @@ async fn find_vta_key_paths(
             .get(crate::keys::store_key(&ka_key_id))
             .await?
             .ok_or_else(|| AppError::NotFound("VTA key-agreement key not found".into()))?;
+        require_active(&ka)?;
         Some(ka.derivation_path)
     };
 
     debug!(signing_path = %signing.derivation_path, ka_path = ?ka_path, "VTA key paths resolved");
     Ok((signing.derivation_path, ka_path, signing.seed_id))
+}
+
+/// The VTA loads only active records as its own identity: a revoked record
+/// (retired by a rotation, or revoked outright) or a rotation's inert staging
+/// record must never become the key it signs or decrypts with.
+fn require_active(record: &KeyRecord) -> Result<(), AppError> {
+    if record.status != vta_sdk::keys::KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "VTA key `{}` is not active; refusing to load it",
+            record.key_id
+        )));
+    }
+    Ok(())
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.
@@ -2629,6 +2705,7 @@ impl MessagingConnect {
                 vta_did,
                 &messaging_config.mediator_did,
                 self.outbox_ks.clone(),
+                app_state.trust_task_pushes_ks.clone(),
                 self.relationships_ks.clone(),
                 self.relationship_drop_counter.clone(),
                 app_state.did_resolver.as_ref(),

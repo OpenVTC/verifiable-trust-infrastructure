@@ -24,7 +24,9 @@ data_dir    = "/srv/vta/data"
 # VTA should resolve DIDs via a remote resolver-cache (e.g. shared
 # across multiple VTAs) or when running in TEE network mode where
 # DID resolution is bridged to a parent-side
-# `affinidi-did-resolver-cache-server` over vsock.
+# `affinidi-did-resolver-cache-server` over vsock. That server keeps
+# its own DID-document cache, so a revoked key can keep verifying for
+# up to [did_cache] ttl_secs + the server's `expire`: keep both short.
 # resolver_url = "ws://resolver.example.com/did/v1/ws"
 
 # Optional human-readable name for this VTA. Surfaced in `vta config show`.

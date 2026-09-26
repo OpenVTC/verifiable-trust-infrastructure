@@ -48,6 +48,12 @@ pub const ENROLLMENT_CLAIM_WINDOW_SECS: u64 = 300;
 
 const TOKEN_KEY_PREFIX: &[u8] = b"install:token:";
 const EMERGENCY_PENDING_KEY: &[u8] = b"install:emergency_pending";
+/// The second unrestricted admin `vtc setup` was given (VTI-APV-014), waiting
+/// for the install bootstrap to write it beside the first.
+const CO_ADMIN_KEY: &[u8] = b"install:co_admin";
+/// ACL writes made offline, daemon stopped, waiting for the daemon to audit
+/// them (`install:break_glass:<uuid>`).
+const BREAK_GLASS_PREFIX: &[u8] = b"install:break_glass:";
 
 fn token_key(jti: &Uuid) -> Vec<u8> {
     let mut out = TOKEN_KEY_PREFIX.to_vec();
@@ -373,6 +379,53 @@ impl InstallTokenStore {
         Ok(value)
     }
 
+    /// Record the co-admin `vtc setup` was given. One per install: a later
+    /// call replaces it, which only a re-run of setup can make.
+    pub async fn record_co_admin(&self, did: &str) -> Result<(), AppError> {
+        self.ks
+            .insert(CO_ADMIN_KEY.to_vec(), &did.to_string())
+            .await
+    }
+
+    /// Read and delete the co-admin record. The install bootstrap calls this
+    /// once, when it writes the first admin, so the co-admin is installed
+    /// exactly once and never by a later request.
+    pub async fn take_co_admin(&self) -> Result<Option<String>, AppError> {
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
+        let key = CO_ADMIN_KEY.to_vec();
+        let value: Option<String> = self.ks.get(key.clone()).await?;
+        if value.is_some() {
+            self.ks.remove(key).await?;
+        }
+        Ok(value)
+    }
+
+    /// Queue an ACL write made offline for the daemon to audit on its next
+    /// boot. The offline commands hold no audit writer — the running daemon
+    /// does — so, like the emergency-bootstrap marker, the fact is left here
+    /// and the daemon writes the row.
+    pub async fn record_break_glass(&self, pending: &PendingBreakGlassAcl) -> Result<(), AppError> {
+        let mut key = BREAK_GLASS_PREFIX.to_vec();
+        key.extend_from_slice(uuid::Uuid::new_v4().to_string().as_bytes());
+        self.ks.insert(key, pending).await
+    }
+
+    /// Read and delete every queued break-glass write, oldest first by the
+    /// time it was made. The daemon calls this once at startup.
+    pub async fn take_break_glass(&self) -> Result<Vec<PendingBreakGlassAcl>, AppError> {
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
+        let mut out = Vec::new();
+        for (key, value) in self.ks.prefix_iter_raw(BREAK_GLASS_PREFIX.to_vec()).await? {
+            match serde_json::from_slice::<PendingBreakGlassAcl>(&value) {
+                Ok(p) => out.push(p),
+                Err(e) => tracing::warn!(error = %e, "dropping an unreadable break-glass record"),
+            }
+            self.ks.remove(key).await?;
+        }
+        out.sort_by_key(|p| p.invoked_at);
+        Ok(out)
+    }
+
     /// List every persisted install-token state row keyed by `jti`.
     /// Used by the `/v1/admin/invites` list surface. Returns the
     /// (jti, state) pairs; the handler derives status (Issued /
@@ -451,6 +504,27 @@ impl InstallTokenStore {
 /// `EmergencyBootstrapInvoked` event.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingEmergencyBootstrap {
+    pub operator_hostname: String,
+    pub invoked_at: DateTime<Utc>,
+}
+
+/// An ACL write an offline command made with the daemon stopped — the
+/// break-glass. It bypassed the consent and attrition rules the daemon
+/// enforces (VTI-APV-014, VTI-APV-009) by design, so the daemon audits it on
+/// its next boot as exactly that.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBreakGlassAcl {
+    /// The command that wrote it, e.g. `vtc acl add`.
+    pub command: String,
+    /// `grant` or `remove`.
+    pub action: String,
+    pub did: String,
+    /// The role written; empty for a removal.
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub contexts: Vec<String>,
     pub operator_hostname: String,
     pub invoked_at: DateTime<Utc>,
 }

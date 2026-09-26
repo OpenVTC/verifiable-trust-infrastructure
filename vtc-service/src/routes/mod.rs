@@ -12,7 +12,7 @@ pub(crate) mod did_log;
 pub(crate) mod directory;
 pub(crate) mod endorsement_types;
 pub(crate) mod endorsements;
-mod git_ns;
+pub(crate) mod git_ns;
 mod health;
 pub(crate) mod install;
 pub(crate) mod invitations;
@@ -975,8 +975,8 @@ fn build_api_chain(
         // Task verb, no longer a bespoke GET.)
         // Credential-exchange query send (admin): prepare a DCQL query + issue a
         // single-use presentation challenge for a holder. Plain admin route (no
-        // Trust-Task descriptor) — the holder answers over the credential-exchange
-        // DIDComm `present` surface.
+        // Trust-Task descriptor) — the holder answers with a
+        // `credential-exchange/present` Trust Task, over any transport.
         .routes(routes!(join_requests::present::send_query))
         // Policies (Phase 2 M2.3). Three POST endpoints, three
         // Trust Tasks. `upload` mints + persists; `activate` flips
@@ -1088,33 +1088,30 @@ fn build_api_chain(
         )
     };
 
-    // P3.9 — encrypted backup / restore (super-admin). Import envelopes
-    // carry the whole community's state (+ optional audit log), so the
-    // import route overrides the 1 MiB global cap with 64 MiB — attached
-    // here, before the global layer below, so the route-specific cap
-    // wins (same mechanism as the website routes above). Export requests
-    // are tiny and keep the default.
-    const BACKUP_IMPORT_CAP: usize = 64 * 1024 * 1024;
+    // P3.9 — encrypted backup / restore. Both routes only ever answer 403: a
+    // backup is the `backup/*` Trust Task family, served over DIDComm or TSP
+    // (see `routes::backup`). They stay mounted so an old client gets a reason
+    // rather than a 404, and keep the default body cap — nothing is read.
     let api = api
         .route(
             "/backup/export",
             ttl(
                 post(backup::export),
-                "https://trusttasks.org/spec/vtc/backup/export/0.1",
+                <trust_tasks_rs::specs::vtc::backup::export::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             ),
         )
         .route(
             "/backup/import",
             ttl(
-                post(backup::import).layer(DefaultBodyLimit::max(BACKUP_IMPORT_CAP)),
-                "https://trusttasks.org/spec/vtc/backup/import/0.1",
+                post(backup::import),
+                <trust_tasks_rs::specs::vtc::backup::import::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             ),
         );
 
     let api = api
         // §14.4 — every authenticated API route inherits the 1 MiB
         // global body cap. The per-route overrides above for
-        // `/v1/website/*` + `/v1/backup/import` apply first; this layer
+        // `/v1/website/*` apply first; this layer
         // is the default for everything else.
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE));
 

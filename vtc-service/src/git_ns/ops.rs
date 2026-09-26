@@ -16,14 +16,14 @@
 use chrono::{DateTime, Timelike, Utc};
 use serde_json::json;
 use trust_tasks_rs::specs::git_ns::account::{
-    link::v0_1 as link, link_status::v0_1 as link_status,
+    link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_1 as job_wire;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_4 as job_wire;
 use trust_tasks_rs::specs::git_ns::namespace::{
-    bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
+    bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind,
 };
 use trust_tasks_rs::specs::git_ns::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
     transfer::v0_1 as transfer,
 };
 use trust_tasks_rs::specs::git_ns::right::{
@@ -68,6 +68,7 @@ pub const NOT_OWNER: &str = transfer::error_codes::NOT_OWNER.code;
 pub const SELF_TRANSFER: &str = transfer::error_codes::SELF_TRANSFER.code;
 pub const UNSUPPORTED_FORGE: &str = link::error_codes::UNSUPPORTED_FORGE.code;
 pub const UNKNOWN_LINK: &str = link_status::error_codes::UNKNOWN_LINK.code;
+pub const NOT_LINKED: &str = unlink::error_codes::NOT_LINKED.code;
 pub const NOT_HEADLESS: &str = reseat::error_codes::NOT_HEADLESS.code;
 pub const SELF_GRANT_NOT_ALLOWED: &str = grant::error_codes::SELF_GRANT_NOT_ALLOWED.code;
 pub const BREAK_GLASS_DISABLED: &str = break_glass::error_codes::DISABLED.code;
@@ -98,6 +99,9 @@ pub enum OpError {
         message: String,
         request: Box<crate::acl::bound_step_up::ApproveRequest>,
     },
+    /// The framework's `unsupportedVersion`: this VTC serves the task, but
+    /// not this operation at this version (a drift/resolve 0.1 `adopt`).
+    UnsupportedVersion(String),
     Internal(AppError),
 }
 
@@ -117,6 +121,7 @@ impl std::fmt::Display for OpError {
             OpError::StepUpRequired { message, .. } => {
                 write!(f, "permissionDenied (step-up required): {message}")
             }
+            OpError::UnsupportedVersion(m) => write!(f, "unsupportedVersion: {m}"),
             OpError::Internal(e) => write!(f, "internal: {e}"),
         }
     }
@@ -569,6 +574,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
                 roles_digest: None,
                 installation_removed: false,
                 forge_status: None,
+                role_map: None,
             };
             store::put_namespace(&state.git_ns.ks, &ns).await?;
             let scope = Scope::Namespace(ns.id.clone());
@@ -673,6 +679,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
         roles_digest: None,
         installation_removed: false,
         forge_status: None,
+        role_map: None,
     };
     store::put_namespace(&state.git_ns.ks, &ns).await?;
     bridge::record_inline_job(
@@ -832,7 +839,7 @@ pub async fn unbind(
     }))?)
 }
 
-// ── git-ns/namespace/reseat/0.1 ─────────────────────────────────────────────
+// ── git-ns/namespace/reseat/0.3 ───────────────────────────────────────────
 
 /// Recovery for a headless namespace: a community administrator grants
 /// `git.ns.admin` on it to a current member. The capability is worth nothing
@@ -897,7 +904,7 @@ pub async fn namespace_reseat(
     // self-grant of `git.ns.admin`, which is `git-ns/right/break-glass`'s.
     let subject = p.subject.to_string();
     did_core("subject", &subject)?;
-    rules::separation_of_duties(&actor.did, &subject, Right::NsAdmin, &resource)?;
+    rules::separation_of_duties(&actor.did, &subject, Right::NsAdmin, true, &resource)?;
     // Step 4 — fixed rule 5.
     let subject_standing = standing(state, &subject).await?;
     if !subject_standing.member {
@@ -971,10 +978,8 @@ pub async fn namespace_reseat(
     row.granter_was_member = actor.member;
     set.rows.push(row.clone());
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
-    // Step 8 — the namespace-level forge projection, as for any ns.admin.
-    let mut updated = ns.clone();
-    updated.roles_digest = None;
-    store::put_namespace(&state.git_ns.ks, &updated).await?;
+    // Step 8 — no forge projection to queue: `git.ns.admin` projects to no
+    // forge role.
 
     // Step 7.
     audit(
@@ -1050,7 +1055,7 @@ async fn admin_record_history(
     Ok(out)
 }
 
-// ── git-ns/repo/create/0.1 ──────────────────────────────────────────────────
+// ── git-ns/repo/create/0.3 ──────────────────────────────────────────────────
 
 pub async fn repo_create(
     state: &AppState,
@@ -1074,11 +1079,36 @@ pub async fn repo_create(
     }
     let ns_res = ns.resource();
     // Item 2 — `git.repo.create` on the namespace, explicit or implied.
-    let passed = rules::holds_admitted(&snap, &actor.did, Right::RepoCreate, &ns_res, t)?;
+    rules::holds_admitted(&snap, &actor.did, Right::RepoCreate, &ns_res, t)?;
     let actor_rights = rules::effective_on(&snap, &actor.did, &ns_res, t);
     let visibility = visibility_from_wire(&to_string_json(&p.visibility))?;
     let name = p.name.to_string();
     let resource = ns_res.child(&name);
+    // Who owns it (`git-ns/repo/create/0.3`, *Authorization*): the requester
+    // by default, and only on an explicit `git.repo.create` — an implied one
+    // (from `git.ns.admin`) makes the requester's own ownership a self-grant.
+    let owner_dids: Vec<String> = match &p.owners {
+        Some(o) => o.iter().map(|d| d.to_string()).collect(),
+        None => vec![actor.did.clone()],
+    };
+    let mut owners = Vec::with_capacity(owner_dids.len());
+    for o in owner_dids {
+        did_core("owners", &o)?;
+        let member = standing(state, &o).await?.member;
+        owners.push((o, member));
+    }
+    let st = settings(state).await;
+    let passed = rules::create_owners_admitted(
+        &snap,
+        &actor.did,
+        actor.member,
+        &Scope::Namespace(ns.id.clone()),
+        &ns_res,
+        &resource,
+        &owners,
+        st.rules,
+        t,
+    )?;
     consent_gate(state, &actor, "repo.create", None).await?;
     let version = check_policy(
         state,
@@ -1131,12 +1161,10 @@ pub async fn repo_create(
     store::put_repo(&state.git_ns.ks, &repo).await?;
     let scope = Scope::Repo(repo.id.clone());
     let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
-    set.rows.push(new_row(
-        &actor.did,
-        Right::RepoOwn,
-        &actor.did,
-        actor.member,
-    ));
+    for (owner, member) in &owners {
+        set.rows
+            .push(new_row(owner, Right::RepoOwn, &actor.did, *member));
+    }
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
     audit(
         state,
@@ -1152,22 +1180,31 @@ pub async fn repo_create(
         },
     )
     .await;
-    audit(
-        state,
-        &actor.did,
-        Some(&actor.did),
-        Audit {
-            action: "gitNs.right.granted",
-            namespace: Some(&ns.id),
-            resource: Some(resource.to_string()),
-            right: Some(Right::RepoOwn),
-            policy_version: version,
-            detail: Some("creator".into()),
-        },
-    )
-    .await;
+    for (owner, _) in &owners {
+        audit(
+            state,
+            &actor.did,
+            Some(owner),
+            Audit {
+                action: "gitNs.right.granted",
+                namespace: Some(&ns.id),
+                resource: Some(resource.to_string()),
+                right: Some(Right::RepoOwn),
+                policy_version: version,
+                detail: Some(
+                    if *owner == actor.did {
+                        "creator"
+                    } else {
+                        "create"
+                    }
+                    .into(),
+                ),
+            },
+        )
+        .await;
+    }
 
-    let owners = vec![actor.did.clone()];
+    let owners: Vec<String> = owners.into_iter().map(|(o, _)| o).collect();
     let mut response = json!({ "repo": wire::repo_summary(&repo, &owners) });
     if bot {
         // Item 5 — the bridge creates it and turns commit trust on.
@@ -1314,10 +1351,13 @@ pub async fn repo_adopt(
                 Right::RepoOwn,
                 &resource,
                 s.member,
+                actor.member,
                 st.rules,
                 t,
             )?,
         };
+        // Fixed rule 5 binds the reservation path too: every owner is a member.
+        rules::members_only(Right::RepoOwn, s.member, actor.member)?;
         version = check_policy(
             state,
             PolicyInput {
@@ -1505,6 +1545,8 @@ pub async fn repo_transfer(
         return Err(declared(SELF_TRANSFER, "`to` is you"));
     }
     let to_standing = standing(state, &to).await?;
+    // Fixed rule 5 of `git-ns/right/grant/0.3`: `own` goes only to a member.
+    rules::members_only(Right::RepoOwn, to_standing.member, actor.member)?;
     consent_gate(state, &actor, "repo.transfer", Some(Right::RepoOwn)).await?;
     let version = check_policy(
         state,
@@ -1535,7 +1577,7 @@ pub async fn repo_transfer(
     // What is handed over is what the caller holds, expiry included: the
     // recipient ends with ownership at least as durable as the caller's and
     // never more. An expiring record does not count toward the last-owner
-    // invariant (as `git-ns/namespace/reseat/0.1` states it for the last
+    // invariant (as `git-ns/namespace/reseat/0.3` states it for the last
     // admin, and this VTC applies to owners alike), so a permanent owner who
     // hands over to someone holding only an expiring record must leave them a
     // permanent one — or the repository is ownerless when it lapses.
@@ -1756,6 +1798,18 @@ pub(crate) struct GrantVia<'a> {
     /// Re-checked against the snapshot the grant is decided on; a refusal
     /// here is the grant's refusal, and nothing is written.
     pub still_holds: &'a (dyn Fn(&Snapshot) -> OpResult<()> + Send + Sync),
+    /// The forge account whose link must still resolve to the grant's
+    /// subject, checked under the same lock — the lock every link and unlink
+    /// is written under — so that a relink cannot fall between check and write
+    /// (drift/resolve 0.3, adopt step 6).
+    pub linked_to: Option<&'a LinkedTo>,
+}
+
+/// A forge account and the member it must be linked to.
+pub(crate) struct LinkedTo {
+    pub forge: String,
+    pub id: String,
+    pub member: String,
 }
 
 pub(crate) async fn right_grant_via(
@@ -1781,6 +1835,27 @@ async fn right_grant_record(
     let snap = Snapshot::load(&state.git_ns.ks).await?;
     if let Some(v) = &via {
         (v.still_holds)(&snap)?;
+        if let Some(link) = v.linked_to {
+            let now_linked = super::bridge::linked_accounts(state)
+                .await?
+                .into_iter()
+                .find(|(_, forges)| forges.get(&link.forge).is_some_and(|a| a.id == link.id))
+                .map(|(did, _)| did);
+            match now_linked {
+                Some(did) if did == link.member => {}
+                Some(_) => return Err(super::drift::subject_changed(&link.forge, &link.id)),
+                None => {
+                    return Err(declared(
+                        super::drift::ACCOUNT_NOT_LINKED,
+                        format!(
+                            "{} account {} is no longer linked to a member; it can only be \
+                             reverted",
+                            link.forge, link.id
+                        ),
+                    ));
+                }
+            }
+        }
     }
     let t = now();
     let resource = parse_resource(&p.resource)?;
@@ -1825,6 +1900,7 @@ async fn right_grant_record(
         right,
         &resource,
         subject_standing.member,
+        actor.member,
         st.rules,
         t,
     )?;
@@ -2202,6 +2278,127 @@ pub async fn account_link_status(
         out["account"] = json!({ "forge": a.forge, "id": a.id, "login": a.login });
     }
     Ok(wire::into(out)?)
+}
+
+// ── git-ns/account/unlink/0.1 ───────────────────────────────────────────────
+
+/// Delete the binding of the caller's DID to their account on one forge, and
+/// re-project so the bridge withdraws the roles it gave that account.
+///
+/// Numbered items are the specification's *Request*.
+pub async fn account_unlink(
+    state: &AppState,
+    actor_did: &str,
+    p: unlink::Payload,
+) -> OpResult<unlink::Response> {
+    did_core("member", actor_did)?;
+    let actor = standing(state, actor_did).await?;
+    // Item 1: the entitlement is being the DID the account is linked to. A
+    // member whose access lapsed still holds their link and may remove it;
+    // anyone with no link — a non-member included — is answered `notLinked`,
+    // so the answer says nothing about who is a member.
+    consent_gate(state, &actor, "account.unlink", None).await?;
+    let forge = p.forge.to_string();
+    let guard = p.account_id.as_ref().map(|id| id.to_string());
+
+    // Items 2 and 3, in one edit of the member row, under the git-ns store
+    // lock that serialises every link completion, so a link completing at
+    // the same moment is either before (and unlinked, if it is the account
+    // named) or after (and kept).
+    let mut outcome: Result<super::model::ForgeAccount, String> =
+        Err(format!("no account is linked to you on {forge}"));
+    let write = store::write_lock().await;
+    crate::members::storage::edit_member(&state.members_ks, &actor.did, |m| {
+        if m.removed_at.is_some() {
+            return false;
+        }
+        let Some(forges) = m
+            .extensions
+            .get_mut("forges")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return false;
+        };
+        let Some(acct) = forges.get(&forge) else {
+            return false;
+        };
+        let text = |k: &str| {
+            acct.get(k)
+                .and_then(serde_json::Value::as_str)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        // An entry without an id and a login is not a link: the projection
+        // never reads one (`bridge::linked_accounts`).
+        let (Some(id), Some(login)) = (text("id"), text("login")) else {
+            return false;
+        };
+        if guard.as_deref().is_some_and(|g| g != id) {
+            outcome = Err(format!(
+                "the account linked on {forge} is not {}",
+                guard.as_deref().unwrap_or_default()
+            ));
+            return false;
+        }
+        forges.remove(&forge);
+        let now_empty = forges.is_empty();
+        if now_empty && let Some(o) = m.extensions.as_object_mut() {
+            o.remove("forges");
+        }
+        outcome = Ok(super::model::ForgeAccount {
+            forge: forge.clone(),
+            id,
+            login,
+        });
+        true
+    })
+    .await?;
+    drop(write);
+    let unlinked = outcome.map_err(|why| declared(NOT_LINKED, why))?;
+    let t = now();
+
+    // Item 4 — the next desired roles are computed from the records, which
+    // no longer hold the binding, so every target it reached changes digest
+    // and is queued now; the projector sends them on its next tick. No
+    // `removeAccounts` (item 5): only the roles the bridge gave go.
+    let affected: Vec<String> = Snapshot::load(&state.git_ns.ks)
+        .await?
+        .namespaces
+        .iter()
+        .filter(|n| n.forge == forge && n.mode == Mode::Bridge && n.state == NamespaceState::Bound)
+        .map(|n| n.id.clone())
+        .collect();
+    bridge::project_roles(state, false).await?;
+
+    // Item 6 — the member and the forge, never the account. One row per
+    // namespace whose roles change, so its admins see why in its activity;
+    // one with no namespace where none does.
+    let rows: Vec<Option<&str>> = if affected.is_empty() {
+        vec![None]
+    } else {
+        affected.iter().map(|id| Some(id.as_str())).collect()
+    };
+    for ns in rows {
+        audit(
+            state,
+            &actor.did,
+            Some(&actor.did),
+            Audit {
+                action: "gitNs.account.unlinked",
+                namespace: ns,
+                resource: None,
+                right: None,
+                policy_version: None,
+                detail: Some(forge.clone()),
+            },
+        )
+        .await;
+    }
+
+    Ok(wire::into(json!({
+        "unlinked": { "forge": unlinked.forge, "id": unlinked.id, "login": unlinked.login },
+        "unlinkedAt": wire::timestamp(t),
+    }))?)
 }
 
 /// Build the `beginBind` / `beginAccountLink` acknowledgement type's `next`,

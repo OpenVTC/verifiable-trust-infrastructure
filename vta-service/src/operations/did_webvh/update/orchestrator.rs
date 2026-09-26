@@ -58,6 +58,8 @@ pub async fn plan_did_webvh_update(
         "plan",
         Mode::Plan,
         PublishTarget::DidLog,
+        &mut Commit::NotCommitted,
+        None,
     )
     .await?
     {
@@ -90,6 +92,8 @@ pub async fn update_did_webvh(
         channel,
         Mode::Execute,
         PublishTarget::DidLog,
+        &mut Commit::NotCommitted,
+        None,
     )
     .await?
     {
@@ -97,6 +101,72 @@ pub async fn update_did_webvh(
         Outcome::Planned(_) => Err(UpdateDidWebvhError::Library(
             "execute mode returned a plan".into(),
         )),
+    }
+}
+
+/// Whether an update reached its commit point — the local log write — before
+/// it returned. Everything before that point is read-only; everything after it
+/// (handle installs, the record, the publish) can fail with the new entry
+/// already the DID's local head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Commit {
+    /// Nothing was written: the DID's log is as it was.
+    NotCommitted,
+    /// The new log entry is the DID's local head, whatever failed after it.
+    Committed,
+}
+
+/// Work that must follow the local log write once that write has started,
+/// whether or not anyone is still waiting for the update.
+///
+/// The log write and this work run together in one spawned task, so dropping
+/// the request future (a client that disconnects, a transport timeout) after
+/// the write was issued cannot stop between the two: the store's blocking
+/// write finishes on its own, and without this the state the caller staged for
+/// the new entry would be left behind with nothing to finish it. It runs only
+/// when the write succeeds, and its error is reported as
+/// [`Commit::Committed`].
+pub(super) type OnCommit = Box<
+    dyn FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), UpdateDidWebvhError>> + Send>,
+        > + Send,
+>;
+
+/// [`update_did_webvh`], reporting on failure whether the new entry was
+/// committed. A caller that staged state for the update (rotate-keys' key
+/// records) passes the work that must follow the commit as `on_commit` (see
+/// [`OnCommit`]); on an error it may discard what it staged only when the
+/// entry was not committed — an error alone does not say which.
+pub(super) async fn update_did_webvh_tracked(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    scid: &str,
+    opts: UpdateDidWebvhOptions,
+    vta_did: Option<&str>,
+    channel: &str,
+    on_commit: Option<OnCommit>,
+) -> Result<UpdateDidWebvhResult, (UpdateDidWebvhError, Commit)> {
+    let mut commit = Commit::NotCommitted;
+    match run_update(
+        deps,
+        auth,
+        scid,
+        opts,
+        vta_did,
+        channel,
+        Mode::Execute,
+        PublishTarget::DidLog,
+        &mut commit,
+        on_commit,
+    )
+    .await
+    {
+        Ok(Outcome::Executed(result)) => Ok(result),
+        Ok(Outcome::Planned(_)) => Err((
+            UpdateDidWebvhError::Library("execute mode returned a plan".into()),
+            commit,
+        )),
+        Err(e) => Err((e, commit)),
     }
 }
 
@@ -363,6 +433,8 @@ pub async fn agent_name_op(
             name: name.to_string(),
             verb,
         },
+        &mut Commit::NotCommitted,
+        None,
     )
     .await?
     {
@@ -494,6 +566,8 @@ async fn run_update(
     channel: &str,
     mode: Mode,
     publish: PublishTarget,
+    commit: &mut Commit,
+    on_commit: Option<OnCommit>,
 ) -> Result<Outcome, UpdateDidWebvhError> {
     // Re-bind the bundled deps to the historical local names so the (large) body
     // below is unchanged. All fields are `Copy` references — this copies the
@@ -1094,7 +1168,15 @@ async fn run_update(
         .get_version_id_fields()
         .map(|(n, h)| format!("{n}-{h}"))
         .map_err(|e| UpdateDidWebvhError::Library(format!("read version id: {e}")))?;
-    let new_scid = new_log_entry.get_scid().unwrap_or_default().to_string();
+    // The DID's own SCID. webvh carries `scid` in the genesis entry's
+    // parameters only, so reading it off an appended entry yields nothing —
+    // and every update reported `newScid: ""`, where `rotate-keys/1.0` requires
+    // the response to report the existing SCID (VTI-KEY-040: rotation does not
+    // change the identifier).
+    let new_scid = new_log_entry
+        .get_scid()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| canonical_scid.clone());
     let new_log_entry_str = serde_json::to_string(new_log_entry)
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("serialize new entry: {e}")))?;
 
@@ -1150,9 +1232,44 @@ async fn run_update(
 
     // 12. Persist new log + new key handles + updated record.
     let new_log_jsonl = state_to_jsonl(result.state())?;
-    webvh_store::store_did_log(webvh_ks, &record.did, &new_log_jsonl)
-        .await
-        .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did_log: {e}")))?;
+    // The commit point: from here the new entry is the DID's local head, and
+    // an error below no longer means nothing happened. The write and the
+    // caller's `on_commit` run in their own task (see [`OnCommit`]).
+    let write = {
+        let webvh_ks = webvh_ks.clone();
+        let did = record.did.clone();
+        let log = new_log_jsonl.clone();
+        tokio::spawn(async move {
+            webvh_store::store_did_log(&webvh_ks, &did, &log)
+                .await
+                .map_err(|e| {
+                    (
+                        UpdateDidWebvhError::Persistence(format!("store_did_log: {e}")),
+                        Commit::NotCommitted,
+                    )
+                })?;
+            if let Some(on_commit) = on_commit {
+                on_commit().await.map_err(|e| (e, Commit::Committed))?;
+            }
+            Ok::<(), (UpdateDidWebvhError, Commit)>(())
+        })
+    };
+    match write.await {
+        Ok(Ok(())) => *commit = Commit::Committed,
+        Ok(Err((e, reached))) => {
+            *commit = reached;
+            return Err(e);
+        }
+        // A panic in the write task leaves it unknown whether the entry
+        // landed; claiming it did not would let a caller discard state a
+        // published entry depends on.
+        Err(e) => {
+            *commit = Commit::Committed;
+            return Err(UpdateDidWebvhError::Persistence(format!(
+                "log write task failed: {e}"
+            )));
+        }
+    }
     // Single source of truth for the post-mutation self-DID resolver refresh:
     // reseed the in-process cache straight from the log we just built, before it
     // leaves this function. Every runtime DID-log mutation (did-webvh update and

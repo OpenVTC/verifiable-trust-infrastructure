@@ -126,7 +126,7 @@ runtime state, and `pnm services tsp enable` adds TSP to it.
 | Inbound: `tsp-message` vault unseal | ✅ shipped (feature-gated; live unpack pending verification) |
 | Inbound: TSP listener (raw-TSP websocket → trust-task spine) | ✅ shipped (feature-gated; live loop pending verification) |
 | Auth over TSP | ✅ by construction (rides the inbound spine → `handle_authenticate`) |
-| **Outbound: TSP send from `send_to_member` / VTA** | ⏳ designed, not built — see `tsp-outbound-send.md` |
+| **Outbound: TSP send** (VTA + VTC Trust Task pushes, incl. credential exchange) | ✅ shipped — the durable push engine, `vti_common::trust_task_push` (TSP > DIDComm > REST) |
 | Live connectivity reporting / per-protocol counts | ⏳ pending the running loop |
 
 **Before enabling `tsp` in production:** run a live VTA↔mediator smoke test (one

@@ -1891,6 +1891,22 @@ pub const TASK_ATTESTATION_STATUS_1_0: &str =
 pub const TASK_ATTESTATION_REPORT_1_0: &str =
     "https://trusttasks.org/spec/vta/attestation/report/1.0";
 
+/// `spec/vta/attestation/mnemonic-export/1.0` — release a TEE VTA's BIP-39 seed
+/// mnemonic once, inside the first-boot export window, **sealed** to the
+/// requester's ephemeral `did:key` (payload: a sealed-transfer
+/// `BootstrapRequest`; response:
+/// [`crate::protocols::attestation_management::MnemonicExportResultBody`]).
+///
+/// Unlike its two siblings this one is authenticated and dispatched: super
+/// admin holding `key-export`, and **only over an end-to-end channel** (DIDComm
+/// authcrypt or TSP). Over Trust Tasks on HTTPS, and on the REST route it
+/// replaces (`POST /attestation/mnemonic`), it is refused with
+/// `permissionDenied`: the mnemonic is the VTA's root derivation material, and
+/// the seal alone does not keep the request and its sealed answer off an
+/// intermediary that terminates TLS. TEE-feature-gated.
+pub const TASK_ATTESTATION_MNEMONIC_EXPORT_1_0: &str =
+    "https://trusttasks.org/spec/vta/attestation/mnemonic-export/1.0";
+
 // ─── Consent slice (spec/consent/*) ──────────────────────────────────────
 //
 // Generic, platform-agnostic consent gating for inbound messaging: a bridge
@@ -2190,6 +2206,8 @@ pub const ALL_URIS: &[&str] = &[
     // Attestation slice (REST-routed, unauthenticated)
     TASK_ATTESTATION_STATUS_1_0,
     TASK_ATTESTATION_REPORT_1_0,
+    // … and the one dispatched, end-to-end-only attestation task
+    TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
     // Consent slice
     TASK_CONSENT_REQUEST_1_0,
     TASK_CONSENT_DECISION_1_0,

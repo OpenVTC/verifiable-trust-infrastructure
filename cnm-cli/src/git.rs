@@ -3,7 +3,7 @@
 //! Two kinds of command, and the difference is who is authorized:
 //!
 //! - **Changes** (`namespace bind|unbind`, `grant`, `revoke`, `adopt`, `view`,
-//!   `link`) are signed `git-ns/*` Trust Tasks, signed with this community profile's
+//!   `link`, `unlink`) are signed `git-ns/*` Trust Tasks, signed with this community profile's
 //!   key and authorized by *that DID's git rights* in the VTC's records. A
 //!   community administrator's role binds namespaces and nothing more: to
 //!   grant, this DID must hold a right that carries the authority.
@@ -69,8 +69,10 @@ pub enum GitCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Create a repository in a namespace, becoming its owner (needs
-    /// `git.repo.create`). Where no bot can create it, prints the steps.
+    /// Create a repository in a namespace (needs `git.repo.create`). You own
+    /// it only if you hold `git.repo.create` by explicit record; a namespace
+    /// admin names another member with `--owner`. Where no bot can create it,
+    /// prints the steps.
     Create {
         /// The namespace identifier (`namespace list`).
         #[arg(long)]
@@ -82,6 +84,10 @@ pub enum GitCommands {
         /// Shown by the forge; do not put anything here you would not publish.
         #[arg(long)]
         description: Option<String>,
+        /// An owner's DID, a current member. Repeat for several. Omitted, you
+        /// are the owner.
+        #[arg(long = "owner")]
+        owners: Vec<String>,
     },
     /// Hand this profile's ownership of a repository to someone else.
     Transfer {
@@ -166,6 +172,19 @@ pub enum GitCommands {
         #[arg(long)]
         namespace: Option<String>,
     },
+    /// Have the bridge re-apply the forge roles of every repository in a
+    /// namespace, or of one repository, from the VTC's rights under the
+    /// bridge's current role map (`git-ns/roles/reproject`). No right changes.
+    /// Community administrators and the namespace's admins; a repository's
+    /// owner, for that repository.
+    Reproject {
+        /// `github.com/acme` (every active or orphaned repository in it) or
+        /// `github.com/acme/widgets`.
+        resource: String,
+        /// Why, for the audit record.
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// What this profile's DID may see (`git-ns/view`), with its linked forge
     /// accounts, or with `--admin` every record and reason (admin session).
     /// Break-glass records are flagged, and every unratified one is listed.
@@ -179,8 +198,8 @@ pub enum GitCommands {
     /// (`git-ns/account/link`), so the bridge can give it the forge roles
     /// this DID's rights call for. With `--list`, show the linked accounts.
     ///
-    /// One account per forge: linking again replaces the one linked there.
-    /// There is no unlink task; an account is unlinked when you leave.
+    /// One account per forge: linking again replaces the one linked there,
+    /// and `git unlink` removes it.
     Link {
         /// The forge host: `github.com`, `codeberg.org`, a GHES or Forgejo
         /// host. It needs a bridge-mode namespace.
@@ -196,6 +215,19 @@ pub enum GitCommands {
         /// stands) and return, rather than waiting for the link to finish.
         #[arg(long)]
         no_wait: bool,
+    },
+    /// Unlink your account on a forge from this profile's DID
+    /// (`git-ns/account/unlink`). The bridge withdraws the forge roles it gave
+    /// that account; your git rights, and what you may sign, are unchanged.
+    Unlink {
+        /// The forge host whose linked account to unlink.
+        #[arg(long)]
+        forge: String,
+        /// Unlink only if this is the account linked there (its forge id, as
+        /// `git link --list` shows it). Without it, the account linked now is
+        /// read first and named, so a re-link in between is never removed.
+        #[arg(long)]
+        account_id: Option<String>,
     },
 }
 
@@ -221,6 +253,12 @@ pub enum DriftCommands {
         /// is refused if the forge now shows something else.
         #[arg(long)]
         observed: Option<String>,
+        /// For `adopt`: the DID of the member who receives the right — the one
+        /// you read as linked to the account (`git view --admin`). Required to
+        /// adopt, refused on a revert. The VTC adopts nothing unless the
+        /// account is still linked to exactly this member.
+        #[arg(long)]
+        subject: Option<String>,
         #[arg(long)]
         reason: Option<String>,
     },
@@ -270,6 +308,7 @@ impl DriftTypeArg {
 
 /// The `git-ns/drift/resolve` payload for these arguments. The account's
 /// forge is the repository's; `login` is display only and defaults to the id.
+#[allow(clippy::too_many_arguments)]
 fn drift_payload(
     resource: &str,
     action: DriftAction,
@@ -277,6 +316,7 @@ fn drift_payload(
     account_id: Option<String>,
     account_login: Option<String>,
     observed: Option<String>,
+    subject: Option<String>,
     reason: Option<String>,
 ) -> CliResult<Value> {
     let resource = resource.to_lowercase();
@@ -313,6 +353,22 @@ fn drift_payload(
         );
     }
     let mut payload = json!({ "resource": resource, "drift": drift, "action": action });
+    match (action, subject) {
+        ("adopt", Some(s)) => payload["subject"] = json!(s.trim()),
+        ("adopt", None) => {
+            return Err(
+                "adopting records a right for the member linked to the account: pass --subject \
+                 with that member's DID, as `git view --admin` shows it"
+                    .into(),
+            );
+        }
+        (_, Some(_)) => {
+            return Err(
+                "a revert changes no right and has no recipient: leave --subject out".into(),
+            );
+        }
+        (_, None) => {}
+    }
     if let Some(r) = reason {
         payload["reason"] = json!(r);
     }
@@ -563,6 +619,10 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
         "git-ns/right/revoke:notGranted" => "\nNothing to revoke: no live record matches. \
              Implied rights (an owner's commit right, an admin's ownership) are not records."
             .to_string(),
+        "git-ns/drift/resolve:subjectChanged" => format!(
+            "{message}. The account was linked to someone else after you read it: run `cnm git \
+             view --admin --resource …` again and decide about the member it names now."
+        ),
         "git-ns/drift/resolve:driftNotFound" => format!(
             "\nNo outstanding item matches — resolved already, or the forge changed since you \
              read it. Read it again:\n  {bin} git view --resource <repository>"
@@ -579,6 +639,14 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nThis item records no right. Revert it instead:\n  {bin} git drift resolve \
              <repository> revert --type <type> [--account-id <id>]"
         ),
+        "git-ns:roleMapUnknown" => format!(
+            "\nThe bridge serving this namespace has not reported its role map, so the VTC \
+             cannot tell which right this forge role stands for, and assumes no default. It \
+             reports when it starts serving the namespace and whenever it reconnects; a bridge \
+             older than git-ns/bridge/event 0.3 never does. Adopt once it has reported, or \
+             revert the role:\n  {bin} git drift resolve <repository> revert --type <type> \
+             [--account-id <id>]"
+        ),
         "git-ns/drift/resolve:notRevertible" if message.contains("manual mode") => {
             "\nThe namespace is governed in manual mode: no bridge can change the forge. Undo \
              the change on the forge yourself."
@@ -589,25 +657,27 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
              would not remove it. Adopt the forge-side role, or revoke the member's right:\n  \
              {bin} git revoke --subject <did> --right <right> --resource <repository>"
         ),
-        "git-ns/drift/resolve:notRevertible" => "\nThe bridge cannot undo this change: one \
-             that implements only git-ns/bridge/job 0.1 cannot take a role it does not manage \
-             off a repository. Remove it on the forge, or upgrade the bridge."
+        "git-ns/drift/resolve:notRevertible" => "\nThe bridge cannot undo this change: it \
+             refused the job, or does not take git-ns/bridge/job 0.4, the only version this VTC \
+             sends. Remove it on the forge, or upgrade the bridge."
             .to_string(),
         "git-ns/account/link:unsupportedForge" => format!(
             "\nA link is completed by a bridge, so it needs a bridge-mode namespace on that \
              forge; a manual-mode namespace gives nobody a forge role. A community \
              administrator can see what is bound:\n  {bin} git namespace list"
         ),
+        "git-ns/account/unlink:notLinked" => {
+            format!("\nSee what is linked to {did}:\n  {bin} git link --list")
+        }
         "git-ns/account/link-status:unknownLink" => format!(
             "\nA link is answered only to the member who began it, and forgotten some days \
              after it finishes. Start again:\n  {bin} git link --forge <forge>"
         ),
-        "git-ns:selfGrantNotAllowed" => format!(
-            "\nSeparation of duties: nobody grants themselves git.ns.admin, git.repo.create or \
-             git.repo.own. Ask another administrator to grant it. If nobody else can, break the \
-             glass — it is announced to every other administrator:\n  {bin} git break-glass \
-             --right=<right> --resource=<resource> --justification='<why nobody else could>'"
-        ),
+        "git-ns:selfGrantNotAllowed" => "\nThis would give you an elevated right (own, \
+             repo.create or ns.admin) on your own authority. Ask another community \
+             administrator to do it, or use break-glass (`cnm git break-glass`), which is \
+             audited and must be ratified."
+            .to_string(),
         "git-ns/right/break-glass:disabled" => "\nThis community's policy has turned \
              break-glass off: another administrator must grant the right."
             .to_string(),
@@ -626,6 +696,12 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
             "\nNothing to ratify: no unratified break-glass record matches. See:\n  {bin} git \
              break-glass-list"
         ),
+        "git-ns/roles/reproject:manualMode" => "\nThe namespace is governed in manual mode: \
+             no bridge projects its roles, so set them on the forge yourself."
+            .to_string(),
+        "git-ns/roles/reproject:noForgeAccess" => "\nThe bridge lost its access to the \
+             forge owner. Once an owner reinstalls the app (or restores the bot), run this again."
+            .to_string(),
         "git-ns/namespace/reseat:notHeadless" => format!(
             "\nThe namespace still has an admin; its admins grant git.ns.admin:\n  {bin} git \
              grant --subject <did> --right git.ns.admin --resource <namespace>"
@@ -828,6 +904,30 @@ fn account_lines(accounts: &Value) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// The forge id of the account linked on `forge`, from `git-ns/view/0.2`'s
+/// `accounts`.
+fn linked_account_id(accounts: &Value, forge: &str) -> Option<String> {
+    accounts
+        .as_array()?
+        .iter()
+        .find(|a| a.pointer("/account/forge").and_then(Value::as_str) == Some(forge))?
+        .pointer("/account/id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// A `git-ns/account/unlink` response, as the line to print.
+fn unlink_line(v: &Value, did: &str) -> String {
+    format!(
+        "Unlinked {} account {BOLD}{}{RESET} (id {}) from {}. The bridge withdraws the forge \
+         roles it gave that account; your git rights are unchanged.",
+        field(v, "/unlinked/forge"),
+        field(v, "/unlinked/login"),
+        field(v, "/unlinked/id"),
+        terminal_safe(did),
+    )
 }
 
 /// Ask `poll` until it answers a state other than `pending`, or `deadline`
@@ -1120,7 +1220,11 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             name,
             visibility,
             description,
+            owners,
         } => {
+            for o in &owners {
+                did_arg("--owner", o)?;
+            }
             let (did, key) = signing_key(keyring_key)?;
             let mut payload = json!({
                 "namespace": namespace,
@@ -1133,7 +1237,10 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             if let Some(d) = description {
                 payload["description"] = json!(d);
             }
-            let payload: specs::repo::create::v0_1::Payload = serde_json::from_value(payload)
+            if !owners.is_empty() {
+                payload["owners"] = json!(owners);
+            }
+            let payload: specs::repo::create::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that repository is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_create_repo(&payload, &key)
@@ -1422,6 +1529,50 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             };
             finish_link(&mut std::io::stdout(), json_mode, &v, &did, &link_id)
         }
+        GitCommands::Unlink { forge, account_id } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let client = anon();
+            let forge = forge.to_lowercase();
+            // Name the account being unlinked: the one linked now, unless the
+            // operator named it. Either way the request carries the guard.
+            let account_id = match account_id {
+                Some(id) => id,
+                None => {
+                    // `git view` answers current members only; a member whose
+                    // access lapsed may still unlink, naming the account.
+                    let resp = client.git_ns_view_v2(None, &key).await.map_err(|e| {
+                        format!(
+                            "{}\nIf you are no longer a current member you can still unlink, \
+                             naming the account:\n  {} git unlink --forge {} --account-id <id>",
+                            explain(e, &did),
+                            shell_word(bin_name()),
+                            shell_word(&terminal_safe(&forge))
+                        )
+                    })?;
+                    let accounts = serde_json::to_value(&resp)?["accounts"].take();
+                    linked_account_id(&accounts, &forge).ok_or_else(|| {
+                        format!(
+                            "no account is linked to {} on {}. See what is linked:\n  {} git \
+                             link --list",
+                            terminal_safe(&did),
+                            terminal_safe(&forge),
+                            shell_word(bin_name())
+                        )
+                    })?
+                }
+            };
+            let v = serde_json::to_value(
+                client
+                    .git_ns_unlink_account(&forge, Some(&account_id), &key)
+                    .await
+                    .map_err(|e| explain(e, &did))?,
+            )?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            println!("{}", unlink_line(&v, &did));
+            Ok(())
+        }
         GitCommands::BreakGlassList { namespace } => {
             let vtc = vtc_target::connect(keyring_key, target).await?;
             let v = vtc
@@ -1470,9 +1621,13 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                     account_id,
                     account_login,
                     observed,
+                    subject,
                     reason,
                 },
         } => {
+            let subject = subject
+                .map(|s| did_arg("--subject", s.trim()))
+                .transpose()?;
             let (did, key) = signing_key(keyring_key)?;
             let payload = drift_payload(
                 &resource,
@@ -1481,15 +1636,40 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 account_id,
                 account_login,
                 observed,
+                subject,
                 reason,
             )?;
-            let payload: specs::drift::resolve::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::drift::resolve::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that resolution is not well formed: {e}"))?;
             let resp = anon()
-                .git_ns_drift_resolve(&payload, &key)
+                .git_ns_drift_resolve_v3(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
+        }
+        GitCommands::Reproject { resource, reason } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let resp = anon()
+                .git_ns_reproject(&resource.to_lowercase(), reason.as_deref(), &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            if is_json_output() {
+                return show(&resp);
+            }
+            if resp.repos.is_empty() {
+                println!("No active or orphaned repository in {resource}: nothing to re-project.");
+            } else {
+                println!(
+                    "Queued a re-projection of {} repositor{}; the bridge applies its current \
+                     role map:",
+                    resp.repos.len(),
+                    if resp.repos.len() == 1 { "y" } else { "ies" }
+                );
+                for r in &resp.repos {
+                    println!("  {}", r.as_str());
+                }
+            }
+            Ok(())
         }
         GitCommands::Reseat {
             namespace,
@@ -1563,6 +1743,7 @@ mod tests {
 
     #[test]
     fn drift_resolve_arguments_become_the_specifications_selector() {
+        const BOB: &str = "did:webvh:QmBobScid2:acme-vtc.example:bob";
         let p = drift_payload(
             "GitHub.com/Acme/Widgets",
             DriftAction::Revert,
@@ -1570,6 +1751,7 @@ mod tests {
             Some("5550123".into()),
             Some("eve-dev".into()),
             Some("write".into()),
+            None,
             None,
         )
         .unwrap();
@@ -1585,51 +1767,105 @@ mod tests {
                 }
             })
         );
-        let _: specs::drift::resolve::v0_1::Payload = serde_json::from_value(p).unwrap();
+        let _: specs::drift::resolve::v0_3::Payload = serde_json::from_value(p).unwrap();
+
+        // An adopt names its recipient (drift/resolve 0.3).
+        let p = drift_payload(
+            "github.com/acme/widgets",
+            DriftAction::Adopt,
+            DriftTypeArg::RoleAdded,
+            Some("9120045".into()),
+            Some("bob-builds".into()),
+            Some("maintain".into()),
+            Some(BOB.into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(p["subject"], json!(BOB));
+        assert_eq!(p["action"], "adopt");
+        let _: specs::drift::resolve::v0_3::Payload = serde_json::from_value(p).unwrap();
+
+        let err =
+            |action, kind, id: Option<&str>, observed: Option<&str>, subject: Option<&str>| {
+                drift_payload(
+                    "github.com/a/b",
+                    action,
+                    kind,
+                    id.map(str::to_string),
+                    None,
+                    observed.map(str::to_string),
+                    subject.map(str::to_string),
+                    None,
+                )
+                .is_err()
+            };
         // A role item needs its account; a protection item has none; adopt
-        // needs what was observed.
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Revert,
-                DriftTypeArg::RoleAdded,
-                None,
-                None,
-                None,
-                None
-            )
-            .is_err()
+        // needs what was observed and whom it grants to; a revert has no
+        // recipient.
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::RoleAdded,
+            None,
+            None,
+            None
+        ));
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::BootstrapMissing,
+            Some("1"),
+            None,
+            None
+        ));
+        assert!(err(
+            DriftAction::Adopt,
+            DriftTypeArg::RoleChanged,
+            Some("1"),
+            None,
+            Some(BOB)
+        ));
+        assert!(err(
+            DriftAction::Adopt,
+            DriftTypeArg::RoleAdded,
+            Some("1"),
+            Some("maintain"),
+            None
+        ));
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::RoleAdded,
+            Some("1"),
+            Some("write"),
+            Some(BOB)
+        ));
+    }
+
+    #[test]
+    fn a_subject_changed_refusal_says_to_read_the_link_again() {
+        let g = guidance(
+            "git-ns/drift/resolve:subjectChanged",
+            "linked to another member",
+            "did:key:z",
         );
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Revert,
-                DriftTypeArg::BootstrapMissing,
-                Some("1".into()),
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Adopt,
-                DriftTypeArg::RoleChanged,
-                Some("1".into()),
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
+        assert!(g.contains("view --admin"), "{g}");
     }
 
     #[test]
     fn a_not_revertible_refusal_explains_the_bridge_version() {
         let g = guidance("git-ns/drift/resolve:notRevertible", "refused", "did:key:z");
-        assert!(g.contains("bridge/job 0.1"), "{g}");
+        assert!(g.contains("bridge/job 0.4"), "{g}");
+    }
+
+    #[test]
+    fn a_self_grant_refusal_gives_the_generic_separation_of_duties_help() {
+        let g = guidance("git-ns:selfGrantNotAllowed", "refused", "did:key:z");
+        assert!(
+            g.ends_with(
+                "\nThis would give you an elevated right (own, repo.create or ns.admin) on your \
+                 own authority. Ask another community administrator to do it, or use break-glass \
+                 (`cnm git break-glass`), which is audited and must be ratified."
+            ),
+            "{g}"
+        );
     }
 
     #[test]
@@ -2015,6 +2251,33 @@ mod tests {
         assert!(lines[0].contains("github.com") && lines[0].contains("bob-builds"));
         assert!(lines[1].contains("codeberg.org") && lines[1].contains("311"));
         assert!(account_lines(&json!([])).is_empty());
+    }
+
+    #[test]
+    fn unlink_names_the_account_linked_on_that_forge() {
+        let accounts = json!([
+            { "account": { "forge": "codeberg.org", "id": "77", "login": "bob-cb" }, "linkedAt": "x" },
+            { "account": { "forge": "github.com", "id": "9120045", "login": "bob-builds" }, "linkedAt": "x" },
+        ]);
+        assert_eq!(
+            linked_account_id(&accounts, "github.com").as_deref(),
+            Some("9120045")
+        );
+        assert_eq!(linked_account_id(&accounts, "gitlab.com"), None);
+        assert_eq!(linked_account_id(&json!([]), "github.com"), None);
+        let line = unlink_line(
+            &json!({
+                "unlinked": { "forge": "github.com", "id": "9120045", "login": "bob\u{202E}evil" },
+                "unlinkedAt": "2026-09-25T09:30:01Z",
+            }),
+            "did:key:z",
+        );
+        assert!(
+            line.contains("9120045") && line.contains("bob?evil"),
+            "{line}"
+        );
+        let g = guidance("git-ns/account/unlink:notLinked", "no account", "did:key:z");
+        assert!(g.contains("git link --list"), "{g}");
     }
 
     #[test]

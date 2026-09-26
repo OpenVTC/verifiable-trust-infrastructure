@@ -504,7 +504,11 @@ async fn verify_checkpoint_state(state: &AppState) -> CheckpointReport {
             keys.insert(vm, public.clone());
             continue;
         }
-        match resolver.resolve_ed25519(&vm).await {
+        // A checkpoint attests the log's head: an assertionMethod key.
+        match resolver
+            .resolve_ed25519(&vm, vti_common::auth::ProofPurpose::AssertionMethod)
+            .await
+        {
             Ok(bytes) => {
                 keys.insert(vm, bytes);
             }

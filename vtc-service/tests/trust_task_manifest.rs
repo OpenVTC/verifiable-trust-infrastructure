@@ -430,6 +430,10 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
+    // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` were sent
+    // and served ahead of their release here, and went back to zero with
+    // trust-tasks-rs 0.23, which generates both.
+    //
     // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
     // 0.2 were bound ahead of their specs here, and went back to zero with
     // trust-tasks-rs 0.20.4, which serves all nine and generates their wire
@@ -694,7 +698,7 @@ fn collect_prefixed_in_file(path: &Path, prefix: &str, out: &mut BTreeSet<String
 const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
     "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
-    "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+    "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
     "https://trusttasks.org/spec/git-ns/right/grant/0.3",
     "https://trusttasks.org/spec/git-ns/right/revoke/0.3",
     "https://trusttasks.org/spec/git-ns/right/break-glass/0.1",
@@ -702,8 +706,9 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
     "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
     "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
-    "https://trusttasks.org/spec/git-ns/repo/create/0.1",
-    "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/create/0.3",
+    "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
+    "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
 ];
 
 /// Signed-document types the console sends that the *spine* dispatches rather

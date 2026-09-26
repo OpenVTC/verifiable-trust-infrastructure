@@ -97,7 +97,12 @@ pub async fn create_key(
     ))
 }
 
-/// GET /keys/{key_id}/secret — retrieve private key material. Auth: Admin or Initiator.
+/// GET /keys/{key_id}/secret — **refused**: a private key is never released over
+/// REST. The operation checks the `key-export` capability (VTI-VTA-003) and then
+/// refuses the hop-by-hop channel, so an entitled caller is told to use
+/// `keys/export-secret/0.1` over DIDComm or TSP, or the on-host CLI, and an
+/// unentitled one is told it lacks the capability. Kept as a route so a legacy
+/// client gets that explanation rather than a bare 404.
 #[utoipa::path(
     get, path = "/keys/{key_id}/secret", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -105,7 +110,7 @@ pub async fn create_key(
     responses(
         (status = 200, description = "Private key material", body = GetKeySecretResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
+        (status = 403, description = "Always: a private key is not released over REST (use DIDComm or TSP), or the caller is not an admin / lacks key-export"),
         (status = 404, description = "Key not found"),
     ),
 )]
@@ -114,15 +119,19 @@ pub async fn get_key_secret(
     State(state): State<AppState>,
     Path(key_id): Path<String>,
 ) -> Result<Json<GetKeySecretResultBody>, AppError> {
+    // No policy gate: the operation refuses every REST export, and running the
+    // gate first would raise a step-up or consent request for an export that
+    // can never complete.
     let result = operations::keys::get_key_secret(
         &state.keys_ks,
         &state.imported_ks,
         &state.contexts_ks,
+        &state.acl_ks,
         &state.seed_store,
         &state.audit_sink,
         &auth.0,
         &key_id,
-        "rest",
+        operations::keys::ExportChannel::HopByHop("rest"),
     )
     .await?;
     Ok(Json(result))
@@ -347,6 +356,19 @@ pub async fn sign_with_key(
     Json(req): Json<SignRequest>,
 ) -> Result<Json<SignResultBody>, AppError> {
     auth.require_write()?;
+    // The policy gate `keys/sign/0.1` meets on the Trust-Task spine, over the
+    // same payload shape — see `get_key_secret` above.
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth,
+        vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1,
+        &serde_json::json!({
+            "keyId": key_id,
+            "payload": req.payload,
+            "algorithm": req.algorithm,
+        }),
+    )
+    .await?;
     use base64::Engine;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&req.payload)
@@ -391,6 +413,13 @@ pub async fn derive_and_sign_key(
     State(state): State<AppState>,
     Json(req): Json<DeriveAndSignBody>,
 ) -> Result<Json<DeriveAndSignResultBody>, AppError> {
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth,
+        vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1,
+        &serde_json::to_value(&req)?,
+    )
+    .await?;
     use base64::Engine;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&req.payload)
@@ -398,6 +427,7 @@ pub async fn derive_and_sign_key(
 
     let result = operations::keys::derive_and_sign(
         &state.keys_ks,
+        &state.acl_ks,
         &state.seed_store,
         &auth,
         &state.audit_sink,
@@ -430,8 +460,16 @@ pub async fn derive_and_sign_document_key(
     State(state): State<AppState>,
     Json(req): Json<DeriveAndSignDocumentBody>,
 ) -> Result<Json<DeriveAndSignDocumentResultBody>, AppError> {
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth,
+        vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
+        &serde_json::to_value(&req)?,
+    )
+    .await?;
     let result = operations::keys::derive_and_sign_document(
         &state.keys_ks,
+        &state.acl_ks,
         &state.seed_store,
         &auth,
         &state.audit_sink,

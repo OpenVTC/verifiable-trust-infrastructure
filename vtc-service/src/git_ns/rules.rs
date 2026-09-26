@@ -279,32 +279,71 @@ pub fn authority_to_revoke(
     }
 }
 
-/// Fixed rule 5: `git.ns.admin` and `git.repo.create` go only to current
-/// members, because a non-member cannot be reached by the membership
-/// lifecycle that revokes rights on departure.
-pub fn members_only(right: Right, subject_is_member: bool) -> Result<(), Refusal> {
-    if right.is_namespace_right() && !subject_is_member {
+/// Fixed rule 5 of `git-ns/right/grant/0.3`: an elevated right
+/// (`git.ns.admin`, `git.repo.create`, `git.repo.own`) goes only to a current
+/// member — an unexpired ACL entry and no recorded departure — and is granted
+/// only by one. A non-member cannot be reached by the membership lifecycle
+/// that revokes rights on departure, and a DID the VTC does not know as a
+/// member (a fresh `did:key`) would otherwise let an actor hand an elevated
+/// right to a second identity they control. Policy cannot waive it.
+pub fn members_only(
+    right: Right,
+    subject_is_member: bool,
+    actor_is_member: bool,
+) -> Result<(), Refusal> {
+    if !right.is_elevated() {
+        return Ok(());
+    }
+    if !actor_is_member {
         return Err(Refusal::MembersOnly(format!(
-            "{right} goes only to current members of the community"
+            "{right} is granted only by a current member of the community"
+        )));
+    }
+    if !subject_is_member {
+        return Err(Refusal::MembersOnly(format!(
+            "{right} goes only to a current member of the community, holding standing in its \
+             access-control records"
         )));
     }
     Ok(())
 }
 
+/// Whether `right` is elevated on `target` for separation of duties:
+/// [`Right::is_elevated_in`] under the role map of the namespace holding
+/// `target` — so where maintainers get forge `admin`, `git.repo.maintain` is
+/// elevated. A manual-mode namespace has no bridge and projects no forge
+/// role, so no map can elevate a right there. With no namespace to read a map
+/// from, it fails closed as an unknown map does: `git.repo.maintain` counts.
+pub fn elevated_on(snap: &Snapshot, right: Right, target: &Resource) -> bool {
+    match snap.namespace_containing(target) {
+        Some(ns) if ns.mode == super::model::Mode::Manual => right.is_elevated(),
+        Some(ns) => right.is_elevated_in(ns, &target.to_string()),
+        None => right.is_elevated() || right == Right::RepoMaintain,
+    }
+}
+
 /// Fixed rule 7 of `git-ns/right/grant/0.3`, *Separation of duties*: an actor
-/// never grants an elevated right (`git.ns.admin`, `git.repo.create`,
-/// `git.repo.own`) to themselves. `actor` is the DID the VTC resolved the
+/// never grants an elevated right to themselves. `elevated` is
+/// [`elevated_on`]: `git.ns.admin`, `git.repo.create` and `git.repo.own`
+/// always, and a right the bridge's role map projects to forge `admin`
+/// (`git-ns/bridge/event/0.3`). `actor` is the DID the VTC resolved the
 /// signer to — after any console-key delegation — so a delegated key cannot
 /// grant its principal what the principal may not grant themselves.
 ///
-/// The refusal names the one way to do it: `git-ns/right/break-glass/0.1`.
+/// The refusal names the way to do it: `git-ns/right/break-glass/0.1` for
+/// the three rights it carries; for a right elevated only by the role map,
+/// another administrator or owner.
 pub fn separation_of_duties(
     actor: &str,
     subject: &str,
     right: Right,
+    elevated: bool,
     target: &Resource,
 ) -> Result<(), Refusal> {
-    if actor == subject && right.is_elevated() {
+    if actor != subject || !(elevated || right.is_elevated()) {
+        return Ok(());
+    }
+    if right.is_elevated() {
         return Err(Refusal::SelfGrant(format!(
             "{right} is an elevated right, and you cannot grant it to yourself: ask another \
              administrator to grant it, or, if nobody else can, break the glass with \
@@ -313,7 +352,11 @@ pub fn separation_of_duties(
              flagged until another administrator ratifies or revokes it"
         )));
     }
-    Ok(())
+    Err(Refusal::SelfGrant(format!(
+        "{right} is elevated on {target}: the bridge's role map projects it to the forge's \
+         admin role (or the bridge has not reported its map yet), and you cannot grant it to \
+         yourself. Ask another owner or administrator to grant it"
+    )))
 }
 
 fn live_holders<'a>(
@@ -416,12 +459,61 @@ pub fn grant_admitted(
     right: Right,
     target: &Resource,
     subject_is_member: bool,
+    actor_is_member: bool,
     settings: RuleSettings,
     now: DateTime<Utc>,
 ) -> Result<RulesPassed, Refusal> {
     authority_to_grant(snap, actor, right, target, settings, now)?;
-    separation_of_duties(actor, subject, right, target)?;
-    members_only(right, subject_is_member)?;
+    separation_of_duties(
+        actor,
+        subject,
+        right,
+        elevated_on(snap, right, target),
+        target,
+    )?;
+    members_only(right, subject_is_member, actor_is_member)?;
+    Ok(RulesPassed::new())
+}
+
+/// `git-ns/repo/create/0.3`, *Authorization*: who may own what a create
+/// makes. The requester may be an owner only when they hold `git.repo.create`
+/// on the namespace by explicit, live record (granted by someone else, or a
+/// break-glass record); a `git.repo.create` only implied by `git.ns.admin`
+/// carries no creator ownership, and naming oneself is a self-grant of
+/// `git.repo.own` (fixed rule 7). Every other owner is a grant of `own` under
+/// rule 2, and every owner and the requester are members (rule 5).
+#[allow(clippy::too_many_arguments)]
+pub fn create_owners_admitted(
+    snap: &Snapshot,
+    actor: &str,
+    actor_is_member: bool,
+    ns_scope: &Scope,
+    ns_res: &Resource,
+    target: &Resource,
+    owners: &[(String, bool)],
+    settings: RuleSettings,
+    now: DateTime<Utc>,
+) -> Result<RulesPassed, Refusal> {
+    let explicit_create =
+        explicit_admitted(snap, actor, Right::RepoCreate, ns_scope, now).is_some();
+    for (owner, owner_is_member) in owners {
+        if owner == actor {
+            if !explicit_create {
+                return Err(Refusal::SelfGrant(format!(
+                    "your git.repo.create on this namespace is only implied by git.ns.admin, \
+                     which does not make you the owner of what you create: name another member \
+                     in owners, or break the glass once for git.repo.create — `cnm git \
+                     break-glass --right=git.repo.create --resource={} \
+                     --justification='…'` — which is audited, announced to every administrator, \
+                     and flagged until another administrator ratifies or revokes it",
+                    ns_res
+                )));
+            }
+        } else {
+            authority_to_grant(snap, actor, Right::RepoOwn, target, settings, now)?;
+        }
+        members_only(Right::RepoOwn, *owner_is_member, actor_is_member)?;
+    }
     Ok(RulesPassed::new())
 }
 
@@ -511,7 +603,7 @@ pub fn break_glass_admitted(
             }
         }
     };
-    members_only(right, actor_is_member)?;
+    members_only(right, actor_is_member, actor_is_member)?;
     Ok((RulesPassed::new(), entitlement))
 }
 
@@ -682,6 +774,21 @@ pub fn reseat_admitted(
     (actor_community_admin && headless && subject_member).then(RulesPassed::new)
 }
 
+/// `git-ns/roles/reproject`: the community-administrator capability, or
+/// `git.ns.admin` on the namespace by explicit, live record of a current
+/// member — or, for a single repository, `git.repo.own` on it, explicit or
+/// implied (`repo_owner`, which the caller computes only for a repository
+/// resource). Owning some repositories never admits a whole namespace.
+pub fn reproject_admitted(
+    actor_community_admin: bool,
+    actor_member: bool,
+    explicit_ns_admin: bool,
+    repo_owner: bool,
+) -> Option<RulesPassed> {
+    (actor_community_admin || (actor_member && (explicit_ns_admin || repo_owner)))
+        .then(RulesPassed::new)
+}
+
 /// The explicit owners of a repository, in grant order.
 pub fn owners(snap: &Snapshot, repo_id: &str, now: DateTime<Utc>) -> Vec<String> {
     live_holders(snap, &Scope::Repo(repo_id.to_string()), Right::RepoOwn, now)
@@ -766,6 +873,7 @@ mod tests {
             roles_digest: None,
             installation_removed: false,
             forge_status: None,
+            role_map: None,
         });
         s.repos.push(Repo {
             id: "r1".into(),
@@ -984,11 +1092,23 @@ mod tests {
     }
 
     #[test]
-    fn namespace_rights_go_to_members_only() {
-        assert!(members_only(Right::NsAdmin, false).is_err());
-        assert!(members_only(Right::RepoCreate, false).is_err());
-        assert!(members_only(Right::CommitSign, false).is_ok());
-        assert!(members_only(Right::RepoOwn, false).is_ok());
+    fn elevated_rights_go_to_and_from_members_only() {
+        for right in [Right::NsAdmin, Right::RepoCreate, Right::RepoOwn] {
+            assert!(
+                members_only(right, false, true).is_err(),
+                "{right} to a non-member"
+            );
+            assert!(
+                members_only(right, true, false).is_err(),
+                "{right} by a non-member"
+            );
+            assert!(
+                members_only(right, true, true).is_ok(),
+                "{right} member to member"
+            );
+        }
+        assert!(members_only(Right::CommitSign, false, false).is_ok());
+        assert!(members_only(Right::RepoMaintain, false, false).is_ok());
     }
 
     /// A service grant is admitted for exactly one shape: `commit.sign`, on a

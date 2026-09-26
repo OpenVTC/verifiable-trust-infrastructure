@@ -456,6 +456,27 @@ pub(super) fn success_response<R: serde::Serialize>(
     }
 }
 
+/// The courtesy acknowledgement of a fire-and-forget task (SPEC §4.4.2): the
+/// originating type with `#response` and a payload of exactly `{}`.
+///
+/// Only for a task whose specification defines **no** success response — §4.4.2
+/// item 4 forbids it beside one that does. It attests that the task was
+/// received and performed, nothing more; the producer must not rely on it.
+pub(super) fn acknowledge(doc: &TrustTask<Value>) -> TrustTaskOutcome {
+    success_response(doc, serde_json::Map::new())
+}
+
+/// No reply at all. Every transport reads an empty body as "nothing goes back"
+/// (`accept_from_proven_sender`). For a fire-and-forget task that was accepted
+/// but not yet performed, where an acknowledgement would claim too much — the
+/// absence of a reply carries no information (SPEC §4.4.2 item 3).
+pub(super) fn silence() -> TrustTaskOutcome {
+    TrustTaskOutcome {
+        status: StatusCode::NO_CONTENT,
+        body: Vec::new(),
+    }
+}
+
 /// Build a routed `task_failed` rejection for a URI we know about but
 /// haven't implemented yet. Kept available for Phase 3+ slices that
 /// land their match arms before the handler body — each new slice can

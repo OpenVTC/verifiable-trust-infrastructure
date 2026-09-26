@@ -2,6 +2,292 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.7.6...vtc-client-v0.7.7) — 2026-09-26
+
+
+### Added
+
+- **vtc**: Git-ns/account/unlink and cnm git unlink ([#1746](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1746))
+
+* fix(vtc): one forge account per member, and only current members' accounts count
+
+  - Link uniqueness (git-ns/account/link item 4) was already enforced under
+    the git-ns store lock. The check and the recording are now one step
+    under the member-row lock too, and a regression test pins it: a
+    second member completing a link to an already-linked forge id ends
+    `failed` and the account stays with the first.
+  - A departed member who held no git right kept their linked accounts for
+    good: the link deletion sat after sweep_departures' early return for
+    "no departed member held a right". It is now its own pass in the
+    lifecycle sweep (git-ns/account/link, Consent/purpose: MUST delete it
+    when the member leaves).
+  - linked_accounts, which the role projection and drift adoption read,
+    now holds only current members' accounts. A member whose access lapsed
+    but who has not left keeps the account, so nobody else can link it,
+    but it projects no role.
+  - GET /v1/git-ns/accounts gains memberCurrent, and the console's Repos
+    plugin no longer offers adoption for an account whose member is not
+    current. The daemon already refused that adoption.
+
+- **vtc/git-ns**: Separation of duties and break-glass for elevated git rights ([#1745](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1745))
+
+* feat(vtc-service): re-project git roles, and use the bridge's reported role map
+
+  Implements two follow-ups to the configurable bridge role map (VGI #84),
+  spec-first in trustoverip/dtgwg-trust-tasks-tf#639.
+
+  git-ns/bridge/event 0.3 (roleMapReported)
+  - Served beside 0.1 and 0.2; all three are read as 0.3 by one handler.
+  - The report is refused malformedRequest when a map is unordered
+    (own >= maintain >= commit, commit <= write) or lists a repository
+    twice, and permissionDenied when a repos/stale resource lies outside
+    the namespace. Otherwise it is kept on the namespace (git_ns::role_map),
+    and only while the same bridge DID serves it.
+  - Each stale active or orphaned repository has its roles digest
+    forgotten, so the projector re-sends its complete desiredRoles without
+    anyone asking. A repository leaves `stale` when a projectRoles job
+    queued after the report succeeds.
+  - drift/resolve adopt derives the right from the map: the lowest right
+    whose role is the observed one. A revert weighs as revoking own when
+    the role is at or above the one own projects to. Without a report the
+    default map is assumed. A namespace admin gets no forge role under any
+    map.
+
+  git-ns/roles/reproject 0.1
+  - Open to a community administrator, or to git.ns.admin on the namespace
+    by explicit record. A repository owner is refused. Covers a namespace
+    (every active or orphaned repository) or one repository. Normal consent
+    class, policy action roles.reproject, audited as
+    gitNs.roles.reprojected. Refused with manualMode or noForgeAccess.
+  - `cnm git reproject <resource> [--reason]` and
+    vtc-client git_ns_reproject.
+
+  Console (Repos)
+  - The namespace and repository rows carry the effective role map
+    (roleMap, roleMapSource, roleMapStale).
+  - The people tables show each person's effective forge role, and "no
+    forge role" for a namespace admin.
+  - Drift adopt and revert use projectedRight / driftRevertImpact over the
+    repository's map. rightForForgeRole is removed.
+  - Stale repositories are flagged, and the namespace card and repository
+    header gain a "Re-project roles" button.
+
+  Behaviour change: on a personal account a revert of collaborator write
+  (or above) now weighs as revoking own, because write is the role own
+  projects to there. Before, it weighed as revoking maintain.
+
+- **git-ns**: An adoption names the member who receives the right ([#1735](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1735))
+
+* feat(vtc-service): re-project git roles, and use the bridge's reported role map
+
+  Implements two follow-ups to the configurable bridge role map (VGI #84),
+  spec-first in trustoverip/dtgwg-trust-tasks-tf#639.
+
+  git-ns/bridge/event 0.3 (roleMapReported)
+  - Served beside 0.1 and 0.2; all three are read as 0.3 by one handler.
+  - The report is refused malformedRequest when a map is unordered
+    (own >= maintain >= commit, commit <= write) or lists a repository
+    twice, and permissionDenied when a repos/stale resource lies outside
+    the namespace. Otherwise it is kept on the namespace (git_ns::role_map),
+    and only while the same bridge DID serves it.
+  - Each stale active or orphaned repository has its roles digest
+    forgotten, so the projector re-sends its complete desiredRoles without
+    anyone asking. A repository leaves `stale` when a projectRoles job
+    queued after the report succeeds.
+  - drift/resolve adopt derives the right from the map: the lowest right
+    whose role is the observed one. A revert weighs as revoking own when
+    the role is at or above the one own projects to. Without a report the
+    default map is assumed. A namespace admin gets no forge role under any
+    map.
+
+  git-ns/roles/reproject 0.1
+  - Open to a community administrator, or to git.ns.admin on the namespace
+    by explicit record. A repository owner is refused. Covers a namespace
+    (every active or orphaned repository) or one repository. Normal consent
+    class, policy action roles.reproject, audited as
+    gitNs.roles.reprojected. Refused with manualMode or noForgeAccess.
+  - `cnm git reproject <resource> [--reason]` and
+    vtc-client git_ns_reproject.
+
+  Console (Repos)
+  - The namespace and repository rows carry the effective role map
+    (roleMap, roleMapSource, roleMapStale).
+  - The people tables show each person's effective forge role, and "no
+    forge role" for a namespace admin.
+  - Drift adopt and revert use projectedRight / driftRevertImpact over the
+    repository's map. rightForForgeRole is removed.
+  - Stale repositories are flagged, and the namespace card and repository
+    header gain a "Re-project roles" button.
+
+  Behaviour change: on a personal account a revert of collaborator write
+  (or above) now weighs as revoking own, because write is the role own
+  projects to there. Before, it weighed as revoking maintain.
+
+- **vtc-service**: Re-project git roles, and use the bridge's reported role map ([#1736](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1736))
+
+* feat(vtc-service): re-project git roles, and use the bridge's reported role map
+
+  Implements two follow-ups to the configurable bridge role map (VGI #84),
+  spec-first in trustoverip/dtgwg-trust-tasks-tf#639.
+
+  git-ns/bridge/event 0.3 (roleMapReported)
+  - Served beside 0.1 and 0.2; all three are read as 0.3 by one handler.
+  - The report is refused malformedRequest when a map is unordered
+    (own >= maintain >= commit, commit <= write) or lists a repository
+    twice, and permissionDenied when a repos/stale resource lies outside
+    the namespace. Otherwise it is kept on the namespace (git_ns::role_map),
+    and only while the same bridge DID serves it.
+  - Each stale active or orphaned repository has its roles digest
+    forgotten, so the projector re-sends its complete desiredRoles without
+    anyone asking. A repository leaves `stale` when a projectRoles job
+    queued after the report succeeds.
+  - drift/resolve adopt derives the right from the map: the lowest right
+    whose role is the observed one. A revert weighs as revoking own when
+    the role is at or above the one own projects to. Without a report the
+    default map is assumed. A namespace admin gets no forge role under any
+    map.
+
+  git-ns/roles/reproject 0.1
+  - Open to a community administrator, or to git.ns.admin on the namespace
+    by explicit record. A repository owner is refused. Covers a namespace
+    (every active or orphaned repository) or one repository. Normal consent
+    class, policy action roles.reproject, audited as
+    gitNs.roles.reprojected. Refused with manualMode or noForgeAccess.
+  - `cnm git reproject <resource> [--reason]` and
+    vtc-client git_ns_reproject.
+
+  Console (Repos)
+  - The namespace and repository rows carry the effective role map
+    (roleMap, roleMapSource, roleMapStale).
+  - The people tables show each person's effective forge role, and "no
+    forge role" for a namespace admin.
+  - Drift adopt and revert use projectedRight / driftRevertImpact over the
+    repository's map. rightForForgeRole is removed.
+  - Stale repositories are flagged, and the namespace card and repository
+    header gain a "Re-project roles" button.
+
+  Behaviour change: on a personal account a revert of collaborator write
+  (or above) now weighs as revoking own, because write is the role own
+  projects to there. Before, it weighed as revoking maintain.
+
+
+
+## [0.7.6](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.7.5...vtc-client-v0.7.6) — 2026-09-26
+
+
+### Added
+
+- **vtc/git-ns**: A namespace admin gets no forge role; bridge jobs are git-ns/bridge/job 0.4 ([#1729](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1729))
+
+* fix(vtc/git-ns): a namespace admin gets no forge role
+
+  Role projection counted what git.ns.admin implies, so every namespace
+  admin went to the bridge as git.repo.own on every repository, and the
+  namespace-level projectRoles job listed them as organisation owners,
+  which the bridge always refused notCapable.
+
+  desiredRoles now carries, per person, the highest right recorded in their
+  own name: own, maintain or commit.sign on the repository, or commit.sign
+  on its namespace. A namespace admin with none of those is sent as
+  git.ns.admin, which the bridge maps to no role, so a stale role it manages
+  is taken off instead of left in place. An admin who is also an explicit
+  owner is still sent as the owner. The namespace-level job is no longer
+  sent, and a reseat no longer queues it.
+
+  Drift follows: a roleChanged adoption compares against the projected
+  right rather than the implied one, so a namespace admin's forge admin role
+  can be adopted as own; and reverting a roleAdded role held by an admin
+  with no right of their own drops them from desiredRoles and names them in
+  removeAccounts only.
+
+  The admin console's grant and reseat previews no longer say an ns.admin
+  is projected onto the forge.
+
+- **cnm**: Answer the community's consent requests from the CLI (VTI-APV-014) ([#1759](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1759))
+
+Making or widening an unrestricted administrator at the VTC needs another
+  unrestricted administrator's consent (VTI-APV-014), but only a device
+  enrolled to handle the task-consent push could answer. An approver with a
+  cnm profile had no way to sign a decision.
+
+  `cnm consent {show,approve,deny} <file|->` takes the request the
+  requester relays (the refusal body, its `details`, or a bare request
+  document), picks the one addressed to this profile, and verifies it. The
+  VTC must have signed it, it must be addressed to this approver, and it
+  must not have expired. Approving requires typing the requester's match
+  code (or `--match-code`); a mismatch sends nothing. The decision is
+  signed with the profile's key under assertionMethod and posted to the
+  document endpoint.
+
+  The approver's shared half is a new `vta_sdk::task_consent` module:
+  `match_code`, `ConsentRequest::verify` returning a
+  `VerifiedConsentRequest` (the only type a decision can be built from),
+  and `decision`. `vtc-client` gains `decide_task_consent`.
+
+  It also fixes a mismatch between the two screens: the requester prompt
+  in `vta_cli_common::consent` printed the whole `zQm…` digest as the
+  "code", while approver devices show six hex characters of the decoded
+  digest. Both now call `vta_sdk::task_consent::match_code`, and so does
+  `vta-mobile-core`, which drops its copy.
+
+  Tested end to end in `unrestricted_admin_consent`: a real VTC-signed
+  request verifies through the SDK, is refused when it is addressed to
+  someone else, comes from another issuer, or has been tampered with, and
+  the decision built from it grants the consent.
+
+- **cnm-cli**: Cnm git link — link a forge account to the profile's DID ([#1726](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1726))
+
+* feat(cnm-cli): cnm git link — link a forge account to the profile's DID
+
+  A member had no CLI way to link their forge account, so the bridge could
+  never give them the forge role their git rights call for.
+
+  `cnm git link --forge <host>` sends git-ns/account/link/0.1 signed as the
+  community profile's DID, prints where to authorise (and GitHub's device
+  code), then polls git-ns/account/link-status/0.1 every five seconds, as
+  the specification asks, until the link is linked, expired or failed.
+  `--status <linkId>` follows a link begun earlier, `--no-wait` returns
+  after printing, and `--list` shows the accounts linked to this DID from
+  git-ns/view/0.2's `accounts`. Refusals (`unsupportedForge`,
+  `unknownLink`, a non-member) print the fix.
+
+  vtc-client gains `git_ns_link_status`. There is no unlink: the
+  specification defines no task for it, and linking again replaces the
+  account on that forge.
+
+- **vtc-service**: Git-ns drift/resolve, namespace/reseat, view 0.2 ([#1703](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1703))
+
+* feat(vtc-service): git-ns drift/resolve, namespace/reseat, view 0.2
+
+  Implements the git-ns tasks added in trust-tasks #625 and #627, on
+  trust-tasks-rs 0.22.5.
+
+  - git-ns/drift/resolve 0.1: an owner adopts a forge-side role as the
+    git-ns/right/grant it is (same fixed rules, policy, consent class), or
+    reverts a forge-side change through the bridge. Items are selected by
+    type, account (role items) and observed (required to adopt). Every
+    declared code: driftNotFound, notAdoptable, accountNotLinked,
+    noMatchingRight, notRevertible, plus the family's codes.
+  - git-ns/bridge/job 0.2: sent only for the revert of a roleAdded item
+    (projectRoles with removeAccounts), in-line, so a bridge implementing
+    only 0.1 is answered notRevertible; every other job stays 0.1.
+  - git-ns/namespace/reseat 0.1: a community administrator grants a
+    permanent git.ns.admin on a headless namespace to a current member,
+    atomically with the headless check; notHeadless otherwise. The audit
+    record keeps the statement and how earlier admin records ended.
+  - git-ns/view 0.2 (served beside 0.1): the caller's own linked forge
+    accounts, narrowed to the resource's forge.
+  - git-ns/bridge/event 0.2 (served beside 0.1, same handler): a transfer
+    detaches wherever it goes; an event any of whose resources, drift items
+    included, lies outside its namespace is refused before anything is
+    applied.
+  - cnm: `cnm git drift resolve`, `cnm git reseat`; `cnm git view` asks for
+    view 0.2. vtc-client gains the matching methods.
+  - Default gitNamespace policy: namespace.reseat receives a right;
+    drift.revert documented.
+
+
+
 ## [0.7.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.7.4...vtc-client-v0.7.5) — 2026-09-24
 
 

@@ -380,6 +380,16 @@ pub(crate) fn success_response<P, R: Serialize>(
     }
 }
 
+/// The courtesy acknowledgement of a fire-and-forget task (SPEC §4.4.2): the
+/// originating type with `#response` and a payload of exactly `{}`.
+///
+/// Only for a task whose specification defines **no** success response — §4.4.2
+/// item 4 forbids it beside one that does. It attests arrival and nothing more;
+/// the producer must not rely on it.
+pub(crate) fn acknowledge<P>(doc: &TrustTask<P>) -> TrustTaskOutcome {
+    success_response(doc, serde_json::Map::new())
+}
+
 /// Convenience wrapper over [`success_response`] for the `request`/`present`
 /// verbs, whose response payload is always a [`VerdictResponse`].
 pub(crate) fn verdict_response(
@@ -484,6 +494,41 @@ pub(crate) async fn verify_trust_task_proof(
     vti_common::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
         .await
         .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
+}
+
+/// Verify a human approver's own decision (a `task-consent/decision` or a
+/// step-up `approve-response`) and return the proven signer DID.
+///
+/// [`verify_trust_task_proof`], plus the rule every approval verifier in the
+/// mesh holds (the VTA, the did-hosting RP's `verify_approval`): the proof is
+/// made for `assertionMethod`, by a key the signer lists under
+/// `assertionMethod`. An approval is the approver's attestation, not an
+/// operational message, so a proof made for `authentication` is refused. A
+/// signer DID that does not resolve is refused, never passed through.
+pub(crate) async fn verify_approval_proof(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+) -> Result<String, AppError> {
+    vti_common::auth::verify_approval_proof_with(doc, &state.trust_task_vm_resolver())
+        .await
+        .map_err(|e| {
+            // The cause stays in the operator's log; the wire gets `Display`.
+            tracing::warn!(
+                type_uri = %doc.type_uri,
+                error = %e,
+                cause = e.cause().unwrap_or_default(),
+                "approval refused at its proof"
+            );
+            AppError::Unauthorized(format!("Trust Task {e}"))
+        })
+}
+
+/// Whether `type_uri` is a human approver's own decision, whose proof the
+/// spine holds to [`verify_approval_proof`] rather than
+/// [`verify_trust_task_proof`].
+pub(crate) fn is_approval_type(type_uri: &str) -> bool {
+    type_uri == super::STEP_UP_APPROVE_RESPONSE_TYPE
+        || type_uri == crate::acl::admin_consent::DECISION_TYPE
 }
 
 #[cfg(test)]

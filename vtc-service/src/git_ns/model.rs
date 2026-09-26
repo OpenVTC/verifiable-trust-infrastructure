@@ -315,7 +315,9 @@ pub struct Namespace {
     pub requested_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_at: Option<DateTime<Utc>>,
-    /// Digest of the last namespace-level role set sent to the bridge.
+    /// Digest of the last namespace-level role set sent to the bridge. No
+    /// longer written: `git.ns.admin` projects to no forge role, so no
+    /// namespace-level set is sent. Kept so stored records still read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles_digest: Option<String>,
     /// The bridge reported it lost access to the namespace.
@@ -325,6 +327,11 @@ pub struct Namespace {
     /// see [`NamespaceForgeStatus`]. Absent until the bridge says anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge_status: Option<NamespaceForgeStatus>,
+    /// The bridge's last `roleMapReported` (`git-ns/bridge/event/0.3`): the
+    /// forge role each right projects to here. Absent until it reports, and
+    /// no map is assumed meanwhile: the map is *unknown* ([`super::role_map`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<super::role_map::RoleMapReport>,
 }
 
 /// The bridge's report of its own standing on a namespace's forge owner.

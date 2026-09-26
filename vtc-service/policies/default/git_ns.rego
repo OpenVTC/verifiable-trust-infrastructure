@@ -32,6 +32,9 @@
 #                 themselves with git-ns/right/break-glass — `subject` is the
 #                 actor) | right.ratify (another administrator ratifying one
 #                 with git-ns/right/ratify — `subject` is the one who broke it)
+#                 | roles.reproject (a community administrator or namespace
+#                 admin having the bridge re-apply a namespace's or a
+#                 repository's forge roles; no right changes)
 #   actor         { did, member, role?, rights[] }  — rights on `resource`
 #   subject       { did, member, role?, rights[] }  — whoever receives or loses
 #                 the right (grant, revoke, transfer, each adopted owner)

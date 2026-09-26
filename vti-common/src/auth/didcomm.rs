@@ -598,34 +598,46 @@ mod tests {
     }
 
     /// End to end against the messaging library's own decryptor: a forged
-    /// envelope really decrypts (so the library alone would accept it, reporting
-    /// the victim's key id from `apu`), and the header check refuses it; the
-    /// library's own packer output passes.
+    /// envelope is refused both by the library (bound to the `skid` it names)
+    /// and by the header check; the library's own packer output passes both.
     #[test]
     fn real_envelopes() {
         use super::super::authcrypt_test_support::{
             DidKeyParty, forge_authcrypt, genuine_authcrypt,
         };
+        use affinidi_tdk::didcomm::jwe::decrypt::{SenderKey, decrypt_bound};
         let attacker = DidKeyParty::from_seed([1; 32]);
         let victim = DidKeyParty::from_seed([2; 32]);
         let vta = DidKeyParty::from_seed([3; 32]);
         let vta_pub = vta.public();
 
         let forged = forge_authcrypt(b"{}", &attacker, &victim.kid, (&vta.kid, &vta_pub));
-        let decrypted = affinidi_tdk::didcomm::jwe::decrypt::decrypt(
-            &forged,
-            &vta.kid,
-            &vta.private(),
-            Some(&attacker.public()),
-        )
-        .expect("the forged envelope decrypts with the attacker's key");
-        assert_eq!(decrypted.sender_kid.as_deref(), Some(victim.kid.as_str()));
+        let attacker_pub = attacker.public();
+        assert!(
+            decrypt_bound(
+                &forged,
+                &vta.kid,
+                &vta.private(),
+                Some(SenderKey::new(&attacker.kid, &attacker_pub)),
+            )
+            .is_err(),
+            "the library refuses a JWE whose apu is not its skid"
+        );
         assert!(matches!(
             verify_authcrypt_header(&forged),
             Err(AuthcryptError::ApuMismatch { .. })
         ));
 
         let genuine = genuine_authcrypt(b"{}", &victim, (&vta.kid, &vta_pub));
+        let victim_pub = victim.public();
+        let decrypted = decrypt_bound(
+            &genuine,
+            &vta.kid,
+            &vta.private(),
+            Some(SenderKey::new(&victim.kid, &victim_pub)),
+        )
+        .expect("a genuine envelope decrypts");
+        assert_eq!(decrypted.sender_kid.as_deref(), Some(victim.kid.as_str()));
         assert_eq!(verify_authcrypt_header(&genuine), Ok(victim.kid.clone()));
     }
 

@@ -714,24 +714,11 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::backup::export::v0_1::Payload,
             s::backup::export::v0_1::Response,
-            // `ExportRequest` — routes/backup.rs.
+            // What `handle_backup_export` (trust_tasks/mod.rs) parses.
             json!({ "password": "correct-horse-battery-staple", "includeAudit": true }),
-            // `ExportResponse` — the envelope was returned bare until #1059.
+            // `ExportResponse` (routes/backup.rs), what `export_inner` answers
+            // with — the envelope was returned bare until #1059.
             json!({ "envelope": backup_envelope() })
-        ),
-        checked!(
-            s::backup::import::v0_1::Payload,
-            s::backup::import::v0_1::Response,
-            // `ImportRequest` — routes/backup.rs:36.
-            json!({ "backup": backup_envelope(), "password": "correct-horse-battery-staple",
-                    "confirm": true }),
-            // `ImportResult` — backup.rs:136.
-            json!({
-                "status": "imported",
-                "sourceDid": COMMUNITY_DID,
-                "counts": { "acl": 3, "members": 12 },
-                "message": "Import complete. Restart the daemon to serve the restored identity.",
-            })
         ),
         // ─── ceremonies ──────────────────────────────────────────────
         checked!(

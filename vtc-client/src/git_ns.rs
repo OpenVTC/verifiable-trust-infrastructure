@@ -26,17 +26,23 @@ use crate::{HolderKey, VtcClient, VtcError};
 /// The generated `git-ns/*` wire types.
 pub use trust_tasks_rs::specs::git_ns as specs;
 
-use specs::account::{link::v0_1 as link, link_status::v0_1 as link_status};
-use specs::drift::resolve::v0_1 as drift_resolve;
-use specs::namespace::{bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind};
+use specs::account::{
+    link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
+};
+use specs::drift::resolve::{v0_1 as drift_resolve, v0_3 as drift_resolve3};
+use specs::namespace::{bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind};
+
+/// `git-ns/namespace/reseat/0.3`, the only reseat version the VTC serves.
+pub const RESEAT_TYPE_URI: &str = <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 use specs::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
     transfer::v0_1 as transfer,
 };
 use specs::right::{
     break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
     revoke::v0_3 as revoke,
 };
+use specs::roles::reproject::v0_1 as reproject;
 use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
 
 /// The `Trust-Task` URL every git-namespace admin read is gated on.
@@ -144,7 +150,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/repo/create/0.1`.
+    /// `git-ns/repo/create/0.3`.
     pub async fn git_ns_create_repo(
         &self,
         payload: &create::Payload,
@@ -312,7 +318,28 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/drift/resolve/0.1` — adopt or revert one reported drift item.
+    /// `git-ns/drift/resolve/0.3` — adopt or revert one reported drift item.
+    /// An adopt names the member who receives the right (`subject`); the VTC
+    /// adopts nothing unless the account is still linked to exactly them.
+    pub async fn git_ns_drift_resolve_v3(
+        &self,
+        payload: &drift_resolve3::Payload,
+        key: &HolderKey,
+    ) -> Result<drift_resolve3::Response, VtcError> {
+        self.git_ns_task(
+            <drift_resolve3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/drift/resolve/0.1` — revert one reported drift item. A 0.1
+    /// adopt names no recipient, and a VTC that serves 0.3 refuses it
+    /// (`unsupportedVersion`); adopt with [`Self::git_ns_drift_resolve_v3`].
+    #[deprecated(
+        note = "a drift/resolve 0.1 adopt names no recipient and is refused; use git_ns_drift_resolve_v3"
+    )]
     pub async fn git_ns_drift_resolve(
         &self,
         payload: &drift_resolve::Payload,
@@ -326,8 +353,10 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/namespace/reseat/0.1` — a community administrator restores an
-    /// admin to a headless namespace.
+    /// `git-ns/namespace/reseat/0.3` — a community administrator restores an
+    /// admin to a headless namespace. 0.3 is wire-identical to 0.2, whose
+    /// generated types are used until a `trust-tasks-rs` release carries
+    /// 0.3's (TODO, with trust-tasks #635).
     pub async fn git_ns_reseat(
         &self,
         namespace: &str,
@@ -340,8 +369,24 @@ impl VtcClient {
             "subject": subject,
             "statement": statement,
         });
+        self.git_ns_task(RESEAT_TYPE_URI, &payload, key).await
+    }
+
+    /// `git-ns/roles/reproject/0.1` — a community administrator or namespace
+    /// admin has the bridge re-apply the forge roles of a namespace's
+    /// repositories, or of one repository. No right changes.
+    pub async fn git_ns_reproject(
+        &self,
+        resource: &str,
+        reason: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<reproject::Response, VtcError> {
+        let mut payload = serde_json::json!({ "resource": resource });
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
         self.git_ns_task(
-            <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <reproject::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             &payload,
             key,
         )
@@ -374,6 +419,27 @@ impl VtcClient {
         let payload = serde_json::json!({ "linkId": link_id });
         self.git_ns_task(
             <link_status::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/account/unlink/0.1` — remove the account linked to `key`'s DID
+    /// on `forge`. With `account_id`, only if that is still the account
+    /// linked there (`git-ns/account/unlink:notLinked` otherwise).
+    pub async fn git_ns_unlink_account(
+        &self,
+        forge: &str,
+        account_id: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<unlink::Response, VtcError> {
+        let mut payload = serde_json::json!({ "forge": forge });
+        if let Some(id) = account_id {
+            payload["accountId"] = serde_json::json!(id);
+        }
+        self.git_ns_task(
+            <unlink::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             &payload,
             key,
         )

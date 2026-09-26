@@ -134,6 +134,11 @@ pub const STEP_UP_PASSKEYS: &str = "step_up_passkeys";
 /// `vti_common::task_consent`. See `crate::acl::admin_consent`.
 pub const TASK_CONSENT: &str = "task_consent";
 
+/// Member pushes in flight and recently finished (`push:<id>`): the signed
+/// Trust Task, the transports still to try, and how it ended. Encrypted at rest
+/// under the storage key. See `crate::member_push`.
+pub const MEMBER_PUSHES: &str = "member_pushes";
+
 /// In-flight backup bundles (#1641): `bundle:<id>` records and `chunks:<id>`
 /// manifests for the chunked `backup/*` transfer, whose bytes are staged under
 /// `<data_dir>/backups`. See `vti_common::backup_transfer`.
@@ -179,6 +184,7 @@ pub const ALL: &[&str] = &[
     STEP_UP_MARKS,
     STEP_UP_PASSKEYS,
     TASK_CONSENT,
+    MEMBER_PUSHES,
     BACKUP_BUNDLES,
     GIT_NS,
     GIT_NS_JOBS,
@@ -286,6 +292,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // and bind one operation against the ACL as it stood; restored elsewhere,
     // a grant would authorize an act the approvers never saw on that host.
     TASK_CONSENT,
+    // Pushes in flight: delivery bookkeeping for this deployment's own
+    // outbox, whose entries are not carried either. Restored elsewhere, a push
+    // would be re-sent by a node that never queued it.
+    MEMBER_PUSHES,
     // In-flight backup transfers. A bundle is a five-minute conversation with
     // one operator about one set of staged bytes, which a restore elsewhere
     // does not have — and a backup that contained its own transfer state would

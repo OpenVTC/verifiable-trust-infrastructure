@@ -386,6 +386,16 @@ fn print_opened(
             println!("  Platform:   {}", b.platform);
             println!("  Fields:     {}", b.fields.len());
         }
+        SealedPayloadV1::SeedMnemonic(m) => {
+            println!("Payload: SeedMnemonic");
+            if let Some(ref did) = m.vta_did {
+                println!("  VTA DID:    {did}");
+            }
+            println!("  Words:      {}", m.mnemonic.split_whitespace().count());
+            println!(
+                "  Open with `pnm bootstrap open` on the offline machine that will hold the backup."
+            );
+        }
     }
     Ok(())
 }
@@ -793,7 +803,13 @@ pub async fn run_keys_bundle(
         webvh_ks: &state.webvh_ks,
         seed_store: &state.seed_store,
     };
-    let bundle = build_did_secrets_bundle(&deps, &auth, &context, "vta-keys-bundle").await?;
+    let bundle = build_did_secrets_bundle(
+        &deps,
+        &auth,
+        &context,
+        crate::operations::keys::ExportChannel::Local("vta-keys-bundle"),
+    )
+    .await?;
 
     vta_cli_common::sealed_producer::emit_did_secrets_bundle(
         bundle,
@@ -830,6 +846,7 @@ pub async fn run_context_create(
     admin_did: Option<String>,
     admin_label: Option<String>,
     admin_expires: Option<String>,
+    admin_handoff: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::auth::AuthClaims;
     use vta_cli_common::commands::contexts::render_context_record;
@@ -878,6 +895,27 @@ pub async fn run_context_create(
         // Scope to the full path the operation assigned (`<parent>/<id>` nested).
         .with_contexts(vec![record.id.clone()])
         .with_expires_at(expires_at);
+        // The granter here is the local operator acting as super-admin, so
+        // the bound is unrestricted and permanent (VTI-ACL-054).
+        let entry = if admin_handoff {
+            if expires_at.is_none() {
+                return Err("--admin-handoff requires --admin-expires (VTI-ACL-054)".into());
+            }
+            entry.with_handoff(Some(crate::acl::HandOff {
+                granted_by: auth.did.clone(),
+                granted_at: crate::auth::session::now_epoch(),
+                bound: crate::acl::HandOffBound {
+                    role: crate::acl::Role::Admin,
+                    allowed_contexts: Vec::new(),
+                    capabilities: Vec::new(),
+                    approve_scope: crate::acl::ApproveScope::None,
+                    allowed_keys: None,
+                    expires_at: None,
+                },
+            }))
+        } else {
+            entry
+        };
         crate::acl::store_acl_entry(&acl_ks, &entry).await?;
         eprintln!(
             "Admin ACL entry created for {did} (context: {}).",

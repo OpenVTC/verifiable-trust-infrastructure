@@ -2,6 +2,580 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.26.0...vti-common-v0.27.0) — 2026-09-26
+
+
+### Added
+
+- **vtc/git-ns**: Separation of duties and break-glass for elevated git rights ([#1745](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1745))
+
+* feat(vtc-service): re-project git roles, and use the bridge's reported role map
+
+  Implements two follow-ups to the configurable bridge role map (VGI #84),
+  spec-first in trustoverip/dtgwg-trust-tasks-tf#639.
+
+  git-ns/bridge/event 0.3 (roleMapReported)
+  - Served beside 0.1 and 0.2; all three are read as 0.3 by one handler.
+  - The report is refused malformedRequest when a map is unordered
+    (own >= maintain >= commit, commit <= write) or lists a repository
+    twice, and permissionDenied when a repos/stale resource lies outside
+    the namespace. Otherwise it is kept on the namespace (git_ns::role_map),
+    and only while the same bridge DID serves it.
+  - Each stale active or orphaned repository has its roles digest
+    forgotten, so the projector re-sends its complete desiredRoles without
+    anyone asking. A repository leaves `stale` when a projectRoles job
+    queued after the report succeeds.
+  - drift/resolve adopt derives the right from the map: the lowest right
+    whose role is the observed one. A revert weighs as revoking own when
+    the role is at or above the one own projects to. Without a report the
+    default map is assumed. A namespace admin gets no forge role under any
+    map.
+
+  git-ns/roles/reproject 0.1
+  - Open to a community administrator, or to git.ns.admin on the namespace
+    by explicit record. A repository owner is refused. Covers a namespace
+    (every active or orphaned repository) or one repository. Normal consent
+    class, policy action roles.reproject, audited as
+    gitNs.roles.reprojected. Refused with manualMode or noForgeAccess.
+  - `cnm git reproject <resource> [--reason]` and
+    vtc-client git_ns_reproject.
+
+  Console (Repos)
+  - The namespace and repository rows carry the effective role map
+    (roleMap, roleMapSource, roleMapStale).
+  - The people tables show each person's effective forge role, and "no
+    forge role" for a namespace admin.
+  - Drift adopt and revert use projectedRight / driftRevertImpact over the
+    repository's map. rightForForgeRole is removed.
+  - Stale repositories are flagged, and the namespace card and repository
+    header gain a "Re-project roles" button.
+
+  Behaviour change: on a personal account a revert of collaborator write
+  (or above) now weighs as revoking own, because write is the role own
+  projects to there. Before, it weighed as revoking maintain.
+
+
+
+### Security
+
+- **acl**: No principal widens its own entry, and no grant exceeds its granter (VTI-ACL-052, VTI-ACL-053) ([#1738](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1738))
+
+* security(acl)!: no principal widens its own entry, and no grant exceeds its granter (VTI-ACL-052, VTI-ACL-053)
+
+  A context-scoped admin, such as a companion service's credential
+  (`--role admin --contexts vgi-bridge`), could raise its own authority.
+  `update_acl` had no self check and no test either way. Tests written
+  against main confirm every case below. Adding a foreign context or
+  raising the role was already refused. What went through was clearing
+  any narrowing on the caller's own entry, and minting a sibling entry
+  that carried none of it:
+
+  - Self-update to clear its capability narrowing, drop its key filter,
+    or extend its expiry. All three succeeded.
+  - A create for another DID it controls, in the same context, with none
+    of its own narrowing: full capabilities, no key filter, no expiry.
+  - An update that cleared another entry's narrowing past what the caller
+    itself held.
+  - Self role change (`acl/change-role`).
+  - Rotation (`acl/swap-key`) rebuilt the entry field by field. It dropped
+    `expires_at`, `allowed_keys`, `approve_scope` and the step-up fields,
+    so a one-hour bootstrap grant became permanent. It also dropped
+    `created_by`. This violated VTI-CLT-029.
+  - An initiator could grant approve authority it did not hold
+    (VTI-ACL-042).
+  - A context admin could update or delete an entry that also acts in a
+    context it does not administer, because overlap was enough.
+
+  VTA (`operations/acl.rs`, the choke point for REST, DIDComm, TSP and the
+  Trust Task spine):
+
+  - update and change-role refuse the caller's own entry (VTI-ACL-052).
+    Delete already did.
+  - create, update and change-role measure the resulting entry against
+    the caller's stored entry (`validate_within_caller`, VTI-ACL-053). The
+    entry must not exceed the caller's effective capabilities (additive
+    ones stay under VTI-ACL-033), key filter, expiry, or confer authority
+    (VTI-ACL-042). A caller with no live entry writes nothing.
+  - update, change-role and delete require the caller to cover every
+    context the entry acts or approves in, not just overlap
+    (VTI-ACL-050 as tightened).
+  - update re-runs the role and act-scope checks on the patched entry, so
+    a role change alone cannot turn "nowhere" into "everywhere".
+  - swap-key copies the entry exactly and only moves the subject. It
+    refuses an expired entry (VTI-CLT-029).
+
+  VTC (`routes/acl.rs`, `routes/admin/invites.rs`,
+  `routes/members/update.rs`):
+
+  - An `acl/grant` rewrite of your own entry is refused. Before, a re-grant
+    with no `expiresAt` made a time-boxed admin permanent.
+  - `acl/change-role` refuses your own entry in either direction; the
+    ceremony already refused self-promotion.
+  - `vtc/members/update` refuses a role or label change on your own entry.
+  - Rewrite, change-role and revoke (including scoped revoke) require
+    full coverage for every role, not only admin targets.
+  - A grant cannot outlive the granter's expiry, and a granter with no
+    live entry is refused.
+  - `vtc/admin/invites/create` requires an unrestricted admin. It writes
+    a community-wide admin entry, and a context admin could previously
+    invite a DID it controls into one.
+
+
+
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.25.0...vti-common-v0.26.0) — 2026-09-26
+
+
+### Added
+
+- **vta-service**: Sign operational documents with the operational key ([#1740](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1740))
+
+* fix(vta-service)!: require a document proof bound to the sender on every DIDComm and TSP trust task
+
+  A Trust Task that reaches the VTA or the VTC over an intrinsic-sender
+  transport (DIDComm, TSP) is now accepted only when the document carries a
+  Data Integrity proof that verifies as its `issuer`, and that issuer is the
+  transport-reported sender. The transport's sender alone no longer
+  authorizes anything (VTI-OPS-021/093).
+
+- **vtc**: Install a co-admin, and audit the offline ACL break-glass (VTI-APV-014) ([#1750](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1750))
+
+Last of four for VTI-APV-014. Since #1741, making anyone an unrestricted
+  admin needs another unrestricted admin's consent. That left two gaps.
+
+  A community installed with one unrestricted admin has nobody to consent, so
+  it could only add a second offline. `vtc setup` now takes an optional
+  `co_admin_did` (a prompt interactively) and refuses one equal to the first
+  admin. The install bootstrap writes the co-admin as an unrestricted admin in
+  the same step as the first, audited as `AclGranted` by `did:key:vtc-install`.
+  The co-admin needs no passkey to consent, since a decision is a document its
+  DID signs. It gets the empty admin sister record a promotion writes, so it can
+  enrol a passkey later through an invite.
+
+  The offline ACL writers are the way out when there are too few admins. They
+  skip the step-up, the consent and the attrition rules by design, and they left
+  no trace: `vtc acl add` and `remove`, `vtc create-did-key --admin` and `vtc
+  admin invite`. Each now queues a record in the `install` keyspace in the same
+  store session as the write. On its next boot the daemon writes an
+  `AclBreakGlassWritten` audit row for each, under `did:key:vtc-break-glass`,
+  naming the command, the change, the DID and the host. This is how the
+  emergency-bootstrap marker already works, because the offline commands hold no
+  audit writer.
+
+  The new audit variant is additive (`AuditEvent` is `#[non_exhaustive]`).
+
+- **vtc**: Acl/grant on the signed door, with a passkey gesture bound to the grant ([#1641](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1641)) ([#1718](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1718))
+
+`acl/grant` is the first verb on the VTC's signed-document door that confers
+  administrative authority, and the reason none had moved: conferring admin
+  needs a passkey gesture, the bearer route reads that from the session's live
+  elevation, and a signed document has no session. `admin_signer` builds its
+  claims with an empty `session_id`, so the gate could only ever fail closed.
+
+  The design (`vtc-operation-bound-step-up.md`, #1713) binds the gesture to the
+  one operation instead, as VTI-APV-003 now permits and VTI-APV-015 describes
+  (dtgwg-vti-spec#40), using the wire dtgwg-trust-tasks-tf#631 published in
+  trust-tasks-rs 0.22.7:
+
+  1. A signed `acl/grant` that would confer admin authority runs every check the
+     bearer route runs — the same `plan_grant` — and then finds no gesture for
+     `(acting admin, digest of type + payload)`. It starts a WebAuthn ceremony
+     over the acting admin's own passkeys, parks it for 300 s, and refuses
+     `permissionDenied` with the ceremony inline as `details.stepUpRequest`: an
+     `approve-request/0.3` payload with `boundTo` (the digest salted with the
+     challenge) and no `sessionId`. The spine releases the refused document's
+     `id`.
+  2. The admin answers with `auth/step-up/approve-response/0.4` carrying
+     `webauthn` evidence. The assertion must verify against the parked ceremony,
+     assert user verification, and come from a passkey registered to the acting
+     admin. The answer is `recorded`; nothing is elevated.
+  3. The identical document is sent again. The recorded gesture is removed before
+     the grant commits, so it authorizes that grant once and nothing else.
+
+  A console key acts as its admin, so it can sign the grant and redeem the
+  gesture, but cannot make one: only a `webauthn` assertion records a gesture,
+  and a `didSigned` or absent `evidence` is refused `noGate`. The bearer route is
+  unchanged and keeps its session gate; the two doors now share `plan_grant` and
+  `commit_grant` and differ only in where the gesture is read from.
+
+  - `vtc-service/src/acl/bound_step_up.rs`: the digest (`vtc/step-up/v1\0`,
+    length-prefixed URI and JCS payload, SHA-256 multihash), the pending and
+    redeemable marks, and the TTL sweep. New keyspace `step_up_marks`, excluded
+    from backup.
+  - `vti-common`: `AuditEvent::OperationStepUpRecorded` names the task, the salted
+    `boundTo` and the credential. `AuditEvent` is `#[non_exhaustive]`, so the
+    variant is additive.
+  - trust-tasks-rs floor raised to 0.22.7 for `approve-request/0.3` and
+    `approve-response/0.4`.
+
+  `tests/signed_step_up.rs` drives the loop with the soft authenticator and holds
+  the refusals the design lists: a gesture for one grant does not authorize
+  another, a spent gesture is gone, a challenge is answered once, a signature
+  alone records nothing, a silent (non-UV) assertion and another admin's passkey
+  are refused, a grant that confers nothing asks for no gesture, and a grant that
+  would be refused anyway never asks.
+
+  One difference from the design note, recorded in its new §8: the gate is not a
+  spine step ahead of dispatch. Whether a grant needs a gesture depends on the
+  entry it would replace, and a gesture must not be asked for a grant another
+  check would refuse, so the verb calls the gate between `plan_grant` and
+  `commit_grant`. The handler is transport-neutral, so REST, DIDComm and TSP
+  still reach the same call.
+
+  `acl/change-role` is next, then VTI-APV-014's second-party consent.
+
+
+
+### Changed
+
+- **vti-common**: Share the durable Trust Task push engine between nodes ([#1760](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1760))
+
+#1754 gave the VTC a push engine that picks TSP > DIDComm > REST by what the
+  recipient's DID document advertises. It records each push durably, queues one
+  outbox attempt per transport, settles on delivery evidence and escalates when
+  an attempt yields none (VTI-TRN-030, -040, -041, -042). The VTA's own pushes
+  (`consent_request::push_one`) are still best-effort TSP followed by DIDComm,
+  and to adopt the same model the engine has to live somewhere both nodes can
+  reach.
+
+  It moves unchanged to `vti_common::trust_task_push`. The node lends it what is
+  its own through a `PushContext`: the records keyspace, the outbox, the
+  resolver, its messaging handle and whether it can send TSP. The REST transport
+  takes its HTTP client, so each node supplies its foreign-fetch profile.
+  `vtc-service::member_push` is now that adapter, and its call sites are
+  unchanged.
+
+  The outbox transport ids keep their `member-push-*` values, so attempts queued
+  before an upgrade still drain after it. `vti-common`'s `tsp` feature now also
+  enables `affinidi-tdk/tsp` and `vta-sdk/tsp` for the TSP transport. That
+  exposed two items in `vta-sdk` gated on `tsp` but used only with `client`,
+  which are now gated on both.
+
+  The VTA moving onto the engine is a follow-up.
+
+- **vti-common**: Move the task-consent core out of vta-policy so the VTC can share it (VTI-APV-014) ([#1730](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1730))
+
+VTI-APV-014 requires consent from a party other than the requester before
+  anyone is granted unrestricted act scope. The VTC is to meet it with the same
+  `task-consent/*` ceremony the VTA runs (VTI-VTC-020: one model, not a parallel
+  one), but the ceremony's data layer lived in `vta-policy`, which the VTC cannot
+  depend on. This moves it to `vti-common` first, so the VTC work that follows
+  reuses it rather than copying it.
+
+  - `vta-policy/src/consent.rs` -> `vti_common::task_consent` and
+    `vta-policy/src/effects.rs` -> `vti_common::task_consent::effects`, moved
+    with their history. `vta_policy::{consent, effects}` re-export them, so
+    every existing path still resolves and the VTA's behaviour is unchanged.
+  - `domain_digest(domain, type_uri, payload, salt)` exposes the digest
+    construction for another domain tag. The VTC's operation-bound step-up
+    carried a byte-for-byte copy of it under `vtc/step-up/v1\0`; it now calls
+    this instead.
+  - `digest_matches_its_pinned_vectors` pins both domains against vectors
+    computed independently of this code, so the move provably changed no
+    digest: a stored pending or grant, and a mark in flight, still resolve
+    after an upgrade.
+  - The `vta/task-consent/v1\0` tag is kept, since it keys the pendings and
+    grants in flight. It separates this digest from others, not one node from
+    another, because a pending never leaves the node that minted it.
+
+  No wire change and no behaviour change.
+
+- **vti-common**: Move the node-neutral backup transfer core out of vta-backup ([#1641](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1641)) ([#1721](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1721))
+
+The community node needs the backup transfer the agent already has. A VTC
+  backup, like any real node's, is too large for one Trust Task document, and the
+  node-neutral `backup/*` family (trustoverip/dtgwg-trust-tasks-tf#633, released
+  in trust-tasks-rs 0.22.7) is how it moves: a bundle, a manifest committed before
+  any byte moves, chunks pulled and pushed by index, a finalize that checks the
+  assembled bytes before trusting them.
+
+  `vta-backup` implements all of that for `vta/backup/*`, but the VTC cannot
+  depend on it — it pulls `vta-config`, `vta-keys`, `vta-support` and `vta-webvh`.
+  Only a thin layer of it is the agent's: serializing the agent's state into an
+  envelope, and applying one. The rest never asked what a bundle contains.
+
+  So that rest moves to `vti_common::backup_transfer`, which both nodes already
+  depend on for storage and auth:
+
+  - `bundle_store` — the `BundleRecord` state machine, token minting and the
+    constant-time token check (was `vta_backup::backup_bundle_store`);
+  - `sweeper` — TTL expiry and retention (was `vta_backup::backup_bundle_sweeper`);
+  - `chunked` — staging, the chunk plan, `get_chunk`, `initiate_import`,
+    `put_chunk`, `finalize_precheck` and the per-DID rate limiter (was
+    `vta_backup::ops::chunked`), plus `check_initiate` and a node-neutral chunked
+    `complete_export`;
+  - the ownership, kind, TTL and open-bundle-cap rules, and `abort`, from
+    `vta_backup::ops::descriptors`.
+
+  Files moved with `git mv`, so their history follows them. `vta-backup`
+  re-exports every moved module under its old path, keeps `initiate_export`
+  (which serializes the agent's state and hands the bytes to `stage_export`), and
+  routes `abort_bundle` through the shared `abort`. No behaviour changes, and no
+  public path in `vta-backup` disappears.
+
+  `vti-common` gains `subtle`, and now declares the tokio `fs` and `io-util`
+  features the moved code uses. `vta-backup` had used `tokio::fs` without
+  declaring `fs`, building only by feature unification.
+
+  The 32 moved tests run in `vti-common`, and `vta-backup`'s own suite (54) is
+  unchanged. The VTC's `backup/*` handlers follow in the next change.
+
+
+
+### Fixed
+
+- **vta-service**: Require a document proof bound to the sender on every DIDComm and TSP trust task ([#1739](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1739))
+- **vti-common**: Bind the authcrypt sender key id to the key used, before trusting a DIDComm sender ([#1732](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1732))
+
+An authcrypt (ECDH-1PU) JWE names its sender key twice in the protected
+  header: `skid` and `apu` (the PartyUInfo the key derivation is bound to). A
+  conforming packer writes the same key id into both. The direct-unpack callers
+  now require that the two agree, and that the key the unpack metadata reports is
+  that same key, before a sender is trusted.
+
+  - New `vti_common::auth::verify_authcrypt_header(raw_jwe)`: for an ECDH-1PU
+    outer layer (JSON or compact serialization) requires `skid` to be a DID URL
+    with a key fragment, `apu` to be present, and `BASE64URL-decode(apu)` to be
+    exactly the `skid` bytes. Any other `alg` is refused, so authcrypt nested
+    inside anoncrypt is not accepted on these paths.
+  - `bind_authcrypt_sender(raw_jwe, message, metadata)` now takes the raw
+    envelope and requires: the header check; an `authcrypt(plaintext)` or
+    `authcrypt(sign(plaintext))` wrapping; `encrypted_from_kid == Some(skid)`;
+    and `DID(from) == DID(skid)`.
+  - Callers updated: VTA `/auth/`, `/auth/refresh`, vault unseal; VTC
+    `/v1/auth/`, `/v1/wallet/auth/` and refresh.
+  - New `vti-common` `test-support` feature with builders for authcrypt
+    envelopes with a caller-chosen protected header; route tests on both
+    services.
+
+
+
+### Security
+
+- **vta-sdk**: Verify a proof's key against its proofPurpose (VTI-KEY-022) ([#1752](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1752))
+
+* security(vta-sdk)!: verify a proof's key against its proofPurpose (VTI-KEY-022)
+
+  A verifier accepted any key the signer's DID document listed under
+  verificationMethod, whatever the proof declared it was for. A key published
+  only for keyAgreement, or authorised only to authenticate, could make an
+  assertionMethod proof.
+
+  vta-sdk adds ProofPurpose, PurposeVmResolver and PurposeBound.
+  TrustTaskVmResolver now resolves a method only for one purpose, and only
+  when all of these hold:
+  - the resolved document is the DID's own;
+  - the method is listed under the relationship the purpose names, by
+    absolute DID URL, by relative fragment, or embedded. A reference resolves
+    only against the top-level verificationMethod set;
+  - the method's controller is the DID.
+
+- **vta-service**: Require assertionMethod on an approver's decision ([#1757](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1757))
+
+* fix(vta-service)!: require a document proof bound to the sender on every DIDComm and TSP trust task
+
+  A Trust Task that reaches the VTA or the VTC over an intrinsic-sender
+  transport (DIDComm, TSP) is now accepted only when the document carries a
+  Data Integrity proof that verifies as its `issuer`, and that issuer is the
+  transport-reported sender. The transport's sender alone no longer
+  authorizes anything (VTI-OPS-021/093).
+
+- **resolver**: One bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134) ([#1737](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1737))
+
+* security(resolver)!: one bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134)
+
+  The VTC ran two DID-document caches: the app resolver built in
+  `init_auth`, and a second one the messaging TDK built for itself
+  because it was given none. Both used the SDK defaults of a 300 s TTL and
+  100 entries. Every DIDComm and TSP message on the mediator socket was
+  checked against a cache the REST and Trust Task paths could not see or
+  evict. Neither cache was ever refreshed when a verification failed, so
+  a peer that rotated was refused as a forger until its entry aged out.
+
+  Bounded TTL (key-roles, dtgwg-vti-spec #42: VTI-KEY-060/062/122/123/134):
+
+  - A new `[did_cache]` section (`vti_common::config::DidCacheConfig`)
+    holds `ttl_secs` (default 60, refused outside 1..=300) and `capacity`
+    (default 1000). The VTA and the VTC read the same type.
+  - The TTL is what bounds how long a key revoked for compromise keeps
+    verifying: VTI-KEY-123 allows no overlap, and nothing else notices a
+    removal. A new key does not wait on the TTL, because of the refresh
+    below. 60 s caps the revocation window at a minute, for one resolution
+    per active DID per minute. 300 s, the SDK default and the old
+    behaviour, is the ceiling.
+  - `vta_sdk::resolver::build_verifier_did_cache_config` builds it, with
+    the webvh host policy the VTA already used. The VTC now uses that
+    policy too, so the private-host opt-in reaches it as well.
+
+  One cache:
+
+  - The VTC messaging TDK is handed the app resolver.
+  - The VTA already shared its resolver. Its fallback when there is no
+    app resolver now gets the same bounds, not the SDK defaults.
+
+  Re-resolve once, then fail closed (`vta_sdk::did_refresh`):
+
+  - `resolve_for_vm`: when a cached document does not list the method a
+    proof names, re-resolve it fresh once. This covers every Trust Task
+    proof on both nodes (`TrustTaskVmResolver`) and the VTC credential/VP
+    resolver (`DidVmResolver`).
+  - `verify_trust_task_proof_with`: when verification fails and the
+    signer's document came from the cache, evict it and verify once more.
+    This covers a key id kept with its material replaced.
+  - `unpack_refreshing_sender`: when an authcrypt unpack fails, evict the
+    sender named in the protected header (`skid`) and retry once. It is
+    used on the REST DIDComm auth and refresh paths of both nodes.
+  - Each forced refresh is rate-limited per DID (5 s, with at most 4096
+    DIDs tracked). A failing proof is something anyone can send, and
+    without the limit each one would make this node fetch a third party's
+    document.
+
+- **vtc**: Unrestricted admin needs another admin's consent (VTI-APV-014) ([#1741](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1741))
+
+* security(vtc)!: unrestricted admin needs another admin's consent (VTI-APV-014)
+
+- **auth**: Retire the superseded refresh token when a DID logs in again ([#1683](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1683))
+
+* security(auth)!: retire the superseded refresh token when a DID logs in again
+
+  Rotation makes a stolen refresh token worth one use, and reuse detection
+  notices it when it comes back. Neither could see a token that is never
+  presented twice.
+
+  `/auth/` is keyed per DID and overwrites `session:{did}`, but the reverse
+  index is a separate `refresh:{hash}` row per token, and `/auth/refresh`
+  authorises from that index alone — it never consults
+  `session.refresh_token`. A login that merely added its own index row left
+  the previous one live, so one account carried two working chains that
+  shared no token: each refreshed into its own successor, no replay ever
+  occurred, and detection never fired. A token stolen before a re-login kept
+  working indefinitely and silently, alongside its owner's, and the one
+  recovery step a user can take unaided — logging in again — did nothing to
+  it.
+
+  `handle_authenticate` now retires the outgoing token. It reads the prior
+  session's `refresh_token` before `store_session` overwrites the row,
+  removes that token's index entry with the atomic claim-and-delete (so two
+  racing logins cannot both retire it, preserving VTI-SES-030), and leaves a
+  tombstone in its place. Ordered after the new chain is durable, as on the
+  rotation path; both writes log on error rather than failing a login that
+  has already committed and minted its tokens.
+
+  `RefreshTombstone` gains `cause` to record why a token was retired.
+  `Superseded` is excluded from the innocent-retry grace window on purpose:
+  that concession answers a lost rotation response, and a client that has
+  just logged in holds its replacement. Honouring a replay there would have
+  handed the new token to whoever replayed a pre-login theft — strictly worse
+  than the gap being closed.
+
+  Replaying a superseded token is refused and audited as
+  `AuthAuditEvent::RefreshSuperseded` (`warn!`, `security_alert = true`), but
+  the session is left running. Unlike reuse, the presented token is already
+  dead — the login took its index — so revoking adds nothing against a thief,
+  while the ordinary cause is a second device still holding what it was
+  issued before the user signed in elsewhere. Killing the session there would
+  sign out the client that is demonstrably current, and the re-login it
+  forces would set the same trap again. The event still carries
+  `security_alert` because a pre-login theft and a stale device are
+  indistinguishable from the node's side; only an operator correlating them
+  can say which it was.
+
+  `cleanup_expired_sessions` now also sweeps `refresh:` entries that their
+  session no longer names. Retirement fixes new logins but cannot reach
+  entries already written, and those rows carry no TTL and are not inert: an
+  orphan resolves again as soon as its DID has a session row, so it outlives
+  a revocation and returns at the next login. The sweep is safe against a
+  concurrent login or rotation because every writer stores the session row
+  before its index entry, so an entry that disagrees with its row is stale
+  rather than half-written.
+
+  Also in this change: `RefreshReuseDetected` takes its `did` from the
+  tombstone, so the alert names the account on the `SessionGone` path where
+  the session row is absent by definition; the lost-response retry log
+  carries `audit = true`, since a stable session id had left it
+  indistinguishable from an ordinary rotation; and the module header no
+  longer describes a delete-and-recreate the handler stopped doing.
+
+  `refresh_reuse_grace` stays at 30s, now documented as a starting point
+  rather than a ceiling — a client only discovers a lost response when its
+  own HTTP timeout fires, so a deployment whose clients retry later than that
+  may want 60s. It is a user-experience call, not a security one: the
+  successor-unspent condition, not the clock, is what keeps the concession
+  narrow. `0` still disables it entirely.
+
+- **vta**: Session and consent operations are scoped to the caller's authority ([#1717](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1717))
+
+Found by the scope sweep that followed FTL-29904 ([#1715](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1715)). Both surfaces
+  checked the caller's role and never the subject or datum it acted on.
+
+  Sessions (VTI-SES-043, VTI-ACL-050). Any admin could list every session on
+  the VTA and end any of them, a super-admin's included, via
+  `DELETE /auth/sessions?did=`, `DELETE /auth/sessions/{id}` and
+  `auth/revoke-session`; initiators could list them all. Session management now
+  follows ACL management: `operations::acl::may_manage_subject` answers "may
+  this caller act on this subject" with the rule `acl/delete` applies (the
+  caller itself, a super-admin, or a managing role that can see the subject's
+  entry and is at least as privileged). A super-admin's entry names no context,
+  so a scoped admin never reaches it; a subject with no entry belongs to no
+  context and only a super-admin reaches it. `GET /auth/sessions` lists only
+  the subjects the caller may manage. `auth/revoke-session` keeps its
+  no-disclosure answer (revokedCount 0) and now also records a durable `denied`
+  row when the session existed. `auth/sessions/list` was already self-only.
+
+  Consent (VTI-CTX-001, VTI-CTX-002). Grants carried no context, so any admin
+  could write a standing Allow for any subject (a decision with no challenge)
+  or withdraw anyone's grant. `ConsentGrant` now records the context of the
+  request it answers. `consent/revoke` needs authority over that context, or
+  super-admin for a grant with none. A decision with no challenge writes a
+  context-less grant and so needs a super-admin. A challenged decision with no
+  bound approver and an empty request context now needs a super-admin, where it
+  skipped the context check. `consent/request`'s `contextHint` must be a context
+  the caller may act in.
+
+  Every refusal is audited with outcome `denied` (VTI-AUD-003) and logged with
+  `security_alert = true`.
+
+- **workspace**: No type derives Debug over secret material ([#1711](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1711))
+
+A derived `Debug` prints every field, so on a type holding a private key, a
+  seed or mnemonic, a bearer or refresh token or a password it puts the secret
+  into anything that formats the value — a `tracing` field, an `unwrap` or
+  `expect` on an enclosing type, a test failure, a panic message. About 55 types
+  across twelve crates did exactly that. It surfaced when `vtc-client` began
+  holding an operator's key in a `HolderKey`, whose derived `Debug` printed it.
+
+  Each now has a hand-written `Debug` that reports the secret as `<redacted>` —
+  presence kept visible for an `Option` — and prints every other field as
+  before, the idiom the workspace already used where someone had thought of it.
+  Among them: `HolderKey`, `Session`, `ClientIdentity`, `CredentialBundle`,
+  `SecretEntry`, `AgentConfig`, `AgentConnect`, `AuthResult`, the key-import and
+  seed-rotation requests (mnemonic), `SeedRecord`, `MnemonicExportResponse`,
+  `SecretsConfig` (seed, Vault token, AppRole secret id), `VaultSecret`, its
+  `CustomField` values and secure notes, `TotpSeed`, the VTC install flow's
+  ephemeral signing keys, setup tokens and install JWT, the VTC backup's signing
+  bundle and password, mobile-core's X25519 and Ed25519 private keys, auth tokens
+  and push tokens (including the Web Push auth secret), and vta-mcp's
+  `--agent-key`/`--holder-key`/`--agent-secrets`.
+
+  `Zeroizing<T>` is not a redaction — its `Debug` prints the inner value — so the
+  fields wrapped in it were redacted too.
+
+  `vta-sdk/tests/secret_debug_census.rs` keeps the class closed. It parses every
+  workspace crate with `syn` and fails on a `#[derive(Debug)]` struct or enum
+  whose field has a secret-sounding name (`*_key`, `*token*`, `*secret*`,
+  `seed*`, `password`, `mnemonic`, `jwt`, and `secret_id` despite its `_id`)
+  and a raw type (`String`, bytes, `Zeroizing<_>`, optionally in an `Option` or
+  behind a reference). A field whose type is another workspace type inherits that
+  type's `Debug`, which is checked where it is defined. What the name rule
+  catches and is not a secret — a claim-type vocabulary token, a webvh path
+  called `mnemonic`, the name of an entry in a secret store — is on a
+  shrink-only list with what the field holds, and the census also refuses a
+  stale entry and a walk that has stopped finding types.
+
+  Not an API change: every type still implements `Debug`; only what it prints
+  differs, and no test asserted on the old output.
+
+
+
 ## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.24.0...vti-common-v0.25.0) — 2026-09-24
 
 

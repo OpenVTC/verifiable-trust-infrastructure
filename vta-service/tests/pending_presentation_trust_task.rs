@@ -3,8 +3,8 @@
 //!
 //! These exercise the **wire plumbing**: dispatch, the super-admin gate, and
 //! the list/deny/approve handlers end to end through the real router. A
-//! `pending-present:` record is seeded directly (the defer half is already
-//! wired in `messaging::handlers::handle_credential_query`); the full
+//! `pending-present:` record is seeded directly (the defer half is
+//! `trust_tasks::credential_exchange::handle_query`); the full
 //! re-present with a real held credential is covered at the operations layer
 //! (`operations::credential_exchange::defer_then_approve_presents_*`, where the
 //! holder fixture lives).

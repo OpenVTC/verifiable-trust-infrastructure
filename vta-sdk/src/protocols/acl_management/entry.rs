@@ -35,6 +35,43 @@ use serde_json::Value;
 /// device binding's local capability list.
 pub const CAPABILITIES_EXT_MEMBER: &str = "org.openvtc.capabilities";
 
+/// The `ext` member that marks a new entry as a one-time hand-off
+/// (VTI-ACL-054): `true` on a grant asks the maintainer to set the marker, and
+/// on a read says the entry carries one that has not been exercised.
+///
+/// Only a grant may carry it. The maintainer refuses it on an update, and a
+/// rotation never carries it across.
+pub const HANDOFF_EXT_MEMBER: &str = "org.openvtc.handoff";
+
+/// Whether an `ext` object asks for (or reports) the hand-off marker.
+///
+/// Anything but a boolean is an error rather than a guess: this member widens
+/// what the subject may later do, so a malformed value must not read as `true`,
+/// and silently reading it as `false` would hide an operator's mistake.
+pub fn handoff_from_ext(ext: Option<&Value>) -> Result<bool, String> {
+    match ext.and_then(|e| e.get(HANDOFF_EXT_MEMBER)) {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(v) => Err(format!(
+            "`{HANDOFF_EXT_MEMBER}` must be a boolean, found {v}"
+        )),
+    }
+}
+
+/// Put the hand-off marker into an `ext` object, preserving anything else
+/// already there. `false` leaves `ext` as it is.
+pub fn handoff_into_ext(ext: Option<Value>, handoff: bool) -> Option<Value> {
+    if !handoff {
+        return ext;
+    }
+    let mut base = match ext {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    base.insert(HANDOFF_EXT_MEMBER.to_string(), Value::Bool(true));
+    Some(Value::Object(base))
+}
+
 /// Read a capability narrowing out of an `ext` object.
 ///
 /// `None` means the member is absent — leave whatever is stored alone. An empty
@@ -309,7 +346,7 @@ impl AclEntry {
             // One extension member the VTA does author: the capability
             // narrowing. The framework has no vocabulary for it, and an
             // operator who cannot read a restriction back cannot verify it.
-            ext: capabilities_into_ext(None, &r.capabilities),
+            ext: handoff_into_ext(capabilities_into_ext(None, &r.capabilities), r.handoff),
         }
     }
 

@@ -2451,6 +2451,13 @@ export interface components {
              */
             truncated: boolean;
         };
+        /**
+         * @description Canonical `acl/revoke/0.1` response: the entry the maintainer now holds —
+         *     `null` after a full removal, the reduced entry after a scope reduction.
+         */
+        AclRevokeResponse: {
+            entry?: null | components["schemas"]["AclEntryResponse"];
+        };
         ActivateResponse: {
             /**
              * Format: uuid
@@ -3643,6 +3650,12 @@ export interface components {
             /** @description The login — display only: logins are renamed and re-registered. */
             login: string;
             member: string;
+            /**
+             * @description Whether the member is still a current member. One whose access lapsed
+             *     keeps the link — no one else may link the account — but it projects
+             *     no forge role, and a forge role it holds cannot be adopted as a right.
+             */
+            memberCurrent: boolean;
         };
         GitNsActivity: {
             items: components["schemas"]["GitNsActivityItem"][];
@@ -3821,6 +3834,17 @@ export interface components {
              *     `enforce`.
              */
             roleDrift: string;
+            roleMap?: null | components["schemas"]["GitNsRoleMap"];
+            /** @description The `issuedAt` of the report held, on the bridge's clock. */
+            roleMapReportedAt?: string | null;
+            /**
+             * @description `reported` — the bridge serving the namespace said so; `unknown` — it
+             *     has not reported since the namespace was bound or came to be served by
+             *     it (or it predates event 0.3). While unknown, drift adoption is
+             *     refused (`git-ns:roleMapUnknown`) and every role revert is weighed as
+             *     revoking `git.repo.own`.
+             */
+            roleMapSource: string;
             /** @description `pending` | `bound`. */
             state: string;
         };
@@ -3877,6 +3901,12 @@ export interface components {
             namespace: string;
             owners: string[];
             resource: string;
+            roleMap?: null | components["schemas"]["GitNsRoleMap"];
+            /**
+             * @description The bridge last projected this repository's roles under an earlier
+             *     role map; a re-projection is queued and has not yet succeeded.
+             */
+            roleMapStale: boolean;
             /**
              * @description `pendingCreate` | `active` | `archived` | `detached` | `orphaned` |
              *     `unmanaged`.
@@ -3912,6 +3942,17 @@ export interface components {
             subject: string;
             /** @description Whether the subject is a current member (an external signer is not). */
             subjectMember: boolean;
+        };
+        /**
+         * @description Which forge role `git.repo.own`, `git.repo.maintain` and
+         *     `git.commit.sign` project to — `none`, `read`, `triage`, `write`,
+         *     `maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to
+         *     no forge role under any map.
+         */
+        GitNsRoleMap: {
+            commit: string;
+            maintain: string;
+            own: string;
         };
         /** @description One bootstrap step's outcome, as the bridge reported it. */
         GitNsStepOutcome: {
@@ -7035,6 +7076,13 @@ export interface operations {
                 scope?: string;
                 /** @description Return only entries whose subject starts with this prefix. */
                 subjectPrefix?: string;
+                /**
+                 * @description How `scope` is read over the hierarchy: `acting-in` (the default)
+                 *     returns entries that may act in it — scoped to it or to an ancestor;
+                 *     `subtree` returns entries holding a grant at or beneath it; `any` is the
+                 *     union. Canonical `acl/list/0.1` `direction`.
+                 */
+                direction?: "acting-in" | "subtree" | "any";
                 /** @description Page size. Clamped to `1..=200`. Defaults to 50. */
                 pageSize?: number;
                 /** @description Opaque continuation token from a previous page's `cursor`. */
@@ -7162,7 +7210,10 @@ export interface operations {
     };
     delete_acl: {
         parameters: {
-            query?: never;
+            query?: {
+                scopes?: string;
+                reason?: string;
+            };
             header?: never;
             path: {
                 /** @description Subject DID */
@@ -7172,8 +7223,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description ACL entry deleted */
-            204: {
+            /** @description Entry revoked: `entry` is null after a removal, the reduced entry after a scope reduction */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AclRevokeResponse"];
+                };
+            };
+            /** @description `scopes` present but empty */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7186,15 +7246,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not an admin, or does not administer every context the entry acts in */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description ACL entry not found */
+            /** @description ACL entry not found (`acl/revoke:subjectNotPresent`), or none of the named scopes are held */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Own entry; a member's entry (use the leave ceremony); a reduction that would unscope the entry; or the last unrestricted admin (`acl/revoke:lastAuthorityProtected`) */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7680,7 +7747,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not an unrestricted (community-wide) admin */
             403: {
                 headers: {
                     [name: string]: unknown;

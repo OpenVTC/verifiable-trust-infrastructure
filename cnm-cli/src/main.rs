@@ -1,7 +1,9 @@
+mod access;
 mod audit;
 mod auth;
 mod backup;
 mod config;
+mod consent;
 mod did_log;
 mod git;
 mod setup;
@@ -201,6 +203,20 @@ enum Commands {
     Vetting {
         #[command(subcommand)]
         command: vetting::VettingCommands,
+    },
+
+    /// The community's own access-control list, on its VTC: list, show,
+    /// grant, update, change-role, revoke. (`acl` is the community VTA's.)
+    Access {
+        #[command(subcommand)]
+        command: access::AccessCommands,
+    },
+
+    /// Answer the community's consent requests: making or widening an
+    /// unrestricted administrator needs another one's approval.
+    Consent {
+        #[command(subcommand)]
+        command: consent::ConsentCommands,
     },
 
     /// Git namespaces: bind a forge owner, grant and revoke git rights,
@@ -554,6 +570,15 @@ enum ContextCommands {
         /// Requires `--admin-did`.
         #[arg(long, requires = "admin_did")]
         admin_expires: Option<String>,
+        /// Mark the admin entry as a **one-time hand-off** (VTI-ACL-054): the
+        /// admin DID may roll over once, while the entry is live, to a long-term
+        /// admin DID the VTA mints for it (provision-integration with an admin
+        /// template). The long-term admin is bounded by your own authority, and
+        /// takes your expiry rather than this entry's. Without it, the rollover
+        /// is refused because the long-term admin would outlive this entry.
+        /// Requires `--admin-expires`.
+        #[arg(long, requires = "admin_expires")]
+        admin_handoff: bool,
     },
     /// Update an existing context
     Update {
@@ -900,6 +925,8 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::DidLog { .. }
             | Commands::Vetting { .. }
             | Commands::Git { .. }
+            | Commands::Consent { .. }
+            | Commands::Access { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1261,6 +1288,7 @@ async fn main() {
                 admin_did,
                 admin_label,
                 admin_expires,
+                admin_handoff,
             } => {
                 let expires_at = match admin_expires.as_deref() {
                     Some(s) => match vta_cli_common::duration::duration_to_expires_at(s) {
@@ -1281,6 +1309,7 @@ async fn main() {
                     // identity; `pnm contexts create --admin-holder` is where
                     // that grant is made, deliberately.
                     holder: false,
+                    handoff: admin_handoff,
                 };
                 contexts::cmd_context_create(&client, &id, &name, description, parent, admin).await
             }
@@ -1357,6 +1386,7 @@ async fn main() {
                         // cnm exposes no capability flags; `None` leaves the
                         // entry holding everything its role implies.
                         None,
+                        false,
                     )
                     .await
                 }
@@ -1446,6 +1476,18 @@ async fn main() {
         Commands::Git { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => git::run(command, &key, &target).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Consent { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => consent::run(command, &key, &target).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Access { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => access::run(command, &key, &target).await,
                 Err(e) => Err(e),
             }
         }
@@ -2248,6 +2290,75 @@ mod tests {
         }));
     }
 
+    /// `cnm access` administers the VTC, so it authenticates to the VTC and
+    /// never to the VTA first; every verb's documented shape parses.
+    #[test]
+    fn access_commands_parse_and_need_no_vta_session() {
+        for argv in [
+            vec!["cnm", "access", "list"],
+            vec![
+                "cnm",
+                "access",
+                "list",
+                "--scope",
+                "ctx-a",
+                "--direction",
+                "subtree",
+            ],
+            vec!["cnm", "access", "show", "did:key:z6Mk"],
+            vec![
+                "cnm",
+                "access",
+                "grant",
+                "did:key:z6Mk",
+                "--role",
+                "member",
+                "--scopes",
+                "a,b",
+                "--expires",
+                "7d",
+            ],
+            vec![
+                "cnm",
+                "access",
+                "update",
+                "did:key:z6Mk",
+                "--scopes",
+                "a,b,c",
+            ],
+            vec!["cnm", "access", "update", "did:key:z6Mk", "--permanent"],
+            vec![
+                "cnm",
+                "access",
+                "change-role",
+                "did:key:z6Mk",
+                "--from",
+                "member",
+                "--to",
+                "moderator",
+            ],
+            vec!["cnm", "access", "revoke", "did:key:z6Mk", "--scopes", "a"],
+        ] {
+            let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert!(!requires_auth(&cli.command), "{argv:?}");
+        }
+        // `--direction` means nothing without a scope to read it against.
+        assert!(Cli::try_parse_from(["cnm", "access", "list", "--direction", "any"]).is_err());
+        // An expiry and a permanent entry cannot both be asked for.
+        assert!(
+            Cli::try_parse_from([
+                "cnm",
+                "access",
+                "update",
+                "did:key:z6Mk",
+                "--expires",
+                "1d",
+                "--permanent"
+            ])
+            .is_err()
+        );
+    }
+
     /// The contract's command shapes parse (CONTRACT-vetter-registry §9).
     #[test]
     fn vetting_commands_parse_as_documented() {
@@ -2358,6 +2469,27 @@ mod tests {
                 "{bad:?} should be refused"
             );
         }
+    }
+
+    #[test]
+    fn git_unlink_takes_a_forge_and_an_optional_account_id() {
+        for ok in [
+            vec!["cnm", "git", "unlink", "--forge", "github.com"],
+            vec![
+                "cnm",
+                "git",
+                "unlink",
+                "--forge",
+                "github.com",
+                "--account-id",
+                "9120045",
+            ],
+        ] {
+            if let Err(e) = Cli::try_parse_from(&ok) {
+                panic!("{ok:?} should parse: {e}");
+            }
+        }
+        assert!(Cli::try_parse_from(["cnm", "git", "unlink"]).is_err());
     }
 
     #[test]

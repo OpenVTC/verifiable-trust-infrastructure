@@ -21,7 +21,11 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { useNameBook } from "@/lib/names";
 import { useViewerDid } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
-import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
+import type {
+  GitNsDriftItem,
+  GitNsRight,
+  GitNsRoleMap,
+} from "@/lib/wire-types";
 
 import {
   adoptTask,
@@ -573,14 +577,26 @@ export function CreateDialog({
   const [name, setName] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [description, setDescription] = useState("");
+  const [owner, setOwner] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [ownerError, setOwnerError] = useState<string | null>(null);
 
   const submit = () => {
     const e = segmentError(name, "repository");
+    const oe = owner.trim() ? didError(owner) : null;
     setError(e);
-    if (!e) {
+    setOwnerError(oe);
+    if (!e && !oe) {
       onBuilt(
-        createTask({ namespaceId, namespaceResource, name, visibility, description, personal }),
+        createTask({
+          namespaceId,
+          namespaceResource,
+          name,
+          visibility,
+          description,
+          owners: owner.trim() ? [owner.trim()] : undefined,
+          personal,
+        }),
       );
     }
   };
@@ -595,8 +611,16 @@ export function CreateDialog({
       <p className="muted">
         {personal
           ? "On a personal account no bot can create a repository: the VTC reserves the name and answers with the commands the account holder runs."
-          : "The bridge creates it and bootstraps commit trust. Whoever signs becomes its owner, and needs git.repo.create here."}
+          : "The bridge creates it and bootstraps commit trust. Whoever signs needs git.repo.create here."}
       </p>
+      <TextField
+        label="Owner (DID)"
+        value={owner}
+        onChange={setOwner}
+        placeholder="Optional — you, if empty"
+        error={ownerError}
+        hint="Empty makes you the owner, which the VTC accepts only if someone else granted you git.repo.create here (or you broke the glass for it). A namespace admin's create right is implied and makes nobody an owner on its own: name another member."
+      />
       <TextField
         label="Name"
         value={name}
@@ -633,7 +657,7 @@ export function CreateDialog({
 }
 
 /**
- * Reseat a headless namespace (`git-ns/namespace/reseat` 0.1). Offered only
+ * Reseat a headless namespace (`git-ns/namespace/reseat` 0.3). Offered only
  * where the daemon reports the namespace headless; the VTC checks it again
  * when it runs the task. The subject is picked from current members only —
  * the fixed rules give `git.ns.admin` to no one else — and the statement is
@@ -730,7 +754,7 @@ export function ReseatDialog({
  */
 export function DriftResolveDialog({
   resource,
-  ns,
+  roleMap,
   item,
   label,
   adopt,
@@ -738,7 +762,9 @@ export function DriftResolveDialog({
   onBuilt,
 }: {
   resource: string;
-  ns: GitNsNamespaceRow;
+  /** The repository's role map (`GitNsRepoRow.roleMap`); absent while the
+   *  bridge has not reported it. */
+  roleMap?: GitNsRoleMap | null;
   item: GitNsDriftItem;
   /** The item as the drift list names it. */
   label: string;
@@ -757,7 +783,7 @@ export function DriftResolveDialog({
     onBuilt(
       adopt
         ? driftAdoptTask(resource, item, adopt.member, adopt.right, reason)
-        : driftRevertTask(resource, ns, item, reason),
+        : driftRevertTask(resource, item, reason, roleMap),
     );
   };
   const verb = adopt ? "Adopt" : "Revert";

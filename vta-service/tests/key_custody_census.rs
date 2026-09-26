@@ -70,7 +70,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     (
         "vta-service/src/operations/keys.rs",
         6,
-        "create_key (path authorized by authorize_explicit_key_path or allocated under the context base), import_key, and the imported-key KEK in get_key_secret / get_key_secret_internal / sign_payload; derived keys go through derive_record_key",
+        "create_key (path authorized by authorize_explicit_key_path or allocated under the context base), import_key, and the imported-key KEK in release_key_secret (behind get_key_secret) / get_key_secret_internal / sign_payload; derived keys go through derive_record_key",
     ),
     (
         "vta-service/src/operations/did_webvh/mod.rs",
@@ -81,6 +81,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "vta-service/src/operations/did_webvh/update/keys.rs",
         4,
         "webvh update keys at allocate/peek paths under the DID's base, and re-derivation from a VTA-written WebvhKeyHandle",
+    ),
+    (
+        "vta-service/src/operations/did_webvh/update/rotate.rs",
+        2,
+        "rotate-keys: replacement keys at paths allocated under the DID's own context base; only methods under the DID whose records are in its context are rotated (validate_document_for_update refuses foreign method ids)",
     ),
     (
         "vta-service/src/operations/provision_integration/mint.rs",

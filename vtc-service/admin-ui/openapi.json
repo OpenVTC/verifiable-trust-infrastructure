@@ -50,6 +50,21 @@
             }
           },
           {
+            "name": "direction",
+            "in": "query",
+            "description": "How `scope` is read over the hierarchy: `acting-in` (the default)\nreturns entries that may act in it — scoped to it or to an ancestor;\n`subtree` returns entries holding a grant at or beneath it; `any` is the\nunion. Canonical `acl/list/0.1` `direction`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which way a context filter reads along the context hierarchy.\n\nA context id names a subtree, so \"entries relevant to context X\" is two\nquestions, not one, and an answer is only meaningful paired with the\ndirection being asked:\n\n| direction | question | predicate |\n|---|---|---|\n| [`ActingIn`](ContextDirection::ActingIn) | who may act **in** X? | scope is X or an ancestor of it |\n| [`Subtree`](ContextDirection::Subtree) | who holds a grant **beneath** X? | scope is X or a descendant of it |\n| [`Any`](ContextDirection::Any) | whose authority **touches** X's subtree? | either of the above |\n\nOnly [`ActingIn`](ContextDirection::ActingIn) existed until now, and a\ncaller sweeping a subtree to revoke it got back exactly the entries it was\n*not* revoking (the ancestors keeping their authority) while every\nleaf-scoped grant it existed to cut was silently absent — an incomplete\nanswer that looks like a complete one (#822).\n\n[`ActingIn`](ContextDirection::ActingIn) is the default, so an omitted\nparameter is today's behaviour exactly. An unparseable value is refused\nrather than defaulted: guessing which question an operator meant is how the\nsilent-wrong-answer failure returns.",
+              "enum": [
+                "acting-in",
+                "subtree",
+                "any"
+              ]
+            }
+          },
+          {
             "name": "pageSize",
             "in": "query",
             "description": "Page size. Clamped to `1..=200`. Defaults to 50.",
@@ -197,20 +212,49 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "scopes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "204": {
-            "description": "ACL entry deleted"
+          "200": {
+            "description": "Entry revoked: `entry` is null after a removal, the reduced entry after a scope reduction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AclRevokeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`scopes` present but empty"
           },
           "401": {
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not an admin, or does not administer every context the entry acts in"
           },
           "404": {
-            "description": "ACL entry not found"
+            "description": "ACL entry not found (`acl/revoke:subjectNotPresent`), or none of the named scopes are held"
+          },
+          "409": {
+            "description": "Own entry; a member's entry (use the leave ceremony); a reduction that would unscope the entry; or the last unrestricted admin (`acl/revoke:lastAuthorityProtected`)"
           }
         },
         "security": [
@@ -681,7 +725,7 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not an unrestricted (community-wide) admin"
           },
           "409": {
             "description": "Target DID already has a non-admin ACL grant"
@@ -6266,6 +6310,22 @@
           }
         }
       },
+      "AclRevokeResponse": {
+        "type": "object",
+        "description": "Canonical `acl/revoke/0.1` response: the entry the maintainer now holds —\n`null` after a full removal, the reduced entry after a scope reduction.",
+        "properties": {
+          "entry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AclEntryResponse"
+              }
+            ]
+          }
+        }
+      },
       "ActivateResponse": {
         "type": "object",
         "required": [
@@ -8218,7 +8278,8 @@
           "member",
           "forge",
           "id",
-          "login"
+          "login",
+          "memberCurrent"
         ],
         "properties": {
           "forge": {
@@ -8240,6 +8301,10 @@
           },
           "member": {
             "type": "string"
+          },
+          "memberCurrent": {
+            "type": "boolean",
+            "description": "Whether the member is still a current member. One whose access lapsed\nkeeps the link — no one else may link the account — but it projects\nno forge role, and a forge role it holds cannot be adopted as a right."
           }
         }
       },
@@ -8697,7 +8762,8 @@
           "headless",
           "installationRemoved",
           "roleDrift",
-          "cascadeOnDeparture"
+          "cascadeOnDeparture",
+          "roleMapSource"
         ],
         "properties": {
           "admins": {
@@ -8787,6 +8853,28 @@
           "roleDrift": {
             "type": "string",
             "description": "The active policy's `role_drift` setting in effect: `report` or\n`enforce`."
+          },
+          "roleMap": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsRoleMap",
+                "description": "The forge role each right projects to on a repository without a map\nof its own, as the bridge serving the namespace reported it\n(`git-ns/bridge/event/0.3` `roleMapReported`). Absent while it has not\nreported: no map, the default included, is assumed."
+              }
+            ]
+          },
+          "roleMapReportedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `issuedAt` of the report held, on the bridge's clock."
+          },
+          "roleMapSource": {
+            "type": "string",
+            "description": "`reported` — the bridge serving the namespace said so; `unknown` — it\nhas not reported since the namespace was bound or came to be served by\nit (or it predates event 0.3). While unknown, drift adoption is\nrefused (`git-ns:roleMapUnknown`) and every role revert is weighed as\nrevoking `git.repo.own`."
           },
           "state": {
             "type": "string",
@@ -8878,7 +8966,8 @@
           "syncState",
           "driftCount",
           "createdAt",
-          "steps"
+          "steps",
+          "roleMapStale"
         ],
         "properties": {
           "bootstrap": {
@@ -8958,6 +9047,21 @@
           },
           "resource": {
             "type": "string"
+          },
+          "roleMap": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsRoleMap",
+                "description": "The forge role each right projects to on this repository, under the\nbridge's reported map. Absent while the namespace's map is unknown\n(`roleMapSource`)."
+              }
+            ]
+          },
+          "roleMapStale": {
+            "type": "boolean",
+            "description": "The bridge last projected this repository's roles under an earlier\nrole map; a re-projection is queued and has not yet succeeded."
           },
           "state": {
             "type": "string",
@@ -9061,6 +9165,26 @@
           "subjectMember": {
             "type": "boolean",
             "description": "Whether the subject is a current member (an external signer is not)."
+          }
+        }
+      },
+      "GitNsRoleMap": {
+        "type": "object",
+        "description": "Which forge role `git.repo.own`, `git.repo.maintain` and\n`git.commit.sign` project to — `none`, `read`, `triage`, `write`,\n`maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to\nno forge role under any map.",
+        "required": [
+          "own",
+          "maintain",
+          "commit"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "maintain": {
+            "type": "string"
+          },
+          "own": {
+            "type": "string"
           }
         }
       },

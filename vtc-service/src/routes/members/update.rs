@@ -136,6 +136,19 @@ pub(crate) async fn update_member_inner(
         ));
     }
 
+    // The role and the label live on the ACL row, and a subject may not modify
+    // its own entry (VTI-ACL-052) — on this door any more than on
+    // `acl/change-role`. The member-row fields (publish consent, departure
+    // preference, extensions) are not authority and stay editable.
+    if auth.did == did && (req.role.is_some() || req.label.is_some()) {
+        return Err(AppError::Forbidden(
+            "you cannot change the role or label of your own ACL entry (VTI-ACL-052) — another \
+             administrator must make this change"
+                .into(),
+        )
+        .into());
+    }
+
     let audit_writer = state
         .audit_writer
         .as_ref()

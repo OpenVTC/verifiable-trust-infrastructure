@@ -52,6 +52,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         vta_name: None,
         public_url: None,
         resolver_url: None,
+        did_cache: Default::default(),
         server: Default::default(),
         log: Default::default(),
         store: StoreConfig { data_dir },

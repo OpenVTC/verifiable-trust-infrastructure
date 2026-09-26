@@ -46,6 +46,26 @@ const rowOf = async (label: string) => {
 };
 
 describe("Members — git rights (UI-13)", () => {
+  it("marks an account whose member is no longer current", async () => {
+    const r = routes().map((route) =>
+      route.path === "/v1/git-ns/accounts"
+        ? {
+            ...route,
+            body: {
+              accounts: ACCOUNTS.map((a) =>
+                a.member === BOB ? { ...a, memberCurrent: false } : a,
+              ),
+            },
+          }
+        : route,
+    );
+    mockFetch(r);
+    mount(`/members/${encodeURIComponent(BOB)}`);
+    const card = (await screen.findByRole("heading", { name: "Git rights" })).closest("section");
+    await within(card!).findByText("@bobm");
+    expect(card!.textContent).toContain("not current — no forge role");
+  });
+
   it("adds a Git column with each member's strongest right and linked logins", async () => {
     mockFetch(routes());
     mount();
@@ -95,6 +115,8 @@ describe("Members — git rights (UI-13)", () => {
     expect(c.queryByRole("link", { name: "acme" })).toBeNull();
     expect(c.getByText("@bobm")).toBeTruthy();
     expect(card.textContent).toContain("1002");
+    // A current member's account carries no lapsed marker.
+    expect(card.textContent).not.toContain("not current");
     // Unlinking is the member's own act: the console names the command.
     expect(card.textContent).toContain("cnm git unlink --forge <host>");
   });

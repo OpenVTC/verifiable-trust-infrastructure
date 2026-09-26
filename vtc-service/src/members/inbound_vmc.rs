@@ -17,7 +17,6 @@
 //! reciprocal half of the join, superseding the retired
 //! `join-requests/accept/0.1` task (one credential-delivery path, not two).
 
-use affinidi_data_integrity::VerifyOptions;
 use serde_json::Value as JsonValue;
 use tracing::info;
 use uuid::Uuid;
@@ -413,14 +412,17 @@ async fn verify_member_vmc(
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
     for proof in &proofs {
         let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
-        let r = proof
-            .verify(&unsigned, &resolver, VerifyOptions::new())
-            .await
-            .map_err(|e| e.to_string());
+        let r = crate::credentials::proof_set::verify_one(
+            proof,
+            &unsigned,
+            &resolver,
+            vti_common::auth::ProofPurpose::AssertionMethod,
+        )
+        .await;
         outcomes.push((did, r));
     }
 
-    crate::credentials::proof_set::accept_any(&outcomes)
+    crate::credentials::proof_set::accept_all(&outcomes)
         .map_err(|e| invalid(format!("member vmc issuer proof did not verify: {e}")))?;
 
     obj.get("id")

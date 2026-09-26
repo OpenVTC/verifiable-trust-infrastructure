@@ -428,6 +428,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Attestation ─────────────────────────────────────────────────────
     (trust_tasks::TASK_ATTESTATION_STATUS_1_0, ReadOnly),
     (trust_tasks::TASK_ATTESTATION_REPORT_1_0, ReadOnly),
+    // One-time: a repeat is refused once the entropy is gone, and the reply is
+    // the (sealed) root mnemonic, which never sits in the dedup store.
+    (
+        trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+        KeyedSecret,
+    ),
     // ── Consent (DTTE) ──────────────────────────────────────────────────
     // A consent request is addressed by the payload digest it binds, so a
     // repeat lands on the same pending request.

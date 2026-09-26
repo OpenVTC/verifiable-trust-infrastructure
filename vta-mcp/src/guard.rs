@@ -105,6 +105,9 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("vault/release", Risk::Sensitive),
     ("vault/proxy-login", Risk::Sensitive),
     ("keys/export-secret", Risk::Sensitive),
+    // The root seed, sealed to the caller: the export of every key this VTA
+    // holds, so it is classified with `keys/export-secret`.
+    ("vta/attestation/mnemonic-export", Risk::Sensitive),
     // Returns the private keys of a context's DID. The verb rule would read
     // `secrets` as an ordinary mutation, and the task's own `sideEffects` are
     // `none` — it reads and changes nothing — so neither the verb nor the side

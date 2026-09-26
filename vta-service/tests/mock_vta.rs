@@ -1138,21 +1138,12 @@ async fn post_trust_task(
     serde_json::from_str(&text).map_err(|e| format!("{type_uri} reply is not JSON: {e} ({text})"))
 }
 
-/// A heavy Trust Task through the full inbound dispatch spine on the default
-/// libtest stack (~2 MiB), current-thread runtime — the in-process axum server
-/// runs on this same thread, so the dispatch future is polled here.
-///
-/// `initiate-export/1.1` with `algorithm: chunkedTrustTask` runs
-/// `handle_initiate_export_1_1`, which awaits a full state export inline — one
-/// of the largest handler futures the VTA has, and the one #1522 hand-boxed.
-/// That box moved to the dispatch seam (`dispatch_typed` `Box::pin`s every arm),
-/// so this handler's whole future is heap-allocated there and the match frame
-/// stays pointer-sized. This is the regression guard for that: unbox the seam
-/// and this overflows the stack — which aborts the process, not merely fails the
-/// assert. A well-formed reply of any kind proves the poll completed without
-/// overflow; the assert also pins the happy path.
+/// A backup export requested over HTTPS is refused through the full inbound
+/// spine: the sealing password would exist in plaintext wherever TLS
+/// terminates. The end-to-end path, which runs the export, is covered by
+/// `trust_tasks::backup::tests`.
 #[tokio::test]
-async fn heavy_trust_task_dispatches_on_default_stack() {
+async fn backup_export_over_https_is_refused() {
     let mock = MockVta::start().await;
     // Empty contexts == super-admin, which backup export requires.
     let (identity, token) = mock
@@ -1172,15 +1163,18 @@ async fn heavy_trust_task_dispatches_on_default_stack() {
             "password": "dispatch-seam-guard-pw",
         }),
     )
-    .await
-    .expect("chunked initiate-export dispatched without a stack overflow");
-
-    // The chunked path answers with a descriptor; its presence confirms the
-    // heavy handler ran to completion rather than merely not overflowing.
+    .await;
+    let text = match &reply {
+        Ok(v) => v.to_string(),
+        Err(e) => e.to_string(),
+    };
     assert!(
-        reply["payload"]["descriptor"].is_object(),
-        "expected a chunked bundle descriptor, got: {reply}"
+        reply
+            .as_ref()
+            .map_or(true, |v| v["payload"]["descriptor"].is_null()),
+        "no bundle over HTTPS: {text}"
     );
+    assert!(text.contains("hop-by-hop"), "{text}");
 }
 
 /// The `services/*` write paths, against a VTA whose own DID is hosted.

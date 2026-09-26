@@ -49,10 +49,39 @@ async fn build() -> Fixture {
     )
     .await
     .expect("install default policies");
+    // The caller every test acts as. Its entry is what bounds the entries it
+    // may write (VTI-ACL-053), so it has to exist, as it would for any caller
+    // that could have authenticated.
+    seed_entry(&vtc, ADMIN, vtc_service::acl::VtcRole::Admin, vec![], None).await;
     Fixture {
         router: vtc.router.clone(),
         vtc,
     }
+}
+
+async fn seed_entry(
+    vtc: &TestVtc,
+    did: &str,
+    role: vtc_service::acl::VtcRole,
+    scopes: Vec<String>,
+    expires_at: Option<u64>,
+) {
+    vtc_service::acl::store_acl_entry(
+        &vtc.state.acl_ks,
+        &vtc_service::acl::VtcAclEntry {
+            did: did.into(),
+            role,
+            label: None,
+            allowed_contexts: scopes,
+            created_at: now_epoch(),
+            created_by: "test".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at,
+        },
+    )
+    .await
+    .unwrap();
 }
 
 async fn admin_token(fix: &Fixture) -> String {
@@ -305,7 +334,7 @@ async fn revoke_with_scopes_reduces_rather_than_removes() {
     )
     .await;
 
-    let (status, _) = call(
+    let (status, body) = call(
         &fix,
         "DELETE",
         "/v1/acl/did:key:z6MkErin?scopes=ctx-a",
@@ -314,7 +343,9 @@ async fn revoke_with_scopes_reduces_rather_than_removes() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Canonical `acl/revoke#response`: the entry the maintainer now holds.
+    assert_eq!(body["entry"]["scopes"], json!(["ctx-b"]), "{body}");
 
     // The entry must survive, minus that one scope.
     let (status, body) = call(&fix, "GET", "/v1/acl/did:key:z6MkErin", SHOW, &token, None).await;
@@ -329,7 +360,7 @@ async fn revoke_without_scopes_removes_the_entry() {
     let token = admin_token(&fix).await;
     grant(&fix, &token, "did:key:z6MkFred", "member", json!(["ctx-a"])).await;
 
-    let (status, _) = call(
+    let (status, body) = call(
         &fix,
         "DELETE",
         "/v1/acl/did:key:z6MkFred",
@@ -338,7 +369,9 @@ async fn revoke_without_scopes_removes_the_entry() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // A full removal leaves nothing: `entry` is `null`, not absent.
+    assert!(body.get("entry").is_some_and(Value::is_null), "{body}");
 
     let (status, _) = call(&fix, "GET", "/v1/acl/did:key:z6MkFred", SHOW, &token, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -526,7 +559,7 @@ async fn revoking_the_acl_of_a_departed_member_is_allowed() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// Scope *reduction* orphans nothing — the entry survives, minus those scopes —
@@ -550,7 +583,7 @@ async fn reducing_a_members_scopes_is_still_allowed() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let (status, body) = call(&fix, "GET", &format!("/v1/acl/{DID}"), SHOW, &token, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -685,7 +718,17 @@ async fn vti_ops_050_self_promotion_is_refused_on_the_change_role_path() {
     let token = stepped_up_admin_token(&fix, 900).await;
     // The caller's own ACL row now says `member` — the bearer outlived the
     // demotion, which is exactly when self-promotion is reachable.
-    seed_member(&fix, ADMIN, "member").await;
+    // Written directly: the caller cannot rewrite its own entry through
+    // `acl/grant` (VTI-ACL-052), which is the point of the neighbouring tests.
+    seed_entry(
+        &fix.vtc,
+        ADMIN,
+        vtc_service::acl::VtcRole::Member,
+        vec![],
+        None,
+    )
+    .await;
+    make_member(&fix, ADMIN).await;
 
     let (status, body) = call(
         &fix,
@@ -697,10 +740,13 @@ async fn vti_ops_050_self_promotion_is_refused_on_the_change_role_path() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // Refused before the ceremony runs: moving your own role in either
+    // direction is a modification of your own entry (VTI-ACL-052). The
+    // ceremony's self-promotion invariant stays behind it.
     let msg = body["error"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("cannot promote yourself") && msg.contains("acl/change-role"),
-        "the refusal must say why and name the fix: {body}"
+        msg.contains("cannot change your own role"),
+        "the refusal must say why: {body}"
     );
 
     let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, ADMIN)
@@ -848,11 +894,12 @@ async fn vti_ops_050_granting_yourself_the_admin_role_is_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // The caller already holds an entry, so this is a rewrite of it and is
+    // refused as one (VTI-ACL-052); a caller with no entry is refused with
+    // "cannot grant yourself" before anything else.
+    let msg = body["error"].as_str().unwrap_or_default();
     assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("cannot grant yourself"),
+        msg.contains("cannot grant yourself") || msg.contains("your own ACL entry"),
         "{body}"
     );
 }
@@ -917,4 +964,575 @@ async fn granting_a_non_admin_role_needs_no_step_up() {
         .await,
         StatusCode::CREATED
     );
+}
+
+// ─── VTI-ACL-052 / VTI-ACL-053: no self-widening, no grant past the granter ──
+
+/// VTI-ACL-052: a rewrite of your own entry is a modification of it. Before
+/// this, an administrator could re-grant itself at the same role with the
+/// expiry dropped (time-boxed → permanent) or the scopes moved.
+#[tokio::test]
+async fn vti_acl_052_an_admin_cannot_rewrite_its_own_entry() {
+    let fix = build().await;
+    const SELF: &str = "did:key:z6MkExpiringCtxAdmin";
+    let expires = now_epoch() + 3600;
+    seed_entry(
+        &fix.vtc,
+        SELF,
+        vtc_service::acl::VtcRole::Admin,
+        vec!["ctx-a".into()],
+        Some(expires),
+    )
+    .await;
+    let token = fix.vtc.token(SELF, "admin", vec!["ctx-a".into()]).await;
+
+    let (status, body) = call(
+        &fix,
+        "POST",
+        "/v1/acl",
+        GRANT,
+        &token,
+        Some(json!({ "entry": { "subject": SELF, "role": "admin", "scopes": ["ctx-a"] } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, SELF)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.expires_at, Some(expires), "expiry must be untouched");
+}
+
+/// VTI-ACL-052 on the role path: demoting yourself is a modification of
+/// your own entry too (the ceremony only refused self-*promotion*).
+#[tokio::test]
+async fn vti_acl_052_an_admin_cannot_change_its_own_role() {
+    let fix = build().await;
+    let token = admin_token(&fix).await;
+    let (status, body) = call(
+        &fix,
+        "PATCH",
+        &format!("/v1/acl/{ADMIN}"),
+        CHANGE_ROLE,
+        &token,
+        Some(json!({ "fromRole": "admin", "toRole": "moderator" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// VTI-ACL-053: an administrator whose entry expires cannot write an entry
+/// that outlives it — the way it would otherwise widen itself, by granting a
+/// second DID it controls.
+#[tokio::test]
+async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
+    let fix = build().await;
+    const GRANTER: &str = "did:key:z6MkShortLivedAdmin";
+    let expires = now_epoch() + 3600;
+    seed_entry(
+        &fix.vtc,
+        GRANTER,
+        vtc_service::acl::VtcRole::Admin,
+        vec!["ctx-a".into()],
+        Some(expires),
+    )
+    .await;
+    let token = fix.vtc.token(GRANTER, "admin", vec!["ctx-a".into()]).await;
+    let at = |secs: u64| {
+        chrono::DateTime::from_timestamp(secs as i64, 0)
+            .unwrap()
+            .to_rfc3339()
+    };
+
+    for (what, entry) in [
+        (
+            "permanent",
+            json!({ "subject": "did:key:z6MkSib1", "role": "member", "scopes": ["ctx-a"] }),
+        ),
+        (
+            "later",
+            json!({ "subject": "did:key:z6MkSib2", "role": "member", "scopes": ["ctx-a"],
+                    "expiresAt": at(expires + 60) }),
+        ),
+    ] {
+        let (status, body) = call(
+            &fix,
+            "POST",
+            "/v1/acl",
+            GRANT,
+            &token,
+            Some(json!({ "entry": entry })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{what}: {body}");
+    }
+
+    let (status, body) = call(
+        &fix,
+        "POST",
+        "/v1/acl",
+        GRANT,
+        &token,
+        Some(
+            json!({ "entry": { "subject": "did:key:z6MkSib3", "role": "member",
+                                "scopes": ["ctx-a"], "expiresAt": at(expires) } }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "within the granter's expiry: {body}"
+    );
+}
+
+/// Overlap makes an entry visible, not manageable. An administrator of ctx-a
+/// could previously rewrite a `[ctx-a, ctx-b]` member entry down to `[ctx-a]`,
+/// strip `ctx-b` with a scoped revoke, or move its role — each a change to
+/// authority in a context it does not administer.
+#[tokio::test]
+async fn a_context_admin_cannot_manage_an_entry_straddling_its_scope() {
+    let fix = build().await;
+    let super_token = admin_token(&fix).await;
+    const DID: &str = "did:key:z6MkStraddler";
+    assert_eq!(
+        grant(&fix, &super_token, DID, "member", json!(["ctx-a", "ctx-b"])).await,
+        StatusCode::CREATED
+    );
+    let ctx_admin = fix
+        .vtc
+        .token("did:key:z6MkCtxAdminA", "admin", vec!["ctx-a".into()])
+        .await;
+
+    let (status, body) = call(
+        &fix,
+        "POST",
+        "/v1/acl",
+        GRANT,
+        &ctx_admin,
+        Some(json!({ "entry": { "subject": DID, "role": "member", "scopes": ["ctx-a"] } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "rewrite: {body}");
+
+    let (status, body) = call(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{DID}?scopes=ctx-b"),
+        REVOKE,
+        &ctx_admin,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "scoped revoke: {body}");
+
+    let (status, body) = call(
+        &fix,
+        "PATCH",
+        &format!("/v1/acl/{DID}"),
+        CHANGE_ROLE,
+        &ctx_admin,
+        Some(json!({ "fromRole": "member", "toRole": "moderator" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "change-role: {body}");
+
+    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, DID)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.allowed_contexts, vec!["ctx-a", "ctx-b"]);
+    assert_eq!(entry.role, vtc_service::acl::VtcRole::Member);
+}
+
+// ---------------------------------------------------------------------------
+// One operation, two doors.
+//
+// The bearer routes above are thin adapters over the same functions the signed
+// Trust Task documents reach on the spine (`trust_tasks::acl_tasks`). These
+// pin that: the same request, made by the same principal once as a bearer call
+// and once as a signed document to `POST /v1/trust-tasks`, gets the same
+// answer — the same body on success, the same refusal on failure.
+// ---------------------------------------------------------------------------
+
+const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
+
+/// A signed document from `from`, addressed to the test VTC.
+async fn signed_doc(from: &vti_rooms_dtg::test_support::Party, uri: &str, payload: Value) -> Value {
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        uri,
+        payload,
+        &from.did,
+        vtc_service::test_support::TEST_VTC_DID,
+    )
+    .unwrap();
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    serde_json::to_value(doc).unwrap()
+}
+
+/// POST a document; the reply's status and whole document.
+async fn post_doc(fix: &Fixture, doc: &Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/trust-tasks")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(doc).unwrap()))
+        .unwrap();
+    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+}
+
+/// An admin with a real key, a bearer token for it, and the fixture.
+async fn two_door_admin(
+    fix: &Fixture,
+    scopes: Vec<String>,
+) -> (vti_rooms_dtg::test_support::Party, String) {
+    let who = vti_rooms_dtg::test_support::Party::new();
+    seed_entry(
+        &fix.vtc,
+        &who.did,
+        vtc_service::acl::VtcRole::Admin,
+        scopes.clone(),
+        None,
+    )
+    .await;
+    let token = fix.vtc.token(&who.did, "admin", scopes).await;
+    (who, token)
+}
+
+/// Drop what legitimately differs between two answers to the same question:
+/// the provenance stamps of a write made a moment apart.
+fn without_stamps(mut v: Value) -> Value {
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(map) => {
+                map.remove("updatedAt");
+                map.remove("createdAt");
+                map.values_mut().for_each(strip);
+            }
+            Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    strip(&mut v);
+    v
+}
+
+#[tokio::test]
+async fn acl_show_and_list_answer_the_same_on_both_doors() {
+    let fix = build().await;
+    let (admin, token) = two_door_admin(&fix, vec![]).await;
+    seed_entry(
+        &fix.vtc,
+        "did:key:z6MkParityShow",
+        vtc_service::acl::VtcRole::Moderator,
+        vec!["ctx-a".into()],
+        None,
+    )
+    .await;
+
+    let (status, rest) = call(
+        &fix,
+        "GET",
+        "/v1/acl/did:key:z6MkParityShow",
+        SHOW,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rest}");
+    let (status, doc) = post_doc(
+        &fix,
+        &signed_doc(&admin, SHOW, json!({ "subject": "did:key:z6MkParityShow" })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"], rest, "acl/show: one operation, one answer");
+
+    let (status, rest) = call(&fix, "GET", "/v1/acl?scope=ctx-a", LIST, &token, None).await;
+    assert_eq!(status, StatusCode::OK, "{rest}");
+    let (status, doc) = post_doc(
+        &fix,
+        &signed_doc(&admin, LIST, json!({ "scope": "ctx-a" })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"], rest, "acl/list: one operation, one answer");
+
+    // The same absence, the same way.
+    let (status, _) = call(
+        &fix,
+        "GET",
+        "/v1/acl/did:key:z6MkNobody",
+        SHOW,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, doc) = post_doc(
+        &fix,
+        &signed_doc(&admin, SHOW, json!({ "subject": "did:key:z6MkNobody" })).await,
+    )
+    .await;
+    assert_eq!(doc["payload"]["details"]["reason"], "not_found", "{doc}");
+}
+
+#[tokio::test]
+async fn acl_revoke_answers_the_same_on_both_doors() {
+    let fix = build().await;
+    let (admin, token) = two_door_admin(&fix, vec![]).await;
+    for did in ["did:key:z6MkParityRest", "did:key:z6MkParityDoc"] {
+        seed_entry(
+            &fix.vtc,
+            did,
+            vtc_service::acl::VtcRole::Member,
+            vec!["ctx-a".into(), "ctx-b".into()],
+            None,
+        )
+        .await;
+    }
+
+    // Scope reduction.
+    let (status, rest) = call(
+        &fix,
+        "DELETE",
+        "/v1/acl/did:key:z6MkParityRest?scopes=ctx-b",
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rest}");
+    let (status, doc) = post_doc(
+        &fix,
+        &signed_doc(
+            &admin,
+            REVOKE,
+            json!({ "subject": "did:key:z6MkParityDoc", "scopes": ["ctx-b"] }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut from_doc = without_stamps(doc["payload"].clone());
+    from_doc["entry"]["subject"] = json!("did:key:z6MkParityRest");
+    assert_eq!(from_doc, without_stamps(rest), "acl/revoke (reduce)");
+
+    // Removal.
+    let (status, rest) = call(
+        &fix,
+        "DELETE",
+        "/v1/acl/did:key:z6MkParityRest",
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rest}");
+    let (status, doc) = post_doc(
+        &fix,
+        &signed_doc(
+            &admin,
+            REVOKE,
+            json!({ "subject": "did:key:z6MkParityDoc" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"], rest, "acl/revoke (remove)");
+    assert_eq!(rest, json!({ "entry": null }));
+
+    // The same absence carries the task's declared code on both doors.
+    let (status, rest) = call(
+        &fix,
+        "DELETE",
+        "/v1/acl/did:key:z6MkParityRest",
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{rest}");
+    assert_eq!(rest["code"], "acl/revoke:subjectNotPresent", "{rest}");
+    let (_, doc) = post_doc(
+        &fix,
+        &signed_doc(
+            &admin,
+            REVOKE,
+            json!({ "subject": "did:key:z6MkParityDoc" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        doc["payload"]["code"], "acl/revoke:subjectNotPresent",
+        "{doc}"
+    );
+}
+
+/// The refusals #1738 added — full cover to revoke, no self-modification — are
+/// the operation's, so both doors give them.
+#[tokio::test]
+async fn acl_revoke_refuses_the_same_on_both_doors() {
+    let fix = build().await;
+    let (scoped, token) = two_door_admin(&fix, vec!["ctx-a".into()]).await;
+    seed_entry(
+        &fix.vtc,
+        "did:key:z6MkParityStraddle",
+        vtc_service::acl::VtcRole::Member,
+        vec!["ctx-a".into(), "ctx-b".into()],
+        None,
+    )
+    .await;
+
+    let (status, rest) = call(
+        &fix,
+        "DELETE",
+        "/v1/acl/did:key:z6MkParityStraddle?scopes=ctx-a",
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{rest}");
+    let (_, doc) = post_doc(
+        &fix,
+        &signed_doc(
+            &scoped,
+            REVOKE,
+            json!({ "subject": "did:key:z6MkParityStraddle", "scopes": ["ctx-a"] }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(doc["payload"]["code"], "permissionDenied", "{doc}");
+    for said in [doc["payload"]["message"].as_str(), rest["error"].as_str()] {
+        assert!(
+            said.is_some_and(|m| m.contains("holds authority outside your contexts")),
+            "the same refusal on both doors: {doc} / {rest}"
+        );
+    }
+
+    let (status, rest) = call(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{}", scoped.did),
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{rest}");
+    let (_, doc) = post_doc(
+        &fix,
+        &signed_doc(&scoped, REVOKE, json!({ "subject": scoped.did })).await,
+    )
+    .await;
+    for said in [doc["payload"]["message"].as_str(), rest["error"].as_str()] {
+        assert!(
+            said.is_some_and(|m| m.contains("cannot delete your own ACL entry")),
+            "the same refusal on both doors: {doc} / {rest}"
+        );
+    }
+
+    let entry =
+        vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, "did:key:z6MkParityStraddle")
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(entry.allowed_contexts, vec!["ctx-a", "ctx-b"]);
+}
+
+/// `?scopes=` naming nothing is refused, not read as "remove the entry":
+/// canonical `acl/revoke` declares `minItems: 1`, and the signed door refuses
+/// the empty array on the schema.
+#[tokio::test]
+async fn acl_revoke_with_an_empty_scope_list_removes_nothing() {
+    let fix = build().await;
+    let (admin, token) = two_door_admin(&fix, vec![]).await;
+    seed_entry(
+        &fix.vtc,
+        "did:key:z6MkParityEmpty",
+        vtc_service::acl::VtcRole::Member,
+        vec!["ctx-a".into()],
+        None,
+    )
+    .await;
+    let (status, rest) = call(
+        &fix,
+        "DELETE",
+        "/v1/acl/did:key:z6MkParityEmpty?scopes=",
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{rest}");
+    let (_, doc) = post_doc(
+        &fix,
+        &signed_doc(
+            &admin,
+            REVOKE,
+            json!({ "subject": "did:key:z6MkParityEmpty", "scopes": [] }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(doc["payload"]["code"], "malformedRequest", "{doc}");
+    assert!(
+        vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, "did:key:z6MkParityEmpty")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// An update and the grant that restates the same entry are one operation
+/// planned by one function, so they land the same row.
+#[tokio::test]
+async fn acl_update_writes_what_the_equivalent_grant_writes() {
+    let fix = build().await;
+    let (admin, token) = two_door_admin(&fix, vec![]).await;
+    for did in ["did:key:z6MkParityGrant", "did:key:z6MkParityUpdate"] {
+        seed_entry(
+            &fix.vtc,
+            did,
+            vtc_service::acl::VtcRole::Member,
+            vec!["ctx-a".into()],
+            None,
+        )
+        .await;
+    }
+    let (status, rest) = call(
+        &fix,
+        "POST",
+        "/v1/acl",
+        GRANT,
+        &token,
+        Some(json!({ "entry": {
+            "subject": "did:key:z6MkParityGrant", "role": "member",
+            "scopes": ["ctx-a", "ctx-b"], "label": "ops",
+        } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rest}");
+    let (status, doc) = post_doc(
+        &fix,
+        &signed_doc(
+            &admin,
+            UPDATE,
+            json!({ "subject": "did:key:z6MkParityUpdate", "scopes": ["ctx-a", "ctx-b"], "label": "ops" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut from_doc = without_stamps(doc["payload"].clone());
+    from_doc["entry"]["subject"] = json!("did:key:z6MkParityGrant");
+    assert_eq!(from_doc, without_stamps(rest));
 }
