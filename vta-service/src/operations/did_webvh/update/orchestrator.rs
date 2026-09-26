@@ -59,6 +59,7 @@ pub async fn plan_did_webvh_update(
         Mode::Plan,
         PublishTarget::DidLog,
         &mut Commit::NotCommitted,
+        None,
     )
     .await?
     {
@@ -92,6 +93,7 @@ pub async fn update_did_webvh(
         Mode::Execute,
         PublishTarget::DidLog,
         &mut Commit::NotCommitted,
+        None,
     )
     .await?
     {
@@ -114,10 +116,27 @@ pub(super) enum Commit {
     Committed,
 }
 
+/// Work that must follow the local log write once that write has started,
+/// whether or not anyone is still waiting for the update.
+///
+/// The log write and this work run together in one spawned task, so dropping
+/// the request future (a client that disconnects, a transport timeout) after
+/// the write was issued cannot stop between the two: the store's blocking
+/// write finishes on its own, and without this the state the caller staged for
+/// the new entry would be left behind with nothing to finish it. It runs only
+/// when the write succeeds, and its error is reported as
+/// [`Commit::Committed`].
+pub(super) type OnCommit = Box<
+    dyn FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), UpdateDidWebvhError>> + Send>,
+        > + Send,
+>;
+
 /// [`update_did_webvh`], reporting on failure whether the new entry was
 /// committed. A caller that staged state for the update (rotate-keys' key
-/// records) must promote it after the commit point and may discard it only
-/// before — an error alone does not say which.
+/// records) passes the work that must follow the commit as `on_commit` (see
+/// [`OnCommit`]); on an error it may discard what it staged only when the
+/// entry was not committed — an error alone does not say which.
 pub(super) async fn update_did_webvh_tracked(
     deps: &super::super::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -125,6 +144,7 @@ pub(super) async fn update_did_webvh_tracked(
     opts: UpdateDidWebvhOptions,
     vta_did: Option<&str>,
     channel: &str,
+    on_commit: Option<OnCommit>,
 ) -> Result<UpdateDidWebvhResult, (UpdateDidWebvhError, Commit)> {
     let mut commit = Commit::NotCommitted;
     match run_update(
@@ -137,6 +157,7 @@ pub(super) async fn update_did_webvh_tracked(
         Mode::Execute,
         PublishTarget::DidLog,
         &mut commit,
+        on_commit,
     )
     .await
     {
@@ -413,6 +434,7 @@ pub async fn agent_name_op(
             verb,
         },
         &mut Commit::NotCommitted,
+        None,
     )
     .await?
     {
@@ -545,6 +567,7 @@ async fn run_update(
     mode: Mode,
     publish: PublishTarget,
     commit: &mut Commit,
+    on_commit: Option<OnCommit>,
 ) -> Result<Outcome, UpdateDidWebvhError> {
     // Re-bind the bundled deps to the historical local names so the (large) body
     // below is unchanged. All fields are `Copy` references — this copies the
@@ -1209,12 +1232,44 @@ async fn run_update(
 
     // 12. Persist new log + new key handles + updated record.
     let new_log_jsonl = state_to_jsonl(result.state())?;
-    webvh_store::store_did_log(webvh_ks, &record.did, &new_log_jsonl)
-        .await
-        .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did_log: {e}")))?;
     // The commit point: from here the new entry is the DID's local head, and
-    // an error below no longer means nothing happened.
-    *commit = Commit::Committed;
+    // an error below no longer means nothing happened. The write and the
+    // caller's `on_commit` run in their own task (see [`OnCommit`]).
+    let write = {
+        let webvh_ks = webvh_ks.clone();
+        let did = record.did.clone();
+        let log = new_log_jsonl.clone();
+        tokio::spawn(async move {
+            webvh_store::store_did_log(&webvh_ks, &did, &log)
+                .await
+                .map_err(|e| {
+                    (
+                        UpdateDidWebvhError::Persistence(format!("store_did_log: {e}")),
+                        Commit::NotCommitted,
+                    )
+                })?;
+            if let Some(on_commit) = on_commit {
+                on_commit().await.map_err(|e| (e, Commit::Committed))?;
+            }
+            Ok::<(), (UpdateDidWebvhError, Commit)>(())
+        })
+    };
+    match write.await {
+        Ok(Ok(())) => *commit = Commit::Committed,
+        Ok(Err((e, reached))) => {
+            *commit = reached;
+            return Err(e);
+        }
+        // A panic in the write task leaves it unknown whether the entry
+        // landed; claiming it did not would let a caller discard state a
+        // published entry depends on.
+        Err(e) => {
+            *commit = Commit::Committed;
+            return Err(UpdateDidWebvhError::Persistence(format!(
+                "log write task failed: {e}"
+            )));
+        }
+    }
     // Single source of truth for the post-mutation self-DID resolver refresh:
     // reseed the in-process cache straight from the log we just built, before it
     // leaves this function. Every runtime DID-log mutation (did-webvh update and

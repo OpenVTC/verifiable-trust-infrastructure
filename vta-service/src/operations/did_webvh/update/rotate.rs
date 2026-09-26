@@ -48,12 +48,23 @@
 //! nobody can re-derive, and a failed append leaves the active records exactly
 //! as they were.
 //!
+//! The promotion is not the request's to abandon. It runs in the same spawned
+//! task as the log write (the orchestrator's `OnCommit`), so a request future
+//! dropped after the write was issued (a client that hangs up, a transport
+//! timeout) still ends with the new keys promoted, rather than published with
+//! only a revoked staging record behind them. A crash in that window is
+//! finished at boot by [`recover_staged_rotations`], which promotes a staging
+//! record whose key the DID's log publishes and removes every other one.
+//!
 //! The authorization keys and the pre-rotation commitment rotate as a
 //! consequence of the document update (see [`super::update_did_webvh`]),
 //! except on an entry that *activates* pre-rotation, where the authorization
 //! keys stay in force because the commitment this entry publishes is what
 //! authorizes the next one.
 
+use std::collections::HashMap;
+
+use affinidi_tdk::secrets_resolver::secrets::Secret;
 use chrono::Utc;
 use didwebvh_rs::log_entry::LogEntryMethods;
 use serde_json::Value;
@@ -61,12 +72,14 @@ use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 
 use super::errors::UpdateDidWebvhError;
 use super::options::{RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, UpdateDidWebvhResult};
-use super::orchestrator::{Commit, update_did_webvh_tracked};
+use super::orchestrator::{Commit, OnCommit, update_did_webvh_tracked};
 use super::state::{find_record_by_scid, state_from_jsonl};
 use crate::auth::AuthClaims;
+use crate::error::AppError;
 use crate::keys::derivation::Bip32Extension;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::keys::{encode_public_multibase, store_key};
+use crate::operations::did_webvh::concurrency::DID_UPDATE_LOCKS;
 use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
@@ -82,6 +95,7 @@ const RELATIONSHIPS: [&str; 5] = [
 ];
 
 /// One method the rotation replaces the key of.
+#[derive(Clone)]
 struct Rotated {
     /// Absolute method id (`did:webvh:…#frag`), the key record's id.
     vm_id: String,
@@ -230,7 +244,53 @@ pub async fn rotate_did_webvh_keys(
             .map_err(|e| UpdateDidWebvhError::Persistence(format!("stage rotated key: {e}")))?;
     }
 
-    // 5. Drive the generic update path. The doc-bearing branch rotates the
+    // 5. What must follow the commit, owned so it can outlive this request:
+    //    promote the records and, for the VTA's own DID, swap the new keys into
+    //    the live secrets resolver, so DIDComm and TSP decrypt what peers
+    //    encrypt to the new key-agreement key and sign with the new signing key
+    //    from this moment (VTI-KEY-122: from the first use of the new key, never
+    //    sign with the retiring one). Waiting for a restart left the VTA unable
+    //    to read anything sent to it after the rotation published.
+    let own_identity = if vta_did == Some(record.did.as_str()) {
+        match identity_secrets {
+            Some(resolver) => Some((resolver.clone(), own_identity_secrets(&root, &rotated))),
+            None => {
+                tracing::warn!(
+                    did = %record.did,
+                    "rotating this VTA's own DID on a path with no live secrets resolver; \
+                     restart the VTA to load the new keys"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let on_commit: OnCommit = {
+        let keys_ks = deps.keys_ks.clone();
+        let rotated = rotated.clone();
+        let prior_version_id = prior_version_id.clone();
+        let context_id = record.context_id.clone();
+        Box::new(move || {
+            Box::pin(async move {
+                promote(
+                    &keys_ks,
+                    &rotated,
+                    &prior_version_id,
+                    &rotation_id,
+                    &context_id,
+                    seed_id,
+                )
+                .await?;
+                if let Some((resolver, secrets)) = own_identity {
+                    install_own_identity(&resolver, secrets).await;
+                }
+                Ok(())
+            })
+        })
+    };
+
+    // 6. Drive the generic update path. The doc-bearing branch rotates the
     //    authorization keys + pre-rotation as a side effect (see the note above
     //    for the one entry where it does not).
     let label = opts
@@ -251,6 +311,7 @@ pub async fn rotate_did_webvh_keys(
         },
         vta_did,
         channel,
+        Some(on_commit),
     )
     .await;
     let result = match result {
@@ -267,62 +328,18 @@ pub async fn rotate_did_webvh_keys(
             return Err(e);
         }
         Err((e, Commit::Committed)) => {
-            // The entry publishing the new keys is the DID's local head, and a
-            // later step (handles, record, publish) failed. The keys are the
-            // DID's now: promote their records so the VTA holds one for every
-            // key its log publishes, and return the error — the next update's
-            // reconcile republishes the head. Unstaging here would leave
-            // published keys nobody can re-derive.
+            // The entry publishing the new keys is the DID's local head. The
+            // promotion ran with the write unless it is what failed, in which
+            // case the staging records stay for the boot recovery to promote;
+            // unstaging here would leave published keys nobody can re-derive.
+            // The next update's reconcile republishes the head.
             tracing::warn!(
                 did = %record.did, error = %e,
-                "rotation committed locally but a later step failed; promoting its key \
-                 records so the published keys stay usable"
+                "rotation committed locally but a later step failed"
             );
-            promote(
-                deps,
-                &rotated,
-                &prior_version_id,
-                &rotation_id,
-                &record.context_id,
-                seed_id,
-            )
-            .await?;
-            if vta_did == Some(record.did.as_str())
-                && let Some(resolver) = identity_secrets
-            {
-                reload_own_identity(resolver, &root, &rotated).await;
-            }
             return Err(e);
         }
     };
-
-    // 6. Promote.
-    promote(
-        deps,
-        &rotated,
-        &prior_version_id,
-        &rotation_id,
-        &record.context_id,
-        seed_id,
-    )
-    .await?;
-
-    // 7. The VTA's own DID: swap the new keys into the live secrets resolver
-    //    now, so DIDComm and TSP decrypt what peers encrypt to the new
-    //    key-agreement key and sign with the new signing key from this moment
-    //    (VTI-KEY-122: from the first use of the new key, never sign with the
-    //    retiring one). Waiting for a restart left the VTA unable to read
-    //    anything sent to it after the rotation published.
-    if vta_did == Some(record.did.as_str()) {
-        match identity_secrets {
-            Some(resolver) => reload_own_identity(resolver, &root, &rotated).await,
-            None => tracing::warn!(
-                did = %record.did,
-                "rotated this VTA's own DID on a path with no live secrets resolver; \
-                 restart the VTA to load the new keys"
-            ),
-        }
-    }
 
     crate::audit::record_best_effort(
         deps.audit,
@@ -346,8 +363,9 @@ pub async fn rotate_did_webvh_keys(
     Ok(result)
 }
 
-/// Insert the rotated keys of the VTA's own DID into the live resolver, under
-/// their (unchanged) method ids, replacing the retired secrets.
+/// The rotated keys of the VTA's own DID as live-resolver secrets, under their
+/// (unchanged) method ids. Derived before the commit so the promotion task
+/// needs no seed.
 ///
 /// A key agreement key replaced in place cannot stay decryptable alongside its
 /// successor: both carry the same method id, and the resolver answers one
@@ -356,12 +374,11 @@ pub async fn rotate_did_webvh_keys(
 /// retiring key usable for decryption (VTI-KEY-122's overlap) needs the new
 /// key-agreement key under a new method id, which the VTA's and VTC's fixed
 /// `#key-1` addressing does not yet allow.
-async fn reload_own_identity(
-    resolver: &affinidi_tdk::secrets_resolver::ThreadedSecretsResolver,
+fn own_identity_secrets(
     root: &vti_common::slip10::ExtendedSigningKey,
     rotated: &[Rotated],
-) {
-    use affinidi_tdk::secrets_resolver::SecretsResolver;
+) -> Vec<Secret> {
+    let mut secrets = Vec::new();
     for r in rotated {
         let secret = match r.key_type {
             KeyType::Ed25519 => root.derive_ed25519(&r.path),
@@ -381,8 +398,7 @@ async fn reload_own_identity(
         match secret {
             Ok(mut secret) => {
                 secret.id = r.vm_id.clone();
-                resolver.insert(secret).await;
-                tracing::info!(vm_id = %r.vm_id, "live secret replaced after rotation");
+                secrets.push(secret);
             }
             Err(e) => tracing::error!(
                 vm_id = %r.vm_id, error = %e,
@@ -390,18 +406,202 @@ async fn reload_own_identity(
             ),
         }
     }
+    secrets
+}
+
+/// Replace the VTA's live secrets with the rotated ones.
+async fn install_own_identity(
+    resolver: &affinidi_tdk::secrets_resolver::ThreadedSecretsResolver,
+    secrets: Vec<Secret>,
+) {
+    use affinidi_tdk::secrets_resolver::SecretsResolver;
+    for secret in secrets {
+        let vm_id = secret.id.clone();
+        resolver.insert(secret).await;
+        tracing::info!(vm_id = %vm_id, "live secret replaced after rotation");
+    }
 }
 
 /// The id a rotated key's path is staged under until the entry publishing it
 /// is appended — unique to one rotation.
 fn staging_id(vm_id: &str, rotation_id: &uuid::Uuid) -> String {
-    format!("{vm_id}@rotating-{rotation_id}")
+    format!("{vm_id}{STAGING_MARK}{rotation_id}")
+}
+
+/// What separates a method id from the rotation id in a staging record's id.
+const STAGING_MARK: &str = "@rotating-";
+
+/// What [`recover_staged_rotations`] did, by record id.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct StagedRotationRecovery {
+    /// Method ids whose staged key the DID's current document publishes, now
+    /// the method's active record.
+    pub promoted: Vec<String>,
+    /// History records (`{method id}@{versionId}`, revoked) written for a
+    /// staged key the log published and a later entry already replaced.
+    pub retired: Vec<String>,
+    /// Staging records removed because the log never published their key.
+    pub removed: Vec<String>,
+}
+
+/// Finish, at boot, every rotation a crash interrupted between its log write
+/// and its promotion.
+///
+/// A rotation's staging record (`{method id}@rotating-{uuid}`, revoked) whose
+/// key the DID's current document publishes under that method is promoted
+/// exactly as the rotation would have: the record it replaces is retired under
+/// the version it was last current at, and the staged key becomes the method's
+/// active record. A staged key the log published but a later entry has since
+/// replaced is kept as that history record, revoked. Every other staging record
+/// (the rotation never committed, or its DID is gone) is removed. The records
+/// are only ever read against the VTA's own stored log, never a host's copy.
+///
+/// A staging record is left untouched — and logged — when the method's active
+/// record belongs to another context, or the DID's log cannot be parsed: those
+/// need an operator, not a guess.
+pub async fn recover_staged_rotations(
+    keys_ks: &KeyspaceHandle,
+    webvh_ks: &KeyspaceHandle,
+) -> Result<StagedRotationRecovery, AppError> {
+    let mut report = StagedRotationRecovery::default();
+    // Per DID: the (versionId, document) of every log entry, or `None` for a
+    // DID with no log.
+    let mut logs: HashMap<String, Option<Vec<(String, Value)>>> = HashMap::new();
+
+    for (_, value) in keys_ks.prefix_iter_raw("key:").await? {
+        let Ok(staged) = serde_json::from_slice::<KeyRecord>(&value) else {
+            continue;
+        };
+        let Some((vm_id, _)) = staged.key_id.split_once(STAGING_MARK) else {
+            continue;
+        };
+        let vm_id = vm_id.to_string();
+        let Some((did, _)) = vm_id.split_once('#') else {
+            keys_ks.remove(store_key(&staged.key_id)).await?;
+            report.removed.push(staged.key_id.clone());
+            continue;
+        };
+        let _guard = DID_UPDATE_LOCKS.acquire(did).await;
+
+        if !logs.contains_key(did) {
+            let entries = match webvh_store::get_did_log(webvh_ks, did).await? {
+                None => None,
+                Some(jsonl) => match state_from_jsonl(&jsonl) {
+                    Ok(state) => Some(
+                        state
+                            .log_entries()
+                            .iter()
+                            .filter_map(|e| {
+                                Some((
+                                    e.get_version_id().to_string(),
+                                    e.log_entry.get_did_document().ok()?,
+                                ))
+                            })
+                            .collect(),
+                    ),
+                    Err(e) => {
+                        tracing::error!(
+                            did, error = %e,
+                            "cannot read the DID log to recover an interrupted key rotation; \
+                             leaving its staging records"
+                        );
+                        continue;
+                    }
+                },
+            };
+            logs.insert(did.to_string(), entries);
+        }
+        let history: Vec<(&str, Option<String>)> = logs[did]
+            .iter()
+            .flatten()
+            .map(|(version, doc)| (version.as_str(), published_key(doc, did, &vm_id)))
+            .collect();
+        let publishes = |k: &Option<String>| k.as_deref() == Some(staged.public_key.as_str());
+
+        if history.last().is_some_and(|(_, k)| publishes(k)) {
+            let active: Option<KeyRecord> = keys_ks.get(store_key(&vm_id)).await?;
+            let already = active
+                .as_ref()
+                .is_some_and(|a| a.public_key == staged.public_key);
+            if !already {
+                if let Some(active) = &active {
+                    if active.context_id != staged.context_id {
+                        tracing::error!(
+                            vm_id = %vm_id,
+                            "the active record of a method an interrupted rotation staged a \
+                             key for belongs to another context; leaving it for an operator"
+                        );
+                        continue;
+                    }
+                    // The version the replaced key was last current at: the
+                    // entry before the run that publishes the staged key.
+                    let first = history
+                        .iter()
+                        .rposition(|(_, k)| !publishes(k))
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                    if let Some(prior) = first.checked_sub(1).map(|i| history[i].0) {
+                        let retired_id = format!("{vm_id}@{prior}");
+                        let mut retired = active.clone();
+                        retired.key_id = retired_id.clone();
+                        retired.status = KeyStatus::Revoked;
+                        retired.updated_at = Utc::now();
+                        keys_ks.insert(store_key(&retired_id), &retired).await?;
+                    }
+                }
+                let mut promoted = staged.clone();
+                promoted.key_id = vm_id.clone();
+                promoted.status = KeyStatus::Active;
+                promoted.updated_at = Utc::now();
+                keys_ks.insert(store_key(&vm_id), &promoted).await?;
+            }
+            keys_ks.remove(store_key(&staged.key_id)).await?;
+            tracing::warn!(vm_id = %vm_id, "promoted the key of an interrupted rotation");
+            report.promoted.push(vm_id);
+        } else if let Some(last) = history.iter().rposition(|(_, k)| publishes(k)) {
+            let retired_id = format!("{vm_id}@{}", history[last].0);
+            if keys_ks
+                .get::<KeyRecord>(store_key(&retired_id))
+                .await?
+                .is_none()
+            {
+                let mut retired = staged.clone();
+                retired.key_id = retired_id.clone();
+                retired.status = KeyStatus::Revoked;
+                retired.updated_at = Utc::now();
+                keys_ks.insert(store_key(&retired_id), &retired).await?;
+            }
+            keys_ks.remove(store_key(&staged.key_id)).await?;
+            report.retired.push(retired_id);
+        } else {
+            keys_ks.remove(store_key(&staged.key_id)).await?;
+            report.removed.push(staged.key_id.clone());
+        }
+    }
+    Ok(report)
+}
+
+/// The `publicKeyMultibase` `doc` publishes under `vm_id`, declared or
+/// embedded in a relationship, with a relative id resolved against `did`.
+fn published_key(doc: &Value, did: &str, vm_id: &str) -> Option<String> {
+    let obj = doc.as_object()?;
+    std::iter::once("verificationMethod")
+        .chain(RELATIONSHIPS)
+        .filter_map(|field| obj.get(field)?.as_array())
+        .flatten()
+        .filter_map(Value::as_object)
+        .find(|m| {
+            m.get("id").and_then(Value::as_str).is_some_and(|id| {
+                id == vm_id || (id.starts_with('#') && format!("{did}{id}") == vm_id)
+            })
+        })
+        .and_then(|m| m.get("publicKeyMultibase")?.as_str().map(str::to_string))
 }
 
 /// Retire each replaced record under the version it was current at, install
 /// the new one under the method id, drop the staging copy.
 async fn promote(
-    deps: &super::super::WebvhDeps<'_>,
+    keys_ks: &KeyspaceHandle,
     rotated: &[Rotated],
     prior_version_id: &str,
     rotation_id: &uuid::Uuid,
@@ -416,20 +616,19 @@ async fn promote(
             retired.key_id = retired_id.clone();
             retired.status = KeyStatus::Revoked;
             retired.updated_at = now;
-            deps.keys_ks
+            keys_ks
                 .insert(store_key(&retired_id), &retired)
                 .await
                 .map_err(|e| UpdateDidWebvhError::Persistence(format!("retire key: {e}")))?;
         }
-        deps.keys_ks
+        keys_ks
             .insert(
                 store_key(&r.vm_id),
                 &new_record(r, &r.vm_id, context_id, seed_id, true),
             )
             .await
             .map_err(|e| UpdateDidWebvhError::Persistence(format!("install rotated key: {e}")))?;
-        let _ = deps
-            .keys_ks
+        let _ = keys_ks
             .remove(store_key(&staging_id(&r.vm_id, rotation_id)))
             .await;
     }

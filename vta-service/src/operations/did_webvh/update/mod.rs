@@ -48,7 +48,7 @@ pub use orchestrator::{
     update_did_webvh,
 };
 pub use plan::UpdatePlan;
-pub use rotate::rotate_did_webvh_keys;
+pub use rotate::{StagedRotationRecovery, recover_staged_rotations, rotate_did_webvh_keys};
 pub use state::resolve_webvh_did;
 
 /// Cross-module accessor for `state_from_jsonl`. `passkey_vms` uses
@@ -2971,6 +2971,193 @@ mod pre_rotation_e2e_tests {
                 "{id}: the live secret is the rotated key"
             );
         }
+    }
+
+    /// The work a caller hangs off the commit runs to completion even when the
+    /// request future is dropped once the log write was issued: a client that
+    /// hangs up must not leave a rotation's new keys with only their revoked
+    /// staging records.
+    #[tokio::test]
+    async fn the_post_commit_work_outlives_a_dropped_request() {
+        let ctx_id = "ctx-rotate-cancel";
+        let (ts, seed_store) = setup(ctx_id).await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (_did, scid) =
+            create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 0).await;
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let on_commit: super::orchestrator::OnCommit = {
+            let gate = gate.clone();
+            Box::new(move || {
+                Box::pin(async move {
+                    let _ = started_tx.send(());
+                    gate.notified().await;
+                    let _ = done_tx.send(());
+                    Ok(())
+                })
+            })
+        };
+        sleep(VERSION_TIME_GAP).await;
+        let update = super::orchestrator::update_did_webvh_tracked(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                ttl: Some(900),
+                ..Default::default()
+            },
+            None,
+            "test",
+            Some(on_commit),
+        );
+        tokio::select! {
+            _ = update => panic!("the update cannot finish while its commit work is held"),
+            started = started_rx => started.expect("the commit work started"),
+        }
+        // The request future is gone. Release the commit work and see it finish.
+        gate.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), done_rx)
+            .await
+            .expect("the commit work finished after the request was dropped")
+            .expect("the commit work ran to its end");
+    }
+
+    /// A crash between a rotation's log write and its promotion leaves the new
+    /// keys behind revoked staging records. The boot recovery promotes a staged
+    /// key the log publishes, retires the key it replaced under the version it
+    /// was last current at, and removes a staging record whose key the log
+    /// never published. It is idempotent.
+    #[tokio::test]
+    async fn boot_recovery_promotes_a_published_staged_key_and_removes_the_rest() {
+        use vta_sdk::keys::{KeyRecord, KeyStatus};
+        let ctx_id = "ctx-rotate-recover";
+        let (ts, seed_store) = setup(ctx_id).await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let (did, scid) =
+            create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 0).await;
+        let prior_version = {
+            let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+                .await
+                .unwrap()
+                .unwrap();
+            let state = state_from_jsonl(&log).unwrap();
+            state
+                .log_entries()
+                .last()
+                .unwrap()
+                .get_version_id()
+                .to_string()
+        };
+
+        sleep(VERSION_TIME_GAP).await;
+        rotate_did_webvh_keys(
+            &deps,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions::default(),
+            None,
+            None,
+            "test",
+        )
+        .await
+        .expect("rotate");
+
+        // Rewind the records to the state a crash after the log write leaves:
+        // the replaced keys still active, the new ones only staged.
+        let get = |id: String| {
+            let ks = ts.keys_ks.clone();
+            async move {
+                ks.get::<KeyRecord>(crate::keys::store_key(&id))
+                    .await
+                    .unwrap()
+            }
+        };
+        let mut expected = Vec::new();
+        for frag in ["#key-0", "#key-1"] {
+            let vm_id = format!("{did}{frag}");
+            let retired_id = format!("{vm_id}@{prior_version}");
+            let new = get(vm_id.clone()).await.expect("promoted record");
+            let mut old = get(retired_id.clone()).await.expect("retired record");
+            old.key_id = vm_id.clone();
+            old.status = KeyStatus::Active;
+            let staging_id = format!("{vm_id}@rotating-{}", uuid::Uuid::new_v4());
+            let mut staged = new.clone();
+            staged.key_id = staging_id.clone();
+            staged.status = KeyStatus::Revoked;
+            ts.keys_ks
+                .insert(crate::keys::store_key(&vm_id), &old)
+                .await
+                .unwrap();
+            ts.keys_ks
+                .remove(crate::keys::store_key(&retired_id))
+                .await
+                .unwrap();
+            ts.keys_ks
+                .insert(crate::keys::store_key(&staging_id), &staged)
+                .await
+                .unwrap();
+            expected.push((vm_id, retired_id, old.public_key, new.public_key));
+        }
+        // A rotation that never committed: its key is in no log entry.
+        let orphan_id = format!("{did}#key-0@rotating-{}", uuid::Uuid::new_v4());
+        let mut orphan = get(expected[0].0.clone()).await.unwrap();
+        orphan.key_id = orphan_id.clone();
+        orphan.status = KeyStatus::Revoked;
+        orphan.public_key = "z6MkneverPublished".into();
+        ts.keys_ks
+            .insert(crate::keys::store_key(&orphan_id), &orphan)
+            .await
+            .unwrap();
+
+        let report =
+            crate::operations::did_webvh::recover_staged_rotations(&ts.keys_ks, &ts.webvh_ks)
+                .await
+                .expect("recover");
+        let mut promoted = report.promoted.clone();
+        promoted.sort();
+        assert_eq!(
+            promoted,
+            expected.iter().map(|e| e.0.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(report.removed, vec![orphan_id.clone()]);
+        assert!(report.retired.is_empty());
+
+        for (vm_id, retired_id, old_pub, new_pub) in &expected {
+            let active = get(vm_id.clone()).await.unwrap();
+            assert_eq!(active.status, KeyStatus::Active, "{vm_id}");
+            assert_eq!(&active.public_key, new_pub, "{vm_id}: the published key");
+            assert_eq!(&active.key_id, vm_id);
+            let retired = get(retired_id.clone()).await.expect("history kept");
+            assert_eq!(retired.status, KeyStatus::Revoked);
+            assert_eq!(&retired.public_key, old_pub);
+        }
+        assert!(
+            !ts.keys_ks
+                .prefix_iter_raw("key:")
+                .await
+                .unwrap()
+                .iter()
+                .any(|(k, _)| String::from_utf8_lossy(k).contains("@rotating")),
+            "no staging record is left behind"
+        );
+
+        let again =
+            crate::operations::did_webvh::recover_staged_rotations(&ts.keys_ks, &ts.webvh_ks)
+                .await
+                .expect("recover again");
+        assert_eq!(again, Default::default(), "recovery is idempotent");
     }
 
     /// The probe from review: an admin of ctx-a must not be able to pull

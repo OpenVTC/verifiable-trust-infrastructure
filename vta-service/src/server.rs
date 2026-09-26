@@ -509,6 +509,17 @@ pub async fn build_app_state(
     let snapshot_ks =
         apply_encryption(store.keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)?);
 
+    // Finish any key rotation a crash interrupted between its log write and its
+    // promotion — before the VTA loads its own keys, which a rotation of its own
+    // DID may have replaced. A failure here must not become a boot loop: the
+    // staging records are inert and the next boot retries.
+    #[cfg(feature = "webvh")]
+    match crate::operations::did_webvh::recover_staged_rotations(&keys_ks, &webvh_ks).await {
+        Ok(report) if report == Default::default() => {}
+        Ok(report) => warn!(?report, "recovered interrupted did:webvh key rotations"),
+        Err(e) => warn!(error = %e, "could not recover interrupted did:webvh key rotations"),
+    }
+
     let auth = init_auth(
         &config,
         &*seed_store,

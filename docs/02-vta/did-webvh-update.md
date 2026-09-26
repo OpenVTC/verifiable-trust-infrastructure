@@ -223,6 +223,15 @@ the new convention; subsequent updates use the fast path.
   queryable and the VTA refuses to sign with it. A method backed by an
   internal (non-extractable) key is refused rather than downgraded to a
   derived one.
+- **A rotation that published always promotes its records.** The new keys are
+  staged as inert `{method id}@rotating-{uuid}` records before the log entry is
+  written. Their promotion runs in the same spawned task as the log write, so a
+  client that disconnects or a transport that times out after the write was
+  issued cannot leave published keys behind only revoked staging records. A
+  crash in that window is finished at the next boot, before the VTA loads its
+  own keys: a staging record whose key the DID's stored log publishes is
+  promoted (the key it replaces retired under the version it was last current
+  at), and every other staging record is removed.
 - **Old authorization keys are not deleted.** After a rotation, the previous
   version's handles move from `webvh:` to `superseded:webvh:` for
   audit / recovery.
