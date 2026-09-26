@@ -670,8 +670,15 @@ messaging service to a VTC post-mint should add both.
    `AppState::send_to_member`, DIDComm.
    The engine moved to `vti_common::trust_task_push` so the VTA can adopt it; the VTC
    lends it its keyspace, outbox, resolver and messaging through a `PushContext`
-   (`vtc-service::member_push` is now that adapter). The VTA's own pushes
-   (`consent_request::push_one`) have not moved onto it yet.
+   (`vtc-service::member_push` is now that adapter). The VTA's device pushes — the
+   task-consent request, the granted notice, the step-up approve-request and the
+   conversation-consent approve-request — go through it too
+   (`vta-service::messaging::push`, via `trust_tasks::step_up::push_to_device`):
+   the VTA's route decision is kept (a routable DID is never sent through a mediator
+   it is not registered with), a device recently seen on TSP (`tsp_reach`, now
+   `vti_common::tsp_reach`) is tried over TSP first, and the push-gateway doorbell
+   rings once when the first attempt is queued. The gateway request/reply exchanges
+   (`push/wake`, `push/provision`) are not pushes and stay on the DIDComm bridge.
 5. ~~Endpoint-shape vs reference impl~~ **Resolved (round 4, verified against the
    mediator + SDK source):** the consumer-doc convention (`#tsp` = mediator DID) is
    sound — see §7.1 for the verified mechanics. The mediator **never URL-parses a

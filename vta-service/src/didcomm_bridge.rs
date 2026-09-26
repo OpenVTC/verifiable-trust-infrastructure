@@ -265,6 +265,16 @@ impl DIDCommBridge {
         self.snapshot().map(|i| i.profile.clone())
     }
 
+    /// The service, ATM and own DID of **one** session, taken together, or
+    /// `None` before the service is published — what a Trust Task push needs
+    /// (`crate::messaging::push`). One snapshot rather than three accessor
+    /// calls, so a reconnect between them cannot pair one session's service
+    /// with another's ATM.
+    pub fn push_wiring(&self) -> Option<(Arc<MessagingService>, ATM, String)> {
+        self.snapshot()
+            .map(|i| (i.service.clone(), i.atm.clone(), i.vta_did.clone()))
+    }
+
     /// The VTA's own DID, or `None` before the service is published.
     pub fn vta_did(&self) -> Option<String> {
         self.snapshot().map(|i| i.vta_did.clone())
