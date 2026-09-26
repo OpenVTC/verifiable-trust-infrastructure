@@ -408,7 +408,7 @@ mod multi_key_tests {
         let doc = vti_common::capability_client::build_document(
             DID,
             "did:web:registry.example",
-            "https://trusttasks.org/spec/trust-registry/record/put/0.1",
+            "https://trusttasks.org/spec/registry/record/put/0.1",
             serde_json::json!({}),
         );
         let mut doc = serde_json::to_value(&doc).unwrap();
