@@ -120,6 +120,13 @@ pub(crate) struct VtcWizardInputs {
     #[serde(default)]
     pub registry_did: Option<String>,
 
+    /// A second unrestricted admin to install beside the first (VTI-APV-014).
+    /// Making anyone an unrestricted admin needs another unrestricted admin's
+    /// consent; with only one there is nobody to give it, and a second can
+    /// then only be added offline. Omit (or leave blank) to install one.
+    #[serde(default)]
+    pub co_admin_did: Option<String>,
+
     /// Where the VTC's `did:webvh` is published. All fields optional; an
     /// empty `[webvh]` table (or omitting it) reproduces the serverless
     /// default — the VTC self-hosts its `did.jsonl` at `base_url` with a
@@ -202,6 +209,9 @@ pub(crate) fn parse_from_toml(file_path: &Path) -> Result<WizardPlan, AppError> 
             context: inputs.context,
             registry_did,
             transports,
+            co_admin_did: super::wizard::normalize_co_admin_did(
+                inputs.co_admin_did.as_deref().unwrap_or(""),
+            )?,
         },
         webvh: inputs.webvh,
         secrets: inputs.secrets,
@@ -243,6 +253,16 @@ fn validate(inputs: &VtcWizardInputs) -> Result<(), AppError> {
 
     if inputs.context.trim().is_empty() {
         errors.push("context must not be empty".into());
+    }
+
+    if let Some(co_admin) = inputs.co_admin_did.as_deref() {
+        let trimmed = co_admin.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with("did:") {
+            errors.push(format!(
+                "co_admin_did must be a DID starting with `did:` (got {co_admin:?}). Omit it to \
+                 install a single admin."
+            ));
+        }
     }
 
     // A blank value is "no registry", same as omitting the key; a non-blank
@@ -646,6 +666,38 @@ keyring_service = "vtc-test"
         };
         assert!(err.contains("load setup key"), "{err}");
         assert!(err.contains("admin ACL"), "actionable hint present: {err}");
+    }
+
+    // ── co-admin (VTI-APV-014) ──────────────────────────────────────
+
+    /// A second admin to install beside the first: optional, and a DID when
+    /// given.
+    #[test]
+    fn co_admin_did_is_optional_and_must_be_a_did() {
+        let none: VtcWizardInputs = toml::from_str(&minimal_toml_with("")).expect("parse");
+        assert!(none.co_admin_did.is_none());
+        validate(&none).expect("one admin is a valid install");
+
+        let some: VtcWizardInputs = toml::from_str(&minimal_toml_with(
+            r#"co_admin_did = "did:key:z6MkCoAdmin""#,
+        ))
+        .expect("parse");
+        validate(&some).expect("a DID-valued co-admin is valid");
+        assert_eq!(
+            super::super::wizard::normalize_co_admin_did(" did:key:z6MkCoAdmin ").unwrap(),
+            Some("did:key:z6MkCoAdmin".to_string())
+        );
+        assert!(
+            super::super::wizard::normalize_co_admin_did("  ")
+                .unwrap()
+                .is_none()
+        );
+
+        let bad: VtcWizardInputs =
+            toml::from_str(&minimal_toml_with(r#"co_admin_did = "alice@example.com""#))
+                .expect("parse");
+        let err = validate(&bad).unwrap_err().to_string();
+        assert!(err.contains("co_admin_did"), "{err}");
     }
 
     // ── trust-registry referral ─────────────────────────────────────

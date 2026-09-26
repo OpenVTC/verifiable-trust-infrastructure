@@ -99,23 +99,19 @@ async fn post_auth(f: &Fixture, prefix: &str, jwe: String) -> (StatusCode, Value
 /// cannot stand in for the one under test.
 #[derive(Clone, Copy, Debug)]
 enum Refusal {
-    /// `AuthcryptError::ApuMismatch`
-    ApuMismatch,
-    /// `AuthcryptError::InvalidSenderKeyId`
-    InvalidSenderKeyId,
-    /// `AuthcryptError::NotAuthcrypt`
-    NotAuthcrypt,
-    /// The messaging library refused the envelope during unpack, before the
-    /// guard ran.
+    /// The messaging library (didcomm 0.15.9+) bound the authcrypt sender to
+    /// the key that encrypted the message and refused the envelope. It does so
+    /// before the VTC's own guard runs, which stays as defence in depth.
+    SenderBinding,
+    /// The messaging library refused the envelope during unpack for another
+    /// reason, before the guard ran.
     Unpack,
 }
 
 impl Refusal {
     fn marker(self) -> &'static str {
         match self {
-            Refusal::ApuMismatch => "does not encode skid",
-            Refusal::InvalidSenderKeyId => "has no usable sender key id",
-            Refusal::NotAuthcrypt => "must be an authenticated (authcrypt) DIDComm envelope",
+            Refusal::SenderBinding => "authcrypt sender key binding failed",
             Refusal::Unpack => "failed to unpack message",
         }
     }
@@ -182,7 +178,7 @@ async fn forged_apu_sender_is_refused() {
             &session_id,
             forged,
             "a skid/apu-split envelope",
-            Refusal::ApuMismatch,
+            Refusal::SenderBinding,
         )
         .await;
     }
@@ -237,7 +233,7 @@ async fn inconsistent_sender_key_headers_are_refused() {
                         &victim_private,
                         recipient,
                     ),
-                    Refusal::InvalidSenderKeyId,
+                    Refusal::SenderBinding,
                 ),
                 _ => (
                     "attacker key with victim from",
@@ -274,7 +270,7 @@ async fn anoncrypt_wrapped_authcrypt_is_refused() {
             &session_id,
             wrapped,
             "anoncrypt(authcrypt)",
-            Refusal::NotAuthcrypt,
+            Refusal::SenderBinding,
         )
         .await;
     }
@@ -296,7 +292,7 @@ async fn refresh_with_forged_apu_sender_is_refused() {
             (&f.vtc.kid, &vtc_pub),
         );
         let (status, body) = post_to(&f, path, REFRESH_TASK, forged).await;
-        assert_refusal(path, status, &body, Refusal::ApuMismatch);
+        assert_refusal(path, status, &body, Refusal::SenderBinding);
     }
     f.mock.shutdown().await;
 }
