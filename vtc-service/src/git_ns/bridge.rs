@@ -668,7 +668,7 @@ impl MessagingBridgeClient {
         let mut value = serde_json::to_value(&doc)
             .map_err(|e| BridgeSendError::Transient(format!("serialise job: {e}")))?;
         signer
-            .sign_doc(&mut value)
+            .sign_operational_doc(&mut value)
             .await
             .map_err(|e| BridgeSendError::Transient(format!("sign job: {e}")))?;
         let doc: TrustTask<Value> = serde_json::from_value(value)

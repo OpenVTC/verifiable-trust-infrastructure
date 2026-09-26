@@ -147,7 +147,7 @@ impl DidcommCapabilityWriter {
         let mut doc_value = serde_json::to_value(&doc)
             .map_err(|e| HookWriteError::Transient(format!("serialise document: {e}")))?;
         self.signer
-            .sign_doc(&mut doc_value)
+            .sign_operational_doc(&mut doc_value)
             .await
             .map_err(|e| HookWriteError::Transient(format!("sign document: {e}")))?;
         serde_json::from_value(doc_value)

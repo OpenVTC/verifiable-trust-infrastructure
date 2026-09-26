@@ -27,6 +27,7 @@ use affinidi_data_integrity::{DataIntegrityProof, SignOptions, VerifyOptions};
 use affinidi_secrets_resolver::secrets::Secret;
 use affinidi_vc::VerifiableCredential;
 use vti_common::error::AppError;
+use vti_common::trust_task::envelope::{EnvelopeRole, seal_envelope};
 
 /// Verification-method fragment the VTC consistently uses for
 /// its assertion-method key. Lines up with what
@@ -130,6 +131,14 @@ impl LocalSigner {
         &self,
         doc: &(impl serde::Serialize + Sync),
     ) -> Result<serde_json::Value, AppError> {
+        self.proof_value_with(doc, SignOptions::new()).await
+    }
+
+    async fn proof_value_with(
+        &self,
+        doc: &(impl serde::Serialize + Sync),
+        options: SignOptions,
+    ) -> Result<serde_json::Value, AppError> {
         let signers: Vec<&dyn affinidi_data_integrity::signer::Signer> = self
             .secrets
             .iter()
@@ -138,7 +147,7 @@ impl LocalSigner {
 
         // `sign_multi` is fail-fast and pins one `created` across the batch, so
         // the proofs on a credential cannot disagree about when it was signed.
-        let proofs = DataIntegrityProof::sign_multi(doc, &signers, SignOptions::new())
+        let proofs = DataIntegrityProof::sign_multi(doc, &signers, options)
             .await
             .map_err(|e| AppError::Internal(format!("sign: {e}")))?;
 
@@ -210,6 +219,49 @@ impl LocalSigner {
     /// (a top-level `id`, a `credentialStatus` block) are spliced **before**
     /// signing so the proof covers them. Any pre-existing `proof` is removed
     /// first — a proof never covers itself.
+    /// Sign a Trust Task request this VTC originates to a peer — `proofPurpose:
+    /// authentication`, the purpose under which the key-roles spec lists the
+    /// operational key — in place. The document must already carry `id`,
+    /// this VTC as `issuer`, and `recipient`; `issuedAt` is set or truncated
+    /// to whole seconds (VTI-KEY-107).
+    pub async fn sign_operational_doc(&self, doc: &mut serde_json::Value) -> Result<(), AppError> {
+        self.sign_operational(doc, EnvelopeRole::Request).await
+    }
+
+    /// Sign a Trust Task response (success or `trust-task-error`) this VTC
+    /// returns, as [`sign_operational_doc`](Self::sign_operational_doc) does a
+    /// request. The response is issued by this VTC whatever the request named,
+    /// and gets an `id` and a whole-second `issuedAt` when it lacks them.
+    pub async fn sign_operational_response(
+        &self,
+        doc: &mut serde_json::Value,
+    ) -> Result<(), AppError> {
+        self.sign_operational(doc, EnvelopeRole::Response).await
+    }
+
+    async fn sign_operational(
+        &self,
+        doc: &mut serde_json::Value,
+        role: EnvelopeRole,
+    ) -> Result<(), AppError> {
+        seal_envelope(doc, &self.issuer_did, role)
+            .map_err(|e| AppError::Internal(format!("cannot sign as this VTC: {e}")))?;
+        let obj = doc
+            .as_object_mut()
+            .ok_or_else(|| AppError::Internal("request document is not a JSON object".into()))?;
+        obj.remove("proof");
+        let proof_value = self
+            .proof_value_with(
+                &*doc,
+                SignOptions::new().with_proof_purpose("authentication"),
+            )
+            .await?;
+        doc.as_object_mut()
+            .expect("checked above")
+            .insert("proof".into(), proof_value);
+        Ok(())
+    }
+
     pub async fn sign_doc(&self, doc: &mut serde_json::Value) -> Result<(), AppError> {
         let obj = doc
             .as_object_mut()
@@ -345,6 +397,34 @@ mod multi_key_tests {
             proof.is_object(),
             "a single-key signer must emit the historical shape, not a one-element array: {proof}"
         );
+    }
+
+    /// A request this VTC originates (a registry write) is signed for
+    /// `authentication`, not the credential default `assertionMethod`, and the
+    /// envelope members it was built with survive signing.
+    #[tokio::test]
+    async fn a_request_is_signed_for_authentication() {
+        let signer = LocalSigner::from_ed25519_seed(DID.into(), &[0x11; 32]);
+        let doc = vti_common::capability_client::build_document(
+            DID,
+            "did:web:registry.example",
+            "https://trusttasks.org/spec/registry/record/put/0.1",
+            serde_json::json!({}),
+        );
+        let mut doc = serde_json::to_value(&doc).unwrap();
+        signer.sign_operational_doc(&mut doc).await.expect("signs");
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
+        assert_eq!(doc["issuer"], DID);
+        assert_eq!(doc["recipient"], "did:web:registry.example");
+        assert!(
+            doc.get("issuedAt").is_some() && doc.get("id").is_some(),
+            "{doc}"
+        );
+
+        // Credentials keep their own purpose.
+        let mut vc = vc();
+        signer.sign_doc(&mut vc).await.expect("signs");
+        assert_ne!(vc["proof"]["proofPurpose"], "authentication");
     }
 
     /// Two keys emit a proof set — one per key, so a verifier can check the

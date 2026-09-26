@@ -188,12 +188,18 @@ pub async fn handle_trust_task(
             )
             .await
         }
-        Err(e) => crate::trust_tasks::reject_trust_task(
-            &body,
-            trust_tasks_rs::RejectReason::PermissionDenied {
-                reason: e.to_string(),
-            },
-        ),
+        Err(e) => {
+            crate::trust_tasks::sign_response(
+                &app_state,
+                crate::trust_tasks::reject_trust_task(
+                    &body,
+                    trust_tasks_rs::RejectReason::PermissionDenied {
+                        reason: e.to_string(),
+                    },
+                ),
+            )
+            .await
+        }
     };
 
     // The dispatch core returns a typed `TrustTaskOutcome`; its `body` is

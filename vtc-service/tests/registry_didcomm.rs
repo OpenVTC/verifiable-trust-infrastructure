@@ -270,8 +270,9 @@ async fn health_follows_the_round_trip_not_a_url() {
     let registry = mock.connect_registry_peer().await;
     let client = client_for(&mock, registry.did());
 
-    // A registry that answers is healthy. The probe is a read, so it carries
-    // no proof — the registry serves it without consulting its admin list.
+    // A registry that answers is healthy. The probe is a read, and like every
+    // registry task it is signed with the operational key: the registry gates
+    // `record/query` as it gates writes.
     let (result, request) = tokio::join!(
         client.health(),
         serve_once(&registry, mock.vtc_did(), |_| response(
@@ -284,14 +285,14 @@ async fn health_follows_the_round_trip_not_a_url() {
         request["type"],
         "https://trusttasks.org/spec/registry/record/query/0.1"
     );
-    assert!(
-        request["proof"].is_null(),
-        "the health probe must not need a proof, or it stops working on a \
-         registry that refuses our writes: {request}",
+    assert_eq!(
+        request["proof"]["proofPurpose"], "authentication",
+        "the health probe is signed with the operational key: {request}",
     );
 
     // A registry that *rejects* is still answering, and answering is what the
-    // signal reports on.
+    // signal reports on — so a registry that refuses our signed probe (not on
+    // its admin list) still reads as alive.
     let (result, _) = tokio::join!(
         client.health(),
         serve_once(&registry, mock.vtc_did(), |_| rejection("permissionDenied")),
