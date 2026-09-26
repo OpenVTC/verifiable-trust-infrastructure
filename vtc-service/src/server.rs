@@ -469,8 +469,8 @@ pub async fn run(
     if crate::backup::import_in_progress(&config_ks).await? {
         return Err(AppError::Config(
             "a backup import was interrupted before it completed — the datastore is in a \
-             half-restored state. Re-run `POST /v1/backup/import` with the same backup to \
-             finish it; the daemon will not serve partial state."
+             half-restored state. Re-run the import (`cnm backup import`) with the same \
+             backup to finish it; the daemon will not serve partial state."
                 .into(),
         ));
     }

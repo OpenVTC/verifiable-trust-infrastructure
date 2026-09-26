@@ -52,11 +52,9 @@ pub(crate) async fn cmd_export(
 
     let vtc = vtc::connect_end_to_end(keyring_key, target).await?;
     println!("Exporting community backup...");
-    let envelope = vtc
-        .client
-        .export_backup(&password, include_audit)
-        .await
-        .map_err(|e| backup_error(&vtc, e))?;
+    let exported = vtc.client.export_backup(&password, include_audit).await;
+    vtc.client.shutdown().await;
+    let envelope = exported.map_err(|e| backup_error(&vtc, e))?;
 
     let source_did = envelope.get("sourceDid").and_then(Value::as_str);
     let path = output.unwrap_or_else(|| {
@@ -119,14 +117,27 @@ pub(crate) async fn cmd_import(
         .interact()?;
     validate_backup_password(&password)?;
 
-    // Preview first (confirm=false) — no mutation, just row counts.
     let vtc = vtc::connect_end_to_end(keyring_key, target).await?;
+    // The session is closed on every path out, success or not.
+    let outcome = import_over(&vtc, &envelope, &password, preview_only).await;
+    vtc.client.shutdown().await;
+    outcome
+}
+
+/// The preview, the confirmation and the import, over an open session.
+async fn import_over(
+    vtc: &Connected,
+    envelope: &Value,
+    password: &str,
+    preview_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Preview first (confirm=false) — no mutation, just row counts.
     println!("Validating backup...");
     let preview = vtc
         .client
-        .import_backup(&envelope, &password, false)
+        .import_backup(envelope, password, false)
         .await
-        .map_err(|e| backup_error(&vtc, e))?;
+        .map_err(|e| backup_error(vtc, e))?;
     print_counts(&preview);
 
     if preview_only {
@@ -148,9 +159,9 @@ pub(crate) async fn cmd_import(
     println!("Importing...");
     let result = vtc
         .client
-        .import_backup(&envelope, &password, true)
+        .import_backup(envelope, password, true)
         .await
-        .map_err(|e| backup_error(&vtc, e))?;
+        .map_err(|e| backup_error(vtc, e))?;
     println!(
         "{GREEN}✓{RESET} {}",
         result

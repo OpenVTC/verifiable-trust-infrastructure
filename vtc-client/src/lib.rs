@@ -18,10 +18,13 @@
 //!
 //! The **admin verbs** are split by what the VTC serves (#1641):
 //!
+//! - A community backup ([`VtcClient::export_backup`],
+//!   [`VtcClient::import_backup`]) is the `backup/*` Trust Task family and goes
+//!   **only over the session**: the VTC refuses it over HTTPS, where the
+//!   password and the bundle would exist in plaintext wherever TLS terminates.
 //! - Those whose tasks the VTC binds as signed documents — a join decision,
-//!   `members/{update,admin-remove,credentials}`, `backup/export` — go as
-//!   documents too: over the session when there is one, otherwise signed with
-//!   the operator's own key (the one [`VtcClient::connect`] authenticated with)
+//!   `members/{update,admin-remove,credentials}` — go as documents too: over
+//!   the session when there is one, otherwise signed with the operator's own key (the one [`VtcClient::connect`] authenticated with)
 //!   and posted to `POST {base}/trust-tasks`. A client holding that key never
 //!   falls back to the bearer route for them, even against a VTC too old to
 //!   serve the document. A client built from a token alone
@@ -130,8 +133,6 @@ pub mod task {
         "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1";
     pub const ENDORSEMENTS_REVOKE: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
-    pub const BACKUP_EXPORT: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
-    pub const BACKUP_IMPORT: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
     pub const MEMBERS_CREDENTIALS: &str =
         <super::members_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 }
@@ -709,6 +710,20 @@ impl VtcClient {
             token: None,
             signer: None,
             documents: Some(documents),
+        }
+    }
+
+    /// Close the DIDComm or TSP session this client holds, if any.
+    ///
+    /// **Required for a client from [`connect_didcomm`](Self::connect_didcomm)
+    /// or [`connect_tsp`](Self::connect_tsp)**: the session is a live,
+    /// auto-reconnecting mediator connection that `Drop` cannot close, and a
+    /// leaked one fights the next session for the same DID on the mediator.
+    /// A no-op for an HTTPS client. Idempotent.
+    pub async fn shutdown(&self) {
+        #[cfg(feature = "didcomm")]
+        if let Some(documents) = &self.documents {
+            documents.shutdown().await;
         }
     }
 
