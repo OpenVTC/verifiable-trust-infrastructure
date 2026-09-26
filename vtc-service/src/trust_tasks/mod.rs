@@ -1387,7 +1387,9 @@ mod spine_proof_tests {
     }
 
     /// Declared `assertionMethod`, by a key the signer lists only under
-    /// `capabilityDelegation`: the signature is valid, the approval is not.
+    /// `capabilityDelegation`: the signature is valid, but the key is not
+    /// authorised for the purpose the proof declares (VTI-KEY-022), so neither
+    /// the general verifier nor the approval path accepts it.
     #[tokio::test]
     async fn an_approval_by_a_key_not_listed_under_assertion_method_is_refused() {
         let tv = build_test_vtc().await;
@@ -1400,9 +1402,13 @@ mod spine_proof_tests {
             ),
         ] {
             let doc = approval(uri, payload, &did, &secret, "assertionMethod").await;
-            vti_common::auth::verify_trust_task_proof(&doc)
+            let err = vti_common::auth::verify_trust_task_proof(&doc)
                 .await
-                .expect("the signature itself is valid");
+                .unwrap_err();
+            assert!(
+                err.cause().is_some_and(|c| c.contains("assertionMethod")),
+                "{uri}: {err:?}"
+            );
             let out = dispatch(&tv.state, &doc).await;
             assert!(
                 refused_at_the_proof(&out),
