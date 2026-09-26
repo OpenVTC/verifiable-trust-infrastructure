@@ -15,6 +15,7 @@ import {
   HANA,
   JUN,
   PERSONAL,
+  RIGHTS,
   WIDGETS,
 } from "./fixtures.test-data";
 
@@ -197,19 +198,169 @@ describe("Repo detail", () => {
     expect(text.some((t) => /git\.commit\.signgithub\.com\/acme(?!\/)/.test(t!))).toBe(true);
   });
 
-  it("lists drift and adopts a forge role into the VTC as the matching right", async () => {
-    mockFetch(gitNsRoutes());
-    mount(DOCS.resource);
+  it("adopts a forge role through git-ns/drift/resolve, carrying the item's selector", async () => {
+    const requests = mockFetch(gitNsRoutes());
+    // Bob owns acme/docs; the maintain role was added for Hana's account.
+    mount(DOCS.resource, signedInAs(BOB));
 
     const drift = await screen.findByRole("region", { name: "Drift" });
     expect(within(drift).getByText("Role added on the forge")).toBeTruthy();
     // The member the account resolves to, by full DID beside the login.
     await waitFor(() => expect(drift.textContent).toContain(`@hsato — linked by Hana Sato ${HANA}`));
-    fireEvent.click(await within(drift).findByRole("button", { name: "Adopt into VTC as maintainer" }));
-    const sign = await screen.findByRole("dialog", { name: "Grant maintainer on acme/docs" });
-    expect(within(sign).getByLabelText("Command").textContent).toContain(
-      `--subject=${HANA} --right=git.repo.maintain --resource=${DOCS.resource}`,
+    const button = await within(drift).findByRole("button", {
+      name: "Adopt: Role added on the forge @hsato",
+    });
+    expect(button.textContent).toBe("Adopt into VTC as maintainer");
+    fireEvent.click(button);
+    const form = await screen.findByRole("dialog", { name: "Adopt drift on acme/docs" });
+    expect(form.textContent).toMatch(/Grants maintainer to/);
+    fireEvent.change(within(form).getByLabelText("Reason"), { target: { value: "Hana's role" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the adopt" }));
+
+    const sign = await screen.findByRole("dialog", { name: "Adopt drift on acme/docs" });
+    expect(sign.textContent).toMatch(/Consent class: Normal/);
+    expect(sign.textContent).toContain(HANA);
+    expect(within(sign).getByLabelText("Command").textContent).toBe(
+      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --reason='Hana'"'"'s role'`,
     );
+    expect(JSON.parse(within(sign).getByLabelText("Document").textContent!)).toEqual({
+      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+      payload: {
+        resource: DOCS.resource,
+        action: "adopt",
+        drift: {
+          type: "roleAdded",
+          account: { forge: "github.com", id: "1003", login: "hsato" },
+          observed: "maintain",
+        },
+        reason: "Hana's role",
+      },
+    });
+    fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
+    expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+
+  const driftRoute = (items: object[]) => ({
+    path: "/v1/git-ns/drift",
+    body: { repos: [{ resource: DOCS.resource, state: "drift", drift: items }] },
+  });
+  const hsato = { forge: "github.com", id: "1003", login: "hsato" };
+
+  it("adopts write on a personal account as maintainer, where the server projects it", async () => {
+    const routes = gitNsRoutes({
+      namespaces: [{ ...ACME, kind: "user" }],
+      extra: [driftRoute([{ type: "roleAdded", resource: DOCS.resource, observed: "write", account: hsato }])],
+    });
+    mockFetch(routes);
+    mount(DOCS.resource, signedInAs(BOB));
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    const button = await within(drift).findByRole("button", { name: /^Adopt/ });
+    expect(button.textContent).toBe("Adopt into VTC as maintainer");
+    expect(drift.textContent).not.toMatch(/No git right/);
+  });
+
+  it("says write projects nothing on an organisation, and offers no adopt", async () => {
+    mockFetch(
+      gitNsRoutes({
+        extra: [driftRoute([{ type: "roleAdded", resource: DOCS.resource, observed: "write", account: hsato }])],
+      }),
+    );
+    mount(DOCS.resource, signedInAs(BOB));
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    await within(drift).findByText("Role added on the forge");
+    await waitFor(() => expect(drift.textContent).toMatch(/No git right projects to the forge role "write"/));
+    expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
+  });
+
+  it("refuses to adopt a lowering, which is accepted by revoking", async () => {
+    // Hana holds maintain on docs; the forge shows her at maintain too.
+    mockFetch(
+      gitNsRoutes({
+        rights: [
+          ...RIGHTS,
+          { ...RIGHTS[4]!, resource: DOCS.resource },
+        ],
+        extra: [driftRoute([{ type: "roleChanged", resource: DOCS.resource, observed: "maintain", expected: "admin", account: hsato }])],
+      }),
+    );
+    mount(DOCS.resource, signedInAs(BOB, ["admin"]));
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    await waitFor(() => expect(drift.textContent).toMatch(/lowering, accepted by revoking/));
+    expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
+    // Revert stays on offer.
+    expect(within(drift).getByRole("button", { name: /^Revert/ })).toBeTruthy();
+  });
+
+  it("offers no adopt until the rights listing has answered", async () => {
+    // The listing never settles: a lowering must not be offered on no data.
+    let release: (v: unknown) => void = () => {};
+    const held = new Promise((r) => (release = r));
+    const routes = gitNsRoutes({
+      rights: [...RIGHTS, { ...RIGHTS[4]!, resource: DOCS.resource }],
+      extra: [
+        driftRoute([{ type: "roleChanged", resource: DOCS.resource, observed: "maintain", expected: "admin", account: hsato }]),
+      ],
+    });
+    const rightsRoute = routes.find((r) => r.path === "/v1/git-ns/rights")!;
+    const body = rightsRoute.body;
+    const realFetch = globalThis.fetch;
+    mockFetch(routes);
+    const mocked = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (new URL(url, "http://x").pathname === "/v1/git-ns/rights") await held;
+      return mocked(input, init);
+    }) as typeof fetch;
+    try {
+      mount(DOCS.resource, signedInAs(BOB, ["admin"]));
+      const drift = await screen.findByRole("region", { name: "Drift" });
+      await waitFor(() => expect(drift.textContent).toMatch(/before offering to adopt/));
+      expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
+      release(body);
+      // Once read, the lowering is recognised and still not offered.
+      await waitFor(() => expect(drift.textContent).toMatch(/lowering, accepted by revoking/));
+      expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it.each([
+    ["a DID that holds no right there", signedInAs(HANA, ["admin"])],
+    ["a viewer without a session probe", undefined],
+  ])("does not offer adopt to %s, and hands over the command", async (_, whoami) => {
+    mockFetch(gitNsRoutes());
+    mount(DOCS.resource, whoami);
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    await waitFor(() => expect(within(drift).getByLabelText("Adopt command")).toBeTruthy());
+    expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
+    expect(within(drift).getByLabelText("Adopt command").textContent).toBe(
+      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain`,
+    );
+  });
+
+  it("offers an elevated adopt only to a community administrator", async () => {
+    const extra = [driftRoute([{ type: "roleAdded", resource: DOCS.resource, observed: "admin", account: hsato }])];
+    mockFetch(gitNsRoutes({ extra }));
+    const view = mount(DOCS.resource, signedInAs(BOB));
+    const drift = await screen.findByRole("region", { name: "Drift" });
+    await waitFor(() => expect(drift.textContent).toMatch(/elevated grant/));
+    expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
+    view.unmount();
+
+    mockFetch(gitNsRoutes({ extra }));
+    mount(DOCS.resource, signedInAs(BOB, ["admin"]));
+    const again = await screen.findByRole("region", { name: "Drift" });
+    fireEvent.click(await within(again).findByRole("button", { name: /^Adopt/ }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: "Adopt drift on acme/docs" })).getByRole(
+        "button",
+        { name: "Build the adopt" },
+      ),
+    );
+    const sign = await screen.findByRole("dialog", { name: "Adopt drift on acme/docs" });
+    expect(sign.textContent).toMatch(/Consent class: Elevated/);
   });
 
   it("reverts drift for the repository's owner as git-ns/drift/resolve", async () => {

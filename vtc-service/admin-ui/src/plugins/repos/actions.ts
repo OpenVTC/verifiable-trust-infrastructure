@@ -452,18 +452,18 @@ export function createTask(c: CreateInput): SignedTask {
  * another. The account's `login` is display only; its `forge` and `id` pick
  * it out.
  */
-export function driftRevertTask(
+function driftResolve(
   resource: string,
-  ns: GitNsNamespaceRow,
+  action: "adopt" | "revert",
   item: GitNsDriftItem,
   reason?: string,
-): SignedTask {
+): { payload: Record<string, unknown>; command: string } {
   const drift: Record<string, unknown> = { type: item.type };
   const args: (Word | string | { opt: string })[] = [
     w("drift"),
     w("resolve"),
     resource,
-    w("revert"),
+    w(action),
     o("type", item.type),
   ];
   if (isRoleDrift(item) && item.account) {
@@ -474,12 +474,22 @@ export function driftRevertTask(
     drift.observed = item.observed;
     args.push(o("observed", item.observed));
   }
-  const payload: Record<string, unknown> = { resource, drift, action: "revert" };
+  const payload: Record<string, unknown> = { resource, drift, action };
   const r = reason?.trim();
   if (r) {
     payload.reason = r;
     args.push(o("reason", r));
   }
+  return { payload, command: cnm(...args) };
+}
+
+export function driftRevertTask(
+  resource: string,
+  ns: GitNsNamespaceRow,
+  item: GitNsDriftItem,
+  reason?: string,
+): SignedTask {
+  const { payload, command } = driftResolve(resource, "revert", item, reason);
   return {
     action: "drift.resolve",
     title: `Revert drift on ${shortName(resource)}`,
@@ -493,7 +503,42 @@ export function driftRevertTask(
         : "Gated as the revocation it amounts to, which is normal-class: authorized by the signer's git.repo.own on the repository, explicit or implied by git.ns.admin.",
     resource,
     parties: [],
-    command: cnm(...args),
+    command,
+  };
+}
+
+/**
+ * `git-ns/drift/resolve` 0.1, `adopt`: the forge-side role is recorded as the
+ * right it projects (`right`, from `adoptStanding`), granted to the member
+ * who linked the account exactly as a grant from the signer would be — and
+ * the item leaves the outstanding drift.
+ *
+ * Selected as a revert is, and `observed` is REQUIRED here: the VTC derives
+ * the right from it and adopts nothing if the forge now shows something else
+ * (`driftNotFound`). The reason, if any, becomes the right's `reason`.
+ */
+export function driftAdoptTask(
+  resource: string,
+  item: GitNsDriftItem,
+  member: string,
+  right: GitNsRight,
+  reason?: string,
+): SignedTask {
+  const { payload, command } = driftResolve(resource, "adopt", item, reason);
+  return {
+    action: "drift.resolve",
+    title: `Adopt drift on ${shortName(resource)}`,
+    effect: `The member is granted ${rightLabel(right).toLowerCase()} (${right}) here, published to the Trust Registry, and the forge keeps the role; the item leaves the outstanding drift and the bridge inspects the repository again. Refused if the forge no longer shows what was read here, or if the account is no longer a current member's.`,
+    taskUri: TASK_URI["drift.resolve"],
+    payload,
+    consent: consentClass("drift.resolve", right),
+    consentNote:
+      consentClass("drift.resolve", right) === "normal"
+        ? "Gated as the grant it records, which is normal-class: authorized by the signer's git.repo.own on the repository, explicit or implied by git.ns.admin."
+        : "Gated as the grant it records: granting ownership is an elevated action, which this VTC accepts only from a community administrator (`elevated_requires_admin`) who also holds git.repo.own here.",
+    resource,
+    parties: [{ role: "Receives the right", did: member }],
+    command,
   };
 }
 

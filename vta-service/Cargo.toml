@@ -104,7 +104,7 @@ vsock-store = ["vti-common/vsock-store"]
 # `tests/` can build complete VTA state the same way the lib unit tests
 # do. Enable via a `[dev-dependencies]` `features = ["test-support"]`
 # entry in the downstream crate. Not meant for production builds.
-test-support = ["webvh", "dep:tempfile"]
+test-support = ["webvh", "dep:tempfile", "vti-common/test-support"]
 # Mediator-backed transports for `MockVta`: an embedded
 # `affinidi-messaging-test-mediator`, a `did:peer:2` VTA identity advertising
 # `DIDCommMessaging` + `TSPTransport` at it, and the **production** inbound
@@ -252,7 +252,7 @@ affinidi-openid4vci = { workspace = true }
 affinidi-status-list = { workspace = true }
 hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
-affinidi-messaging-didcomm = "0.15"
+affinidi-messaging-didcomm = "0.15.9"
 # D2 P2a cut-over: the reliable-messaging delivery layer replaces the old
 # `affinidi-messaging-didcomm-service` type-routed framework. `MessagingService`
 # (subscribe/send/request over a `DidCommTransport`) drives inbound + outbound;
@@ -345,7 +345,7 @@ tempfile = { version = "3", optional = true }
 # A real dependency rather than a dev-dependency: `test-support` exists to serve
 # *external* consumers, and a dev-dependency would not be available to them.
 # `tsp` so the mediator routes raw-TSP frames, not just DIDComm.
-affinidi-messaging-test-mediator = { version = "0.10", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.10.2", optional = true, features = [
     "tsp",
 ] }
 libc = { workspace = true, optional = true }

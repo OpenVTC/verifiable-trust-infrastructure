@@ -2,6 +2,7 @@ mod audit;
 mod auth;
 mod backup;
 mod config;
+mod consent;
 mod did_log;
 mod git;
 mod setup;
@@ -201,6 +202,13 @@ enum Commands {
     Vetting {
         #[command(subcommand)]
         command: vetting::VettingCommands,
+    },
+
+    /// Answer the community's consent requests: making or widening an
+    /// unrestricted administrator needs another one's approval.
+    Consent {
+        #[command(subcommand)]
+        command: consent::ConsentCommands,
     },
 
     /// Git namespaces: bind a forge owner, grant and revoke git rights,
@@ -900,6 +908,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::DidLog { .. }
             | Commands::Vetting { .. }
             | Commands::Git { .. }
+            | Commands::Consent { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1446,6 +1455,12 @@ async fn main() {
         Commands::Git { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => git::run(command, &key, &target).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Consent { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => consent::run(command, &key, &target).await,
                 Err(e) => Err(e),
             }
         }
@@ -2312,6 +2327,51 @@ mod tests {
             if let Err(e) = Cli::try_parse_from(&argv) {
                 panic!("{argv:?} should parse: {e}");
             }
+        }
+    }
+
+    /// `git link` starts a link (`--forge`), follows one (`--status`) or lists
+    /// what is linked (`--list`), and those three do not mix.
+    #[test]
+    fn git_link_takes_exactly_one_of_forge_status_or_list() {
+        for ok in [
+            vec!["cnm", "git", "link", "--forge", "github.com"],
+            vec!["cnm", "git", "link", "--forge", "codeberg.org", "--no-wait"],
+            vec!["cnm", "git", "link", "--status", "lnk_4Tq9Xw2P"],
+            vec![
+                "cnm",
+                "git",
+                "link",
+                "--status",
+                "lnk_4Tq9Xw2P",
+                "--no-wait",
+            ],
+            vec!["cnm", "--json", "git", "link", "--list"],
+        ] {
+            if let Err(e) = Cli::try_parse_from(&ok) {
+                panic!("{ok:?} should parse: {e}");
+            }
+        }
+        for bad in [
+            vec!["cnm", "git", "link"],
+            vec!["cnm", "git", "link", "--no-wait"],
+            vec!["cnm", "git", "link", "--list", "--forge", "github.com"],
+            vec!["cnm", "git", "link", "--list", "--status", "lnk_1"],
+            vec!["cnm", "git", "link", "--list", "--no-wait"],
+            vec![
+                "cnm",
+                "git",
+                "link",
+                "--forge",
+                "github.com",
+                "--status",
+                "lnk_1",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(&bad).is_err(),
+                "{bad:?} should be refused"
+            );
         }
     }
 

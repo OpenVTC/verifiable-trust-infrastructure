@@ -65,6 +65,14 @@ use crate::status_list;
 /// process-wide lock is the right grain.)
 static LAST_ADMIN_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+/// Take [`LAST_ADMIN_LOCK`] for a write that can end an admin outside this
+/// executor — `acl/revoke`, an `acl/grant` rewrite — so it serialises with
+/// `depart` and `remint` and the admin-set checks they all make
+/// (`crate::acl::admin_consent::check_attrition`) see one another's writes.
+pub(crate) async fn lock_admin_set() -> tokio::sync::MutexGuard<'static, ()> {
+    LAST_ADMIN_LOCK.lock().await
+}
+
 /// What the executor did. Carries back whatever the caller needs to
 /// audit + respond — currently the credentials minted on admit.
 #[derive(Debug)]
@@ -377,6 +385,15 @@ async fn remint(
         }
     }
 
+    // A demotion ends an unrestricted admin, and must not leave nobody able to
+    // consent to another (VTI-APV-014, VTI-APV-009). After the broader guard
+    // above, so the community's very last admin is refused in those terms.
+    if !matches!(new_role, VtcRole::Admin)
+        && crate::acl::admin_consent::is_live_unrestricted(&acl, crate::auth::session::now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
+    }
+
     acl.role = new_role.clone();
     store_acl_entry(&state.acl_ks, &acl).await?;
 
@@ -461,7 +478,8 @@ async fn depart(
 
     // No-last-admin invariant — checked before any write so a refusal
     // leaves the community untouched.
-    if let Some(acl) = get_acl_entry(&state.acl_ks, subject_did).await?
+    let acl = get_acl_entry(&state.acl_ks, subject_did).await?;
+    if let Some(acl) = acl.as_ref()
         && matches!(acl.role, VtcRole::Admin)
     {
         let other_admins = list_acl_entries(&state.acl_ks)
@@ -475,6 +493,14 @@ async fn depart(
                  member to admin first"
             )));
         }
+    }
+    // Removing an unrestricted admin also must not leave nobody able to consent
+    // to another (VTI-APV-014, VTI-APV-009). After the broader guard, so the
+    // community's very last admin is refused in those terms.
+    if let Some(acl) = acl.as_ref()
+        && crate::acl::admin_consent::is_live_unrestricted(acl, crate::auth::session::now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
     }
 
     let member = get_member(&state.members_ks, subject_did).await?;

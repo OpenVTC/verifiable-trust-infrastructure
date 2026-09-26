@@ -37,6 +37,7 @@ pub mod hooks;
 pub mod install;
 pub mod join;
 pub mod keys;
+pub mod member_push;
 pub mod members;
 pub mod messaging;
 /// The one place this service packs a Trust Task for the wire.

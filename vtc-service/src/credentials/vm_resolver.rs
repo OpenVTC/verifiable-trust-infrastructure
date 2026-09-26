@@ -54,8 +54,10 @@ impl DidVmResolver {
                  the DID cache to verify did:webvh / did:web issuers + holders"
             ))
         })?;
-        let resolved = resolver
-            .resolve(base_did)
+        // A cached document that does not list `vm` is re-resolved once,
+        // fresh, before the method is refused: the signer may have rotated
+        // since it was cached (VTI-KEY-134).
+        let resolved = vta_sdk::trust_task_proof::resolve_for_vm(resolver, base_did, vm)
             .await
             .map_err(|e| AppError::Validation(format!("DID `{base_did}` did not resolve: {e}")))?;
         let relative = vm
@@ -134,8 +136,10 @@ impl DidVmResolver {
                  BBS issuers"
             ))
         })?;
-        let resolved = resolver
-            .resolve(base_did)
+        // A cached document that does not list `vm` is re-resolved once,
+        // fresh, before the method is refused: the signer may have rotated
+        // since it was cached (VTI-KEY-134).
+        let resolved = vta_sdk::trust_task_proof::resolve_for_vm(resolver, base_did, vm)
             .await
             .map_err(|e| AppError::Validation(format!("DID `{base_did}` did not resolve: {e}")))?;
         let doc: Value = serde_json::to_value(&resolved.doc)
