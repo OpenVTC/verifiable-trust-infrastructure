@@ -57,7 +57,7 @@ impl OperatorMessages for MediatorMessages {
     fn pnm_admin_command_hint(&self, context_id: &str, setup_did: &str) -> String {
         format!(
             "pnm contexts create --id {context_id} --name \"Mediator\" \\\n  \
-             --admin-did {setup_did} --admin-expires 1h"
+             --admin-did {setup_did} --admin-expires 1h --admin-handoff"
         )
     }
 }
@@ -77,7 +77,7 @@ impl OperatorMessages for WebvhServerMessages {
     fn pnm_admin_command_hint(&self, context_id: &str, setup_did: &str) -> String {
         format!(
             "pnm contexts create --id {context_id} --name \"WebVH server\" \\\n  \
-             --admin-did {setup_did} --admin-expires 1h"
+             --admin-did {setup_did} --admin-expires 1h --admin-handoff"
         )
     }
 }
@@ -90,12 +90,12 @@ mod tests {
     fn mediator_pnm_command_matches_donor_layout() {
         // Snapshot of the form the donor `mediator-setup` cli currently
         // prints: `pnm contexts create --id <ctx> --name "Mediator" \
-        //   --admin-did <did> --admin-expires 1h`.
+        //   --admin-did <did> --admin-expires 1h --admin-handoff`.
         // Matching this verbatim keeps mediator-setup's external
         // appearance unchanged after migration.
         assert_eq!(
             MediatorMessages.pnm_admin_command_hint("prod-mediator", "did:key:z6MkExample"),
-            "pnm contexts create --id prod-mediator --name \"Mediator\" \\\n  --admin-did did:key:z6MkExample --admin-expires 1h",
+            "pnm contexts create --id prod-mediator --name \"Mediator\" \\\n  --admin-did did:key:z6MkExample --admin-expires 1h --admin-handoff",
         );
     }
 

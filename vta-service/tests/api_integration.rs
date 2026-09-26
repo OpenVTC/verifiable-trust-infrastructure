@@ -129,8 +129,28 @@ impl TestContext {
 }
 
 impl TestContext {
+    /// Store the ACL row a token stands for, when there is none.
+    ///
+    /// A real token is only minted for a DID with an entry, and an ACL write
+    /// is bounded by the writer's own entry (VTI-ACL-053), so a token with no
+    /// row behind it describes a caller that cannot exist. A row a test seeded
+    /// itself is left as it is.
+    async fn ensure_token_entry(&self, did: &str, role: &str, contexts: &[String]) {
+        let Ok(role) = Role::parse(role) else {
+            return;
+        };
+        if vti_common::acl::get_acl_entry(self.acl_ks(), did)
+            .await
+            .expect("read acl")
+            .is_none()
+        {
+            self.create_acl(did, role, contexts.to_vec()).await;
+        }
+    }
+
     /// Create an authenticated session and return a Bearer token.
     async fn auth_token(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
+        self.ensure_token_entry(did, role, &contexts).await;
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {
             session_id: session_id.clone(),
@@ -169,6 +189,7 @@ impl TestContext {
     /// through; a plain `auth_token` is AAL1, which the gate answers with a
     /// step-up `403`.
     async fn auth_token_aal2(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
+        self.ensure_token_entry(did, role, &contexts).await;
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {
             session_id: session_id.clone(),

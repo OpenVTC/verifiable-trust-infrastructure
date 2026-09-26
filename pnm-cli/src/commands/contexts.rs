@@ -22,11 +22,13 @@ pub(crate) async fn run(
             admin_label,
             admin_expires,
             admin_holder,
+            admin_handoff,
         } => match resolve_admin_acl_options(
             admin_did,
             admin_label,
             admin_expires.as_deref(),
             admin_holder,
+            admin_handoff,
         ) {
             Ok(admin) => {
                 contexts::cmd_context_create(client, &id, &name, description, parent, admin).await
@@ -156,6 +158,7 @@ fn resolve_admin_acl_options(
     admin_label: Option<String>,
     admin_expires: Option<&str>,
     admin_holder: bool,
+    admin_handoff: bool,
 ) -> Result<contexts::AdminAclOptions, Box<dyn std::error::Error>> {
     let expires_at = match admin_expires {
         Some(s) => Some(
@@ -170,5 +173,6 @@ fn resolve_admin_acl_options(
         expires_at,
         expires_duration: admin_expires.map(str::to_string),
         holder: admin_holder,
+        handoff: admin_handoff,
     })
 }
