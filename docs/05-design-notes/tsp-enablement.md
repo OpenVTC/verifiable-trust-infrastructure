@@ -668,6 +668,10 @@ messaging service to a VTC post-mint should add both.
    DIDComm through the shared mediator. The credential-exchange protocol messages
    (offer, issue, query, request-VMC) have no TSP binding and stay on
    `AppState::send_to_member`, DIDComm.
+   The engine moved to `vti_common::trust_task_push` so the VTA can adopt it; the VTC
+   lends it its keyspace, outbox, resolver and messaging through a `PushContext`
+   (`vtc-service::member_push` is now that adapter). The VTA's own pushes
+   (`consent_request::push_one`) have not moved onto it yet.
 5. ~~Endpoint-shape vs reference impl~~ **Resolved (round 4, verified against the
    mediator + SDK source):** the consumer-doc convention (`#tsp` = mediator DID) is
    sound — see §7.1 for the verified mechanics. The mediator **never URL-parses a

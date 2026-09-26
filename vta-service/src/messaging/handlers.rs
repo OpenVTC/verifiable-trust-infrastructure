@@ -177,11 +177,14 @@ pub async fn handle_trust_task(
         // envelope to the VTA's own key, so no intermediary — mediator included
         // — held the plaintext.
         Ok(sender) => {
-            crate::trust_tasks::accept_from_proven_sender(
-                &app_state,
-                sender,
-                &body,
-                crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+            crate::trust_tasks::transport::with_binding(
+                "didcomm",
+                crate::trust_tasks::accept_from_proven_sender(
+                    &app_state,
+                    sender,
+                    &body,
+                    crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+                ),
             )
             .await
         }

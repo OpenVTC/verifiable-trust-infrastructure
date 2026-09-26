@@ -196,9 +196,13 @@ pub async fn mnemonic_status(
     ),
 )]
 pub async fn mnemonic_export(
-    _auth: SuperAdminAuth,
+    SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<MnemonicExportResponse>, AppError> {
+    // The root seed is the export of every key this VTA holds: the same
+    // capability as any other export (VTI-VTA-003), not only the role.
+    crate::operations::keys::ensure_may_export(&state.acl_ks, &auth, "attestation/mnemonic")
+        .await?;
     let guard = state
         .tee
         .as_ref()
@@ -209,6 +213,49 @@ pub async fn mnemonic_export(
             )
         })?;
 
-    let response = guard.export()?;
-    Ok(Json(response))
+    // The root mnemonic is the most consequential export this VTA has, and it
+    // used to leave only a tracing line. Recorded durably *before* the entropy
+    // is released, and a failed write refuses the export — the same rule as
+    // `keys/export-secret` (VTI-VTA-003): once the words are out they cannot be
+    // taken back, so an unrecorded release is not permitted. The row names the
+    // caller and the transport; never the words.
+    crate::audit::record(
+        &state.audit_sink,
+        "seed.mnemonic_export",
+        &auth.did,
+        None,
+        "success",
+        Some("rest"),
+        None,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            target: vta_audit::AUDIT_WRITE_FAILURE_TARGET,
+            error = %e, actor = %auth.did,
+            "mnemonic export refused: its audit row could not be written"
+        );
+        AppError::Internal(
+            "the mnemonic was not released: the export could not be recorded in the audit \
+             trail, and an unrecorded export is not permitted (VTI-VTA-003)"
+                .into(),
+        )
+    })?;
+    match guard.export() {
+        Ok(response) => Ok(Json(response)),
+        Err(e) => {
+            // The row above claimed a release that did not happen; say so.
+            crate::audit::record_best_effort(
+                &state.audit_sink,
+                "seed.mnemonic_export",
+                &auth.did,
+                None,
+                "failure:not_released",
+                Some("rest"),
+                None,
+            )
+            .await;
+            Err(e)
+        }
+    }
 }
