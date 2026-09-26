@@ -89,6 +89,14 @@ impl Right {
     pub fn is_namespace_right(self) -> bool {
         matches!(self, Right::NsAdmin | Right::RepoCreate)
     }
+
+    /// An *elevated* right (`git-ns/_shared/0.4` `ElevatedRight`): one that
+    /// carries authority over other people's rights. Separation of duties
+    /// (fixed rule 7 of `git-ns/right/grant/0.3`) forbids granting one to
+    /// oneself; the explicit self-grant is `git-ns/right/break-glass/0.1`.
+    pub fn is_elevated(self) -> bool {
+        matches!(self, Right::NsAdmin | Right::RepoCreate | Right::RepoOwn)
+    }
 }
 
 impl std::fmt::Display for Right {
@@ -319,6 +327,11 @@ pub struct Namespace {
     /// see [`NamespaceForgeStatus`]. Absent until the bridge says anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge_status: Option<NamespaceForgeStatus>,
+    /// The bridge's last `roleMapReported` (`git-ns/bridge/event/0.3`): the
+    /// forge role each right projects to here. Absent until it reports, and
+    /// no map is assumed meanwhile: the map is *unknown* ([`super::role_map`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<super::role_map::RoleMapReport>,
 }
 
 /// The bridge's report of its own standing on a namespace's forge owner.

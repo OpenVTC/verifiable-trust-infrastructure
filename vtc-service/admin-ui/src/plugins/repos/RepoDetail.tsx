@@ -16,9 +16,16 @@ import type {
   GitNsRepoRow,
   GitNsRight,
   GitNsRightRow,
+  GitNsRoleMap,
 } from "@/lib/wire-types";
 
-import { archiveTask, driftAdoptTask, driftRevertTask, type SignedTask } from "./actions";
+import {
+  archiveTask,
+  driftAdoptTask,
+  driftRevertTask,
+  reprojectTask,
+  type SignedTask,
+} from "./actions";
 import {
   fetchAccounts,
   fetchActivity,
@@ -44,6 +51,7 @@ import {
   bootstrapSteps,
   desiredTuples,
   expiresWithin,
+  forgeRoleFor,
   guardFor,
   inheritedRights,
   isRight,
@@ -92,21 +100,35 @@ function ForgeAccountCell({
   forge,
   forges,
   right,
+  roleMap,
 }: {
   did: string;
   forge: string;
   forges: ForgeAccounts | undefined;
   right: string;
+  /** The repository's role map, when the row is about one repository. */
+  roleMap?: GitNsRoleMap | null;
 }) {
   const acct = forges?.get(did)?.get(forge);
+  const role = roleMap ? forgeRoleFor(roleMap, right) : undefined;
   if (!acct) {
     return (
       <span className="muted">
-        Not linked{right === "git.commit.sign" ? " · fork pull requests" : ""}
+        Not linked{role === "none" || (!roleMap && right === "git.commit.sign") ? " · fork pull requests" : ""}
       </span>
     );
   }
-  return <span title={`${forge} id ${acct.id}`}>@{acct.login}</span>;
+  return (
+    <span title={`${forge} id ${acct.id}`}>
+      @{acct.login}
+      {role !== undefined && (
+        <span className="muted gitns-small" aria-label="Effective forge role">
+          {" · "}
+          {role === "none" ? "no forge role" : role}
+        </span>
+      )}
+    </span>
+  );
 }
 
 function GrantedBy({
@@ -140,11 +162,15 @@ function PeopleTable({
   onRevoke,
   readOnlyNote,
   vtcDid,
+  roleMap,
 }: {
   rows: GitNsRightRow[];
   vtcDid: string | undefined;
   forge: string;
   forges: ForgeAccounts | undefined;
+  /** The repository's role map: each row then shows the forge role its right
+   *  projects to. */
+  roleMap?: GitNsRoleMap | null;
   onRevoke?: (row: GitNsRightRow) => void;
   readOnlyNote?: (row: GitNsRightRow) => string | null;
 }) {
@@ -187,7 +213,13 @@ function PeopleTable({
                   </ToneChip>
                 </td>
                 <td>
-                  <ForgeAccountCell did={r.subject} forge={forge} forges={forges} right={r.right} />
+                  <ForgeAccountCell
+                    did={r.subject}
+                    forge={forge}
+                    forges={forges}
+                    right={r.right}
+                    roleMap={roleMap}
+                  />
                 </td>
                 <td>
                   <GrantedBy row={r} vtcDid={vtcDid} />
@@ -330,7 +362,7 @@ function DriftList({
                     <>
                       {" "}
                       <code aria-label="Revert command">
-                        {driftRevertTask(repo.resource, ns, d).command}
+                        {driftRevertTask(repo.resource, d, undefined, repo.roleMap).command}
                       </code>
                     </>
                   )}
@@ -718,6 +750,10 @@ export function RepoDetail() {
   const vtcDid = inherited.find((r) => isServiceGrant(r, ns))?.grantedBy ?? undefined;
   const governed = repo.state !== "unmanaged" && repo.state !== "detached";
   const archived = repo.state === "archived";
+  const reprojectable =
+    ns.state === "bound" &&
+    !ns.installationRemoved &&
+    (repo.state === "active" || repo.state === "orphaned");
   const lastOwner = (r: GitNsRightRow) =>
     r.right === "git.repo.own" && owners.length === 1 && owners[0] === r.subject
       ? "Last owner — name another first"
@@ -756,6 +792,17 @@ export function RepoDetail() {
               >
                 Transfer ownership
               </button>
+              {ns.mode === "bridge" && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!reprojectable}
+                  title="Have the bridge re-apply this repository's forge roles under its current role map. No right changes."
+                  onClick={() => setDialog({ kind: "sign", task: reprojectTask(repo.resource) })}
+                >
+                  Re-project roles
+                </button>
+              )}
               <button
                 type="button"
                 className="secondary destructive"
@@ -768,6 +815,28 @@ export function RepoDetail() {
           )}
         </div>
       </header>
+
+      {repo.roleMapStale && repo.roleMap && (
+        <div className="finding warn">
+          <strong>Forge roles projected under an earlier role map</strong>
+          <span>
+            The bridge now gives owners {repo.roleMap.own}, maintainers {repo.roleMap.maintain} and
+            committers {repo.roleMap.commit === "none" ? "no role" : repo.roleMap.commit} here. The
+            VTC has queued a re-projection; this clears once the bridge confirms it.
+          </span>
+          {reprojectable && (
+            <span>
+              <button
+                type="button"
+                className="secondary sm"
+                onClick={() => setDialog({ kind: "sign", task: reprojectTask(repo.resource) })}
+              >
+                Re-project now
+              </button>
+            </span>
+          )}
+        </div>
+      )}
 
       {repo.state === "orphaned" && (
         <div className="finding error">
@@ -825,6 +894,7 @@ export function RepoDetail() {
                 forge={ns.forge}
                 forges={forges}
                 vtcDid={vtcDid}
+                roleMap={repo.roleMap}
                 readOnlyNote={(r) =>
                   r.origin === "roleDerived"
                     ? "Managed in configuration"
@@ -856,6 +926,7 @@ export function RepoDetail() {
                 forge={ns.forge}
                 forges={forges}
                 vtcDid={vtcDid}
+                roleMap={repo.roleMap}
                 readOnlyNote={(r) =>
                   isServiceGrant(r, ns)
                     ? "Bridge service grant · Dependabot re-sign"
@@ -938,7 +1009,7 @@ export function RepoDetail() {
       {dialog?.kind === "drift" && (
         <DriftResolveDialog
           resource={repo.resource}
-          ns={ns}
+          roleMap={repo.roleMap}
           item={dialog.item}
           adopt={dialog.adopt}
           label={DRIFT_LABEL[dialog.item.type] ?? dialog.item.type}

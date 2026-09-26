@@ -430,13 +430,9 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
-    // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` (trust-tasks
-    // #635) went back to zero with trust-tasks-rs 0.23, which serves both.
-    // The hand-written `bridge::JOB_TYPE` and `git_ns::reseat_v0_3` have not
-    // yet given way to the generated `job::v0_4` and `reseat::v0_3` — that
-    // migration is a separate follow-up, tracked by the TODOs on those two
-    // modules rather than by this list, which only asserts registry
-    // publication.
+    // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` were sent
+    // and served ahead of their release here, and went back to zero with
+    // trust-tasks-rs 0.23, which generates both.
     //
     // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
     // 0.2 were bound ahead of their specs here, and went back to zero with
@@ -710,6 +706,7 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
     "https://trusttasks.org/spec/git-ns/repo/create/0.1",
     "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+    "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
 ];
 
 #[test]
