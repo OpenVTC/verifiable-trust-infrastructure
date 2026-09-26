@@ -4980,6 +4980,45 @@ async fn grant_rule_7_leaves_normal_self_grants_alone() {
     .await);
 }
 
+/// Rule 7 under the bridge's role map (`Right::is_elevated_in`): where
+/// maintainers get forge `admin`, `git.repo.maintain` is elevated, so an owner
+/// cannot grant it to himself — and the refusal does not point at
+/// break-glass, which carries only ns.admin, repo.create and own. Under the
+/// default map it is not elevated.
+#[tokio::test]
+async fn grant_rule_7_counts_a_right_the_role_map_projects_to_admin() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&report_role_map_from(
+        &f,
+        &f.bridge_party,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "admin", "commit": "none" } }),
+        chrono::TimeDelta::zero(),
+    )
+    .await);
+    let out = grant(&f, &f.bob, &f.bob.did, "git.repo.maintain", RES).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    let msg = payload(&out)["message"].as_str().unwrap().to_string();
+    assert!(msg.contains("role map"), "{msg}");
+    assert!(!msg.contains("break-glass"), "{msg}");
+    // commit.sign is never projected to admin by an ordered map.
+    ok(&grant(&f, &f.bob, &f.bob.did, "git.commit.sign", RES).await);
+    // Another owner or administrator grants it: fine.
+    ok(&grant(&f, &f.admin, &f.bob.did, "git.repo.maintain", RES).await);
+}
+
+/// Rule 7 before the bridge reports its map: `git.repo.maintain` might be the
+/// right the map projects to `admin`, so a self-grant of it is refused (fail
+/// closed); under the default map, once reported, it is allowed.
+#[tokio::test]
+async fn grant_rule_7_counts_maintain_while_the_role_map_is_unknown() {
+    let (f, ns) = drift_fixture_unreported(json!([])).await;
+    let out = grant(&f, &f.bob, &f.bob.did, "git.repo.maintain", RES).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    report_default_map(&f, &ns).await;
+    ok(&grant(&f, &f.bob, &f.bob.did, "git.repo.maintain", RES).await);
+}
+
 #[tokio::test]
 async fn repo_adopt_naming_oneself_owner_is_a_self_grant() {
     let f = fixture().await;

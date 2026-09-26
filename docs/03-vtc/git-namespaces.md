@@ -340,8 +340,16 @@ authority to grant it to anyone else (`git-ns/right/grant/0.3`, fixed rule
 7). It is refused with `git-ns:selfGrantNotAllowed`, and the same rule binds
 every task that records a right on the actor's own authority: an adopted
 drift item whose linked member is the resolver, `repo/adopt` naming oneself
-an owner, and `namespace/reseat` to oneself. Self-grants of
-`git.repo.maintain` and `git.commit.sign` stay allowed. `namespace/bind`
+an owner, and `namespace/reseat` to oneself. The bridge's role map can
+make `git.repo.maintain` elevated too: where it projects `maintain` to the
+forge's `admin` role on the repository (`Right::is_elevated_in`), a
+self-grant of it is refused the same way — and while a bridge-mode
+namespace's map is unknown, so is every self-grant of `maintain` (fail
+closed). Break-glass does not carry `maintain`; another owner or
+administrator grants it. A manual-mode namespace projects no forge role, so
+there the three rights above are the only elevated ones. Self-grants of
+`git.commit.sign`, and of `git.repo.maintain` where the map keeps it below
+`admin`, stay allowed. `namespace/bind`
 (the binder's first `git.ns.admin`) and `repo/create` (the creator's first
 `own`) are not self-grants — but `repo/create` (served at 0.3) makes its
 creator the owner only on an **explicit** `git.repo.create` record (granted by

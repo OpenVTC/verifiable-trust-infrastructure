@@ -860,6 +860,17 @@ export function adoptStanding(
       why: `This is your own forge account: adopting it as ${rightLabel(right).toLowerCase()} would grant you an elevated right yourself, which separation of duties refuses. Hand the command below to another owner or administrator — or, if nobody else can, break the glass, which is announced to every administrator.`,
     };
   }
+  // Mirrors `rules::elevated_on`: where the bridge's map projects the right
+  // to forge `admin` it is elevated too — but break-glass does not carry it.
+  if (viewer === member && repo.roleMap && forgeRoleFor(repo.roleMap, right) === "admin") {
+    return {
+      may: false,
+      handOver: true,
+      member,
+      right,
+      why: `This is your own forge account, and the bridge's role map gives ${rightLabel(right).toLowerCase()} the forge's admin role here, so adopting it would grant you an elevated right yourself, which separation of duties refuses. Hand the command below to another owner or administrator.`,
+    };
+  }
   if (consentClass("drift.resolve", right) !== "normal" && !superAdmin) {
     return {
       may: false,

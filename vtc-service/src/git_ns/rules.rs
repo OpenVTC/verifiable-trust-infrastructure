@@ -308,20 +308,42 @@ pub fn members_only(
     Ok(())
 }
 
+/// Whether `right` is elevated on `target` for separation of duties:
+/// [`Right::is_elevated_in`] under the role map of the namespace holding
+/// `target` — so where maintainers get forge `admin`, `git.repo.maintain` is
+/// elevated. A manual-mode namespace has no bridge and projects no forge
+/// role, so no map can elevate a right there. With no namespace to read a map
+/// from, it fails closed as an unknown map does: `git.repo.maintain` counts.
+pub fn elevated_on(snap: &Snapshot, right: Right, target: &Resource) -> bool {
+    match snap.namespace_containing(target) {
+        Some(ns) if ns.mode == super::model::Mode::Manual => right.is_elevated(),
+        Some(ns) => right.is_elevated_in(ns, &target.to_string()),
+        None => right.is_elevated() || right == Right::RepoMaintain,
+    }
+}
+
 /// Fixed rule 7 of `git-ns/right/grant/0.3`, *Separation of duties*: an actor
-/// never grants an elevated right (`git.ns.admin`, `git.repo.create`,
-/// `git.repo.own`) to themselves. `actor` is the DID the VTC resolved the
+/// never grants an elevated right to themselves. `elevated` is
+/// [`elevated_on`]: `git.ns.admin`, `git.repo.create` and `git.repo.own`
+/// always, and a right the bridge's role map projects to forge `admin`
+/// (`git-ns/bridge/event/0.3`). `actor` is the DID the VTC resolved the
 /// signer to — after any console-key delegation — so a delegated key cannot
 /// grant its principal what the principal may not grant themselves.
 ///
-/// The refusal names the one way to do it: `git-ns/right/break-glass/0.1`.
+/// The refusal names the way to do it: `git-ns/right/break-glass/0.1` for
+/// the three rights it carries; for a right elevated only by the role map,
+/// another administrator or owner.
 pub fn separation_of_duties(
     actor: &str,
     subject: &str,
     right: Right,
+    elevated: bool,
     target: &Resource,
 ) -> Result<(), Refusal> {
-    if actor == subject && right.is_elevated() {
+    if actor != subject || !(elevated || right.is_elevated()) {
+        return Ok(());
+    }
+    if right.is_elevated() {
         return Err(Refusal::SelfGrant(format!(
             "{right} is an elevated right, and you cannot grant it to yourself: ask another \
              administrator to grant it, or, if nobody else can, break the glass with \
@@ -330,7 +352,11 @@ pub fn separation_of_duties(
              flagged until another administrator ratifies or revokes it"
         )));
     }
-    Ok(())
+    Err(Refusal::SelfGrant(format!(
+        "{right} is elevated on {target}: the bridge's role map projects it to the forge's \
+         admin role (or the bridge has not reported its map yet), and you cannot grant it to \
+         yourself. Ask another owner or administrator to grant it"
+    )))
 }
 
 fn live_holders<'a>(
@@ -438,7 +464,13 @@ pub fn grant_admitted(
     now: DateTime<Utc>,
 ) -> Result<RulesPassed, Refusal> {
     authority_to_grant(snap, actor, right, target, settings, now)?;
-    separation_of_duties(actor, subject, right, target)?;
+    separation_of_duties(
+        actor,
+        subject,
+        right,
+        elevated_on(snap, right, target),
+        target,
+    )?;
     members_only(right, subject_is_member, actor_is_member)?;
     Ok(RulesPassed::new())
 }

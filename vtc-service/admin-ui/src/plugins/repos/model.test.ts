@@ -349,6 +349,21 @@ describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
     expect(!unlinked.may && unlinked.why).toMatch(/No member has linked/);
   });
 
+  it("hands over a self-adopt the role map makes elevated", () => {
+    // Where maintainers get forge admin, maintain is elevated (`rules::elevated_on`).
+    const maintainersAdmin = { ...DOCS, roleMap: { own: "admin", maintain: "admin", commit: "none" } };
+    const self = adoptStanding(BOB, true, ACME, maintainersAdmin, added("admin"), BOB, 0);
+    expect(self).toMatchObject({ may: false, handOver: true, member: BOB, right: "git.repo.maintain" });
+    expect(self.may === false && self.why).toMatch(/role map/);
+    expect(self.may === false && self.why).not.toMatch(/break the glass/);
+    // Under the default map maintain is not elevated: Bob adopts it himself.
+    expect(adoptStanding(BOB, false, ACME, DOCS, added("maintain"), BOB, 0)).toEqual({
+      may: true,
+      member: BOB,
+      right: "git.repo.maintain",
+    });
+  });
+
   it("hands over to an owner, and an elevated adopt to a community administrator", () => {
     const outsider = adoptStanding(HANA, true, ACME, DOCS, added("maintain"), HANA, 0);
     expect(outsider).toMatchObject({ may: false, handOver: true, right: "git.repo.maintain" });

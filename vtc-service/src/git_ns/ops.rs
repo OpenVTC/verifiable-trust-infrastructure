@@ -899,7 +899,7 @@ pub async fn namespace_reseat(
     // self-grant of `git.ns.admin`, which is `git-ns/right/break-glass`'s.
     let subject = p.subject.to_string();
     did_core("subject", &subject)?;
-    rules::separation_of_duties(&actor.did, &subject, Right::NsAdmin, &resource)?;
+    rules::separation_of_duties(&actor.did, &subject, Right::NsAdmin, true, &resource)?;
     // Step 4 — fixed rule 5.
     let subject_standing = standing(state, &subject).await?;
     if !subject_standing.member {
