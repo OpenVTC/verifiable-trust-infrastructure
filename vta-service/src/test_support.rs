@@ -208,18 +208,21 @@ pub const TEST_ADMIN_SEED: [u8; 32] = [0x7A; 32];
 ///
 /// `VtaClient` verifies replies now
 /// (OpenVTC/verifiable-trust-infrastructure#1341), and production has always
-/// signed them with `{vta_did}#key-0` for every DID method that is not
-/// `did:peer` (`server.rs`). A mock that cannot sign is therefore not a cheap
+/// signed them with its own key for every DID method that is not `did:peer`
+/// (`server.rs`). A mock that cannot sign is therefore not a cheap
 /// stand-in any more — it is a VTA that behaves in a way no real one does, and
 /// every test through it fails with the client blaming the reply.
 pub const TEST_VTA_SEED: [u8; 32] = [0x5A; 32];
 
-/// The mock VTA's `did:key` and its `#key-0` verification method.
+/// The mock VTA's `did:key` and its verification method,
+/// `did:key:<id>#<id>` — the one method a did:key has, and the one production
+/// signs as (`server.rs`, the did:key branch of `AuthInit`). A did:key has no
+/// `#key-0`, and a verifier refuses a proof naming one (VTI-KEY-022).
 ///
 /// Derived, not written down: a literal here is what the sentinel was.
 pub fn test_vta_did() -> (String, String) {
     let (did, _vm) = did_for_seed(TEST_VTA_SEED[0]);
-    let vm = format!("{did}#key-0");
+    let vm = crate::operations::credentials::vta_signing_vm(&did);
     (did, vm)
 }
 
@@ -531,7 +534,7 @@ async fn provision_vta_signing_identity(
     // The same key, as a `Secret` the response signer can use.
     //
     // Production sets `signing_vm_id` to `{vta_did}#key-0` for did:webvh and
-    // did:key alike (`server.rs`, the non-`did:peer` branch of `AuthInit`), so
+    // to `did:key:<id>#<id>` for did:key (`server.rs`, `AuthInit`), so
     // a REST-only VTA signs its answers with its own key and needs no transport
     // identity to do it. This harness never ran that path — it populated the
     // signer only from `build_transport_state`, which requires a `did:peer:2` —
@@ -553,11 +556,11 @@ async fn provision_vta_signing_identity(
             None,
         )
         .expect("construct the VTA's own signing secret");
-        secret.id = key_id.clone();
-        VtaOwnSigner {
-            vm_id: key_id.clone(),
-            secret,
-        }
+        // The record is stored under `#key-0` whatever the method; the proof
+        // names the method the DID document lists.
+        let vm_id = crate::operations::credentials::vta_signing_vm(&vta_did);
+        secret.id = vm_id.clone();
+        VtaOwnSigner { vm_id, secret }
     };
 
     save_key_record(
@@ -1009,8 +1012,9 @@ pub struct VtaTransportIdentity {
 
 /// The VTA's own response-signing key, as production wires it.
 ///
-/// `{vta_did}#key-0` — the same verification method `server.rs` puts in
-/// `signing_vm_id` for every DID method that is not `did:peer`. Carried out of
+/// The same verification method `server.rs` puts in `signing_vm_id` for every
+/// DID method that is not `did:peer`: `{vta_did}#key-0`, or
+/// `did:key:<id>#<id>` for a did:key. Carried out of
 /// [`provision_vta_signing_identity`] rather than re-derived, so the harness
 /// signs with the key it actually provisioned.
 pub(crate) struct VtaOwnSigner {

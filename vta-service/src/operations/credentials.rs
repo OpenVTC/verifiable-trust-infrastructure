@@ -201,12 +201,27 @@ pub async fn revoke_credential(
     Ok(revoked_at)
 }
 
+/// The verification method a VTA's signing key has in its own DID document.
+///
+/// The key *store* names the signing record `{vta_did}#key-0` whatever the DID
+/// method, but a proof must name a method the DID document lists: a did:webvh
+/// VTA's is `#key-0`, and a did:key VTA's is its one method,
+/// `did:key:<id>#<id>` — a did:key has no `#key-0`, and a verifier refuses a
+/// proof naming one (VTI-KEY-022).
+pub(crate) fn vta_signing_vm(vta_did: &str) -> String {
+    match vta_did.strip_prefix("did:key:") {
+        Some(id) => format!("{vta_did}#{id}"),
+        None => format!("{vta_did}#key-0"),
+    }
+}
+
 /// Load the VTA's `{vta_did}#key-0` VC-issuance key as a signing `Secret`.
 ///
 /// Mirrors `provision_integration::vta_keys::load_vta_vc_issuance_secret`: an
 /// [`InternalAuthority`]-gated `get_key_secret_internal`, then reconstruct the
-/// `Secret` from the multibase private key with `id = {vta_did}#key-0` so the
-/// Data-Integrity proof's `verificationMethod` resolves under the VTA DID.
+/// `Secret` from the multibase private key with `id` =
+/// [`vta_signing_vm`], so the Data-Integrity proof's `verificationMethod` is a
+/// method the VTA's DID document lists.
 pub(crate) async fn load_vta_issuer_secret(
     state: &AppState,
     vta_did: &str,
@@ -232,7 +247,7 @@ pub(crate) async fn load_vta_issuer_secret(
         .map_err(|e| AppError::Internal(format!("decode VTA issuer key {key_id}: {e}")))?;
     let mut secret = Secret::from_multibase(&resp.private_key_multibase, None)
         .map_err(|e| AppError::Internal(format!("construct issuer Secret for {key_id}: {e}")))?;
-    secret.id = key_id;
+    secret.id = vta_signing_vm(vta_did);
     Ok(secret)
 }
 

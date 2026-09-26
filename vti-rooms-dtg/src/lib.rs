@@ -46,11 +46,11 @@
 //! different thing: a key is named by the credential's own proof, and a host that cannot
 //! resolve it refuses rather than proceeding.
 
-use affinidi_data_integrity::VerificationMethodResolver;
 use affinidi_secrets_resolver::secrets::KeyType;
 use base64::Engine as _;
 use dtg_credentials::authority::{AuthorityError, verify_chain};
 use dtg_credentials::{DTGCredential, DTGCredentialType};
+use vti_common::auth::{ProofPurpose, PurposeVmResolver};
 use vti_common::error::AppError;
 use vti_rooms::authz::{Action, ChainVerifier, VerifiedChain};
 use vti_rooms::wire::AuthorityPresentation;
@@ -68,32 +68,42 @@ pub use vti_rooms::authz::ACTION_SUCCEED;
 /// unresolvable method as "probably fine" has stopped checking signatures.
 #[async_trait::async_trait]
 pub trait VerificationKeys: Send + Sync {
-    /// The Ed25519 public key bytes for `verification_method`.
-    async fn public_key(&self, verification_method: &str) -> Result<Vec<u8>, AppError>;
+    /// The Ed25519 public key bytes for `verification_method`, provided the DID
+    /// naming it authorised it for `purpose` (VTI-KEY-022) — the proof's own
+    /// `proofPurpose`, never an assumed one.
+    async fn public_key(
+        &self,
+        verification_method: &str,
+        purpose: ProofPurpose,
+    ) -> Result<Vec<u8>, AppError>;
 }
 
 /// [`VerificationKeys`] over any resolver the host already has.
 ///
-/// Both a VTC and a room host carry an `affinidi_data_integrity::VerificationMethodResolver`
+/// Both a VTC and a room host carry a [`PurposeVmResolver`]
 /// — `vti_common::auth::TrustTaskVmResolver` is one — so wrapping it beats making each host
 /// write its own lookup and get the key-type check subtly different.
 pub struct DataIntegrityKeys<R>(pub R);
 
 #[async_trait::async_trait]
-impl<R: VerificationMethodResolver + Send + Sync> VerificationKeys for DataIntegrityKeys<R> {
-    async fn public_key(&self, verification_method: &str) -> Result<Vec<u8>, AppError> {
+impl<R: PurposeVmResolver + Send + Sync> VerificationKeys for DataIntegrityKeys<R> {
+    async fn public_key(
+        &self,
+        verification_method: &str,
+        purpose: ProofPurpose,
+    ) -> Result<Vec<u8>, AppError> {
         let resolved = self
             .0
-            .resolve_vm(verification_method)
+            .resolve_vm_for_purpose(verification_method, purpose)
             .await
-            .map_err(|e| AppError::NotFound(format!("resolve `{verification_method}`: {e}")))?;
+            .map_err(|e| AppError::NotFound(format!("resolve the verification method: {e}")))?;
 
         // Room credentials are signed `eddsa-jcs-2022`. Handing a P-256 key to an Ed25519
         // verifier is not a type error anywhere in the stack — the bytes are the same
         // length — so the algorithm is checked here rather than assumed.
         if !matches!(resolved.key_type, KeyType::Ed25519) {
             return Err(AppError::NotFound(format!(
-                "`{verification_method}` is a {:?} key; room credentials are eddsa-jcs-2022",
+                "the verification method is a {:?} key; room credentials are eddsa-jcs-2022",
                 resolved.key_type
             )));
         }
@@ -221,8 +231,16 @@ pub async fn open_credential(
         .as_ref()
         .ok_or_else(|| AppError::Validation(format!("{what} carries no proof")))?;
 
+    // A credential is its issuer's attestation: its proof must declare
+    // assertionMethod, and the key must be listed there (VTI-KEY-022).
+    if proof.proof_purpose != ProofPurpose::AssertionMethod.as_str() {
+        tracing::warn!("room credential proof does not declare proofPurpose assertionMethod");
+        return Err(AppError::Validation(format!(
+            "{what} could not be verified"
+        )));
+    }
     let key = keys
-        .public_key(&proof.verification_method)
+        .public_key(&proof.verification_method, ProofPurpose::AssertionMethod)
         .await
         .map_err(|e| {
             // The resolver's own error is for the operator; the caller learns only that it
@@ -378,7 +396,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl VerificationKeys for NoKeys {
-        async fn public_key(&self, _vm: &str) -> Result<Vec<u8>, AppError> {
+        async fn public_key(&self, _vm: &str, _purpose: ProofPurpose) -> Result<Vec<u8>, AppError> {
             Err(AppError::NotFound("no keys here".into()))
         }
     }
@@ -476,7 +494,11 @@ mod tests {
         struct AnyKey;
         #[async_trait::async_trait]
         impl VerificationKeys for AnyKey {
-            async fn public_key(&self, _vm: &str) -> Result<Vec<u8>, AppError> {
+            async fn public_key(
+                &self,
+                _vm: &str,
+                _purpose: ProofPurpose,
+            ) -> Result<Vec<u8>, AppError> {
                 Ok(vec![0u8; 32])
             }
         }
@@ -531,7 +553,11 @@ mod tests {
         struct OneKey;
         #[async_trait::async_trait]
         impl VerificationKeys for OneKey {
-            async fn public_key(&self, _vm: &str) -> Result<Vec<u8>, AppError> {
+            async fn public_key(
+                &self,
+                _vm: &str,
+                _purpose: ProofPurpose,
+            ) -> Result<Vec<u8>, AppError> {
                 Ok(vec![0u8; 32])
             }
         }
@@ -569,7 +595,7 @@ mod signed {
 
     #[async_trait::async_trait]
     impl VerificationKeys for DidKeyResolver {
-        async fn public_key(&self, vm: &str) -> Result<Vec<u8>, AppError> {
+        async fn public_key(&self, vm: &str, _purpose: ProofPurpose) -> Result<Vec<u8>, AppError> {
             let did = vm.split('#').next().unwrap_or_default();
             let multibase = did
                 .strip_prefix("did:key:")

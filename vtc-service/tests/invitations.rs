@@ -406,7 +406,8 @@ impl Invitee {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use ed25519_dalek::Signer;
         let header = json!({ "typ": "openid4vci-proof+jwt", "alg": "EdDSA",
-                             "kid": format!("{}#key-0", self.did) });
+                             "kid": format!("{}#{}", self.did,
+                                            self.did.strip_prefix("did:key:").unwrap()) });
         let payload = json!({ "iss": self.did, "aud": VTC_DID,
                               "iat": chrono::Utc::now().timestamp(), "nonce": code });
         let h = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
