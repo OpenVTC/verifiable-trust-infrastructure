@@ -119,7 +119,10 @@ an approval for the benign one would authorize the destructive one.
 
 Six hex characters, UI-only, no wire field. It is derived from the **decoded
 digest bytes**, not from the multibase string
-(`vta-mobile-core/src/consent.rs:79`).
+(`vta_sdk::task_consent::match_code`, which the mobile approver, `cnm consent`
+and the `pnm`/`cnm` requester prompt all call — the requester prompt used to
+print the whole `zQm…` digest, leaving the operator nothing to compare against
+the device's six characters).
 
 That distinction is load-bearing. A `digestMultibase` always begins `zQm` — the
 base58btc marker plus the sha2-256 multihash prefix, identical for every digest
@@ -242,8 +245,16 @@ error. Use a DIDComm- or TSP-transport client.
 
 The decision signer lives in `vta-mobile-core/src/consent.rs`
 (`build_task_consent_decision_did_signed`) — a UniFFI crate built for the
-mobile bindings. **No CLI links it**, so `pnm` shows the code and waits for a
-device to answer.
+mobile bindings. `pnm` has no approver command yet, so it shows the code and
+waits for a device to answer.
+
+The approver's shared half is `vta_sdk::task_consent`: `match_code` (which
+every surface, requester and approver, must use), `ConsentRequest::verify`
+(proof, signer = issuer = the expected node, addressed to this approver, not
+expired), and `VerifiedConsentRequest::decision`. `cnm consent
+{show,approve,deny}` is built on it for the VTC's unrestricted-admin consent
+(see `docs/03-vtc/bootstrap-runbook.md`). A `pnm` equivalent would be the same
+module plus a VTA client call.
 
 For a single-operator posture, set `exclude_requester = false` and put the
 CLI's own DID in the set.

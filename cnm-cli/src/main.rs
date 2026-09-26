@@ -2,6 +2,7 @@ mod audit;
 mod auth;
 mod backup;
 mod config;
+mod consent;
 mod did_log;
 mod git;
 mod setup;
@@ -201,6 +202,13 @@ enum Commands {
     Vetting {
         #[command(subcommand)]
         command: vetting::VettingCommands,
+    },
+
+    /// Answer the community's consent requests: making or widening an
+    /// unrestricted administrator needs another one's approval.
+    Consent {
+        #[command(subcommand)]
+        command: consent::ConsentCommands,
     },
 
     /// Git namespaces: bind a forge owner, grant and revoke git rights,
@@ -900,6 +908,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::DidLog { .. }
             | Commands::Vetting { .. }
             | Commands::Git { .. }
+            | Commands::Consent { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1446,6 +1455,12 @@ async fn main() {
         Commands::Git { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => git::run(command, &key, &target).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Consent { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => consent::run(command, &key, &target).await,
                 Err(e) => Err(e),
             }
         }
