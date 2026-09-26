@@ -413,3 +413,138 @@ async fn backup_export_and_import_are_refused_over_rest() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The code `vtc/backup/export/0.1` declares, on every end-to-end transport the
+// harness offers. The same signed document goes through the same spine either
+// way; only the carriage differs.
+// ---------------------------------------------------------------------------
+
+/// The end-to-end transports a backup is served on.
+#[cfg(feature = "didcomm-harness")]
+#[derive(Debug, Clone, Copy)]
+enum Transport {
+    DIDComm,
+    #[cfg(feature = "tsp")]
+    Tsp,
+}
+
+#[cfg(feature = "didcomm-harness")]
+impl Transport {
+    const ALL: &[Transport] = &[
+        Transport::DIDComm,
+        #[cfg(feature = "tsp")]
+        Transport::Tsp,
+    ];
+
+    /// A VTC reachable on this transport.
+    async fn start(self) -> vtc_service::test_support::MockVtcDidcomm {
+        use vtc_service::test_support::MockVtcDidcomm;
+        match self {
+            Transport::DIDComm => MockVtcDidcomm::start().await,
+            #[cfg(feature = "tsp")]
+            Transport::Tsp => MockVtcDidcomm::start_with_tsp().await,
+        }
+    }
+
+    /// A session to `mock` on this transport, as `did` holding `key`.
+    async fn connect(
+        self,
+        mock: &vtc_service::test_support::MockVtcDidcomm,
+        did: &str,
+        key: &str,
+    ) -> vta_sdk::client::VtaClient {
+        use vta_sdk::client::VtaClient;
+        let (vtc, mediator) = (mock.vtc_did(), mock.mediator_did());
+        match self {
+            Transport::DIDComm => VtaClient::connect_didcomm(did, key, vtc, mediator, None).await,
+            #[cfg(feature = "tsp")]
+            Transport::Tsp => VtaClient::connect_tsp(did, key, vtc, mediator, None).await,
+        }
+        .unwrap_or_else(|e| panic!("connect over {self:?}: {e}"))
+    }
+}
+
+/// A deterministic `did:key` and its multibase private key.
+#[cfg(feature = "didcomm-harness")]
+fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+    let seed = [seed_byte; 32];
+    let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let did = format!(
+        "did:key:{}",
+        vta_sdk::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+    );
+    let mut buf = vec![0x80, 0x26];
+    buf.extend_from_slice(&seed);
+    (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+}
+
+/// The declared code a session reported a refusal under: the client surfaces
+/// an undeclared-by-it code as `trust task failed [<code>]: <message>`.
+#[cfg(feature = "didcomm-harness")]
+fn tt_error_code(err: &vta_sdk::error::VtaError) -> Option<String> {
+    let text = err.to_string();
+    let rest = text.split_once("trust task failed [")?.1;
+    Some(rest.split_once(']')?.0.to_string())
+}
+
+/// A super-admin's export with a password under the minimum is answered with
+/// `vtc/backup/export:passwordTooShort` — the code its spec declares — on
+/// every end-to-end transport, and nothing is exported.
+#[cfg(feature = "didcomm-harness")]
+#[tokio::test]
+async fn the_export_task_answers_with_the_code_its_spec_declares() {
+    use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+    use vtc_service::backup::EXPORT_ERR_PASSWORD_TOO_SHORT;
+
+    let short = "x".repeat(vta_sdk::protocols::backup_management::MIN_BACKUP_PASSWORD_LEN - 1);
+    for &transport in Transport::ALL {
+        let mock = transport.start().await;
+        {
+            let mut config = mock.vtc.state.config.write().await;
+            config.secrets.backend = Some(vtc_service::config::SecretBackend::Plaintext);
+            config.config_path = mock.vtc.data_dir().join("config.toml");
+            vtc_service::keys::seed_store::create_secret_store(&config)
+                .expect("plaintext store")
+                .set(b"signing-bundle")
+                .await
+                .expect("seed the store");
+        }
+        let (admin_did, admin_key) = did_key_from_seed(0x5c);
+        store_acl_entry(
+            &mock.vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: admin_did.clone(),
+                role: VtcRole::Admin,
+                label: None,
+                allowed_contexts: vec![],
+                created_at: 0,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("seed the super-admin");
+        mock.register_local_did(&admin_did).await;
+
+        let client = transport.connect(&mock, &admin_did, &admin_key).await;
+        let err = client
+            .dispatch_trust_task(
+                "https://trusttasks.org/spec/vtc/backup/export/0.1",
+                serde_json::json!({ "password": short }),
+                30,
+            )
+            .await
+            .expect_err("a short password exports nothing");
+        assert_eq!(
+            tt_error_code(&err).as_deref(),
+            Some(EXPORT_ERR_PASSWORD_TOO_SHORT),
+            "over {transport:?}: {err}"
+        );
+
+        client.shutdown().await;
+        mock.shutdown().await;
+    }
+}
