@@ -423,5 +423,12 @@ describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
       member: ALICE,
       right: "git.repo.maintain",
     });
+    // Where the map gives maintainers `admin`, maintain is elevated too
+    // (`Right::is_elevated_in`): a forge admin adopts as maintain, handed over.
+    const maintainersAdmin = { ...DOCS, roleMap: { own: "admin", maintain: "admin", commit: "none" } };
+    const raised = adoptStanding(ALICE, true, ACME, maintainersAdmin, { ...added, observed: "admin" }, ALICE, 0);
+    expect(raised).toMatchObject({ may: false, handOver: true, member: ALICE, right: "git.repo.maintain" });
+    expect(raised.may === false && raised.why).toMatch(/role map/);
+    expect(raised.may === false && raised.why).not.toMatch(/break-glass/);
   });
 });

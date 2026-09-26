@@ -768,6 +768,19 @@ const ELEVATED_RIGHTS: ReadonlySet<GitNsRight> = new Set<GitNsRight>([
   "git.repo.own",
 ]);
 
+/**
+ * Whether `right` is elevated on a repository under its role map — mirrors
+ * `Right::is_elevated_in`: an elevated right, or one the map projects to
+ * forge `admin` (a map that gives maintainers `admin` makes
+ * `git.repo.maintain` elevated). With no map reported, `git.repo.maintain`
+ * counts too, which fails closed.
+ */
+export function isElevatedIn(right: GitNsRight, map: GitNsRoleMap | null | undefined): boolean {
+  if (ELEVATED_RIGHTS.has(right)) return true;
+  if (!map) return right === "git.repo.maintain";
+  return forgeRoleFor(map, right) === "admin";
+}
+
 export type AdoptStanding =
   /** Adoptable, by this viewer: grants `right` to `member`. */
   | { may: true; member: string; right: GitNsRight }
@@ -794,7 +807,8 @@ export type AdoptStanding =
  *   projected right (`projectedRepoRank`) — a lowering is accepted by
  *   revoking, not adopting (`notAdoptable`);
  * - step 6 (0.3): separation of duties — nobody adopts an elevated right
- *   (`git.repo.own`) for themselves (`git-ns:selfGrantNotAllowed`); the
+ *   (`git.repo.own`, or one the role map projects to forge `admin`:
+ *   `isElevatedIn`) for themselves (`git-ns:selfGrantNotAllowed`); the
  *   viewer is the DID a console key acts as, so this is its admin. Another
  *   owner can adopt it, so the command is handed over rather than offered;
  * - step 7: the grant's consent class — `own` is elevated, which this VTC
@@ -839,13 +853,15 @@ export function adoptStanding(
       `The forge shows ${item.observed}, no higher than the member is projected at here — that is a lowering, accepted by revoking the right, not by adopting.`,
     );
   }
-  if (viewer === member && ELEVATED_RIGHTS.has(right)) {
+  if (viewer === member && isElevatedIn(right, repo.roleMap)) {
     return {
       may: false,
       handOver: true,
       member,
       right,
-      why: `Adopting this role would make you ${rightLabel(right).toLowerCase()}, an elevated right nobody grants themselves. Hand the command below to another owner or namespace admin — or, if nobody else can, use break-glass (git-ns/right/break-glass), which every other administrator sees until one ratifies or revokes it.`,
+      why: ELEVATED_RIGHTS.has(right)
+        ? `Adopting this role would make you ${rightLabel(right).toLowerCase()}, an elevated right nobody grants themselves. Hand the command below to another owner or namespace admin — or, if nobody else can, use break-glass (git-ns/right/break-glass), which every other administrator sees until one ratifies or revokes it.`
+        : `Adopting this role would make you ${rightLabel(right).toLowerCase()}, which the bridge's role map gives the forge's admin role here, so it is an elevated right nobody grants themselves. Hand the command below to another owner or namespace admin.`,
     };
   }
   const owns = !!viewer && (repo.owners.includes(viewer) || ns.admins.includes(viewer));

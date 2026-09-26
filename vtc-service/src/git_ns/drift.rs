@@ -417,19 +417,27 @@ async fn adopt(
         }
     }
     // Step 6 (0.3) — separation of duties: nobody adopts an elevated right
-    // for themselves. `actor.did` is the DID the signer was resolved to,
+    // for themselves — elevated as the role map makes it (`is_elevated_in`):
+    // where maintainers get forge `admin`, `maintain` is elevated too. `actor.did` is the DID the signer was resolved to,
     // after any console-key delegation (`tasks::acting_as`), so a
     // console key cannot adopt for its admin what the admin could not adopt
     // themselves. Fixed: it runs before policy, which cannot waive it.
-    if member == actor.did && right.is_elevated() {
+    if member == actor.did && right.is_elevated_in(&d.ns, &d.repo.resource) {
+        // Break-glass carries only ns.admin, repo.create and own, so a right
+        // elevated only by the map is pointed at another owner.
+        let way = if right.is_elevated() {
+            "ask another owner or namespace admin to adopt it, or, if nobody else can, break \
+             the glass with git-ns/right/break-glass, which is audited and shown to every \
+             administrator until another one ratifies or revokes it"
+        } else {
+            "the bridge's role map gives it the forge's admin role here (or the bridge has not \
+             reported its map). Ask another owner or namespace admin to adopt it"
+        };
         return Err(declared(
             SELF_GRANT_NOT_ALLOWED,
             format!(
                 "adopting this role would record {right} on {} for you, and {right} is an \
-                 elevated right you cannot grant yourself: ask another owner or namespace admin \
-                 to adopt it, or, if nobody else can, break the glass with \
-                 git-ns/right/break-glass, which is audited and shown to every administrator \
-                 until another one ratifies or revokes it",
+                 elevated right you cannot grant yourself: {way}",
                 d.resource
             ),
         ));

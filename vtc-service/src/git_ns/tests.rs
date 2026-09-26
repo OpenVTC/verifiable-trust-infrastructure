@@ -4037,6 +4037,48 @@ async fn an_adoption_never_grants_the_resolver_an_elevated_right() {
     assert_eq!(body["right"]["subject"], json!(f.bob.did));
 }
 
+/// drift/resolve 0.3 adopt step 6 under the reported role map: where
+/// maintainers get forge `admin`, `git.repo.maintain` is elevated
+/// (`Right::is_elevated_in`), so an owner cannot adopt a forge `admin` as
+/// `maintain` for himself — though another owner can adopt it for him.
+#[tokio::test]
+async fn a_map_that_gives_maintainers_admin_makes_a_self_adopted_maintain_elevated() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "admin", "commit": "none" } }),
+    )
+    .await);
+    link_account(&f, &ns, &f.bob, "5550088", "bob-b").await;
+    let bob_acct = json!({ "forge": "github.com", "id": "5550088", "login": "bob-b" });
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": bob_acct.clone(), "observed": "admin" }]),
+    )
+    .await;
+    let sel = json!({ "type": "roleAdded", "account": bob_acct, "observed": "admin" });
+
+    let out = resolve_naming(&f, &f.bob, sel.clone(), "adopt", Some(&f.bob.did)).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(String::from_utf8_lossy(&out.body).contains("git.repo.maintain"));
+    assert!(!String::from_utf8_lossy(&out.body).contains("break-glass"));
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap();
+    assert!(
+        !snap
+            .rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .any(|r| r.subject == f.bob.did && r.right == super::model::Right::RepoMaintain)
+    );
+
+    // The community administrator, a namespace admin, adopts it for Bob.
+    let body = ok(&resolve_naming(&f, &f.admin, sel, "adopt", Some(&f.bob.did)).await);
+    assert_eq!(body["right"]["right"], "git.repo.maintain");
+    assert_eq!(body["right"]["subject"], json!(f.bob.did));
+}
+
 /// A namespace admin with nothing in their own name has no projected right.
 #[tokio::test]
 async fn a_namespace_admin_alone_has_no_projected_right() {

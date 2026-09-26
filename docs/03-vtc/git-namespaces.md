@@ -261,11 +261,12 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   role, so a namespace admin holding `maintain` there can have a forge `admin`
   adopted as `own`) held by a forge account linked to a current member, at a
   role a right projects to, can be adopted. Nobody adopts an elevated right
-  (`git.repo.own`) for themselves — the member the item names is compared with
+  (`git.repo.own`, or a right the bridge's role map projects to forge `admin`
+  there — and, while no map is reported, `git.repo.maintain`) for themselves — the member the item names is compared with
   the resolver after console-key delegation, and a match is refused
   `git-ns:selfGrantNotAllowed`: another owner adopts it, or the resolver uses
-  `git-ns/right/break-glass`. Adopting `maintain` or `commit.sign` for oneself
-  is allowed. The right is the **lowest** whose role in the bridge's reported role map (the
+  `git-ns/right/break-glass`. Adopting `commit.sign`, or `maintain` where it is
+  not elevated, for oneself is allowed. The right is the **lowest** whose role in the bridge's reported role map (the
   repository's own entry where it has one) is the observed role — under the
   default map `admin` is `git.repo.own`, `maintain` is `git.repo.maintain`,
   and on a personal account collaborator `write` is `git.repo.maintain`.
