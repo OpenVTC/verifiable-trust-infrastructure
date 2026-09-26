@@ -956,8 +956,8 @@ fn build_api_chain(
         // Task verb, no longer a bespoke GET.)
         // Credential-exchange query send (admin): prepare a DCQL query + issue a
         // single-use presentation challenge for a holder. Plain admin route (no
-        // Trust-Task descriptor) — the holder answers over the credential-exchange
-        // DIDComm `present` surface.
+        // Trust-Task descriptor) — the holder answers with a
+        // `credential-exchange/present` Trust Task, over any transport.
         .routes(routes!(join_requests::present::send_query))
         // Policies (Phase 2 M2.3). Three POST endpoints, three
         // Trust Tasks. `upload` mints + persists; `activate` flips

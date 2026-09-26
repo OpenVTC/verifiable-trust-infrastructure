@@ -1,27 +1,32 @@
-//! Deliver issued credentials to a holder's wallet over DIDComm.
+//! Push credential-exchange steps, and other VTC-originated Trust Tasks, to a
+//! holder — over whichever transport the holder speaks.
 //!
 //! When the VTC issues a credential to a member — at join auto-admit, at
 //! admin-approve, or when a role change re-mints the role VEC — the holder needs
 //! to actually *receive* it. The REST surfaces return the credential inline in
 //! their response (for out-of-band hand-off), but a holder that interacted over
-//! DIDComm, or one that's offline at approval/role-change time, has no inline
-//! channel. This module pushes each credential to the holder over DIDComm.
+//! messaging, or one that's offline at approval/role-change time, has no inline
+//! channel. This module pushes each credential to the holder.
 //!
-//! Each credential is wrapped in a `credential-exchange/issue` message — the same
-//! one-way-deposit shape the holder's VTA receives via its
-//! `handle_credential_issue` handler — packed authcrypt **to the proven holder**
-//! (never the relayer) and forwarded via the holder's own mediator (resolved from
-//! its DID document, falling back to the VTC's mediator for the shared-mediator
-//! deployment). Sending is **best-effort**: the credential is already issued and
-//! persisted, so the caller logs a delivery failure rather than unwinding the
-//! decision.
+//! Every step is a **signed Trust Task document** (`credential-exchange/issue`,
+//! `query`, `offer`, `vtc/members/request-vmc`, `join-requests/submit-receipt`)
+//! pushed through [`crate::member_push`]: TSP > DIDComm > REST by what the holder
+//! advertises, durable on the delivery outbox, escalating when a transport yields
+//! no evidence of delivery. None of these tasks defines a response document —
+//! the counterparty's answer, when there is one, arrives later as the next task
+//! in the thread. A step used to be a bare DIDComm message typed as its task URI,
+//! which `bindings/didcomm/0.2` §2 requires a consumer to refuse, and which no
+//! other transport can carry at all.
+//!
+//! Sending is **best-effort** for delivered credentials: the credential is
+//! already issued and persisted, so the caller logs a delivery failure rather
+//! than unwinding the decision.
 
-use affinidi_messaging_didcomm::Message;
 use affinidi_openid4vci::issuer::create_credential_response;
 use affinidi_vc::VerifiableCredential;
 use serde_json::Value as JsonValue;
-use uuid::Uuid;
 use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody};
+use vti_common::capability_client::build_document;
 use vti_common::error::AppError;
 
 use crate::ceremony::AdmitOutcome;
@@ -29,7 +34,7 @@ use crate::server::AppState;
 
 /// Deliver the credentials a holder earned by being admitted — the
 /// MembershipCredential and role EndorsementCredential of an [`AdmitOutcome`] —
-/// into the holder's wallet over DIDComm. See [`deliver_credentials`].
+/// into the holder's wallet. See [`deliver_credentials`].
 pub(crate) async fn deliver_membership_credentials(
     state: &AppState,
     holder_did: &str,
@@ -38,14 +43,13 @@ pub(crate) async fn deliver_membership_credentials(
     deliver_credentials(state, holder_did, &[&admit.vmc, &admit.role_vec]).await
 }
 
-/// Deliver each of `credentials` to `holder_did` over DIDComm, one
-/// `credential-exchange/issue` message apiece.
+/// Deliver each of `credentials` to `holder_did`, one signed
+/// `credential-exchange/issue` document apiece, addressed **to the proven
+/// holder** (not a relayer).
 ///
-/// Packed authcrypt **to the proven holder** (not a relayer) and forwarded via
-/// the holder's own mediator. Best-effort by nature (mediator delivery is
-/// end-to-end): failures are reported so the caller can log them, but the
-/// credentials are already issued and persisted — a failure must not unwind the
-/// decision that issued them.
+/// Failures are reported so the caller can log them, but the credentials are
+/// already issued and persisted — a failure must not unwind the decision that
+/// issued them.
 ///
 /// # Every credential is attempted
 ///
@@ -76,11 +80,11 @@ pub(crate) async fn deliver_credentials(
             let credential_json = serde_json::to_value(credential)
                 .map_err(|e| AppError::Internal(format!("issued credential serialise: {e}")))?;
             let body = issue_message_body(credential_json)?;
-            // A fresh thread per delivered credential — `issue` is a one-way
-            // deposit, not a request/response, so it needs no correlation to a
-            // prior thread.
-            let msg_id = Uuid::new_v4().to_string();
-            push_to_holder(state, holder_did, &msg_id, CREDENTIAL_ISSUE_TYPE, body).await
+            // No thread: an unprompted delivery answers nothing, so it starts
+            // its own.
+            push_document(state, holder_did, CREDENTIAL_ISSUE_TYPE, body, Thread::New)
+                .await
+                .map(|_| ())
         };
 
         if let Err(e) = push.await {
@@ -140,25 +144,32 @@ fn issue_message_body(credential_json: JsonValue) -> Result<JsonValue, AppError>
         .map_err(|e| AppError::Internal(format!("issue body serialise: {e}")))
 }
 
-/// Pack `body` as a DIDComm message (`msg_id` / `msg_type`) from the VTC to
-/// `holder_did` and send it over the VTC's **shared inbound mediator
-/// connection** via [`AppState::send_to_member`].
+/// Where a pushed step sits in its exchange.
+pub(crate) enum Thread<'a> {
+    /// Starts nothing and answers nothing — its own document `id` is the thread.
+    New,
+    /// Opens a thread whose root id the VTC has already committed to (a
+    /// presentation challenge is keyed by it): the document takes this `id`, and
+    /// the holder's answer carries it as `threadId`.
+    Root(&'a str),
+    /// Continues an existing thread — carried as the document's `threadId`.
+    Reply(&'a str),
+}
+
+/// Sign `payload` as a `type_uri` Trust Task from this VTC to `holder_did` and
+/// push it (see the module docs). Returns the pushed document's `id`.
 ///
-/// This is the single outbound funnel — credential-query push, issued-credential
-/// delivery, and the member-VMC request all go through it. Routing the send
-/// through the running listener's connection is deliberate: the mediator allows
-/// one websocket per DID, so an outbound path must reuse that connection rather
-/// than open its own (a second one made the mediator terminate connections with
-/// `w.websocket.duplicate-channel`, and the auto-reconnecting sockets then
-/// duelled). The listener packs authcrypt and forwards through the VTC's
-/// mediator — the same path inbound replies already take to reach members.
-pub(crate) async fn push_to_holder(
+/// This is the single outbound funnel for VTC-originated exchange steps. The
+/// document is signed with the VTC's operational key under `authentication`
+/// (VTI-KEY-106): the VTC composed it, and the holder's consumer binds that
+/// proof to the transport sender.
+pub(crate) async fn push_document(
     state: &AppState,
     holder_did: &str,
-    msg_id: &str,
-    msg_type: &str,
-    body: JsonValue,
-) -> Result<(), AppError> {
+    type_uri: &str,
+    payload: JsonValue,
+    thread: Thread<'_>,
+) -> Result<String, AppError> {
     let vtc_did = state
         .config
         .read()
@@ -167,13 +178,30 @@ pub(crate) async fn push_to_holder(
         .clone()
         .filter(|d| !d.is_empty())
         .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
+    let signer = state
+        .credential_signer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
 
-    let message = Message::build(msg_id.to_string(), msg_type.to_string(), body)
-        .from(vtc_did)
-        .to(holder_did.to_string())
-        .finalize();
+    let mut doc = build_document(&vtc_did, holder_did, type_uri, payload);
+    match thread {
+        Thread::New => {}
+        Thread::Root(id) => doc.id = id.to_string(),
+        Thread::Reply(thread_id) => doc.thread_id = Some(thread_id.to_string()),
+    }
+    let id = doc.id.clone();
+    let mut doc_value = serde_json::to_value(&doc)
+        .map_err(|e| AppError::Internal(format!("serialise {type_uri} document: {e}")))?;
+    signer.sign_operational_doc(&mut doc_value).await?;
 
-    state.send_to_member(holder_did, message).await
+    crate::member_push::push_trust_task(
+        state,
+        holder_did,
+        doc_value,
+        crate::server::EXCHANGE_DELIVER_BY,
+    )
+    .await?;
+    Ok(id)
 }
 
 #[cfg(test)]

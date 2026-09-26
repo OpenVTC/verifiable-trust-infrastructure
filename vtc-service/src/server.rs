@@ -245,8 +245,8 @@ pub struct AppState {
     pub supervisor: Option<SupervisorKind>,
     /// Shared handle to the running inbound DIDComm listener, published by
     /// [`crate::messaging::run_didcomm_service`] once it starts. Every outbound
-    /// message to a member goes through this (see [`Self::send_to_member`]) so
-    /// it reuses the listener's single mediator websocket — the mediator permits
+    /// push to a member goes through this (see [`crate::member_push`]) so it
+    /// reuses the listener's single mediator websocket — the mediator permits
     /// only one connection per DID, and opening a second made it terminate one
     /// as `w.websocket.duplicate-channel`. Unset until the listener boots (and
     /// when messaging is disabled), so sends are best-effort.
@@ -256,12 +256,14 @@ pub struct AppState {
     pub git_ns: crate::git_ns::GitNsHandles,
 }
 
-/// Delivery deadline for an ordinary proactive message to a member.
+/// Delivery deadline for a pushed credential-exchange step or other ordinary
+/// proactive task to a member ([`crate::credentials::delivery::push_document`]).
 ///
 /// A member who misses one of these can ask again — the credential push, the
 /// exchange query and the reciprocal-VMC request all have a member-initiated
 /// counterpart.
-const DEFAULT_DELIVER_BY: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+pub(crate) const EXCHANGE_DELIVER_BY: std::time::Duration =
+    std::time::Duration::from_secs(24 * 3600);
 
 /// Delivery deadline for a removal notice: **30 days**.
 ///
@@ -323,81 +325,6 @@ impl AppState {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 Some(n.saturating_sub(1))
             });
-    }
-
-    /// Send a proactive DIDComm message to a member/holder over the VTC's
-    /// **single inbound mediator connection** (the running listener). This is
-    /// the one channel any VTC component uses to initiate an interaction with a
-    /// member — credential delivery, the credential-exchange query, the
-    /// reciprocal-VMC request. It reuses the listener's websocket (the SDK packs
-    /// authcrypt and forwards through the VTC's mediator, exactly as the inbound
-    /// reply path does), so outbound never opens a competing socket.
-    ///
-    /// `Ok(())` once the message is **durably queued** for guaranteed delivery
-    /// (not yet sent) — the delivery-layer drain loop owns sending + retrying it
-    /// until it lands (up to `deliver_by`). `Err` only when the listener isn't
-    /// running yet **or** the enqueue itself fails — surfaced honestly (never
-    /// swallowed), so a caller that must know whether the frame was accepted for
-    /// delivery can act on it. Packs authcrypt with the VTC's keys and hands off
-    /// to the delivery-layer
-    /// [`MessagingService`](affinidi_messaging_delivery::MessagingService) over
-    /// the one shared mediator websocket.
-    pub async fn send_to_member(
-        &self,
-        recipient_did: &str,
-        message: affinidi_messaging_didcomm::Message,
-    ) -> Result<(), AppError> {
-        self.send_to_member_by(recipient_did, message, DEFAULT_DELIVER_BY)
-            .await
-    }
-
-    /// As [`send_to_member`](Self::send_to_member), but with an explicit
-    /// delivery deadline.
-    ///
-    /// The default window suits a message the member is expecting and will come
-    /// back for. It does not suit a **removal notice**, which is the one case
-    /// where the act being reported is the act that ends the member's ability
-    /// to ask about it: their ACL row is gone, so every authenticated route now
-    /// refuses them and there is no poll to fall back on. Undelivered inside
-    /// the window means never, with no way for them to find out otherwise —
-    /// hence [`REMOVAL_NOTICE_DELIVER_BY`].
-    pub async fn send_to_member_by(
-        &self,
-        recipient_did: &str,
-        message: affinidi_messaging_didcomm::Message,
-        deliver_by: std::time::Duration,
-    ) -> Result<(), AppError> {
-        let messaging = self.didcomm.get().ok_or_else(|| {
-            AppError::Internal("VTC messaging not running — cannot send to member".into())
-        })?;
-        // Capture the id before packing — `pack_encrypted` borrows `message`.
-        let idempotency_key = message.id.clone();
-        let (packed, _) = messaging
-            .atm
-            .pack_encrypted(
-                &message,
-                recipient_did,
-                Some(&messaging.vtc_did),
-                Some(&messaging.vtc_did),
-            )
-            .await
-            .map_err(|e| {
-                AppError::Internal(format!("DIDComm pack for {recipient_did} failed: {e}"))
-            })?;
-        messaging
-            .service
-            .send(
-                recipient_did,
-                packed.into_bytes(),
-                affinidi_messaging_delivery::Delivery::Guaranteed {
-                    idempotency_key: Some(idempotency_key),
-                    ordering_key: None,
-                    deliver_by,
-                },
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("DIDComm send to {recipient_did} failed: {e}")))
-            .map(|_| ())
     }
 }
 

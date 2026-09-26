@@ -66,7 +66,7 @@ mod consent;
 mod consent_request;
 mod contexts;
 mod cred_vault;
-mod credential_exchange;
+pub(crate) mod credential_exchange;
 mod credentials;
 mod device;
 mod did_templates;
@@ -2209,14 +2209,30 @@ dispatch_table! {
     // ─── Discovery ───────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1 => discovery::handle_trust_task_discovery
         [ None None false ],
+    // ─── Credential-exchange: the holder's steps ─────────────────
+    //
+    // What an issuer or verifier sends this holder. Counterparty tasks: they
+    // dispatch on a zero-authority claim when the ACL does not know the sender
+    // (`credential_exchange::is_counterparty_task`), and act with this VTA's
+    // own authority. Classed by what *this* handler does, which is more than
+    // the registry declares: answering an offer signs a key-binding proof as
+    // the holder, and answering a query discloses held credentials.
+    vta_sdk::protocols::credential_exchange::OFFER
+        => credential_exchange::handle_offer
+        [ Mutating None true ],
+    vta_sdk::protocols::credential_exchange::ISSUE
+        => credential_exchange::handle_issue
+        [ Mutating Secret false ],
+    vta_sdk::protocols::credential_exchange::QUERY
+        => credential_exchange::handle_query
+        [ Mutating Secret true ],
     // ─── Credential-exchange: deferred-presentation approval ─────
     //
     // The holder operator's out-of-band surface over deferred presentations.
     // The `credential-exchange/*` family keeps its URIs in
     // `vta_sdk::protocols::credential_exchange`, not the central `trust_tasks`
-    // registry — so these sit outside the `ALL_URIS` parity harness (like the
-    // `query`/`present` message types), but are still tracked by
-    // `dispatched_uris()` (harmless extra entries).
+    // registry — so these sit outside the `ALL_URIS` parity harness, but are
+    // still tracked by `dispatched_uris()` (harmless extra entries).
     vta_sdk::protocols::credential_exchange::PENDING_LIST
         => credential_exchange::handle_pending_list
         [ None Metadata false ],

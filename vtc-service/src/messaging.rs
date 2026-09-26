@@ -19,14 +19,6 @@ use tracing::{debug, error, info, warn};
 use serde_json::json;
 use vti_common::outbox_store::VtiOutboxStore;
 
-use vta_sdk::protocols::credential_exchange::PRESENT as CREDENTIAL_PRESENT_TYPE;
-use vta_sdk::protocols::credential_exchange::REQUEST as CREDENTIAL_REQUEST_TYPE;
-use vta_sdk::protocols::credential_exchange::{
-    ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, PresentBody, RequestBody,
-};
-use vta_sdk::protocols::join_requests::{
-    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JoinRequestSubmitReceiptBody,
-};
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 
 use crate::config::AppConfig;
@@ -1059,11 +1051,11 @@ async fn route(msg: &Message, auth_sender: Option<String>, state: &AppState) -> 
         // Task and requires a consumer to refuse any other type at the DIDComm
         // layer — so a document whose DIDComm `type` is its own task URI falls
         // to `unhandled_message`, which says where it should have been carried
-        // (Keyring VTI-42). Twelve such arms lived here; two of them
-        // (`members/self-remove`, `members/vmc`) parsed bespoke bodies and
-        // skipped the spine's freshness, recipient and proof checks entirely.
-        CREDENTIAL_REQUEST_TYPE => credential_request_handler(msg, state).await,
-        CREDENTIAL_PRESENT_TYPE => credential_present_handler(msg, state).await,
+        // (Keyring VTI-42). Fourteen such arms lived here. The last two were
+        // `credential-exchange/request` and `present`; like `members/self-remove`
+        // and `members/vmc` before them they parsed bare bodies and skipped the
+        // spine's freshness, recipient and proof checks entirely. They are
+        // served on the spine now, from every transport.
         _ => unhandled_message(msg),
     }
 }
@@ -1345,195 +1337,6 @@ async fn envelope_task_handler(
         );
     }
     tt_didcomm_reply(outcome, thid)
-}
-
-/// `credential-exchange/request/1.0` over DIDComm (Phase 3, task 3.2 wire).
-///
-/// The holder redeems a pre-authorized offer: the body carries an OID4VCI
-/// credential request with a key-binding proof. [`credentials::redeem`] looks
-/// up the pending issuance by the proof `nonce` (the pre-authorized code),
-/// verifies the proof binds the intended subject, and returns the credential —
-/// which we wrap in a `credential-exchange/issue` reply (the same shape the VTA
-/// holder-receive handler consumes). Single-use: the offer is consumed on
-/// success only.
-///
-/// The DIDComm `from` (authcrypt sender) authenticates the *relayer*; the
-/// **inner key-binding proof** authenticates the *holder*, and the credential
-/// is released only to the proven subject — so a relayer ≠ holder is safe (it
-/// can't satisfy the proof), mirroring the provision-integration onion.
-async fn credential_request_handler(msg: &Message, state: &AppState) -> Option<Reply> {
-    let thid = msg.id.clone();
-    let body: RequestBody = match serde_json::from_value(msg.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("malformed credential request: {e}"),
-            ));
-        }
-    };
-
-    let response = match crate::credentials::redeem(
-        &state.join_requests_ks,
-        &body.credential_request,
-        chrono::Utc::now(),
-        &crate::credentials::vm_resolver::DidVmResolver::new(state.did_resolver.clone()),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("credential issuance: {e}"),
-            ));
-        }
-    };
-
-    let issue = IssueBody {
-        credential_response: Some(response),
-        sealed: None,
-    };
-    let issue_body = match serde_json::to_value(&issue) {
-        Ok(v) => v,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("issue serialise: {e}"),
-            ));
-        }
-    };
-    Some(Reply {
-        type_: CREDENTIAL_ISSUE_TYPE.to_string(),
-        body: issue_body,
-        thid,
-    })
-}
-
-/// `credential-exchange/present/1.0` over DIDComm (close-the-join-loop, part 3).
-///
-/// The holder answers the VTC's DCQL query with an OID4VP `vp_token`. The present
-/// replies on the query's thread (`thid`); the VTC consumes the **single-use
-/// presentation challenge** keyed by that thread
-/// ([`crate::credentials::present_challenge`]) to recover the expected nonce +
-/// audience (freshness / replay), cryptographically verifies the `vp_token`, runs
-/// the join decision, and — on `allow` — admits the proven holder and issues the
-/// MembershipCredential. Replies with a join receipt (request id + status).
-///
-/// The DIDComm `from` (authcrypt sender) authenticates the *relayer*; the
-/// **holder kb-jwt** inside the `vp_token` authenticates the *holder* and binds
-/// the verifier's nonce + audience — so a relayer ≠ holder is safe (it cannot
-/// forge the kb-jwt), mirroring the request-handler onion.
-async fn credential_present_handler(msg: &Message, state: &AppState) -> Option<Reply> {
-    // The reply threads to the present's own id (not the query thread).
-    let thid = msg.id.clone();
-    let body: PresentBody = match serde_json::from_value(msg.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("malformed present body: {e}"),
-            ));
-        }
-    };
-
-    // The present replies on the query's thread; the challenge is keyed by it.
-    let thread_id = match msg.thid.clone() {
-        Some(t) => t,
-        None => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                "present carries no thread id (thid) to correlate its challenge",
-            ));
-        }
-    };
-
-    let now = chrono::Utc::now();
-    let challenge = match crate::credentials::present_challenge::consume(
-        &state.join_requests_ks,
-        &thread_id,
-        now,
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("present challenge: {e}"),
-            ));
-        }
-    };
-
-    let outcome = match crate::routes::join_requests::present::present_and_decide_join(
-        state,
-        &body.vp_token,
-        &challenge.aud,
-        &challenge.nonce,
-        // The same thread the challenge was keyed by: the exchange every
-        // presented credential's `taskContext` is resolved against.
-        &thread_id,
-        JoinTransport::DIDComm,
-        now,
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("present decision: {e}"),
-            ));
-        }
-    };
-
-    // On auto-admit, deliver the issued MembershipCredential (+ role VEC) to the
-    // proven holder's wallet over DIDComm — the holder only gets a receipt on the
-    // reply thread, so without this the credential it just earned would never
-    // reach it. Best-effort: the credential is already issued + persisted, so a
-    // delivery failure is logged (the holder/admin can re-fetch), not fatal.
-    if let Some(admit) = outcome.admit.as_deref() {
-        let holder_did = outcome.request.applicant_did.clone();
-        if let Err(e) =
-            crate::credentials::delivery::deliver_membership_credentials(state, &holder_did, admit)
-                .await
-        {
-            warn!(holder = %holder_did, request = %outcome.request.id, error = %e, "membership-credential delivery failed; credential is issued and can be re-delivered");
-        } else {
-            info!(holder = %holder_did, request = %outcome.request.id, "queued membership credentials for guaranteed delivery to holder");
-        }
-    }
-
-    let status = serde_json::to_value(outcome.request.status)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default();
-    let receipt = JoinRequestSubmitReceiptBody {
-        request_id: outcome.request.id,
-        status,
-    };
-    let receipt_body = match serde_json::to_value(&receipt) {
-        Ok(v) => v,
-        Err(e) => {
-            return Some(problem_report(
-                thid,
-                codes::INTERNAL,
-                format!("receipt serialise: {e}"),
-            ));
-        }
-    };
-    Some(Reply {
-        type_: JOIN_REQUEST_SUBMIT_RECEIPT_TYPE.to_string(),
-        body: receipt_body,
-        thid,
-    })
 }
 
 pub(crate) fn parse_disposition(s: &str) -> Result<Disposition, String> {
