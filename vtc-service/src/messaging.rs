@@ -469,6 +469,7 @@ pub async fn run_didcomm_service(
         }
         let rest: Arc<dyn MessageTransport> = Arc::new(crate::member_push::RestPushTransport::new(
             state.member_pushes_ks.clone(),
+            crate::recognition::verify::foreign_fetch_client(),
         ));
         service.add_transport(crate::member_push::REST_TRANSPORT_ID.into(), rest.clone());
         tokio::spawn(affinidi_messaging_delivery::drain_loop_via(
