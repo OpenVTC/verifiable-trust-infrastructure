@@ -43,6 +43,25 @@ fn related(filter: Option<&Resource>, r: &Resource) -> bool {
 
 /// Build the view as JSON in the specification's response shape.
 pub fn build(snap: &Snapshot, viewer: Viewer<'_>, filter: Option<&Resource>) -> Value {
+    build_with(snap, viewer, filter, Shape::default())
+}
+
+/// What a version of the view adds.
+#[derive(Debug, Clone, Copy, Default)]
+struct Shape {
+    /// `git-ns/view/0.4`: records carry `breakGlass`, and every unratified
+    /// break-glass record goes to every administrator it concerns.
+    break_glass: bool,
+    /// The caller holds the community-administrator capability.
+    community_admin: bool,
+}
+
+fn build_with(
+    snap: &Snapshot,
+    viewer: Viewer<'_>,
+    filter: Option<&Resource>,
+    shape: Shape,
+) -> Value {
     let t = now();
     let governs = |res: &Resource| match &viewer {
         Viewer::Administrator => true,
@@ -98,10 +117,23 @@ pub fn build(snap: &Snapshot, viewer: Viewer<'_>, filter: Option<&Resource>) -> 
             continue;
         }
         let governed = governs(&res);
-        for row in set.rows.iter().filter(|r| r.is_live(t)) {
+        // `git-ns/view/0.4`, item 3: every unratified break-glass record in a
+        // namespace the caller administers — the community-administrator
+        // capability or `git.ns.admin` — or on a resource they own, whatever
+        // else they may see. Owning or administering is `governed`.
+        let bg_visible = shape.break_glass && (governed || shape.community_admin);
+        for row in set.rows.iter() {
+            let unratified_bg = row.is_recorded(t) && row.is_unratified_break_glass();
+            if !(row.is_live(t) || (shape.break_glass && unratified_bg)) {
+                continue;
+            }
             let own = matches!(&viewer, Viewer::Member(did) if *did == row.subject);
-            if governed || own {
-                rights.push(wire::right_record(row, &res, governed));
+            if governed || own || (unratified_bg && bg_visible) {
+                if shape.break_glass {
+                    rights.push(wire::right_record_full(row, &res, governed));
+                } else if row.is_live(t) {
+                    rights.push(wire::right_record(row, &res, governed));
+                }
             }
         }
     }
@@ -158,6 +190,27 @@ pub fn for_member_v2(
     member: Option<&crate::members::Member>,
 ) -> Result<trust_tasks_rs::specs::git_ns::view::v0_2::Response, AppError> {
     let mut v = build(snap, Viewer::Member(did), filter);
+    v["accounts"] = Value::Array(linked_accounts_of(member, filter));
+    wire::into(v)
+}
+
+/// The member's view as `git-ns/view/0.4`.
+pub fn for_member_v4(
+    snap: &Snapshot,
+    did: &str,
+    community_admin: bool,
+    filter: Option<&Resource>,
+    member: Option<&crate::members::Member>,
+) -> Result<trust_tasks_rs::specs::git_ns::view::v0_4::Response, AppError> {
+    let mut v = build_with(
+        snap,
+        Viewer::Member(did),
+        filter,
+        Shape {
+            break_glass: true,
+            community_admin,
+        },
+    );
     v["accounts"] = Value::Array(linked_accounts_of(member, filter));
     wire::into(v)
 }

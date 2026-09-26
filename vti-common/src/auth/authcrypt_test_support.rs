@@ -199,18 +199,45 @@ pub async fn offline_atm_with(secrets: &[Secret]) -> affinidi_tdk::messaging::AT
 /// A DIDComm `auth/authenticate/0.1` plaintext answering `challenge` for
 /// `session_id`, claiming `from`, stamped now — ready to be authcrypted.
 pub fn authenticate_plaintext(from: &str, to: &str, challenge: &str, session_id: &str) -> Vec<u8> {
+    plaintext_message(
+        "https://trusttasks.org/spec/auth/authenticate/0.1",
+        from,
+        to,
+        serde_json::json!({ "challenge": challenge, "session_id": session_id }),
+    )
+}
+
+/// Wrap `inner` (an already-packed JWE) in an anoncrypt (ECDH-ES) layer to
+/// `recipient` — `anoncrypt(authcrypt(plaintext))`.
+pub fn anoncrypt_wrap(inner: &str, recipient: (&str, &PublicKeyAgreement)) -> String {
+    affinidi_tdk::didcomm::jwe::encrypt::anoncrypt(inner.as_bytes(), &[recipient])
+        .expect("anoncrypt")
+}
+
+/// A DIDComm plaintext of `type_uri` with `body`, claiming `from`, stamped now.
+pub fn plaintext_message(type_uri: &str, from: &str, to: &str, body: serde_json::Value) -> Vec<u8> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")
         .as_secs();
     let msg = affinidi_tdk::didcomm::Message::build(
         format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "https://trusttasks.org/spec/auth/authenticate/0.1".to_string(),
-        serde_json::json!({ "challenge": challenge, "session_id": session_id }),
+        type_uri.to_string(),
+        body,
     )
     .from(from.to_string())
     .to(to.to_string())
     .created_time(now)
     .finalize();
     serde_json::to_vec(&msg).expect("serialize message")
+}
+
+/// A DIDComm `auth/refresh/0.1` plaintext carrying `refresh_token`.
+pub fn refresh_plaintext(from: &str, to: &str, refresh_token: &str) -> Vec<u8> {
+    plaintext_message(
+        "https://trusttasks.org/spec/auth/refresh/0.1",
+        from,
+        to,
+        serde_json::json!({ "refresh_token": refresh_token }),
+    )
 }

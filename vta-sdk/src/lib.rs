@@ -118,6 +118,10 @@ pub mod context_provision;
 pub mod contexts;
 pub mod credentials;
 pub mod did_key;
+/// Forcing a fresh resolution of a DID a verification failed against — see
+/// the module docs.
+#[cfg(feature = "proof-verify")]
+pub mod did_refresh;
 pub mod did_secrets;
 pub mod did_templates;
 /// Verifying a Trust-Task document's Data-Integrity proof. Moved down from
@@ -205,6 +209,9 @@ pub mod session;
 // private one (#830).
 #[cfg(feature = "session")]
 pub mod session_hub;
+/// The approver's side of task consent: the match code, request verification,
+/// and the decision payload.
+pub mod task_consent;
 /// Holder-signing for Trust Task documents — the shared `eddsa-jcs-2022`
 /// primitive both services' holder surfaces verify against.
 #[cfg(feature = "client")]

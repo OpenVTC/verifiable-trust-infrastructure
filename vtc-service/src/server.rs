@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -131,6 +131,13 @@ pub struct AppState {
     /// Unrestricted-admin consent requests and grants (VTI-APV-014). See
     /// `crate::acl::admin_consent`.
     pub task_consent_ks: KeyspaceHandle,
+    /// Member pushes in flight (`crate::member_push`). Encrypted at rest.
+    pub member_pushes_ks: KeyspaceHandle,
+    /// Which members were recently seen sending here over TSP, recorded from
+    /// the proven sender of each inbound TSP frame. A member whose DID
+    /// document advertises no transport (a `did:key` wallet) is pushed to over
+    /// TSP first while it is fresh (`crate::member_push`).
+    pub tsp_reach: Arc<vti_common::tsp_reach::TspReachability>,
     /// In-flight backup bundles for the chunked `backup/*` transfer — records
     /// and manifests; the bytes are staged under `<data_dir>/backups`. See
     /// [`vti_common::backup_transfer`].
@@ -512,6 +519,7 @@ pub async fn run(
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
     let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
     let task_consent_ks = store.keyspace(keyspaces::TASK_CONSENT)?;
+    let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
@@ -625,6 +633,13 @@ pub async fn run(
     // crash-safe; a failure aborts boot rather than serving a store with a
     // half-encrypted secret keyspace. `install_store` is (re)built on the
     // wrapped handle so issued tokens are encrypted on disk.
+    // A push record holds the signed Trust Task a TSP or REST outbox entry
+    // names, so it is encrypted like the other stores that hold content; it
+    // starts empty, so there is nothing to migrate.
+    let member_pushes_ks = match storage_key {
+        Some(key) => member_pushes_ks.with_encryption(key),
+        None => member_pushes_ks,
+    };
     let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
         Some(key) => {
             let n_install = install_ks.migrate_to_encrypted(key).await?;
@@ -822,6 +837,8 @@ pub async fn run(
         console_keys_ks,
         step_up_marks_ks,
         task_consent_ks,
+        member_pushes_ks,
+        tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
         backup_bundles_ks,
         schemas_ks,
         endorsements_ks,
@@ -1366,6 +1383,50 @@ pub async fn run(
             .await
         {
             error!(error = %e, "failed to emit EmergencyBootstrapInvoked envelope");
+        }
+    }
+
+    // VTI-APV-014: audit every ACL write an offline command made while the
+    // daemon was stopped. Each skipped the consent and attrition rules by
+    // design; this is the row that says so. Taken (and deleted) as it is read,
+    // so a restart loop audits each once.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        match state.install_store.take_break_glass().await {
+            Ok(writes) => {
+                for w in writes {
+                    warn!(
+                        command = %w.command,
+                        action = %w.action,
+                        did = %w.did,
+                        operator_hostname = %w.operator_hostname,
+                        invoked_at = %w.invoked_at,
+                        "an ACL change was made offline (break-glass) since the daemon last ran \
+                         — auditing now",
+                    );
+                    let subject = w.did.clone();
+                    if let Err(e) = writer
+                        .write(
+                            "did:key:vtc-break-glass",
+                            Some(&subject),
+                            vti_common::audit::AuditEvent::AclBreakGlassWritten(
+                                vti_common::audit::BreakGlassAclData {
+                                    command: w.command,
+                                    action: w.action,
+                                    did: w.did,
+                                    role: w.role,
+                                    contexts: w.contexts,
+                                    operator_hostname: w.operator_hostname,
+                                    invoked_at: w.invoked_at,
+                                },
+                            ),
+                        )
+                        .await
+                    {
+                        error!(error = %e, "failed to emit AclBreakGlassWritten envelope");
+                    }
+                }
+            }
+            Err(e) => error!(error = %e, "failed to read queued break-glass ACL writes"),
         }
     }
 
@@ -2030,23 +2091,40 @@ async fn init_auth(
         }
     };
 
-    // 1. DID resolver (local mode)
-    let did_resolver = match DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("failed to create DID resolver: {e} — auth endpoints will not work");
-            return Ok((
-                None,
-                None,
-                None,
-                None,
-                install_signer,
-                audit_writer,
-                credential_signer,
-                storage_key,
-            ));
-        }
-    };
+    // 1. DID resolver (local mode) — the node's one DID-document cache. The
+    // messaging listener shares it (`messaging::build_messaging`), so a
+    // refresh on any path is seen by all of them. Its TTL is explicit and
+    // bounded (`[did_cache]`, default 60 s, at most 300 s): it is how long a
+    // key revoked from a member's document keeps verifying here. The host
+    // policy is the one the VTA and the CLIs use.
+    info!(
+        ttl_secs = config.did_cache.ttl_secs,
+        capacity = config.did_cache.capacity,
+        "DID document cache bounds"
+    );
+    let did_resolver =
+        match DIDCacheClient::new(vta_sdk::resolver::build_verifier_did_cache_config(
+            None,
+            config.did_cache.ttl_secs,
+            config.did_cache.capacity,
+        ))
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("failed to create DID resolver: {e} — auth endpoints will not work");
+                return Ok((
+                    None,
+                    None,
+                    None,
+                    None,
+                    install_signer,
+                    audit_writer,
+                    credential_signer,
+                    storage_key,
+                ));
+            }
+        };
 
     // 2. Secrets resolver with VTC's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;

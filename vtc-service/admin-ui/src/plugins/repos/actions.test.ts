@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { GitNsDriftItem, GitNsNamespaceRow } from "@/lib/wire-types";
+import type { GitNsDriftItem } from "@/lib/wire-types";
 
 import {
   adoptTask,
@@ -15,6 +15,7 @@ import {
   didError,
   driftAdoptTask,
   driftRevertTask,
+  reprojectTask,
   expiryDaysError,
   forgeHostError,
   grantTask,
@@ -32,24 +33,6 @@ import {
 
 const BOB = "did:webvh:QmBob:bob.dev";
 
-const ORG_NS: GitNsNamespaceRow = {
-  id: "ns_acme",
-  forge: "github.com",
-  owner: "acme",
-  resource: "github.com/acme",
-  mode: "bridge",
-  state: "bound",
-  kind: "organization",
-  bridgeDid: "did:webvh:QmBridge:bridge.acme.dev",
-  boundBy: BOB,
-  requestedAt: "2026-08-01T00:00:00Z",
-  admins: [BOB],
-  repoCount: 1,
-  headless: false,
-  installationRemoved: false,
-  roleDrift: "report",
-  cascadeOnDeparture: false,
-};
 const ROLE_ADDED: GitNsDriftItem = {
   type: "roleAdded",
   resource: "github.com/acme/widgets",
@@ -69,7 +52,7 @@ describe("signed git-ns tasks", () => {
       },
       new Date("2026-09-23T00:00:00.000Z"),
     );
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/right/grant/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/right/grant/0.3");
     expect(t.payload).toEqual({
       subject: BOB,
       right: "git.commit.sign",
@@ -89,6 +72,15 @@ describe("signed git-ns tasks", () => {
     );
     expect(grantTask({ subject: BOB, right: "git.ns.admin", resource: "github.com/acme" }).consent).toBe(
       "destructive",
+    );
+  });
+
+  it("says an ns.admin grant gives no forge role, and a repository grant does", () => {
+    expect(grantTask({ subject: BOB, right: "git.ns.admin", resource: "github.com/acme" }).effect).toMatch(
+      /no role on the forge/,
+    );
+    expect(grantTask({ subject: BOB, right: "git.repo.own", resource: "github.com/acme/x" }).effect).toMatch(
+      /projected onto the forge/,
     );
   });
 
@@ -124,7 +116,7 @@ describe("signed git-ns tasks", () => {
       description: "Gadget tools",
       personal: false,
     });
-    expect(c.taskUri).toBe("https://trusttasks.org/spec/git-ns/repo/create/0.1");
+    expect(c.taskUri).toBe("https://trusttasks.org/spec/git-ns/repo/create/0.3");
     expect(c.payload).toEqual({
       namespace: "ns_1",
       name: "gadgets",
@@ -134,10 +126,22 @@ describe("signed git-ns tasks", () => {
     expect(c.command).toBe(
       "cnm git create --namespace=ns_1 gadgets --visibility=public --description='Gadget tools'",
     );
+    // A namespace admin names the owner (`git-ns/repo/create` 0.3).
+    const forBob = createTask({
+      namespaceId: "ns_1",
+      namespaceResource: "github.com/acme",
+      name: "gadgets",
+      visibility: "public",
+      owners: ["did:web:bob.example"],
+      personal: false,
+    });
+    expect(forBob.payload).toMatchObject({ owners: ["did:web:bob.example"] });
+    expect(forBob.command).toContain("--owner=did:web:bob.example");
+    expect(forBob.effect).toContain("did:web:bob.example becomes its owner.");
     expect(c.consent).toBe("normal");
   });
 
-  it("builds a reseat as git-ns/namespace/reseat 0.1 and cnm git reseat sign it", () => {
+  it("builds a reseat as git-ns/namespace/reseat 0.3 and cnm git reseat sign it", () => {
     const t = reseatTask(
       "ns_acme",
       "github.com/acme",
@@ -145,7 +149,7 @@ describe("signed git-ns tasks", () => {
       "  Alice left on 2026-09-20; Bob owns most repos and agreed.  ",
     );
     expect(t.action).toBe("namespace.reseat");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.3");
     // Exactly the spec's three fields, statement trimmed; nothing else.
     expect(t.payload).toEqual({
       namespace: "ns_acme",
@@ -162,8 +166,12 @@ describe("signed git-ns tasks", () => {
   });
 
   it("builds a drift revert selecting the item by type, account and observed value", () => {
-    const t = driftRevertTask("github.com/acme/widgets", ORG_NS, ROLE_ADDED, " not ours ");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.1");
+    const t = driftRevertTask("github.com/acme/widgets", ROLE_ADDED, " not ours ", {
+      own: "admin",
+      maintain: "maintain",
+      commit: "none",
+    });
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.3");
     expect(t.payload).toEqual({
       resource: "github.com/acme/widgets",
       action: "revert",
@@ -184,23 +192,58 @@ describe("signed git-ns tasks", () => {
 
   it("classes taking an admin role off the forge as the owner revocation it weighs as", () => {
     const admin = { ...ROLE_ADDED, observed: "admin" };
-    expect(driftRevertTask("github.com/acme/widgets", ORG_NS, admin).consent).toBe("elevated");
+    const org = { own: "admin", maintain: "maintain", commit: "none" };
+    expect(driftRevertTask("github.com/acme/widgets", admin, undefined, org).consent).toBe("elevated");
     // Re-adding a projected role is never more than maintain.
     expect(
-      driftRevertTask("github.com/acme/widgets", ORG_NS, { ...admin, type: "roleRemoved" }).consent,
+      driftRevertTask("github.com/acme/widgets", { ...admin, type: "roleRemoved" }, undefined, org)
+        .consent,
     ).toBe("normal");
-    // On a personal account `admin` projects nothing.
+    // On a personal account owners get collaborator `write`, so taking off
+    // `write` — or anything above it — weighs as revoking ownership.
+    const user = { own: "write", maintain: "write", commit: "none" };
+    expect(driftRevertTask("github.com/glenn-g/x", admin, undefined, user).consent).toBe("elevated");
     expect(
-      driftRevertTask("github.com/glenn-g/x", { ...ORG_NS, kind: "user" }, admin).consent,
+      driftRevertTask("github.com/glenn-g/x", { ...admin, observed: "read" }, undefined, user).consent,
     ).toBe("normal");
+    // Under the bridge's map: owners given only `maintain` make a `maintain`
+    // revert an owner-level one; maintainers given `admin` do not lower it.
+    const map = { own: "maintain", maintain: "write", commit: "none" };
+    expect(driftRevertTask("github.com/acme/widgets", ROLE_ADDED, undefined, map).consent).toBe(
+      "elevated",
+    );
+  });
+
+  it("weighs every role revert as revoking ownership while the role map is unknown", () => {
+    // No map reported: any role but `none` might be the one owners get.
+    const t = driftRevertTask("github.com/acme/widgets", { ...ROLE_ADDED, observed: "read" });
+    expect(t.consent).toBe("elevated");
+    expect(t.consentNote).toMatch(/weighs as revoking ownership/);
+    // Re-adding a removed role is still at most maintain.
+    expect(
+      driftRevertTask("github.com/acme/widgets", { ...ROLE_ADDED, type: "roleRemoved" }).consent,
+    ).toBe("normal");
+  });
+
+  it("builds a re-projection of a namespace or a repository", () => {
+    const ns = reprojectTask("github.com/acme", " map changed ");
+    expect(ns.taskUri).toBe("https://trusttasks.org/spec/git-ns/roles/reproject/0.1");
+    expect(ns.payload).toEqual({ resource: "github.com/acme", reason: "map changed" });
+    expect(ns.consent).toBe("normal");
+    expect(ns.effect).toMatch(/every active or orphaned repository/);
+    expect(ns.command).toBe("cnm git reproject github.com/acme --reason='map changed'");
+    const repo = reprojectTask("github.com/acme/widgets");
+    expect(repo.payload).toEqual({ resource: "github.com/acme/widgets" });
+    expect(repo.command).toBe("cnm git reproject github.com/acme/widgets");
   });
 
   it("builds a drift adopt carrying the selector and the member who receives the right", () => {
     const t = driftAdoptTask("github.com/acme/widgets", ROLE_ADDED, BOB, "git.repo.maintain", "on the team");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.3");
     expect(t.payload).toEqual({
       resource: "github.com/acme/widgets",
       action: "adopt",
+      subject: BOB,
       drift: {
         type: "roleAdded",
         account: { forge: "github.com", id: "1003", login: "hsato" },
@@ -211,7 +254,7 @@ describe("signed git-ns tasks", () => {
     expect(t.consent).toBe("normal");
     expect(t.parties).toEqual([{ role: "Receives the right", did: BOB }]);
     expect(t.command).toBe(
-      "cnm git drift resolve github.com/acme/widgets adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --reason='on the team'",
+      `cnm git drift resolve github.com/acme/widgets adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --subject=${BOB} --reason='on the team'`,
     );
     // Adopting ownership is gated as the elevated grant it records.
     expect(
@@ -221,7 +264,7 @@ describe("signed git-ns tasks", () => {
   });
 
   it("leaves the account out of a ruleset revert", () => {
-    const t = driftRevertTask("github.com/acme/widgets", ORG_NS, {
+    const t = driftRevertTask("github.com/acme/widgets", {
       type: "requiredCheckMissing",
       resource: "github.com/acme/widgets",
       expected: "required",
@@ -297,17 +340,17 @@ describe("every command is safe to paste into a shell", () => {
     ["reseat namespace", (v) => reseatTask(v, NS, BOB, "Alice left")],
     ["reseat subject", (v) => reseatTask("ns_1", NS, v, "Alice left")],
     ["reseat statement", (v) => reseatTask("ns_1", NS, BOB, v)],
-    ["drift revert resource", (v) => driftRevertTask(v, ORG_NS, ROLE_ADDED)],
+    ["drift revert resource", (v) => driftRevertTask(v, ROLE_ADDED)],
     [
       "drift revert account",
-      (v) => driftRevertTask(REPO, ORG_NS, { ...ROLE_ADDED, account: { forge: "github.com", id: v, login: "x" } }),
+      (v) => driftRevertTask(REPO, { ...ROLE_ADDED, account: { forge: "github.com", id: v, login: "x" } }),
     ],
     [
       "drift revert login",
-      (v) => driftRevertTask(REPO, ORG_NS, { ...ROLE_ADDED, account: { forge: "github.com", id: "1", login: v } }),
+      (v) => driftRevertTask(REPO, { ...ROLE_ADDED, account: { forge: "github.com", id: "1", login: v } }),
     ],
-    ["drift revert observed", (v) => driftRevertTask(REPO, ORG_NS, { ...ROLE_ADDED, observed: v })],
-    ["drift revert reason", (v) => driftRevertTask(REPO, ORG_NS, ROLE_ADDED, v)],
+    ["drift revert observed", (v) => driftRevertTask(REPO, { ...ROLE_ADDED, observed: v })],
+    ["drift revert reason", (v) => driftRevertTask(REPO, ROLE_ADDED, v)],
     ["drift adopt resource", (v) => driftAdoptTask(v, ROLE_ADDED, BOB, "git.repo.maintain")],
     [
       "drift adopt account",
@@ -316,6 +359,7 @@ describe("every command is safe to paste into a shell", () => {
     ],
     ["drift adopt observed", (v) => driftAdoptTask(REPO, { ...ROLE_ADDED, observed: v }, BOB, "git.repo.maintain")],
     ["drift adopt reason", (v) => driftAdoptTask(REPO, ROLE_ADDED, BOB, "git.repo.maintain", v)],
+    ["drift adopt subject", (v) => driftAdoptTask(REPO, ROLE_ADDED, v, "git.repo.maintain")],
     [
       "create namespace",
       (v) => createTask({ namespaceId: v, namespaceResource: NS, name: "x", visibility: "public", personal: false }),

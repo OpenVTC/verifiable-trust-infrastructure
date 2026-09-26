@@ -238,6 +238,12 @@ pub const TASK_CONSENT: &str = "task_consent";
 /// not backed up.
 pub const OUTBOX: &str = "outbox";
 
+/// Trust Task pushes in flight or recently finished — one record per push,
+/// holding the signed document, the transport plan and the outcome
+/// (`vti_common::trust_task_push`). Encrypted at rest; runtime delivery state
+/// like [`OUTBOX`], not backed up.
+pub const TRUST_TASK_PUSHES: &str = "trust_task_pushes";
+
 /// Idempotency records for keyed Trust Tasks — one row per
 /// `(actor, idempotency-key)`, holding the request digest and, for tasks whose
 /// response may be replayed, the original response. Lets a client's retry of a
@@ -300,6 +306,7 @@ pub const ALL: &[&str] = &[
     POLICY,
     TASK_CONSENT,
     OUTBOX,
+    TRUST_TASK_PUSHES,
     IDEMPOTENCY,
     RELATIONSHIPS,
 ];
@@ -391,6 +398,9 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // Reliable-messaging outbox: runtime delivery state, re-driven from live
     // sends, not part of a state backup.
     OUTBOX,
+    // Trust Task push records: the same runtime delivery state as the outbox
+    // they drive, bounded by their retention sweep.
+    TRUST_TASK_PUSHES,
     // Trust-Task idempotency records. Short-lived by construction (a retry
     // window, not durable state) and scoped to the VTA that served the original
     // request — restoring one elsewhere would claim to have already performed
@@ -557,7 +567,7 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // Key material derived under it, its own log, its advertised name.
         b"keys" | b"internal_keys" | b"imported_secrets" | b"webvh" => Cascade,
         // Resolution + protocol caches keyed by DID: stale the moment it goes.
-        b"cache" | b"outbox" => Cascade,
+        b"cache" | b"outbox" | b"trust_task_pushes" => Cascade,
         // TSP relationships name this VTA's DID as one half of each `(our_vid,
         // their_vid)` pair; with that VID gone the relationship can neither send
         // nor be sent to, so its rows go with it — the same reasoning as the

@@ -3,7 +3,7 @@
 //!
 //! Read-only, and deliberately so. Every change to a git right is a signed
 //! `git-ns/*` Trust Task, authorized by the signer's own git rights
-//! (`git-ns/right/grant/0.1`, *Authorization*: "a VTC administrator who holds
+//! (`git-ns/right/grant/0.3`, *Authorization*: "a VTC administrator who holds
 //! no git right grants nothing through this task"). A bearer session carries
 //! no proof, and these tasks declare one REQUIRED, so there is no bearer door
 //! to them here; the console acts by having the administrator sign.
@@ -30,6 +30,12 @@
 //!
 //! And one read that is not the community administrator's alone:
 //!
+//! - `GET /v1/git-ns/break-glass` — every break-glass record (`git-ns/right/break-glass/0.1`),
+//!   unratified first, for a community administrator (every namespace) or a
+//!   live `git.ns.admin` (their namespaces): the console's persistent banner
+//!   and its *Break-glass grants* list. Like `activity`, not the community
+//!   administrator's alone, because every administrator of a namespace must
+//!   see a break-glass in it (`break-glass/0.1`, *Visibility*).
 //! - `GET /v1/git-ns/activity` — rights changes, drift and bridge jobs in the
 //!   namespaces the caller administers (`git.ns.admin`), for any authenticated
 //!   session; a community administrator sees every namespace. The VTC issues
@@ -52,10 +58,10 @@ use vti_common::auth::{AdminAuth, SuperAdminAuth};
 use vti_common::error::AppError;
 
 use crate::git_ns::bridge::{self, BridgeJob};
-use crate::git_ns::model::{Resource, Right, RightRow, Scope};
+use crate::git_ns::model::{RepoState, Resource, Right, RightRow, Scope};
 use crate::git_ns::ops::{now, standing};
 use crate::git_ns::store::Snapshot;
-use crate::git_ns::{lifecycle, projection, rules, view, wire};
+use crate::git_ns::{lifecycle, projection, role_map, rules, view, wire};
 use crate::server::AppState;
 
 // ── query parameters ────────────────────────────────────────────────────────
@@ -138,6 +144,42 @@ pub struct GitNsNamespaceRow {
     pub role_drift: String,
     /// The active policy's `cascade_on_departure` setting in effect.
     pub cascade_on_departure: bool,
+    /// The forge role each right projects to on a repository without a map
+    /// of its own, as the bridge serving the namespace reported it
+    /// (`git-ns/bridge/event/0.3` `roleMapReported`). Absent while it has not
+    /// reported: no map, the default included, is assumed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<GitNsRoleMap>,
+    /// `reported` — the bridge serving the namespace said so; `unknown` — it
+    /// has not reported since the namespace was bound or came to be served by
+    /// it (or it predates event 0.3). While unknown, drift adoption is
+    /// refused (`git-ns:roleMapUnknown`) and every role revert is weighed as
+    /// revoking `git.repo.own`.
+    pub role_map_source: String,
+    /// The `issuedAt` of the report held, on the bridge's clock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_map_reported_at: Option<String>,
+}
+
+/// Which forge role `git.repo.own`, `git.repo.maintain` and
+/// `git.commit.sign` project to — `none`, `read`, `triage`, `write`,
+/// `maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to
+/// no forge role under any map.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct GitNsRoleMap {
+    pub own: String,
+    pub maintain: String,
+    pub commit: String,
+}
+
+impl From<crate::git_ns::role_map::RoleMap> for GitNsRoleMap {
+    fn from(m: crate::git_ns::role_map::RoleMap) -> Self {
+        GitNsRoleMap {
+            own: m.own.as_str().to_string(),
+            maintain: m.maintain.as_str().to_string(),
+            commit: m.commit.as_str().to_string(),
+        }
+    }
 }
 
 /// The bridge's report of its standing on a namespace's forge owner, carried
@@ -230,6 +272,14 @@ pub struct GitNsRepoRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub last_check: Option<Value>,
+    /// The forge role each right projects to on this repository, under the
+    /// bridge's reported map. Absent while the namespace's map is unknown
+    /// (`roleMapSource`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_map: Option<GitNsRoleMap>,
+    /// The bridge last projected this repository's roles under an earlier
+    /// role map; a re-projection is queued and has not yet succeeded.
+    pub role_map_stale: bool,
 }
 
 /// One bootstrap step's outcome, as the bridge reported it.
@@ -271,6 +321,62 @@ pub struct GitNsRightRow {
     pub subject_member: bool,
     /// Whether the granter has since left the community.
     pub granter_departed: bool,
+    /// Present exactly when the subject gave themselves this right through
+    /// `git-ns/right/break-glass/0.1`. Unratified while `ratifiedBy` is absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub break_glass: Option<GitNsBreakGlassMark>,
+}
+
+/// A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsBreakGlassMark {
+    pub by: String,
+    pub at: String,
+    pub justification: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratified_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratified_at: Option<String>,
+}
+
+impl From<&crate::git_ns::model::BreakGlassMark> for GitNsBreakGlassMark {
+    fn from(b: &crate::git_ns::model::BreakGlassMark) -> Self {
+        Self {
+            by: b.by.clone(),
+            at: wire::timestamp(b.at),
+            justification: b.justification.clone(),
+            effective_at: b.effective_at.map(wire::timestamp),
+            ratified_by: b.ratified_by.clone(),
+            ratified_at: b.ratified_at.map(wire::timestamp),
+        }
+    }
+}
+
+/// One break-glass record.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsBreakGlassItem {
+    /// The namespace's identifier.
+    pub namespace: String,
+    /// The namespace's resource (`github.com/acme`).
+    pub namespace_resource: String,
+    pub subject: String,
+    pub right: String,
+    pub resource: String,
+    pub granted_at: String,
+    pub break_glass: GitNsBreakGlassMark,
+    /// `unratified` — live, flagged, awaiting another administrator;
+    /// `pending` — unratified and not yet in effect (a policy delay);
+    /// `ratified` — an ordinary grant now, kept here as history.
+    pub state: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct GitNsBreakGlassList {
+    pub items: Vec<GitNsBreakGlassItem>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -422,6 +528,7 @@ pub async fn namespaces_list(
         .iter()
         .map(|ns| {
             let v = wire::namespace(ns);
+            let ns_map_source = role_map::source(ns);
             GitNsNamespaceRow {
                 id: ns.id.clone(),
                 forge: ns.forge.clone(),
@@ -457,6 +564,10 @@ pub async fn namespaces_list(
                 }),
                 role_drift: role_drift.to_string(),
                 cascade_on_departure: settings.cascade_on_departure,
+                role_map: role_map::for_namespace(ns).map(Into::into),
+                role_map_source: ns_map_source.as_str().to_string(),
+                role_map_reported_at: role_map::current_report(ns)
+                    .map(|r| wire::timestamp(r.issued_at)),
             }
         })
         .collect();
@@ -527,6 +638,14 @@ pub async fn repos_list(
                     })
                     .collect(),
                 last_check: r.forge_report.last_check.clone(),
+                role_map: snap
+                    .namespace(&r.namespace_id)
+                    .and_then(|ns| role_map::for_repo(ns, &r.resource))
+                    .map(Into::into),
+                role_map_stale: matches!(r.state, RepoState::Active | RepoState::Orphaned)
+                    && snap
+                        .namespace(&r.namespace_id)
+                        .is_some_and(|ns| role_map::is_stale(ns, &r.resource)),
             }
         })
         .collect();
@@ -567,6 +686,7 @@ async fn right_row(
         reason: row.reason.clone(),
         subject_member,
         granter_departed: row.granter_was_member && !granter_member,
+        break_glass: row.break_glass.as_ref().map(Into::into),
     })
 }
 
@@ -599,7 +719,13 @@ pub async fn rights_list(
         if filter.as_ref().is_some_and(|f| !f.contains(&res)) {
             continue;
         }
-        for row in set.rows.iter().filter(|r| r.is_live(t)) {
+        // A break-glass record waiting out a policy delay is listed too: it is
+        // exactly the one other administrators have a window to revoke.
+        for row in set
+            .rows
+            .iter()
+            .filter(|r| r.is_live(t) || (r.is_recorded(t) && r.break_glass.is_some()))
+        {
             if q.subject.as_deref().is_some_and(|s| s != row.subject) {
                 continue;
             }
@@ -635,6 +761,7 @@ pub async fn rights_list(
                 reason: None,
                 subject_member: standing(&state, &entry.did).await?.member,
                 granter_departed: false,
+                break_glass: None,
             });
         }
     }
@@ -903,6 +1030,110 @@ pub struct GitNsActivityItem {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GitNsActivity {
     pub items: Vec<GitNsActivityItem>,
+}
+
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct BreakGlassFilter {
+    /// Only this namespace (its identifier).
+    pub namespace: Option<String>,
+}
+
+/// The namespaces `did` administers for break-glass purposes: every one for a
+/// community administrator; otherwise those they hold a live `git.ns.admin`
+/// on by explicit record. `None` when they administer none.
+async fn administered_namespaces(
+    state: &AppState,
+    snap: &Snapshot,
+    did: &str,
+) -> Result<(bool, std::collections::BTreeSet<String>), AppError> {
+    let t = now();
+    let caller = standing(state, did).await?;
+    let allowed = snap
+        .namespaces
+        .iter()
+        .filter(|n| {
+            caller.community_admin || rules::admins(snap, &n.id, t).iter().any(|a| a == did)
+        })
+        .map(|n| n.id.clone())
+        .collect();
+    Ok((caller.community_admin, allowed))
+}
+
+#[utoipa::path(
+    get, path = "/git-ns/break-glass",
+    operation_id = "gitNsBreakGlassList", tag = "git-ns",
+    params(BreakGlassFilter),
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Break-glass records in the namespaces the caller administers, unratified first", body = GitNsBreakGlassList),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "The caller administers no namespace (or not the one named)"),
+    ),
+)]
+pub async fn break_glass_list(
+    auth: vti_common::auth::AuthClaims,
+    State(state): State<AppState>,
+    Query(q): Query<BreakGlassFilter>,
+) -> Result<Json<GitNsBreakGlassList>, AppError> {
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let t = now();
+    let (community_admin, mut allowed) = administered_namespaces(&state, &snap, &auth.did).await?;
+    if let Some(n) = &q.namespace {
+        if !allowed.contains(n) {
+            return Err(AppError::Forbidden(format!(
+                "you do not administer namespace `{n}`"
+            )));
+        }
+        allowed = std::iter::once(n.clone()).collect();
+    }
+    if allowed.is_empty() && !community_admin {
+        return Err(AppError::Forbidden(
+            "break-glass records are for the community's administrators and each namespace's \
+             admins; you are neither"
+                .into(),
+        ));
+    }
+    let mut items = Vec::new();
+    for (scope, set) in &snap.rights {
+        let (Some(ns), Some(res)) = (snap.scope_namespace(scope), snap.scope_resource(scope))
+        else {
+            continue;
+        };
+        if !allowed.contains(&ns.id) {
+            continue;
+        }
+        for row in set.rows.iter().filter(|r| r.is_recorded(t)) {
+            let Some(bg) = &row.break_glass else {
+                continue;
+            };
+            let state = if bg.ratified_by.is_some() {
+                "ratified"
+            } else if row.is_pending(t) {
+                "pending"
+            } else {
+                "unratified"
+            };
+            items.push(GitNsBreakGlassItem {
+                namespace: ns.id.clone(),
+                namespace_resource: ns.resource().to_string(),
+                subject: row.subject.clone(),
+                right: row.right.as_str().to_string(),
+                resource: res.to_string(),
+                granted_at: wire::timestamp(row.granted_at),
+                break_glass: bg.into(),
+                state: state.into(),
+            });
+        }
+    }
+    // Unratified and pending first, newest first within each.
+    items.sort_by(|a, b| {
+        (a.state == "ratified")
+            .cmp(&(b.state == "ratified"))
+            .then_with(|| b.break_glass.at.cmp(&a.break_glass.at))
+    });
+    Ok(Json(GitNsBreakGlassList { items }))
 }
 
 #[utoipa::path(

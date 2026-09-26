@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.52.0"
+version = "0.53.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -133,6 +133,9 @@ session = [
   # Rotation of a temp-provisioned did:key on first successful auth needs
   # a CSPRNG seed for the replacement Ed25519 key.
   "dep:getrandom",
+  # `agent_session::InboundMessage::verify` — the only sender an inbound
+  # DIDComm message vouches for is its document's verified proof signer.
+  "proof-verify",
 ]
 integration = ["client", "session"]
 # OS keyring backend for session storage. Pulls in `keyring-core` plus
@@ -318,7 +321,7 @@ sha2 = { workspace = true, optional = true }
 # Used by `client` (didcomm_light::pack_anoncrypt) to produce JWEs the
 # workspace's pinned DIDComm decrypt path will accept (ECDH-ES+A256KW +
 # A256CBC-HS512). Same pinned version as `vta-service`.
-affinidi-messaging-didcomm = { version = "0.15", optional = true }
+affinidi-messaging-didcomm = { version = "0.15.9", optional = true }
 hpke = { version = "0.14", optional = true }
 affinidi-crypto = { workspace = true, optional = true }
 affinidi-vc = { workspace = true, optional = true }

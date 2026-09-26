@@ -2,6 +2,189 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.6](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.17.5...cnm-cli-v0.17.6) — 2026-09-26
+
+
+### Added
+
+- **vtc/git-ns**: A namespace admin gets no forge role; bridge jobs are git-ns/bridge/job 0.4 ([#1729](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1729))
+
+* fix(vtc/git-ns): a namespace admin gets no forge role
+
+  Role projection counted what git.ns.admin implies, so every namespace
+  admin went to the bridge as git.repo.own on every repository, and the
+  namespace-level projectRoles job listed them as organisation owners,
+  which the bridge always refused notCapable.
+
+  desiredRoles now carries, per person, the highest right recorded in their
+  own name: own, maintain or commit.sign on the repository, or commit.sign
+  on its namespace. A namespace admin with none of those is sent as
+  git.ns.admin, which the bridge maps to no role, so a stale role it manages
+  is taken off instead of left in place. An admin who is also an explicit
+  owner is still sent as the owner. The namespace-level job is no longer
+  sent, and a reseat no longer queues it.
+
+  Drift follows: a roleChanged adoption compares against the projected
+  right rather than the implied one, so a namespace admin's forge admin role
+  can be adopted as own; and reverting a roleAdded role held by an admin
+  with no right of their own drops them from desiredRoles and names them in
+  removeAccounts only.
+
+  The admin console's grant and reseat previews no longer say an ns.admin
+  is projected onto the forge.
+
+- **pnm**: Answer this VTA's consent requests from the CLI ([#1761](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1761))
+
+A task under a `requires: consent` rule waits for its approver set, and only
+  a device enrolled for the task-consent push could answer. `pnm` showed the
+  requester the code and waited.
+
+  `pnm consent {show,approve,deny} <file|->` is the approver's side. It takes
+  the refusal the requester relays (the body, its `details`, or a bare request
+  document) and picks the request addressed to this profile. It checks that
+  this VTA signed it, that it is addressed to this approver and that it has
+  not expired. Approving requires typing the requester's match code, or
+  `--match-code`. The decision is dispatched as a Trust Task, which the client
+  signs with the profile's key under assertionMethod.
+
+  The operator-facing half is now shared with `cnm consent`: reading the
+  input, what is shown, the code comparison, the report and the refusal
+  hints, all in `vta_cli_common::consent_approve`. `cnm consent` moves onto
+  it, keeping its VTC-specific hint for `permissionDenied`.
+
+  Tested end to end in `delegated_consent_e2e`: a real VTA-signed request
+  verifies through `vta_sdk::task_consent`. It is refused when it is
+  addressed to someone else or has been tampered with, and the decision
+  built from it is granted.
+
+- **cnm**: Answer the community's consent requests from the CLI (VTI-APV-014) ([#1759](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1759))
+
+Making or widening an unrestricted administrator at the VTC needs another
+  unrestricted administrator's consent (VTI-APV-014), but only a device
+  enrolled to handle the task-consent push could answer. An approver with a
+  cnm profile had no way to sign a decision.
+
+  `cnm consent {show,approve,deny} <file|->` takes the request the
+  requester relays (the refusal body, its `details`, or a bare request
+  document), picks the one addressed to this profile, and verifies it. The
+  VTC must have signed it, it must be addressed to this approver, and it
+  must not have expired. Approving requires typing the requester's match
+  code (or `--match-code`); a mismatch sends nothing. The decision is
+  signed with the profile's key under assertionMethod and posted to the
+  document endpoint.
+
+  The approver's shared half is a new `vta_sdk::task_consent` module:
+  `match_code`, `ConsentRequest::verify` returning a
+  `VerifiedConsentRequest` (the only type a decision can be built from),
+  and `decision`. `vtc-client` gains `decide_task_consent`.
+
+  It also fixes a mismatch between the two screens: the requester prompt
+  in `vta_cli_common::consent` printed the whole `zQm…` digest as the
+  "code", while approver devices show six hex characters of the decoded
+  digest. Both now call `vta_sdk::task_consent::match_code`, and so does
+  `vta-mobile-core`, which drops its copy.
+
+  Tested end to end in `unrestricted_admin_consent`: a real VTC-signed
+  request verifies through the SDK, is refused when it is addressed to
+  someone else, comes from another issuer, or has been tampered with, and
+  the decision built from it grants the consent.
+
+- **cnm-cli**: Cnm git link — link a forge account to the profile's DID ([#1726](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1726))
+
+* feat(cnm-cli): cnm git link — link a forge account to the profile's DID
+
+  A member had no CLI way to link their forge account, so the bridge could
+  never give them the forge role their git rights call for.
+
+  `cnm git link --forge <host>` sends git-ns/account/link/0.1 signed as the
+  community profile's DID, prints where to authorise (and GitHub's device
+  code), then polls git-ns/account/link-status/0.1 every five seconds, as
+  the specification asks, until the link is linked, expired or failed.
+  `--status <linkId>` follows a link begun earlier, `--no-wait` returns
+  after printing, and `--list` shows the accounts linked to this DID from
+  git-ns/view/0.2's `accounts`. Refusals (`unsupportedForge`,
+  `unknownLink`, a non-member) print the fix.
+
+  vtc-client gains `git_ns_link_status`. There is no unlink: the
+  specification defines no task for it, and linking again replaces the
+  account on that forge.
+
+- **vtc-service**: Git-ns drift/resolve, namespace/reseat, view 0.2 ([#1703](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1703))
+
+* feat(vtc-service): git-ns drift/resolve, namespace/reseat, view 0.2
+
+  Implements the git-ns tasks added in trust-tasks #625 and #627, on
+  trust-tasks-rs 0.22.5.
+
+  - git-ns/drift/resolve 0.1: an owner adopts a forge-side role as the
+    git-ns/right/grant it is (same fixed rules, policy, consent class), or
+    reverts a forge-side change through the bridge. Items are selected by
+    type, account (role items) and observed (required to adopt). Every
+    declared code: driftNotFound, notAdoptable, accountNotLinked,
+    noMatchingRight, notRevertible, plus the family's codes.
+  - git-ns/bridge/job 0.2: sent only for the revert of a roleAdded item
+    (projectRoles with removeAccounts), in-line, so a bridge implementing
+    only 0.1 is answered notRevertible; every other job stays 0.1.
+  - git-ns/namespace/reseat 0.1: a community administrator grants a
+    permanent git.ns.admin on a headless namespace to a current member,
+    atomically with the headless check; notHeadless otherwise. The audit
+    record keeps the statement and how earlier admin records ended.
+  - git-ns/view 0.2 (served beside 0.1): the caller's own linked forge
+    accounts, narrowed to the resource's forge.
+  - git-ns/bridge/event 0.2 (served beside 0.1, same handler): a transfer
+    detaches wherever it goes; an event any of whose resources, drift items
+    included, lies outside its namespace is refused before anything is
+    applied.
+  - cnm: `cnm git drift resolve`, `cnm git reseat`; `cnm git view` asks for
+    view 0.2. vtc-client gains the matching methods.
+  - Default gitNamespace policy: namespace.reseat receives a right;
+    drift.revert documented.
+
+
+
+### Fixed
+
+- **vtc-admin-ui,cnm-cli**: Shell quoting that is safe in fish, and reseat follow-ups ([#1723](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1723))
+
+shellQuote (admin console) and shell_word (cnm) used POSIX '...'\''...'
+  quoting. fish reads \' and \\ as escapes even inside single quotes, so a
+  value such as  x\' ; echo INJECTED ; echo \  pasted into fish ran
+  `echo INJECTED`. Both now single-quote runs without ' or \ and write each
+  ' as "'" and each \ as "\\", which read back byte-exact in sh, bash, zsh
+  and fish. A bare word may no longer start with = (zsh's =cmd expansion) or
+  % (fish's %self), nor, in cnm, with -.
+
+  Tests run the generated words through sh, bash and, where installed, zsh
+  and fish, and assert every hostile value comes back byte-exact.
+
+- **vtc-service**: Git-ns review follow-ups — adopt policy input, legacy revoke, reseat evidence ([#1714](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1714))
+
+Follow-ups from the review of #1703.
+
+  - The policy sees an adopted drift item as `right.grant` with
+    `via: "drift.adopt"` (git-ns/drift/resolve, step 6), so a community can
+    refuse every adoption and still grant. Default policy comment and docs
+    say so.
+  - right/revoke still accepts a subject that is not a DID-core DID when a
+    recorded right names it — one granted before DID-core was enforced —
+    so no right is left that nobody can take away. Grant, transfer, adopt
+    and reseat still refuse one.
+  - A reseat's evidence comes from the audit log: each earlier git.ns.admin
+    record revoked (by whom, why — a revoke now records its reason),
+    lapsed (when) or removed on departure (when), plus records not yet
+    swept; holders are not named. The subject's own lapsed admin record is
+    replaced rather than kept beside the new one.
+  - drift/resolve adopt re-checks its item (observed value included) under
+    the store lock the grant is written under; a changed item adopts
+    nothing.
+  - Two string literals that had lost their line continuation (the
+    notHeadless message, cnm's --observed error) are fixed.
+  - cnm sanitises the VTC's error code as well as its message; the
+    notAdoptable hint for a lowering names revoke; the notRevertible hint
+    covers manual mode and accounts the projection holds.
+
+
+
 ## [0.17.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.17.4...cnm-cli-v0.17.5) — 2026-09-24
 
 

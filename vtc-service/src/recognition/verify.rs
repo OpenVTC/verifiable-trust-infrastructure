@@ -22,7 +22,7 @@
 //! Both surfaces are heavy: DID resolution can hit external
 //! HTTPS, status-list fetching is unconditionally HTTP. Key
 //! resolution goes through the DI library's
-//! `VerificationMethodResolver` (the shared
+//! `PurposeVmResolver` (the shared
 //! [`crate::credentials::vm_resolver::DidVmResolver`]); status
 //! fetching is behind the small [`StatusListFetcher`] trait.
 //! Both are injected, so `verify_foreign_vec` is unit-testable
@@ -30,13 +30,13 @@
 
 use std::sync::Arc;
 
-use affinidi_data_integrity::{VerificationMethodResolver, VerifyOptions};
 use affinidi_vc::VerifiableCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 use vta_sdk::http::ForeignFetchError;
+use vti_common::auth::PurposeVmResolver;
 
 use crate::credentials::vm_resolver::check_issuer_binding;
 use crate::registry::{RegistryError, TrustRegistryClient};
@@ -158,7 +158,7 @@ pub struct VerifiedForeignCredential {
 pub async fn verify_foreign_vec(
     vec: &VerifiableCredential,
     vmc: &VerifiableCredential,
-    resolver: &dyn VerificationMethodResolver,
+    resolver: &dyn PurposeVmResolver,
     status_fetcher: &dyn StatusListFetcher,
     registry: Arc<dyn TrustRegistryClient>,
     now: DateTime<Utc>,
@@ -267,7 +267,7 @@ pub async fn verify_foreign_vec(
 async fn verify_proof(
     vc: &VerifiableCredential,
     issuer_did: &str,
-    resolver: &dyn VerificationMethodResolver,
+    resolver: &dyn PurposeVmResolver,
     label: &str,
 ) -> Result<(), RecognitionError> {
     let proof_value = vc
@@ -297,14 +297,17 @@ async fn verify_proof(
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
     for proof in &proofs {
         let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
-        let r = proof
-            .verify(&vc_without_proof, resolver, VerifyOptions::new())
-            .await
-            .map_err(|e| e.to_string());
+        let r = crate::credentials::proof_set::verify_one(
+            proof,
+            &vc_without_proof,
+            resolver,
+            vti_common::auth::ProofPurpose::AssertionMethod,
+        )
+        .await;
         outcomes.push((did, r));
     }
 
-    crate::credentials::proof_set::accept_any(&outcomes)
+    crate::credentials::proof_set::accept_all(&outcomes)
         .map_err(|e| RecognitionError::ProofInvalid(format!("{label}: {e}")))?;
     Ok(())
 }
@@ -434,7 +437,7 @@ pub struct HttpStatusListFetcher {
     client: reqwest::Client,
     /// Resolves the list credential's issuer key for the signature check. `None`
     /// → no verification (fetch + decode only).
-    key_resolver: Option<Arc<dyn VerificationMethodResolver>>,
+    key_resolver: Option<Arc<dyn PurposeVmResolver>>,
 }
 
 impl HttpStatusListFetcher {
@@ -451,7 +454,7 @@ impl HttpStatusListFetcher {
     /// A fetcher that verifies each fetched list credential's `eddsa-jcs-2022`
     /// issuer signature via `key_resolver` before trusting it. Uses the shared
     /// hardened client ([`foreign_fetch_client`]).
-    pub fn with_issuer_verification(key_resolver: Arc<dyn VerificationMethodResolver>) -> Self {
+    pub fn with_issuer_verification(key_resolver: Arc<dyn PurposeVmResolver>) -> Self {
         Self {
             client: foreign_fetch_client(),
             key_resolver: Some(key_resolver),
@@ -512,7 +515,7 @@ async fn read_body_capped(
 async fn verify_status_list_signature(
     list_credential: &JsonValue,
     expected_issuer: Option<&str>,
-    resolver: &dyn VerificationMethodResolver,
+    resolver: &dyn PurposeVmResolver,
     url: &str,
 ) -> Result<(), RecognitionError> {
     let list_issuer = list_credential
@@ -564,14 +567,17 @@ async fn verify_status_list_signature(
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
     for proof in &proofs {
         let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
-        let r = proof
-            .verify(&signing_doc, resolver, VerifyOptions::new())
-            .await
-            .map_err(|e| e.to_string());
+        let r = crate::credentials::proof_set::verify_one(
+            proof,
+            &signing_doc,
+            resolver,
+            vti_common::auth::ProofPurpose::AssertionMethod,
+        )
+        .await;
         outcomes.push((did, r));
     }
 
-    crate::credentials::proof_set::accept_any(&outcomes).map_err(|e| {
+    crate::credentials::proof_set::accept_all(&outcomes).map_err(|e| {
         RecognitionError::StatusListFailed(format!(
             "status list {url} issuer signature did not verify: {e}"
         ))
@@ -745,8 +751,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    /// In-memory `VerificationMethodResolver`. Tests seed the key bytes they
-    /// expect the verifier to use, keyed by issuer DID; `resolve_vm` looks them
+    /// In-memory `PurposeVmResolver`. Tests seed the key bytes they
+    /// expect the verifier to use, keyed by issuer DID; `resolve_vm_for_purpose` looks them
     /// up by the base DID of the verificationMethod URI.
     struct StubKeyResolver {
         keys: HashMap<String, Vec<u8>>,
@@ -765,10 +771,11 @@ mod tests {
     }
 
     #[async_trait]
-    impl VerificationMethodResolver for StubKeyResolver {
-        async fn resolve_vm(
+    impl PurposeVmResolver for StubKeyResolver {
+        async fn resolve_vm_for_purpose(
             &self,
             vm: &str,
+            _purpose: vti_common::auth::ProofPurpose,
         ) -> Result<affinidi_data_integrity::ResolvedKey, affinidi_data_integrity::DataIntegrityError>
         {
             let base = vm.split('#').next().unwrap_or(vm);

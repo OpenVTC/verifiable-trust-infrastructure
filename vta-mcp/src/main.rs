@@ -129,9 +129,13 @@ struct Args {
     holder_key: Option<String>,
 
     /// Verification-method fragment of the holder DID used as the VP proof's
-    /// `verificationMethod` (`{holder_did}#{fragment}`).
-    #[arg(long, env = "VTA_MCP_HOLDER_VM_FRAGMENT", default_value = "key-0")]
-    holder_vm_fragment: String,
+    /// `verificationMethod` (`{holder_did}#{fragment}`). It must name a key the
+    /// holder's DID document lists under `authentication`, or verifiers refuse
+    /// the presentation. Defaults to the key the DID method names: the key id
+    /// for a `did:key`, `key-1` (the first V key) for a `did:peer`, and
+    /// `key-0` otherwise.
+    #[arg(long, env = "VTA_MCP_HOLDER_VM_FRAGMENT")]
+    holder_vm_fragment: Option<String>,
 
     /// Refuse every operation that is not read-only. The strongest single
     /// setting: the bridge can inspect the VTA and nothing else, whatever its
@@ -402,6 +406,20 @@ async fn attach(client: VtaClient, args: &Args) -> Result<Arc<AgentSession>, Str
     Ok(Arc::new(agent))
 }
 
+/// The verification-method fragment a holder DID's signing key has when none
+/// is configured. A did:key names exactly one method, `did:key:<id>#<id>`; a
+/// did:peer:2 numbers its keys from `#key-1`; the workspace's did:webvh
+/// templates put the signing key at `#key-0`.
+fn default_vm_fragment(did: &str) -> String {
+    if let Some(id) = did.strip_prefix("did:key:") {
+        id.to_string()
+    } else if did.starts_with("did:peer:") {
+        "key-1".to_string()
+    } else {
+        "key-0".to_string()
+    }
+}
+
 /// Optional holder identity for the `issue_vp` tool (signs presentations
 /// locally; the key never crosses MCP).
 fn holder_identity(args: &Args) -> Option<Arc<server::HolderIdentity>> {
@@ -410,7 +428,10 @@ fn holder_identity(args: &Args) -> Option<Arc<server::HolderIdentity>> {
             tracing::info!(%did, "issue_vp enabled with configured holder identity");
             Some(Arc::new(server::HolderIdentity {
                 did: did.clone(),
-                vm_fragment: args.holder_vm_fragment.clone(),
+                vm_fragment: args
+                    .holder_vm_fragment
+                    .clone()
+                    .unwrap_or_else(|| default_vm_fragment(did)),
                 key_multibase: key.clone(),
             }))
         }
@@ -493,6 +514,15 @@ mod tests {
     /// Args with everything unset — the base every case below varies from.
     fn args() -> Args {
         Args::parse_from(["vta-mcp"])
+    }
+
+    /// The default fragment names the key the holder's DID method gives its
+    /// signing key, so a VP proof verifies without extra configuration.
+    #[test]
+    fn the_default_holder_fragment_follows_the_did_method() {
+        assert_eq!(default_vm_fragment("did:key:z6MkAbc"), "z6MkAbc");
+        assert_eq!(default_vm_fragment("did:peer:2.Vz6MkAbc"), "key-1");
+        assert_eq!(default_vm_fragment("did:webvh:QmScid:example.com"), "key-0");
     }
 
     #[test]

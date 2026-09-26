@@ -42,7 +42,6 @@
 //!    edge that already exists. See [`attach_persona`] for the
 //!    binding argument and for what upstream has not settled.
 
-use affinidi_data_integrity::VerifyOptions;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
 use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
@@ -1669,14 +1668,17 @@ async fn verify_di_proof(
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
     for proof in &proofs {
         let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
-        let r = proof
-            .verify(&vrc_without_proof, &vm_resolver, VerifyOptions::new())
-            .await
-            .map_err(|e| e.to_string());
+        let r = crate::credentials::proof_set::verify_one(
+            proof,
+            &vrc_without_proof,
+            &vm_resolver,
+            vti_common::auth::ProofPurpose::AssertionMethod,
+        )
+        .await;
         outcomes.push((did, r));
     }
 
-    crate::credentials::proof_set::accept_any(&outcomes).map_err(|e| format!("verify: {e}"))?;
+    crate::credentials::proof_set::accept_all(&outcomes).map_err(|e| format!("verify: {e}"))?;
     Ok(())
 }
 

@@ -227,7 +227,7 @@ pub async fn sweep_expiry(state: &AppState) -> Result<bool, AppError> {
     let mut changed = false;
     for (scope, set) in &snap.rights {
         let (lapsed, live): (Vec<_>, Vec<_>) =
-            set.rows.iter().cloned().partition(|r| !r.is_live(t));
+            set.rows.iter().cloned().partition(|r| r.is_lapsed(t));
         if lapsed.is_empty() {
             continue;
         }

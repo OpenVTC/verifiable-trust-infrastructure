@@ -112,6 +112,36 @@ async fn dump_rows(ks: &KeyspaceHandle) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppEr
     Ok(rows)
 }
 
+/// A backup carries the seed — every key the VTA can derive — so it is the
+/// largest export this VTA makes, and it needs the capability every other
+/// export needs (VTI-VTA-003), not only the super-admin role. Checked here,
+/// in the one function every backup path calls (REST, DIDComm, the `stream`
+/// and `chunkedTrustTask` Trust Tasks), so no transport can skip it.
+///
+/// Reads the caller's ACL entry, so a super-admin narrowed without
+/// `key-export` is refused; with no entry the role decides; a store error
+/// refuses.
+async fn require_key_export(target: &BackupTarget<'_>, auth: &AuthClaims) -> Result<(), AppError> {
+    use vti_common::acl::{Capability, entry_has_capability, get_acl_entry, role_has_capability};
+    let acl_ks = target.keyspace(vta_keyspaces::ACL)?;
+    let may = match get_acl_entry(&acl_ks, &auth.did).await {
+        Ok(Some(entry)) => entry_has_capability(&entry, Capability::KeyExport),
+        Ok(None) => role_has_capability(&auth.role, Capability::KeyExport),
+        Err(e) => {
+            tracing::error!(error = %e, did = %auth.did, "could not read the ACL entry for the backup key-export check; refusing");
+            false
+        }
+    };
+    if may {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "backup export denied: {} does not carry the key-export capability. A backup carries \
+         the seed, so it is an export of every key this VTA holds (VTI-VTA-003)",
+        auth.did
+    )))
+}
+
 /// Assemble and encrypt a backup of the entire VTA state.
 pub async fn export_backup(
     target: &BackupTarget<'_>,
@@ -122,6 +152,7 @@ pub async fn export_backup(
     include_audit: bool,
 ) -> Result<BackupEnvelope, AppError> {
     auth.require_super_admin()?;
+    require_key_export(target, auth).await?;
     vta_sdk::protocols::backup_management::validate_backup_password(password)
         .map_err(AppError::Validation)?;
 

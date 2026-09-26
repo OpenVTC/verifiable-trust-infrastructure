@@ -100,6 +100,47 @@ pub enum SealedPayloadV1 {
     /// variant — no existing variant changes (issue #512). See
     /// [`MessagingBridgeCredentialsBundle`].
     MessagingBridgeCredentials(Box<MessagingBridgeCredentialsBundle>),
+    /// A TEE VTA's BIP-39 seed mnemonic, released once during the first-boot
+    /// export window (`vta/attestation/mnemonic-export/1.0`, over DIDComm or
+    /// TSP, or signed at first boot over HTTPS — never plain REST) for an
+    /// offline paper backup.
+    ///
+    /// Sealed rather than returned as JSON: the mnemonic is the VTA's root
+    /// derivation material (VTI-VTA-001, VTI-KEY-033), and a plaintext response
+    /// exists in the clear wherever TLS terminates. Sealed to the operator's
+    /// ephemeral `did:key` under an `Attested` producer assertion, it is
+    /// readable only by that key and provably came from the enclave. Additive
+    /// variant — no existing variant changes.
+    SeedMnemonic(Box<SeedMnemonicBundle>),
+}
+
+/// The payload of [`SealedPayloadV1::SeedMnemonic`].
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeedMnemonicBundle {
+    /// The BIP-39 mnemonic phrase.
+    pub mnemonic: String,
+    /// The VTA whose seed this is, when it has a DID yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vta_did: Option<String>,
+}
+
+/// The words are the VTA's root derivation material: wiped from memory when
+/// the bundle goes, on every path — opened, sealed, or dropped on an error.
+impl Drop for SeedMnemonicBundle {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.mnemonic);
+    }
+}
+
+/// Written by hand so the mnemonic never reaches a log.
+impl std::fmt::Debug for SeedMnemonicBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeedMnemonicBundle")
+            .field("mnemonic", &"<redacted>")
+            .field("vta_did", &self.vta_did)
+            .finish()
+    }
 }
 
 /// Platform credentials for a single `vti-message-bridge` connector. Mirrors

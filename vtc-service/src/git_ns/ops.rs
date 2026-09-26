@@ -18,15 +18,18 @@ use serde_json::json;
 use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status,
 };
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_1 as job_wire;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_4 as job_wire;
 use trust_tasks_rs::specs::git_ns::namespace::{
-    bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
+    bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind,
 };
 use trust_tasks_rs::specs::git_ns::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
     transfer::v0_1 as transfer,
 };
-use trust_tasks_rs::specs::git_ns::right::{grant::v0_1 as grant, revoke::v0_1 as revoke};
+use trust_tasks_rs::specs::git_ns::right::{
+    break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
+    revoke::v0_3 as revoke,
+};
 use vti_common::audit::{AuditEvent, GitNsOperationData};
 use vti_common::error::AppError;
 
@@ -66,6 +69,12 @@ pub const SELF_TRANSFER: &str = transfer::error_codes::SELF_TRANSFER.code;
 pub const UNSUPPORTED_FORGE: &str = link::error_codes::UNSUPPORTED_FORGE.code;
 pub const UNKNOWN_LINK: &str = link_status::error_codes::UNKNOWN_LINK.code;
 pub const NOT_HEADLESS: &str = reseat::error_codes::NOT_HEADLESS.code;
+pub const SELF_GRANT_NOT_ALLOWED: &str = grant::error_codes::SELF_GRANT_NOT_ALLOWED.code;
+pub const BREAK_GLASS_DISABLED: &str = break_glass::error_codes::DISABLED.code;
+pub const BREAK_GLASS_NOT_HEADLESS: &str = break_glass::error_codes::NOT_HEADLESS.code;
+pub const NOT_BREAK_GLASS: &str = ratify::error_codes::NOT_BREAK_GLASS.code;
+pub const RECORD_CHANGED: &str = ratify::error_codes::RECORD_CHANGED.code;
+pub const SELF_RATIFICATION: &str = ratify::error_codes::SELF_RATIFICATION.code;
 
 /// Why an operation refused, as the wire will carry it.
 #[derive(Debug)]
@@ -82,6 +91,16 @@ pub enum OpError {
     /// The framework's `unavailable`: a bridge that must answer in-line did
     /// not. Retryable, and honest about it.
     Unavailable(String),
+    /// The framework's `permissionDenied`, with an operation-bound step-up
+    /// inline as `details.stepUpRequest` (`crate::acl::bound_step_up`): the
+    /// same document, re-sent once the gesture is recorded, succeeds.
+    StepUpRequired {
+        message: String,
+        request: Box<crate::acl::bound_step_up::ApproveRequest>,
+    },
+    /// The framework's `unsupportedVersion`: this VTC serves the task, but
+    /// not this operation at this version (a drift/resolve 0.1 `adopt`).
+    UnsupportedVersion(String),
     Internal(AppError),
 }
 
@@ -98,6 +117,10 @@ impl std::fmt::Display for OpError {
             OpError::PermissionDenied(m) => write!(f, "permissionDenied: {m}"),
             OpError::Malformed(m) => write!(f, "malformedRequest: {m}"),
             OpError::Unavailable(m) => write!(f, "unavailable: {m}"),
+            OpError::StepUpRequired { message, .. } => {
+                write!(f, "permissionDenied (step-up required): {message}")
+            }
+            OpError::UnsupportedVersion(m) => write!(f, "unsupportedVersion: {m}"),
             OpError::Internal(e) => write!(f, "internal: {e}"),
         }
     }
@@ -117,6 +140,7 @@ impl From<Refusal> for OpError {
             Refusal::ScopeViolation(m) => declared(SCOPE_VIOLATION, m),
             Refusal::Escalation(m) => declared(ESCALATION, m),
             Refusal::MembersOnly(m) => declared(MEMBERS_ONLY, m),
+            Refusal::SelfGrant(m) => declared(SELF_GRANT_NOT_ALLOWED, m),
         }
     }
 }
@@ -428,7 +452,7 @@ pub(super) fn lookup<'a>(snap: &'a Snapshot, resource: &Resource) -> OpResult<Op
 }
 
 /// The scope a resource's rights hang on, if it is recorded.
-fn scope_for(snap: &Snapshot, resource: &Resource) -> OpResult<Option<Scope>> {
+pub(super) fn scope_for(snap: &Snapshot, resource: &Resource) -> OpResult<Option<Scope>> {
     if resource.is_namespace() {
         Ok(snap
             .namespaces
@@ -478,6 +502,7 @@ pub(super) fn new_row(
         reason: None,
         subject_was_member: subject_member,
         granter_was_member: true,
+        break_glass: None,
     }
 }
 
@@ -548,6 +573,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
                 roles_digest: None,
                 installation_removed: false,
                 forge_status: None,
+                role_map: None,
             };
             store::put_namespace(&state.git_ns.ks, &ns).await?;
             let scope = Scope::Namespace(ns.id.clone());
@@ -652,6 +678,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
         roles_digest: None,
         installation_removed: false,
         forge_status: None,
+        role_map: None,
     };
     store::put_namespace(&state.git_ns.ks, &ns).await?;
     bridge::record_inline_job(
@@ -811,7 +838,7 @@ pub async fn unbind(
     }))?)
 }
 
-// ── git-ns/namespace/reseat/0.1 ─────────────────────────────────────────────
+// ── git-ns/namespace/reseat/0.3 ───────────────────────────────────────────
 
 /// Recovery for a headless namespace: a community administrator grants
 /// `git.ns.admin` on it to a current member. The capability is worth nothing
@@ -871,9 +898,13 @@ pub async fn namespace_reseat(
             ),
         ));
     }
-    // Step 4 — fixed rule 5.
+    // Fixed rule 7 of `git-ns/right/grant/0.3` binds reseat: a community
+    // administrator reseating a headless namespace to themselves is a
+    // self-grant of `git.ns.admin`, which is `git-ns/right/break-glass`'s.
     let subject = p.subject.to_string();
     did_core("subject", &subject)?;
+    rules::separation_of_duties(&actor.did, &subject, Right::NsAdmin, true, &resource)?;
+    // Step 4 — fixed rule 5.
     let subject_standing = standing(state, &subject).await?;
     if !subject_standing.member {
         return Err(declared(
@@ -922,7 +953,7 @@ pub async fn namespace_reseat(
         .iter()
         .filter(|r| r.right == Right::NsAdmin)
     {
-        let ended = if !row.is_live(t) {
+        let ended = if row.is_lapsed(t) {
             json!({ "ended": "lapsed", "at": row.expires_at.map(wire::timestamp) })
         } else {
             json!({ "ended": "departed" })
@@ -946,10 +977,8 @@ pub async fn namespace_reseat(
     row.granter_was_member = actor.member;
     set.rows.push(row.clone());
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
-    // Step 8 — the namespace-level forge projection, as for any ns.admin.
-    let mut updated = ns.clone();
-    updated.roles_digest = None;
-    store::put_namespace(&state.git_ns.ks, &updated).await?;
+    // Step 8 — no forge projection to queue: `git.ns.admin` projects to no
+    // forge role.
 
     // Step 7.
     audit(
@@ -1011,7 +1040,7 @@ async fn admin_record_history(
             ("gitNs.right.revoked", Some("departed" | "granterDeparted")) => {
                 json!({ "ended": "departed", "at": at })
             }
-            ("gitNs.right.revoked", why) => {
+            ("gitNs.right.revoked" | "gitNs.right.breakGlassRevoked", why) => {
                 let mut e = json!({ "ended": "revoked", "at": at, "by": env.actor_did_plain });
                 if let Some(w) = why {
                     e["why"] = json!(w);
@@ -1025,7 +1054,7 @@ async fn admin_record_history(
     Ok(out)
 }
 
-// ── git-ns/repo/create/0.1 ──────────────────────────────────────────────────
+// ── git-ns/repo/create/0.3 ──────────────────────────────────────────────────
 
 pub async fn repo_create(
     state: &AppState,
@@ -1049,11 +1078,36 @@ pub async fn repo_create(
     }
     let ns_res = ns.resource();
     // Item 2 — `git.repo.create` on the namespace, explicit or implied.
-    let passed = rules::holds_admitted(&snap, &actor.did, Right::RepoCreate, &ns_res, t)?;
+    rules::holds_admitted(&snap, &actor.did, Right::RepoCreate, &ns_res, t)?;
     let actor_rights = rules::effective_on(&snap, &actor.did, &ns_res, t);
     let visibility = visibility_from_wire(&to_string_json(&p.visibility))?;
     let name = p.name.to_string();
     let resource = ns_res.child(&name);
+    // Who owns it (`git-ns/repo/create/0.3`, *Authorization*): the requester
+    // by default, and only on an explicit `git.repo.create` — an implied one
+    // (from `git.ns.admin`) makes the requester's own ownership a self-grant.
+    let owner_dids: Vec<String> = match &p.owners {
+        Some(o) => o.iter().map(|d| d.to_string()).collect(),
+        None => vec![actor.did.clone()],
+    };
+    let mut owners = Vec::with_capacity(owner_dids.len());
+    for o in owner_dids {
+        did_core("owners", &o)?;
+        let member = standing(state, &o).await?.member;
+        owners.push((o, member));
+    }
+    let st = settings(state).await;
+    let passed = rules::create_owners_admitted(
+        &snap,
+        &actor.did,
+        actor.member,
+        &Scope::Namespace(ns.id.clone()),
+        &ns_res,
+        &resource,
+        &owners,
+        st.rules,
+        t,
+    )?;
     consent_gate(state, &actor, "repo.create", None).await?;
     let version = check_policy(
         state,
@@ -1106,12 +1160,10 @@ pub async fn repo_create(
     store::put_repo(&state.git_ns.ks, &repo).await?;
     let scope = Scope::Repo(repo.id.clone());
     let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
-    set.rows.push(new_row(
-        &actor.did,
-        Right::RepoOwn,
-        &actor.did,
-        actor.member,
-    ));
+    for (owner, member) in &owners {
+        set.rows
+            .push(new_row(owner, Right::RepoOwn, &actor.did, *member));
+    }
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
     audit(
         state,
@@ -1127,22 +1179,31 @@ pub async fn repo_create(
         },
     )
     .await;
-    audit(
-        state,
-        &actor.did,
-        Some(&actor.did),
-        Audit {
-            action: "gitNs.right.granted",
-            namespace: Some(&ns.id),
-            resource: Some(resource.to_string()),
-            right: Some(Right::RepoOwn),
-            policy_version: version,
-            detail: Some("creator".into()),
-        },
-    )
-    .await;
+    for (owner, _) in &owners {
+        audit(
+            state,
+            &actor.did,
+            Some(owner),
+            Audit {
+                action: "gitNs.right.granted",
+                namespace: Some(&ns.id),
+                resource: Some(resource.to_string()),
+                right: Some(Right::RepoOwn),
+                policy_version: version,
+                detail: Some(
+                    if *owner == actor.did {
+                        "creator"
+                    } else {
+                        "create"
+                    }
+                    .into(),
+                ),
+            },
+        )
+        .await;
+    }
 
-    let owners = vec![actor.did.clone()];
+    let owners: Vec<String> = owners.into_iter().map(|(o, _)| o).collect();
     let mut response = json!({ "repo": wire::repo_summary(&repo, &owners) });
     if bot {
         // Item 5 — the bridge creates it and turns commit trust on.
@@ -1285,13 +1346,17 @@ pub async fn repo_adopt(
             _ => rules::grant_admitted(
                 &snap,
                 &actor.did,
+                o,
                 Right::RepoOwn,
                 &resource,
                 s.member,
+                actor.member,
                 st.rules,
                 t,
             )?,
         };
+        // Fixed rule 5 binds the reservation path too: every owner is a member.
+        rules::members_only(Right::RepoOwn, s.member, actor.member)?;
         version = check_policy(
             state,
             PolicyInput {
@@ -1479,6 +1544,8 @@ pub async fn repo_transfer(
         return Err(declared(SELF_TRANSFER, "`to` is you"));
     }
     let to_standing = standing(state, &to).await?;
+    // Fixed rule 5 of `git-ns/right/grant/0.3`: `own` goes only to a member.
+    rules::members_only(Right::RepoOwn, to_standing.member, actor.member)?;
     consent_gate(state, &actor, "repo.transfer", Some(Right::RepoOwn)).await?;
     let version = check_policy(
         state,
@@ -1509,7 +1576,7 @@ pub async fn repo_transfer(
     // What is handed over is what the caller holds, expiry included: the
     // recipient ends with ownership at least as durable as the caller's and
     // never more. An expiring record does not count toward the last-owner
-    // invariant (as `git-ns/namespace/reseat/0.1` states it for the last
+    // invariant (as `git-ns/namespace/reseat/0.3` states it for the last
     // admin, and this VTC applies to owners alike), so a permanent owner who
     // hands over to someone holding only an expiring record must leave them a
     // permanent one — or the repository is ownerless when it lapses.
@@ -1709,7 +1776,10 @@ pub async fn repo_archive(
     }))?)
 }
 
-// ── git-ns/right/grant/0.1 ──────────────────────────────────────────────────
+// ── git-ns/right/grant/0.3 ──────────────────────────────────────────────────
+//
+// 0.1 and 0.2 are not served: every grant is held to fixed rule 7, and every
+// record answered carries its `breakGlass`.
 
 pub async fn right_grant(
     state: &AppState,
@@ -1727,6 +1797,18 @@ pub(crate) struct GrantVia<'a> {
     /// Re-checked against the snapshot the grant is decided on; a refusal
     /// here is the grant's refusal, and nothing is written.
     pub still_holds: &'a (dyn Fn(&Snapshot) -> OpResult<()> + Send + Sync),
+    /// The forge account whose link must still resolve to the grant's
+    /// subject, checked under the same lock — the lock every link and unlink
+    /// is written under — so that a relink cannot fall between check and write
+    /// (drift/resolve 0.3, adopt step 6).
+    pub linked_to: Option<&'a LinkedTo>,
+}
+
+/// A forge account and the member it must be linked to.
+pub(crate) struct LinkedTo {
+    pub forge: String,
+    pub id: String,
+    pub member: String,
 }
 
 pub(crate) async fn right_grant_via(
@@ -1735,11 +1817,44 @@ pub(crate) async fn right_grant_via(
     p: grant::Payload,
     via: Option<GrantVia<'_>>,
 ) -> OpResult<grant::Response> {
+    let (row, resource) = right_grant_record(state, actor_did, p, via).await?;
+    Ok(wire::into(
+        json!({ "right": wire::right_record_full(&row, &resource, true) }),
+    )?)
+}
+
+async fn right_grant_record(
+    state: &AppState,
+    actor_did: &str,
+    p: grant::Payload,
+    via: Option<GrantVia<'_>>,
+) -> OpResult<(RightRow, Resource)> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
     let snap = Snapshot::load(&state.git_ns.ks).await?;
     if let Some(v) = &via {
         (v.still_holds)(&snap)?;
+        if let Some(link) = v.linked_to {
+            let now_linked = super::bridge::linked_accounts(state)
+                .await?
+                .into_iter()
+                .find(|(_, forges)| forges.get(&link.forge).is_some_and(|a| a.id == link.id))
+                .map(|(did, _)| did);
+            match now_linked {
+                Some(did) if did == link.member => {}
+                Some(_) => return Err(super::drift::subject_changed(&link.forge, &link.id)),
+                None => {
+                    return Err(declared(
+                        super::drift::ACCOUNT_NOT_LINKED,
+                        format!(
+                            "{} account {} is no longer linked to a member; it can only be \
+                             reverted",
+                            link.forge, link.id
+                        ),
+                    ));
+                }
+            }
+        }
     }
     let t = now();
     let resource = parse_resource(&p.resource)?;
@@ -1780,9 +1895,11 @@ pub(crate) async fn right_grant_via(
     let passed = rules::grant_admitted(
         &snap,
         &actor.did,
+        &subject,
         right,
         &resource,
         subject_standing.member,
+        actor.member,
         st.rules,
         t,
     )?;
@@ -1818,16 +1935,16 @@ pub(crate) async fn right_grant_via(
     {
         return Err(declared(EXPIRY_IN_PAST, "`expiresAt` is not in the future"));
     }
-    // Item 6 — a live record already there is returned unchanged.
+    // Item 6 — a live record already there is returned unchanged; so is an
+    // unratified (or still pending) break-glass record, whose ratification is
+    // `git-ns/right/ratify`'s and never a side effect of a grant (0.3, item 6).
     let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
     if let Some(existing) = set
         .rows
         .iter()
-        .find(|r| r.subject == subject && r.right == right && r.is_live(t))
+        .find(|r| r.subject == subject && r.right == right && r.is_recorded(t))
     {
-        return Ok(wire::into(json!({
-            "right": wire::right_record(existing, &resource, true),
-        }))?);
+        return Ok((existing.clone(), resource));
     }
     // Item 7.
     set.rows
@@ -1861,18 +1978,27 @@ pub(crate) async fn right_grant_via(
         },
     )
     .await;
-    Ok(wire::into(
-        json!({ "right": wire::right_record(&row, &resource, true) }),
-    )?)
+    Ok((row, resource))
 }
 
-// ── git-ns/right/revoke/0.1 ─────────────────────────────────────────────────
+// ── git-ns/right/revoke/0.3 ─────────────────────────────────────────────────
 
 pub async fn right_revoke(
     state: &AppState,
     actor_did: &str,
     p: revoke::Payload,
 ) -> OpResult<revoke::Response> {
+    let (row, resource) = right_revoke_record(state, actor_did, p).await?;
+    Ok(wire::into(
+        json!({ "revoked": wire::right_record_full(&row, &resource, true) }),
+    )?)
+}
+
+async fn right_revoke_record(
+    state: &AppState,
+    actor_did: &str,
+    p: revoke::Payload,
+) -> OpResult<(RightRow, Resource)> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
     let snap = Snapshot::load(&state.git_ns.ks).await?;
@@ -1880,19 +2006,9 @@ pub async fn right_revoke(
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
     let subject = p.subject.to_string();
-    // A subject recorded before DID-core was enforced can still be revoked:
-    // refusing it would leave a right nobody can take away. Anything else
-    // must be a DID-core DID, as for a grant.
-    if did_core("subject", &subject).is_err() {
-        let recorded = Snapshot::load(&state.git_ns.ks)
-            .await?
-            .rights
-            .values()
-            .any(|set| set.rows.iter().any(|r| r.subject == subject));
-        if !recorded {
-            did_core("subject", &subject)?;
-        }
-    }
+    // `revoke/0.3` pins `_shared/0.4`, whose `Did` is DID-core, so the payload
+    // cannot carry anything else; checked again here as for a grant.
+    did_core("subject", &subject)?;
     let not_granted = || {
         declared(
             NOT_GRANTED,
@@ -1904,15 +2020,25 @@ pub async fn right_revoke(
     };
     // Item 1.
     let scope = scope_for(&snap, &resource)?.ok_or_else(not_granted)?;
+    // A break-glass record still waiting for its `effectiveAt` matches: it is
+    // revocable while it waits (`git-ns/right/revoke/0.3`, item 1).
     let row = snap
         .rows(&scope)
         .iter()
-        .find(|r| r.subject == subject && r.right == right && r.is_live(t))
+        .find(|r| r.subject == subject && r.right == right && r.is_recorded(t))
         .cloned()
         .ok_or_else(not_granted)?;
-    // Item 2.
+    // Item 2 — and, for an unratified break-glass record, any community
+    // administrator (0.3, *Authorization*).
     let st = settings(state).await;
-    let passed = rules::revoke_admitted(&snap, &actor.did, &row, &resource, st.rules, t)?;
+    let bg_passed = rules::revoke_break_glass_admitted(actor.community_admin, &row);
+    // Whoever is entitled, taking back an unratified break-glass is neither
+    // gated nor put to policy.
+    let unratified_bg = row.is_unratified_break_glass();
+    let passed = match bg_passed {
+        Some(p) => p,
+        None => rules::revoke_admitted(&snap, &actor.did, &row, &resource, st.rules, t)?,
+    };
     // Item 3 — resignations too.
     match &scope {
         Scope::Repo(id) => {
@@ -1944,38 +2070,76 @@ pub async fn right_revoke(
             }
         }
     }
-    consent_gate(state, &actor, "right.revoke", Some(right)).await?;
+    // Taking back an unratified break-glass is never gated or refused by
+    // policy: policy may narrow break-glass, never entrench one (0.3, item 4).
+    if !unratified_bg {
+        consent_gate(state, &actor, "right.revoke", Some(right)).await?;
+    }
     let subject_standing = standing(state, &subject).await?;
     // Item 4.
-    let version = check_policy(
-        state,
-        PolicyInput {
-            action: "right.revoke",
-            actor: &actor,
-            actor_rights: rules::effective_on(&snap, &actor.did, &resource, t)
-                .into_iter()
-                .collect(),
-            resource: &resource,
-            right: Some(right),
-            subject: Some((&subject_standing, vec![right])),
-            visibility: None,
-            expires_at: None,
-            namespace: snap.scope_namespace(&scope),
-            passed,
-        },
-    )
-    .await?;
+    let version = if unratified_bg {
+        let _ = passed;
+        None
+    } else {
+        check_policy(
+            state,
+            PolicyInput {
+                action: "right.revoke",
+                actor: &actor,
+                actor_rights: rules::effective_on(&snap, &actor.did, &resource, t)
+                    .into_iter()
+                    .collect(),
+                resource: &resource,
+                right: Some(right),
+                subject: Some((&subject_standing, vec![right])),
+                visibility: None,
+                expires_at: None,
+                namespace: snap.scope_namespace(&scope),
+                passed,
+            },
+        )
+        .await?
+    };
     // Item 5.
     let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
     set.rows
         .retain(|r| !(r.subject == subject && r.right == right));
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    // Item 6 — a break-glass record's end is announced and audited as its
+    // break-glass was.
+    if row.break_glass.is_some()
+        && let Some(ns) = snap.scope_namespace(&scope)
+    {
+        let after = Snapshot::load(&state.git_ns.ks).await?;
+        if let Err(e) = super::break_glass::announce(
+            state,
+            &after,
+            ns,
+            &resource,
+            &row,
+            super::break_glass::Event::Revoked,
+            &actor.did,
+            p.reason.as_ref().map(|r| r.to_string()),
+            None,
+            None,
+            version,
+        )
+        .await
+        {
+            // The revocation is durable; refusing now would say it failed.
+            tracing::error!(error = %e, "the break-glass revocation's audit row could not be written");
+        }
+    }
     audit(
         state,
         &actor.did,
         Some(&subject),
         Audit {
-            action: "gitNs.right.revoked",
+            action: if row.break_glass.is_some() {
+                "gitNs.right.breakGlassRevoked"
+            } else {
+                "gitNs.right.revoked"
+            },
             namespace: snap.scope_namespace(&scope).map(|n| n.id.as_str()),
             resource: Some(resource.to_string()),
             right: Some(right),
@@ -1991,9 +2155,7 @@ pub async fn right_revoke(
         },
     )
     .await;
-    Ok(wire::into(
-        json!({ "revoked": wire::right_record(&row, &resource, true) }),
-    )?)
+    Ok((row, resource))
 }
 
 // ── git-ns/account/link/0.1 ─────────────────────────────────────────────────

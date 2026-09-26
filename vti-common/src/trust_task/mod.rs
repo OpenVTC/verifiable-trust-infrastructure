@@ -22,6 +22,7 @@
 //! next to the handler in source, and `cargo doc` surfaces it on the
 //! route without any procedural-macro indirection.
 
+pub mod envelope;
 pub mod extractor;
 #[cfg(feature = "openapi")]
 pub mod openapi;

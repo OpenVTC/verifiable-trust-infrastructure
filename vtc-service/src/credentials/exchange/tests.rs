@@ -40,7 +40,8 @@ impl Holder {
         let header = json!({
             "typ": OID4VCI_PROOF_TYP,
             "alg": "EdDSA",
-            "kid": format!("{}#key-0", self.did),
+            // A did:key names one method: its own key id.
+            "kid": format!("{}#{}", self.did, self.did.trim_start_matches("did:key:")),
         });
         let mut payload = json!({ "iss": self.did, "aud": aud, "iat": iat });
         if let Some(n) = nonce {
@@ -412,7 +413,7 @@ fn make_presentation(aud: &str, nonce: &str, iat: u64, exp: i64, with_kb: bool) 
         affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
     let issuer_signer = SdSigner {
         key: SigningKey::from_bytes(&[9u8; 32]),
-        kid: format!("{issuer_did}#key-0"),
+        kid: format!("{issuer_did}#{}", issuer_did.trim_start_matches("did:key:")),
     };
 
     let holder = SigningKey::from_bytes(&[5u8; 32]);
@@ -471,7 +472,7 @@ fn make_presentation_holder(
         affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
     let issuer_signer = SdSigner {
         key: SigningKey::from_bytes(&[9u8; 32]),
-        kid: format!("{issuer_did}#key-0"),
+        kid: format!("{issuer_did}#{}", issuer_did.trim_start_matches("did:key:")),
     };
 
     let holder = SigningKey::from_bytes(&[holder_seed; 32]);
@@ -820,7 +821,7 @@ async fn verify_vp_token_rejects_a_di_vc_signed_outside_its_issuer() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, AppError::Validation(m) if m.contains("not under the issuer")),
+        matches!(&err, AppError::Validation(m) if m.contains("not under the credential's issuer")),
         "{err:?}"
     );
 }
@@ -1030,7 +1031,7 @@ fn bbs_derived_presentation(nonce: &str, subject: &str, disclose: &[&str]) -> (V
     let base = sign_base_document(
         &vc,
         &mandatory,
-        &format!("{issuer_did}#bbs-key-0"),
+        &format!("{issuer_did}#{}", issuer_did.trim_start_matches("did:key:")),
         "2020-01-01T00:00:00Z",
         &sk,
         &pk,
@@ -1108,7 +1109,7 @@ fn bbs_pseudonym_presentation(
         "type": "DataIntegrityProof",
         "cryptosuite": "bbs-2023",
         "created": "2020-01-01T00:00:00Z",
-        "verificationMethod": format!("{issuer_did}#bbs-key-0"),
+        "verificationMethod": format!("{issuer_did}#{}", issuer_did.trim_start_matches("did:key:")),
         "proofPurpose": "assertionMethod",
         "@context": vc["@context"].clone(),
     });

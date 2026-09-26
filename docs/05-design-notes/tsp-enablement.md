@@ -658,6 +658,27 @@ messaging service to a VTC post-mint should add both.
 4. ~~VTC member messaging default~~ **Resolved (round 3):** VTC→member **stays DIDComm
    until the Phase B flip** (§12). TSP is advertised/accepted before then, but VTC's
    outbound default does not switch to TSP until Phase B.
+   **Done for Trust Task pushes (2026-09-25):** a VTC-originated Trust Task push —
+   removal notice, task-consent request, granted notice — goes through
+   `vtc-service::member_push` and follows the preference order, TSP > DIDComm > REST,
+   matched on the recipient's advertised service `type` (REST only by
+   `TrustTaskHTTPS`). Each attempt is durable on the delivery outbox, and one that
+   produces no delivery evidence in its window escalates to the next transport the
+   recipient offers (VTI-TRN-042). A recipient that advertises nothing still goes over
+   DIDComm through the shared mediator. The credential-exchange protocol messages
+   (offer, issue, query, request-VMC) have no TSP binding and stay on
+   `AppState::send_to_member`, DIDComm.
+   The engine moved to `vti_common::trust_task_push` so the VTA can adopt it; the VTC
+   lends it its keyspace, outbox, resolver and messaging through a `PushContext`
+   (`vtc-service::member_push` is now that adapter). The VTA's device pushes — the
+   task-consent request, the granted notice, the step-up approve-request and the
+   conversation-consent approve-request — go through it too
+   (`vta-service::messaging::push`, via `trust_tasks::step_up::push_to_device`):
+   the VTA's route decision is kept (a routable DID is never sent through a mediator
+   it is not registered with), a device recently seen on TSP (`tsp_reach`, now
+   `vti_common::tsp_reach`) is tried over TSP first, and the push-gateway doorbell
+   rings once when the first attempt is queued. The gateway request/reply exchanges
+   (`push/wake`, `push/provision`) are not pushes and stay on the DIDComm bridge.
 5. ~~Endpoint-shape vs reference impl~~ **Resolved (round 4, verified against the
    mediator + SDK source):** the consumer-doc convention (`#tsp` = mediator DID) is
    sound — see §7.1 for the verified mechanics. The mediator **never URL-parses a
