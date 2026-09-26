@@ -1222,3 +1222,94 @@ async fn a_consent_refusal_keeps_its_coordinates_however_many_approvers() {
         "expected the requests to be shed from 2 or 3 approvers on, got {shed_at:?}"
     );
 }
+
+/// The approver's side as `pnm consent approve` runs it: the relayed request
+/// verifies through `vta_sdk::task_consent` against this VTA, its match code
+/// agrees with the digest the refusal names, and the decision built from it is
+/// the one the VTA grants. A real VTA-signed request through the SDK verifier,
+/// because a proof that only round-trips through its own signer proves nothing
+/// about re-serialisation.
+#[tokio::test]
+async fn a_relayed_request_is_answered_through_the_sdk() {
+    use vta_sdk::task_consent::{ConsentRequest, TaskConsentError, extract_requests, match_code};
+
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        provisionable_vta: true,
+        ..Default::default()
+    })
+    .await;
+    let requester = approver(REQUESTER_SEED);
+    let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
+    let ops = approver(0x31);
+
+    let (did, _scid) = create_did(&router, &ctx, &token).await;
+    {
+        let mut cfg = ctx.config.write().await;
+        cfg.policy.enforcement = true;
+        cfg.policy
+            .approver_sets
+            .insert("operators".into(), vec![ops.did.clone()]);
+    }
+    install_policy(&ctx, REQUIRE_CONSENT).await;
+
+    let update = envelope(
+        WEBVH_UPDATE,
+        &requester,
+        &ctx.vta_did,
+        json!({
+            "did": did,
+            "document": { "@context": ["https://www.w3.org/ns/did/v1"], "id": did, "alsoKnownAs": ["did:example:sdk"] }
+        }),
+    );
+    let (_, rejected) = post(&router, &token, &update).await;
+    let details = rejected["payload"]["details"].clone();
+
+    // What the approver is handed: the refusal body, relayed as it came.
+    let requests = extract_requests(&rejected["payload"]);
+    assert_eq!(requests.len(), 1, "{rejected}");
+    let resolver = vta_sdk::trust_task_proof::TrustTaskVmResolver::did_key_only();
+    let now = chrono::Utc::now();
+
+    let wrong = ConsentRequest::new(requests[0].clone())
+        .verify(&ctx.vta_did, &requester.did, &resolver, now)
+        .await;
+    assert!(
+        matches!(wrong, Err(TaskConsentError::WrongRecipient { .. })),
+        "{wrong:?}"
+    );
+    let mut tampered = requests[0].clone();
+    tampered["payload"]["requester"] = json!(approver(0x32).did);
+    let wrong = ConsentRequest::new(tampered)
+        .verify(&ctx.vta_did, &ops.did, &resolver, now)
+        .await;
+    assert!(
+        matches!(wrong, Err(TaskConsentError::ProofInvalid)),
+        "{wrong:?}"
+    );
+
+    let verified = ConsentRequest::new(requests[0].clone())
+        .verify(&ctx.vta_did, &ops.did, &resolver, now)
+        .await
+        .expect("the VTA's own request verifies");
+    assert_eq!(verified.payload().requester, requester.did);
+    assert_eq!(
+        verified.match_code(),
+        match_code(details["payloadDigest"].as_str().unwrap()).unwrap()
+    );
+
+    let decision = envelope(
+        TASK_CONSENT_DECISION,
+        &ops,
+        &ctx.vta_did,
+        serde_json::to_value(verified.decision(true, None).unwrap()).unwrap(),
+    );
+    let (status, granted) = post(&router, &token, &decision).await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    let response: vta_sdk::task_consent::decision::Response =
+        serde_json::from_value(granted["payload"].clone())
+            .expect("the reply is the generated response type");
+    assert_eq!(
+        response.status,
+        vta_sdk::task_consent::decision::ResponseStatus::Granted
+    );
+}
