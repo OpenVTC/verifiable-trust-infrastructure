@@ -1001,6 +1001,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   `AuditSeverity::Critical`, and is announced to every other administrator —
   policy may disable, delay or tighten it, never quieten it. An unratified
   break-glass record never counts toward the last-owner/last-admin invariants.
+  A namespace admin gets no forge role: role projection (`bridge::highest_repo_rights`) counts only rights held in the person's own
+  name, sends an admin with none as `git.ns.admin` (no role), one entry per
+  account, and never a namespace-level `projectRoles` job. Jobs are
+  `git-ns/bridge/job` 0.4 only, sent only to a bridge that lists 0.4 in
+  `trust-task-discovery` (`bridge::send_v0_4`); never downgrade.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
   `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.

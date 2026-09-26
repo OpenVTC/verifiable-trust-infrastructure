@@ -141,6 +141,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         vta_name: None,
         public_url: None,
         resolver_url: None,
+        did_cache: Default::default(),
         server: Default::default(),
         log: Default::default(),
         store: StoreConfig { data_dir },
@@ -2695,6 +2696,11 @@ mod transport_harness_tests {
             let mediator_did = mock.mediator_did().to_string();
             let log = std::sync::Arc::new(std::sync::Mutex::new(PeerLog::default()));
             let loop_log = log.clone();
+            // The peer signs its replies: the VTA releases a waiter only to a
+            // reply its peer verifiably signed.
+            let reply_key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&did, &priv_mb)
+                .expect("a did:key names its own verification method");
+            let reply_issuer = did.clone();
             let loop_handle = tokio::spawn(async move {
                 loop {
                     // Resolve the poll before the reply send below: `receive_next`
@@ -2737,10 +2743,21 @@ mod transport_harness_tests {
                     // `respond_with` threads the reply on the request's
                     // `threadId`-or-`id` (SPEC §4.9) — the same key the VTA's
                     // `pending_replies` waiter is registered under.
-                    let reply = request.respond_with(
+                    let mut reply = request.respond_with(
                         format!("urn:uuid:d6-reply-{}", request.id),
                         serde_json::json!({ "answered": true }),
                     );
+                    reply.issuer = Some(reply_issuer.clone());
+                    if let Err(e) =
+                        vta_sdk::trust_task_sign::sign_in_place_with(&mut reply, &reply_key).await
+                    {
+                        loop_log
+                            .lock()
+                            .expect("peer log")
+                            .faults
+                            .push(format!("the reply could not be signed: {e}"));
+                        continue;
+                    }
                     if let Ok(bytes) = serde_json::to_vec(&reply) {
                         let sent = loop_session
                             .send_document(&vta_did, &mediator_did, &bytes)

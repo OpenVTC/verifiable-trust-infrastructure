@@ -498,7 +498,7 @@ async fn maybe_wake_consent_approver(
             );
             return;
         };
-        let secret = match crate::operations::credentials::load_vta_issuer_secret(
+        let secret = match super::load_operational_secret(
             state,
             &vta_did,
             "consent-approve-request",
@@ -533,7 +533,7 @@ async fn maybe_wake_consent_approver(
             &unsigned,
             &secret,
             SignOptions::new()
-                .with_proof_purpose("assertionMethod")
+                .with_proof_purpose("authentication")
                 .with_cryptosuite(CryptoSuite::EddsaJcs2022),
         )
         .await

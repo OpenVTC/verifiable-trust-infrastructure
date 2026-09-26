@@ -216,6 +216,15 @@ pub enum AuditEvent {
     /// is the salted digest the approvers were shown, never the unsalted one.
     TaskConsentRecorded(TaskConsentData),
 
+    /// An ACL row was written or removed by an **offline** command, with the
+    /// daemon stopped — the break-glass. It did not pass the checks the daemon
+    /// makes on the same change: the step-up, another admin's consent to an
+    /// unrestricted grant (VTI-APV-014), the attrition rules (VTI-APV-009).
+    /// That is what it is for, and this row says it happened. Written by the
+    /// daemon on its next boot, from what the command left behind; the actor
+    /// is `did:key:vtc-break-glass`.
+    AclBreakGlassWritten(BreakGlassAclData),
+
     /// `POST /v1/join-requests` (REST or DIDComm) accepted a
     /// well-formed submission and persisted it as `Pending`. The
     /// actor on this event is the applicant DID — they're the
@@ -684,6 +693,7 @@ impl AuditEvent {
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
             Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
+            Self::AclBreakGlassWritten(..) => "AclBreakGlassWritten",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
@@ -1307,6 +1317,25 @@ pub struct OperationStepUpData {
     pub credential_id: String,
     /// When the unspent authorization lapses.
     pub expires_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::AclBreakGlassWritten`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BreakGlassAclData {
+    /// The command that made the change, e.g. `vtc acl add`.
+    pub command: String,
+    /// `grant` or `remove`.
+    pub action: String,
+    pub did: String,
+    /// The role written; empty for a removal.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contexts: Vec<String>,
+    /// The host the command ran on, and when.
+    pub operator_hostname: String,
+    pub invoked_at: DateTime<Utc>,
 }
 
 /// Payload for [`AuditEvent::TaskConsentRecorded`].

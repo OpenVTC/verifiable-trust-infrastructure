@@ -37,10 +37,13 @@
 //! ever authenticate, which is not a security property — it is the absence of a
 //! feature the rest of the stack already assumes.
 
+use crate::did_refresh::{evict_for_fresh_resolve, resolve_for_vm};
 use affinidi_data_integrity::did_vm::resolve_did_key;
 use affinidi_data_integrity::{DataIntegrityError, ResolvedKey, VerificationMethodResolver};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_secrets_resolver::secrets::KeyType;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 /// Resolves a Trust Task proof's `verificationMethod` to its public key.
 ///
@@ -54,12 +57,76 @@ use affinidi_secrets_resolver::secrets::KeyType;
 #[derive(Clone, Default)]
 pub struct TrustTaskVmResolver {
     resolver: Option<DIDCacheClient>,
+    relationship: Option<ProofRelationship>,
+    /// DIDs whose document this resolver was handed **from the cache**, so a
+    /// verification that fails against one can ask for it fresh
+    /// ([`Self::refresh_if_cached`]). A document just fetched is not refetched:
+    /// it is as current as a second fetch would be.
+    served_from_cache: Arc<Mutex<HashSet<String>>>,
+}
+
+/// A verification relationship a proof's method must be listed under in its
+/// controller's DID document.
+///
+/// The resolver otherwise finds a key wherever the document declares it, so a
+/// proof that says `assertionMethod` made with a key listed only under
+/// `authentication` would verify. What a proof's purpose claims is only true
+/// when the DID's controller put the key under that relationship.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProofRelationship {
+    /// `authentication`: the DID's own operational messages.
+    Authentication,
+    /// `assertionMethod`: an attestation, such as a human approver's decision.
+    AssertionMethod,
+}
+
+impl ProofRelationship {
+    /// The relationship's name in a DID document, and the matching
+    /// `proofPurpose`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::AssertionMethod => "assertionMethod",
+        }
+    }
+
+    fn lists(self, doc: &affinidi_did_common::Document, vm: &str) -> bool {
+        let relative = vm
+            .split_once('#')
+            .map(|(_, fragment)| format!("#{fragment}"))
+            .unwrap_or_default();
+        let entries = match self {
+            Self::Authentication => &doc.authentication,
+            Self::AssertionMethod => &doc.assertion_method,
+        };
+        entries.iter().any(|e| {
+            let id = e.get_id();
+            id == vm || (!relative.is_empty() && id == relative)
+        })
+    }
+
+    fn require(
+        self,
+        doc: &affinidi_did_common::Document,
+        vm: &str,
+    ) -> Result<(), DataIntegrityError> {
+        if self.lists(doc, vm) {
+            Ok(())
+        } else {
+            Err(DataIntegrityError::Resolver(format!(
+                "verificationMethod `{vm}` is not listed under `{}` in its DID document",
+                self.as_str()
+            )))
+        }
+    }
 }
 
 impl std::fmt::Debug for TrustTaskVmResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrustTaskVmResolver")
             .field("network_resolution", &self.resolver.is_some())
+            .field("relationship", &self.relationship)
             .finish()
     }
 }
@@ -71,6 +138,8 @@ impl TrustTaskVmResolver {
     pub fn new(resolver: DIDCacheClient) -> Self {
         Self {
             resolver: Some(resolver),
+            relationship: None,
+            served_from_cache: Arc::default(),
         }
     }
 
@@ -83,14 +152,48 @@ impl TrustTaskVmResolver {
     /// checked.
     #[must_use]
     pub fn did_key_only() -> Self {
-        Self { resolver: None }
+        Self::default()
     }
 
     /// A resolver from an optional cache client — network resolution when
     /// `Some`, `did:key`-only when `None`.
     #[must_use]
     pub fn from_optional(resolver: Option<DIDCacheClient>) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            relationship: None,
+            served_from_cache: Arc::default(),
+        }
+    }
+
+    /// This resolver, resolving only a verification method its DID document
+    /// lists under `relationship`.
+    ///
+    /// `did:key` needs no check: its document lists its signing key under both
+    /// `authentication` and `assertionMethod` by definition.
+    #[must_use]
+    pub fn requiring(mut self, relationship: ProofRelationship) -> Self {
+        self.relationship = Some(relationship);
+        self
+    }
+
+    /// Evict `did` for a fresh resolution if — and only if — this resolver was
+    /// handed its document from the cache. Returns whether it did, i.e. whether
+    /// a retry could see a different document.
+    ///
+    /// For a verification that failed against a listed key: the key id is
+    /// unchanged but its material was replaced, which [`resolve_for_vm`]
+    /// cannot notice because the method is still listed.
+    pub async fn refresh_if_cached(&self, did: &str) -> bool {
+        let Some(resolver) = self.resolver.as_ref() else {
+            return false;
+        };
+        let was_cached = self
+            .served_from_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(did);
+        was_cached && evict_for_fresh_resolve(resolver, did).await
     }
 
     /// Whether this resolver can resolve a method other than `did:key`.
@@ -121,7 +224,7 @@ impl TrustTaskVmResolver {
         // a host wanting to serve such a room had to enable network resolution it does not
         // need, and accept the exposure that flag exists to gate.
         if base_did.starts_with("did:peer:") {
-            return resolve_did_peer(vm, base_did);
+            return resolve_did_peer(vm, base_did, self.relationship);
         }
 
         let resolver = self.resolver.as_ref().ok_or_else(|| {
@@ -130,9 +233,21 @@ impl TrustTaskVmResolver {
                  for did:key only"
             ))
         })?;
-        let resolved = resolver.resolve(base_did).await.map_err(|e| {
+        let resolved = resolve_for_vm(resolver, base_did, vm).await.map_err(|e| {
             DataIntegrityError::Resolver(format!("`{base_did}` did not resolve: {e}"))
         })?;
+        // Recorded before the relationship check: a cached document may predate
+        // the signer listing this key under the relationship, and a retry after
+        // `refresh_if_cached` must be able to see the current one.
+        if resolved.cache_hit {
+            self.served_from_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(base_did.to_string());
+        }
+        if let Some(relationship) = self.relationship {
+            relationship.require(&resolved.doc, vm)?;
+        }
 
         // A DID document may name its verification methods absolutely
         // (`did:webvh:…:glenn#key-0`) or relatively (`#key-0`); the proof
@@ -168,7 +283,11 @@ impl TrustTaskVmResolver {
 /// looked up exactly as the network path looks one up — including accepting both the
 /// absolute and relative spellings of the same id, because a proof always names a method
 /// absolutely while a document may not.
-fn resolve_did_peer(vm: &str, base_did: &str) -> Result<ResolvedKey, DataIntegrityError> {
+fn resolve_did_peer(
+    vm: &str,
+    base_did: &str,
+    relationship: Option<ProofRelationship>,
+) -> Result<ResolvedKey, DataIntegrityError> {
     use affinidi_did_common::DID;
     use affinidi_did_resolver_traits::{PeerResolver, Resolver};
 
@@ -183,6 +302,9 @@ fn resolve_did_peer(vm: &str, base_did: &str) -> Result<ResolvedKey, DataIntegri
             ))
         })?
         .map_err(|e| DataIntegrityError::Resolver(format!("`{base_did}` did not resolve: {e}")))?;
+    if let Some(relationship) = relationship {
+        relationship.require(&doc, vm)?;
+    }
 
     let relative = vm
         .split_once('#')

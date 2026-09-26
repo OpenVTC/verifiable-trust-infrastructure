@@ -11,13 +11,20 @@
 //!   the bound challenge (handled by the approve-response handler reusing
 //!   `verify_passkey_login`).
 //!
+//! Every approve-response, approved or denied and whichever gate it carries,
+//! is the approver's own attestation: its proof must be made for
+//! `assertionMethod` with a key the approver lists under `assertionMethod`
+//! ([`crate::auth::verify_approval_proof`]), as the did-hosting RP's
+//! `verify_approval` requires. A proof made for `authentication` is refused.
+//!
 //! This module is the did-signed verifier; the handler that consumes the
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
 //!
 //! The *request* leg (`auth/step-up/approve-request/0.2`, minted by
 //! [`mint_pending_step_up`]) is **signed by this VTA** — `eddsa-jcs-2022`,
-//! `assertionMethod`, issuer DID == the proof's `verificationMethod` DID —
+//! `authentication` by its operational key, issuer DID == the proof's
+//! `verificationMethod` DID —
 //! the same shape as `task-consent` ([`super::consent_request`]) and the
 //! spec's REQUIRED proof. Both request legs put prose (`reason`) in front of
 //! a human, so the request must be attributable to its issuer, and the signed
@@ -83,6 +90,10 @@ pub(super) enum GateError {
 /// identity: the proof's `verificationMethod` DID MUST equal the signer, and the
 /// `eddsa-jcs-2022` signature MUST verify under that `did:key`.
 ///
+/// The proof must be made for `assertionMethod`, with a key listed under the
+/// signer's `assertionMethod` relationship: the approval is an attestation by
+/// the approver, not an operational message.
+///
 /// `did:key` resolution is local (no I/O); the mobile holder key is always a
 /// `did:key`, matching the engine's signing side.
 pub(super) async fn verify_did_signed_gate(
@@ -93,16 +104,16 @@ pub(super) async fn verify_did_signed_gate(
 
     // Verify the eddsa-jcs-2022 proof via the single shared verifier (P1.4),
     // which returns the cryptographically-proven signer DID.
-    let signer_did = crate::auth::verify_trust_task_proof(doc)
+    let signer_did = crate::auth::verify_approval_proof(doc)
         .await
         .map_err(|e| match e {
             DiProofError::NoProof => GateError::NoGate,
             DiProofError::NotDataIntegrity => {
                 GateError::ProofInvalid("not a Data Integrity proof".to_string())
             }
-            DiProofError::NoDid | DiProofError::VerifyFailed(_) => {
-                GateError::ProofInvalid(e.to_string())
-            }
+            DiProofError::NoDid
+            | DiProofError::VerifyFailed(_)
+            | DiProofError::WrongPurpose { .. } => GateError::ProofInvalid(e.to_string()),
         })?;
 
     // Bind identity: the proven signer must be the expected signer (the document
@@ -403,6 +414,19 @@ pub(super) async fn handle_approve_response(
             "did"
         }
         Some(approve_response::Evidence::Webauthn(assertion)) => {
+            // The passkey assertion is the gate, but the document is still the
+            // approver's attestation: its proof must be an `assertionMethod`
+            // proof by the approver, like every approve-response. A missing
+            // proof here is an invalid document, not a missing gate.
+            if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
+                let e = match e {
+                    GateError::NoGate => GateError::ProofInvalid(
+                        "an approve-response must carry the approver's proof".to_string(),
+                    ),
+                    other => other,
+                };
+                return reject_with(&doc, gate_err_to_reject(e));
+            }
             match verify_webauthn_gate(state, &issuer, &challenge, assertion).await {
                 Ok(()) => "passkey",
                 Err(reason) => return reject_with(&doc, reason),
@@ -604,13 +628,13 @@ fn reason_and_context(payload: &Value) -> (&str, Option<&Value>) {
     (reason, ctx)
 }
 
-/// Load the VTA's `{vta_did}#key-0` issuer key for signing a step-up
-/// approve-request. Thin wrapper over
-/// [`crate::operations::credentials::load_vta_issuer_secret`] (the same key
-/// task-consent requests are signed with) that logs the failure and flattens
+/// Load the VTA's operational key for signing a step-up approve-request
+/// (`proofPurpose: authentication`, VTI-KEY-106). Thin wrapper over
+/// [`super::load_operational_secret`] (the same key task-consent requests are
+/// signed with) that logs the failure and flattens
 /// the error to `Err(())` for the gate surfaces' internal-error mapping.
 async fn load_step_up_signing_secret(state: &AppState, vta_did: &str) -> Result<Secret, ()> {
-    crate::operations::credentials::load_vta_issuer_secret(state, vta_did, "step-up")
+    super::load_operational_secret(state, vta_did, "step-up")
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to load VTA issuer key for step-up approve-request");
@@ -632,7 +656,7 @@ async fn load_step_up_signing_secret(state: &AppState, vta_did: &str) -> Result<
 /// that used to share it are gone.
 ///
 /// The document carries the spec's REQUIRED Data-Integrity proof
-/// (`eddsa-jcs-2022`, `assertionMethod`), signed with `secret` — the VTA's
+/// (`eddsa-jcs-2022`, `authentication`), signed with `secret` — the VTA's
 /// `{vta_did}#key-0` issuer key — so the `reason` a human reads is attributable
 /// to this VTA and the request is retainable evidence of what was asked (see
 /// the module doc). Signing happens *last*, over the complete document
@@ -730,7 +754,7 @@ async fn mint_pending_step_up(
         &doc,
         secret,
         SignOptions::new()
-            .with_proof_purpose("assertionMethod")
+            .with_proof_purpose("authentication")
             .with_cryptosuite(CryptoSuite::EddsaJcs2022),
     )
     .await
@@ -1047,12 +1071,37 @@ async fn maybe_push_step_up(
     trigger_gateway_wake(state, recipient, &mediator_did).await;
 }
 
+/// The unsigned `push/wake/0.2` request [`trigger_gateway_wake`] signs and
+/// sends: `id`, `issuedAt`, `issuer` (this VTA), `recipient` (the gateway).
+#[cfg(feature = "didcomm")]
+pub(crate) fn push_wake_document(
+    vta_did: Option<&str>,
+    gateway: &str,
+    handle: &str,
+    approver_mediator: &str,
+) -> serde_json::Value {
+    json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/push/wake/0.2",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": vta_did,
+        "recipient": gateway,
+        "payload": {
+            "handle": handle,
+            "v": 1,
+            "mediator": approver_mediator,
+            "urgency": "interactive",
+        },
+    })
+}
+
 /// Send a `push/wake` to the approver device's push gateway over DIDComm
 /// (spawned, best-effort): a contentless doorbell telling the device to connect
 /// to `approver_mediator` and drain the queued `approve-request`. No-op if the
 /// approver has no wake channel (set via `device/set-wake`) or its gateway isn't
-/// a DID. The VTA authenticates to the gateway as the authcrypt sender (it is on
-/// the handle's allowlist, provisioned at set-wake).
+/// a DID. The document carries this VTA's Data Integrity proof (`proofPurpose:
+/// authentication`), which is what identifies it to the gateway as a party on
+/// the handle's allowlist (provisioned at set-wake).
 #[cfg(feature = "didcomm")]
 pub(super) async fn trigger_gateway_wake(
     state: &AppState,
@@ -1070,19 +1119,16 @@ pub(super) async fn trigger_gateway_wake(
         return; // URL gateway → HTTPS path (follow-up).
     }
     let vta_did = state.config.read().await.vta_did.clone();
-    let wake_doc = json!({
-        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/push/wake/0.2",
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": vta_did,
-        "recipient": wake.gateway,
-        "payload": {
-            "handle": wake.handle,
-            "v": 1,
-            "mediator": approver_mediator,
-            "urgency": "interactive",
-        },
-    });
+    let mut wake_doc = push_wake_document(
+        vta_did.as_deref(),
+        &wake.gateway,
+        &wake.handle,
+        approver_mediator,
+    );
+    if !super::sign_outbound_request(state, &mut wake_doc).await {
+        tracing::warn!(gateway = %wake.gateway, "push/wake not sent: it could not be signed");
+        return;
+    }
     let bridge = state.didcomm_bridge.clone();
     let gateway = wake.gateway.clone();
     let approver = recipient.to_string();
@@ -1486,12 +1532,12 @@ mod tests {
         );
 
         // The approve-request is signed (spec: proof REQUIRED) — an
-        // eddsa-jcs-2022 assertionMethod proof whose verificationMethod DID is
+        // eddsa-jcs-2022 authentication proof whose verificationMethod DID is
         // the issuer, and the signature verifies over the served document.
         let proof = &v["approveRequest"]["proof"];
         assert_eq!(proof["type"], "DataIntegrityProof", "{v}");
         assert_eq!(proof["cryptosuite"], "eddsa-jcs-2022", "{v}");
-        assert_eq!(proof["proofPurpose"], "assertionMethod", "{v}");
+        assert_eq!(proof["proofPurpose"], "authentication", "{v}");
         let task: TrustTask<Value> = serde_json::from_value(v["approveRequest"].clone()).unwrap();
         let signer = crate::auth::verify_trust_task_proof(&task)
             .await
@@ -1623,6 +1669,11 @@ mod tests {
     /// Build an approve-response-shaped TrustTask and attach a did-signed
     /// eddsa-jcs-2022 proof from `sk` (mirrors the engine's signing side).
     fn signed_doc(sk: &SigningKey, subject: &str, vm: &str) -> TrustTask<Value> {
+        signed_doc_for(sk, subject, vm, "assertionMethod")
+    }
+
+    /// [`signed_doc`] with the proof made for `purpose`.
+    fn signed_doc_for(sk: &SigningKey, subject: &str, vm: &str, purpose: &str) -> TrustTask<Value> {
         // Build a TrustTask<Value> by deserialization (for_payload needs
         // P: Payload, which Value isn't) — proofless, ready to sign.
         let doc_json = json!({
@@ -1644,7 +1695,7 @@ mod tests {
         let mut di = DataIntegrityProof::new(
             CryptoSuite::EddsaJcs2022,
             vm.to_string(),
-            "assertionMethod".to_string(),
+            purpose.to_string(),
             None,
             Some("2026-05-31T00:00:00Z".to_string()),
             None,
@@ -1690,6 +1741,22 @@ mod tests {
             verify_did_signed_gate(&doc, "did:key:zSomeoneElse").await,
             Err(GateError::SubjectMismatch)
         );
+    }
+
+    /// The approval is the approver's attestation: a valid proof by the right
+    /// key, made for `authentication`, is refused.
+    #[tokio::test]
+    async fn rejects_an_approval_signed_for_authentication() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let (did, mb) = did_key(&sk);
+        let vm = format!("{did}#{mb}");
+        let doc = signed_doc_for(&sk, &did, &vm, "authentication");
+        match verify_did_signed_gate(&doc, &did).await {
+            Err(GateError::ProofInvalid(reason)) => {
+                assert!(reason.contains("assertionMethod"), "{reason}");
+            }
+            other => panic!("expected ProofInvalid, got {other:?}"),
+        }
     }
 
     #[tokio::test]

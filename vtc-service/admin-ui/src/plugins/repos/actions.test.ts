@@ -92,6 +92,15 @@ describe("signed git-ns tasks", () => {
     );
   });
 
+  it("says an ns.admin grant gives no forge role, and a repository grant does", () => {
+    expect(grantTask({ subject: BOB, right: "git.ns.admin", resource: "github.com/acme" }).effect).toMatch(
+      /no role on the forge/,
+    );
+    expect(grantTask({ subject: BOB, right: "git.repo.own", resource: "github.com/acme/x" }).effect).toMatch(
+      /projected onto the forge/,
+    );
+  });
+
   it("builds a revoke, bind, unbind and adopt with their cnm commands", () => {
     expect(revokeTask(BOB, "git.repo.maintain", "github.com/acme/x").command).toBe(
       `cnm git revoke --subject=${BOB} --right=git.repo.maintain --resource=github.com/acme/x`,
@@ -149,7 +158,7 @@ describe("signed git-ns tasks", () => {
     expect(c.consent).toBe("normal");
   });
 
-  it("builds a reseat as git-ns/namespace/reseat 0.1 and cnm git reseat sign it", () => {
+  it("builds a reseat as git-ns/namespace/reseat 0.3 and cnm git reseat sign it", () => {
     const t = reseatTask(
       "ns_acme",
       "github.com/acme",
@@ -157,7 +166,7 @@ describe("signed git-ns tasks", () => {
       "  Alice left on 2026-09-20; Bob owns most repos and agreed.  ",
     );
     expect(t.action).toBe("namespace.reseat");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.3");
     // Exactly the spec's three fields, statement trimmed; nothing else.
     expect(t.payload).toEqual({
       namespace: "ns_acme",

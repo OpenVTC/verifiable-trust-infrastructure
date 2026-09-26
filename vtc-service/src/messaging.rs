@@ -157,14 +157,30 @@ async fn build_messaging(
     mediator_did: &str,
     outbox_ks: KeyspaceHandle,
     tsp_relationships_ks: KeyspaceHandle,
+    did_resolver: Option<DIDCacheClient>,
+    did_cache: &vti_common::config::DidCacheConfig,
 ) -> Result<(Arc<MessagingService>, Arc<ATM>, Arc<ATMProfile>), String> {
-    let tdk = TDKSharedState::new(
-        TDKConfig::builder()
-            .build()
-            .map_err(|e| format!("build TDK config: {e}"))?,
-    )
-    .await
-    .map_err(|e| format!("create TDK shared state: {e}"))?;
+    // One DID-document cache for the whole node. This TDK used to build its
+    // own on the SDK defaults, so every DIDComm and TSP message on the mediator
+    // socket was checked against a second cache — one the REST and Trust Task
+    // paths could not see, refresh or evict, and whose TTL no setting reached.
+    // A rotation the app cache had already followed could still be refused
+    // here, and a revoked key accepted here after the app cache had dropped it.
+    let tdk_config = match did_resolver {
+        Some(resolver) => TDKConfig::builder().with_did_resolver(resolver),
+        None => TDKConfig::builder().with_did_resolver_config(
+            vta_sdk::resolver::build_verifier_did_cache_config(
+                None,
+                did_cache.ttl_secs,
+                did_cache.capacity,
+            ),
+        ),
+    }
+    .build()
+    .map_err(|e| format!("build TDK config: {e}"))?;
+    let tdk = TDKSharedState::new(tdk_config)
+        .await
+        .map_err(|e| format!("create TDK shared state: {e}"))?;
     for secret in secrets {
         tdk.secrets_resolver().insert(secret).await;
     }
@@ -384,6 +400,8 @@ pub async fn run_didcomm_service(
         &mediator_did,
         state.outbox_ks.clone(),
         state.tsp_relationships_ks.clone(),
+        state.did_resolver.clone(),
+        &config.did_cache,
     )
     .await
     {
@@ -419,6 +437,59 @@ pub async fn run_didcomm_service(
     let tsp_messaging = messaging.clone();
     if state.didcomm.set(messaging).is_err() {
         warn!("VTC messaging handle was already published — outbound sends use the existing one");
+    }
+
+    // Member pushes over TSP and REST (`crate::member_push`), on the same
+    // durable outbox as DIDComm. Each is a named transport with its own drain:
+    // the default drain skips entries pinned to one, and the entry names a
+    // push record rather than carrying bytes, so only its own transport can
+    // send it. The outbox poll above already confirms TSP collection, because
+    // the mediator lists TSP and DIDComm messages in one outbox.
+    {
+        use affinidi_messaging_delivery::OutboxStore;
+        let outbox: Arc<dyn OutboxStore> = Arc::new(vti_common::outbox_store::VtiOutboxStore::new(
+            state.outbox_ks.clone(),
+        ));
+        #[cfg(feature = "tsp")]
+        if let Some(primary) = service.primary_transport() {
+            let tsp: Arc<dyn MessageTransport> = Arc::new(crate::member_push::TspPushTransport {
+                atm: atm.clone(),
+                profile: profile.clone(),
+                mediator_did: mediator_did.clone(),
+                pushes: state.member_pushes_ks.clone(),
+                conn: primary.connection_state(),
+            });
+            service.add_transport(crate::member_push::TSP_TRANSPORT_ID.into(), tsp.clone());
+            tokio::spawn(affinidi_messaging_delivery::drain_loop_via(
+                outbox.clone(),
+                crate::member_push::TSP_TRANSPORT_ID.into(),
+                tsp,
+                Duration::from_secs(2),
+            ));
+        }
+        let rest: Arc<dyn MessageTransport> = Arc::new(crate::member_push::RestPushTransport::new(
+            state.member_pushes_ks.clone(),
+            crate::recognition::verify::foreign_fetch_client(),
+        ));
+        service.add_transport(crate::member_push::REST_TRANSPORT_ID.into(), rest.clone());
+        tokio::spawn(affinidi_messaging_delivery::drain_loop_via(
+            outbox,
+            crate::member_push::REST_TRANSPORT_ID.into(),
+            rest,
+            Duration::from_secs(2),
+        ));
+
+        // Settle what has evidence and escalate what has none (VTI-TRN-042).
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                tick.tick().await;
+                if let Err(e) = crate::member_push::sweep(&sweep_state).await {
+                    warn!(error = %e, "member-push sweep failed; retrying next tick");
+                }
+            }
+        });
     }
 
     info!("VTC messaging connected to mediator — inbound messages will be processed");
@@ -649,7 +720,11 @@ async fn handle_tsp(
     // before the envelope comes off.
     if let Some(doc) = tsp_reply_document(&inbound.message.payload) {
         let thread_id = doc.thread_id.clone().unwrap_or_default();
-        if !state.pending_replies.complete(doc) {
+        if !state
+            .pending_replies
+            .complete_verified(doc, &state.trust_task_vm_resolver())
+            .await
+        {
             debug!(%thread_id, sender = %sender_vid, "TSP reply had no waiter — dropping");
         }
         return;
@@ -925,7 +1000,10 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
     if msg.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE
         && let Some((_thid, doc)) =
             vti_common::capability_client::parse_envelope_document(&msg.body)
-        && state.pending_replies.complete(doc)
+        && state
+            .pending_replies
+            .complete_verified(doc.clone(), &state.trust_task_vm_resolver())
+            .await
     {
         return None;
     }

@@ -653,7 +653,7 @@ export function CreateDialog({
 }
 
 /**
- * Reseat a headless namespace (`git-ns/namespace/reseat` 0.1). Offered only
+ * Reseat a headless namespace (`git-ns/namespace/reseat` 0.3). Offered only
  * where the daemon reports the namespace headless; the VTC checks it again
  * when it runs the task. The subject is picked from current members only —
  * the fixed rules give `git.ns.admin` to no one else — and the statement is
