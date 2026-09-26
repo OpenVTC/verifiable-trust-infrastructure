@@ -1457,6 +1457,10 @@ fn every_git_ns_task_is_served() {
     ] {
         assert!(served.contains(&uri(task).as_str()), "{task} is not served");
     }
+    assert!(
+        served.contains(&uri3("drift/resolve").as_str()),
+        "drift/resolve 0.3 is not served"
+    );
     assert!(served.contains(&RESEAT_URI), "reseat 0.3 is not served");
     assert!(
         !served.contains(&uri("namespace/reseat").as_str()),
@@ -3966,14 +3970,29 @@ fn eve_acct() -> Value {
     json!({ "forge": "github.com", "id": "5550123", "login": "eve-dev" })
 }
 
+fn uri3(task: &str) -> String {
+    format!("{URI}/{task}/0.3")
+}
+
+/// `git-ns/drift/resolve` 0.3. An adopt names Carol — the one member whose
+/// account the fixture links — as the recipient.
 async fn resolve(f: &Fixture, who: &Party, drift: Value, action: &str) -> TrustTaskOutcome {
-    send(
-        &f.vtc.state,
-        who,
-        "drift/resolve",
-        json!({ "resource": RES, "drift": drift, "action": action, "reason": "decided" }),
-    )
-    .await
+    let subject = (action == "adopt").then(|| f.carol.did.clone());
+    resolve_naming(f, who, drift, action, subject.as_deref()).await
+}
+
+async fn resolve_naming(
+    f: &Fixture,
+    who: &Party,
+    drift: Value,
+    action: &str,
+    subject: Option<&str>,
+) -> TrustTaskOutcome {
+    let mut p = json!({ "resource": RES, "drift": drift, "action": action, "reason": "decided" });
+    if let Some(s) = subject {
+        p["subject"] = json!(s);
+    }
+    send_v(&f.vtc.state, who, &uri3("drift/resolve"), p).await
 }
 
 #[tokio::test]
@@ -4037,11 +4056,12 @@ async fn drift_adopt_of_ones_own_account_into_an_elevated_right_is_a_self_grant(
     )
     .await;
 
-    let out = resolve(
+    let out = resolve_naming(
         &f,
         &f.admin,
         json!({ "type": "roleAdded", "account": admin_acct, "observed": "admin" }),
         "adopt",
+        Some(&f.admin.did),
     )
     .await;
     assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
@@ -4066,6 +4086,340 @@ async fn drift_adopt_of_ones_own_account_into_an_elevated_right_is_a_self_grant(
         1,
         "the drift item stays outstanding for someone who may adopt it"
     );
+}
+
+/// drift/resolve 0.3, "Binding the recipient": an adoption grants to the
+/// member the resolver named, or to nobody.
+#[tokio::test]
+async fn drift_resolve_adopts_only_for_the_member_it_names() {
+    let (f, ns) = drift_fixture(json!([
+        { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "maintain" }
+    ]))
+    .await;
+    let sel = json!({ "type": "roleAdded", "account": carol_acct(), "observed": "maintain" });
+    let rows_for = |did: String| {
+        let ks = f.vtc.state.git_ns.ks.clone();
+        async move {
+            let snap = Snapshot::load(&ks).await.unwrap();
+            let repo = snap.repo_at(RES).unwrap();
+            snap.rows(&Scope::Repo(repo.id.clone()))
+                .iter()
+                .filter(|r| r.subject == did)
+                .count()
+        }
+    };
+
+    // Naming someone else than the account's member adopts nothing.
+    let out = resolve_naming(&f, &f.bob, sel.clone(), "adopt", Some(&f.stranger.did)).await;
+    assert_eq!(code(&out), "git-ns/drift/resolve:subjectChanged");
+    assert_eq!(rows_for(f.carol.did.clone()).await, 0);
+    assert_eq!(rows_for(f.stranger.did.clone()).await, 0);
+
+    // The account relinked after Bob read it — to Bob himself here — and
+    // Bob's adoption still names Carol: refused, and nobody gains a right.
+    crate::members::storage::edit_member(&f.vtc.state.members_ks, &f.carol.did, |m| {
+        m.extensions
+            .as_object_mut()
+            .is_some_and(|o| o.remove("forges").is_some())
+    })
+    .await
+    .unwrap();
+    link_account(&f, &ns, &f.bob, "5550001", "carol-c").await;
+    let out = resolve(&f, &f.bob, sel.clone(), "adopt").await;
+    assert_eq!(code(&out), "git-ns/drift/resolve:subjectChanged");
+    assert_eq!(rows_for(f.carol.did.clone()).await, 0);
+
+    // Named as the account's member now, it adopts.
+    let body = ok(&resolve_naming(&f, &f.bob, sel, "adopt", Some(&f.bob.did)).await);
+    assert_eq!(body["right"]["subject"], json!(f.bob.did));
+}
+
+/// drift/resolve 0.3, adopt step 5: a `roleChanged` adoption is compared
+/// with the member's *projected* right (their own-name rights, as the
+/// projector lists them), not their effective one. A namespace admin
+/// projects to no forge role, so one who holds `maintain` on a repository can
+/// have the forge `admin` role they were given there adopted — by someone
+/// else (step 6: nobody adopts `own` for themselves).
+#[tokio::test]
+async fn a_namespace_admin_adopts_a_raise_over_their_own_name_right() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    // The binder is the namespace's admin; give them `maintain` in their own
+    // name, and a linked account.
+    ok(&grant(&f, &f.bob, &f.admin.did, "git.repo.maintain", RES).await);
+    link_account(&f, &ns, &f.admin, "5550077", "admin-a").await;
+    let admin_acct = json!({ "forge": "github.com", "id": "5550077", "login": "admin-a" });
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleChanged", "resource": RES, "account": admin_acct.clone(),
+                 "expected": "maintain", "observed": "admin" }]),
+    )
+    .await;
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap().clone();
+    let ns_rec = snap.namespace(&ns).unwrap().clone();
+    // Effective: own (implied by ns.admin). Projected: maintain.
+    assert!(
+        super::rules::effective_on(
+            &snap,
+            &f.admin.did,
+            &repo.resource().unwrap(),
+            super::ops::now()
+        )
+        .contains(&super::model::Right::RepoOwn)
+    );
+    assert_eq!(
+        super::bridge::projected_repo_right(&snap, &ns_rec, &repo, &f.admin.did, super::ops::now()),
+        Some(super::model::Right::RepoMaintain)
+    );
+    let sel = json!({ "type": "roleChanged", "account": admin_acct, "observed": "admin" });
+    // Another community administrator who is a namespace admin adopts it.
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    ok(&grant(&f, &f.admin, &dana.did, "git.ns.admin", "github.com/acme").await);
+    let body = ok(&resolve_naming(&f, &dana, sel, "adopt", Some(&f.admin.did)).await);
+    assert_eq!(body["right"]["right"], "git.repo.own");
+    assert_eq!(body["right"]["subject"], json!(f.admin.did));
+    assert_eq!(body["right"]["grantedBy"], json!(dana.did));
+}
+
+/// drift/resolve 0.3, adopt step 6 — separation of duties: an adoption that
+/// would record `git.repo.own` for the resolver themselves is refused
+/// `git-ns:selfGrantNotAllowed`, pointing at break-glass, and records
+/// nothing — whether they sign themselves or through a console key acting
+/// for them. Adopting a lower right for oneself stays allowed.
+#[tokio::test]
+async fn an_adoption_never_grants_the_resolver_an_elevated_right() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&grant(&f, &f.bob, &f.admin.did, "git.repo.maintain", RES).await);
+    link_account(&f, &ns, &f.admin, "5550077", "admin-a").await;
+    let admin_acct = json!({ "forge": "github.com", "id": "5550077", "login": "admin-a" });
+    link_account(&f, &ns, &f.bob, "5550088", "bob-b").await;
+    let bob_acct = json!({ "forge": "github.com", "id": "5550088", "login": "bob-b" });
+    report_drift(
+        &f,
+        &ns,
+        json!([
+            { "type": "roleChanged", "resource": RES, "account": admin_acct.clone(),
+              "expected": "maintain", "observed": "admin" },
+            { "type": "roleAdded", "resource": RES, "account": bob_acct.clone(), "observed": "maintain" }
+        ]),
+    )
+    .await;
+    let sel = json!({ "type": "roleChanged", "account": admin_acct, "observed": "admin" });
+    let own_rows = |snap: &Snapshot| {
+        let repo = snap.repo_at(RES).unwrap();
+        snap.rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .filter(|r| r.subject == f.admin.did && r.right == super::model::Right::RepoOwn)
+            .count()
+    };
+
+    // The admin, for themselves: refused, before policy, naming break-glass.
+    let out = resolve_naming(&f, &f.admin, sel.clone(), "adopt", Some(&f.admin.did)).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(String::from_utf8_lossy(&out.body).contains("git-ns/right/break-glass"));
+
+    // A console key acting for the admin is the admin: refused the same.
+    let console = Party::new();
+    crate::acl::console_key::enrol_delegation(
+        &f.vtc.state.console_keys_ks,
+        &f.vtc.state.acl_ks,
+        &console.did,
+        &f.admin.did,
+        Some("browser".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    let out = resolve_naming(&f, &console, sel, "adopt", Some(&f.admin.did)).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    assert_eq!(own_rows(&snap), 0);
+    assert_eq!(snap.repo_at(RES).unwrap().sync.drift.len(), 2);
+
+    // `maintain` is not elevated: Bob, an owner, adopts it for himself.
+    let body = ok(&resolve_naming(
+        &f,
+        &f.bob,
+        json!({ "type": "roleAdded", "account": bob_acct, "observed": "maintain" }),
+        "adopt",
+        Some(&f.bob.did),
+    )
+    .await);
+    assert_eq!(body["right"]["right"], "git.repo.maintain");
+    assert_eq!(body["right"]["subject"], json!(f.bob.did));
+}
+
+/// drift/resolve 0.3 adopt step 6 under the reported role map: where
+/// maintainers get forge `admin`, `git.repo.maintain` is elevated
+/// (`Right::is_elevated_in`), so an owner cannot adopt a forge `admin` as
+/// `maintain` for himself — though another owner can adopt it for him.
+#[tokio::test]
+async fn a_map_that_gives_maintainers_admin_makes_a_self_adopted_maintain_elevated() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    ok(&report_role_map(
+        &f,
+        &ns,
+        json!({ "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "admin", "commit": "none" } }),
+    )
+    .await);
+    link_account(&f, &ns, &f.bob, "5550088", "bob-b").await;
+    let bob_acct = json!({ "forge": "github.com", "id": "5550088", "login": "bob-b" });
+    report_drift(
+        &f,
+        &ns,
+        json!([{ "type": "roleAdded", "resource": RES, "account": bob_acct.clone(), "observed": "admin" }]),
+    )
+    .await;
+    let sel = json!({ "type": "roleAdded", "account": bob_acct, "observed": "admin" });
+
+    let out = resolve_naming(&f, &f.bob, sel.clone(), "adopt", Some(&f.bob.did)).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(String::from_utf8_lossy(&out.body).contains("git.repo.maintain"));
+    assert!(!String::from_utf8_lossy(&out.body).contains("break-glass"));
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap();
+    assert!(
+        !snap
+            .rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .any(|r| r.subject == f.bob.did && r.right == super::model::Right::RepoMaintain)
+    );
+
+    // The community administrator, a namespace admin, adopts it for Bob.
+    let body = ok(&resolve_naming(&f, &f.admin, sel, "adopt", Some(&f.bob.did)).await);
+    assert_eq!(body["right"]["right"], "git.repo.maintain");
+    assert_eq!(body["right"]["subject"], json!(f.bob.did));
+}
+
+/// A namespace admin with nothing in their own name has no projected right.
+#[tokio::test]
+async fn a_namespace_admin_alone_has_no_projected_right() {
+    let (f, ns) = drift_fixture(json!([])).await;
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap().clone();
+    let ns_rec = snap.namespace(&ns).unwrap().clone();
+    assert_eq!(
+        super::bridge::projected_repo_right(&snap, &ns_rec, &repo, &f.admin.did, super::ops::now()),
+        None
+    );
+    // The repository's explicit owner is projected at own.
+    assert_eq!(
+        super::bridge::projected_repo_right(&snap, &ns_rec, &repo, &f.bob.did, super::ops::now()),
+        Some(super::model::Right::RepoOwn)
+    );
+}
+
+/// The link check is repeated under the lock the grant is written under.
+#[tokio::test]
+async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
+    let (f, _ns) = drift_fixture(json!([])).await;
+    let holds = |_: &Snapshot| -> super::ops::OpResult<()> { Ok(()) };
+    let grant_to = |subject: String| -> trust_tasks_rs::specs::git_ns::right::grant::v0_3::Payload {
+        serde_json::from_value(
+            json!({ "subject": subject, "right": "git.repo.maintain", "resource": RES }),
+        )
+        .unwrap()
+    };
+    // Carol's account, expected to be Bob's: refused.
+    let wrong = super::ops::LinkedTo {
+        forge: "github.com".into(),
+        id: "5550001".into(),
+        member: f.bob.did.clone(),
+    };
+    let r = super::ops::right_grant_via(
+        &f.vtc.state,
+        &f.bob.did,
+        grant_to(f.bob.did.clone()),
+        Some(super::ops::GrantVia {
+            via: "drift.adopt",
+            still_holds: &holds,
+            linked_to: Some(&wrong),
+        }),
+    )
+    .await;
+    assert!(matches!(
+        r,
+        Err(super::ops::OpError::Declared { code, .. }) if code == super::drift::SUBJECT_CHANGED
+    ));
+    // An account linked to nobody: accountNotLinked.
+    let gone = super::ops::LinkedTo {
+        forge: "github.com".into(),
+        id: "9999999".into(),
+        member: f.carol.did.clone(),
+    };
+    let r = super::ops::right_grant_via(
+        &f.vtc.state,
+        &f.bob.did,
+        grant_to(f.carol.did.clone()),
+        Some(super::ops::GrantVia {
+            via: "drift.adopt",
+            still_holds: &holds,
+            linked_to: Some(&gone),
+        }),
+    )
+    .await;
+    assert!(matches!(
+        r,
+        Err(super::ops::OpError::Declared { code, .. }) if code == super::drift::ACCOUNT_NOT_LINKED
+    ));
+    // Linked as expected: granted.
+    let right = super::ops::LinkedTo {
+        forge: "github.com".into(),
+        id: "5550001".into(),
+        member: f.carol.did.clone(),
+    };
+    assert!(
+        super::ops::right_grant_via(
+            &f.vtc.state,
+            &f.bob.did,
+            grant_to(f.carol.did.clone()),
+            Some(super::ops::GrantVia {
+                via: "drift.adopt",
+                still_holds: &holds,
+                linked_to: Some(&right),
+            }),
+        )
+        .await
+        .is_ok()
+    );
+}
+
+/// 0.1 names no recipient: it still reverts, and no longer adopts.
+#[tokio::test]
+async fn drift_resolve_0_1_reverts_but_does_not_adopt() {
+    let (f, _ns) = drift_fixture(json!([
+        { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "maintain" },
+        { "type": "requiredCheckMissing", "resource": RES }
+    ]))
+    .await;
+    let out = send(
+        &f.vtc.state,
+        &f.bob,
+        "drift/resolve",
+        json!({ "resource": RES, "action": "adopt",
+                "drift": { "type": "roleAdded", "account": carol_acct(), "observed": "maintain" } }),
+    )
+    .await;
+    assert_eq!(code(&out), "unsupportedVersion");
+    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let repo = snap.repo_at(RES).unwrap();
+    assert!(
+        !snap
+            .rows(&Scope::Repo(repo.id.clone()))
+            .iter()
+            .any(|r| r.subject == f.carol.did)
+    );
+    let body = ok(&send(
+        &f.vtc.state,
+        &f.bob,
+        "drift/resolve",
+        json!({ "resource": RES, "action": "revert", "drift": { "type": "requiredCheckMissing" } }),
+    )
+    .await);
+    assert_eq!(body["action"], "revert");
 }
 
 #[tokio::test]
@@ -4175,6 +4529,12 @@ async fn drift_resolve_checks_the_resource_the_caller_and_the_selector() {
         let out = resolve(&f, &f.bob, drift.clone(), action).await;
         assert_eq!(code(&out), "malformedRequest", "{drift}");
     }
+    // 0.3: an adopt must name its recipient, and a revert has none.
+    let adopt_sel = json!({ "type": "roleAdded", "account": eve_acct(), "observed": "write" });
+    let out = resolve_naming(&f, &f.bob, adopt_sel, "adopt", None).await;
+    assert_eq!(code(&out), "malformedRequest");
+    let out = resolve_naming(&f, &f.bob, sel.clone(), "revert", Some(&f.carol.did)).await;
+    assert_eq!(code(&out), "malformedRequest");
     // policyDenied.
     activate_git_policy(&f, &policy_denying("drift.revert")).await;
     let out = resolve(&f, &f.bob, sel.clone(), "revert").await;
@@ -4715,6 +5075,7 @@ async fn an_adoption_whose_item_changed_grants_nothing() {
         Some(super::ops::GrantVia {
             via: "drift.adopt",
             still_holds: &still_holds,
+            linked_to: None,
         }),
     )
     .await;
@@ -5420,10 +5781,6 @@ async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_conc
 }
 
 // ── the bridge's role map (git-ns/bridge/event 0.3) and re-projection ───────
-
-fn uri3(task: &str) -> String {
-    format!("{URI}/{task}/0.3")
-}
 
 /// A GitHub organisation's ladder.
 fn org_ladder() -> Value {
@@ -6177,9 +6534,8 @@ async fn a_revert_is_refused_for_an_admin_who_is_also_an_explicit_owner() {
 }
 
 /// #1729's "a namespace admin adopts their own forge admin role", under
-/// separation of duties (grant 0.3 rule 7): the self-adoption of `own` is
-/// refused, and another community administrator adopts it for them, after
-/// which it is projected.
+/// drift/resolve 0.3: step 6 refuses the self-adoption of `own`, and another
+/// community administrator adopts it for them, after which it is projected.
 #[tokio::test]
 async fn a_namespace_admins_own_forge_admin_role_is_adopted_by_someone_else() {
     let (f, ns) = drift_fixture(json!([])).await;
@@ -6191,12 +6547,12 @@ async fn a_namespace_admins_own_forge_admin_role_is_adopted_by_someone_else() {
     )
     .await;
     let sel = json!({ "type": "roleAdded", "account": admin_acct(), "observed": "admin" });
-    let out = resolve(&f, &f.admin, sel.clone(), "adopt").await;
+    let out = resolve_naming(&f, &f.admin, sel.clone(), "adopt", Some(&f.admin.did)).await;
     assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
     let dana = Party::new();
     seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
     ok(&grant(&f, &f.admin, &dana.did, "git.ns.admin", "github.com/acme").await);
-    let body = ok(&resolve(&f, &dana, sel, "adopt").await);
+    let body = ok(&resolve_naming(&f, &dana, sel, "adopt", Some(&f.admin.did)).await);
     assert_eq!(body["right"]["subject"], json!(f.admin.did));
     assert_eq!(body["right"]["right"], "git.repo.own");
     // Now recorded in their own name, it is projected.
@@ -6245,8 +6601,12 @@ async fn someone_else_adopts_a_namespace_admins_forge_admin_role() {
     assert_eq!(body["right"]["grantedBy"], json!(f.admin.did));
 }
 
+/// #1729's implied-rights comparison, under drift/resolve 0.3: step 5
+/// compares a `roleChanged` with the *projected* right, so for a namespace
+/// admin holding `maintain` a forge `admin` is a raise, not `notAdoptable` —
+/// and adopting it for oneself is refused by step 6.
 #[tokio::test]
-async fn a_role_change_is_measured_against_implied_rights_as_drift_resolve_0_2_says() {
+async fn a_role_change_is_measured_against_the_projected_right_as_drift_resolve_0_3_says() {
     let (f, ns) = drift_fixture(json!([])).await;
     link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
     ok(&grant(&f, &f.bob, &f.admin.did, "git.repo.maintain", RES).await);
@@ -6256,14 +6616,13 @@ async fn a_role_change_is_measured_against_implied_rights_as_drift_resolve_0_2_s
         json!([{ "type": "roleChanged", "resource": RES, "account": admin_acct(), "expected": "maintain", "observed": "admin" }]),
     )
     .await;
-    // `own` is implied by `ns.admin`, so `admin` is "no higher than the
-    // member's highest effective right" (git-ns/drift/resolve 0.2, step 4).
-    let out = resolve(
+    let out = resolve_naming(
         &f,
         &f.admin,
         json!({ "type": "roleChanged", "account": admin_acct(), "observed": "admin" }),
         "adopt",
+        Some(&f.admin.did),
     )
     .await;
-    assert_eq!(code(&out), "git-ns/drift/resolve:notAdoptable");
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
 }

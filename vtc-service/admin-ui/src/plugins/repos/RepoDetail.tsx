@@ -62,7 +62,7 @@ import {
   repoRights,
   type AdoptStanding,
   adoptStanding,
-  heldRepoRank,
+  projectedRepoRank,
   isAdoptableKind,
   repoStatus,
   revertStanding,
@@ -323,7 +323,7 @@ function DriftList({
                 repo,
                 d,
                 member,
-                member ? heldRepoRank(rights, member, repo, ns) : 0,
+                member ? projectedRepoRank(rights, member, repo, ns) : 0,
               );
         const protection = d.type === "requiredCheckMissing" || d.type === "protectionWeakened";
         const standing = revertStanding(viewer, superAdmin, ns, repo, d);

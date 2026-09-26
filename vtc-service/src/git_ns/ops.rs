@@ -98,6 +98,9 @@ pub enum OpError {
         message: String,
         request: Box<crate::acl::bound_step_up::ApproveRequest>,
     },
+    /// The framework's `unsupportedVersion`: this VTC serves the task, but
+    /// not this operation at this version (a drift/resolve 0.1 `adopt`).
+    UnsupportedVersion(String),
     Internal(AppError),
 }
 
@@ -117,6 +120,7 @@ impl std::fmt::Display for OpError {
             OpError::StepUpRequired { message, .. } => {
                 write!(f, "permissionDenied (step-up required): {message}")
             }
+            OpError::UnsupportedVersion(m) => write!(f, "unsupportedVersion: {m}"),
             OpError::Internal(e) => write!(f, "internal: {e}"),
         }
     }
@@ -1793,6 +1797,18 @@ pub(crate) struct GrantVia<'a> {
     /// Re-checked against the snapshot the grant is decided on; a refusal
     /// here is the grant's refusal, and nothing is written.
     pub still_holds: &'a (dyn Fn(&Snapshot) -> OpResult<()> + Send + Sync),
+    /// The forge account whose link must still resolve to the grant's
+    /// subject, checked under the same lock — the lock every link and unlink
+    /// is written under — so that a relink cannot fall between check and write
+    /// (drift/resolve 0.3, adopt step 6).
+    pub linked_to: Option<&'a LinkedTo>,
+}
+
+/// A forge account and the member it must be linked to.
+pub(crate) struct LinkedTo {
+    pub forge: String,
+    pub id: String,
+    pub member: String,
 }
 
 pub(crate) async fn right_grant_via(
@@ -1818,6 +1834,27 @@ async fn right_grant_record(
     let snap = Snapshot::load(&state.git_ns.ks).await?;
     if let Some(v) = &via {
         (v.still_holds)(&snap)?;
+        if let Some(link) = v.linked_to {
+            let now_linked = super::bridge::linked_accounts(state)
+                .await?
+                .into_iter()
+                .find(|(_, forges)| forges.get(&link.forge).is_some_and(|a| a.id == link.id))
+                .map(|(did, _)| did);
+            match now_linked {
+                Some(did) if did == link.member => {}
+                Some(_) => return Err(super::drift::subject_changed(&link.forge, &link.id)),
+                None => {
+                    return Err(declared(
+                        super::drift::ACCOUNT_NOT_LINKED,
+                        format!(
+                            "{} account {} is no longer linked to a member; it can only be \
+                             reverted",
+                            link.forge, link.id
+                        ),
+                    ));
+                }
+            }
+        }
     }
     let t = now();
     let resource = parse_resource(&p.resource)?;

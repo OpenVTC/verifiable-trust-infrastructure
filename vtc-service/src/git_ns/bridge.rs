@@ -945,6 +945,43 @@ pub fn highest_repo_rights(
     out
 }
 
+/// The right `member` is projected at on `repo` — the one right
+/// [`highest_repo_rights`] lists them at in its `desiredRoles` — counting only
+/// rights recorded in their own name: `own`, `maintain` or `commit.sign` on
+/// the repository, or `commit.sign` on its namespace. `git.ns.admin` projects
+/// to no forge role, so what it implies does not count, and a namespace admin
+/// with nothing of their own there has no projected right (`None`).
+///
+/// It is `git-ns/drift/resolve` 0.3's *projected right of a member*, which a
+/// `roleChanged` adoption must strictly raise. It goes through
+/// [`highest_repo_rights`] — the projector itself — with namespace-admin rows
+/// left out, so it is the same function the projector uses and agrees with it
+/// whether or not the projector already leaves them out.
+pub fn projected_repo_right(
+    snap: &Snapshot,
+    ns: &Namespace,
+    repo: &Repo,
+    member: &str,
+    t: DateTime<Utc>,
+) -> Option<Right> {
+    let repo_res = repo.resource()?;
+    let own_name = |rows: &[RightRow]| -> Vec<RightRow> {
+        rows.iter()
+            .filter(|r| r.subject == member && r.right != Right::NsAdmin)
+            .cloned()
+            .collect()
+    };
+    highest_repo_rights(
+        &ns.resource(),
+        &own_name(snap.rows(&Scope::Namespace(ns.id.clone()))),
+        &repo_res,
+        &own_name(snap.rows(&Scope::Repo(repo.id.clone()))),
+        t,
+    )
+    .remove(member)
+    .filter(|r| matches!(r, Right::RepoOwn | Right::RepoMaintain | Right::CommitSign))
+}
+
 fn desired_role_json(subject: &str, right: Right, account: &ForgeAccount) -> Value {
     json!({
         "subject": subject,

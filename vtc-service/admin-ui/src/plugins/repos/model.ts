@@ -731,23 +731,26 @@ export function isAdoptableKind(item: GitNsDriftItem): boolean {
 }
 
 /**
- * The strongest of own / maintain / commit.sign `member` holds on the
- * repository, explicit or implied, as a rank (`Right::rank`: own 3,
- * maintain 2, commit.sign 1; 0 for nothing) — what `adopt` step 4 compares
- * a `roleChanged` against. It mirrors `rules::effective_on`, which reads the
- * git-ns store only: expired rows count for nothing, and `roleDerived` rows —
- * v0.1 hook-relay grants merged into the listing from the registry, never
- * held in that store — are ignored. The namespace's admins (`ns.admins`, the
- * live `git.ns.admin` holders) own every repository in it.
+ * The member's *projected right* on the repository as a rank
+ * (`Right::rank`: own 3, maintain 2, commit.sign 1; 0 for none) — what
+ * drift/resolve 0.3 adopt step 5 compares a `roleChanged` against, and what
+ * `bridge::projected_repo_right` computes: the highest right recorded **in
+ * the member's own name** that reaches the repository — own, maintain or
+ * commit.sign on it (its explicit owners, `repo.owners`, included), or
+ * commit.sign on its namespace. `git.ns.admin` projects to no forge role, so
+ * what it implies does not count: a namespace admin holding `maintain` here
+ * ranks 2, and can adopt a forge `admin` as owner. Expired rows count for
+ * nothing, and `roleDerived` rows — v0.1 hook-relay grants merged into the
+ * listing from the registry, never held in the git-ns store — are ignored.
  */
-export function heldRepoRank(
+export function projectedRepoRank(
   rights: GitNsRightRow[],
   member: string,
   repo: GitNsRepoRow,
   ns: GitNsNamespaceRow,
   now = Date.now(),
 ): number {
-  let best = repo.owners.includes(member) || ns.admins.includes(member) ? 3 : 0;
+  let best = repo.owners.includes(member) ? 3 : 0;
   for (const r of rights) {
     if (r.subject !== member) continue;
     if (r.origin === "roleDerived") continue;
@@ -756,11 +759,9 @@ export function heldRepoRank(
       if (r.right === "git.repo.own") best = Math.max(best, 3);
       else if (r.right === "git.repo.maintain") best = Math.max(best, 2);
       else if (r.right === "git.commit.sign") best = Math.max(best, 1);
-    } else if (r.resource === ns.resource) {
-      // `ns.admin` implies own on every repository in it; a namespace-wide
-      // commit.sign counts on each one.
-      if (r.right === "git.ns.admin") best = Math.max(best, 3);
-      else if (r.right === "git.commit.sign") best = Math.max(best, 1);
+    } else if (r.resource === ns.resource && r.right === "git.commit.sign") {
+      // A namespace-wide commit.sign is projected on each repository.
+      best = Math.max(best, 1);
     }
   }
   return best;
@@ -771,6 +772,19 @@ const RANK: Partial<Record<GitNsRight, number>> = {
   "git.repo.maintain": 2,
   "git.commit.sign": 1,
 };
+
+/**
+ * Whether `right` is elevated on a repository under its role map — mirrors
+ * `Right::is_elevated_in`: an elevated right, or one the map projects to
+ * forge `admin` (a map that gives maintainers `admin` makes
+ * `git.repo.maintain` elevated). With no map reported, `git.repo.maintain`
+ * counts too, which fails closed.
+ */
+export function isElevatedIn(right: GitNsRight, map: GitNsRoleMap | null | undefined): boolean {
+  if (isElevated(right)) return true;
+  if (!map) return right === "git.repo.maintain";
+  return forgeRoleFor(map, right) === "admin";
+}
 
 export type AdoptStanding =
   /** Adoptable, by this viewer: grants `right` to `member`. */
@@ -794,14 +808,17 @@ export type AdoptStanding =
  * - step 3: a right projects to the observed role (`noMatchingRight`)
  *   under the bridge's reported role map (`projectedRight`); with no map
  *   reported nothing is adoptable (`git-ns:roleMapUnknown`);
- * - step 4: a `roleChanged` adopts only a raise — a lowering is accepted by
+ * - step 5 (0.3): a `roleChanged` adopts only a raise over the member's
+ *   projected right (`projectedRepoRank`) — a lowering is accepted by
  *   revoking, not adopting (`notAdoptable`);
- * - step 5: the grant it makes is held to fixed rule 7 of
- *   `git-ns/right/grant` 0.3 — nobody adopts their own account into an
- *   elevated right (`git-ns:selfGrantNotAllowed`) — and to its consent class:
- *   `own` is elevated, which this VTC accepts only from a community
- *   administrator (`elevated_requires_admin`, assumed on, as for every
- *   elevated task).
+ * - step 6 (0.3): separation of duties — nobody adopts an elevated right
+ *   (`git.repo.own`, or one the role map projects to forge `admin`:
+ *   `isElevatedIn`) for themselves (`git-ns:selfGrantNotAllowed`); the
+ *   viewer is the DID a console key acts as, so this is its admin. Another
+ *   owner can adopt it, so the command is handed over rather than offered;
+ * - step 7: the grant's consent class — `own` is elevated, which this VTC
+ *   accepts only from a community administrator (`elevated_requires_admin`,
+ *   assumed on, as for every elevated task).
  *
  * The VTC decides either way; this only keeps the console from offering what
  * it would refuse.
@@ -838,8 +855,22 @@ export function adoptStanding(
   }
   if (item.type === "roleChanged" && (RANK[right] ?? 0) <= heldRank) {
     return refuse(
-      `The forge shows ${item.observed}, no higher than what the member already holds here — that is a lowering, accepted by revoking the right, not by adopting.`,
+      `The forge shows ${item.observed}, no higher than the member is projected at here — that is a lowering, accepted by revoking the right, not by adopting.`,
     );
+  }
+  // Separation of duties, mirroring `rules::elevated_on` (grant 0.3 rule 7,
+  // drift/resolve 0.3 step 6): where the bridge's map projects the right to
+  // forge `admin` it is elevated too — but break-glass does not carry it.
+  if (!!viewer && viewer === member.trim() && isElevatedIn(right, repo.roleMap)) {
+    return {
+      may: false,
+      handOver: true,
+      member,
+      right,
+      why: isElevated(right)
+        ? `Adopting this role would make you ${rightLabel(right).toLowerCase()}, an elevated right nobody grants themselves (separation of duties). Hand the command below to another owner or namespace admin — or, if nobody else can, use break-glass (git-ns/right/break-glass), which every other administrator sees until one ratifies or revokes it.`
+        : `Adopting this role would make you ${rightLabel(right).toLowerCase()}, which the bridge's role map gives the forge's admin role here, so it is an elevated right nobody grants themselves (separation of duties). Hand the command below to another owner or namespace admin.`,
+    };
   }
   const owns = !!viewer && (repo.owners.includes(viewer) || ns.admins.includes(viewer));
   if (!owns) {
@@ -849,26 +880,6 @@ export function adoptStanding(
       member,
       right,
       why: "Adopting is an owner's decision too: hand the command below to an owner or namespace admin.",
-    };
-  }
-  if (isSelfGrant(viewer, member, right)) {
-    return {
-      may: false,
-      handOver: true,
-      member,
-      right,
-      why: `This is your own forge account: adopting it as ${rightLabel(right).toLowerCase()} would grant you an elevated right yourself, which separation of duties refuses. Hand the command below to another owner or administrator — or, if nobody else can, break the glass, which is announced to every administrator.`,
-    };
-  }
-  // Mirrors `rules::elevated_on`: where the bridge's map projects the right
-  // to forge `admin` it is elevated too — but break-glass does not carry it.
-  if (viewer === member && repo.roleMap && forgeRoleFor(repo.roleMap, right) === "admin") {
-    return {
-      may: false,
-      handOver: true,
-      member,
-      right,
-      why: `This is your own forge account, and the bridge's role map gives ${rightLabel(right).toLowerCase()} the forge's admin role here, so adopting it would grant you an elevated right yourself, which separation of duties refuses. Hand the command below to another owner or administrator.`,
     };
   }
   if (consentClass("drift.resolve", right) !== "normal" && !superAdmin) {

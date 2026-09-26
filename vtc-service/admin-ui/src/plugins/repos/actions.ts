@@ -71,7 +71,9 @@ export const TASK_URI: Record<GitNsAction, string> = {
   "repo.transfer": "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
   "repo.archive": "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
   "repo.create": "https://trusttasks.org/spec/git-ns/repo/create/0.3",
-  "drift.resolve": "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+  // 0.3: an adopt names the member who receives the right (`subject`), and
+  // the VTC refuses a 0.1 adopt, which names nobody.
+  "drift.resolve": "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
   "roles.reproject": "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
 };
 
@@ -553,6 +555,7 @@ function driftResolve(
   action: "adopt" | "revert",
   item: GitNsDriftItem,
   reason?: string,
+  subject?: string,
 ): { payload: Record<string, unknown>; command: string } {
   const drift: Record<string, unknown> = { type: item.type };
   const args: (Word | string | { opt: string })[] = [
@@ -571,6 +574,10 @@ function driftResolve(
     args.push(o("observed", item.observed));
   }
   const payload: Record<string, unknown> = { resource, drift, action };
+  if (subject) {
+    payload.subject = subject;
+    args.push(o("subject", subject));
+  }
   const r = reason?.trim();
   if (r) {
     payload.reason = r;
@@ -615,7 +622,11 @@ export function driftRevertTask(
  *
  * Selected as a revert is, and `observed` is REQUIRED here: the VTC derives
  * the right from it and adopts nothing if the forge now shows something else
- * (`driftNotFound`). The reason, if any, becomes the right's `reason`.
+ * (`driftNotFound`). `member` goes in as `subject` — the recipient the
+ * operator was shown — and the VTC adopts nothing unless the account is still
+ * linked to exactly that member (`subjectChanged`), so a relink between
+ * reading and signing never grants to someone nobody saw. The reason, if any,
+ * becomes the right's `reason`.
  */
 export function driftAdoptTask(
   resource: string,
@@ -624,11 +635,11 @@ export function driftAdoptTask(
   right: GitNsRight,
   reason?: string,
 ): SignedTask {
-  const { payload, command } = driftResolve(resource, "adopt", item, reason);
+  const { payload, command } = driftResolve(resource, "adopt", item, reason, member);
   return {
     action: "drift.resolve",
     title: `Adopt drift on ${shortName(resource)}`,
-    effect: `The member is granted ${rightLabel(right).toLowerCase()} (${right}) here, published to the Trust Registry, and the forge keeps the role; the item leaves the outstanding drift and the bridge inspects the repository again. Refused if the forge no longer shows what was read here, or if the account is no longer a current member's.`,
+    effect: `The member is granted ${rightLabel(right).toLowerCase()} (${right}) here, published to the Trust Registry, and the forge keeps the role; the item leaves the outstanding drift and the bridge inspects the repository again. Refused if the forge no longer shows what was read here, or if the account is now linked to anyone but this member.`,
     taskUri: TASK_URI["drift.resolve"],
     payload,
     consent: consentClass("drift.resolve", right),
