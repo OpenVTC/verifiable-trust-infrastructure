@@ -61,7 +61,7 @@ use tracing::{debug, info, warn};
 use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
 use trust_tasks_rs::specs::task_consent::request::v0_1 as request;
 use vti_common::audit::{AuditEvent, TaskConsentData};
-use vti_common::capability_client::{TRUST_TASK_ENVELOPE_TYPE, build_document};
+use vti_common::capability_client::build_document;
 use vti_common::error::AppError;
 use vti_common::task_consent::effects::{Effect, StatePin};
 use vti_common::task_consent::{self, PendingTaskConsent, TaskConsentGrant};
@@ -663,26 +663,20 @@ async fn sign_requests(
 /// the relay copy, an approver answers later with a separate decision, and a
 /// push failure must never become a refusal of something else.
 async fn push(state: &AppState, requests: &[Value]) {
-    let Some(vtc_did) = state.config.read().await.vtc_did.clone() else {
-        return;
-    };
     for doc in requests {
         let Some(approver) = doc.get("recipient").and_then(Value::as_str) else {
             continue;
         };
-        let envelope = affinidi_messaging_didcomm::Message::build(
-            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            TRUST_TASK_ENVELOPE_TYPE.to_string(),
+        // Over whichever transport the approver speaks (`crate::member_push`).
+        // Queued is all an `Ok` means (R1.1); the requester holds the relay copy.
+        if let Err(e) = crate::member_push::push_trust_task(
+            state,
+            approver,
             doc.clone(),
+            Duration::from_secs(PENDING_TTL_SECS),
         )
-        .from(vtc_did.clone())
-        .to(approver.to_string())
-        .finalize();
-        if let Err(e) = state
-            .send_to_member_by(approver, envelope, Duration::from_secs(PENDING_TTL_SECS))
-            .await
+        .await
         {
-            // Queued-locally is all an `Ok` would have meant anyway (R1.1).
             debug!(approver, error = %e, "consent request not pushed; the requester can relay it");
         }
     }
@@ -909,23 +903,16 @@ async fn try_notify_granted(
         .map_err(|e| AppError::Internal(format!("serialise granted notice: {e}")))?;
     signer.sign_doc(&mut doc).await?;
 
-    let envelope = affinidi_messaging_didcomm::Message::build(
-        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        TRUST_TASK_ENVELOPE_TYPE.to_string(),
-        doc,
-    )
-    .from(vtc_did)
-    .to(pending.requester_did.clone())
-    .finalize();
+    // Over whichever transport the requester speaks (`crate::member_push`).
     // The grant lives `GRANT_TTL_SECS`; a notice delivered after it lapsed
     // would point at nothing.
-    state
-        .send_to_member_by(
-            &pending.requester_did,
-            envelope,
-            Duration::from_secs(GRANT_TTL_SECS),
-        )
-        .await?;
+    crate::member_push::push_trust_task(
+        state,
+        &pending.requester_did,
+        doc,
+        Duration::from_secs(GRANT_TTL_SECS),
+    )
+    .await?;
     info!(requester = %pending.requester_did, "granted notice queued");
     Ok(())
 }

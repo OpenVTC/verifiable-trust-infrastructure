@@ -166,9 +166,21 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
 
     let mut unsigned = doc.clone();
     unsigned.proof = None;
-    di.verify(&unsigned, resolver, VerifyOptions::new())
-        .await
-        .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
+    if let Err(first) = di.verify(&unsigned, resolver, VerifyOptions::new()).await {
+        // Checked against a cached document, a failure may only mean the
+        // signer rotated since it was cached — the key id kept, its material
+        // replaced. Re-resolve once, fresh, and verify again; fail closed on
+        // whatever that says (VTI-KEY-134). A document fetched for this call is
+        // not fetched again, and the refresh is rate-limited per DID
+        // (`FRESH_RESOLVE_MIN_INTERVAL`), so a stream of bad proofs cannot turn
+        // this verifier into a fetch amplifier.
+        if !resolver.refresh_if_cached(&signer_did).await {
+            return Err(DiProofError::VerifyFailed(first.to_string()));
+        }
+        di.verify(&unsigned, resolver, VerifyOptions::new())
+            .await
+            .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
+    }
 
     Ok(signer_did)
 }

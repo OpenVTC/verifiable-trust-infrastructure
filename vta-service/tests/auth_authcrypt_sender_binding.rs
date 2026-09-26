@@ -99,22 +99,22 @@ async fn challenge(f: &Fixture, did: &str) -> (String, String) {
 /// cannot stand in for the one under test.
 #[derive(Clone, Copy, Debug)]
 enum Refusal {
-    /// `AuthcryptError::ApuMismatch`
-    ApuMismatch,
-    /// `AuthcryptError::InvalidSenderKeyId`
-    InvalidSenderKeyId,
-    /// `AuthcryptError::NotAuthcrypt`
+    /// The messaging library (didcomm 0.15.9+) bound the authcrypt sender to
+    /// the key that encrypted the message and refused the envelope. It does so
+    /// before the VTA's own guard runs, which stays as defence in depth.
+    SenderBinding,
+    /// `AuthcryptError::NotAuthcrypt`: the outer envelope is not authcrypt.
     NotAuthcrypt,
-    /// The messaging library refused the envelope during unpack, before the
-    /// guard ran (the envelope does not decrypt or fails its own checks).
+    /// The messaging library refused the envelope during unpack for another
+    /// reason, before the guard ran (the envelope does not decrypt or fails its
+    /// own checks).
     Unpack,
 }
 
 impl Refusal {
     fn marker(self) -> &'static str {
         match self {
-            Refusal::ApuMismatch => "does not encode skid",
-            Refusal::InvalidSenderKeyId => "has no usable sender key id",
+            Refusal::SenderBinding => "authcrypt sender key binding failed",
             Refusal::NotAuthcrypt => "must be an authenticated (authcrypt) DIDComm envelope",
             Refusal::Unpack => "failed to unpack message",
         }
@@ -173,7 +173,7 @@ async fn forged_apu_sender_is_refused() {
         &session_id,
         forged,
         "a skid/apu-split envelope",
-        Refusal::ApuMismatch,
+        Refusal::SenderBinding,
     )
     .await;
 }
@@ -217,14 +217,14 @@ async fn inconsistent_sender_key_headers_are_refused() {
             Skid::Str(&f.victim.did),
             Some(f.victim.did.clone().into_bytes()),
             true,
-            Refusal::InvalidSenderKeyId,
+            Refusal::SenderBinding,
         ),
         (
             "apu naming another key of the sender DID",
             Skid::Str(&f.attacker.kid),
             Some(format!("{}#other", f.victim.did).into_bytes()),
             false,
-            Refusal::ApuMismatch,
+            Refusal::SenderBinding,
         ),
     ];
     for (what, skid, apu, as_victim, expected) in cases {
@@ -309,7 +309,13 @@ async fn anoncrypt_wrapped_authcrypt_is_refused() {
             &session_id,
             wrapped,
             &format!("anoncrypt({what} authcrypt)"),
-            Refusal::NotAuthcrypt,
+            // The library refuses a forged inner sender outright; a genuine
+            // one unpacks, and the guard refuses the anoncrypt outer layer.
+            if what == "forged" {
+                Refusal::SenderBinding
+            } else {
+                Refusal::NotAuthcrypt
+            },
         )
         .await;
     }
@@ -329,7 +335,7 @@ async fn refresh_with_forged_apu_sender_is_refused() {
         (&f.vta.kid, &vta_pub),
     );
     let (status, body) = request(&f.router, post("/auth/refresh", "text/plain", forged)).await;
-    assert_refusal("forged refresh", status, &body, Refusal::ApuMismatch);
+    assert_refusal("forged refresh", status, &body, Refusal::SenderBinding);
 }
 
 /// Vault unseal (`vault/upsert` with a `didcomm-authcrypt` sealed secret)
@@ -353,11 +359,11 @@ async fn vault_unseal_refuses_forged_apu_sender() {
     let forged = forge_authcrypt(&plaintext, &attacker, &caller.kid, (&vta.kid, &vta_pub));
     match unseal_secret(&atm, &caller.did, &forged).await {
         Err(UnsealError::UnpackFailed(msg)) => assert!(
-            msg.contains(Refusal::ApuMismatch.marker()),
-            "expected the ApuMismatch refusal, got: {msg}"
+            msg.contains(Refusal::SenderBinding.marker()),
+            "expected the SenderBinding refusal, got: {msg}"
         ),
         Ok(_) => panic!("a forged sealed secret must not open"),
-        Err(_) => panic!("a forged sealed secret must be refused by the sender guard"),
+        Err(_) => panic!("a forged sealed secret must be refused by the sender binding"),
     }
 
     // The caller's own sealed secret still opens.

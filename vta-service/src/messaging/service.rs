@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
 use affinidi_messaging_core::{Inbound, InboundKind, MessageTransport, Protocol, ReceivedMessage};
 #[cfg(feature = "didcomm")]
 use affinidi_messaging_delivery::Delivery;
@@ -90,10 +89,16 @@ pub async fn build_messaging(
     let mut builder = TDKConfig::builder().with_load_environment(false);
     if let Some(dr) = did_resolver {
         builder = builder.with_did_resolver(dr.clone());
-    } else if let Some(url) = resolver_url {
-        let resolver_config = DIDCacheConfigBuilder::default()
-            .with_network_mode(url)
-            .build();
+    } else {
+        // No app resolver (auth init failed). Build one with the same bounds a
+        // configured node gets rather than the SDK's unbounded-by-us defaults,
+        // so this path cannot hold a peer's document longer than the rest of
+        // the node would.
+        let resolver_config = vta_sdk::resolver::build_verifier_did_cache_config(
+            resolver_url,
+            vti_common::config::DID_CACHE_TTL_DEFAULT_SECS,
+            vti_common::config::DID_CACHE_CAPACITY_DEFAULT,
+        );
         builder = builder.with_did_resolver_config(resolver_config);
     }
     let tdk_config = builder

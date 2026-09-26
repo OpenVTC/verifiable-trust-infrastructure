@@ -41,9 +41,6 @@ chrono = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 # Multibase (base58btc) encoding of the signature into `proofValue`.
 multibase = { workspace = true }
-# The match code is hex over the decoded digest bytes, not over the multibase
-# string — see `consent::match_code_from_digest`.
-hex = { workspace = true }
 # `CachedDidResolver` — the VerificationMethodResolver that resolves a request
 # proof's verificationMethod through the crate's shared DID resolver cache, so
 # the device can verify a VTA-signed request no matter the issuer's DID method.
