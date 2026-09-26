@@ -3646,6 +3646,21 @@ async fn reseat_restores_an_admin_to_a_headless_namespace_and_answers_every_code
     let out = reseat(&f, &dana, &ns, &dana.did).await;
     assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
     assert!(String::from_utf8_lossy(&out.body).contains("git-ns/right/break-glass"));
+    // A console key acting for Dana is Dana: it cannot reseat to her either.
+    let console = Party::new();
+    crate::acl::console_key::enrol_delegation(
+        &f.vtc.state.console_keys_ks,
+        &f.vtc.state.acl_ks,
+        &console.did,
+        &dana.did,
+        Some("browser".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    let out = reseat(&f, &console, &ns, &dana.did).await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    assert!(String::from_utf8_lossy(&out.body).contains("git-ns/right/break-glass"));
     let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
     assert!(!super::rules::admins(&snap, &ns, super::ops::now()).contains(&dana.did));
     // Step 4 — members only.
