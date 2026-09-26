@@ -2,7 +2,7 @@
 name = "vta-policy"
 description = "VTA policy subsystem — the regorus (Rego) engine, the default policy bundle, consent model, and decision evaluators"
 readme = "README.md"
-version = "0.3.22"
+version = "0.3.23"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -20,12 +20,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.25" }
-vta-config = { path = "../vta-config", version = "0.6" }
+vti-common = { path = "../vti-common", version = "0.26" }
+vta-config = { path = "../vta-config", version = "0.7" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.3" }
 # Types only (default features off): the declarative approvals model + its Rego
 # synthesizer, shared with the CLI so both sides derive the same module.
-vta-sdk = { path = "../vta-sdk", version = "0.52", default-features = false }
+vta-sdk = { path = "../vta-sdk", version = "0.53", default-features = false }
 regorus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
