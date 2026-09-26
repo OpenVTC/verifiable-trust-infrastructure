@@ -451,6 +451,7 @@ impl TestVtcBuilder {
             step_up_marks_ks,
             task_consent_ks,
             member_pushes_ks,
+            tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
             backup_bundles_ks,
             registry_client: None,
             registry_health: crate::registry::RegistryHealth::new(),
@@ -1801,6 +1802,13 @@ mod didcomm_harness {
         /// because the DID has to be a local mediator account before its
         /// socket can authenticate.
         fn mint(mediator_did: &str) -> (String, Vec<Secret>) {
+            Self::mint_with(Some(mediator_did))
+        }
+
+        /// Mint the identity, advertising `TSPTransport` at `mediator_did`, or
+        /// no service at all when `None` — a peer the VTC can only reach over
+        /// TSP once it has seen it there, as it would a `did:key` wallet.
+        fn mint_with(mediator_did: Option<&str>) -> (String, Vec<Secret>) {
             use affinidi_tdk::dids::{
                 OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
             };
@@ -1808,9 +1816,8 @@ mod didcomm_harness {
             // `TSPTransport` naming the mediator DID — the workspace convention
             // for `#tsp`, and what makes the VTC route through its own mediator
             // rather than nest.
-            let (did, secrets) = DID::generate_did_peer_with_services(
-                peer_key_roles(),
-                Some(vec![PeerService {
+            let services = mediator_did.map(|mediator_did| {
+                vec![PeerService {
                     type_: "TSPTransport".into(),
                     endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
                         uri: mediator_did.to_string(),
@@ -1818,9 +1825,10 @@ mod didcomm_harness {
                         routing_keys: vec![],
                     })),
                     id: None,
-                }]),
-            )
-            .expect("mint a TSP-advertising did:peer");
+                }]
+            });
+            let (did, secrets) = DID::generate_did_peer_with_services(peer_key_roles(), services)
+                .expect("mint the TSP peer's did:peer");
             assert!(
                 did.len() < 1_000,
                 "TSP peer did:peer is {} bytes, over the stock resolver's 1000-byte limit",
@@ -2116,7 +2124,27 @@ mod didcomm_harness {
         /// counts a collection it saw the message waiting for.
         #[cfg(feature = "tsp")]
         pub async fn register_tsp_peer(&self) -> PendingTspPeer {
-            let (did, secrets) = TestTspPeer::mint(self.mediator.did());
+            self.register_tsp_peer_with(TestTspPeer::mint(self.mediator.did()))
+                .await
+        }
+
+        /// A peer that receives over TSP but whose DID document advertises no
+        /// transport at all — reachable over TSP only once the VTC has learned
+        /// it is listening there (`tsp_reach`). Connected; the caller owns its
+        /// shutdown.
+        #[cfg(feature = "tsp")]
+        pub async fn connect_silent_tsp_peer(&self) -> TestTspPeer {
+            self.register_tsp_peer_with(TestTspPeer::mint_with(None))
+                .await
+                .connect()
+                .await
+        }
+
+        #[cfg(feature = "tsp")]
+        async fn register_tsp_peer_with(
+            &self,
+            (did, secrets): (String, Vec<Secret>),
+        ) -> PendingTspPeer {
             self.mediator
                 .register_local_did(&did)
                 .await

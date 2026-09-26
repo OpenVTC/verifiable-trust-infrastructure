@@ -683,6 +683,10 @@ async fn handle_tsp(
         warn!("inbound TSP frame has no cryptographically-verified sender VID — dropping");
         return;
     };
+    // A verified TSP frame is proof the sender is listening on TSP now, which
+    // its DID document cannot say for a `did:key`. Member pushes read this to
+    // reach such a member over TSP first (`crate::member_push`).
+    state.tsp_reach.record(&sender_vid);
 
     // A relationship request is not traffic: it carries no envelope, and the
     // transport has already RECORDED it (which is what admits the application

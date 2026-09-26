@@ -33,6 +33,7 @@ fn context(state: &AppState) -> PushContext<'_> {
             own_did: &m.vtc_did,
         }),
         tsp: cfg!(feature = "tsp"),
+        learned_tsp: Some(&state.tsp_reach),
     }
 }
 
