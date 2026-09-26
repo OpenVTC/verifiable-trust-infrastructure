@@ -4026,6 +4026,8 @@ async fn drift_adopt_of_ones_own_account_into_an_elevated_right_is_a_self_grant(
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     adopt_with_forge_id(&f, RES, "100").await;
+    // The bridge reports its (default) role map, so the adopt reaches rule 7.
+    report_default_map(&f, &ns).await;
     let admin_acct = json!({ "forge": "github.com", "id": "5550077", "login": "admin-a" });
     link_account(&f, &ns, &f.admin, "5550077", "admin-a").await;
     report_drift(
@@ -6174,8 +6176,12 @@ async fn a_revert_is_refused_for_an_admin_who_is_also_an_explicit_owner() {
     assert_eq!(code(&out), "git-ns/drift/resolve:notRevertible");
 }
 
+/// #1729's "a namespace admin adopts their own forge admin role", under
+/// separation of duties (grant 0.3 rule 7): the self-adoption of `own` is
+/// refused, and another community administrator adopts it for them, after
+/// which it is projected.
 #[tokio::test]
-async fn a_namespace_admin_adopts_their_own_forge_admin_role_as_ownership() {
+async fn a_namespace_admins_own_forge_admin_role_is_adopted_by_someone_else() {
     let (f, ns) = drift_fixture(json!([])).await;
     link_account(&f, &ns, &f.admin, "5550777", "admin-a").await;
     report_drift(
@@ -6184,13 +6190,13 @@ async fn a_namespace_admin_adopts_their_own_forge_admin_role_as_ownership() {
         json!([{ "type": "roleAdded", "resource": RES, "account": admin_acct(), "observed": "admin" }]),
     )
     .await;
-    let body = ok(&resolve(
-        &f,
-        &f.admin,
-        json!({ "type": "roleAdded", "account": admin_acct(), "observed": "admin" }),
-        "adopt",
-    )
-    .await);
+    let sel = json!({ "type": "roleAdded", "account": admin_acct(), "observed": "admin" });
+    let out = resolve(&f, &f.admin, sel.clone(), "adopt").await;
+    assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+    let dana = Party::new();
+    seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
+    ok(&grant(&f, &f.admin, &dana.did, "git.ns.admin", "github.com/acme").await);
+    let body = ok(&resolve(&f, &dana, sel, "adopt").await);
     assert_eq!(body["right"]["subject"], json!(f.admin.did));
     assert_eq!(body["right"]["right"], "git.repo.own");
     // Now recorded in their own name, it is projected.
