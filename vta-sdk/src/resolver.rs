@@ -126,6 +126,28 @@ pub fn build_did_cache_config(url: Option<&str>) -> DIDCacheConfig {
     builder.build()
 }
 
+/// [`build_did_cache_config`] for a long-running verifier, with the document
+/// cache bounded explicitly rather than left on the SDK's defaults.
+///
+/// `cache_ttl_secs` is how long a mutable DID's document is served from the
+/// cache — and so how long a key removed from it keeps verifying on this node.
+/// A service passes its `[did_cache]` section here; see
+/// `vti_common::config::DidCacheConfig` for the bound and its reasoning.
+pub fn build_verifier_did_cache_config(
+    url: Option<&str>,
+    cache_ttl_secs: u32,
+    cache_capacity: u32,
+) -> DIDCacheConfig {
+    let mut builder = DIDCacheConfigBuilder::default()
+        .with_host_policy(webvh_host_policy())
+        .with_cache_ttl(cache_ttl_secs)
+        .with_cache_capacity(cache_capacity);
+    if let Some(u) = url {
+        builder = builder.with_network_mode(u);
+    }
+    builder.build()
+}
+
 /// Read `PNM_RESOLVER_URL` and build a `DIDCacheConfig` accordingly.
 /// Empty string or unset means local mode.
 pub fn build_did_cache_config_from_env() -> DIDCacheConfig {

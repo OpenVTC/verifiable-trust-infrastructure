@@ -259,6 +259,13 @@ pub(super) async fn preconditions(
     request: &VerifiedBootstrapRequest,
 ) -> Result<(), AppError> {
     auth.require_admin()?;
+    // Provisioning delivers private keys derived from this VTA's seed to the
+    // holder — an export (VTI-VTA-003), however well sealed — so it needs the
+    // capability every other export needs. Here, before anything is minted,
+    // so the did:key branch (whose material never passes `get_key_secret`) is
+    // gated too, and a refused caller leaves nothing half-made behind.
+    crate::operations::keys::ensure_may_export(&state.acl_ks, auth, "provision-integration")
+        .await?;
     auth.require_context(context)?;
 
     require_scope_authority(auth, admin_scope)?;

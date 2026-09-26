@@ -27,10 +27,149 @@ use vta_sdk::protocol::{
 
 use crate::display::{NAME_HEADER, NameBook, UNNAMED, book_from_acl, inline, shorten_did};
 
+// ── Trust-Task path (DIDComm / TSP) ────────────────────────────────
+//
+// Over DIDComm and TSP the VTA serves only signed Trust Tasks, so the
+// `vta/services/*` tasks carry these commands there. REST keeps its routes.
+
+/// Whether this client reaches the VTA's Trust-Task surface by messaging rather
+/// than REST — in which case the services commands go as Trust Tasks.
+fn over_messaging(client: &VtaClient) -> bool {
+    !matches!(
+        client.trust_task_transport(),
+        vta_sdk::client::SurfaceTransport::Rest
+    )
+}
+
+async fn services_task(
+    client: &VtaClient,
+    type_uri: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(client.dispatch_trust_task(type_uri, payload, 120).await?)
+}
+
+fn str_of<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    v.get(key).and_then(serde_json::Value::as_str)
+}
+
+/// Print a `ServiceMutationResult` from `vta/services/{enable,update,disable}`.
+fn print_mutation(headline: &str, response: &serde_json::Value) {
+    let result = response.get("result").unwrap_or(response);
+    println!("{headline}");
+    if let Some(v) = str_of(result, "logEntryVersionId") {
+        println!("  New version ID: {v}");
+    }
+    if let Some(v) = str_of(result, "effectiveAt") {
+        println!("  Effective at:   {v}");
+    }
+    if let Some(v) = str_of(result, "drainingMediator") {
+        println!("  Draining:       {v}");
+    }
+    if let Some(v) = str_of(result, "drainUntil") {
+        println!("  Drain deadline: {v}");
+    }
+    let serverless = result
+        .get("serverless")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if let Some(vta_did) = str_of(result, "vtaDid") {
+        print_serverless_hint(serverless, vta_did);
+    }
+}
+
+/// Print a `RollbackResult` from `vta/services/rollback`.
+fn print_rollback_task(kind: &str, response: &serde_json::Value) {
+    let result = response.get("result").unwrap_or(response);
+    let outcome = str_of(result, "kind").unwrap_or("unknown");
+    if outcome == "noOp" {
+        println!("{kind} rollback: nothing to do — the previous state already holds.");
+        return;
+    }
+    println!("{kind} rolled back ({outcome}).");
+    if let Some(v) = str_of(result, "logEntryVersionId") {
+        println!("  New version ID: {v}");
+    }
+    if let Some(v) = str_of(result, "effectiveAt") {
+        println!("  Effective at:   {v}");
+    }
+    if let Some(v) = str_of(result, "drainingMediator") {
+        println!("  Draining:       {v}");
+    }
+    if let Some(v) = str_of(result, "drainUntil") {
+        println!("  Drain deadline: {v}");
+    }
+}
+
+async fn mutate(
+    client: &VtaClient,
+    type_uri: &str,
+    service: &str,
+    config: Option<serde_json::Value>,
+    headline: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut payload = serde_json::json!({ "service": service });
+    if let Some(c) = config {
+        payload["config"] = c;
+    }
+    let response = services_task(client, type_uri, payload).await?;
+    print_mutation(headline, &response);
+    Ok(())
+}
+
+async fn rollback(
+    client: &VtaClient,
+    service: &str,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = services_task(
+        client,
+        vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
+        serde_json::json!({ "service": service }),
+    )
+    .await?;
+    print_rollback_task(label, &response);
+    Ok(())
+}
+
 // ── services list ──────────────────────────────────────────────────
 
 /// `pnm services list` — show current REST + DIDComm advertisements.
 pub async fn cmd_services_list(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        let response = services_task(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_LIST_1_0,
+            serde_json::json!({}),
+        )
+        .await?;
+        println!("Services advertised on this VTA's DID document:");
+        println!();
+        for state in response
+            .get("services")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let kind = str_of(state, "kind").unwrap_or("?");
+            let on = if state.get("enabled").and_then(serde_json::Value::as_bool) == Some(true) {
+                "on"
+            } else {
+                "off"
+            };
+            println!("  {kind:<9} {on}");
+            if let Some(m) = str_of(state, "mediatorDid") {
+                println!("    Mediator:     {m}");
+            }
+            if let Some(u) = str_of(state, "url") {
+                println!("    URL:          {u}");
+            }
+            if let Some(d) = str_of(state, "drainsUntil") {
+                println!("    Drains until: {d}");
+            }
+        }
+        return Ok(());
+    }
     let response = client.list_services().await?;
 
     println!("Services advertised on this VTA's DID document:");
@@ -86,6 +225,16 @@ pub async fn cmd_services_rest_enable(
     client: &VtaClient,
     url: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+            "rest",
+            Some(serde_json::json!({ "url": url })),
+            "REST enabled.",
+        )
+        .await;
+    }
     let req = EnableRestRequest::new(url);
     let resp = client.enable_rest(req).await?;
     println!("REST enabled.");
@@ -99,6 +248,16 @@ pub async fn cmd_services_rest_update(
     client: &VtaClient,
     url: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0,
+            "rest",
+            Some(serde_json::json!({ "url": url })),
+            "REST URL updated.",
+        )
+        .await;
+    }
     let req = UpdateRestRequest::new(url);
     let resp = client.update_rest(req).await?;
     println!("REST URL updated.");
@@ -111,6 +270,16 @@ pub async fn cmd_services_rest_update(
 pub async fn cmd_services_rest_disable(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0,
+            "rest",
+            None,
+            "REST disabled.",
+        )
+        .await;
+    }
     let resp = client.disable_rest(DisableRestRequest::default()).await?;
     println!("REST disabled.");
     println!("  New version ID: {}", resp.log_entry_version_id);
@@ -122,6 +291,9 @@ pub async fn cmd_services_rest_disable(
 pub async fn cmd_services_rest_rollback(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return rollback(client, "rest", "REST").await;
+    }
     let resp = client.rollback_rest(RollbackRestRequest::default()).await?;
     print_rollback_result("REST", &resp);
     Ok(())
@@ -138,6 +310,16 @@ pub async fn cmd_services_tsp_enable(
     client: &VtaClient,
     mediator_did: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+            "tsp",
+            Some(serde_json::json!({ "mediatorDid": mediator_did })),
+            "TSP enabled.",
+        )
+        .await;
+    }
     let req = EnableTspRequest::new(mediator_did);
     let resp = client.enable_tsp(req).await?;
     println!("TSP enabled.");
@@ -151,6 +333,16 @@ pub async fn cmd_services_tsp_update(
     client: &VtaClient,
     mediator_did: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0,
+            "tsp",
+            Some(serde_json::json!({ "mediatorDid": mediator_did })),
+            "TSP mediator DID updated.",
+        )
+        .await;
+    }
     let req = UpdateTspRequest::new(mediator_did);
     let resp = client.update_tsp(req).await?;
     println!("TSP mediator DID updated.");
@@ -163,6 +355,16 @@ pub async fn cmd_services_tsp_update(
 pub async fn cmd_services_tsp_disable(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0,
+            "tsp",
+            None,
+            "TSP disabled.",
+        )
+        .await;
+    }
     let resp = client.disable_tsp(DisableTspRequest::default()).await?;
     println!("TSP disabled.");
     println!("  New version ID: {}", resp.log_entry_version_id);
@@ -174,6 +376,9 @@ pub async fn cmd_services_tsp_disable(
 pub async fn cmd_services_tsp_rollback(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return rollback(client, "tsp", "TSP").await;
+    }
     let resp = client.rollback_tsp(RollbackTspRequest::default()).await?;
     print_rollback_result("TSP", &resp);
     Ok(())
@@ -185,6 +390,16 @@ pub async fn cmd_services_webauthn_enable(
     client: &VtaClient,
     url: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+            "webauthn",
+            Some(serde_json::json!({ "url": url })),
+            "WebAuthn enabled.",
+        )
+        .await;
+    }
     let req = vta_sdk::protocol::services::EnableWebauthnRequest::new(url);
     let resp = client.enable_webauthn(req).await?;
     println!("WebAuthn enabled.");
@@ -198,6 +413,16 @@ pub async fn cmd_services_webauthn_update(
     client: &VtaClient,
     url: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0,
+            "webauthn",
+            Some(serde_json::json!({ "url": url })),
+            "WebAuthn URL updated.",
+        )
+        .await;
+    }
     let req = vta_sdk::protocol::services::UpdateWebauthnRequest::new(url);
     let resp = client.update_webauthn(req).await?;
     println!("WebAuthn URL updated.");
@@ -215,6 +440,16 @@ pub async fn cmd_services_webauthn_disable(
          this VTA controls. Any operator currently using passkey login will need to re-enrol \
          after the next `services webauthn enable`."
     );
+    if over_messaging(client) {
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0,
+            "webauthn",
+            None,
+            "WebAuthn disabled.",
+        )
+        .await;
+    }
     let resp = client
         .disable_webauthn(vta_sdk::protocol::services::DisableWebauthnRequest::default())
         .await?;
@@ -228,6 +463,9 @@ pub async fn cmd_services_webauthn_disable(
 pub async fn cmd_services_webauthn_rollback(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return rollback(client, "webauthn", "WebAuthn").await;
+    }
     let resp = client
         .rollback_webauthn(vta_sdk::protocol::services::RollbackWebauthnRequest::default())
         .await?;
@@ -243,6 +481,20 @@ pub async fn cmd_services_didcomm_enable(
     force: bool,
     handshake_timeout_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        let mut config = serde_json::json!({ "mediatorDid": mediator_did, "force": force });
+        if let Some(t) = handshake_timeout_secs {
+            config["handshakeTimeoutSecs"] = t.into();
+        }
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+            "didcomm",
+            Some(config),
+            "DIDComm enabled.",
+        )
+        .await;
+    }
     let mut req = EnableDidcommRequest::new(&mediator_did);
     req.force = force;
     req.handshake_timeout_secs = handshake_timeout_secs;
@@ -283,6 +535,23 @@ pub async fn cmd_services_didcomm_update(
     force: bool,
     handshake_timeout_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        // `update` carries no drain TTL: the agent applies its own floor to a
+        // mediator change requested over messaging.
+        let _ = drain_ttl_secs;
+        let mut config = serde_json::json!({ "mediatorDid": new_mediator_did, "force": force });
+        if let Some(t) = handshake_timeout_secs {
+            config["handshakeTimeoutSecs"] = t.into();
+        }
+        return mutate(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0,
+            "didcomm",
+            Some(config),
+            "DIDComm mediator updated.",
+        )
+        .await;
+    }
     let mut req = UpdateDidcommRequest::new(&new_mediator_did, drain_ttl_secs);
     req.force = force;
     req.handshake_timeout_secs = handshake_timeout_secs;
@@ -306,6 +575,16 @@ pub async fn cmd_services_didcomm_disable(
     client: &VtaClient,
     drain_ttl_secs: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        let response = services_task(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0,
+            serde_json::json!({ "service": "didcomm", "drainTtlSecs": drain_ttl_secs }),
+        )
+        .await?;
+        print_mutation("DIDComm disabled.", &response);
+        return Ok(());
+    }
     let req = DisableDidcommRequest::new(drain_ttl_secs);
     let resp = client.disable_didcomm(req).await?;
     println!("DIDComm disabled.");
@@ -330,6 +609,9 @@ pub async fn cmd_services_didcomm_rollback(
     client: &VtaClient,
     drain_ttl_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return rollback(client, "didcomm", "DIDComm").await;
+    }
     let req = RollbackDidcommRequest { drain_ttl_secs };
     let resp = client.rollback_didcomm(req).await?;
     print_rollback_result("DIDComm", &resp);
@@ -358,6 +640,35 @@ async fn mediator_name_book(client: &VtaClient) -> NameBook {
 pub async fn cmd_services_didcomm_drain_list(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        let response = services_task(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0,
+            serde_json::json!({}),
+        )
+        .await?;
+        let entries: Vec<&serde_json::Value> = response
+            .get("entries")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .collect();
+        if entries.is_empty() {
+            println!("No mediators currently in drain.");
+            return Ok(());
+        }
+        println!("Drain set ({} mediator(s)):", entries.len());
+        println!();
+        println!("  {:<46}  DRAIN UNTIL", "MEDIATOR DID");
+        for e in entries {
+            println!(
+                "  {:<46}  {}",
+                shorten_did(str_of(e, "mediatorDid").unwrap_or("?")),
+                str_of(e, "drainsUntil").unwrap_or("?")
+            );
+        }
+        return Ok(());
+    }
     let resp = client.list_drain().await?;
     if resp.entries.is_empty() {
         println!("No mediators currently in drain.");
@@ -394,6 +705,20 @@ pub async fn cmd_services_didcomm_drain_cancel(
     client: &VtaClient,
     mediator_did: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        let response = services_task(
+            client,
+            vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0,
+            serde_json::json!({ "mediatorDid": mediator_did }),
+        )
+        .await?;
+        println!(
+            "Drain cancelled for {}.",
+            str_of(&response, "mediatorDid").unwrap_or(&mediator_did)
+        );
+        println!("  Listener was torn down immediately.");
+        return Ok(());
+    }
     let req = vta_sdk::protocol::DrainCancelRequest { mediator_did };
     let resp = client.drain_cancel(req).await?;
     println!("Drain cancelled for {}.", resp.mediator_did);
@@ -409,6 +734,13 @@ pub async fn cmd_services_report(
     until: Option<String>,
     format: ReportFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if over_messaging(client) {
+        return Err(
+            "`services report` is REST-only: the mediator telemetry report has no Trust Task. \
+             Reach it over REST:\n  <cli> --transport rest services report"
+                .into(),
+        );
+    }
     let report = client
         .mediator_report(since.as_deref(), until.as_deref())
         .await?;
@@ -607,6 +939,27 @@ impl std::str::FromStr for ReportFormat {
 
 #[cfg(test)]
 mod tests {
+    /// A REST client keeps the REST routes; the Trust-Task path is for the
+    /// messaging transports, where the VTA serves nothing else.
+    #[test]
+    fn a_rest_client_keeps_the_rest_routes() {
+        let client = vta_sdk::client::VtaClient::new("http://localhost:9999");
+        assert!(!super::over_messaging(&client));
+    }
+
+    /// The mutation result the `vta/services/*` tasks answer with renders
+    /// without panicking whatever members are present.
+    #[test]
+    fn a_trust_task_result_renders() {
+        super::print_mutation(
+            "REST enabled.",
+            &serde_json::json!({ "result": {
+                "logEntryVersionId": "2-abc",
+                "effectiveAt": "2026-01-01T00:00:00Z",
+            }}),
+        );
+        super::print_rollback_task("REST", &serde_json::json!({ "result": { "kind": "noOp" } }));
+    }
     /// Keyring VTI-36: the hint names the URL the log is resolved from.
     #[test]
     fn webvh_log_url_follows_the_did_to_https_transform() {

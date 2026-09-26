@@ -40,6 +40,51 @@ async fn read_entry(data_dir: &Path, did: &str) -> Option<VtcAclEntry> {
     get_acl_entry(&ks, did).await.expect("get_acl_entry")
 }
 
+/// VTI-APV-014: the offline commands are the break-glass — they skip the
+/// consent and attrition rules the daemon enforces — so each write leaves a
+/// record the daemon turns into an `AclBreakGlassWritten` audit row on its next
+/// boot. Taking the records spends them.
+#[tokio::test]
+async fn vti_apv_014_every_offline_write_is_queued_for_audit() {
+    let (_dir, cfg, data_dir) = fixture();
+
+    run_acl_add(AclAddArgs {
+        config_path: Some(cfg.clone()),
+        did: DID.into(),
+        role: "admin".into(),
+        label: None,
+        contexts: vec![],
+        expires: None,
+    })
+    .await
+    .expect("add");
+    run_acl_remove(Some(cfg.clone()), DID.into())
+        .await
+        .expect("remove");
+
+    let store = Store::open(&StoreConfig {
+        data_dir: data_dir.to_path_buf(),
+    })
+    .expect("open store");
+    let install = vtc_service::install::InstallTokenStore::new(
+        store.keyspace("install").expect("install ks"),
+    );
+    let queued = install.take_break_glass().await.expect("take");
+    assert_eq!(queued.len(), 2, "{queued:?}");
+    assert_eq!(queued[0].command, "vtc acl add");
+    assert_eq!(queued[0].action, "grant");
+    assert_eq!(queued[0].did, DID);
+    assert_eq!(queued[0].role, "admin");
+    assert_eq!(queued[1].command, "vtc acl remove");
+    assert_eq!(queued[1].action, "remove");
+    assert!(!queued[0].operator_hostname.is_empty());
+
+    assert!(
+        install.take_break_glass().await.expect("take").is_empty(),
+        "each is audited once"
+    );
+}
+
 #[tokio::test]
 async fn add_list_remove_round_trip() {
     let (_dir, cfg, data_dir) = fixture();

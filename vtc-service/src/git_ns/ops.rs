@@ -18,9 +18,9 @@ use serde_json::json;
 use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status,
 };
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_1 as job_wire;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_3 as job_wire;
 use trust_tasks_rs::specs::git_ns::namespace::{
-    bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
+    bind::v0_1 as bind, reseat::v0_2 as reseat, unbind::v0_1 as unbind,
 };
 use trust_tasks_rs::specs::git_ns::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
@@ -815,7 +815,7 @@ pub async fn unbind(
     }))?)
 }
 
-// ── git-ns/namespace/reseat/0.1 ─────────────────────────────────────────────
+// ── git-ns/namespace/reseat/0.3 (0.2's payload types) ─────────────────────
 
 /// Recovery for a headless namespace: a community administrator grants
 /// `git.ns.admin` on it to a current member. The capability is worth nothing
@@ -875,9 +875,25 @@ pub async fn namespace_reseat(
             ),
         ));
     }
-    // Step 4 — fixed rule 5.
     let subject = p.subject.to_string();
     did_core("subject", &subject)?;
+    // Step 4 — separation of duties, before the members-only floor so a
+    // self-reseat hears why. Reseating a headless namespace to yourself is a
+    // self-grant of `git.ns.admin`, an elevated right: another administrator
+    // reseats it, or you say so explicitly with `git-ns/right/break-glass`.
+    // `actor.did` is the DID the signer resolved to (`acting_as`), so a
+    // delegated key cannot reseat to its principal either.
+    if subject == actor.did {
+        return Err(declared(
+            super::reseat_v0_3::SELF_GRANT_NOT_ALLOWED,
+            format!(
+                "you cannot reseat {resource} to yourself: that is a self-grant of git.ns.admin \
+                 (separation of duties). Ask another community administrator to reseat it, or \
+                 record it explicitly with git-ns/right/break-glass"
+            ),
+        ));
+    }
+    // Step 4 — fixed rule 5.
     let subject_standing = standing(state, &subject).await?;
     if !subject_standing.member {
         return Err(declared(
@@ -950,10 +966,8 @@ pub async fn namespace_reseat(
     row.granter_was_member = actor.member;
     set.rows.push(row.clone());
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
-    // Step 8 — the namespace-level forge projection, as for any ns.admin.
-    let mut updated = ns.clone();
-    updated.roles_digest = None;
-    store::put_namespace(&state.git_ns.ks, &updated).await?;
+    // Step 8 — no forge projection to queue: `git.ns.admin` projects to no
+    // forge role.
 
     // Step 7.
     audit(
@@ -1513,7 +1527,7 @@ pub async fn repo_transfer(
     // What is handed over is what the caller holds, expiry included: the
     // recipient ends with ownership at least as durable as the caller's and
     // never more. An expiring record does not count toward the last-owner
-    // invariant (as `git-ns/namespace/reseat/0.1` states it for the last
+    // invariant (as `git-ns/namespace/reseat/0.3` states it for the last
     // admin, and this VTC applies to owners alike), so a permanent owner who
     // hands over to someone holding only an expiring record must leave them a
     // permanent one — or the repository is ownerless when it lapses.

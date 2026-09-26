@@ -81,11 +81,14 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // `accept_from_proven_sender` explains why that is not the transport's call
     // to make, and what it cost when it was. TSP seals to the recipient VID,
     // same guarantee as authcrypt.
-    let outcome = crate::trust_tasks::accept_from_proven_sender(
-        app_state,
-        sender_vid,
-        payload,
-        crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+    let outcome = crate::trust_tasks::transport::with_binding(
+        "tsp",
+        crate::trust_tasks::accept_from_proven_sender(
+            app_state,
+            sender_vid,
+            payload,
+            crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+        ),
     )
     .await;
     info!(
@@ -321,25 +324,44 @@ mod tests {
     /// so the answer must reach it and nothing may go back.
     #[tokio::test]
     async fn a_reply_reaches_its_waiter_without_the_sender_needing_acl_standing() {
+        use affinidi_tdk::secrets_resolver::secrets::Secret;
         let (app_state, _dir) = build_signing_test_app_state().await;
 
-        const THREAD: &str = "urn:uuid:11111111-1111-1111-1111-111111111111";
-        let mut waiting = app_state.pending_replies.register(THREAD);
+        // The hosting server: a real key, so its reply can carry the proof a
+        // waiter requires. No ACL entry.
+        let mut secret = Secret::generate_ed25519(None, Some(&[0x33; 32]));
+        let mb = secret.get_public_keymultibase().unwrap();
+        let host = format!("did:key:{mb}");
+        secret.id = format!("{host}#{mb}");
 
-        let response = serde_json::json!({
+        const THREAD: &str = "urn:uuid:11111111-1111-1111-1111-111111111111";
+        let mut waiting = app_state.pending_replies.register(THREAD, &host);
+
+        let mut response = serde_json::json!({
             "id": "urn:uuid:22222222-2222-2222-2222-222222222222",
             "threadId": THREAD,
             "type": "https://trusttasks.org/spec/did-management/did/problem-report/0.1",
+            "issuer": host,
             "payload": {},
-        })
-        .to_string();
+        });
 
-        let body = dispatch_one(
-            &app_state,
-            &framed(&response),
-            "did:webvh:zHostingServerWithNoAclEntry",
+        // Unsigned: it does not release the waiter.
+        let body = dispatch_one(&app_state, &framed(&response.to_string()), &host).await;
+        let _ = body;
+        assert!(
+            waiting.try_recv().is_err(),
+            "an unsigned document on the thread must not release the waiter"
+        );
+
+        let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+            &response,
+            &secret,
+            affinidi_data_integrity::SignOptions::new(),
         )
-        .await;
+        .await
+        .unwrap();
+        response["proof"] = serde_json::to_value(proof).unwrap();
+        let body = dispatch_one(&app_state, &framed(&response.to_string()), &host).await;
 
         assert!(
             body.is_empty(),
@@ -348,7 +370,7 @@ mod tests {
         );
         assert!(
             waiting.try_recv().is_ok(),
-            "the waiting request must receive the answer it asked for"
+            "the waiting request must receive the answer its peer signed"
         );
     }
 

@@ -134,12 +134,38 @@ async fn round_trip_over_didcomm() {
 /// The chunk tasks through the real spine, driven step by step: a manifest,
 /// a non-consuming read, an out-of-range index refused with the declared code,
 /// and completion releasing the bundle so a further read is refused.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn chunk_tasks_are_served_by_the_dispatch_spine() {
+///
+/// Over DIDComm, so it runs on 8 MiB worker stacks for the same reason as
+/// [`a_backup_round_trips_over_didcomm_in_chunks`].
+#[test]
+fn chunk_tasks_are_served_by_the_dispatch_spine() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("test runtime")
+        .block_on(chunk_tasks_over_didcomm());
+}
+
+async fn chunk_tasks_over_didcomm() {
     common::init_tracing();
 
-    let mock = MockVta::start().await;
-    let client = mock.signing_client(0x82, "admin", Vec::new()).await;
+    // Backup export tasks are refused over a hop-by-hop transport, so the
+    // chunk tasks are driven over DIDComm, as a real producer sends them.
+    let mock = MockVta::start_with_transports().await;
+    let (client_did, client_priv) = did_key_from_seed(0x82);
+    mock.register_mediator_account(&client_did).await;
+    mock.grant_super_admin(&client_did).await;
+    let client = VtaClient::connect_didcomm(
+        &client_did,
+        &client_priv,
+        mock.vta_did(),
+        mock.mediator_did(),
+        None,
+    )
+    .await
+    .expect("client connects to the VTA over DIDComm");
 
     let response: initiate_export_1_1::Response = client
         .post_trust_task(
@@ -202,6 +228,7 @@ async fn chunk_tasks_are_served_by_the_dispatch_spine() {
         "expected vta/backup/get-chunk:terminalState, got {err:?}"
     );
 
+    client.shutdown().await;
     mock.shutdown().await;
 }
 

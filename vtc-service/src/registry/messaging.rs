@@ -329,7 +329,7 @@ impl MessagingRegistryClient {
 
         // Register before sending: a reply can land while the send is still
         // returning.
-        let receiver = self.replies.register(&doc.id);
+        let receiver = self.replies.register(&doc.id, &self.registry_did);
         // Whether this send rode TSP — read before the move-y `match protocol`
         // below, and used by the D4 reply-timeout reset (§7.2.2 recovery). Only
         // the `tsp` build has a relationship to repair.
