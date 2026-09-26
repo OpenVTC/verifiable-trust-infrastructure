@@ -2,6 +2,76 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.54.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.53.0...vta-sdk-v0.54.0) — 2026-09-26
+
+
+### Security
+
+- **acl**: No principal widens its own entry, and no grant exceeds its granter (VTI-ACL-052, VTI-ACL-053) ([#1738](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1738))
+
+* security(acl)!: no principal widens its own entry, and no grant exceeds its granter (VTI-ACL-052, VTI-ACL-053)
+
+  A context-scoped admin, such as a companion service's credential
+  (`--role admin --contexts vgi-bridge`), could raise its own authority.
+  `update_acl` had no self check and no test either way. Tests written
+  against main confirm every case below. Adding a foreign context or
+  raising the role was already refused. What went through was clearing
+  any narrowing on the caller's own entry, and minting a sibling entry
+  that carried none of it:
+
+  - Self-update to clear its capability narrowing, drop its key filter,
+    or extend its expiry. All three succeeded.
+  - A create for another DID it controls, in the same context, with none
+    of its own narrowing: full capabilities, no key filter, no expiry.
+  - An update that cleared another entry's narrowing past what the caller
+    itself held.
+  - Self role change (`acl/change-role`).
+  - Rotation (`acl/swap-key`) rebuilt the entry field by field. It dropped
+    `expires_at`, `allowed_keys`, `approve_scope` and the step-up fields,
+    so a one-hour bootstrap grant became permanent. It also dropped
+    `created_by`. This violated VTI-CLT-029.
+  - An initiator could grant approve authority it did not hold
+    (VTI-ACL-042).
+  - A context admin could update or delete an entry that also acts in a
+    context it does not administer, because overlap was enough.
+
+  VTA (`operations/acl.rs`, the choke point for REST, DIDComm, TSP and the
+  Trust Task spine):
+
+  - update and change-role refuse the caller's own entry (VTI-ACL-052).
+    Delete already did.
+  - create, update and change-role measure the resulting entry against
+    the caller's stored entry (`validate_within_caller`, VTI-ACL-053). The
+    entry must not exceed the caller's effective capabilities (additive
+    ones stay under VTI-ACL-033), key filter, expiry, or confer authority
+    (VTI-ACL-042). A caller with no live entry writes nothing.
+  - update, change-role and delete require the caller to cover every
+    context the entry acts or approves in, not just overlap
+    (VTI-ACL-050 as tightened).
+  - update re-runs the role and act-scope checks on the patched entry, so
+    a role change alone cannot turn "nowhere" into "everywhere".
+  - swap-key copies the entry exactly and only moves the subject. It
+    refuses an expired entry (VTI-CLT-029).
+
+  VTC (`routes/acl.rs`, `routes/admin/invites.rs`,
+  `routes/members/update.rs`):
+
+  - An `acl/grant` rewrite of your own entry is refused. Before, a re-grant
+    with no `expiresAt` made a time-boxed admin permanent.
+  - `acl/change-role` refuses your own entry in either direction; the
+    ceremony already refused self-promotion.
+  - `vtc/members/update` refuses a role or label change on your own entry.
+  - Rewrite, change-role and revoke (including scoped revoke) require
+    full coverage for every role, not only admin targets.
+  - A grant cannot outlive the granter's expiry, and a granter with no
+    live entry is refused.
+  - `vtc/admin/invites/create` requires an unrestricted admin. It writes
+    a community-wide admin entry, and a context admin could previously
+    invite a DID it controls into one.
+
+- **vta-sdk**: A consent request must be signed under authentication ([#1766](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1766))
+
+
 ## [0.53.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.52.0...vta-sdk-v0.53.0) — 2026-09-26
 
 

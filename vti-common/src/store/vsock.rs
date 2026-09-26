@@ -392,6 +392,35 @@ impl VsockKeyspaceHandle {
         Ok(true)
     }
 
+    /// Non-atomic compare-and-move: the vsock proto has no multi-op opcode, so
+    /// this is `get` + compare + `insert` + `delete` across round-trips. The
+    /// same documented gap as `take_raw`'s fallback; callers that need
+    /// exactly-one semantics also serialise in-process.
+    pub async fn move_if_unchanged<V: Serialize>(
+        &self,
+        old_key: impl Into<Vec<u8>>,
+        expected: Vec<u8>,
+        new_key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<super::MoveOutcome, AppError> {
+        tracing::warn!(
+            "VsockKeyspaceHandle::move_if_unchanged is not atomic across vsock round-trips; \
+             single-replica TEE deployments are unaffected in practice."
+        );
+        let old_key = old_key.into();
+        let new_key = new_key.into();
+        match self.get_raw(old_key.clone()).await? {
+            None => return Ok(super::MoveOutcome::SourceMissing),
+            Some(current) if current != expected => return Ok(super::MoveOutcome::SourceChanged),
+            Some(_) => {}
+        }
+        if self.swap(old_key, new_key, value).await? {
+            Ok(super::MoveOutcome::Moved)
+        } else {
+            Ok(super::MoveOutcome::TargetExists)
+        }
+    }
+
     /// Send a request, reconnecting once on failure.
     async fn send(&self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
         let mut guard = self.conn.lock().await;

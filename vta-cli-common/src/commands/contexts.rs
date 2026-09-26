@@ -239,6 +239,9 @@ pub struct AdminAclOptions {
     /// with this flag it also manages the identity of the person who owns the
     /// agent. Super-admin only, refused server-side otherwise.
     pub holder: bool,
+    /// Mark the entry as a one-time hand-off (VTI-ACL-054), so the admin DID
+    /// can roll over to a VTA-minted long-term admin. Requires `expires_at`.
+    pub handoff: bool,
 }
 
 impl AdminAclOptions {
@@ -302,6 +305,9 @@ pub async fn cmd_context_create(
                 }
                 (None, None) => {}
             }
+            if admin.handoff {
+                hint.push_str(" --handoff");
+            }
             eprintln!("{hint}");
             return Ok(());
         }
@@ -336,6 +342,9 @@ pub async fn cmd_context_create(
             // the holder-scoped persona tasks on top.
             acl_req = acl_req.capabilities(vec!["persona-holder".to_string()]);
         }
+        if admin.handoff {
+            acl_req = acl_req.handoff();
+        }
         let acl = client.create_acl(acl_req).await?;
 
         println!();
@@ -348,6 +357,9 @@ pub async fn cmd_context_create(
         }
         if admin.holder {
             println!("  Identity:   holder (persona-holder capability granted)");
+        }
+        if acl.handoff() {
+            println!("  Hand-off:   one-time (may roll over once to a VTA-minted admin)");
         }
         match acl.expires_at {
             Some(secs) => {

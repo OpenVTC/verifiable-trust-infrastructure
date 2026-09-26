@@ -2,6 +2,155 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.43.0...vta-service-v0.44.0) — 2026-09-26
+
+
+### Added
+
+- **credential-exchange**: Every step is a signed Trust Task on the spine, over any transport ([#1771](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1771))
+
+Every credential-exchange step — offer, request, issue, query, present — and
+  the VTC's `vtc/members/request-vmc` and `join-requests/submit-receipt` pushes
+  were bare DIDComm messages typed as their task URI, served beside the binding
+  envelope. `bindings/didcomm/0.2` §2 requires a consumer to refuse that
+  carriage; it skipped the spine's proof, freshness, recipient and replay checks;
+  and no transport but DIDComm could carry it. They were never missing a TSP
+  binding. Each is a signed Trust Task now.
+
+  VTC
+  - Pushes `offer`, `issue`, `query`, `request-vmc` and `submit-receipt` through
+    the durable push engine (TSP > DIDComm > REST, escalating on no delivery
+    evidence) as documents signed with its operational key under
+    `authentication` — `credentials::delivery::push_document`, the one outbound
+    funnel. `AppState::send_to_member` and `push_to_holder` are gone.
+  - Serves `credential-exchange/request` and `present` on the dispatcher, from
+    every transport. None of the five steps defines a response, so what goes
+    back on the carrying transport is the SPEC §4.4.2 empty `#response`
+    acknowledgement; the answer is the next step, pushed on the thread (`issue`
+    after `request`, threaded on the offer; `submit-receipt` after `present`,
+    threaded on the query, to whoever sent it).
+  - The bare `request`/`present` arms are deleted; typed as themselves they are
+    refused naming the envelope.
+  - The git-ns break-glass notice ([#1745](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1745)) was the last caller of the removed
+    DIDComm-only send; it now goes through the push engine too, signed with the
+    operational key under `authentication` like the removal notice it copies.
+
+  VTA (holder)
+  - Serves `offer`, `issue` and `query` on the spine and pushes `request` and
+    `present` back. They are counterparty tasks: an issuer or verifier holds no
+    ACL entry here, so they dispatch on a zero-authority claim beside the
+    ceremony carve-out (`is_counterparty_task`), and each handler acts with the
+    VTA's own authority under the gate it always had — an offer only with a
+    configured `credential_holder_did`, a presentation only to a trusted verifier
+    or after operator approval.
+  - This restores `query`, whose bare arm #1739 deleted, leaving a holder that
+    could not answer a verifier. A deferred query is answered with silence (an
+    acknowledgement would claim a task not yet performed); `pending-approve` now
+    also pushes the `present` to the verifier on the query's thread.
+  - The bare `offer`/`issue` arms are deleted. The helpers only the TEE
+    attestation arms still use are gated on `tee` until those arms go.
+
+  Breaking (wire): a holder or wallet must read the pushed documents and send
+  `request`/`present` as signed documents with `threadId`. openvtc #392 is the
+  companion and is merged.
+
+  Not fixed here, found on the way: the push engine carries one signed document
+  for the whole delivery window, while a receiving VTA refuses an `issuedAt`
+  older than ten minutes, so a holder offline when its credential is pushed gets
+  it `expired` (removal notices share this). And a counterparty's `issue` or
+  deferred `query` still costs this VTA a durable write from any sender, as the
+  bare handlers did; a floor like the ceremony one is a follow-up.
+
+- **vta**: Device pushes go through the durable Trust Task push engine ([#1767](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1767))
+
+* feat(vtc): push to a member over TSP once it has spoken TSP here, when its DID document says nothing
+
+  A member whose DID document advertises no transport — a `did:key` wallet,
+  which cannot carry services — was always pushed to over DIDComm, even when it
+  was demonstrably listening on TSP. The VTA already solved this for device
+  push by learning from inbound (`tsp_reach`): a verified TSP frame proves the
+  sender is on TSP now. The VTC had no equivalent.
+
+  - `TspReachability` moves from vta-service to `vti_common::tsp_reach` so both
+    nodes share one. The VTA re-exports it at its old path, unchanged.
+  - The shared push engine (`vti_common::trust_task_push`) takes it through
+    `PushContext::learned_tsp`. A recipient whose document advertises nothing
+    is tried over TSP first while fresh, with DIDComm behind it. A peer that
+    switched back gives no error on TSP, only silence, and escalation on
+    missing evidence is what recovers. What a document does advertise still
+    wins: learning only fills in for one that says nothing.
+  - The VTC records the verified sender of every inbound TSP frame
+    (`handle_tsp`) in `AppState::tsp_reach`, and `member_push` passes it to the
+    engine.
+
+
+
+### Security
+
+- **acl**: No principal widens its own entry, and no grant exceeds its granter (VTI-ACL-052, VTI-ACL-053) ([#1738](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1738))
+
+* security(acl)!: no principal widens its own entry, and no grant exceeds its granter (VTI-ACL-052, VTI-ACL-053)
+
+  A context-scoped admin, such as a companion service's credential
+  (`--role admin --contexts vgi-bridge`), could raise its own authority.
+  `update_acl` had no self check and no test either way. Tests written
+  against main confirm every case below. Adding a foreign context or
+  raising the role was already refused. What went through was clearing
+  any narrowing on the caller's own entry, and minting a sibling entry
+  that carried none of it:
+
+  - Self-update to clear its capability narrowing, drop its key filter,
+    or extend its expiry. All three succeeded.
+  - A create for another DID it controls, in the same context, with none
+    of its own narrowing: full capabilities, no key filter, no expiry.
+  - An update that cleared another entry's narrowing past what the caller
+    itself held.
+  - Self role change (`acl/change-role`).
+  - Rotation (`acl/swap-key`) rebuilt the entry field by field. It dropped
+    `expires_at`, `allowed_keys`, `approve_scope` and the step-up fields,
+    so a one-hour bootstrap grant became permanent. It also dropped
+    `created_by`. This violated VTI-CLT-029.
+  - An initiator could grant approve authority it did not hold
+    (VTI-ACL-042).
+  - A context admin could update or delete an entry that also acts in a
+    context it does not administer, because overlap was enough.
+
+  VTA (`operations/acl.rs`, the choke point for REST, DIDComm, TSP and the
+  Trust Task spine):
+
+  - update and change-role refuse the caller's own entry (VTI-ACL-052).
+    Delete already did.
+  - create, update and change-role measure the resulting entry against
+    the caller's stored entry (`validate_within_caller`, VTI-ACL-053). The
+    entry must not exceed the caller's effective capabilities (additive
+    ones stay under VTI-ACL-033), key filter, expiry, or confer authority
+    (VTI-ACL-042). A caller with no live entry writes nothing.
+  - update, change-role and delete require the caller to cover every
+    context the entry acts or approves in, not just overlap
+    (VTI-ACL-050 as tightened).
+  - update re-runs the role and act-scope checks on the patched entry, so
+    a role change alone cannot turn "nowhere" into "everywhere".
+  - swap-key copies the entry exactly and only moves the subject. It
+    refuses an expired entry (VTI-CLT-029).
+
+  VTC (`routes/acl.rs`, `routes/admin/invites.rs`,
+  `routes/members/update.rs`):
+
+  - An `acl/grant` rewrite of your own entry is refused. Before, a re-grant
+    with no `expiresAt` made a time-boxed admin permanent.
+  - `acl/change-role` refuses your own entry in either direction; the
+    ceremony already refused self-promotion.
+  - `vtc/members/update` refuses a role or label change on your own entry.
+  - Rewrite, change-role and revoke (including scoped revoke) require
+    full coverage for every role, not only admin targets.
+  - A grant cannot outlive the granter's expiry, and a granter with no
+    live entry is refused.
+  - `vtc/admin/invites/create` requires an unrestricted admin. It writes
+    a community-wide admin entry, and a context admin could previously
+    invite a DID it controls into one.
+
+
+
 ## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.42.0...vta-service-v0.43.0) — 2026-09-26
 
 

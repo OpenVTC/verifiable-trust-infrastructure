@@ -365,6 +365,9 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
     }
     println!("Created At:       {}", entry.created_at);
     println!("Created By:       {}", entry.created_by);
+    if entry.handoff() {
+        println!("Hand-off:         one-time, not yet exercised (VTI-ACL-054)");
+    }
     Ok(())
 }
 
@@ -382,9 +385,13 @@ pub async fn cmd_acl_create(
     approve_contexts: Vec<String>,
     allowed_keys: Option<Vec<String>>,
     capabilities: Option<Vec<String>>,
+    handoff: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
+    if handoff {
+        req = req.handoff();
+    }
     if let Some(ref caps) = capabilities {
         req = req.capabilities(caps.clone());
     }

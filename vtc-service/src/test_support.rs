@@ -529,8 +529,37 @@ impl TestVtc {
     /// Mint a bearer token for `did` with `role`, creating the backing
     /// `Authenticated` session row so the `AuthClaims` extractor (which
     /// re-checks session state on every request) accepts it.
+    ///
+    /// Also writes the ACL row the token stands for, when there is none. A
+    /// real token is only ever minted for a DID with an entry, and the ACL
+    /// write paths bound what a caller may grant by that entry (VTI-ACL-053),
+    /// so a token with no row behind it would describe a caller that cannot
+    /// exist. A row a test seeded itself is left as it is.
     pub async fn token(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
         use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
+        if crate::acl::get_acl_entry(&self.state.acl_ks, did)
+            .await
+            .expect("read ACL row")
+            .is_none()
+            && let Ok(vtc_role) = role.parse::<crate::acl::VtcRole>()
+        {
+            crate::acl::store_acl_entry(
+                &self.state.acl_ks,
+                &crate::acl::VtcAclEntry {
+                    did: did.to_string(),
+                    role: vtc_role,
+                    label: None,
+                    allowed_contexts: contexts.clone(),
+                    created_at: now_epoch(),
+                    created_by: "test-support".into(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("seed the token's ACL row");
+        }
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {
             session_id: session_id.clone(),
@@ -1249,6 +1278,71 @@ mod didcomm_harness {
             self.await_outcome(&req_id, timeout).await
         }
 
+        /// As [`try_request_enveloped`](Self::try_request_enveloped), for a step
+        /// of an exchange: the document carries `thread_id` as its `threadId`
+        /// (a `request` answering an offer, a `present` answering a query).
+        /// The outcome is whatever the VTC put on the transport — for a
+        /// credential-exchange step, the empty `#response` acknowledgement; its
+        /// real answer arrives as the next pushed task.
+        pub async fn try_request_in_thread(
+            &self,
+            vtc_did: &str,
+            typ: &str,
+            body: Value,
+            thread_id: &str,
+            timeout: Duration,
+        ) -> ReplyOutcome {
+            let req_id = Uuid::new_v4().to_string();
+            let mut doc = wrap_trust_task(typ, &self.did, vtc_did, body);
+            doc["threadId"] = json!(thread_id);
+            let doc = sign_trust_task(doc, &self.signing_secret).await;
+            let msg = Message::build(
+                req_id.clone(),
+                vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
+                doc,
+            )
+            .from(self.did.clone())
+            .to(vtc_did.to_string())
+            .finalize();
+            self.send(&msg, vtc_did).await;
+            self.await_outcome(&req_id, timeout).await
+        }
+
+        /// A `credential-exchange/request` payload redeeming the offer
+        /// `pre_authorized_code` made by `issuer` for `vct`, with an
+        /// `openid4vci-proof+jwt` key-binding proof by **this client's own DID
+        /// key** — the key the credential is bound to.
+        pub fn credential_request(
+            &self,
+            issuer: &str,
+            pre_authorized_code: &str,
+            vct: &str,
+        ) -> Value {
+            use base64::Engine;
+            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            use ed25519_dalek::Signer;
+            let seed: [u8; 32] = self
+                .signing_secret
+                .get_private_bytes()
+                .try_into()
+                .expect("the applicant's signing key is a 32-byte Ed25519 seed");
+            let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+            let header = json!({ "typ": "openid4vci-proof+jwt", "alg": "EdDSA",
+                                 "kid": self.signing_secret.id });
+            let payload = json!({ "iss": self.did, "aud": issuer,
+                                  "iat": chrono::Utc::now().timestamp(),
+                                  "nonce": pre_authorized_code });
+            let h = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("header"));
+            let p = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("payload"));
+            let sig = key.sign(format!("{h}.{p}").as_bytes());
+            json!({ "credential_request": {
+                "format": "vc+sd-jwt",
+                "vct": vct,
+                "proof": { "proof_type": "jwt",
+                           "jwt": format!("{h}.{p}.{}", URL_SAFE_NO_PAD.encode(sig.to_bytes())) },
+            }})
+        }
+
         /// Send `body` as a `typ` DIDComm message to `vtc_did` (authcrypt,
         /// forwarded via the mediator) and return the threaded reply body.
         /// Panics on timeout *or* a problem-report — this is the happy-path
@@ -1443,11 +1537,31 @@ mod didcomm_harness {
         }
 
         /// Await the next unsolicited inbound message (no thread correlation),
-        /// e.g. a pushed `credential-exchange/issue`. `None` on timeout.
+        /// e.g. a pushed `credential-exchange/issue`, as `(type, payload)`.
+        /// `None` on timeout.
+        ///
+        /// A pushed Trust Task arrives in the DIDComm binding envelope, so this
+        /// reads the task's own type and payload out of the document; see
+        /// [`Self::next_pushed_document`] for the whole document.
         pub async fn next_pushed(&self, timeout: Duration) -> Option<(String, Value)> {
-            self.recv_matching(|r| r.thid.is_none(), timeout)
-                .await
-                .map(|r| (r.typ, r.body))
+            let doc = self.next_pushed_document(timeout).await?;
+            let typ = doc["type"].as_str().unwrap_or_default().to_string();
+            Some((typ, doc["payload"].clone()))
+        }
+
+        /// As [`Self::next_pushed`], but the whole Trust Task document — for a
+        /// test that asserts on its proof, addressing or thread. Panics on a
+        /// push that is not in the binding envelope: every task the VTC pushes
+        /// is a signed document, and a bare one is the regression.
+        pub async fn next_pushed_document(&self, timeout: Duration) -> Option<Value> {
+            let r = self.recv_matching(|r| r.thid.is_none(), timeout).await?;
+            assert_eq!(
+                r.typ,
+                vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE,
+                "a pushed task must arrive in the binding envelope, not typed as itself: {}",
+                r.body
+            );
+            Some(r.body)
         }
 
         async fn send(&self, msg: &Message, to: &str) {

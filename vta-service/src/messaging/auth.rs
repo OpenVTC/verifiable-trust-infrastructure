@@ -66,6 +66,22 @@ pub async fn auth_for_trust_task_envelope(
 
     let type_uri = ceremony::peek_type_uri(body);
     match type_uri.as_deref() {
+        // An issuer or verifier: a counterparty to this holder, not an operator
+        // of it, so it holds no ACL entry by design. The handler acts with the
+        // VTA's own authority under its own gate (an offer only with a
+        // configured holder identity, a presentation only to a trusted verifier
+        // or after approval) and reads the proven sender only as the party to
+        // answer — the claim reaches nothing.
+        Some(uri) if crate::trust_tasks::credential_exchange::is_counterparty_task(uri) => {
+            tracing::debug!(
+                sender = %sender_did,
+                type_uri = %uri,
+                acl = %denial,
+                "credential-exchange step from a counterparty with no ACL standing — \
+                 dispatching on a zero-authority claim"
+            );
+            Ok(ceremony::ceremony_claims(sender_did))
+        }
         Some(uri)
             if ceremony::is_ceremony_task(uri)
                 && ceremony::may_attempt_ceremony(state, uri, sender_did).await =>
@@ -387,6 +403,49 @@ mod tests {
                 .expect("a delegated step-up approver holds neither ACL entry nor set membership");
         assert_eq!(claims.role, Role::Monitor);
         assert!(claims.allowed_contexts.is_empty());
+    }
+
+    /// An issuer or verifier is a counterparty to this holder, not an operator
+    /// of it: its `offer`, `issue` or `query` reaches the handler from a DID the
+    /// ACL has never heard of, on a claim that reaches nothing. Before these
+    /// were Trust Tasks they bypassed this gate by not being in the envelope at
+    /// all — and skipped every document check with it.
+    #[tokio::test]
+    async fn a_credential_exchange_step_from_a_counterparty_is_dispatched_with_no_authority() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        for uri in [
+            vta_sdk::protocols::credential_exchange::OFFER,
+            vta_sdk::protocols::credential_exchange::ISSUE,
+            vta_sdk::protocols::credential_exchange::QUERY,
+        ] {
+            let claims = auth_for_trust_task_envelope(&state, "did:key:zIssuer", &envelope(uri))
+                .await
+                .unwrap_or_else(|e| panic!("{uri} from a counterparty must dispatch: {e:?}"));
+            assert_eq!(claims.did, "did:key:zIssuer", "{uri}");
+            assert_eq!(claims.role, Role::Monitor, "{uri}");
+            assert!(claims.allowed_contexts.is_empty(), "{uri}");
+            assert!(!claims.is_super_admin(), "{uri}");
+        }
+    }
+
+    /// Only the three steps a counterparty *sends*. The operator's approval
+    /// surface over deferred presentations stays behind the ACL, and so do the
+    /// steps this VTA sends (`request`, `present`), which it never receives.
+    #[tokio::test]
+    async fn the_counterparty_carve_out_covers_no_other_credential_task() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        for uri in [
+            vta_sdk::protocols::credential_exchange::PENDING_LIST,
+            vta_sdk::protocols::credential_exchange::PENDING_APPROVE,
+            vta_sdk::protocols::credential_exchange::PENDING_DENY,
+            vta_sdk::protocols::credential_exchange::REQUEST,
+            vta_sdk::protocols::credential_exchange::PRESENT,
+        ] {
+            let err = auth_for_trust_task_envelope(&state, "did:key:zIssuer", &envelope(uri))
+                .await
+                .expect_err(uri);
+            assert!(matches!(err, AppError::Forbidden(_)), "{uri}: got {err:?}");
+        }
     }
 
     /// The carve-out is for ceremony tasks and nothing else. The same

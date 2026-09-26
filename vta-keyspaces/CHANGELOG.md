@@ -2,6 +2,35 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.3...vta-keyspaces-v0.3.4) — 2026-09-26
+
+
+### Added
+
+- **vta**: Device pushes go through the durable Trust Task push engine ([#1767](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1767))
+
+* feat(vtc): push to a member over TSP once it has spoken TSP here, when its DID document says nothing
+
+  A member whose DID document advertises no transport — a `did:key` wallet,
+  which cannot carry services — was always pushed to over DIDComm, even when it
+  was demonstrably listening on TSP. The VTA already solved this for device
+  push by learning from inbound (`tsp_reach`): a verified TSP frame proves the
+  sender is on TSP now. The VTC had no equivalent.
+
+  - `TspReachability` moves from vta-service to `vti_common::tsp_reach` so both
+    nodes share one. The VTA re-exports it at its old path, unchanged.
+  - The shared push engine (`vti_common::trust_task_push`) takes it through
+    `PushContext::learned_tsp`. A recipient whose document advertises nothing
+    is tried over TSP first while fresh, with DIDComm behind it. A peer that
+    switched back gives no error on TSP, only silence, and escalation on
+    missing evidence is what recovers. What a document does advertise still
+    wins: learning only fills in for one that says nothing.
+  - The VTC records the verified sender of every inbound TSP frame
+    (`handle_tsp`) in `AppState::tsp_reach`, and `member_push` passes it to the
+    engine.
+
+
+
 ## [0.3.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.2...vta-keyspaces-v0.3.3) — 2026-09-26
 
 

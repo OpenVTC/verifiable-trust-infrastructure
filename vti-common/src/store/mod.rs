@@ -403,6 +403,43 @@ impl KeyspaceHandle {
             KeyspaceHandle::Vsock(h) => h.swap(old_key, new_key, value).await,
         }
     }
+
+    /// Move a row to a new key, only while it still holds exactly `expected`
+    /// (its plaintext as read earlier), writing `value` at `new_key`. See
+    /// [`LocalKeyspaceHandle::move_if_unchanged`].
+    ///
+    /// On the [`KeyspaceHandle::Vsock`] variant this has the same documented
+    /// non-atomic fallback as [`KeyspaceHandle::take_raw`].
+    pub async fn move_if_unchanged<V: Serialize>(
+        &self,
+        old_key: impl Into<Vec<u8>>,
+        expected: Vec<u8>,
+        new_key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<MoveOutcome, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => {
+                h.move_if_unchanged(old_key, expected, new_key, value).await
+            }
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => {
+                h.move_if_unchanged(old_key, expected, new_key, value).await
+            }
+        }
+    }
+}
+
+/// What [`KeyspaceHandle::move_if_unchanged`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveOutcome {
+    /// The row was moved: `new_key` holds the value and `old_key` is gone.
+    Moved,
+    /// `old_key` held nothing, so another caller moved or removed it first.
+    SourceMissing,
+    /// `old_key` held something other than the expected bytes.
+    SourceChanged,
+    /// `new_key` was already occupied. Nothing was written.
+    TargetExists,
 }
 
 // ===========================================================================
@@ -750,6 +787,54 @@ impl LocalKeyspaceHandle {
         .await
     }
 
+    /// Compare-and-move under the per-keyspace write lock (see [`WriteLocks`]).
+    ///
+    /// Moves the row at `old_key` to `new_key`, storing `value` there, only if
+    /// `old_key` still holds exactly `expected` (compared as plaintext) and
+    /// `new_key` is empty. Exactly one of two racing callers observes
+    /// [`MoveOutcome::Moved`]; every other outcome writes nothing.
+    pub async fn move_if_unchanged<V: Serialize>(
+        &self,
+        old_key: impl Into<Vec<u8>>,
+        expected: Vec<u8>,
+        new_key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<MoveOutcome, AppError> {
+        let old_key = old_key.into();
+        let new_key = new_key.into();
+        let bytes = serde_json::to_vec(value)?;
+        let bytes = self.maybe_encrypt(&new_key, bytes)?;
+        let ks = self.keyspace.clone();
+        let lock = self.write_lock.clone();
+        #[cfg(feature = "encryption")]
+        let enc_key = self.encryption_key.clone();
+        #[cfg(feature = "encryption")]
+        let name = self.name.clone();
+        blocking_with_timeout(move || {
+            let _guard = lock_writes(&lock);
+            let Some(current) = ks.get(&old_key)? else {
+                return Ok(MoveOutcome::SourceMissing);
+            };
+            #[cfg(feature = "encryption")]
+            let current = {
+                let k = enc_key.as_ref().map(|arc| &***arc);
+                encryption::maybe_decrypt_bytes(k, &name, &old_key, &current)?
+            };
+            #[cfg(not(feature = "encryption"))]
+            let current = current.to_vec();
+            if current != expected {
+                return Ok(MoveOutcome::SourceChanged);
+            }
+            if ks.contains_key(&new_key)? {
+                return Ok(MoveOutcome::TargetExists);
+            }
+            ks.insert(&new_key, bytes)?;
+            ks.remove(&old_key)?;
+            Ok(MoveOutcome::Moved)
+        })
+        .await
+    }
+
     /// Insert only if `key` is absent. The check and insert run under
     /// the per-keyspace write lock (see [`WriteLocks`]), so exactly one
     /// of two racing callers observes `true`.
@@ -954,6 +1039,59 @@ mod tests {
             }
         }
         assert_eq!(claimed, 1, "exactly one concurrent take_raw may claim");
+    }
+
+    /// The hand-off's commit (VTI-ACL-056): N concurrent moves of one row to N
+    /// different keys — exactly one lands, and the row is gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn move_if_unchanged_under_concurrency_admits_exactly_one() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        ks.insert("src", &"row".to_string()).await.unwrap();
+        let expected = ks.get_raw("src").await.unwrap().unwrap();
+
+        let mut handles = Vec::new();
+        for n in 0..16 {
+            let ks = store.keyspace("test").unwrap();
+            let expected = expected.clone();
+            handles.push(tokio::spawn(async move {
+                ks.move_if_unchanged("src", expected, format!("dst{n}"), &"row".to_string())
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut moved = 0;
+        for h in handles {
+            if h.await.unwrap() == MoveOutcome::Moved {
+                moved += 1;
+            }
+        }
+        assert_eq!(moved, 1, "exactly one concurrent move may land");
+        assert!(ks.get_raw("src").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn move_if_unchanged_refuses_a_changed_source_and_an_occupied_target() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+        ks.insert("src", &"v1".to_string()).await.unwrap();
+        let stale = ks.get_raw("src").await.unwrap().unwrap();
+        ks.insert("src", &"v2".to_string()).await.unwrap();
+        assert_eq!(
+            ks.move_if_unchanged("src", stale, "dst", &"x".to_string())
+                .await
+                .unwrap(),
+            MoveOutcome::SourceChanged
+        );
+        let current = ks.get_raw("src").await.unwrap().unwrap();
+        ks.insert("dst", &"taken".to_string()).await.unwrap();
+        assert_eq!(
+            ks.move_if_unchanged("src", current, "dst", &"x".to_string())
+                .await
+                .unwrap(),
+            MoveOutcome::TargetExists
+        );
+        assert!(ks.get_raw("src").await.unwrap().is_some(), "nothing moved");
     }
 
     #[tokio::test]

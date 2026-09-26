@@ -156,7 +156,7 @@ pub const REVOKE_INVITE_ERR_NOT_FOUND: &str =
     responses(
         (status = 200, description = "Install URL + one-time claim code minted", body = CreateInviteResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not an unrestricted (community-wide) admin"),
         (status = 409, description = "Target DID already has a non-admin ACL grant"),
     ),
 )]
@@ -189,6 +189,19 @@ pub async fn create_invite(
     }
     if ttl_seconds == 0 {
         return Err(out_of_range().into());
+    }
+
+    // The grant below is an unrestricted admin entry — a community-wide
+    // super-admin. Only a caller that already is one may confer it
+    // (VTI-ACL-022, VTI-ACL-053); `AdminAuth` alone admits an administrator of
+    // a single context, who could otherwise mint community-wide authority for
+    // any DID it controls by inviting it.
+    if !admin.0.is_super_admin() {
+        return Err(AppError::Forbidden(
+            "only an unrestricted administrator can invite an administrator: the invite grants community-wide admin authority, which an administrator scoped to some contexts does not hold"
+                .into(),
+        )
+        .into());
     }
 
     let signer = require_install_signer(&state)?;

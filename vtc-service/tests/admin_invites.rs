@@ -185,3 +185,34 @@ async fn the_revoke_task_answers_with_the_code_its_spec_declares() {
         "{body}"
     );
 }
+
+/// An invite grants community-wide admin authority, so only a caller that
+/// already holds it may send one (VTI-ACL-022, VTI-ACL-053). An administrator
+/// of one context used to pass `AdminAuth` and could invite a DID it controls
+/// into an unrestricted admin entry.
+#[tokio::test]
+async fn a_context_scoped_admin_cannot_invite_a_community_wide_admin() {
+    let (vtc, _) = build().await;
+    let scoped = vtc
+        .token("did:key:z6MkScopedInviter", "admin", vec!["ctx-a".into()])
+        .await;
+    const INVITEE: &str = "did:key:z6MkWouldBeSuperAdmin";
+
+    let (status, body) = call(
+        &vtc,
+        &scoped,
+        "POST",
+        "/v1/admin/invites",
+        CREATE_TASK,
+        Some(json!({ "did": INVITEE, "ttlSeconds": 600 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        vtc_service::acl::get_acl_entry(&vtc.state.acl_ks, INVITEE)
+            .await
+            .unwrap()
+            .is_none(),
+        "no admin entry may be written for the invitee"
+    );
+}

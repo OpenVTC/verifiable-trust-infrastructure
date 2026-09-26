@@ -2,6 +2,242 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.17.6...cnm-cli-v0.18.0) — 2026-09-26
+
+
+### Added
+
+- **vtc**: Git-ns/account/unlink and cnm git unlink ([#1746](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1746))
+
+* fix(vtc): one forge account per member, and only current members' accounts count
+
+  - Link uniqueness (git-ns/account/link item 4) was already enforced under
+    the git-ns store lock. The check and the recording are now one step
+    under the member-row lock too, and a regression test pins it: a
+    second member completing a link to an already-linked forge id ends
+    `failed` and the account stays with the first.
+  - A departed member who held no git right kept their linked accounts for
+    good: the link deletion sat after sweep_departures' early return for
+    "no departed member held a right". It is now its own pass in the
+    lifecycle sweep (git-ns/account/link, Consent/purpose: MUST delete it
+    when the member leaves).
+  - linked_accounts, which the role projection and drift adoption read,
+    now holds only current members' accounts. A member whose access lapsed
+    but who has not left keeps the account, so nobody else can link it,
+    but it projects no role.
+  - GET /v1/git-ns/accounts gains memberCurrent, and the console's Repos
+    plugin no longer offers adoption for an account whose member is not
+    current. The daemon already refused that adoption.
+
+- **vtc/git-ns**: Separation of duties and break-glass for elevated git rights ([#1745](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1745))
+
+* feat(vtc-service): re-project git roles, and use the bridge's reported role map
+
+  Implements two follow-ups to the configurable bridge role map (VGI #84),
+  spec-first in trustoverip/dtgwg-trust-tasks-tf#639.
+
+  git-ns/bridge/event 0.3 (roleMapReported)
+  - Served beside 0.1 and 0.2; all three are read as 0.3 by one handler.
+  - The report is refused malformedRequest when a map is unordered
+    (own >= maintain >= commit, commit <= write) or lists a repository
+    twice, and permissionDenied when a repos/stale resource lies outside
+    the namespace. Otherwise it is kept on the namespace (git_ns::role_map),
+    and only while the same bridge DID serves it.
+  - Each stale active or orphaned repository has its roles digest
+    forgotten, so the projector re-sends its complete desiredRoles without
+    anyone asking. A repository leaves `stale` when a projectRoles job
+    queued after the report succeeds.
+  - drift/resolve adopt derives the right from the map: the lowest right
+    whose role is the observed one. A revert weighs as revoking own when
+    the role is at or above the one own projects to. Without a report the
+    default map is assumed. A namespace admin gets no forge role under any
+    map.
+
+  git-ns/roles/reproject 0.1
+  - Open to a community administrator, or to git.ns.admin on the namespace
+    by explicit record. A repository owner is refused. Covers a namespace
+    (every active or orphaned repository) or one repository. Normal consent
+    class, policy action roles.reproject, audited as
+    gitNs.roles.reprojected. Refused with manualMode or noForgeAccess.
+  - `cnm git reproject <resource> [--reason]` and
+    vtc-client git_ns_reproject.
+
+  Console (Repos)
+  - The namespace and repository rows carry the effective role map
+    (roleMap, roleMapSource, roleMapStale).
+  - The people tables show each person's effective forge role, and "no
+    forge role" for a namespace admin.
+  - Drift adopt and revert use projectedRight / driftRevertImpact over the
+    repository's map. rightForForgeRole is removed.
+  - Stale repositories are flagged, and the namespace card and repository
+    header gain a "Re-project roles" button.
+
+  Behaviour change: on a personal account a revert of collaborator write
+  (or above) now weighs as revoking own, because write is the role own
+  projects to there. Before, it weighed as revoking maintain.
+
+- **git-ns**: An adoption names the member who receives the right ([#1735](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1735))
+
+* feat(vtc-service): re-project git roles, and use the bridge's reported role map
+
+  Implements two follow-ups to the configurable bridge role map (VGI #84),
+  spec-first in trustoverip/dtgwg-trust-tasks-tf#639.
+
+  git-ns/bridge/event 0.3 (roleMapReported)
+  - Served beside 0.1 and 0.2; all three are read as 0.3 by one handler.
+  - The report is refused malformedRequest when a map is unordered
+    (own >= maintain >= commit, commit <= write) or lists a repository
+    twice, and permissionDenied when a repos/stale resource lies outside
+    the namespace. Otherwise it is kept on the namespace (git_ns::role_map),
+    and only while the same bridge DID serves it.
+  - Each stale active or orphaned repository has its roles digest
+    forgotten, so the projector re-sends its complete desiredRoles without
+    anyone asking. A repository leaves `stale` when a projectRoles job
+    queued after the report succeeds.
+  - drift/resolve adopt derives the right from the map: the lowest right
+    whose role is the observed one. A revert weighs as revoking own when
+    the role is at or above the one own projects to. Without a report the
+    default map is assumed. A namespace admin gets no forge role under any
+    map.
+
+  git-ns/roles/reproject 0.1
+  - Open to a community administrator, or to git.ns.admin on the namespace
+    by explicit record. A repository owner is refused. Covers a namespace
+    (every active or orphaned repository) or one repository. Normal consent
+    class, policy action roles.reproject, audited as
+    gitNs.roles.reprojected. Refused with manualMode or noForgeAccess.
+  - `cnm git reproject <resource> [--reason]` and
+    vtc-client git_ns_reproject.
+
+  Console (Repos)
+  - The namespace and repository rows carry the effective role map
+    (roleMap, roleMapSource, roleMapStale).
+  - The people tables show each person's effective forge role, and "no
+    forge role" for a namespace admin.
+  - Drift adopt and revert use projectedRight / driftRevertImpact over the
+    repository's map. rightForForgeRole is removed.
+  - Stale repositories are flagged, and the namespace card and repository
+    header gain a "Re-project roles" button.
+
+  Behaviour change: on a personal account a revert of collaborator write
+  (or above) now weighs as revoking own, because write is the role own
+  projects to there. Before, it weighed as revoking maintain.
+
+- **vtc-service**: Re-project git roles, and use the bridge's reported role map ([#1736](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1736))
+
+* feat(vtc-service): re-project git roles, and use the bridge's reported role map
+
+  Implements two follow-ups to the configurable bridge role map (VGI #84),
+  spec-first in trustoverip/dtgwg-trust-tasks-tf#639.
+
+  git-ns/bridge/event 0.3 (roleMapReported)
+  - Served beside 0.1 and 0.2; all three are read as 0.3 by one handler.
+  - The report is refused malformedRequest when a map is unordered
+    (own >= maintain >= commit, commit <= write) or lists a repository
+    twice, and permissionDenied when a repos/stale resource lies outside
+    the namespace. Otherwise it is kept on the namespace (git_ns::role_map),
+    and only while the same bridge DID serves it.
+  - Each stale active or orphaned repository has its roles digest
+    forgotten, so the projector re-sends its complete desiredRoles without
+    anyone asking. A repository leaves `stale` when a projectRoles job
+    queued after the report succeeds.
+  - drift/resolve adopt derives the right from the map: the lowest right
+    whose role is the observed one. A revert weighs as revoking own when
+    the role is at or above the one own projects to. Without a report the
+    default map is assumed. A namespace admin gets no forge role under any
+    map.
+
+  git-ns/roles/reproject 0.1
+  - Open to a community administrator, or to git.ns.admin on the namespace
+    by explicit record. A repository owner is refused. Covers a namespace
+    (every active or orphaned repository) or one repository. Normal consent
+    class, policy action roles.reproject, audited as
+    gitNs.roles.reprojected. Refused with manualMode or noForgeAccess.
+  - `cnm git reproject <resource> [--reason]` and
+    vtc-client git_ns_reproject.
+
+  Console (Repos)
+  - The namespace and repository rows carry the effective role map
+    (roleMap, roleMapSource, roleMapStale).
+  - The people tables show each person's effective forge role, and "no
+    forge role" for a namespace admin.
+  - Drift adopt and revert use projectedRight / driftRevertImpact over the
+    repository's map. rightForForgeRole is removed.
+  - Stale repositories are flagged, and the namespace card and repository
+    header gain a "Re-project roles" button.
+
+  Behaviour change: on a personal account a revert of collaborator write
+  (or above) now weighs as revoking own, because write is the role own
+  projects to there. Before, it weighed as revoking maintain.
+
+
+
+### Security
+
+- **acl**: No principal widens its own entry, and no grant exceeds its granter (VTI-ACL-052, VTI-ACL-053) ([#1738](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1738))
+
+* security(acl)!: no principal widens its own entry, and no grant exceeds its granter (VTI-ACL-052, VTI-ACL-053)
+
+  A context-scoped admin, such as a companion service's credential
+  (`--role admin --contexts vgi-bridge`), could raise its own authority.
+  `update_acl` had no self check and no test either way. Tests written
+  against main confirm every case below. Adding a foreign context or
+  raising the role was already refused. What went through was clearing
+  any narrowing on the caller's own entry, and minting a sibling entry
+  that carried none of it:
+
+  - Self-update to clear its capability narrowing, drop its key filter,
+    or extend its expiry. All three succeeded.
+  - A create for another DID it controls, in the same context, with none
+    of its own narrowing: full capabilities, no key filter, no expiry.
+  - An update that cleared another entry's narrowing past what the caller
+    itself held.
+  - Self role change (`acl/change-role`).
+  - Rotation (`acl/swap-key`) rebuilt the entry field by field. It dropped
+    `expires_at`, `allowed_keys`, `approve_scope` and the step-up fields,
+    so a one-hour bootstrap grant became permanent. It also dropped
+    `created_by`. This violated VTI-CLT-029.
+  - An initiator could grant approve authority it did not hold
+    (VTI-ACL-042).
+  - A context admin could update or delete an entry that also acts in a
+    context it does not administer, because overlap was enough.
+
+  VTA (`operations/acl.rs`, the choke point for REST, DIDComm, TSP and the
+  Trust Task spine):
+
+  - update and change-role refuse the caller's own entry (VTI-ACL-052).
+    Delete already did.
+  - create, update and change-role measure the resulting entry against
+    the caller's stored entry (`validate_within_caller`, VTI-ACL-053). The
+    entry must not exceed the caller's effective capabilities (additive
+    ones stay under VTI-ACL-033), key filter, expiry, or confer authority
+    (VTI-ACL-042). A caller with no live entry writes nothing.
+  - update, change-role and delete require the caller to cover every
+    context the entry acts or approves in, not just overlap
+    (VTI-ACL-050 as tightened).
+  - update re-runs the role and act-scope checks on the patched entry, so
+    a role change alone cannot turn "nowhere" into "everywhere".
+  - swap-key copies the entry exactly and only moves the subject. It
+    refuses an expired entry (VTI-CLT-029).
+
+  VTC (`routes/acl.rs`, `routes/admin/invites.rs`,
+  `routes/members/update.rs`):
+
+  - An `acl/grant` rewrite of your own entry is refused. Before, a re-grant
+    with no `expiresAt` made a time-boxed admin permanent.
+  - `acl/change-role` refuses your own entry in either direction; the
+    ceremony already refused self-promotion.
+  - `vtc/members/update` refuses a role or label change on your own entry.
+  - Rewrite, change-role and revoke (including scoped revoke) require
+    full coverage for every role, not only admin targets.
+  - A grant cannot outlive the granter's expiry, and a granter with no
+    live entry is refused.
+  - `vtc/admin/invites/create` requires an unrestricted admin. It writes
+    a community-wide admin entry, and a context admin could previously
+    invite a DID it controls into one.
+
+
+
 ## [0.17.6](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.17.5...cnm-cli-v0.17.6) — 2026-09-26
 
 

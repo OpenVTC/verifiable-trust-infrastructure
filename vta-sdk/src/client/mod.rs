@@ -3348,6 +3348,7 @@ mod tests {
             approve_contexts: vec![],
             allowed_keys: None,
             capabilities: Vec::new(),
+            handoff: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         // The builder API is unchanged; only what it serialises moved. The wire

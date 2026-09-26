@@ -665,9 +665,13 @@ messaging service to a VTC post-mint should add both.
    `TrustTaskHTTPS`). Each attempt is durable on the delivery outbox, and one that
    produces no delivery evidence in its window escalates to the next transport the
    recipient offers (VTI-TRN-042). A recipient that advertises nothing still goes over
-   DIDComm through the shared mediator. The credential-exchange protocol messages
-   (offer, issue, query, request-VMC) have no TSP binding and stay on
-   `AppState::send_to_member`, DIDComm.
+   DIDComm through the shared mediator. **The credential-exchange steps followed
+   (2026-09-26):** `offer`, `issue`, `query`, `vtc/members/request-vmc` and
+   `join-requests/submit-receipt` are signed Trust Tasks pushed through the same
+   engine, `request` and `present` are served on the dispatcher at both nodes,
+   and `AppState::send_to_member` is gone. They were never missing a TSP
+   binding — they were bare DIDComm messages typed as their task URI, which no
+   binding allows.
    The engine moved to `vti_common::trust_task_push` so the VTA can adopt it; the VTC
    lends it its keyspace, outbox, resolver and messaging through a `PushContext`
    (`vtc-service::member_push` is now that adapter). The VTA's device pushes — the

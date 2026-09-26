@@ -380,6 +380,16 @@ pub(crate) fn success_response<P, R: Serialize>(
     }
 }
 
+/// The courtesy acknowledgement of a fire-and-forget task (SPEC §4.4.2): the
+/// originating type with `#response` and a payload of exactly `{}`.
+///
+/// Only for a task whose specification defines **no** success response — §4.4.2
+/// item 4 forbids it beside one that does. It attests arrival and nothing more;
+/// the producer must not rely on it.
+pub(crate) fn acknowledge<P>(doc: &TrustTask<P>) -> TrustTaskOutcome {
+    success_response(doc, serde_json::Map::new())
+}
+
 /// Convenience wrapper over [`success_response`] for the `request`/`present`
 /// verbs, whose response payload is always a [`VerdictResponse`].
 pub(crate) fn verdict_response(

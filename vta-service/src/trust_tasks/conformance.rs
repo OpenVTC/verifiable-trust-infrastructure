@@ -279,6 +279,14 @@ enum Conformance {
     KnownDrift(&'static str),
 }
 
+/// The response side of a fire-and-forget task's witness: the SPEC §4.4.2
+/// courtesy acknowledgement, whose payload **MUST** be exactly `{}`. The spec
+/// declares no response schema to parse against, so this accepts the empty
+/// object and nothing else.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Acknowledgement {}
+
 macro_rules! checked {
     ($p:ty, $r:ty, $req:expr, $resp:expr) => {
         Conformance::Checked(Witness {
@@ -1328,6 +1336,68 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         }
                     })),
                 })
+            ),
+        ),
+        // ─── credential-exchange: the holder's steps ─────────────
+        //
+        // Fire-and-forget: none defines a response, and the handler answers
+        // with the empty acknowledgement (its real answer is the next step,
+        // pushed). Requests are what a VTC sends, parsed through the SDK's
+        // body types and re-serialised.
+        (
+            credx::OFFER,
+            checked!(
+                specs::credential_exchange::offer::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::OfferBody>(json!({
+                        "credential_offer": {
+                            "credential_issuer": "did:web:vtc.example",
+                            "credential_configuration_ids": ["VIC"],
+                            "grants": {
+                                "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
+                                    "pre-authorized_code": "code-1"
+                                }
+                            }
+                        }
+                    }))
+                    .expect("an offer body")
+                ),
+                json!({})
+            ),
+        ),
+        (
+            credx::ISSUE,
+            checked!(
+                specs::credential_exchange::issue::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::IssueBody>(json!({
+                        "credential_response": { "credential": "eyJhbGciOiJFZERTQSJ9.e30.c2ln~" }
+                    }))
+                    .expect("an issue body")
+                ),
+                json!({})
+            ),
+        ),
+        (
+            credx::QUERY,
+            checked!(
+                specs::credential_exchange::query::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::QueryBody>(json!({
+                        "dcql_query": { "credentials": [{
+                            "id": "membership",
+                            "format": "dc+sd-jwt",
+                            "meta": { "vct_values": ["https://openvtc.org/credentials/MembershipCredential"] }
+                        }]},
+                        "nonce": "nonce-1",
+                        "purpose": "join: present a membership credential"
+                    }))
+                    .expect("a query body")
+                ),
+                json!({})
             ),
         ),
         // ─── credential-exchange: deferred presentations ─────────

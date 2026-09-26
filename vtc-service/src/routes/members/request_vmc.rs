@@ -96,12 +96,12 @@ pub async fn request_vmc(
     let request_body = serde_json::to_value(&request)
         .map_err(|e| AppError::Internal(format!("serialise request-vmc body: {e}")))?;
 
-    crate::credentials::delivery::push_to_holder(
+    crate::credentials::delivery::push_document(
         &state,
         &member_did,
-        &thread_id,
         MEMBER_REQUEST_VMC_TYPE,
         request_body,
+        crate::credentials::delivery::Thread::Root(&thread_id),
     )
     .await?;
 
