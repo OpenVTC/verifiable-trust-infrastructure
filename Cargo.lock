@@ -11112,7 +11112,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing-subscriber",
- "trust-tasks-proof",
  "trust-tasks-rs",
  "uniffi",
  "vta-sdk",

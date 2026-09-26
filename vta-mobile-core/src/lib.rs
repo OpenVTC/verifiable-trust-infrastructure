@@ -14,7 +14,7 @@
 //! - all UI.
 //!
 //! This crate wraps the existing Rust building blocks — `vta-sdk` (VTA auth /
-//! session), `trust-tasks-rs` + `trust-tasks-proof` (Trust Task build/verify),
+//! session, Trust Task proof verification), `trust-tasks-rs` (Trust Task build),
 //! and the `affinidi-tdk` DIDComm/resolver/crypto stack — so the wire crypto
 //! is written once and shared, never reimplemented per platform.
 //!
