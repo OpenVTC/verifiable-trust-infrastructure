@@ -480,7 +480,10 @@ async fn a_step_up_authorises_the_promotion_it_was_run_for() {
     let (_session_id, token) = session_for(&fix, &admin).await;
 
     // The second enrolled admin is already `Admin` in the fixture, so promote
-    // a plain member instead.
+    // a plain member instead — a *scoped* one, so the promotion lands a scoped
+    // admin and the elevation is the whole gate. A scopeless member would
+    // become an unrestricted admin, which also needs another admin's consent
+    // (VTI-APV-014, `unrestricted_admin_consent.rs`).
     let target = "did:key:zMemberToPromote";
     vtc_service::acl::store_acl_entry(
         &fix.state.acl_ks,
@@ -488,7 +491,7 @@ async fn a_step_up_authorises_the_promotion_it_was_run_for() {
             did: target.into(),
             role: vtc_service::acl::VtcRole::Member,
             label: None,
-            allowed_contexts: vec![],
+            allowed_contexts: vec!["ctx-a".into()],
             created_at: now_epoch(),
             created_by: admin.clone(),
             updated_at: None,

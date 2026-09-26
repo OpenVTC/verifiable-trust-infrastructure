@@ -13,6 +13,7 @@ import {
   bindTask,
   createTask,
   didError,
+  driftAdoptTask,
   driftRevertTask,
   reprojectTask,
   expiryDaysError,
@@ -74,6 +75,15 @@ describe("signed git-ns tasks", () => {
     );
   });
 
+  it("says an ns.admin grant gives no forge role, and a repository grant does", () => {
+    expect(grantTask({ subject: BOB, right: "git.ns.admin", resource: "github.com/acme" }).effect).toMatch(
+      /no role on the forge/,
+    );
+    expect(grantTask({ subject: BOB, right: "git.repo.own", resource: "github.com/acme/x" }).effect).toMatch(
+      /projected onto the forge/,
+    );
+  });
+
   it("builds a revoke, bind, unbind and adopt with their cnm commands", () => {
     expect(revokeTask(BOB, "git.repo.maintain", "github.com/acme/x").command).toBe(
       `cnm git revoke --subject=${BOB} --right=git.repo.maintain --resource=github.com/acme/x`,
@@ -119,7 +129,7 @@ describe("signed git-ns tasks", () => {
     expect(c.consent).toBe("normal");
   });
 
-  it("builds a reseat as git-ns/namespace/reseat 0.1 and cnm git reseat sign it", () => {
+  it("builds a reseat as git-ns/namespace/reseat 0.3 and cnm git reseat sign it", () => {
     const t = reseatTask(
       "ns_acme",
       "github.com/acme",
@@ -127,7 +137,7 @@ describe("signed git-ns tasks", () => {
       "  Alice left on 2026-09-20; Bob owns most repos and agreed.  ",
     );
     expect(t.action).toBe("namespace.reseat");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.3");
     // Exactly the spec's three fields, statement trimmed; nothing else.
     expect(t.payload).toEqual({
       namespace: "ns_acme",
@@ -213,6 +223,31 @@ describe("signed git-ns tasks", () => {
     const repo = reprojectTask("github.com/acme/widgets");
     expect(repo.payload).toEqual({ resource: "github.com/acme/widgets" });
     expect(repo.command).toBe("cnm git reproject github.com/acme/widgets");
+  });
+
+  it("builds a drift adopt carrying the selector and the member who receives the right", () => {
+    const t = driftAdoptTask("github.com/acme/widgets", ROLE_ADDED, BOB, "git.repo.maintain", "on the team");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.1");
+    expect(t.payload).toEqual({
+      resource: "github.com/acme/widgets",
+      action: "adopt",
+      drift: {
+        type: "roleAdded",
+        account: { forge: "github.com", id: "1003", login: "hsato" },
+        observed: "maintain",
+      },
+      reason: "on the team",
+    });
+    expect(t.consent).toBe("normal");
+    expect(t.parties).toEqual([{ role: "Receives the right", did: BOB }]);
+    expect(t.command).toBe(
+      "cnm git drift resolve github.com/acme/widgets adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --reason='on the team'",
+    );
+    // Adopting ownership is gated as the elevated grant it records.
+    expect(
+      driftAdoptTask("github.com/acme/widgets", { ...ROLE_ADDED, observed: "admin" }, BOB, "git.repo.own")
+        .consent,
+    ).toBe("elevated");
   });
 
   it("leaves the account out of a ruleset revert", () => {
@@ -303,6 +338,14 @@ describe("every command is safe to paste into a shell", () => {
     ],
     ["drift revert observed", (v) => driftRevertTask(REPO, { ...ROLE_ADDED, observed: v })],
     ["drift revert reason", (v) => driftRevertTask(REPO, ROLE_ADDED, v)],
+    ["drift adopt resource", (v) => driftAdoptTask(v, ROLE_ADDED, BOB, "git.repo.maintain")],
+    [
+      "drift adopt account",
+      (v) =>
+        driftAdoptTask(REPO, { ...ROLE_ADDED, account: { forge: "github.com", id: v, login: "x" } }, BOB, "git.repo.maintain"),
+    ],
+    ["drift adopt observed", (v) => driftAdoptTask(REPO, { ...ROLE_ADDED, observed: v }, BOB, "git.repo.maintain")],
+    ["drift adopt reason", (v) => driftAdoptTask(REPO, ROLE_ADDED, BOB, "git.repo.maintain", v)],
     [
       "create namespace",
       (v) => createTask({ namespaceId: v, namespaceResource: NS, name: "x", visibility: "public", personal: false }),

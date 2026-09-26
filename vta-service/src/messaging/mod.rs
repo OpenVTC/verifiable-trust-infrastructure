@@ -15,8 +15,6 @@ pub mod drain_store;
 pub mod drain_sweeper;
 #[cfg(feature = "didcomm")]
 pub mod handlers;
-#[cfg(all(feature = "webvh", feature = "didcomm"))]
-pub mod handlers_protocol;
 #[cfg(feature = "didcomm")]
 pub mod handshake;
 #[cfg(feature = "didcomm")]

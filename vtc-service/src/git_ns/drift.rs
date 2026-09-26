@@ -8,11 +8,10 @@
 //! — required for `adopt` — by the `observed` value the caller last read, so a
 //! decision about one forge state is never applied to another.
 //!
-//! The one revert `git-ns/bridge/job` 0.1 cannot express is taking a role the
-//! bridge does not manage off a repository (`roleAdded`): that job is sent as
-//! 0.2, with `removeAccounts`, and in-line, because a bridge that refuses it
-//! — one that implements only 0.1 — must be answered `notRevertible` rather
-//! than reported as done. Every other revert reuses a 0.1 job and is queued.
+//! Taking a role the bridge does not manage off a repository (`roleAdded`) is
+//! a `projectRoles` job with `removeAccounts`, sent in-line, because a bridge
+//! that refuses it must be answered `notRevertible` rather than reported as
+//! done. Every other revert is queued. Every job is `git-ns/bridge/job` 0.4.
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::git_ns::drift::resolve::v0_1 as resolve;
@@ -458,14 +457,20 @@ async fn revert(state: &AppState, actor: &ops::Standing, d: &Decided) -> OpResul
 
     match d.selector.kind.as_str() {
         "roleAdded" => {
-            // `removeAccounts` — git-ns/bridge/job 0.2, and only here.
+            // `removeAccounts`, and only here.
             let snap = Snapshot::load(&state.git_ns.ks).await?;
             let roles = bridge::desired_roles_now(state, &snap, &d.ns, &d.repo).await?;
             let account = item.get("account").cloned().unwrap_or(Value::Null);
             let (forge, id) = d.selector.account.clone().unwrap_or_default();
+            // An account listed at `git.ns.admin` — a namespace admin with no
+            // right of their own here — is projected to no role, so its forge
+            // role may be taken off; `git-ns/bridge/job` 0.4 lets
+            // `removeAccounts` name it, and a bridge before 0.4 is sent no
+            // such entry at all.
             if roles.iter().any(|r| {
                 r.pointer("/account/forge").and_then(Value::as_str) == Some(forge.as_str())
                     && r.pointer("/account/id").and_then(Value::as_str) == Some(id.as_str())
+                    && r.get("right").and_then(Value::as_str) != Some(Right::NsAdmin.as_str())
             }) {
                 // Never revert by changing the projection: this account is a
                 // member's, holding a right here.
@@ -499,12 +504,11 @@ async fn revert(state: &AppState, actor: &ops::Standing, d: &Decided) -> OpResul
                 Err(BridgeSendError::Rejected { code, message }) => {
                     return Err(declared(
                         NOT_REVERTIBLE,
-                        format!(
-                            "the bridge refused the revert ({code}: {message}); a bridge that \
-                             implements only git-ns/bridge/job 0.1 cannot take a role it does \
-                             not manage off a repository"
-                        ),
+                        format!("the bridge refused the revert ({code}: {message})"),
                     ));
+                }
+                Err(BridgeSendError::Outdated(m)) => {
+                    return Err(declared(NOT_REVERTIBLE, m));
                 }
                 Err(BridgeSendError::Transient(m)) => {
                     return Err(OpError::Unavailable(format!(

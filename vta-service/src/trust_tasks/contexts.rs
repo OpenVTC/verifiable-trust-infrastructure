@@ -218,8 +218,8 @@ pub(super) async fn handle_secrets(
         webvh_ks: &state.webvh_ks,
         seed_store: &state.seed_store,
     };
-    match operations::export::get_context_secrets(&deps, auth, &req.id, TRANSPORT_TRUST_TASK).await
-    {
+    let channel = super::keys::export_channel();
+    match operations::export::get_context_secrets(&deps, auth, &req.id, channel).await {
         // The spec's response is lowerCamelCase (SPEC §4.10); `DidSecretsBundle` is the
         // internal snake_case form, shared with the on-disk export. The conversion is the
         // boundary between them.

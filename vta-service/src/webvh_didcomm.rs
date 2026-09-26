@@ -21,10 +21,10 @@
 //! provides, and the duplicate would drift out of sync with it. The original
 //! reasoning, still accurate for the DIDComm leg:
 //!
-//! - **Signing identity** — the `DIDCommBridge` packs every outbound
-//!   message with the VTA's existing DIDComm sender key; the daemon
-//!   verifies it via `unpack_signed` exactly the same way it verifies
-//!   the JWS-over-REST envelope.
+//! - **Signing identity** — every document carries this VTA's Data
+//!   Integrity proof (operational key, `proofPurpose: authentication`),
+//!   attached by `send_task`; the host does not rely on the DIDComm
+//!   sender to identify the composer.
 //! - **Audience binding** — DIDComm messages are addressed to a
 //!   specific `to:` DID intrinsically; replay against a different
 //!   daemon fails because the message is encrypted to *this* daemon's
@@ -277,12 +277,9 @@ fn build_envelope_document(
         // message, which is always the envelope type.
         "type": task,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        // Addressed to the host, per SPEC §4.8. did-hosting does not enforce
-        // `recipient` on the DID-management bridge (it authorizes the authcrypt
-        // sender), but an unaddressed document is one a stricter peer is
-        // entitled to refuse.
+        // Addressed to the host, per SPEC §4.8, and covered by the proof
+        // `send_task` attaches.
         "recipient": recipient,
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,
     });
     // `issuer` only when we actually know it. SPEC §4.8.1 requires an in-band
@@ -397,7 +394,21 @@ impl<'a> WebvhDIDCommClient<'a> {
         response_task: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, AppError> {
-        let doc = build_envelope_document(task, &self.server_did, self.bridge.vta_did(), payload);
+        let mut doc =
+            build_envelope_document(task, &self.server_did, self.bridge.vta_did(), payload);
+        // The host does not rely on the transport sender to learn who composed
+        // a DID-management document: every one carries this VTA's proof
+        // (`proofPurpose: authentication`), bound to its `issuer`.
+        if doc.get("issuer").is_none() {
+            return Err(AppError::Internal(
+                "cannot send a DID-management task before this VTA's DID is known".into(),
+            ));
+        }
+        if !self.bridge.sign_outbound_request(&mut doc).await {
+            return Err(AppError::Internal(
+                "could not sign the DID-management task with this VTA's operational key".into(),
+            ));
+        }
 
         // Carriage is `operations::outbound`'s, not this client's: choosing the
         // transport, applying its binding and awaiting the reply are the same
@@ -965,6 +976,57 @@ mod envelope_binding_tests {
                 .starts_with("urn:uuid:"),
             "the document id is the thread anchor and must be a urn:uuid"
         );
+    }
+
+    /// What goes on the wire: the document signed by the VTA's operational key
+    /// through the bridge — `proofPurpose: authentication`, issuer = VTA DID,
+    /// recipient = the host, `issuedAt` in whole seconds with `Z`, unique id.
+    #[tokio::test]
+    async fn the_document_is_signed_with_the_operational_key() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().unwrap();
+        let mut doc = build_envelope_document(
+            TASK_DID_CHECK_NAME,
+            SERVER,
+            Some(vta_did.clone()),
+            json!({ "path": "bob" }),
+        );
+        let other = build_envelope_document(
+            TASK_DID_CHECK_NAME,
+            SERVER,
+            Some(vta_did.clone()),
+            json!({}),
+        );
+        assert_ne!(doc["id"], other["id"], "every document gets its own id");
+        let issued_at = doc["issuedAt"].as_str().unwrap().to_string();
+        assert!(
+            issued_at.ends_with('Z') && !issued_at.contains('.'),
+            "issuedAt in whole seconds with Z: {issued_at}"
+        );
+
+        assert!(state.didcomm_bridge.sign_outbound_request(&mut doc).await);
+        assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
+        assert_eq!(doc["proof"]["cryptosuite"], "eddsa-jcs-2022", "{doc}");
+        assert_eq!(doc["issuer"], vta_did.as_str());
+        assert_eq!(doc["recipient"], SERVER);
+        let typed: trust_tasks_rs::TrustTask<serde_json::Value> =
+            serde_json::from_value(doc).unwrap();
+        let signer =
+            vti_common::auth::verify_trust_task_proof_with(&typed, &state.trust_task_vm_resolver())
+                .await
+                .expect("the proof verifies");
+        assert_eq!(signer.split('#').next(), Some(vta_did.as_str()));
+    }
+
+    /// A bridge with no signer installed refuses to sign rather than letting
+    /// an unsigned document out.
+    #[tokio::test]
+    async fn a_bridge_without_a_signer_signs_nothing() {
+        let bridge = crate::didcomm_bridge::DIDCommBridge::placeholder();
+        let mut doc =
+            build_envelope_document(TASK_DID_CHECK_NAME, SERVER, Some(VTA.into()), json!({}));
+        assert!(!bridge.sign_outbound_request(&mut doc).await);
+        assert!(doc.get("proof").is_none());
     }
 
     /// No `issuer` rather than a wrong one. SPEC §4.8.1 makes an in-band issuer

@@ -763,20 +763,16 @@ mod tests {
         let (p, l) = split_strs(&e);
         assert!(p.contains(&"vault-read".to_string()), "{p:?}");
         assert!(p.contains(&"sign".to_string()), "{p:?}");
-        assert!(
-            !p.contains(&"key-export".to_string()),
-            "an ecosystem-local capability must not enter the closed enum: {p:?}"
-        );
-        assert!(
-            l.contains(&"keyExport".to_string()),
-            "…but it must still be reported, under `ext` — and in lowerCamelCase, \
-             so the document does not answer in two dialects at once: {l:?}"
-        );
+        // `keyExport` was ecosystem-local until the specification registered it
+        // (trust-tasks 0.23), so it is published now, not carried under `ext`.
+        assert!(p.contains(&"key-export".to_string()), "{p:?}");
+        assert!(l.is_empty(), "every capability is registered: {l:?}");
     }
 
     /// The published `device/_shared` enum registers `signTrustTask`,
-    /// `credentialWrite`, the memory and the room capabilities. They go in
-    /// `capabilities`, where a `capabilityFilter` can find them — not in `ext`.
+    /// `credentialWrite`, the memory, the room and (since 0.23) the `keyExport`
+    /// capabilities. They go in `capabilities`, where a `capabilityFilter` can
+    /// find them — not in `ext`.
     #[test]
     fn capabilities_the_specification_registers_are_published() {
         let mut e = entry_with_binding();
@@ -789,17 +785,14 @@ mod tests {
             "memory-write",
             "room-present",
             "room-open",
+            "key-export",
         ] {
             assert!(
                 p.contains(&cap.to_string()),
                 "{cap} must be published: {p:?}"
             );
         }
-        assert_eq!(
-            l,
-            vec!["keyExport".to_string()],
-            "only unregistered ones go in ext"
-        );
+        assert!(l.is_empty(), "only unregistered ones go in ext: {l:?}");
     }
 
     /// An entry whose stored list is only an additive grant holds its whole role

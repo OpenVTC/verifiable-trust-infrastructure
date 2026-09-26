@@ -14,6 +14,8 @@ import {
   forgeRoleFor,
   revertStanding,
   driftRevertImpact,
+  adoptStanding,
+  heldRepoRank,
 } from "./model";
 import {
   ACME,
@@ -289,5 +291,89 @@ describe("revertStanding — what git-ns/drift/resolve accepts", () => {
     expect(!r.may && r.why).toMatch(/manual mode/);
     expect(revertStanding(ALICE, true, ACME, { ...DOCS, state: "archived" }, maintain).may).toBe(false);
     expect(revertStanding(ALICE, true, ACME, LEGACY, maintain).may).toBe(true);
+  });
+});
+
+describe("adoptStanding — what git-ns/drift/resolve adopt accepts", () => {
+  const added = (observed: string) => ({
+    type: "roleAdded" as const,
+    resource: DOCS.resource,
+    observed,
+    account: { forge: "github.com", id: "1003", login: "hsato" },
+  });
+  const USER_NS = { ...ACME, kind: "user" };
+
+  it("adopts a maintain role as maintainer for an owner, normal-class", () => {
+    const r = adoptStanding(BOB, false, ACME, DOCS, added("maintain"), HANA, 0);
+    expect(r).toEqual({ may: true, member: HANA, right: "git.repo.maintain" });
+  });
+
+  it("projects write to maintainer under a personal account's map, and to nothing on an organisation", () => {
+    // The bridge's default map on a personal account: own and maintain both
+    // collapse to `write`.
+    const personal = { ...DOCS, roleMap: { own: "write", maintain: "write", commit: "none" } };
+    expect(adoptStanding(BOB, false, USER_NS, personal, added("write"), HANA, 0)).toEqual({
+      may: true,
+      member: HANA,
+      right: "git.repo.maintain",
+    });
+    const org = adoptStanding(BOB, false, ACME, DOCS, added("write"), HANA, 0);
+    expect(org.may).toBe(false);
+    expect(!org.may && org.why).toMatch(/No git right projects to the forge role "write"/);
+    // `admin` projects nothing on a personal account.
+    expect(adoptStanding(BOB, true, USER_NS, personal, added("admin"), HANA, 0).may).toBe(false);
+  });
+
+  it("adopts nothing while the bridge has not reported its role map", () => {
+    const unknown = { ...DOCS, roleMap: undefined };
+    const r = adoptStanding(BOB, true, ACME, unknown, added("maintain"), HANA, 0);
+    expect(r.may).toBe(false);
+    expect(!r.may && !r.handOver && r.why).toMatch(/role map/);
+  });
+
+  it("refuses a lowering: a roleChanged no higher than what the member holds", () => {
+    const changed = { ...added("maintain"), type: "roleChanged" as const };
+    // Hana already maintains (rank 2): maintain is no raise.
+    const r = adoptStanding(BOB, true, ACME, DOCS, changed, HANA, 2);
+    expect(r.may).toBe(false);
+    expect(!r.may && !r.handOver && r.why).toMatch(/lowering/);
+    // From committer (rank 1) it is a raise.
+    expect(adoptStanding(BOB, true, ACME, DOCS, changed, HANA, 1).may).toBe(true);
+  });
+
+  it("refuses what records no right, and an account nobody linked", () => {
+    expect(
+      adoptStanding(BOB, true, ACME, DOCS, { ...added("admin"), type: "roleRemoved" }, HANA, 0).may,
+    ).toBe(false);
+    const unlinked = adoptStanding(BOB, true, ACME, DOCS, added("maintain"), undefined, 0);
+    expect(!unlinked.may && unlinked.why).toMatch(/No member has linked/);
+  });
+
+  it("hands over to an owner, and an elevated adopt to a community administrator", () => {
+    const outsider = adoptStanding(HANA, true, ACME, DOCS, added("maintain"), HANA, 0);
+    expect(outsider).toMatchObject({ may: false, handOver: true, right: "git.repo.maintain" });
+    const owner = adoptStanding(BOB, false, ACME, DOCS, added("admin"), HANA, 0);
+    expect(owner).toMatchObject({ may: false, handOver: true, right: "git.repo.own" });
+    expect(adoptStanding(BOB, true, ACME, DOCS, added("admin"), HANA, 0)).toEqual({
+      may: true,
+      member: HANA,
+      right: "git.repo.own",
+    });
+    // A namespace admin owns every repository in it.
+    expect(adoptStanding(ALICE, false, ACME, DOCS, added("maintain"), HANA, 0).may).toBe(true);
+  });
+
+  it("ranks what a member holds, explicit, implied and unexpired", () => {
+    expect(heldRepoRank(RIGHTS, BOB, DOCS, ACME)).toBe(3);
+    expect(heldRepoRank(RIGHTS, HANA, WIDGETS, ACME)).toBe(2);
+    expect(heldRepoRank(RIGHTS, ALICE, DOCS, ACME)).toBe(3);
+    expect(heldRepoRank(RIGHTS, HANA, DOCS, ACME)).toBe(0);
+    const lapsed = [{ ...RIGHTS[4]!, expiresAt: "2000-01-01T00:00:00Z" }];
+    expect(heldRepoRank(lapsed, HANA, WIDGETS, ACME)).toBe(0);
+    // A namespace admin owns every repository in it, with or without a row.
+    expect(heldRepoRank([], ALICE, DOCS, ACME)).toBe(3);
+    // A v0.1 hook-relay grant is not in the store effective_on reads.
+    const derived = [{ ...RIGHTS[4]!, resource: DOCS.resource, origin: "roleDerived" }];
+    expect(heldRepoRank(derived, HANA, DOCS, ACME)).toBe(0);
   });
 });

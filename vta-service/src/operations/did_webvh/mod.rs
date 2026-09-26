@@ -38,10 +38,10 @@ pub use servers::{
     register_webvh_server, remove_webvh_server, retire_orphan_slot,
 };
 pub use update::{
-    AgentNameVerb, RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions,
-    UpdateDidWebvhResult, UpdatePlan, agent_name_op, check_agent_name, list_agent_names,
-    plan_did_webvh_update, resolve_webvh_did, rotate_did_webvh_keys, state_from_jsonl_pub,
-    update_did_webvh,
+    AgentNameVerb, RotateDidWebvhKeysOptions, StagedRotationRecovery, UpdateDidWebvhError,
+    UpdateDidWebvhOptions, UpdateDidWebvhResult, UpdatePlan, agent_name_op, check_agent_name,
+    list_agent_names, plan_did_webvh_update, recover_staged_rotations, resolve_webvh_did,
+    rotate_did_webvh_keys, state_from_jsonl_pub, update_did_webvh,
 };
 
 use std::sync::Arc;

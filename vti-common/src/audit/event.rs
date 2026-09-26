@@ -207,6 +207,24 @@ pub enum AuditEvent {
     /// row follows under the same actor when the document is re-sent.
     OperationStepUpRecorded(OperationStepUpData),
 
+    /// A step of the second-party consent that unrestricted admin authority
+    /// needs (VTI-APV-014): asked for, approved or declined by another admin,
+    /// granted once enough have approved, or spent by the operation it names.
+    ///
+    /// The actor is whoever took the step — the requester for `requested` and
+    /// `consumed`, the approver for `approved` and `declined`. `payload_digest`
+    /// is the salted digest the approvers were shown, never the unsalted one.
+    TaskConsentRecorded(TaskConsentData),
+
+    /// An ACL row was written or removed by an **offline** command, with the
+    /// daemon stopped — the break-glass. It did not pass the checks the daemon
+    /// makes on the same change: the step-up, another admin's consent to an
+    /// unrestricted grant (VTI-APV-014), the attrition rules (VTI-APV-009).
+    /// That is what it is for, and this row says it happened. Written by the
+    /// daemon on its next boot, from what the command left behind; the actor
+    /// is `did:key:vtc-break-glass`.
+    AclBreakGlassWritten(BreakGlassAclData),
+
     /// `POST /v1/join-requests` (REST or DIDComm) accepted a
     /// well-formed submission and persisted it as `Pending`. The
     /// actor on this event is the applicant DID — they're the
@@ -648,6 +666,8 @@ impl AuditEvent {
             Self::AdminPromoted(..) => "AdminPromoted",
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
+            Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
+            Self::AclBreakGlassWritten(..) => "AclBreakGlassWritten",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
@@ -1201,6 +1221,47 @@ pub struct OperationStepUpData {
     pub credential_id: String,
     /// When the unspent authorization lapses.
     pub expires_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::AclBreakGlassWritten`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BreakGlassAclData {
+    /// The command that made the change, e.g. `vtc acl add`.
+    pub command: String,
+    /// `grant` or `remove`.
+    pub action: String,
+    pub did: String,
+    /// The role written; empty for a removal.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contexts: Vec<String>,
+    /// The host the command ran on, and when.
+    pub operator_hostname: String,
+    pub invoked_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::TaskConsentRecorded`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskConsentData {
+    /// `requested`, `approved`, `declined`, `granted` or `consumed`.
+    pub stage: String,
+    /// Type URI of the operation consented to.
+    pub task: String,
+    /// The DID that asked for the operation.
+    pub requester: String,
+    /// The DID the operation acts on.
+    pub subject: String,
+    /// The digest salted with the ceremony's challenge — what the approvers
+    /// were shown.
+    pub payload_digest: String,
+    /// Approvals needed, and those recorded so far (on `granted` and
+    /// `consumed`, the approvers whose consent the grant carries).
+    pub min_approvals: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

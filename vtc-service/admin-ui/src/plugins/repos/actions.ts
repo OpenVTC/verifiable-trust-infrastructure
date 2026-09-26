@@ -59,7 +59,7 @@ import type { GitNsDriftItem, GitNsRight, GitNsRoleMap } from "@/lib/wire-types"
 export const TASK_URI: Record<GitNsAction, string> = {
   "namespace.bind": "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
   "namespace.unbind": "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
-  "namespace.reseat": "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+  "namespace.reseat": "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
   "right.grant": "https://trusttasks.org/spec/git-ns/right/grant/0.1",
   "right.revoke": "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
   "repo.adopt": "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
@@ -206,7 +206,7 @@ export function reasonError(value: string): string | null {
 }
 
 /** A reseat's statement: REQUIRED, 1–1024 characters
- *  (`git-ns/namespace/reseat/0.1`). */
+ *  (`git-ns/namespace/reseat/0.3`). */
 export function statementError(value: string): string | null {
   const v = value.trim();
   if (!v) return "Say why the namespace is headless and why this member.";
@@ -264,7 +264,7 @@ export function unbindTask(namespaceId: string, resource: string): SignedTask {
 }
 
 /**
- * `git-ns/namespace/reseat` 0.1: a community administrator seats `subject` —
+ * `git-ns/namespace/reseat` 0.3: a community administrator seats `subject` —
  * a current member — as the permanent `git.ns.admin` of a headless namespace.
  */
 export function reseatTask(
@@ -278,7 +278,7 @@ export function reseatTask(
     action: "namespace.reseat",
     title: `Reseat ${resource}`,
     effect:
-      "The member receives namespace admin (git.ns.admin) with no expiry, published to the Trust Registry and projected onto the forge by the bridge. The statement becomes the right's reason, is kept in the audit record with how each earlier admin record ended, and is shown to the namespace's repository owners. Refused while a current member holds a live git.ns.admin there.",
+      "The member receives namespace admin (git.ns.admin) with no expiry, published to the Trust Registry. It gives no role on the forge. The statement becomes the right's reason, is kept in the audit record with how each earlier admin record ended, and is shown to the namespace's repository owners. Refused while a current member holds a live git.ns.admin there.",
     taskUri: TASK_URI["namespace.reseat"],
     payload: { namespace: namespaceId, subject, statement: s },
     consent: consentClass("namespace.reseat"),
@@ -322,7 +322,9 @@ export function grantTask(g: GrantInput, now = new Date()): SignedTask {
     action: "right.grant",
     title: `Grant ${rightLabel(g.right).toLowerCase()} on ${shortName(g.resource)}`,
     effect:
-      "The right is recorded, published to the Trust Registry (with its implied commit right where it has one), and projected onto the forge by the bridge.",
+      g.right === "git.ns.admin"
+        ? "The right is recorded and published to the Trust Registry (with its implied commit right). It gives no role on the forge: a namespace admin acts through the VTC and the bridge."
+        : "The right is recorded, published to the Trust Registry (with its implied commit right where it has one), and projected onto the forge by the bridge.",
     taskUri: TASK_URI["right.grant"],
     payload,
     consent: consentClass("right.grant", g.right),
@@ -453,22 +455,18 @@ export function createTask(c: CreateInput): SignedTask {
  * another. The account's `login` is display only; its `forge` and `id` pick
  * it out.
  */
-export function driftRevertTask(
+function driftResolve(
   resource: string,
+  action: "adopt" | "revert",
   item: GitNsDriftItem,
   reason?: string,
-  /** The repository's role map (`GitNsRepoRow.roleMap`); absent while the
-   *  bridge has not reported it, when every role revert weighs as revoking
-   *  own. */
-  roleMap?: GitNsRoleMap | null,
-): SignedTask {
+): { payload: Record<string, unknown>; command: string } {
   const drift: Record<string, unknown> = { type: item.type };
-  const impact = driftRevertImpact(item, roleMap);
   const args: (Word | string | { opt: string })[] = [
     w("drift"),
     w("resolve"),
     resource,
-    w("revert"),
+    w(action),
     o("type", item.type),
   ];
   if (isRoleDrift(item) && item.account) {
@@ -479,12 +477,26 @@ export function driftRevertTask(
     drift.observed = item.observed;
     args.push(o("observed", item.observed));
   }
-  const payload: Record<string, unknown> = { resource, drift, action: "revert" };
+  const payload: Record<string, unknown> = { resource, drift, action };
   const r = reason?.trim();
   if (r) {
     payload.reason = r;
     args.push(o("reason", r));
   }
+  return { payload, command: cnm(...args) };
+}
+
+export function driftRevertTask(
+  resource: string,
+  item: GitNsDriftItem,
+  reason?: string,
+  /** The repository's role map (`GitNsRepoRow.roleMap`); absent while the
+   *  bridge has not reported it, when every role revert weighs as revoking
+   *  own. */
+  roleMap?: GitNsRoleMap | null,
+): SignedTask {
+  const impact = driftRevertImpact(item, roleMap);
+  const { payload, command } = driftResolve(resource, "revert", item, reason);
   return {
     action: "drift.resolve",
     title: `Revert drift on ${shortName(resource)}`,
@@ -498,7 +510,42 @@ export function driftRevertTask(
         : "Gated as the revocation it amounts to, which is normal-class: authorized by the signer's git.repo.own on the repository, explicit or implied by git.ns.admin.",
     resource,
     parties: [],
-    command: cnm(...args),
+    command,
+  };
+}
+
+/**
+ * `git-ns/drift/resolve` 0.1, `adopt`: the forge-side role is recorded as the
+ * right it projects (`right`, from `adoptStanding`), granted to the member
+ * who linked the account exactly as a grant from the signer would be — and
+ * the item leaves the outstanding drift.
+ *
+ * Selected as a revert is, and `observed` is REQUIRED here: the VTC derives
+ * the right from it and adopts nothing if the forge now shows something else
+ * (`driftNotFound`). The reason, if any, becomes the right's `reason`.
+ */
+export function driftAdoptTask(
+  resource: string,
+  item: GitNsDriftItem,
+  member: string,
+  right: GitNsRight,
+  reason?: string,
+): SignedTask {
+  const { payload, command } = driftResolve(resource, "adopt", item, reason);
+  return {
+    action: "drift.resolve",
+    title: `Adopt drift on ${shortName(resource)}`,
+    effect: `The member is granted ${rightLabel(right).toLowerCase()} (${right}) here, published to the Trust Registry, and the forge keeps the role; the item leaves the outstanding drift and the bridge inspects the repository again. Refused if the forge no longer shows what was read here, or if the account is no longer a current member's.`,
+    taskUri: TASK_URI["drift.resolve"],
+    payload,
+    consent: consentClass("drift.resolve", right),
+    consentNote:
+      consentClass("drift.resolve", right) === "normal"
+        ? "Gated as the grant it records, which is normal-class: authorized by the signer's git.repo.own on the repository, explicit or implied by git.ns.admin."
+        : "Gated as the grant it records: granting ownership is an elevated action, which this VTC accepts only from a community administrator (`elevated_requires_admin`) who also holds git.repo.own here.",
+    resource,
+    parties: [{ role: "Receives the right", did: member }],
+    command,
   };
 }
 

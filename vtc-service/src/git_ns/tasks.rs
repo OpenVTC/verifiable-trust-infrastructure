@@ -26,9 +26,7 @@ use trust_tasks_rs::specs::git_ns::bridge::{
     event::v0_1 as event, event::v0_2 as event2, event::v0_3 as event3, result::v0_1 as result,
 };
 use trust_tasks_rs::specs::git_ns::drift::resolve::v0_1 as drift_resolve;
-use trust_tasks_rs::specs::git_ns::namespace::{
-    bind::v0_1 as bind, reseat::v0_1 as reseat, unbind::v0_1 as unbind,
-};
+use trust_tasks_rs::specs::git_ns::namespace::{bind::v0_1 as bind, unbind::v0_1 as unbind};
 use trust_tasks_rs::specs::git_ns::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
     transfer::v0_1 as transfer,
@@ -251,7 +249,23 @@ signed_handler!(
     drift_resolve::Payload,
     super::drift::drift_resolve
 );
-signed_handler!(handle_reseat, reseat::Payload, ops::namespace_reseat);
+/// `git-ns/namespace/reseat/0.3` — the only reseat version served (0.1 and
+/// 0.2 queued a namespace-level forge projection that no longer exists).
+pub(crate) async fn handle_reseat(
+    doc: TrustTask<super::reseat_v0_3::Payload>,
+    ctx: GitNsCtx,
+) -> TrustTaskOutcome {
+    let signer = match signer(&doc, &ctx) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let actor = match acting_as(&ctx.state, &signer).await {
+        Ok(a) => a,
+        Err(e) => return respond::<_, ()>(&doc, Err(e)),
+    };
+    let r = ops::namespace_reseat(&ctx.state, &actor, doc.payload.0.clone()).await;
+    respond(&doc, r)
+}
 signed_handler!(
     handle_reproject,
     reproject::Payload,

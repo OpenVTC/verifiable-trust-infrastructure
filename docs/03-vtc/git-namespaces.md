@@ -28,6 +28,18 @@ by the VTC and is never a record — except that, because verifiers ask only
 about `git.commit.sign`, the implied commit right of every `own`,
 `maintain` and `ns.admin` is published explicitly.
 
+A namespace admin gets **no role on the forge** — not organisation owner, no
+repository role. `ns.admin` is exercised through the VTC and the bridge (bind,
+adopt, reseat, grants); making someone an organisation owner is left to the
+community, outside the VTC. The bridge projects only rights held in a
+person's own name: each repository's `desiredRoles` carries, per linked
+account and once per account, the highest `own`, `maintain` or `commit.sign`
+recorded for them on that repository (or `commit.sign` on its namespace). An
+admin with none of those there is sent as `git.ns.admin`, which the bridge
+maps to no role — so it takes off a stale role it manages rather than leave
+it — and an admin who is also an explicit owner is sent as the owner. There
+is no namespace-level `projectRoles` job.
+
 The **fixed rules** are code, not policy: containment by whole segment (a
 right never crosses forges, and `acme` does not contain `acme-labs`), no
 escalation, `repo.create` not re-delegable, a repository keeps an owner, a
@@ -219,9 +231,14 @@ It is normal-class, audited as `gitNs.roles.reprojected`, and refused in
 manual mode (`manualMode`) and while the bridge has lost its access
 (`noForgeAccess`). The shipped policy evaluates it as `roles.reproject`.
 
-Jobs go out as `git-ns/bridge/job/0.1`, except the one job 0.1 cannot express:
-taking off a repository a role the bridge does not manage (`projectRoles` with
-`removeAccounts`, reverting a `roleAdded` drift item), sent as 0.2.
+Every job goes out as `git-ns/bridge/job/0.4`
+([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635)),
+and only to a bridge that lists 0.4 when asked with `trust-task-discovery`
+(asked again hourly, so an upgrade is noticed). A bridge that does not is sent
+nothing: in-line jobs (binding, account links, a `roleAdded` revert) are
+refused with "upgrade the bridge", and queued jobs wait with that as their
+last error. A bridge before 0.4 would read a `git.ns.admin` entry as
+ownership, which is why there is no downgrade.
 
 Jobs are queued in `git_ns_jobs`; role projection retries
 forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
@@ -240,7 +257,10 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   grant. The item must still be outstanding as it was selected when the right
   is written; a forge that changed meanwhile adopts nothing. Only a role item (`roleAdded`, or a `roleChanged` that
   raises the member above what they hold) held by a forge account linked to a
-  current member, at a role a right projects to, can be adopted. The right
+  current member, at a role a right projects to, can be adopted. For a
+  `roleChanged` item, "holds" counts implied rights (`git-ns/drift/resolve`
+  0.2): a namespace admin's forge `admin` role on a repository where they
+  hold `maintain` is not adoptable, though a `roleAdded` one is. The right
   is the **lowest** whose role in the bridge's reported role map (the
   repository's own entry where it has one) is the observed role — under the
   default map `admin` is `git.repo.own`, `maintain` is `git.repo.maintain`,
@@ -251,9 +271,9 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   `git.commit.sign`; a role no right's is (`triage`, `read`, `none`) projects
   nothing.
 - **revert** changes no right and has the bridge undo the change: a
-  `roleAdded` role is removed with `git-ns/bridge/job/0.2`'s
-  `removeAccounts`, sent in-line so that a bridge implementing only 0.1 is
-  answered `notRevertible` instead of a revert that does nothing; a
+  `roleAdded` role is removed with `removeAccounts`, sent in-line so that a
+  bridge that refuses it is answered `notRevertible` instead of a revert that
+  does nothing (a namespace admin at no role may be named there too); a
   `roleChanged` or `roleRemoved` role re-sends the complete `desiredRoles`;
   protection items re-run the `requiredCheck` bootstrap step, and
   `bootstrapMissing` the whole plan. Reverting a role at or above the one
@@ -270,16 +290,47 @@ cnm git drift resolve github.com/acme/widgets revert --type roleAdded \
   --account-id 5550123 --account-login eve-dev --observed write
 ```
 
+## Linking a forge account
+
+The bridge gives a member the forge role their rights call for only once it
+knows which forge account is theirs. A member links it with
+`git-ns/account/link` and follows it with `git-ns/account/link-status`;
+`cnm git link` does both, signed as the community profile's DID:
+
+```sh
+cnm git link --forge github.com      # prints the URL (and on GitHub a device code), then waits
+cnm git link --status lnk_4Tq9Xw2P   # follow a link begun earlier
+cnm git link --list                  # the accounts linked to this DID (git-ns/view/0.2)
+```
+
+It polls every five seconds until the link is `linked`, `expired` or
+`failed`; `--no-wait` prints where to authorise and returns. Anything but
+`linked` exits non-zero, with `--json` too (which prints the last answer on
+stdout either way). A link needs a bridge-mode namespace on the forge
+(`unsupportedForge` otherwise). `failed` means the forge refused it — the
+member declined the authorisation, or the bridge could not complete it — or
+the account is already linked to another member. The authorisation URL is
+printed only if it is an `https://` URL, in its parsed form, and nothing the
+VTC or bridge returns reaches the terminal with control or format (bidi,
+zero-width) characters in it. Linking again
+replaces the account linked on that forge. There is no unlink task: an
+account is unlinked when its member leaves.
+
 ## Reseating a headless namespace
 
 A namespace whose every `git.ns.admin` has left the community or lapsed is
 *headless*. A community administrator restores one with
-`git-ns/namespace/reseat` — `cnm git reseat <namespace> --subject <did>
+`git-ns/namespace/reseat` 0.3 (the only version served; it queues no forge
+projection) — `cnm git reseat <namespace> --subject <did>
 --statement "…"` — which grants a current member a permanent `git.ns.admin`,
 with the statement as its reason. It is refused (`notHeadless`) while any
 live admin record of a current member remains, so it cannot be used to go
 around an admin; the audit record keeps the statement and how each earlier
-admin record ended.
+admin record ended. The subject is never the administrator reseating:
+reseating a namespace to yourself is a self-grant of `git.ns.admin`, refused
+with `git-ns:selfGrantNotAllowed` (separation of duties) — another community
+administrator reseats it to you, or (once this VTC serves it) you record it
+explicitly with `git-ns/right/break-glass`.
 
 ## Administrator surface
 
@@ -347,11 +398,17 @@ adopt, transfer, archive, re-project roles — is signed with the browser's cons
 enrolled, and otherwise handed to the administrator as the `cnm git …`
 command that signs it, with the document itself.
 
+The **Members** page shows each member's git rights and linked forge accounts
+(from `rights` and `accounts`) in its list, and a member's page lists them in
+a *Git rights* card — recorded rights with their resource, granter and expiry,
+and role-derived ones marked as such. Both need a community administrator; a
+scoped administrator sees that said instead of the column.
+
 ## Limits
 
 - **No member step-up** — see *Consent classes* above.
 - **A namespace with no admin.** The last-admin and last-owner invariants count
-  only records with no expiry (`git-ns/namespace/reseat/0.1`), so an expiring
+  only records with no expiry (`git-ns/namespace/reseat/0.3`), so an expiring
   `ns.admin` or `own` cannot be the one that keeps them. A departure can still
   leave a namespace headless; it is recovered with a reseat (above).
 - **No binding credential.** `git-ns/account/link` says the VTC SHOULD issue a

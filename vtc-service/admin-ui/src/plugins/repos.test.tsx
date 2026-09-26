@@ -279,13 +279,33 @@ describe("Repos plugin — overview", () => {
       `cnm git reseat ns_acme --subject=${BOB} --statement='Alice left; Bob owns most repos'`,
     );
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent!)).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+      type: "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
       payload: { namespace: "ns_acme", subject: BOB, statement: "Alice left; Bob owns most repos" },
     });
     // No console key: nothing to sign with, so nothing is sent.
     await within(sign).findByRole("button", { name: "I have sent it — refresh" });
     expect(within(sign).queryByRole("button", { name: "Sign and send" })).toBeNull();
     expect(within(sign).queryByLabelText(/destructive and want to sign it/)).toBeNull();
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+    expect(requests.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it("does not build a reseat to the viewer themselves (separation of duties)", async () => {
+    const requests = mockFetch(
+      gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }] }),
+    );
+    // Bob is a member and a community administrator, reseating to himself.
+    mount("/repos", { ...COMMUNITY_ADMIN, session: { ...COMMUNITY_ADMIN.session, subject: BOB } });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reseat github.com/acme" }));
+    const form = await screen.findByRole("dialog", { name: "Reseat github.com/acme" });
+    await within(form).findByRole("option", { name: /Bob Mensah/ });
+    fireEvent.change(within(form).getByLabelText("New namespace admin"), { target: { value: BOB } });
+    fireEvent.change(within(form).getByLabelText("Statement"), { target: { value: "Alice left" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Build the reseat" }));
+
+    expect(form.textContent).toMatch(/cannot reseat a namespace to yourself/);
+    expect(within(form).queryByLabelText("Document")).toBeNull();
     expect(postSignedTrustTask).not.toHaveBeenCalled();
     expect(requests.every((r) => r.method === "GET")).toBe(true);
   });
@@ -313,7 +333,7 @@ describe("Repos plugin — overview", () => {
     fireEvent.click(send);
     await waitFor(() =>
       expect(postSignedTrustTask).toHaveBeenCalledWith(
-        "https://trusttasks.org/spec/git-ns/namespace/reseat/0.1",
+        "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
         { namespace: "ns_acme", subject: BOB, statement: "Alice left" },
       ),
     );

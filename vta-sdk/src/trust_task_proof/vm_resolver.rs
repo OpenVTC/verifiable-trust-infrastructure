@@ -37,10 +37,13 @@
 //! ever authenticate, which is not a security property — it is the absence of a
 //! feature the rest of the stack already assumes.
 
+use crate::did_refresh::{evict_for_fresh_resolve, resolve_for_vm};
 use affinidi_data_integrity::did_vm::resolve_did_key;
 use affinidi_data_integrity::{DataIntegrityError, ResolvedKey, VerificationMethodResolver};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_secrets_resolver::secrets::KeyType;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 /// Resolves a Trust Task proof's `verificationMethod` to its public key.
 ///
@@ -54,6 +57,11 @@ use affinidi_secrets_resolver::secrets::KeyType;
 #[derive(Clone, Default)]
 pub struct TrustTaskVmResolver {
     resolver: Option<DIDCacheClient>,
+    /// DIDs whose document this resolver was handed **from the cache**, so a
+    /// verification that fails against one can ask for it fresh
+    /// ([`Self::refresh_if_cached`]). A document just fetched is not refetched:
+    /// it is as current as a second fetch would be.
+    served_from_cache: Arc<Mutex<HashSet<String>>>,
 }
 
 impl std::fmt::Debug for TrustTaskVmResolver {
@@ -71,6 +79,7 @@ impl TrustTaskVmResolver {
     pub fn new(resolver: DIDCacheClient) -> Self {
         Self {
             resolver: Some(resolver),
+            served_from_cache: Arc::default(),
         }
     }
 
@@ -83,14 +92,36 @@ impl TrustTaskVmResolver {
     /// checked.
     #[must_use]
     pub fn did_key_only() -> Self {
-        Self { resolver: None }
+        Self::default()
     }
 
     /// A resolver from an optional cache client — network resolution when
     /// `Some`, `did:key`-only when `None`.
     #[must_use]
     pub fn from_optional(resolver: Option<DIDCacheClient>) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            served_from_cache: Arc::default(),
+        }
+    }
+
+    /// Evict `did` for a fresh resolution if — and only if — this resolver was
+    /// handed its document from the cache. Returns whether it did, i.e. whether
+    /// a retry could see a different document.
+    ///
+    /// For a verification that failed against a listed key: the key id is
+    /// unchanged but its material was replaced, which [`resolve_for_vm`]
+    /// cannot notice because the method is still listed.
+    pub async fn refresh_if_cached(&self, did: &str) -> bool {
+        let Some(resolver) = self.resolver.as_ref() else {
+            return false;
+        };
+        let was_cached = self
+            .served_from_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(did);
+        was_cached && evict_for_fresh_resolve(resolver, did).await
     }
 
     /// Whether this resolver can resolve a method other than `did:key`.
@@ -130,9 +161,15 @@ impl TrustTaskVmResolver {
                  for did:key only"
             ))
         })?;
-        let resolved = resolver.resolve(base_did).await.map_err(|e| {
+        let resolved = resolve_for_vm(resolver, base_did, vm).await.map_err(|e| {
             DataIntegrityError::Resolver(format!("`{base_did}` did not resolve: {e}"))
         })?;
+        if resolved.cache_hit {
+            self.served_from_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(base_did.to_string());
+        }
 
         // A DID document may name its verification methods absolutely
         // (`did:webvh:…:glenn#key-0`) or relatively (`#key-0`); the proof

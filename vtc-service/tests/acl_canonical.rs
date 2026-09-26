@@ -624,7 +624,16 @@ async fn vti_ops_051_a_live_step_up_promotes_and_runs_the_role_change_pipeline()
     let fix = build().await;
     let token = stepped_up_admin_token(&fix, 900).await;
     const DID: &str = "did:key:z6MkPromoted";
-    seed_member(&fix, DID, "member").await;
+    // Scoped, so the promotion lands a scoped admin and the step-up is the
+    // whole gate. Promoting a scopeless member makes an *unrestricted* admin,
+    // which also needs another admin's consent (VTI-APV-014) — covered in
+    // `unrestricted_admin_consent.rs`.
+    let admin = admin_token(&fix).await;
+    assert_eq!(
+        grant(&fix, &admin, DID, "member", json!(["ctx-a"])).await,
+        StatusCode::CREATED
+    );
+    make_member(&fix, DID).await;
 
     let (status, body) = call(
         &fix,

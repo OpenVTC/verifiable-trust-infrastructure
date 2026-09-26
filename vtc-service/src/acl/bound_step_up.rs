@@ -246,6 +246,29 @@ pub async fn redeem_or_request(
     Ok(Gate::Required(Box::new(request)))
 }
 
+/// Whether a recorded gesture for `(admin_did, this operation)` is waiting,
+/// **without spending it**.
+///
+/// For a gate that needs the gesture *and* something else — another admin's
+/// consent, for unrestricted authority (`super::admin_consent`). It asks for the
+/// gesture first, then the consent, and spends neither until both are present,
+/// so a missing consent never costs the requester the gesture they already
+/// made. [`redeem_or_request`] is still the spend: a mark this reports may have
+/// lapsed or been spent by the time the caller redeems it.
+pub async fn has_mark(
+    state: &AppState,
+    admin_did: &str,
+    type_uri: &str,
+    payload: &Value,
+) -> Result<bool, AppError> {
+    let digest = operation_digest(type_uri, payload)?;
+    Ok(state
+        .step_up_marks_ks
+        .get::<RedeemableMark>(mark_key(admin_did, &digest))
+        .await?
+        .is_some_and(|mark| now_epoch() < mark.expires_at))
+}
+
 /// The inline `auth/step-up/approve-request/0.3` payload: `boundTo` present,
 /// `sessionId` absent, webauthn the only acceptable evidence.
 ///

@@ -46,7 +46,7 @@ use crate::server::AppState;
 // Wire shapes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct CreateInviteRequest {
@@ -139,6 +139,10 @@ const MAX_TTL_SECONDS: u64 = 24 * 60 * 60;
 
 /// `vtc/admin/invites/create:ttlTooLong` — `ttlSeconds` exceeds the 24-hour
 /// maximum.
+/// `vtc/admin/invites/create/0.1` — what an invite's consent is bound to.
+const CREATE_INVITE_TYPE: &str =
+    <trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 pub const CREATE_INVITE_ERR_TTL_TOO_LONG: &str =
     trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
 /// `vtc/admin/invites/revoke:notFound` — no invite with that `jti`.
@@ -206,6 +210,46 @@ pub async fn create_invite(
             .into());
         }
         None => {
+            // The entry this writes is an **unrestricted** admin, so an invite
+            // is a grant of unrestricted authority and costs what one costs on
+            // `acl/grant`: an unrestricted caller, the caller's live step-up,
+            // and another unrestricted admin's consent (VTI-APV-014). Before
+            // this, `AdminAuth` alone was enough — so a *scoped* admin could
+            // mint a community-wide admin here, with no gesture and nobody
+            // else asked.
+            if !admin.0.is_super_admin() {
+                return Err(AppError::Forbidden(
+                    "only an unrestricted admin can invite an admin, because an invited admin \
+                     is unrestricted"
+                        .into(),
+                )
+                .into());
+            }
+            if !crate::acl::elevation::verified(&admin.0, &state.sessions_ks).await {
+                return Err(crate::acl::elevation::required(&format!(
+                    "inviting {} as an unrestricted admin",
+                    req.did
+                ))
+                .into());
+            }
+            let op_payload = serde_json::to_value(&req)
+                .map_err(|e| AppError::Internal(format!("serialise invite request: {e}")))?;
+            let consent = crate::acl::admin_consent::require(
+                &state,
+                &admin.0.did,
+                &req.did,
+                crate::acl::admin_consent::Operation {
+                    type_uri: CREATE_INVITE_TYPE,
+                    payload: &op_payload,
+                },
+                &format!(
+                    "Invite {} to become an unrestricted administrator of this community",
+                    req.did
+                ),
+            )
+            .await?;
+            consent.spend(&state).await?;
+
             let label = req
                 .label
                 .clone()

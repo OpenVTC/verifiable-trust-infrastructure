@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -509,6 +509,17 @@ pub async fn build_app_state(
     let snapshot_ks =
         apply_encryption(store.keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)?);
 
+    // Finish any key rotation a crash interrupted between its log write and its
+    // promotion — before the VTA loads its own keys, which a rotation of its own
+    // DID may have replaced. A failure here must not become a boot loop: the
+    // staging records are inert and the next boot retries.
+    #[cfg(feature = "webvh")]
+    match crate::operations::did_webvh::recover_staged_rotations(&keys_ks, &webvh_ks).await {
+        Ok(report) if report == Default::default() => {}
+        Ok(report) => warn!(?report, "recovered interrupted did:webvh key rotations"),
+        Err(e) => warn!(error = %e, "could not recover interrupted did:webvh key rotations"),
+    }
+
     let auth = init_auth(
         &config,
         &*seed_store,
@@ -554,7 +565,7 @@ pub async fn build_app_state(
         .audit_sink
         .unwrap_or_else(|| vta_audit::shared_chained_sink(audit_ks.clone(), audit_key_ks.clone()));
 
-    Ok(AppState {
+    let state = AppState {
         keys_ks,
         sessions_ks,
         acl_ks,
@@ -627,7 +638,14 @@ pub async fn build_app_state(
         restart_tx,
         #[cfg(feature = "rest")]
         metrics_handle: parts.metrics_handle,
-    })
+    };
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    if let (Some(resolver), Some(vm_id)) = (&state.secrets_resolver, &state.signing_vm_id) {
+        state
+            .didcomm_bridge
+            .set_document_signer(resolver.clone(), vm_id.clone());
+    }
+    Ok(state)
 }
 
 /// Whether this build can **receive** TSP. One definition, so the startup check
@@ -1985,16 +2003,35 @@ async fn init_auth(
     };
 
     // 1. DID resolver (network mode if resolver_url is set, local mode otherwise)
+    //
+    // The cache TTL is explicit and bounded (`[did_cache]`, default 60 s, at
+    // most 300 s): it is how long a key revoked from a peer's document keeps
+    // verifying here. A proof that fails against a cached document re-resolves
+    // it once before it is refused (`vta_sdk::trust_task_proof`), so a
+    // rotation does not wait for the TTL.
     let resolver_config = {
-        let mut builder = DIDCacheConfigBuilder::default()
-            .with_host_policy(vta_sdk::resolver::webvh_host_policy());
         if let Some(ref url) = config.resolver_url {
-            info!(url = %url, "DID resolver using network mode (remote resolver)");
-            builder = builder.with_network_mode(url);
+            // The remote keeps its own cache, which this node can neither read
+            // nor evict: a revoked key keeps verifying for up to our TTL plus
+            // the remote's (`DidCacheConfig::ttl_secs`).
+            info!(
+                url = %url,
+                "DID resolver using network mode (remote resolver); a revoked key may keep \
+                 verifying for did_cache.ttl_secs plus the remote resolver's own cache expiry"
+            );
         } else {
             info!("DID resolver using local mode");
         }
-        builder.build()
+        info!(
+            ttl_secs = config.did_cache.ttl_secs,
+            capacity = config.did_cache.capacity,
+            "DID document cache bounds"
+        );
+        vta_sdk::resolver::build_verifier_did_cache_config(
+            config.resolver_url.as_deref(),
+            config.did_cache.ttl_secs,
+            config.did_cache.capacity,
+        )
     };
     let mut did_resolver = match DIDCacheClient::new(resolver_config).await {
         Ok(r) => r,
@@ -2332,6 +2369,7 @@ async fn find_vta_key_paths(
         .get(crate::keys::store_key(&signing_key_id))
         .await?
         .ok_or_else(|| AppError::NotFound("VTA signing key not found".into()))?;
+    require_active(&signing)?;
 
     let ka_path = if vta_did.starts_with("did:key:") {
         None
@@ -2341,11 +2379,25 @@ async fn find_vta_key_paths(
             .get(crate::keys::store_key(&ka_key_id))
             .await?
             .ok_or_else(|| AppError::NotFound("VTA key-agreement key not found".into()))?;
+        require_active(&ka)?;
         Some(ka.derivation_path)
     };
 
     debug!(signing_path = %signing.derivation_path, ka_path = ?ka_path, "VTA key paths resolved");
     Ok((signing.derivation_path, ka_path, signing.seed_id))
+}
+
+/// The VTA loads only active records as its own identity: a revoked record
+/// (retired by a rotation, or revoked outright) or a rotation's inert staging
+/// record must never become the key it signs or decrypts with.
+fn require_active(record: &KeyRecord) -> Result<(), AppError> {
+    if record.status != vta_sdk::keys::KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "VTA key `{}` is not active; refusing to load it",
+            record.key_id
+        )));
+    }
+    Ok(())
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.

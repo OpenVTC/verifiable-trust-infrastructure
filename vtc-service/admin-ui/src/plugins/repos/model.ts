@@ -119,9 +119,10 @@ export function consentClass(action: GitNsAction, right?: GitNsRight): ConsentCl
   ) {
     return "destructive";
   }
-  // A drift revert is gated as the revocation it amounts to
-  // (`git_ns::drift::revert` → `consent_gate("right.revoke", impact)`), so it
-  // is classed by its impact the same way.
+  // Resolving drift is gated as the grant or revocation it amounts to —
+  // adopt as `consent_gate("right.grant", right)` inside `right_grant_via`,
+  // revert as `consent_gate("right.revoke", impact)` — so it is classed by
+  // that right the same way.
   if (action === "right.grant" || action === "right.revoke" || action === "drift.resolve") {
     if (right === "git.ns.admin") return "destructive";
     if (right === "git.repo.own" || right === "git.repo.create") return "elevated";
@@ -706,6 +707,142 @@ export function revertStanding(
     };
   }
   return { may: true };
+}
+
+/** Whether the item is one adopt can take at all (`git_ns::drift::adopt`,
+ *  step 1): a role added or raised on the forge. */
+export function isAdoptableKind(item: GitNsDriftItem): boolean {
+  return item.type === "roleAdded" || item.type === "roleChanged";
+}
+
+/**
+ * The strongest of own / maintain / commit.sign `member` holds on the
+ * repository, explicit or implied, as a rank (`Right::rank`: own 3,
+ * maintain 2, commit.sign 1; 0 for nothing) — what `adopt` step 4 compares
+ * a `roleChanged` against. It mirrors `rules::effective_on`, which reads the
+ * git-ns store only: expired rows count for nothing, and `roleDerived` rows —
+ * v0.1 hook-relay grants merged into the listing from the registry, never
+ * held in that store — are ignored. The namespace's admins (`ns.admins`, the
+ * live `git.ns.admin` holders) own every repository in it.
+ */
+export function heldRepoRank(
+  rights: GitNsRightRow[],
+  member: string,
+  repo: GitNsRepoRow,
+  ns: GitNsNamespaceRow,
+  now = Date.now(),
+): number {
+  let best = repo.owners.includes(member) || ns.admins.includes(member) ? 3 : 0;
+  for (const r of rights) {
+    if (r.subject !== member) continue;
+    if (r.origin === "roleDerived") continue;
+    if (r.expiresAt && Date.parse(r.expiresAt) <= now) continue;
+    if (r.resource === repo.resource) {
+      if (r.right === "git.repo.own") best = Math.max(best, 3);
+      else if (r.right === "git.repo.maintain") best = Math.max(best, 2);
+      else if (r.right === "git.commit.sign") best = Math.max(best, 1);
+    } else if (r.resource === ns.resource) {
+      // `ns.admin` implies own on every repository in it; a namespace-wide
+      // commit.sign counts on each one.
+      if (r.right === "git.ns.admin") best = Math.max(best, 3);
+      else if (r.right === "git.commit.sign") best = Math.max(best, 1);
+    }
+  }
+  return best;
+}
+
+const RANK: Partial<Record<GitNsRight, number>> = {
+  "git.repo.own": 3,
+  "git.repo.maintain": 2,
+  "git.commit.sign": 1,
+};
+
+export type AdoptStanding =
+  /** Adoptable, by this viewer: grants `right` to `member`. */
+  | { may: true; member: string; right: GitNsRight }
+  /** Adoptable, but not by this viewer — hand the command to someone who can. */
+  | { may: false; handOver: true; member: string; right: GitNsRight; why: string }
+  /** Not adoptable by anyone as it stands. */
+  | { may: false; handOver: false; why: string };
+
+/**
+ * Whether the VTC would accept adopting `item` signed as `viewer` — the
+ * checks `git-ns/drift/resolve` makes for `adopt`, in its order, as far as
+ * the console can see them:
+ *
+ * - the repository is active or orphaned (`repoNotActive`);
+ * - the signer holds `git.repo.own` there, explicit or implied
+ *   (`permissionDenied`);
+ * - step 1: a role added or raised on the forge (`notAdoptable`);
+ * - step 2: the account is linked to a member (`accountNotLinked`; whether
+ *   that member is still current the VTC decides);
+ * - step 3: a right projects to the observed role (`noMatchingRight`)
+ *   under the bridge's reported role map (`projectedRight`); with no map
+ *   reported nothing is adoptable (`git-ns:roleMapUnknown`);
+ * - step 4: a `roleChanged` adopts only a raise — a lowering is accepted by
+ *   revoking, not adopting (`notAdoptable`);
+ * - step 5: the grant's consent class — `own` is elevated, which this VTC
+ *   accepts only from a community administrator (`elevated_requires_admin`,
+ *   assumed on, as for every elevated task).
+ *
+ * The VTC decides either way; this only keeps the console from offering what
+ * it would refuse.
+ */
+export function adoptStanding(
+  viewer: string | null,
+  superAdmin: boolean,
+  ns: GitNsNamespaceRow,
+  repo: GitNsRepoRow,
+  item: GitNsDriftItem,
+  member: string | undefined,
+  heldRank: number,
+): AdoptStanding {
+  const refuse = (why: string): AdoptStanding => ({ may: false, handOver: false, why });
+  if (repo.state !== "active" && repo.state !== "orphaned") {
+    return refuse(`The repository is ${repo.state}; drift is resolved on an active or orphaned one.`);
+  }
+  if (!isAdoptableKind(item)) {
+    return refuse("Only a role added or raised on the forge can be adopted; revert this one, or revoke with a right change.");
+  }
+  if (!member) {
+    return refuse("No member has linked this forge account, so there is nobody to grant it to. It can only be reverted.");
+  }
+  if (!repo.roleMap) {
+    return refuse(
+      "The bridge has not reported its role map, so which git right this forge role stands for is unknown: it cannot be adopted until the bridge reports (`git-ns:roleMapUnknown`).",
+    );
+  }
+  const right = projectedRight(repo.roleMap, item.observed);
+  if (!right) {
+    return refuse(
+      `No git right projects to the forge role "${item.observed ?? "nothing"}" here. Revert it, or grant a right and then revert the role.`,
+    );
+  }
+  if (item.type === "roleChanged" && (RANK[right] ?? 0) <= heldRank) {
+    return refuse(
+      `The forge shows ${item.observed}, no higher than what the member already holds here — that is a lowering, accepted by revoking the right, not by adopting.`,
+    );
+  }
+  const owns = !!viewer && (repo.owners.includes(viewer) || ns.admins.includes(viewer));
+  if (!owns) {
+    return {
+      may: false,
+      handOver: true,
+      member,
+      right,
+      why: "Adopting is an owner's decision too: hand the command below to an owner or namespace admin.",
+    };
+  }
+  if (consentClass("drift.resolve", right) !== "normal" && !superAdmin) {
+    return {
+      may: false,
+      handOver: true,
+      member,
+      right,
+      why: `Adopting as ${rightLabel(right).toLowerCase()} is an elevated grant, which this VTC accepts only from a community administrator who also owns the repository. Hand the command below to one.`,
+    };
+  }
+  return { may: true, member, right };
 }
 
 // ── activity ────────────────────────────────────────────────────────────

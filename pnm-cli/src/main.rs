@@ -294,6 +294,15 @@ async fn main() {
         Commands::Contexts { command } => commands::contexts::run(&client, command).await,
         Commands::Acl { command } => commands::acl::run(&client, command).await,
         Commands::Approvals { command } => commands::approvals::run(&client, command).await,
+        Commands::Consent { command } => {
+            commands::consent::run(
+                &client,
+                &keyring_key,
+                vta_config.vta_did.as_deref(),
+                command,
+            )
+            .await
+        }
         Commands::Policy { command } => commands::policy::run(&client, command).await,
         Commands::Device { command } => commands::device::run(&client, command).await,
         Commands::Vault { command } => commands::vault::run(&client, command).await,

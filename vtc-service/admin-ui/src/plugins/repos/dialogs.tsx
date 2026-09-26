@@ -19,6 +19,7 @@ import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { useNameBook } from "@/lib/names";
+import { useViewerDid } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import type {
   GitNsDriftItem,
@@ -30,6 +31,7 @@ import {
   adoptTask,
   createTask,
   didError,
+  driftAdoptTask,
   driftRevertTask,
   expiryDaysError,
   grantTask,
@@ -615,6 +617,10 @@ export function CreateDialog({
  * the fixed rules give `git.ns.admin` to no one else — and the statement is
  * required.
  */
+/** Why a reseat to the viewer is not built. */
+const SELF_RESEAT_ERROR =
+  "You cannot reseat a namespace to yourself: separation of duties. Choose another member, or ask another community administrator to reseat it to you.";
+
 export function ReseatDialog({
   namespaceId,
   namespaceResource,
@@ -633,8 +639,17 @@ export function ReseatDialog({
     statement: null,
   });
 
+  const viewer = useViewerDid();
+
   const submit = () => {
-    const next = { subject: didError(subject), statement: statementError(statement) };
+    // Reseating to yourself is a self-grant of `git.ns.admin`, which
+    // `git-ns/namespace/reseat` 0.3 refuses (`git-ns:selfGrantNotAllowed`,
+    // separation of duties) — so the form does not build it.
+    const self = viewer !== null && subject.trim() === viewer;
+    const next = {
+      subject: self ? SELF_RESEAT_ERROR : didError(subject),
+      statement: statementError(statement),
+    };
     setErrors(next);
     if (next.subject || next.statement) return;
     onBuilt(reseatTask(namespaceId, namespaceResource, subject.trim(), statement));
@@ -674,16 +689,19 @@ export function ReseatDialog({
 }
 
 /**
- * Revert one drift item (`git-ns/drift/resolve` 0.1, `revert`): the bridge
- * re-applies the VTC-authoritative state. Offered only where the console
- * reads the signer as able to (`revertStanding`); the VTC checks again. The
- * reason is optional and kept in the audit record.
+ * Resolve one drift item (`git-ns/drift/resolve` 0.1): `revert` has the
+ * bridge re-apply the VTC-authoritative state; `adopt` records the forge role
+ * as the right it projects, for the member who linked the account. Offered
+ * only where the console reads the signer as able to (`revertStanding`,
+ * `adoptStanding`); the VTC checks again. The reason is optional — kept in the
+ * audit record, and for an adopt as the right's reason too.
  */
-export function RevertDriftDialog({
+export function DriftResolveDialog({
   resource,
   roleMap,
   item,
   label,
+  adopt,
   onClose,
   onBuilt,
 }: {
@@ -694,22 +712,31 @@ export function RevertDriftDialog({
   item: GitNsDriftItem;
   /** The item as the drift list names it. */
   label: string;
+  /** Adopt, granting `right` to `member`; revert when absent. */
+  adopt?: { member: string; right: GitNsRight };
   onClose: () => void;
   onBuilt: (task: SignedTask) => void;
 }) {
+  const book = useNameBook();
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const submit = () => {
     const e = reasonError(reason);
     setError(e);
-    if (!e) onBuilt(driftRevertTask(resource, item, reason, roleMap));
+    if (e) return;
+    onBuilt(
+      adopt
+        ? driftAdoptTask(resource, item, adopt.member, adopt.right, reason)
+        : driftRevertTask(resource, item, reason, roleMap),
+    );
   };
+  const verb = adopt ? "Adopt" : "Revert";
   return (
     <FormDialog
-      title={`Revert drift on ${shortName(resource)}`}
+      title={`${verb} drift on ${shortName(resource)}`}
       onClose={onClose}
       onSubmit={submit}
-      submitLabel="Build the revert"
+      submitLabel={`Build the ${verb.toLowerCase()}`}
     >
       <p>
         <b>{label}</b>
@@ -719,13 +746,26 @@ export function RevertDriftDialog({
         {" · "}
         {item.expected ? `projection calls for ${item.expected}` : "projection calls for nothing"}
       </p>
-      <p className="muted">{driftRevertEffect(item)}</p>
+      {adopt ? (
+        <p className="muted">
+          Grants <b>{rightLabel(adopt.right).toLowerCase()}</b> to{" "}
+          {book.nameOf(adopt.member) && <b>{book.nameOf(adopt.member)} </b>}
+          <code className="gitns-party-did">{adopt.member}</code>, who linked this account,
+          as a grant from you would. The forge keeps the role.
+        </p>
+      ) : (
+        <p className="muted">{driftRevertEffect(item)}</p>
+      )}
       <TextField
         label="Reason"
         value={reason}
         onChange={setReason}
         placeholder="Optional"
-        hint={`Kept in the audit record for the repository's owners and the namespace's admins. Never published. At most ${MAX_REASON} characters.`}
+        hint={
+          adopt
+            ? `Recorded as the right's reason and in the audit record, for the repository's owners and the namespace's admins. Never published. At most ${MAX_REASON} characters.`
+            : `Kept in the audit record for the repository's owners and the namespace's admins. Never published. At most ${MAX_REASON} characters.`
+        }
         error={error}
       />
     </FormDialog>

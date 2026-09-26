@@ -125,6 +125,7 @@ use crate::join::{JoinSubmitOutcome, JoinTransport};
 use crate::routes::join_requests::manifest::ManifestVersion;
 use crate::server::AppState;
 
+pub(crate) use helpers::DETAILS_MAX_JCS_BYTES;
 pub(crate) use helpers::TrustTaskOutcome;
 // The one spelling of the framework error document's Type URI in this crate.
 // Re-exported so the messaging layer labels a type-less reply with the same
@@ -138,9 +139,10 @@ use helpers::{
 
 /// The transport-resolved caller identity threaded into the dispatcher.
 ///
-/// `sender_did` is the DIDComm authcrypt sender (already cryptographically
-/// authenticated); it is `None` over REST, where the holder is recovered
-/// from the document proof instead.
+/// `sender_did` is the transport-reported sender (DIDComm, TSP): a claim the
+/// spine accepts only once the document's own proof binds it (step 3a of
+/// [`dispatch_trust_task_core`]). It is `None` over REST,
+/// where the holder is recovered from the document proof instead.
 pub(crate) struct JoinAuthCtx {
     pub transport: JoinTransport,
     pub sender_did: Option<String>,
@@ -163,7 +165,8 @@ pub(crate) struct JoinAuthCtx {
 }
 
 impl JoinAuthCtx {
-    /// The DIDComm context: the authcrypt sender is the proven holder.
+    /// The DIDComm context. The sender is only a claim until the spine binds
+    /// it to the document proof.
     ///
     /// The envelope arm builds its context field by field, because an
     /// unauthenticated sender there is `None` rather than a refusal; this
@@ -216,6 +219,18 @@ impl JoinAuthCtx {
 /// has the whole argument, including the one transitional allowance #1641
 /// shipped with and why it is gone.
 pub(crate) async fn dispatch_trust_task_core(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    body: &[u8],
+) -> TrustTaskOutcome {
+    // Every answer is signed, refusals included — the early returns below as
+    // well as the dispatched result (which `dispatch_trust_task_validated`
+    // signs before recording it for redelivery).
+    let outcome = dispatch_trust_task_validated(state, ctx, body).await;
+    sign_response(state, outcome).await
+}
+
+async fn dispatch_trust_task_validated(
     state: &AppState,
     ctx: &JoinAuthCtx,
     body: &[u8],
@@ -362,6 +377,41 @@ pub(crate) async fn dispatch_trust_task_core(
         ctx
     };
 
+    // 3a. Over DIDComm and TSP the transport-reported sender is a claim, not
+    //     proof of who composed the document (VTI-OPS-021/093). Every document
+    //     arriving that way must carry a proof (verified above against its
+    //     `issuer`), and that issuer must be the sender: the proof VM's
+    //     controller, the issuer and the sender are one DID. Handlers that read
+    //     `sender_did` then read a DID the document proves, whatever the task's
+    //     own proof requirement.
+    if matches!(ctx.transport, JoinTransport::DIDComm | JoinTransport::Tsp) {
+        let base = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+        match (ctx.verified_signer.as_deref(), ctx.sender_did.as_deref()) {
+            (Some(signer), Some(sender)) if base(signer) == base(sender) => {}
+            (None, _) => {
+                tracing::warn!(type_uri, "messaging document carries no proof — refused");
+                return reject_with(&doc, RejectReason::ProofRequired);
+            }
+            (Some(signer), sender) => {
+                tracing::warn!(
+                    type_uri,
+                    %signer,
+                    sender = ?sender,
+                    "messaging document is signed by a DID other than its sender — refused"
+                );
+                return reject_with(
+                    &doc,
+                    RejectReason::IdentityMismatch(
+                        trust_tasks_rs::ConsistencyError::IssuerMismatch {
+                            in_band: signer.to_string(),
+                            transport: sender.unwrap_or_default().to_string(),
+                        },
+                    ),
+                );
+            }
+        }
+    }
+
     // 3b. SPEC §7.2 item 11 — the duplicate-execution record.
     //
     // Every transport that reaches this spine is at-least-once. The mediator
@@ -448,7 +498,7 @@ pub(crate) async fn dispatch_trust_task_core(
 
     // 4. Dispatch by type URI, then sign what comes back.
     let outcome = dispatch_typed(state, ctx, doc, &type_uri).await;
-    let outcome = sign_success_response(state, outcome).await;
+    let outcome = sign_response(state, outcome).await;
 
     // Close out the claim taken at 3b.
     //
@@ -574,19 +624,17 @@ fn retain_until(
 ///
 /// # Scope
 ///
-/// Success responses only. An *error response*'s `type` resolves to the
-/// framework's `trust-task-error` specification, whose own requirement is
-/// RECOMMENDED rather than REQUIRED (SPEC §8.1, and §7.3's note that the error
-/// variant is deliberately not declarable by a task). Signing those is a
-/// separate decision with its own rationale — a retained compliance refusal is
-/// the case that argues for it — and is not smuggled in here.
+/// Every response document — success **and** `trust-task-error` — is signed
+/// with `proofPurpose: authentication` (VTI-KEY-106): a client that refuses
+/// unsigned replies must be able to attribute a refusal as well as a result.
+/// A document that already carries a proof, or an empty body, is left alone.
 ///
 /// A community with no signer configured (setup, before provisioning) returns
 /// the document unsigned rather than failing: it has nothing to sign with, and
 /// refusing to answer would make an unprovisioned VTC unusable rather than
 /// merely unattributable.
-async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
-    if !outcome.status.is_success() {
+pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
+    if outcome.body.is_empty() {
         return outcome;
     }
     let Some(signer) = state.credential_signer.clone() else {
@@ -603,8 +651,11 @@ async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> T
             return outcome;
         }
     };
-    if let Err(e) = signer.sign_doc(&mut doc).await {
-        tracing::error!(error = %e, "could not sign the success response; returning it unsigned");
+    if doc.get("proof").is_some() {
+        return outcome;
+    }
+    if let Err(e) = signer.sign_operational_response(&mut doc).await {
+        tracing::error!(error = %e, "could not sign the response; returning it unsigned");
         return outcome;
     }
     match serde_json::to_vec(&doc) {
@@ -730,6 +781,9 @@ async fn dispatch_typed(
         ACL_GRANT_TYPE => handle_acl_grant(state, ctx, doc).await,
         ACL_CHANGE_ROLE_TYPE => handle_acl_change_role(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, doc).await,
+        crate::acl::admin_consent::DECISION_TYPE => {
+            handle_task_consent_decision(state, ctx, doc).await
+        }
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1214,14 +1268,16 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            40,
+            44,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
              moved (`config/export`, `config/import`) + the 2 batch 4 moved \
              (`endorsement-types/register`, `endorsement-types/delete`) + batch \
              5's `backup/export` + `acl/grant` + `acl/change-role` + the 7 \
-             `backup/*` chunked-transfer tasks. \
+             `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014) \
+             + the 3 trust-tasks 0.23 made proof-REQUIRED (`vetting/vetters/profile`, \
+             `vetting/vetters/resend`, `members/personhood/challenge`). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries; got {required:?}"
@@ -1386,6 +1442,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_CHANGE_ROLE_TYPE,
     // The gesture that operation-bound step-up asks for.
     STEP_UP_APPROVE_RESPONSE_TYPE,
+    // Another admin's consent to an unrestricted grant (VTI-APV-014). The
+    // request it answers is pushed by this service, never dispatched here.
+    crate::acl::admin_consent::DECISION_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,
@@ -2956,18 +3015,48 @@ async fn handle_acl_grant(
     // After every check, before any write: a gesture must never be asked for
     // an act that would be refused anyway, and one that has been spent must
     // not be spent on a write that then fails a check.
-    if plan.confers_admin {
-        let reason = match plan.entry.allowed_contexts.as_slice() {
-            [] => format!(
+    let step_up_refusal =
+        |request: &trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload| {
+            reject_with_code(
+                &doc,
+                TrustTaskCode::Standard(StandardCode::PermissionDenied),
+                "a passkey gesture bound to this grant is required",
+                Some(bound_step_up::refusal_details(request)),
+            )
+        };
+    if plan.confers_unrestricted {
+        // Unrestricted authority needs the gesture *and* another admin's
+        // consent (VTI-APV-014), both bound to this document's payload.
+        use crate::acl::admin_consent::{self, Operation, SignedGate};
+        let gate = admin_consent::gesture_then_consent(
+            state,
+            &actor.did,
+            &plan.entry.did,
+            Operation {
+                type_uri: ACL_GRANT_TYPE,
+                payload: &doc.payload,
+            },
+            &format!(
                 "Grant community-wide administrator authority to {}",
                 plan.entry.did
             ),
-            scopes => format!(
-                "Grant administrator authority over {} to {}",
-                scopes.join(", "),
-                plan.entry.did
-            ),
+            &crate::routes::acl::unrestricted_grant_summary(&plan.entry.did),
+        )
+        .await;
+        let ready = match gate {
+            Ok(SignedGate::Ready(ready)) => ready,
+            Ok(SignedGate::StepUpRequired(request)) => return step_up_refusal(&request),
+            Err(e) => return app_error_to_reject(&doc, &e),
         };
+        if let Err(e) = ready.spend(state).await {
+            return app_error_to_reject(&doc, &e);
+        }
+    } else if plan.confers_admin {
+        let reason = format!(
+            "Grant administrator authority over {} to {}",
+            plan.entry.allowed_contexts.join(", "),
+            plan.entry.did
+        );
         match bound_step_up::redeem_or_request(
             state,
             &actor.did,
@@ -2978,14 +3067,7 @@ async fn handle_acl_grant(
         .await
         {
             Ok(Gate::Satisfied) => {}
-            Ok(Gate::Required(request)) => {
-                return reject_with_code(
-                    &doc,
-                    TrustTaskCode::Standard(StandardCode::PermissionDenied),
-                    "a passkey gesture bound to this grant is required",
-                    Some(bound_step_up::refusal_details(&request)),
-                );
-            }
+            Ok(Gate::Required(request)) => return step_up_refusal(&request),
             Err(e) => return app_error_to_reject(&doc, &e),
         }
     }
@@ -3137,6 +3219,84 @@ async fn handle_step_up_approve_response(
             Some(hint),
         ),
         Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `task-consent/decision/0.1` — another admin's answer to a request for
+/// consent to an unrestricted grant (VTI-APV-014).
+///
+/// The approver is the document's proven signer, resolved as every signed admin
+/// verb resolves it ([`admin_signer`]), and must be an unrestricted admin now
+/// and not the requester. Which operation is being consented to is this
+/// service's own record of the request, found by the salted digest — never
+/// anything the decision says. See [`crate::acl::admin_consent::decide`].
+async fn handle_task_consent_decision(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::acl::admin_consent::{self, Decided, DecisionError};
+    use decision::error_codes as codes;
+    use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
+
+    let approver = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let payload: decision::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let refuse = |code: trust_tasks_rs::DeclaredErrorCode, message: &str| {
+        reject_with_code(&doc, extended_code(code.code), message, None)
+    };
+    match admin_consent::decide(state, &approver.did, &payload).await {
+        Ok(Decided::Granted {
+            payload_digest,
+            approvals,
+        }) => success_response(
+            &doc,
+            serde_json::json!({
+                "status": "granted",
+                "payloadDigest": payload_digest,
+                "approvals": approvals,
+            }),
+        ),
+        Ok(Decided::Pending {
+            payload_digest,
+            approvals,
+            needed,
+        }) => success_response(
+            &doc,
+            serde_json::json!({
+                "status": "pending",
+                "payloadDigest": payload_digest,
+                "approvals": approvals,
+                "needed": needed,
+            }),
+        ),
+        Ok(Decided::Denied { payload_digest }) => success_response(
+            &doc,
+            serde_json::json!({ "status": "denied", "payloadDigest": payload_digest }),
+        ),
+        Err(DecisionError::NoPending) => refuse(
+            codes::NO_PENDING,
+            "no consent request is waiting on this digest; it has lapsed, been decided, or was \
+             never made",
+        ),
+        Err(DecisionError::ChallengeMismatch) => refuse(
+            codes::CHALLENGE_MISMATCH,
+            "the challenge does not match the consent request",
+        ),
+        Err(DecisionError::NotAnApprover) => refuse(
+            codes::NOT_AN_APPROVER,
+            "only another unrestricted admin of this community can consent to this",
+        ),
+        Err(DecisionError::RequesterExcluded) => refuse(
+            codes::REQUESTER_EXCLUDED,
+            "the admin who asked for this cannot consent to it",
+        ),
+        Err(DecisionError::Internal(e)) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -3455,6 +3615,7 @@ mod tests {
             <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            crate::acl::admin_consent::DECISION_TYPE,
             backup_tasks::INITIATE_EXPORT_TYPE,
             backup_tasks::GET_CHUNK_TYPE,
             backup_tasks::COMPLETE_EXPORT_TYPE,
@@ -3560,14 +3721,20 @@ mod tests {
         use vti_rooms_dtg::test_support::Party;
 
         const MEMBER: &str = "did:key:zPersonhoodMember";
-        const STRANGER: &str = "did:key:zNotAMember";
 
+        /// A community with signers and [`MEMBER`] seeded as a member.
         async fn fixture() -> TestVtc {
             let vtc = TestVtc::builder().with_signers(true).build().await;
+            seed_member(&vtc, MEMBER).await;
+            vtc
+        }
+
+        /// Seed `did` as a member of `vtc`.
+        async fn seed_member(vtc: &TestVtc, did: &str) {
             store_acl_entry(
                 &vtc.state.acl_ks,
                 &VtcAclEntry {
-                    did: MEMBER.into(),
+                    did: did.into(),
                     role: VtcRole::Member,
                     label: None,
                     allowed_contexts: vec![],
@@ -3580,41 +3747,18 @@ mod tests {
             )
             .await
             .expect("seed member ACL");
-            vtc
         }
 
         /// The fixture leaves `vtc_did` unset, so `validate_basic`'s
-        /// recipient binding is skipped — these tests are about the
-        /// per-verb auth the handlers add, not the framework envelope
-        /// checks that run ahead of every verb alike.
+        /// recipient binding is skipped — these tests are about the per-verb
+        /// auth the handlers add. Every document here is signed: over DIDComm
+        /// the spine accepts a document only when its proof binds it to the
+        /// sender, whatever the task's own proof requirement.
         ///
-        /// The envelope is still the one a real producer sends. `issuedAt` and
-        /// `recipient` are both required of these specifications, and the spine
-        /// enforces them ahead of any handler since #1641; a bare
-        /// `TrustTask::new` was refused as `malformedRequest` before the verb
-        /// under test was ever reached.
-        ///
-        /// **No `proof`, and that is not leniency.**
-        /// `vtc/members/personhood/challenge/0.1` declares `proof` OPTIONAL, so
-        /// the spine asks for none and the authcrypt sender is the whole of the
-        /// caller's identity — which is exactly what these tests are about. Its
-        /// sibling `assert/0.1` *does* declare `proof` REQUIRED, and since
-        /// #1672 there is no setting that makes an unsigned one acceptable; the
-        /// one test that drives it uses [`signed_document`] instead.
-        fn document(type_uri: &str, payload: serde_json::Value) -> Vec<u8> {
-            let mut doc = TrustTask::new(
-                uuid::Uuid::new_v4().to_string(),
-                type_uri.parse().expect("dispatched URI parses as TypeUri"),
-                payload,
-            );
-            doc.recipient = Some(crate::test_support::TEST_VTC_DID.to_string());
-            doc.issued_at = Some(chrono::Utc::now());
-            serde_json::to_vec(&doc).expect("serialize document")
-        }
-
-        /// The same envelope, issued by `from` and carrying `from`'s
-        /// Data-Integrity proof — what a producer sends for a task that
-        /// declares `proof` REQUIRED.
+        /// A document issued by `from` and carrying `from`'s Data-Integrity
+        /// proof — what a producer sends for a task that declares `proof`
+        /// REQUIRED. Both `vtc/members/personhood/challenge/0.1` (since
+        /// trust-tasks 0.23) and `assert/0.1` do.
         ///
         /// `from` is a real `did:key` with the secret behind it, because the
         /// spine verifies the proof against the document's own `issuer`
@@ -3654,10 +3798,17 @@ mod tests {
         #[tokio::test]
         async fn a_member_can_mint_a_challenge_over_messaging() {
             let vtc = fixture().await;
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3686,10 +3837,17 @@ mod tests {
         #[tokio::test]
         async fn a_success_response_is_signed() {
             let vtc = fixture().await;
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3721,27 +3879,18 @@ mod tests {
         #[tokio::test]
         async fn a_community_with_no_signer_still_answers() {
             let vtc = TestVtc::builder().with_signers(false).build().await;
-            store_acl_entry(
-                &vtc.state.acl_ks,
-                &VtcAclEntry {
-                    did: MEMBER.into(),
-                    role: VtcRole::Member,
-                    label: None,
-                    allowed_contexts: vec![],
-                    created_at: 0,
-                    created_by: "did:key:vtc-install".into(),
-                    updated_at: None,
-                    updated_by: None,
-                    expires_at: None,
-                },
-            )
-            .await
-            .expect("seed the member");
+            let member = Party::new();
+            seed_member(&vtc, &member.did).await;
 
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(MEMBER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(member.did.clone()),
+                &signed_document(
+                    &member,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": member.did }),
+                )
+                .await,
             )
             .await;
 
@@ -3761,10 +3910,16 @@ mod tests {
         #[tokio::test]
         async fn a_stranger_cannot_mint_a_challenge() {
             let vtc = fixture().await;
+            let stranger = Party::new();
             let out = dispatch_trust_task_core(
                 &vtc.state,
-                &JoinAuthCtx::didcomm(STRANGER.into()),
-                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &signed_document(
+                    &stranger,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": MEMBER }),
+                )
+                .await,
             )
             .await;
 
@@ -3777,6 +3932,50 @@ mod tests {
                 body.contains("not a member"),
                 "expected a permission refusal naming membership, got: {body}"
             );
+        }
+
+        /// A refusal is signed, for `authentication`, like a result.
+        #[tokio::test]
+        async fn a_refusal_is_signed() {
+            let vtc = fixture().await;
+            let stranger = Party::new();
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &signed_document(
+                    &stranger,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": stranger.did }),
+                )
+                .await,
+            )
+            .await;
+            assert!(!out.status.is_success(), "{}", rendered(&out));
+            let doc: serde_json::Value = serde_json::from_slice(&out.body).expect("JSON reply");
+            assert_eq!(
+                doc["proof"]["proofPurpose"], "authentication",
+                "a refusal must carry this community's proof: {doc}"
+            );
+
+            // So is one refused before dispatch — here an unsigned document.
+            let mut unsigned: serde_json::Value = serde_json::from_slice(
+                &signed_document(
+                    &stranger,
+                    PERSONHOOD_CHALLENGE_TYPE,
+                    json!({ "did": stranger.did }),
+                )
+                .await,
+            )
+            .unwrap();
+            unsigned.as_object_mut().unwrap().remove("proof");
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(stranger.did.clone()),
+                &serde_json::to_vec(&unsigned).unwrap(),
+            )
+            .await;
+            let doc: serde_json::Value = serde_json::from_slice(&out.body).expect("JSON reply");
+            assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
         }
 
         /// `assert/0.1` declares `actsAsSubject: true`. On a transport that
