@@ -318,7 +318,7 @@ sha2 = { workspace = true, optional = true }
 # Used by `client` (didcomm_light::pack_anoncrypt) to produce JWEs the
 # workspace's pinned DIDComm decrypt path will accept (ECDH-ES+A256KW +
 # A256CBC-HS512). Same pinned version as `vta-service`.
-affinidi-messaging-didcomm = { version = "0.15", optional = true }
+affinidi-messaging-didcomm = { version = "0.15.9", optional = true }
 hpke = { version = "0.14", optional = true }
 affinidi-crypto = { workspace = true, optional = true }
 affinidi-vc = { workspace = true, optional = true }

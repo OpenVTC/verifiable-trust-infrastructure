@@ -126,6 +126,20 @@ pub(crate) fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> Trus
             task_failed_because(message, reasons::CONFLICT)
         }
         AppError::Gone(_) => task_failed_because(message, reasons::GONE),
+        // A decision the caller can still obtain — another party's consent. The
+        // VTA's gate sends this as `taskFailed` with the reason in `details`,
+        // which is what `VtaClient` reads back into `VtaError::ConsentRequired`,
+        // so this door says it the same way (VTI-APV-002).
+        AppError::ApprovalRequired { code, details } => {
+            let mut details = details.clone();
+            if let Some(map) = details.as_object_mut() {
+                map.insert("reason".into(), Value::String((*code).to_string()));
+            }
+            RejectReason::TaskFailed {
+                reason: (*code).to_string(),
+                details: Some(details),
+            }
+        }
         // Framework 0.5.0, *What a `message` May Not Say*: a `message` MUST
         // NOT reveal consumer-internal state. Passing `err.to_string()` out
         // sent the cause verbatim — "vtc_did not configured",
@@ -265,7 +279,7 @@ pub(crate) const OPAQUE_INTERNAL_ERROR: &str =
 
 /// Framework 0.5.0, *Bounding `details`*: where a specification declares no
 /// bound, 4096 bytes of JCS and 16 immediate members apply.
-const DETAILS_MAX_JCS_BYTES: usize = 4096;
+pub(crate) const DETAILS_MAX_JCS_BYTES: usize = 4096;
 /// Companion to [`DETAILS_MAX_JCS_BYTES`].
 const DETAILS_MAX_MEMBERS: usize = 16;
 

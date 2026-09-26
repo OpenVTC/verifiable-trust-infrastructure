@@ -27,6 +27,10 @@ pub mod seed_store;
 pub mod setup;
 pub mod slip10;
 pub mod store;
+pub mod task_consent;
 pub mod telemetry;
 pub mod trust_task;
+/// Push a signed Trust Task over TSP > DIDComm > REST, durably, with
+/// escalation — shared by the VTA and the VTC.
+pub mod trust_task_push;
 pub mod vault;

@@ -75,6 +75,9 @@ pub enum ConfigKeyKind {
     /// the API rather than in the console keeps the bound true for
     /// a scripted `config/patch` as well.
     U64Range { min: u64, max: u64 },
+    /// A count constrained to `min..=max`, inclusive — [`Self::U64Range`] for a
+    /// value that is not a duration, so the refusal does not call it seconds.
+    CountRange { min: u64, max: u64 },
     /// Restricted set of strings — the value must be one of the
     /// listed variants. Useful for `log.level` ∈ {"trace", "debug",
     /// "info", "warn", "error"}.
@@ -114,6 +117,9 @@ pub struct ConfigKeyDef {
 /// test). Pinned against the real config by a unit test below, so the
 /// copy cannot drift.
 const DEFAULT_ADMIN_IDLE_TIMEOUT: u64 = 900;
+
+/// The runtime key for [`crate::config::AclConfig::unrestricted_admin_consent_threshold`].
+pub const UNRESTRICTED_ADMIN_CONSENT_THRESHOLD: &str = "acl.unrestricted_admin_consent_threshold";
 
 /// The full catalog of UX-settable keys for Phase 0.
 ///
@@ -172,6 +178,19 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
             min: 60,
             max: 86_400,
         },
+        requires_restart: false,
+        sensitive: false,
+    },
+    // How many other unrestricted admins must consent to making someone an
+    // unrestricted admin (VTI-APV-014). Read live by the gate, so no restart.
+    //
+    // No value switches the requirement off: the minimum is one other party.
+    // The upper bound is a sanity cap, not a policy; the binding limit is the
+    // community's own admin count, checked when the value is written
+    // (`crate::acl::admin_consent::check_threshold_meetable`).
+    ConfigKeyDef {
+        key: UNRESTRICTED_ADMIN_CONSENT_THRESHOLD,
+        kind: ConfigKeyKind::CountRange { min: 1, max: 16 },
         requires_restart: false,
         sensitive: false,
     },
@@ -303,6 +322,11 @@ fn toml_layer_value(key: &str, cfg: &AppConfig) -> Option<Value> {
         // `public_url` has no compiled-in default — `None` (unset) is the
         // default, so any configured value is the toml-layer value.
         "public_url" => cfg.public_url.clone().map(Value::String),
+        UNRESTRICTED_ADMIN_CONSENT_THRESHOLD => {
+            let n = cfg.acl.unrestricted_admin_consent_threshold;
+            (n != crate::config::default_unrestricted_admin_consent_threshold())
+                .then(|| Value::Number(serde_json::Number::from(n)))
+        }
         "auth.admin_idle_timeout" => {
             if cfg.auth.admin_idle_timeout == DEFAULT_ADMIN_IDLE_TIMEOUT {
                 None
@@ -328,6 +352,9 @@ fn default_layer_value(key: &str) -> Value {
         // No compiled-in default: `null` means "unset" (pre-setup
         // deployment — WebAuthn / status lists deferred).
         "public_url" => Value::Null,
+        UNRESTRICTED_ADMIN_CONSENT_THRESHOLD => Value::Number(serde_json::Number::from(
+            crate::config::default_unrestricted_admin_consent_threshold(),
+        )),
         "auth.admin_idle_timeout" => {
             Value::Number(serde_json::Number::from(DEFAULT_ADMIN_IDLE_TIMEOUT))
         }
@@ -348,12 +375,33 @@ fn env_layer_value(key: &str) -> Option<Value> {
             .map(|n| Value::Number(serde_json::Number::from(n))),
         "log.level" => std::env::var("VTC_LOG_LEVEL").ok().map(Value::String),
         "public_url" => std::env::var("VTC_PUBLIC_URL").ok().map(Value::String),
+        UNRESTRICTED_ADMIN_CONSENT_THRESHOLD => {
+            std::env::var("VTC_ACL_UNRESTRICTED_ADMIN_CONSENT_THRESHOLD")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|n| Value::Number(serde_json::Number::from(n)))
+        }
         "auth.admin_idle_timeout" => std::env::var("VTC_AUTH_ADMIN_IDLE_TIMEOUT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .map(|n| Value::Number(serde_json::Number::from(n))),
         _ => None,
     }
+}
+
+/// The unrestricted-admin consent threshold in force now: env, then the database
+/// layer, then `fallback` (the in-memory value, which carries TOML or the
+/// default). Below 1 never comes back — a corrupt row is not read as "no consent
+/// needed".
+pub async fn live_consent_threshold(fallback: u64, db: &ConfigStore) -> Result<u64, AppError> {
+    let layered = match env_layer_value(UNRESTRICTED_ADMIN_CONSENT_THRESHOLD) {
+        Some(v) => Some(v),
+        None => db.get(UNRESTRICTED_ADMIN_CONSENT_THRESHOLD).await?,
+    };
+    Ok(layered
+        .and_then(|v| v.as_u64())
+        .filter(|n| *n >= 1)
+        .unwrap_or(fallback.max(1)))
 }
 
 /// Compute the four-layer-merged view for every registry key.
@@ -422,6 +470,16 @@ fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
         "public_url" => {
             cfg.public_url = value.as_str().map(str::to_string);
         }
+        // Below 1 is refused at write; a row that says otherwise is corrupt and
+        // must not be read as "no consent needed".
+        UNRESTRICTED_ADMIN_CONSENT_THRESHOLD => match value.as_u64() {
+            Some(n) if n >= 1 => cfg.acl.unrestricted_admin_consent_threshold = n,
+            _ => tracing::warn!(
+                %value,
+                "config override `{UNRESTRICTED_ADMIN_CONSENT_THRESHOLD}` is not a count of at \
+                 least 1 — ignored"
+            ),
+        },
         "auth.admin_idle_timeout" => match value.as_u64() {
             Some(n) => cfg.auth.admin_idle_timeout = n,
             None => tracing::warn!(
@@ -486,6 +544,17 @@ pub fn validate_value(def: &ConfigKeyDef, value: &Value) -> Result<(), AppError>
             Some(n) if (min..=max).contains(&n) => Ok(()),
             Some(n) => Err(AppError::Validation(format!(
                 "{} must be between {min} and {max} seconds, got {n}",
+                def.key
+            ))),
+            None => Err(AppError::Validation(format!(
+                "{} must be an unsigned integer",
+                def.key
+            ))),
+        },
+        ConfigKeyKind::CountRange { min, max } => match value.as_u64() {
+            Some(n) if (min..=max).contains(&n) => Ok(()),
+            Some(n) => Err(AppError::Validation(format!(
+                "{} must be between {min} and {max}, got {n}",
                 def.key
             ))),
             None => Err(AppError::Validation(format!(

@@ -18,12 +18,23 @@ vsock-store = ["dep:tokio-vsock", "dep:libc"]
 # and VTC to survive a restart without §7.2.2 dropping every peer's traffic.
 # Pulls `affinidi-messaging-sdk` (for `RelationshipKv`/`PersistentRelationshipStore`),
 # so it is off by default and only the TSP-speaking services turn it on.
-tsp = ["dep:affinidi-messaging-sdk"]
+tsp = [
+  "dep:affinidi-messaging-sdk",
+  # `trust_task_push::TspPushTransport`: `atm.tsp()` and the TSP binding
+  # envelope.
+  "affinidi-tdk/tsp",
+  "vta-sdk/tsp",
+]
 # Exposes `AuthClaims::unsafe_local_cli_super_admin` — a synthesizer that
 # produces a super-admin claim without any wire-level verification. Only
 # for the local/dev `vta` binary's CLI, where the trust boundary is the
 # OS process (not the network). NEVER enable in enclave builds.
 cli-synthesis = []
+# Test-only builders for authcrypt envelopes with a caller-chosen protected
+# header (`auth::authcrypt_test_support`), so the services' route tests can
+# drive the sender-binding guard with envelopes a conforming packer would never
+# emit. NEVER enable in a production build.
+test-support = []
 # Shared WebAuthn / passkey infrastructure (types + storage). Services
 # (VTA, VTC) implement the `auth::passkey::PasskeyState` trait on their
 # `AppState` and gain reusable enrolment + login storage primitives. The
@@ -67,6 +78,11 @@ async-trait = "0.1"
 # Durable OutboxStore backend (`outbox_store::VtiOutboxStore`) for the D1
 # delivery layer — the Guaranteed-send outbox, persisted via `store::Store`.
 affinidi-messaging-delivery = { workspace = true }
+# `trust_task_push`: the transport trait its TSP and REST transports implement,
+# and the HTTP client the REST one posts with.
+affinidi-messaging-core = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
 # Durable TSP relationship store (`relationship_store::KeyspaceRelationshipKv`)
 # for the Rev 3 §7.2.2 recovery machinery — the `RelationshipKv`/
 # `PersistentRelationshipStore`/`EvictionPolicy` types the ATM is handed. Behind
@@ -86,6 +102,8 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 tracing = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
+# RFC 8785 canonical payload under the task-consent digest (`task_consent`).
+serde_json_canonicalizer = { workspace = true }
 hmac = { workspace = true }
 hkdf = { workspace = true }
 rand = { workspace = true }

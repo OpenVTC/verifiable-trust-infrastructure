@@ -143,8 +143,11 @@ async fn post(fix: &Fixture, doc: &Value) -> (StatusCode, Value) {
     (status, body["payload"].clone())
 }
 
+/// A grant of *scoped* admin authority. These tests are about the gesture; a
+/// grant of unrestricted admin also needs another admin's consent
+/// (VTI-APV-014), which `unrestricted_admin_consent.rs` drives.
 fn grant_admin(subject: &str) -> Value {
-    json!({ "entry": { "subject": subject, "role": "admin", "scopes": [] } })
+    json!({ "entry": { "subject": subject, "role": "admin", "scopes": ["ctx-a"] } })
 }
 
 /// The inline approve-request a refusal carries, checked for the shape
@@ -535,10 +538,14 @@ async fn a_refused_grant_never_asks_for_a_gesture() {
 
 // ─── acl/change-role ─────────────────────────────────────────────────────
 
-/// A plain member, ready to promote.
+/// A plain member, ready to promote — scoped, so the promotion lands a scoped
+/// admin and the gesture is the whole gate. A scopeless member would become an
+/// unrestricted admin, which also needs another admin's consent (VTI-APV-014).
 async fn member(fix: &Fixture) -> Party {
     let party = Party::new();
-    store_acl_entry(&fix.vtc.state.acl_ks, &row(&party.did, VtcRole::Member))
+    let mut entry = row(&party.did, VtcRole::Member);
+    entry.allowed_contexts = vec!["ctx-a".into()];
+    store_acl_entry(&fix.vtc.state.acl_ks, &entry)
         .await
         .unwrap();
     vtc_service::members::store_member(

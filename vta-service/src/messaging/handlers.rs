@@ -1816,6 +1816,7 @@ pub async fn handle_rotate_did_webvh_keys(
             &env.scid,
             opts,
             vta_did.as_deref(),
+            state.secrets_resolver.as_deref(),
             "didcomm",
         )
         .await

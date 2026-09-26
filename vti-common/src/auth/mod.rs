@@ -1,3 +1,5 @@
+#[cfg(any(test, feature = "test-support"))]
+pub mod authcrypt_test_support;
 pub mod backend;
 pub mod didcomm;
 pub mod extractor;
@@ -16,7 +18,7 @@ pub use backend::{
 // Moved down to `vta-sdk` when a client needed the same verifier a service
 // does — re-exported so every call site here is unchanged, and so the
 // `verificationMethod` resolution subtlety exists exactly once.
-pub use didcomm::{AuthcryptError, bind_authcrypt_sender};
+pub use didcomm::{AuthcryptError, bind_authcrypt_sender, verify_authcrypt_header};
 pub use extractor::{
     AdminAuth, AuthClaims, AuthState, ManageAuth, StepUpAuth, SuperAdminAuth, WriteAuth,
 };

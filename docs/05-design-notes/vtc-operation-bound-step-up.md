@@ -255,7 +255,16 @@ upstream spec and a `trust-tasks-rs` bump first).
    **Done.**
 4. VTC task-consent for unrestricted admin (§4): the threshold config key with
    its write-time and attrition checks, the co-admin at install, and the
-   offline break-glass (§4c).
+   offline break-glass (§4c). **In progress** (§9):
+   1. The shared core moved to `vti_common::task_consent` (#1730). **Done.**
+   2. The gate on `acl/grant` and `acl/change-role`, both doors;
+      `task-consent/decision/0.1` dispatched; the threshold key with its
+      write-time check. **Done.**
+   3. Attrition checks, and the paths that confer unrestricted admin without
+      reaching the gate: `vtc/admin/invites/create`, and an `acl/grant` rewrite
+      that narrows an unrestricted admin (the attrition case). **Done** (§10).
+   4. The co-admin at install, and audit rows for the offline writers.
+      **Done** (§11).
 5. Console-key enrolment once `auth/signing-key/*` is published.
 6. Retire the bearer routes of the three verbs; close the #1641 entries.
 
@@ -310,3 +319,121 @@ upstream spec and a `trust-tasks-rs` bump first).
 - **`AdminPromoted.authorising_session_id`** is empty for a promotion made on
   the signed door, which has no session; the gesture is the
   `OperationStepUpRecorded` row under the same actor.
+
+## 9. As built (step 4.2: the consent gate)
+
+- **Code:** `vtc-service/src/acl/admin_consent.rs` — the trigger
+  (`confers_unrestricted`), the approver set, the threshold, `require` (find a
+  live consent or raise the request), `gesture_then_consent` (the signed door's
+  combined gate), `decide` (a `task-consent/decision/0.1`) and
+  `ReadyGrant::spend`. Storage is `vti_common::task_consent`, the same code the
+  VTA's gate runs, in its own `task_consent` keyspace: excluded from backup and
+  swept by the retention sweeper.
+- **Trigger:** the resulting entry is an admin with `ActScope::All`, and the
+  entry before it was not a live unrestricted admin. So a new unrestricted
+  admin, a scoped admin widened to community-wide, a scopeless member promoted
+  by `acl/change-role`, and an expired unrestricted admin granted again all need
+  consent. A label edit on a live unrestricted admin, and any scoped admin
+  grant, do not.
+- **Approvers:** every other live unrestricted admin, requester always
+  excluded. The approver set is named `unrestricted-admins` on the wire; there
+  is no rule to look it up in, because VTI-APV-014 fixes it.
+- **Threshold:** `acl.unrestricted_admin_consent_threshold`
+  (`[acl] unrestricted_admin_consent_threshold` in TOML,
+  `VTC_ACL_UNRESTRICTED_ADMIN_CONSENT_THRESHOLD`), 1–16, default 1. The gate
+  reads it through the config layers on every request, so a runtime patch binds
+  the next grant without a `config/reload`. `config/patch` and the config import
+  both refuse a value above the number of unrestricted admins less one;
+  1 is always accepted, since there is no lower value to choose.
+- **Order on the signed door:** satisfiable → gesture → consent → spend both.
+  A community with too few possible approvers is refused before any gesture, with
+  the break-glass command in the message. The gesture comes before any other
+  admin is asked, so a party holding only the requester's signing key cannot
+  make their devices ring. A gesture made while the consent is outstanding is
+  kept (`bound_step_up::has_mark`); if it lapses before the approvals land it is
+  asked for again.
+- **Bearer route:** the session's step-up, then the consent. The digest is taken
+  over the canonical task payload the body describes; for `acl/change-role` that
+  includes the subject from the path.
+- **Re-checked when spent:** the approvers must still be unrestricted admins,
+  the threshold in force must still be met, and the subject's ACL entry must
+  hash to the version the approvers were shown (a `StatePin` over the whole
+  entry, label included). A consent that fails any of these is discarded and
+  asked for again.
+- **Refusal:** `auth:consent_required`, in the VTA gate's shape — `taskFailed`
+  with the reason in `details` on the signed door, `403` with the details merged
+  into the body on REST — carrying `payloadDigest` (salted), `challenge`,
+  `correlator`, `approverSet`, `minApprovals`, `excludeRequester` and the
+  VTC-signed `consentRequests` to relay. When the requests would push `details`
+  over the framework's 4 KiB bound they are left out and counted
+  (`consentRequestsOmitted`), because an oversized `details` is dropped whole.
+- **Requests** are VTC-signed, one per approver, each addressed to that
+  approver, and pushed over DIDComm when first raised; re-asking returns the
+  same challenge and pushes nothing. An approver's device must list the VTC DID
+  as a trusted issuer to show them.
+- **Audit:** `TaskConsentRecorded` with a `stage` of `requested`, `approved`,
+  `declined`, `granted` or `consumed`, under whoever took the step.
+- **Granted notice:** once the threshold is met, the requester is sent a
+  `task-consent/granted/0.1` over DIDComm, so it re-sends the operation at once
+  instead of polling. It is VTC-signed (the proof is optional in the
+  specification; this service signs what it originates), threaded on the
+  ceremony's `correlator`, and carries the salted digest and the task type.
+  It is advisory and best-effort: the grant found when the operation is re-sent
+  is the authorization, a failed send is logged and never fails the decision,
+  and a denial sends no notice, as the specification requires.
+- **Tests:** `vtc-service/tests/unrestricted_admin_consent.rs`.
+
+## 10. As built (step 4.3: attrition and invites)
+
+- **Attrition** (`admin_consent::check_attrition`): a change that ends a live
+  unrestricted admin is refused when no other unrestricted admin would remain,
+  or when the threshold is above 1 and could no longer be met. It runs on every
+  door that can end one: `acl/revoke` (which had no last-admin check at all), a
+  demotion (`execute::remint`), a removal from the community (`execute::depart`)
+  and an `acl/grant` rewrite that narrows the entry to scoped. Each checks and
+  writes under the executor's `LAST_ADMIN_LOCK` (`ceremony::lock_admin_set`), so
+  two such changes cannot each pass the check and together strand the community.
+- **Why threshold 1 is exempt from the second rule:** the write-time check
+  accepts 1 however few admins there are, and attrition matches it. At the
+  default a two-admin community can still remove one of them, which is the
+  compromised-admin case, and must never be a lockout. Above 1 the threshold has
+  to be lowered first, and the refusal names the `config/patch` that does it.
+- **The old last-admin guard** counted any admin, so the last unrestricted admin
+  could step down behind a scoped one. That left nobody who could ever consent to
+  an unrestricted grant. The attrition check refuses it; the old guard is kept for
+  what it still protects (no admin of any kind).
+- **Invites** (`vtc/admin/invites/create`): an invite that writes a new admin
+  entry writes an unrestricted one, so it now costs what that grant costs — an
+  unrestricted caller, a live step-up, and another admin's consent bound to the
+  invite request. Before this, `AdminAuth` was enough, so a **scoped** admin
+  could mint a community-wide one here with no gesture and nobody else asked.
+  An invite for a DID that already holds an admin entry writes nothing and is
+  unchanged.
+- **Console:** the invite form steps up first and, like an unrestricted
+  `acl/grant`, turns `auth:consent_required` into an instruction to wait for
+  another admin and try again.
+
+## 11. As built (step 4.4: co-admin at install, audited break-glass)
+
+- **Co-admin at install:** `vtc setup` takes an optional second administrator
+  DID — `co_admin_did` in the `--from` TOML, a prompt interactively — and
+  refuses one equal to the first admin. Setup records it in the `install`
+  keyspace (`install:co_admin`) beside the install token; the install
+  bootstrap takes the record once and writes the co-admin as an unrestricted
+  admin in the same step as the first, audited as an `AclGranted` by
+  `did:key:vtc-install`. The co-admin needs no passkey to consent — a decision
+  is a document its DID signs — and gets the empty admin sister record a
+  promotion writes, so it can enrol a passkey later through an invite (which,
+  for an existing admin, writes no entry and needs no consent).
+- **Audited break-glass:** every offline ACL write — `vtc acl add` and
+  `remove`, `vtc create-did-key --admin`, `vtc admin invite` — queues a record
+  (`install:break_glass:<uuid>`) in the same store session as the write. On its
+  next boot the daemon takes every record and writes an `AclBreakGlassWritten`
+  audit row for each under `did:key:vtc-break-glass`, naming the command, the
+  change, the DID and the host. The offline commands hold no audit writer,
+  which is why the daemon writes the row, as it already does for the
+  emergency-bootstrap marker. Emergency bootstrap keeps its own
+  `EmergencyBootstrapInvoked` event.
+- **With this step §4 is complete:** the gate (§9), attrition and invites
+  (§10), a way to start with two unrestricted admins, and an audited way out
+  when there are too few.

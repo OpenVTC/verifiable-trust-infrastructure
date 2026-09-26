@@ -276,6 +276,8 @@ pub(crate) async fn update_member_inner(
             did,
             &acl.role.to_string(),
             &new_role.to_string(),
+            // Never a promotion, so never a consent to bind.
+            None,
         )
         .await?;
 
