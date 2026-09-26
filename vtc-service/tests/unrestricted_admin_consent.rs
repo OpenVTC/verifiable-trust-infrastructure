@@ -1018,6 +1018,10 @@ async fn vti_apv_014_a_relayed_request_is_answered_through_the_sdk() {
         "{wrong:?}"
     );
 
+    // A fresh resolver for the genuine request. The failed verification above
+    // evicted the VTC's cached document to re-resolve it (VTI-KEY-134), and this
+    // test DID resolves nowhere but the preloaded cache.
+    let resolver = resolver_knowing_the_vtc(&fix).await;
     let verified = ConsentRequest::new(requests[0].clone())
         .verify(TEST_VTC_DID, &approver.did, &resolver, now)
         .await
