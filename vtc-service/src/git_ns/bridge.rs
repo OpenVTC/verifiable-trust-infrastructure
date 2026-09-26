@@ -61,9 +61,10 @@ use super::store::{self, Snapshot};
 use super::wire;
 
 /// `git-ns/bridge/job/0.4`, the only version the VTC sends. Spelled out
-/// until a `trust-tasks-rs` release carries the generated `job::v0_4` type;
-/// the payload is 0.3's shape, with `repo` required for `projectRoles`, and
-/// the acknowledgement is 0.3's.
+/// rather than the generated `job::v0_4` type trust-tasks-rs 0.23 now
+/// carries — adopting it is a separate follow-up; the payload is 0.3's
+/// shape, with `repo` required for `projectRoles`, and the acknowledgement
+/// is 0.3's.
 pub const JOB_TYPE: &str = "https://trusttasks.org/spec/git-ns/bridge/job/0.4";
 /// `trust-task-discovery/0.2`: the VTC asks a bridge whether it takes
 /// [`JOB_TYPE`] before sending it a job.

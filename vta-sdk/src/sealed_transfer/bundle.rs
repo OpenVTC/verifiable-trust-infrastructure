@@ -101,8 +101,9 @@ pub enum SealedPayloadV1 {
     /// [`MessagingBridgeCredentialsBundle`].
     MessagingBridgeCredentials(Box<MessagingBridgeCredentialsBundle>),
     /// A TEE VTA's BIP-39 seed mnemonic, released once during the first-boot
-    /// export window (`POST /attestation/mnemonic`) for an offline paper
-    /// backup.
+    /// export window (`vta/attestation/mnemonic-export/1.0`, over DIDComm or
+    /// TSP, or signed at first boot over HTTPS — never plain REST) for an
+    /// offline paper backup.
     ///
     /// Sealed rather than returned as JSON: the mnemonic is the VTA's root
     /// derivation material (VTI-VTA-001, VTI-KEY-033), and a plaintext response

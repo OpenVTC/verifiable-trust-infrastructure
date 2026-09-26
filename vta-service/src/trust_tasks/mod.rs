@@ -272,9 +272,6 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     // ─ vta/attestation/* (REST-routed, unauthenticated) — keep-and-spec.
     "https://trusttasks.org/spec/vta/attestation/status/1.0",
     "https://trusttasks.org/spec/vta/attestation/report/1.0",
-    // `mnemonic-export` is dispatched (end-to-end only). Specced upstream at
-    // trustoverip/dtgwg-trust-tasks-tf#649; remove once it ships.
-    "https://trusttasks.org/spec/vta/attestation/mnemonic-export/1.0",
     // ─ vta/webvh/** — two-ends-of-one-wire decision pending (plan §B).
     //   `dids/update` is published; the rest are not.
     // ─ Vault archival lifecycle (#540) — generalise with a store

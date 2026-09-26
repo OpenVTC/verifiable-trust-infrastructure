@@ -3,8 +3,8 @@
 //! are REST-routed and unauthenticated; see `vta_sdk::trust_tasks`.)
 
 use serde_json::Value;
+use trust_tasks_rs::specs::vta::attestation::mnemonic_export::v1_0 as mnemonic_export_spec;
 use trust_tasks_rs::{RejectReason, TrustTask};
-use vta_sdk::protocols::attestation_management::MnemonicExportBody;
 use vta_sdk::sealed_transfer::BootstrapRequest;
 use vti_common::error::AppError;
 
@@ -41,17 +41,18 @@ pub(super) async fn handle_mnemonic_export(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let body: MnemonicExportBody = match parse_payload(&doc) {
+    let payload: mnemonic_export_spec::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    let client_did = payload.client_did.to_string();
     if let Err(e) = entitled(state, auth).await {
         return app_error_to_reject(&doc, e);
     }
     if let Err(outcome) = signed_by_the_caller(state, auth, &doc).await {
         return *outcome;
     }
-    if transport::current() != TransportConfidentiality::EndToEnd && body.client_did != auth.did {
+    if transport::current() != TransportConfidentiality::EndToEnd && client_did != auth.did {
         return app_error_to_reject(
             &doc,
             AppError::Forbidden(
@@ -62,9 +63,9 @@ pub(super) async fn handle_mnemonic_export(
     }
     let req = BootstrapRequest {
         version: 1,
-        client_did: body.client_did,
-        nonce: body.nonce,
-        label: body.label,
+        client_did,
+        nonce: payload.nonce.to_string(),
+        label: payload.label.map(|l| l.to_string()),
     };
     match operations::attestation::export_mnemonic_sealed(
         state,

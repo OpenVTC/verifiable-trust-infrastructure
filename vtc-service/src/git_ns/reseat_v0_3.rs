@@ -1,9 +1,12 @@
 //! `git-ns/namespace/reseat/0.3`, the only reseat version the VTC serves.
 //!
-//! TODO(trust-tasks release carrying trust-tasks #635): replace this module
-//! with the generated `trust_tasks_rs::specs::git_ns::namespace::reseat::v0_3`,
-//! and drop its entry from `UNPUBLISHED_CANONICAL_OK` in
-//! `tests/trust_task_manifest.rs`.
+//! trust-tasks-rs 0.23 now carries the generated
+//! `trust_tasks_rs::specs::git_ns::namespace::reseat::v0_3`; its entry
+//! already came out of `UNPUBLISHED_CANONICAL_OK` in
+//! `tests/trust_task_manifest.rs`. TODO: replace this hand-written module
+//! with that generated one — it is a distinct type from 0.2's, not merely a
+//! wrapper, so `ops::namespace_reseat` and its callers need to move onto it
+//! too.
 //!
 //! 0.3 is wire-identical to 0.2, so the payloads are 0.2's generated types
 //! under the 0.3 type URI. What 0.3 changes is what the VTC does: step 8
@@ -18,8 +21,8 @@ pub use base::error_codes;
 
 /// `git-ns:selfGrantNotAllowed` — 0.3's step 4: the subject is the
 /// administrator reseating. 0.2's generated `error_codes` does not declare it.
-/// TODO(trust-tasks release carrying trust-tasks #635): use the generated
-/// `reseat::v0_3::error_codes::SELF_GRANT_NOT_ALLOWED`.
+/// TODO: use the generated `reseat::v0_3::error_codes::SELF_GRANT_NOT_ALLOWED`
+/// once this module moves onto the generated 0.3 type.
 pub const SELF_GRANT_NOT_ALLOWED: &str = "git-ns:selfGrantNotAllowed";
 
 /// The bare type URI.
