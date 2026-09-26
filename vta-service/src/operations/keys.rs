@@ -4483,56 +4483,6 @@ mod tests {
         assert_eq!(exported.public_key_multibase, created.public_key);
     }
 
-    /// Records written before the fix are re-encoded at boot, once.
-    #[tokio::test]
-    async fn unprefixed_p256_records_are_migrated() {
-        let h = TestHarness::new().await;
-        let now = chrono::Utc::now();
-        let secret = p256::SecretKey::from_slice(&[7u8; 32]).unwrap();
-        let point = secret.public_key().to_sec1_point(true);
-        let bare = multibase::encode(multibase::Base::Base58Btc, point.as_bytes());
-        let record = KeyRecord {
-            key_id: "k-old".into(),
-            derivation_path: "m/26'/0'/0'/0'".into(),
-            key_type: KeyType::P256,
-            status: KeyStatus::Active,
-            public_key: bare,
-            label: None,
-            context_id: None,
-            seed_id: None,
-            exportable: None,
-            origin: KeyOrigin::Derived,
-            created_at: now,
-            updated_at: now,
-        };
-        h.keys_ks
-            .insert(keys::store_key("k-old"), &record)
-            .await
-            .unwrap();
-        assert_eq!(
-            keys::migrate_unprefixed_public_keys(&h.keys_ks)
-                .await
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            keys::migrate_unprefixed_public_keys(&h.keys_ks)
-                .await
-                .unwrap(),
-            0
-        );
-        let fixed: KeyRecord = h
-            .keys_ks
-            .get(keys::store_key("k-old"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            fixed.public_key,
-            encode_public_multibase(&KeyType::P256, point.as_bytes())
-        );
-    }
-
     /// Scope before existence: a caller restricted to `test-ctx` gets one
     /// refusal for a key in another context and for a key that does not
     /// exist — naming neither — on both the export and the signing oracle.

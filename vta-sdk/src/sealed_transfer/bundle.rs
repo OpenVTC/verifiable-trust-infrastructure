@@ -124,6 +124,14 @@ pub struct SeedMnemonicBundle {
     pub vta_did: Option<String>,
 }
 
+/// The words are the VTA's root derivation material: wiped from memory when
+/// the bundle goes, on every path — opened, sealed, or dropped on an error.
+impl Drop for SeedMnemonicBundle {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.mnemonic);
+    }
+}
+
 /// Written by hand so the mnemonic never reaches a log.
 impl std::fmt::Debug for SeedMnemonicBundle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

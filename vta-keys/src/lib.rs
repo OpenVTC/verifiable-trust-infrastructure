@@ -37,51 +37,6 @@ pub fn encode_public_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
     multibase::encode(Base::Base58Btc, &buf)
 }
 
-/// Re-encode a stored public key that was written without its multicodec
-/// prefix, or `None` when it already carries one (or is not recognisable).
-///
-/// Earlier builds stored derived and imported P-256 keys, and imported X25519
-/// keys, as a bare multibase of the raw point — the one form in the keyspace
-/// that names no algorithm, and not the form key custody publishes when the
-/// same key is exported. Only those two cases are rewritten: an Ed25519 or
-/// ML-DSA key was always prefixed, and anything that does not decode to the
-/// exact raw length of its type is left for a human to look at.
-pub fn prefixed_public_multibase(key_type: &KeyType, public: &str) -> Option<String> {
-    let (_, bytes) = multibase::decode(public).ok()?;
-    if bytes.starts_with(key_type.multicodec_public()) {
-        return None;
-    }
-    let raw_ok = match key_type {
-        KeyType::P256 => bytes.len() == 33 && matches!(bytes[0], 0x02 | 0x03),
-        KeyType::X25519 => bytes.len() == 32,
-        _ => false,
-    };
-    raw_ok.then(|| encode_public_multibase(key_type, &bytes))
-}
-
-/// Boot migration: rewrite every key record whose public key was stored
-/// without its multicodec prefix (see [`prefixed_public_multibase`]).
-/// Idempotent; returns how many records it rewrote. A record that fails to
-/// parse is skipped, as `list_keys` skips it.
-pub async fn migrate_unprefixed_public_keys(
-    keys_ks: &KeyspaceHandle,
-) -> Result<usize, vti_common::error::AppError> {
-    let mut rewritten = 0;
-    for (raw_key, value) in keys_ks.prefix_iter_raw("key:").await? {
-        let Ok(mut record) = serde_json::from_slice::<KeyRecord>(&value) else {
-            continue;
-        };
-        let Some(fixed) = prefixed_public_multibase(&record.key_type, &record.public_key) else {
-            continue;
-        };
-        record.public_key = fixed;
-        let key = String::from_utf8_lossy(&raw_key).into_owned();
-        keys_ks.insert(key, &record).await?;
-        rewritten += 1;
-    }
-    Ok(rewritten)
-}
-
 pub fn store_key(key_id: &str) -> String {
     format!("key:{key_id}")
 }

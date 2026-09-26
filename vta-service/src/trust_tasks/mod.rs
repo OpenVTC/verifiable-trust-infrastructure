@@ -46,6 +46,8 @@ use crate::server::AppState;
 
 mod acl;
 mod app_state;
+#[cfg(feature = "tee")]
+mod attestation;
 mod audit;
 #[cfg(test)]
 mod audit_coverage;
@@ -172,6 +174,8 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
+    // The mnemonic export — requires `tee`.
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -268,6 +272,9 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     // ─ vta/attestation/* (REST-routed, unauthenticated) — keep-and-spec.
     "https://trusttasks.org/spec/vta/attestation/status/1.0",
     "https://trusttasks.org/spec/vta/attestation/report/1.0",
+    // `mnemonic-export` is dispatched (end-to-end only). Specced upstream at
+    // trustoverip/dtgwg-trust-tasks-tf#649; remove once it ships.
+    "https://trusttasks.org/spec/vta/attestation/mnemonic-export/1.0",
     // ─ vta/webvh/** — two-ends-of-one-wire decision pending (plan §B).
     //   `dids/update` is published; the rest are not.
     // ─ Vault archival lifecycle (#540) — generalise with a store
@@ -1881,6 +1888,10 @@ dispatch_table! {
     // `vta/contexts/secrets`, for the same reason — the act is disclosure.
     vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1 => keys::handle_export_secret
         [ None Secret false ],
+    // ─── Attestation slice (the dispatched one; end-to-end only) ─
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0 => attestation::handle_mnemonic_export
+        [ Mutating Secret false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign

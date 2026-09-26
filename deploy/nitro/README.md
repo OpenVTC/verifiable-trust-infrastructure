@@ -1313,9 +1313,15 @@ TOKEN=$(curl -s -X POST http://localhost:8443/auth/challenge -H 'Content-Type: a
 curl -s http://localhost:8443/attestation/mnemonic \
     -H "Authorization: Bearer $JWT" | jq
 
-# Export (one-time, entropy zeroed after)
-curl -s -X POST http://localhost:8443/attestation/mnemonic \
-    -H "Authorization: Bearer $JWT" | jq '.mnemonic'
+# Export (one-time, entropy zeroed after). Only over DIDComm or TSP: the
+# REST route POST /attestation/mnemonic refuses with 403. On the offline
+# machine that will hold the backup, mint an ephemeral key and nonce:
+pnm bootstrap request --out req.json
+# Send spec/vta/attestation/mnemonic-export/1.0 with the payload
+# {"clientDid": <client_did from req.json>, "nonce": <nonce from req.json>}
+# over DIDComm or TSP. The response carries a sealed `bundle` and its `digest`.
+# Open it on that same machine:
+pnm bootstrap open --bundle bundle.armor --expect-digest <digest>
 ```
 
 After 5 minutes (or one successful export), the entropy is permanently zeroed.
