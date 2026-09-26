@@ -168,7 +168,10 @@ additions — `acl/{grant,change-role}`, the seven `backup/*` chunked-transfer
 tasks, `task-consent/decision/0.1`, the three trust-tasks 0.23 made
 proof-REQUIRED, and (2026-09-26) the two credential-exchange steps a holder
 sends, `credential-exchange/{request,present}/0.1`, which were bare DIDComm
-arms beside the envelope until then — bring it to forty-six. The
+arms beside the envelope until then — bring it to forty-six, and `acl/update`
+and `acl/revoke` (2026-09-26, with `acl/{show,list}`, which declare no proof
+and are refused unsigned anyway because they authorize from the signer's ACL
+row) to forty-eight. The
 count is asserted by
 `the_dispatched_set_declares_the_proofs_the_design_note_records`, so a batch
 that lands without updating this note fails a test.

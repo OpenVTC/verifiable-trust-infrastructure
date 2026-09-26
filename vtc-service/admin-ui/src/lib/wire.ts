@@ -2355,6 +2355,13 @@ export interface components {
              */
             truncated: boolean;
         };
+        /**
+         * @description Canonical `acl/revoke/0.1` response: the entry the maintainer now holds —
+         *     `null` after a full removal, the reduced entry after a scope reduction.
+         */
+        AclRevokeResponse: {
+            entry?: null | components["schemas"]["AclEntryResponse"];
+        };
         ActivateResponse: {
             /**
              * Format: uuid
@@ -6861,6 +6868,13 @@ export interface operations {
                 scope?: string;
                 /** @description Return only entries whose subject starts with this prefix. */
                 subjectPrefix?: string;
+                /**
+                 * @description How `scope` is read over the hierarchy: `acting-in` (the default)
+                 *     returns entries that may act in it — scoped to it or to an ancestor;
+                 *     `subtree` returns entries holding a grant at or beneath it; `any` is the
+                 *     union. Canonical `acl/list/0.1` `direction`.
+                 */
+                direction?: "acting-in" | "subtree" | "any";
                 /** @description Page size. Clamped to `1..=200`. Defaults to 50. */
                 pageSize?: number;
                 /** @description Opaque continuation token from a previous page's `cursor`. */
@@ -6988,7 +7002,10 @@ export interface operations {
     };
     delete_acl: {
         parameters: {
-            query?: never;
+            query?: {
+                scopes?: string;
+                reason?: string;
+            };
             header?: never;
             path: {
                 /** @description Subject DID */
@@ -6998,8 +7015,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description ACL entry deleted */
-            204: {
+            /** @description Entry revoked: `entry` is null after a removal, the reduced entry after a scope reduction */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AclRevokeResponse"];
+                };
+            };
+            /** @description `scopes` present but empty */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7012,15 +7038,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not an admin */
+            /** @description Caller is not an admin, or does not administer every context the entry acts in */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description ACL entry not found */
+            /** @description ACL entry not found (`acl/revoke:subjectNotPresent`), or none of the named scopes are held */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Own entry; a member's entry (use the leave ceremony); a reduction that would unscope the entry; or the last unrestricted admin (`acl/revoke:lastAuthorityProtected`) */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

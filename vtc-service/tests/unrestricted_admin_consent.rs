@@ -733,7 +733,7 @@ async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// At the default threshold a two-admin community can still remove one of
@@ -753,7 +753,7 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// An `acl/grant` rewrite that narrows an unrestricted admin to a scoped one is
