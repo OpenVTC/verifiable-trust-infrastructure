@@ -74,7 +74,7 @@ impl CapabilityWriter for DidcommCapabilityWriter {
         let doc = self.build_signed_document(&issuer, job).await?;
 
         // Register the waiter before sending so a fast reply cannot be lost.
-        let receiver = self.replies.register(&doc.id);
+        let receiver = self.replies.register(&doc.id, &self.registry_did);
 
         if let Err(e) = self.send_envelope(messaging, &doc).await {
             self.replies.abandon(&doc.id);
@@ -147,7 +147,7 @@ impl DidcommCapabilityWriter {
         let mut doc_value = serde_json::to_value(&doc)
             .map_err(|e| HookWriteError::Transient(format!("serialise document: {e}")))?;
         self.signer
-            .sign_doc(&mut doc_value)
+            .sign_operational_doc(&mut doc_value)
             .await
             .map_err(|e| HookWriteError::Transient(format!("sign document: {e}")))?;
         serde_json::from_value(doc_value)
@@ -249,7 +249,7 @@ mod tests {
     #[tokio::test]
     async fn pending_replies_correlate_by_thread_id() {
         let replies = PendingReplies::new();
-        let rx = replies.register("urn:uuid:req");
+        let rx = replies.register("urn:uuid:req", "did:key:z6MkRegistry");
 
         // A reply with the wrong threadId completes nobody.
         let mut wrong: TrustTask<serde_json::Value> = TrustTask::new(
@@ -260,7 +260,7 @@ mod tests {
             serde_json::json!({}),
         );
         wrong.thread_id = Some("urn:uuid:other".into());
-        assert!(!replies.complete(wrong));
+        assert!(!replies.complete(wrong, Some("did:key:z6MkRegistry")));
 
         // The matching reply resolves the waiter.
         let mut right: TrustTask<serde_json::Value> = TrustTask::new(
@@ -271,7 +271,10 @@ mod tests {
             serde_json::json!({}),
         );
         right.thread_id = Some("urn:uuid:req".into());
-        assert!(replies.complete(right));
+        // Unsigned, or signed by someone else: the waiter stays.
+        assert!(!replies.complete(right.clone(), None));
+        assert!(!replies.complete(right.clone(), Some("did:key:z6MkImpostor")));
+        assert!(replies.complete(right, Some("did:key:z6MkRegistry#key-0")));
         assert!(rx.await.is_ok());
     }
 }

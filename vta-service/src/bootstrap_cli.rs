@@ -386,6 +386,16 @@ fn print_opened(
             println!("  Platform:   {}", b.platform);
             println!("  Fields:     {}", b.fields.len());
         }
+        SealedPayloadV1::SeedMnemonic(m) => {
+            println!("Payload: SeedMnemonic");
+            if let Some(ref did) = m.vta_did {
+                println!("  VTA DID:    {did}");
+            }
+            println!("  Words:      {}", m.mnemonic.split_whitespace().count());
+            println!(
+                "  Open with `pnm bootstrap open` on the offline machine that will hold the backup."
+            );
+        }
     }
     Ok(())
 }
@@ -793,7 +803,13 @@ pub async fn run_keys_bundle(
         webvh_ks: &state.webvh_ks,
         seed_store: &state.seed_store,
     };
-    let bundle = build_did_secrets_bundle(&deps, &auth, &context, "vta-keys-bundle").await?;
+    let bundle = build_did_secrets_bundle(
+        &deps,
+        &auth,
+        &context,
+        crate::operations::keys::ExportChannel::Local("vta-keys-bundle"),
+    )
+    .await?;
 
     vta_cli_common::sealed_producer::emit_did_secrets_bundle(
         bundle,

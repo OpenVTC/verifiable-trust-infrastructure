@@ -146,10 +146,10 @@ pub async fn run_keys_secrets(
                 let verifying_key = p256_secret.secret_key.public_key();
                 let encoded = verifying_key.to_sec1_point(true);
                 (
-                    multibase::encode(multibase::Base::Base58Btc, encoded.as_bytes()),
-                    multibase::encode(
-                        multibase::Base::Base58Btc,
-                        p256_secret.secret_key.to_bytes(),
+                    crate::keys::encode_public_multibase(&KeyType::P256, encoded.as_bytes()),
+                    crate::keys::encode_private_multibase(
+                        &KeyType::P256,
+                        &p256_secret.secret_key.to_bytes(),
                     ),
                 )
             }

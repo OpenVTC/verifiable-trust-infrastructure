@@ -957,6 +957,35 @@ impl VtcClient {
         Ok(resp.json().await?)
     }
 
+    /// Answer a `task-consent/request/0.1` the VTC raised — the approver's half
+    /// of VTI-APV-014, where making or widening an unrestricted administrator
+    /// needs another unrestricted administrator's consent.
+    ///
+    /// Build `decision` from a verified request
+    /// ([`vta_sdk::task_consent::VerifiedConsentRequest::decision`]); the VTC
+    /// matches it to its pending request by the challenge and digest it echoes.
+    /// The document is signed by this client's own key, which must belong to
+    /// an unrestricted administrator other than the requester. There is no
+    /// bearer path: the proof is the approver's authority.
+    pub async fn decide_task_consent(
+        &self,
+        decision: &trust_tasks_rs::specs::task_consent::decision::v0_1::Payload,
+    ) -> Result<trust_tasks_rs::specs::task_consent::decision::v0_1::Response, VtcError> {
+        use trust_tasks_rs::specs::task_consent::decision::v0_1 as spec;
+        let payload =
+            serde_json::to_value(decision).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
+        let reply = self
+            .admin_document(
+                vta_sdk::task_consent::DECISION_TYPE,
+                payload,
+                spec::ERROR_CODES,
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?
+            .ok_or(VtcError::NotAuthenticated)?;
+        decode_payload(reply, "task-consent decision")
+    }
+
     /// Remove a member (offboarding). The VTC applies its removal disposition and
     /// flips the member's status-list revocation bit. `reason` is an optional
     /// admin note. Requires an admin token. For a fleet, this decommissions a

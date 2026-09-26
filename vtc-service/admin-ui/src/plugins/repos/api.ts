@@ -19,6 +19,7 @@ import { getJson, getJsonExempt } from "@/lib/api";
 import type {
   GitNsAccountList,
   GitNsActivity,
+  GitNsBreakGlassList,
   GitNsDepartedGrants,
   GitNsDriftList,
   GitNsJobList,
@@ -44,6 +45,7 @@ export const gitNsKeys = {
   accounts: ["git-ns", "accounts"] as const,
   activity: (namespace: string) => ["git-ns", "activity", namespace] as const,
   members: ["git-ns", "members"] as const,
+  breakGlass: ["git-ns", "break-glass"] as const,
 };
 
 export const fetchNamespaces = (): Promise<GitNsNamespaceList> =>
@@ -90,6 +92,18 @@ export const fetchActivity = (namespace: string, limit = 100): Promise<GitNsActi
     `/v1/git-ns/activity?namespace=${encodeURIComponent(namespace)}&limit=${limit}`,
   );
 
+/**
+ * Break-glass records — self-granted elevated rights (`git-ns/right/break-glass`)
+ * — in the namespaces the caller administers: every one for a community
+ * administrator, those of their own namespaces for a namespace admin, and 403
+ * for anyone else. Ratified ones included, as their history.
+ *
+ * Read by the shell's banner on every page as well as by the Repos list, so
+ * it lives under `gitNsKeys.all` and refreshes with every change sent here.
+ */
+export const fetchBreakGlass = (): Promise<GitNsBreakGlassList> =>
+  getJsonExempt<GitNsBreakGlassList>("/v1/git-ns/break-glass");
+
 /** The listing clamps a page to 200; asking for more returns 200 silently. */
 const MEMBERS_PAGE = 200;
 
@@ -109,9 +123,13 @@ export async function fetchMembersPage(
 /** DID → forge host → linked account. */
 export type ForgeAccounts = Map<string, Map<string, { id: string; login: string }>>;
 
+/** Current members' accounts only: one whose member's access lapsed is still
+ *  theirs (nobody else may link it) but projects no role and cannot be
+ *  adopted, so no screen offers either for it. */
 export function indexAccounts(list: GitNsAccountList | undefined): ForgeAccounts {
   const out: ForgeAccounts = new Map();
   for (const a of list?.accounts ?? []) {
+    if (!a.memberCurrent) continue;
     const byHost = out.get(a.member) ?? new Map<string, { id: string; login: string }>();
     byHost.set(a.forge, { id: a.id, login: a.login });
     out.set(a.member, byHost);

@@ -32,8 +32,11 @@
 //! this task sign as any room this VTA holds a key for, silently, with every one of those
 //! gates still present and none of them consulted.
 //!
-//! So these tasks add no new trust: a caller who may name a room's key could already have
-//! signed with it through `keys/sign`.
+//! So these tasks add no new trust over the key: every gate `keys/sign` applies to the
+//! key applies here too. The one it does not is the `sign` capability itself, and that is
+//! deliberate (VTI-VTA-007): these tasks sign protocol-defined documents under their own
+//! constrained grant, and must not require — or confer — the general one. `sign_payload`
+//! demands `sign` only for opaque, caller-supplied bytes.
 //!
 //! Note what is deliberately *not* checked: that the caller is the room's owner. "Owner" is
 //! a fact about the room's DID controller, and this service is not a DID resolver.

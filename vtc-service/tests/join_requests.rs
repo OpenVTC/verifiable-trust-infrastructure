@@ -1119,7 +1119,10 @@ fn build_vp_token(
         affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
     let issuer_signer = SdSigner {
         key: SigningKey::from_bytes(&[9u8; 32]),
-        kid: format!("{issuer_did}#key-0"),
+        kid: format!(
+            "{issuer_did}#{}",
+            issuer_did.strip_prefix("did:key:").unwrap()
+        ),
     };
 
     let holder = SigningKey::from_bytes(&[holder_seed; 32]);

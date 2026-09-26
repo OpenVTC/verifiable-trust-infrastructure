@@ -531,6 +531,7 @@ pub async fn rotate_did_keys_handler(
         &scid,
         body,
         vta_did.as_deref(),
+        state.secrets_resolver.as_deref(),
         "rest",
     )
     .await?;

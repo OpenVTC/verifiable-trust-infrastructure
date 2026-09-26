@@ -4,6 +4,7 @@ import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { ChevronsLeft, ChevronsRight, Menu, RefreshCw, X } from "lucide-react";
 
 import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api";
+import { BreakGlassBanner } from "@/components/BreakGlassBanner";
 import { PluginHost } from "@/components/PluginHost";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { probeSession, signOut, WhoamiResponse } from "@/lib/api";
@@ -13,6 +14,7 @@ import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
 import { Install } from "@/pages/Install";
 import { Login } from "@/pages/Login";
+import { StepUpPage } from "@/pages/StepUp";
 
 /**
  * Hook that subscribes to plugin-registry changes and returns the
@@ -236,6 +238,9 @@ export default function App() {
         <ReloadPluginsButton />
       </aside>
       <main className="content">
+        {/* Not dismissible: it clears when every self-granted elevated right
+            has been ratified or revoked (git-ns/right/break-glass). */}
+        <BreakGlassBanner />
         <Routes>
           {plugins.map((p) => (
             <Route
@@ -248,6 +253,8 @@ export default function App() {
           {plugins[0] && (
             <Route path="/" element={<PluginHost plugin={plugins[0]} />} />
           )}
+          {/* A passkey step-up handed over from `cnm` (lib/bound-step-up.ts). */}
+          <Route path="/step-up" element={<StepUpPage />} />
           {/* Fallback for unknown URLs under /admin/ */}
           <Route path="*" element={<NotFound />} />
         </Routes>

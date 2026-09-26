@@ -61,7 +61,7 @@ use tracing::{debug, info, warn};
 use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
 use trust_tasks_rs::specs::task_consent::request::v0_1 as request;
 use vti_common::audit::{AuditEvent, TaskConsentData};
-use vti_common::capability_client::{TRUST_TASK_ENVELOPE_TYPE, build_document};
+use vti_common::capability_client::build_document;
 use vti_common::error::AppError;
 use vti_common::task_consent::effects::{Effect, StatePin};
 use vti_common::task_consent::{self, PendingTaskConsent, TaskConsentGrant};
@@ -89,6 +89,11 @@ pub const CONSENT_REQUIRED: &str = "auth:consent_required";
 
 /// `task-consent/request/0.1` — what this service signs and sends approvers.
 pub(crate) const REQUEST_TYPE: &str = <request::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `task-consent/granted/0.1` — the notice the requester gets once enough
+/// approvers have approved.
+pub(crate) const GRANTED_TYPE: &str =
+    <trust_tasks_rs::specs::task_consent::granted::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `task-consent/decision/0.1` — what an approver answers with.
 pub(crate) const DECISION_TYPE: &str = <decision::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -646,7 +651,9 @@ async fn sign_requests(
         let doc = build_document(&vtc_did, approver, REQUEST_TYPE, payload.clone());
         let mut doc = serde_json::to_value(&doc)
             .map_err(|e| AppError::Internal(format!("serialise task-consent request: {e}")))?;
-        signer.sign_doc(&mut doc).await?;
+        // The operational key, under `authentication`: this is a request
+        // the VTC sends as itself, not a credential it issues (VTI-KEY-106).
+        signer.sign_operational_doc(&mut doc).await?;
         signed.push(doc);
     }
     Ok(signed)
@@ -656,26 +663,20 @@ async fn sign_requests(
 /// the relay copy, an approver answers later with a separate decision, and a
 /// push failure must never become a refusal of something else.
 async fn push(state: &AppState, requests: &[Value]) {
-    let Some(vtc_did) = state.config.read().await.vtc_did.clone() else {
-        return;
-    };
     for doc in requests {
         let Some(approver) = doc.get("recipient").and_then(Value::as_str) else {
             continue;
         };
-        let envelope = affinidi_messaging_didcomm::Message::build(
-            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            TRUST_TASK_ENVELOPE_TYPE.to_string(),
+        // Over whichever transport the approver speaks (`crate::member_push`).
+        // Queued is all an `Ok` means (R1.1); the requester holds the relay copy.
+        if let Err(e) = crate::member_push::push_trust_task(
+            state,
+            approver,
             doc.clone(),
+            Duration::from_secs(PENDING_TTL_SECS),
         )
-        .from(vtc_did.clone())
-        .to(approver.to_string())
-        .finalize();
-        if let Err(e) = state
-            .send_to_member_by(approver, envelope, Duration::from_secs(PENDING_TTL_SECS))
-            .await
+        .await
         {
-            // Queued-locally is all an `Ok` would have meant anyway (R1.1).
             debug!(approver, error = %e, "consent request not pushed; the requester can relay it");
         }
     }
@@ -833,10 +834,87 @@ pub async fn decide(
         approvals,
         "unrestricted-admin consent granted"
     );
+    notify_granted(state, &pending, &wire).await;
     Ok(Decided::Granted {
         payload_digest: wire,
         approvals,
     })
+}
+
+/// Tell the requester its operation now has the consent it was waiting on,
+/// so it sends the operation again at once rather than polling
+/// (`task-consent/granted/0.1`).
+///
+/// **Advisory, and best-effort.** The single-use grant found when the
+/// operation is re-sent is the authorization; this notice confers nothing, and
+/// a lost one costs the requester one more try. So a failure to build or send
+/// it is logged and never fails the decision that triggered it. Only a grant
+/// sends one: the specification sends no notice for a denial, so that nobody
+/// treats this channel as the authoritative outcome.
+///
+/// Threaded on the ceremony's `correlator` — the value the refusal handed the
+/// requester — and never on the digest, which is derived from the payload
+/// (framework 0.5.0, identifier correlation). Signed, like every document this
+/// service originates; the specification makes the proof optional.
+async fn notify_granted(state: &AppState, pending: &PendingTaskConsent, wire_digest: &str) {
+    if let Err(e) = try_notify_granted(state, pending, wire_digest).await {
+        debug!(
+            requester = %pending.requester_did,
+            error = %e,
+            "granted notice not sent; the requester finds the grant when it sends the operation again"
+        );
+    }
+}
+
+async fn try_notify_granted(
+    state: &AppState,
+    pending: &PendingTaskConsent,
+    wire_digest: &str,
+) -> Result<(), AppError> {
+    let vtc_did = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
+    let signer = state
+        .credential_signer
+        .clone()
+        .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
+
+    let payload = json!({
+        "status": "granted",
+        "payloadDigest": wire_digest,
+        "taskType": pending.type_uri,
+    });
+    {
+        use trust_tasks_rs::validate::ValidatedPayload as _;
+        trust_tasks_rs::specs::task_consent::granted::v0_1::Payload::validate_value(&payload)
+            .map_err(|e| AppError::Internal(format!("granted notice does not conform: {e}")))?;
+    }
+
+    let mut doc = build_document(&vtc_did, &pending.requester_did, GRANTED_TYPE, payload);
+    if !pending.correlator.is_empty() {
+        doc.thread_id = Some(pending.correlator.clone());
+    }
+    let mut doc = serde_json::to_value(&doc)
+        .map_err(|e| AppError::Internal(format!("serialise granted notice: {e}")))?;
+    signer.sign_doc(&mut doc).await?;
+
+    // Over whichever transport the requester speaks (`crate::member_push`).
+    // The grant lives `GRANT_TTL_SECS`; a notice delivered after it lapsed
+    // would point at nothing.
+    crate::member_push::push_trust_task(
+        state,
+        &pending.requester_did,
+        doc,
+        Duration::from_secs(GRANT_TTL_SECS),
+    )
+    .await?;
+    info!(requester = %pending.requester_did, "granted notice queued");
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

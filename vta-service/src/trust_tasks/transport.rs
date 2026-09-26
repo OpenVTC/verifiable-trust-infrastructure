@@ -61,6 +61,40 @@ pub(crate) fn current() -> TransportConfidentiality {
         .unwrap_or(TransportConfidentiality::HopByHop)
 }
 
+// Which binding carried the current Trust Task — `https`, `didcomm` or `tsp`.
+//
+// Separate from [`TransportConfidentiality`] because the two answer different
+// questions: DIDComm and TSP are both end-to-end, and an audit row recording a
+// key export has to say which of them the key left over, not only how well it
+// was protected on the way. Set by the three entry points that hand a document
+// to the spine; read by the handlers whose audit rows name the transport.
+tokio::task_local! {
+    static BINDING: &'static str;
+}
+
+/// Run `f` with the carrying binding recorded for its duration.
+pub(crate) async fn with_binding<F, T>(binding: &'static str, f: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    BINDING.scope(binding, f).await
+}
+
+/// The audit `channel` for a Trust Task handler: `trust-task/<binding>` when an
+/// entry point recorded the binding, and the bare surface name otherwise.
+///
+/// The bare fallback is deliberate rather than a guess: a dispatch path that
+/// forgot to record its binding writes a row that says less, not one that
+/// names the wrong transport.
+pub(crate) fn audit_channel() -> &'static str {
+    match BINDING.try_with(|b| *b) {
+        Ok("https") => "trust-task/https",
+        Ok("didcomm") => "trust-task/didcomm",
+        Ok("tsp") => "trust-task/tsp",
+        _ => super::helpers::TRANSPORT_TRUST_TASK,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +114,20 @@ mod tests {
         assert_eq!(seen, TransportConfidentiality::EndToEnd);
         // And the scope does not leak past its future.
         assert_eq!(current(), TransportConfidentiality::HopByHop);
+    }
+
+    #[tokio::test]
+    async fn audit_channel_names_the_binding_only_inside_a_scope() {
+        assert_eq!(audit_channel(), "trust-task");
+        for (binding, channel) in [
+            ("https", "trust-task/https"),
+            ("didcomm", "trust-task/didcomm"),
+            ("tsp", "trust-task/tsp"),
+        ] {
+            assert_eq!(
+                with_binding(binding, async { audit_channel() }).await,
+                channel
+            );
+        }
     }
 }

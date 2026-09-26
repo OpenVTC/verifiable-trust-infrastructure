@@ -36,6 +36,7 @@
 
 use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 
+use super::purpose::{ProofPurpose, PurposeBound};
 use super::vm_resolver::TrustTaskVmResolver;
 use serde::Serialize;
 use serde_json::Value;
@@ -53,6 +54,11 @@ pub enum DiProofError {
     NoDid,
     /// The signature failed to verify (carries the underlying reason).
     VerifyFailed(String),
+    /// The proof declares a purpose other than the one this document needs.
+    WrongPurpose {
+        /// The purpose the document needs.
+        expected: &'static str,
+    },
 }
 
 impl DiProofError {
@@ -90,6 +96,9 @@ impl std::fmt::Display for DiProofError {
             // and every additional word is an oracle. The cause is available
             // to the operator through [`Self::cause`].
             Self::VerifyFailed(_) => write!(f, "proof verification failed"),
+            Self::WrongPurpose { expected } => {
+                write!(f, "proof must be made for `{expected}`")
+            }
         }
     }
 }
@@ -158,9 +167,148 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
 
     let mut unsigned = doc.clone();
     unsigned.proof = None;
-    di.verify(&unsigned, resolver, VerifyOptions::new())
-        .await
+    // VTI-KEY-022: the key must be one the signer authorised for the purpose
+    // the proof declares, not merely a key its DID document lists.
+    let bound = PurposeBound::for_proof(resolver, &di)
         .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
+    if let Err(first) = di.verify(&unsigned, &bound, VerifyOptions::new()).await {
+        // Checked against a cached document, a failure may only mean the
+        // signer rotated since it was cached — the key id kept, its material
+        // replaced. Re-resolve once, fresh, and verify again; fail closed on
+        // whatever that says (VTI-KEY-134). A document fetched for this call is
+        // not fetched again, and the refresh is rate-limited per DID
+        // (`FRESH_RESOLVE_MIN_INTERVAL`), so a stream of bad proofs cannot turn
+        // this verifier into a fetch amplifier. The retry stays bound to the
+        // proof's purpose.
+        if !resolver.refresh_if_cached(&signer_did).await {
+            return Err(DiProofError::VerifyFailed(first.to_string()));
+        }
+        di.verify(&unsigned, &bound, VerifyOptions::new())
+            .await
+            .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
+    }
 
     Ok(signer_did)
+}
+
+/// The `proofPurpose` of a human approver's own decision: a
+/// `task-consent/decision` or a step-up `approve-response`.
+pub const APPROVAL_PROOF_PURPOSE: &str = "assertionMethod";
+
+/// Verify a human approver's decision (`task-consent/decision`, step-up
+/// `approve-response`) and return the proven signer DID.
+///
+/// Everything [`verify_trust_task_proof_with`] checks, plus: the proof is made
+/// for [`APPROVAL_PROOF_PURPOSE`]. A decision is the approver's attestation,
+/// not an operational message, and a proof made for `authentication` is
+/// refused. This matches the did-hosting RP's `verify_approval`
+/// (affinidi-webvh-service #213), which is where a wallet's decisions are also
+/// sent.
+///
+/// That the key is listed under the signer's `assertionMethod` relationship is
+/// not a second check here: it is VTI-KEY-022's purpose binding, which every
+/// proof gets — the verification runs through a [`PurposeBound`] resolver
+/// fixed to `assertionMethod`, including the retry after a DID-cache refresh.
+///
+/// Binding the signer to the approver the caller expects remains the caller's
+/// job, as with [`verify_trust_task_proof_with`].
+pub async fn verify_approval_proof_with<P: Serialize + Clone + Sync>(
+    doc: &TrustTask<P>,
+    resolver: &TrustTaskVmResolver,
+) -> Result<String, DiProofError> {
+    let proof = doc.proof.as_ref().ok_or(DiProofError::NoProof)?;
+    let di: DataIntegrityProof = serde_json::to_value(proof)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .ok_or(DiProofError::NotDataIntegrity)?;
+    if ProofPurpose::parse(&di.proof_purpose).ok() != Some(ProofPurpose::AssertionMethod) {
+        return Err(DiProofError::WrongPurpose {
+            expected: APPROVAL_PROOF_PURPOSE,
+        });
+    }
+    // The declared purpose is now `assertionMethod`, so the general verifier
+    // binds the resolver to exactly that relationship.
+    verify_trust_task_proof_with(doc, resolver).await
+}
+
+/// [`verify_approval_proof_with`] against `did:key` only, with no network I/O.
+pub async fn verify_approval_proof(doc: &TrustTask<Value>) -> Result<String, DiProofError> {
+    verify_approval_proof_with(doc, &TrustTaskVmResolver::did_key_only()).await
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+    use affinidi_data_integrity::SignOptions;
+    use affinidi_secrets_resolver::secrets::Secret;
+    use serde_json::json;
+
+    /// A `did:peer:2` whose one Ed25519 key is published under `purpose_code`
+    /// (`A` = assertionMethod only, `D` = capabilityDelegation only; `V` would
+    /// be both authentication and assertionMethod), and its signing secret.
+    fn peer(purpose_code: char, seed: u8) -> (String, Secret) {
+        let probe = Secret::generate_ed25519(None, Some(&[seed; 32]));
+        let mb = probe.get_public_keymultibase().expect("public key");
+        let did = format!("did:peer:2.{purpose_code}{mb}");
+        let secret = Secret::generate_ed25519(Some(&format!("{did}#key-1")), Some(&[seed; 32]));
+        (did, secret)
+    }
+
+    async fn decision(issuer: &str, secret: &Secret, purpose: &str) -> TrustTask<Value> {
+        let mut doc = json!({
+            "id": "urn:uuid:decision-1",
+            "type": "https://trusttasks.org/spec/task-consent/decision/0.1",
+            "issuer": issuer,
+            "recipient": "did:web:vta.example",
+            "issuedAt": "2026-09-25T10:00:00Z",
+            "payload": { "decision": "approve" },
+        });
+        let proof =
+            DataIntegrityProof::sign(&doc, secret, SignOptions::new().with_proof_purpose(purpose))
+                .await
+                .expect("sign");
+        doc["proof"] = serde_json::to_value(proof).unwrap();
+        serde_json::from_value(doc).unwrap()
+    }
+
+    /// An approver's decision verifies only as an `assertionMethod` proof by a
+    /// key the approver lists under `assertionMethod`.
+    #[tokio::test]
+    async fn an_approval_is_an_assertion_by_an_assertion_key() {
+        let (asserting, secret) = peer('A', 3);
+        let ok = decision(&asserting, &secret, "assertionMethod").await;
+        assert_eq!(verify_approval_proof(&ok).await.unwrap(), asserting);
+
+        // The right key, made for `authentication`.
+        let operational = decision(&asserting, &secret, "authentication").await;
+        assert!(matches!(
+            verify_approval_proof(&operational).await,
+            Err(DiProofError::WrongPurpose {
+                expected: "assertionMethod"
+            })
+        ));
+
+        // Declared `assertionMethod`, by a key the DID does not list under
+        // `assertionMethod`: refused by the approval verifier and, since
+        // VTI-KEY-022 binds every proof to its purpose, by the general one too.
+        let (delegating, secret) = peer('D', 4);
+        let misfiled = decision(&delegating, &secret, "assertionMethod").await;
+        for err in [
+            verify_trust_task_proof(&misfiled).await.unwrap_err(),
+            verify_approval_proof(&misfiled).await.unwrap_err(),
+        ] {
+            assert!(
+                err.cause().is_some_and(|c| c.contains("assertionMethod")),
+                "{err:?}"
+            );
+        }
+
+        // And the relationship is the one the proof declares: an
+        // assertion-only key does not make an `authentication` proof.
+        let err = verify_trust_task_proof(&operational).await.unwrap_err();
+        assert!(
+            err.cause().is_some_and(|c| c.contains("authentication")),
+            "{err:?}"
+        );
+    }
 }

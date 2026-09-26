@@ -11,9 +11,12 @@
 //! bootstrap, use the `vta bootstrap provision-integration` CLI on the
 //! VTA host.
 //!
-//! Auth model — layered like an onion. The DIDComm authcrypt
-//! sender authenticates the *relayer* and is gated by the VTA's
-//! ACL (sender must be admin in the target context). Inside the
+//! Auth model — layered like an onion. The request is a Trust Task
+//! document carried in the DIDComm binding envelope and signed by the
+//! *relayer* (the session's DID): that Data Integrity proof, bound to the
+//! document's `issuer` and the DIDComm sender, authenticates the relayer,
+//! and the VTA's ACL gates it (relayer must be admin in the target
+//! context). The DIDComm sender alone authenticates nobody. Inside the
 //! body, the VP's `DataIntegrityProof` authenticates the *holder*
 //! — the bundle is HPKE-sealed to the holder's X25519 derivation,
 //! so only the holder can open it. Sender and holder may legitimately
@@ -30,7 +33,7 @@
 use crate::didcomm_session::DIDCommSession;
 use crate::error::VtaError;
 use crate::protocols::provision_integration_management::{
-    ProvisionSpecVersion, request_body_for_version, result_uri_for,
+    ProvisionSpecVersion, request_body_for_version,
 };
 
 use serde_json::Value;
@@ -44,6 +47,9 @@ use super::http::{
 /// seal the bundle — all of which happen synchronously inside the
 /// shared library function before the reply lands.
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
+
+/// The DIDComm binding envelope — the only DIDComm carriage for a Trust Task.
+const TRUST_TASK_ENVELOPE_TYPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
 
 /// Send a `provision-integration` request over an existing DIDComm
 /// session.
@@ -92,6 +98,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// this crate's casing.
 pub async fn provision_integration_didcomm(
     session: &DIDCommSession,
+    relayer_key: &crate::trust_task_sign::HolderKey,
     request: Value,
     context: Option<String>,
     assertion: Option<AssertionMode>,
@@ -120,12 +127,49 @@ pub async fn provision_integration_didcomm(
     let request_uri = spec_version.request_uri();
     let body = request_body_for_version(&body_struct, request_uri).map_err(VtaError::from)?;
 
-    session
-        .send_and_wait::<ProvisionIntegrationResponse>(
-            request_uri,
-            body,
-            result_uri_for(request_uri),
-            DEFAULT_TIMEOUT_SECS,
-        )
+    send_signed_task(
+        session,
+        relayer_key,
+        request_uri,
+        body,
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .await
+}
+
+/// Send one Trust Task over a raw [`DIDCommSession`]: the document is issued by
+/// the session's DID, addressed to its VTA, signed with `key`, carried in the
+/// DIDComm binding envelope, and the reply's `payload` is decoded as `T`.
+///
+/// The signature is what identifies the caller: the VTA refuses any document
+/// over DIDComm whose proof, `issuer` and sender are not one DID.
+pub(crate) async fn send_signed_task<T: serde::de::DeserializeOwned>(
+    session: &DIDCommSession,
+    key: &crate::trust_task_sign::HolderKey,
+    type_uri: &str,
+    payload: Value,
+    timeout_secs: u64,
+) -> Result<T, VtaError> {
+    let mut doc = crate::trust_task_sign::build_unsigned(
+        type_uri,
+        payload,
+        session.client_did(),
+        &session.vta_did,
+    )
+    .map_err(|e| VtaError::Protocol(format!("could not build `{type_uri}`: {e}")))?;
+    crate::trust_task_sign::sign_in_place_with(&mut doc, key)
         .await
+        .map_err(|e| VtaError::Protocol(format!("could not sign `{type_uri}`: {e}")))?;
+    let doc = serde_json::to_value(&doc).map_err(VtaError::from)?;
+    let reply: Value = session
+        .send_and_wait(
+            TRUST_TASK_ENVELOPE_TYPE,
+            doc,
+            TRUST_TASK_ENVELOPE_TYPE,
+            timeout_secs,
+        )
+        .await?;
+    let payload = crate::client::VtaClient::extract_trust_task_payload(reply)?;
+    serde_json::from_value(payload)
+        .map_err(|e| VtaError::Protocol(format!("`{type_uri}` response decode: {e}")))
 }

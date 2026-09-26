@@ -19,18 +19,27 @@ import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { useNameBook } from "@/lib/names";
+import { useViewerDid } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
-import type { GitNsDriftItem, GitNsNamespaceRow, GitNsRight } from "@/lib/wire-types";
+import type {
+  GitNsDriftItem,
+  GitNsRight,
+  GitNsRoleMap,
+} from "@/lib/wire-types";
 
 import {
   adoptTask,
+  breakGlassTask,
   createTask,
   didError,
   driftAdoptTask,
   driftRevertTask,
   expiryDaysError,
   grantTask,
+  justificationError,
+  MAX_JUSTIFICATION,
   MAX_REASON,
+  ratifyTask,
   reasonError,
   reseatTask,
   revokeTask,
@@ -40,7 +49,14 @@ import {
   transferTask,
 } from "./actions";
 import { fetchMembersPage, gitNsKeys } from "./api";
-import { consentClass, driftRevertEffect, RIGHT_LABEL, rightLabel, shortName } from "./model";
+import {
+  consentClass,
+  driftRevertEffect,
+  isSelfGrant,
+  RIGHT_LABEL,
+  rightLabel,
+  shortName,
+} from "./model";
 import { useModal } from "./ui";
 
 const OTHER = "__other__";
@@ -52,12 +68,15 @@ function FormDialog({
   onSubmit,
   submitLabel,
   children,
+  submitClass = "primary",
 }: {
   title: string;
   onClose: () => void;
   onSubmit: () => void;
   submitLabel: string;
   children: ReactNode;
+  /** `destructive` for the one form whose submit builds a destructive act. */
+  submitClass?: string;
 }) {
   const titleId = useId();
   const surfaceRef = useRef<HTMLFormElement>(null);
@@ -88,7 +107,7 @@ function FormDialog({
           <button type="button" className="secondary" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="primary">
+          <button type="submit" className={submitClass}>
             {submitLabel}
           </button>
         </div>
@@ -300,10 +319,19 @@ export function GrantDialog({
   }>({ subject: null, days: null, reason: null });
   const namespaceRight = right === "git.ns.admin" || right === "git.repo.create";
   const consent = consentClass("right.grant", right);
+  const viewer = useViewerDid();
+  const selfGrant = isSelfGrant(viewer, subject, right);
+  const [breakGlass, setBreakGlass] = useState(false);
+
+  if (breakGlass) {
+    return (
+      <BreakGlassDialog right={right} resource={resource} onClose={onClose} onBuilt={onBuilt} />
+    );
+  }
 
   const submit = () => {
     const next = {
-      subject: didError(subject),
+      subject: selfGrant ? SELF_GRANT_ERROR : didError(subject),
       days: expiryDaysError(days),
       reason: reasonError(reason),
     };
@@ -355,6 +383,9 @@ export function GrantDialog({
         <p>
           Right: <b>{RIGHT_LABEL[right]}</b> <code>{right}</code>
         </p>
+      )}
+      {selfGrant && (
+        <SelfGrantNotice right={right} onBreakGlass={() => setBreakGlass(true)} />
       )}
       {consent !== "normal" && (
         <p className="muted">
@@ -546,14 +577,26 @@ export function CreateDialog({
   const [name, setName] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [description, setDescription] = useState("");
+  const [owner, setOwner] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [ownerError, setOwnerError] = useState<string | null>(null);
 
   const submit = () => {
     const e = segmentError(name, "repository");
+    const oe = owner.trim() ? didError(owner) : null;
     setError(e);
-    if (!e) {
+    setOwnerError(oe);
+    if (!e && !oe) {
       onBuilt(
-        createTask({ namespaceId, namespaceResource, name, visibility, description, personal }),
+        createTask({
+          namespaceId,
+          namespaceResource,
+          name,
+          visibility,
+          description,
+          owners: owner.trim() ? [owner.trim()] : undefined,
+          personal,
+        }),
       );
     }
   };
@@ -568,8 +611,16 @@ export function CreateDialog({
       <p className="muted">
         {personal
           ? "On a personal account no bot can create a repository: the VTC reserves the name and answers with the commands the account holder runs."
-          : "The bridge creates it and bootstraps commit trust. Whoever signs becomes its owner, and needs git.repo.create here."}
+          : "The bridge creates it and bootstraps commit trust. Whoever signs needs git.repo.create here."}
       </p>
+      <TextField
+        label="Owner (DID)"
+        value={owner}
+        onChange={setOwner}
+        placeholder="Optional — you, if empty"
+        error={ownerError}
+        hint="Empty makes you the owner, which the VTC accepts only if someone else granted you git.repo.create here (or you broke the glass for it). A namespace admin's create right is implied and makes nobody an owner on its own: name another member."
+      />
       <TextField
         label="Name"
         value={name}
@@ -606,7 +657,7 @@ export function CreateDialog({
 }
 
 /**
- * Reseat a headless namespace (`git-ns/namespace/reseat` 0.1). Offered only
+ * Reseat a headless namespace (`git-ns/namespace/reseat` 0.3). Offered only
  * where the daemon reports the namespace headless; the VTC checks it again
  * when it runs the task. The subject is picked from current members only —
  * the fixed rules give `git.ns.admin` to no one else — and the statement is
@@ -629,9 +680,29 @@ export function ReseatDialog({
     subject: null,
     statement: null,
   });
+  const viewer = useViewerDid();
+  // A community administrator reseating a headless namespace to themselves is
+  // a self-grant of `git.ns.admin`, which `git-ns/right/grant` 0.3 routes to
+  // break-glass.
+  const selfGrant = isSelfGrant(viewer, subject, "git.ns.admin");
+  const [breakGlass, setBreakGlass] = useState(false);
+
+  if (breakGlass) {
+    return (
+      <BreakGlassDialog
+        right="git.ns.admin"
+        resource={namespaceResource}
+        onClose={onClose}
+        onBuilt={onBuilt}
+      />
+    );
+  }
 
   const submit = () => {
-    const next = { subject: didError(subject), statement: statementError(statement) };
+    const next = {
+      subject: selfGrant ? SELF_GRANT_ERROR : didError(subject),
+      statement: statementError(statement),
+    };
     setErrors(next);
     if (next.subject || next.statement) return;
     onBuilt(reseatTask(namespaceId, namespaceResource, subject.trim(), statement));
@@ -658,6 +729,9 @@ export function ReseatDialog({
         membersOnly
         error={errors.subject}
       />
+      {selfGrant && (
+        <SelfGrantNotice right="git.ns.admin" onBreakGlass={() => setBreakGlass(true)} />
+      )}
       <TextField
         label="Statement"
         value={statement}
@@ -680,7 +754,7 @@ export function ReseatDialog({
  */
 export function DriftResolveDialog({
   resource,
-  ns,
+  roleMap,
   item,
   label,
   adopt,
@@ -688,7 +762,9 @@ export function DriftResolveDialog({
   onBuilt,
 }: {
   resource: string;
-  ns: GitNsNamespaceRow;
+  /** The repository's role map (`GitNsRepoRow.roleMap`); absent while the
+   *  bridge has not reported it. */
+  roleMap?: GitNsRoleMap | null;
   item: GitNsDriftItem;
   /** The item as the drift list names it. */
   label: string;
@@ -707,7 +783,7 @@ export function DriftResolveDialog({
     onBuilt(
       adopt
         ? driftAdoptTask(resource, item, adopt.member, adopt.right, reason)
-        : driftRevertTask(resource, ns, item, reason),
+        : driftRevertTask(resource, item, reason, roleMap),
     );
   };
   const verb = adopt ? "Adopt" : "Revert";
@@ -746,6 +822,192 @@ export function DriftResolveDialog({
             ? `Recorded as the right's reason and in the audit record, for the repository's owners and the namespace's admins. Never published. At most ${MAX_REASON} characters.`
             : `Kept in the audit record for the repository's owners and the namespace's admins. Never published. At most ${MAX_REASON} characters.`
         }
+        error={error}
+      />
+    </FormDialog>
+  );
+}
+
+// ── break-glass ─────────────────────────────────────────────────────────
+
+const SELF_GRANT_ERROR =
+  "You cannot grant yourself this right: separation of duties. Choose someone else, or break the glass.";
+
+/**
+ * Shown where a form would build an elevated self-grant, which the VTC
+ * refuses (`git-ns:selfGrantNotAllowed`) — so the form does not build it, and
+ * says what to do instead.
+ */
+function SelfGrantNotice({
+  right,
+  onBreakGlass,
+}: {
+  right: GitNsRight;
+  onBreakGlass: () => void;
+}) {
+  return (
+    <div className="finding error" role="alert">
+      <strong>You cannot grant yourself {RIGHT_LABEL[right].toLowerCase()}</strong>
+      <span>
+        Namespace admin, repo creator and owner carry authority over other people's
+        rights, so separation of duties requires someone else to grant them to you.
+        Ask another owner or administrator. If nobody else can — they are gone, or
+        unreachable and this cannot wait — you can break the glass.
+      </span>
+      <span>
+        <button type="button" className="secondary sm destructive" onClick={onBreakGlass}>
+          Break glass…
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/** What breaking the glass does, said before the justification is typed. */
+export function BreakGlassConsequences() {
+  return (
+    <ul className="gitns-consequences">
+      <li>
+        <b>Takes effect immediately</b> and is published to the Trust Registry like any
+        other right.
+      </li>
+      <li>
+        <b>Never expires on its own.</b> It lasts until another administrator revokes it,
+        or ratifies it into an ordinary grant.
+      </li>
+      <li>
+        <b>Every community administrator and every namespace admin is notified now</b>,
+        with your justification, and it is recorded at the audit log's highest severity.
+      </li>
+      <li>
+        <b>It stays flagged</b> on every administrator's console until another
+        administrator ratifies or revokes it. Any of them may revoke it at any time.
+      </li>
+      <li>
+        The VTC asks for your <b>passkey</b> before it records it, bound to this one
+        request.
+      </li>
+    </ul>
+  );
+}
+
+/**
+ * `git-ns/right/break-glass` 0.1: record an elevated right for yourself, with a
+ * justification every administrator will read. The right is fixed by where it
+ * was opened from; the signer is always the subject.
+ */
+export function BreakGlassDialog({
+  right,
+  resource,
+  onClose,
+  onBuilt,
+}: {
+  right: GitNsRight;
+  resource: string;
+  onClose: () => void;
+  onBuilt: (task: SignedTask) => void;
+}) {
+  const [justification, setJustification] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const id = useId();
+  const submit = () => {
+    const e = justificationError(justification);
+    setError(e);
+    if (!e) onBuilt(breakGlassTask(right, resource, justification));
+  };
+  return (
+    <FormDialog
+      title={`Break glass: ${RIGHT_LABEL[right].toLowerCase()} on ${shortName(resource)}`}
+      onClose={onClose}
+      onSubmit={submit}
+      submitLabel="Build the break-glass"
+      submitClass="secondary destructive"
+    >
+      <p>
+        You are about to give yourself <b>{RIGHT_LABEL[right]}</b> <code>{right}</code> on{" "}
+        <code>{resource}</code> — a right your own rights let you grant to others, but
+        that separation of duties stops you granting to yourself.
+      </p>
+      <BreakGlassConsequences />
+      <div className="field">
+        <label className="field-label" htmlFor={id}>
+          Justification
+        </label>
+        <textarea
+          id={id}
+          rows={4}
+          value={justification}
+          maxLength={MAX_JUSTIFICATION + 200}
+          placeholder="Why nobody else could grant this now — who you tried, what cannot wait"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-err` : `${id}-hint`}
+          onChange={(e) => setJustification(e.target.value)}
+        />
+        <span id={`${id}-hint`} className="field-hint">
+          Required. Shown to every administrator and every owner of the resource, sent in
+          every notice and kept in the audit record. Never published. At most{" "}
+          {MAX_JUSTIFICATION} characters.
+        </span>
+        <FieldError id={`${id}-err`} error={error} />
+      </div>
+    </FormDialog>
+  );
+}
+
+/**
+ * `git-ns/right/ratify` 0.1: confirm someone else's break-glass. The
+ * justification is shown in full before anything is built — a ratifier
+ * should read it, and what was done since, first.
+ */
+export function RatifyDialog({
+  subject,
+  subjectName,
+  right,
+  resource,
+  breakGlassAt,
+  justification,
+  onClose,
+  onBuilt,
+}: {
+  subject: string;
+  subjectName?: string;
+  right: GitNsRight;
+  resource: string;
+  breakGlassAt: string;
+  justification: string;
+  onClose: () => void;
+  onBuilt: (task: SignedTask) => void;
+}) {
+  const [statement, setStatement] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const submit = () => {
+    const e = reasonError(statement);
+    setError(e);
+    if (!e) onBuilt(ratifyTask(subject, right, resource, breakGlassAt, statement));
+  };
+  return (
+    <FormDialog
+      title={`Ratify ${rightLabel(right).toLowerCase()} on ${shortName(resource)}`}
+      onClose={onClose}
+      onSubmit={submit}
+      submitLabel="Build the ratification"
+    >
+      <p>
+        <b>{subjectName ?? shortenDid(subject)}</b>{" "}
+        <code className="gitns-party-did">{subject}</code> gave themselves this right on{" "}
+        {new Date(breakGlassAt).toLocaleString()}, saying:
+      </p>
+      <blockquote className="gitns-justification">{justification}</blockquote>
+      <p className="muted">
+        Ratifying confirms they should keep it: the flag clears and it becomes an
+        ordinary grant. If they should not keep it, revoke it instead.
+      </p>
+      <TextField
+        label="Statement"
+        value={statement}
+        onChange={setStatement}
+        placeholder="Optional"
+        hint={`Kept in the audit record and sent to the other administrators. At most ${MAX_REASON} characters.`}
         error={error}
       />
     </FormDialog>

@@ -120,7 +120,12 @@ pub(super) async fn handle_decision(
     };
 
     // Authority is the proof: verify it and take the *proven* signer DID.
-    let approver = match crate::auth::verify_trust_task_proof_with(
+    //
+    // A decision is the approver's attestation, so the proof must be made for
+    // `assertionMethod` with a key listed under the approver's
+    // `assertionMethod` (the did-hosting RP's `verify_approval` holds decisions
+    // to the same rule). One made for `authentication` is refused.
+    let approver = match crate::auth::verify_approval_proof_with(
         &doc,
         &state.trust_task_vm_resolver(),
     )
@@ -139,6 +144,7 @@ pub(super) async fn handle_decision(
             // An operator watching an update loop needs to tell them apart.
             tracing::warn!(
                 error = %e,
+                cause = e.cause().unwrap_or_default(),
                 "task-consent decision arrived but failed proof verification; \
                  no approver could be attributed"
             );
@@ -513,9 +519,14 @@ mod tests {
                 "decision": "approve",
             },
         });
-        let proof = DataIntegrityProof::sign(&doc, &secret, SignOptions::new())
-            .await
-            .expect("sign the decision");
+        // The approver's decision is an attestation: `assertionMethod`.
+        let proof = DataIntegrityProof::sign(
+            &doc,
+            &secret,
+            SignOptions::new().with_proof_purpose("assertionMethod"),
+        )
+        .await
+        .expect("sign the decision");
         doc.as_object_mut()
             .unwrap()
             .insert("proof".into(), serde_json::to_value(proof).unwrap());
@@ -555,6 +566,87 @@ mod tests {
         .unwrap()
         .expect("a consumable grant must exist for the requester");
         assert_eq!(grant.approvers, vec![approver]);
+    }
+
+    /// A decision is the approver's attestation. One whose proof is made for
+    /// `authentication` is refused before any pending is consulted, and so is
+    /// one with no proof, exactly as the did-hosting RP's `verify_approval`
+    /// refuses them.
+    #[tokio::test]
+    async fn a_decision_signed_for_authentication_is_refused() {
+        use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        let (state, _dir) = build_signing_test_app_state().await;
+        let mut secret = Secret::generate_ed25519(None, Some(&[0xB3; 32]));
+        let pub_mb = secret.get_public_keymultibase().expect("approver pubkey");
+        let approver = format!("did:key:{pub_mb}");
+        secret.id = format!("{approver}#{pub_mb}");
+        let vta_did = state.config.read().await.vta_did.clone().unwrap();
+
+        let decision = |purpose: Option<&'static str>| {
+            let secret = secret.clone();
+            let approver = approver.clone();
+            let vta_did = vta_did.clone();
+            async move {
+                let mut doc = json!({
+                    "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                    "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1,
+                    "issuer": approver,
+                    "recipient": vta_did,
+                    "issuedAt": chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "payload": {
+                        "challenge": "9c1f4b7a2e6d80f35a4c9b1e7d2f6083",
+                        "payloadDigest": "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ",
+                        "decision": "approve",
+                    },
+                });
+                if let Some(purpose) = purpose {
+                    let proof = DataIntegrityProof::sign(
+                        &doc,
+                        &secret,
+                        SignOptions::new().with_proof_purpose(purpose),
+                    )
+                    .await
+                    .expect("sign the decision");
+                    doc["proof"] = serde_json::to_value(proof).unwrap();
+                }
+                serde_json::from_value::<TrustTask<Value>>(doc).unwrap()
+            }
+        };
+        let claims = crate::test_support::super_admin_claims();
+
+        for (purpose, why) in [
+            (
+                Some("authentication"),
+                "an operational proof is not an approval",
+            ),
+            (None, "an unsigned decision authorizes nothing"),
+        ] {
+            let outcome = handle_decision(&state, &claims, decision(purpose).await).await;
+            let reply: Value = serde_json::from_slice(&outcome.body).unwrap();
+            assert!(
+                reply["type"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("trust-task-error")),
+                "{why}: {reply}"
+            );
+            assert!(
+                reply.to_string().contains("valid proof"),
+                "{why}: refused at the proof, before any pending: {reply}"
+            );
+        }
+
+        // The same decision made for `assertionMethod` gets past the proof, and
+        // is refused only for having no pending to decide.
+        let outcome =
+            handle_decision(&state, &claims, decision(Some("assertionMethod")).await).await;
+        let reply: Value = serde_json::from_slice(&outcome.body).unwrap();
+        assert!(
+            !reply.to_string().contains("valid proof"),
+            "an assertionMethod decision passes the proof check: {reply}"
+        );
     }
 
     const OPENVTC: &str = "openvtc";

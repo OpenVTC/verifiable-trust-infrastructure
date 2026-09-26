@@ -15,9 +15,9 @@ impl VtaClient {
     ///
     /// Works over both transports:
     /// - **REST**: `POST /bootstrap/provision-integration`.
-    /// - **DIDComm**: `provision-integration/1.0` protocol over the
-    ///   open authcrypt session. The VTA-side handler is the same
-    ///   shared library function as REST; only the I/O differs.
+    /// - **DIDComm**: the `provision/integration` Trust Task, signed by
+    ///   this client's identity, in the DIDComm binding envelope. The
+    ///   VTA-side handler is the same shared library function as REST.
     ///
     /// In DIDComm mode, the session's `client_did` must already
     /// hold admin role in the target context's ACL. Sender and VP
@@ -45,8 +45,21 @@ impl VtaClient {
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { session, .. } => {
+                let relayer_key = self
+                    .identity
+                    .as_ref()
+                    .ok_or_else(|| {
+                        VtaError::Protocol(
+                            "provision-integration over DIDComm needs a client identity to sign \
+                             the request with"
+                                .into(),
+                        )
+                    })?
+                    .holder_key()
+                    .map_err(|e| VtaError::Protocol(format!("this client cannot sign: {e}")))?;
                 crate::provision_integration::didcomm::provision_integration_didcomm(
                     session,
+                    &relayer_key,
                     req.request,
                     req.context,
                     req.assertion,

@@ -169,6 +169,46 @@ pub async fn bootstrap(
     };
     store_acl_entry(&state.acl_ks, &acl_entry).await?;
 
+    // The second unrestricted admin `vtc setup` was given, installed in the same
+    // step as the first (VTI-APV-014): making anyone an unrestricted admin needs
+    // another's consent, so a community installed with one could never grant
+    // remotely. Taken once — a later bootstrap is refused above anyway.
+    let co_admin = match state.install_store.take_co_admin().await? {
+        Some(did) if did != admin_did => {
+            let entry = VtcAclEntry {
+                did: did.clone(),
+                role: VtcRole::Admin,
+                label: Some("co-admin (install bootstrap)".into()),
+                allowed_contexts: vec![],
+                created_at: now_unix(),
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+            };
+            store_acl_entry(&state.acl_ks, &entry).await?;
+            // The sister record a promotion writes, so the co-admin can enrol a
+            // passkey later for the console. Consenting needs none.
+            if crate::acl::admin::get_admin_entry(&state.passkey_ks, &did)
+                .await?
+                .is_none()
+            {
+                store_admin_entry(
+                    &state.passkey_ks,
+                    &AdminEntry {
+                        did: did.clone(),
+                        passkeys: Vec::new(),
+                        extensions: serde_json::Value::Null,
+                        created_at: now,
+                    },
+                )
+                .await?;
+            }
+            Some(entry)
+        }
+        _ => None,
+    };
+
     // Initialise the singleton community profile if not already present.
     // Per spec §5.1, `community_did` is immutable from this point — so
     // we only lock it in when `vtc_did` is actually configured. The
@@ -196,6 +236,22 @@ pub async fn bootstrap(
         .await?;
 
     info!(%admin_did, event_id = %envelope.event_id, "community installed");
+
+    if let Some(entry) = co_admin {
+        audit_writer
+            .write(
+                "did:key:vtc-install",
+                Some(&entry.did),
+                AuditEvent::AclGranted(vti_common::audit::AclChangeData {
+                    did: entry.did.clone(),
+                    role: entry.role.to_string(),
+                    contexts: entry.allowed_contexts.clone(),
+                    expires_at: None,
+                }),
+            )
+            .await?;
+        info!(co_admin = %entry.did, "co-admin installed beside the first admin");
+    }
 
     Ok((
         StatusCode::OK,

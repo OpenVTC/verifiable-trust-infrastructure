@@ -32,9 +32,10 @@ default = ["setup", "keyring", "website", "admin-ui", "tsp"]
 # This is Phase A of docs/05-design-notes/tsp-enablement.md §12 — "advertise
 # TSP + DIDComm; prefer TSP when both peers speak it" — and NOT the Phase B
 # flip. It enables `handle_tsp`, which answers an inbound TSP frame over TSP
-# because the caller is waiting on the TSP correlation. VTC-*initiated* sends
-# to a member (`AppState::send_to_member`) stay DIDComm until Phase B (§14 Q4);
-# nothing here touches that path.
+# because the caller is waiting on the TSP correlation. VTC-*initiated* Trust
+# Task pushes (`member_push`) follow TSP > DIDComm > REST by what the recipient
+# advertises (§14 Q4); the credential-exchange messages on
+# `AppState::send_to_member` stay DIDComm, having no TSP binding.
 #
 # The two legs: `vta-sdk/tsp` for the SDK capability, and `affinidi-tdk/tsp`
 # for `atm.tsp()` — the receive side reads TSP frames off the shared mediator
@@ -122,7 +123,7 @@ path = "src/main.rs"
 [dependencies]
 vti-rooms = { path = "../vti-rooms", version = "0.2" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.25", features = [
+vti-common = { path = "../vti-common", version = "0.26", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -140,7 +141,7 @@ vti-common = { path = "../vti-common", version = "0.25", features = [
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.4" }
-vta-sdk = { path = "../vta-sdk", version = "0.52", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.53", features = [
   "didcomm",
   "session",
   "config-session",
@@ -217,7 +218,7 @@ subtle = { workspace = true }
 # message handler in `messaging.rs` (M1.8.2). The service crate
 # accepts `Message` / `UnpackMetadata` by value but doesn't
 # re-export them.
-affinidi-messaging-didcomm = "0.15"
+affinidi-messaging-didcomm = "0.15.9"
 # Embedded in-process test mediator for the `didcomm-harness` feature
 # (`MockVtc::start_didcomm`, #436). Optional + feature-gated so it never
 # enters a production build; same crate the e2e suite uses.
@@ -228,7 +229,7 @@ affinidi-messaging-didcomm = "0.15"
 # mediator-side twin of the client-side failure this crate's TSP work is about.
 # Always on (not conditioned on this crate's `tsp`): the harness is test-only,
 # and a mediator that can route TSP is harmless to the DIDComm suite.
-affinidi-messaging-test-mediator = { version = "0.10", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.11", optional = true, features = [
     "tsp",
 ] }
 tokio-util = { workspace = true, features = ["rt"] }

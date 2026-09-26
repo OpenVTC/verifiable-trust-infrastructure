@@ -992,7 +992,20 @@ new flow, update both this section and the relevant `docs/*.md`.
   new repository at the old name inherits nothing); the projection withdraws
   before it publishes, and publishes the implied `git.commit.sign` of every
   `own`, `maintain` and `ns.admin`; a grant's `reason` is never published or
-  audited.
+  audited. Grant and revoke are served at 0.3 only (no 0.1/0.2), repo/create
+  at 0.3: an implied `repo.create` (from `ns.admin`) carries no creator
+  ownership. Elevated rights go only to, and only from, ACL-backed members.
+  **Separation of duties** (grant 0.3 rule 7): no elevated self-grant
+  through any task; the only way is `git-ns/right/break-glass` (`git_ns::break_glass`),
+  which always takes an operation-bound passkey step-up, is audited at
+  `AuditSeverity::Critical`, and is announced to every other administrator —
+  policy may disable, delay or tighten it, never quieten it. An unratified
+  break-glass record never counts toward the last-owner/last-admin invariants.
+  A namespace admin gets no forge role: role projection (`bridge::highest_repo_rights`) counts only rights held in the person's own
+  name, sends an admin with none as `git.ns.admin` (no role), one entry per
+  account, and never a namespace-level `projectRoles` job. Jobs are
+  `git-ns/bridge/job` 0.4 only, sent only to a bridge that lists 0.4 in
+  `trust-task-discovery` (`bridge::send_v0_4`); never downgrade.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
   `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.

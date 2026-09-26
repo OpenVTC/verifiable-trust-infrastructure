@@ -311,7 +311,9 @@ pub enum TypedErrorPayload {
 /// producers (`DIDCommSession::await_tsp_reply` / `TspSession::await_reply`) and
 /// [`VtaError::is_tsp_reply_timeout`], so the self-repair path recognises a
 /// §7.2.2 silent drop without a brittle literal repeated in three places.
-#[cfg(feature = "tsp")]
+// Only the client and session transports produce or read it; `tsp` alone
+// (the binding envelope, which `vti-common` uses) has neither.
+#[cfg(all(feature = "tsp", feature = "client"))]
 pub(crate) const TSP_REPLY_TIMEOUT_PREFIX: &str = "timed out waiting for the TSP reply";
 
 impl VtaError {
@@ -319,7 +321,7 @@ impl VtaError {
     /// signature of a §7.2.2 silent drop (the peer dropped our frame because it
     /// holds no relationship with us). The self-repair path in
     /// `dispatch_trust_task` keys on this to re-form the relationship and retry.
-    #[cfg(feature = "tsp")]
+    #[cfg(all(feature = "tsp", feature = "client"))]
     pub(crate) fn is_tsp_reply_timeout(&self) -> bool {
         matches!(self, VtaError::TspTransport(msg) if msg.starts_with(TSP_REPLY_TIMEOUT_PREFIX))
     }

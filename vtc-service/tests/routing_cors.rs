@@ -50,6 +50,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         admin_ui: Default::default(),
         trust_tasks: Default::default(),
         acl: Default::default(),
+        did_cache: Default::default(),
         config_path: std::path::PathBuf::new(),
     }
 }

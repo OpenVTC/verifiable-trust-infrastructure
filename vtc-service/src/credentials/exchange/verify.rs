@@ -245,7 +245,9 @@ pub async fn verify_presentation(
     let hasher = Sha256Hasher;
     let resolver = DidVmResolver::new(did_resolver.cloned());
     let issuer_verifier = EdDsaJwtVerifier {
-        key: resolver.resolve_verifying_key(&issuer_vm).await?,
+        key: resolver
+            .resolve_verifying_key(&issuer_vm, vti_common::auth::ProofPurpose::AssertionMethod)
+            .await?,
     };
 
     let holder_verifier = EdDsaJwtVerifier { key: holder_key };
@@ -422,7 +424,7 @@ async fn verify_di_vp(
     did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
     now: DateTime<Utc>,
 ) -> Result<Vec<VerifiedPresentation>, AppError> {
-    use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+    use affinidi_data_integrity::DataIntegrityProof;
 
     let resolver = DidVmResolver::new(did_resolver.cloned());
 
@@ -456,18 +458,21 @@ async fn verify_di_vp(
     let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
     for proof in &proofs {
         let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
-        let r = proof
-            .verify(&vp_unsigned, &resolver, VerifyOptions::new())
-            .await
-            .map_err(|e| e.to_string());
+        let r = crate::credentials::proof_set::verify_one(
+            proof,
+            &vp_unsigned,
+            &resolver,
+            vti_common::auth::ProofPurpose::Authentication,
+        )
+        .await;
         outcomes.push((did, r));
     }
 
     // The holder DID comes from the acceptance rule rather than from whichever
-    // proof happened to be first: `accept_any` has already refused a set whose
+    // proof happened to be first: `accept_all` has already refused a set whose
     // verifying proofs disagree about who signed, so there is exactly one
     // answer to return here.
-    let holder_did = crate::credentials::proof_set::accept_any(&outcomes)
+    let holder_did = crate::credentials::proof_set::accept_all(&outcomes)
         .map_err(|e| AppError::Validation(format!("DI VP holder proof did not verify: {e}")))?;
 
     // 2. Freshness + audience binding (both are top-level VP fields, signed).
@@ -515,10 +520,14 @@ async fn verify_di_vp(
         if let Some(obj) = vc_unsigned.as_object_mut() {
             obj.remove("proof");
         }
-        vc_proof
-            .verify(&vc_unsigned, &resolver, VerifyOptions::new())
-            .await
-            .map_err(|e| AppError::Validation(format!("DI VC issuer proof did not verify: {e}")))?;
+        crate::credentials::proof_set::verify_one(
+            &vc_proof,
+            &vc_unsigned,
+            &resolver,
+            vti_common::auth::ProofPurpose::AssertionMethod,
+        )
+        .await
+        .map_err(|e| AppError::Validation(format!("DI VC issuer proof did not verify: {e}")))?;
 
         check_w3c_temporal(vc, now)?;
 
@@ -695,7 +704,7 @@ async fn verify_bbs_presentation(
         .ok_or_else(|| AppError::Validation("bbs-2023 proof has no `verificationMethod`".into()))?;
     check_issuer_binding(vm, &issuer_did)?;
     let g2 = DidVmResolver::new(did_resolver.cloned())
-        .resolve_bbs_g2(vm)
+        .resolve_bbs_g2(vm, vti_common::auth::ProofPurpose::AssertionMethod)
         .await?;
     let pk = PublicKey::from_bytes(&g2)
         .map_err(|e| AppError::Validation(format!("bbs-2023 issuer key is invalid: {e}")))?;
