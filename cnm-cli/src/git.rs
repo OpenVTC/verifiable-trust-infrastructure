@@ -191,6 +191,12 @@ pub enum DriftCommands {
         /// is refused if the forge now shows something else.
         #[arg(long)]
         observed: Option<String>,
+        /// For `adopt`: the DID of the member who receives the right — the one
+        /// you read as linked to the account (`git view --admin`). Required to
+        /// adopt, refused on a revert. The VTC adopts nothing unless the
+        /// account is still linked to exactly this member.
+        #[arg(long)]
+        subject: Option<String>,
         #[arg(long)]
         reason: Option<String>,
     },
@@ -240,6 +246,7 @@ impl DriftTypeArg {
 
 /// The `git-ns/drift/resolve` payload for these arguments. The account's
 /// forge is the repository's; `login` is display only and defaults to the id.
+#[allow(clippy::too_many_arguments)]
 fn drift_payload(
     resource: &str,
     action: DriftAction,
@@ -247,6 +254,7 @@ fn drift_payload(
     account_id: Option<String>,
     account_login: Option<String>,
     observed: Option<String>,
+    subject: Option<String>,
     reason: Option<String>,
 ) -> CliResult<Value> {
     let resource = resource.to_lowercase();
@@ -283,6 +291,22 @@ fn drift_payload(
         );
     }
     let mut payload = json!({ "resource": resource, "drift": drift, "action": action });
+    match (action, subject) {
+        ("adopt", Some(s)) => payload["subject"] = json!(s.trim()),
+        ("adopt", None) => {
+            return Err(
+                "adopting records a right for the member linked to the account: pass --subject \
+                 with that member's DID, as `git view --admin` shows it"
+                    .into(),
+            );
+        }
+        (_, Some(_)) => {
+            return Err(
+                "a revert changes no right and has no recipient: leave --subject out".into(),
+            );
+        }
+        (_, None) => {}
+    }
     if let Some(r) = reason {
         payload["reason"] = json!(r);
     }
@@ -533,6 +557,10 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
         "git-ns/right/revoke:notGranted" => "\nNothing to revoke: no live record matches. \
              Implied rights (an owner's commit right, an admin's ownership) are not records."
             .to_string(),
+        "git-ns/drift/resolve:subjectChanged" => format!(
+            "{message}. The account was linked to someone else after you read it: run `cnm git \
+             view --admin --resource …` again and decide about the member it names now."
+        ),
         "git-ns/drift/resolve:driftNotFound" => format!(
             "\nNo outstanding item matches — resolved already, or the forge changed since you \
              read it. Read it again:\n  {bin} git view --resource <repository>"
@@ -1162,9 +1190,13 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                     account_id,
                     account_login,
                     observed,
+                    subject,
                     reason,
                 },
         } => {
+            let subject = subject
+                .map(|s| did_arg("--subject", s.trim()))
+                .transpose()?;
             let (did, key) = signing_key(keyring_key)?;
             let payload = drift_payload(
                 &resource,
@@ -1173,12 +1205,13 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 account_id,
                 account_login,
                 observed,
+                subject,
                 reason,
             )?;
-            let payload: specs::drift::resolve::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::drift::resolve::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that resolution is not well formed: {e}"))?;
             let resp = anon()
-                .git_ns_drift_resolve(&payload, &key)
+                .git_ns_drift_resolve_v3(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
@@ -1279,6 +1312,7 @@ mod tests {
 
     #[test]
     fn drift_resolve_arguments_become_the_specifications_selector() {
+        const BOB: &str = "did:webvh:QmBobScid2:acme-vtc.example:bob";
         let p = drift_payload(
             "GitHub.com/Acme/Widgets",
             DriftAction::Revert,
@@ -1286,6 +1320,7 @@ mod tests {
             Some("5550123".into()),
             Some("eve-dev".into()),
             Some("write".into()),
+            None,
             None,
         )
         .unwrap();
@@ -1301,45 +1336,86 @@ mod tests {
                 }
             })
         );
-        let _: specs::drift::resolve::v0_1::Payload = serde_json::from_value(p).unwrap();
+        let _: specs::drift::resolve::v0_3::Payload = serde_json::from_value(p).unwrap();
+
+        // An adopt names its recipient (drift/resolve 0.3).
+        let p = drift_payload(
+            "github.com/acme/widgets",
+            DriftAction::Adopt,
+            DriftTypeArg::RoleAdded,
+            Some("9120045".into()),
+            Some("bob-builds".into()),
+            Some("maintain".into()),
+            Some(BOB.into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(p["subject"], json!(BOB));
+        assert_eq!(p["action"], "adopt");
+        let _: specs::drift::resolve::v0_3::Payload = serde_json::from_value(p).unwrap();
+
+        let err =
+            |action, kind, id: Option<&str>, observed: Option<&str>, subject: Option<&str>| {
+                drift_payload(
+                    "github.com/a/b",
+                    action,
+                    kind,
+                    id.map(str::to_string),
+                    None,
+                    observed.map(str::to_string),
+                    subject.map(str::to_string),
+                    None,
+                )
+                .is_err()
+            };
         // A role item needs its account; a protection item has none; adopt
-        // needs what was observed.
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Revert,
-                DriftTypeArg::RoleAdded,
-                None,
-                None,
-                None,
-                None
-            )
-            .is_err()
+        // needs what was observed and whom it grants to; a revert has no
+        // recipient.
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::RoleAdded,
+            None,
+            None,
+            None
+        ));
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::BootstrapMissing,
+            Some("1"),
+            None,
+            None
+        ));
+        assert!(err(
+            DriftAction::Adopt,
+            DriftTypeArg::RoleChanged,
+            Some("1"),
+            None,
+            Some(BOB)
+        ));
+        assert!(err(
+            DriftAction::Adopt,
+            DriftTypeArg::RoleAdded,
+            Some("1"),
+            Some("maintain"),
+            None
+        ));
+        assert!(err(
+            DriftAction::Revert,
+            DriftTypeArg::RoleAdded,
+            Some("1"),
+            Some("write"),
+            Some(BOB)
+        ));
+    }
+
+    #[test]
+    fn a_subject_changed_refusal_says_to_read_the_link_again() {
+        let g = guidance(
+            "git-ns/drift/resolve:subjectChanged",
+            "linked to another member",
+            "did:key:z",
         );
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Revert,
-                DriftTypeArg::BootstrapMissing,
-                Some("1".into()),
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            drift_payload(
-                "github.com/a/b",
-                DriftAction::Adopt,
-                DriftTypeArg::RoleChanged,
-                Some("1".into()),
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
+        assert!(g.contains("view --admin"), "{g}");
     }
 
     #[test]

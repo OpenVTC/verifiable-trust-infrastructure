@@ -705,7 +705,7 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
     "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
     "https://trusttasks.org/spec/git-ns/repo/create/0.1",
-    "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+    "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
     "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
 ];
 

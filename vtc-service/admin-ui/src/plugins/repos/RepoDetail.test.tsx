@@ -248,13 +248,14 @@ describe("Repo detail", () => {
     expect(sign.textContent).toMatch(/Consent class: Normal/);
     expect(sign.textContent).toContain(HANA);
     expect(within(sign).getByLabelText("Command").textContent).toBe(
-      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --reason='Hana'"'"'s role'`,
+      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --subject=${HANA} --reason='Hana'"'"'s role'`,
     );
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent!)).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
       payload: {
         resource: DOCS.resource,
         action: "adopt",
+        subject: HANA,
         drift: {
           type: "roleAdded",
           account: { forge: "github.com", id: "1003", login: "hsato" },
@@ -365,7 +366,7 @@ describe("Repo detail", () => {
     await waitFor(() => expect(within(drift).getByLabelText("Adopt command")).toBeTruthy());
     expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
     expect(within(drift).getByLabelText("Adopt command").textContent).toBe(
-      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain`,
+      `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --subject=${HANA}`,
     );
   });
 
@@ -413,7 +414,7 @@ describe("Repo detail", () => {
     );
     const doc = JSON.parse(within(sign).getByLabelText("Document").textContent!);
     expect(doc).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.1",
+      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
       payload: {
         resource: DOCS.resource,
         action: "revert",
