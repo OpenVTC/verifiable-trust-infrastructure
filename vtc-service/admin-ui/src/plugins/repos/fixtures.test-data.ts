@@ -5,6 +5,7 @@
 import type {
   GitNsAccountRow,
   GitNsActivityItem,
+  GitNsBreakGlassItem,
   GitNsNamespaceRow,
   GitNsRepoRow,
   GitNsRightRow,
@@ -130,6 +131,9 @@ const right = (r: Partial<GitNsRightRow> & Pick<GitNsRightRow, "subject" | "righ
   ...r,
 });
 
+/** A right row with the fixtures' defaults. */
+export const rightRow = right;
+
 export const RIGHTS: GitNsRightRow[] = [
   right({ subject: ALICE, right: "git.ns.admin", resource: "github.com/acme", grantedBy: ALICE }),
   right({ subject: BOB, right: "git.repo.create", resource: "github.com/acme" }),
@@ -215,6 +219,22 @@ export const ACTIVITY: GitNsActivityItem[] = [
   },
 ];
 
+/** Alice, a namespace admin of acme, broke the glass for owner on docs. */
+export const ALICE_BREAK_GLASS: GitNsBreakGlassItem = {
+  namespace: "ns_acme",
+  namespaceResource: "github.com/acme",
+  subject: ALICE,
+  right: "git.repo.own",
+  resource: "github.com/acme/docs",
+  grantedAt: "2026-09-25T02:10:31Z",
+  breakGlass: {
+    by: ALICE,
+    at: "2026-09-25T02:10:31Z",
+    justification: "CVE fix must ship tonight; Bob unreachable since 22:00.",
+  },
+  state: "unratified",
+};
+
 export function gitNsRoutes(
   over: {
     namespaces?: GitNsNamespaceRow[];
@@ -222,6 +242,8 @@ export function gitNsRoutes(
     rights?: GitNsRightRow[];
     extra?: MockRoute[];
     activityStatus?: number;
+    breakGlass?: GitNsBreakGlassItem[];
+    breakGlassStatus?: number;
   } = {},
 ): MockRoute[] {
   return [
@@ -259,6 +281,14 @@ export function gitNsRoutes(
       },
     },
     { path: "/v1/git-ns/jobs", body: { jobs: [] } },
+    {
+      path: "/v1/git-ns/break-glass",
+      status: over.breakGlassStatus,
+      body:
+        over.breakGlassStatus === 403
+          ? { error: "you administer no namespace" }
+          : { items: over.breakGlass ?? [] },
+    },
     { path: "/v1/git-ns/accounts", body: { accounts: ACCOUNTS } },
     {
       path: "/v1/git-ns/activity",

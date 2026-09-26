@@ -69,8 +69,10 @@ pub enum GitCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Create a repository in a namespace, becoming its owner (needs
-    /// `git.repo.create`). Where no bot can create it, prints the steps.
+    /// Create a repository in a namespace (needs `git.repo.create`). You own
+    /// it only if you hold `git.repo.create` by explicit record; a namespace
+    /// admin names another member with `--owner`. Where no bot can create it,
+    /// prints the steps.
     Create {
         /// The namespace identifier (`namespace list`).
         #[arg(long)]
@@ -82,6 +84,10 @@ pub enum GitCommands {
         /// Shown by the forge; do not put anything here you would not publish.
         #[arg(long)]
         description: Option<String>,
+        /// An owner's DID, a current member. Repeat for several. Omitted, you
+        /// are the owner.
+        #[arg(long = "owner")]
+        owners: Vec<String>,
     },
     /// Hand this profile's ownership of a repository to someone else.
     Transfer {
@@ -124,6 +130,48 @@ pub enum GitCommands {
         #[arg(long)]
         statement: String,
     },
+    /// Break the glass: record for this profile's DID an elevated right it
+    /// may already grant but, under separation of duties, not to itself
+    /// (`git-ns/right/break-glass/0.1`). Needs a passkey gesture bound to this
+    /// one request, takes effect at once, never lapses, and is announced to
+    /// every other administrator until one ratifies or revokes it.
+    BreakGlass {
+        #[arg(long, value_enum)]
+        right: RightArg,
+        /// `github.com/acme` (git.ns.admin, git.repo.create) or
+        /// `github.com/acme/widgets` (git.repo.own).
+        #[arg(long)]
+        resource: String,
+        /// Why nobody else could grant it. Required; shown to every
+        /// administrator of the namespace and kept in the audit record.
+        #[arg(long)]
+        justification: String,
+    },
+    /// Ratify another member's break-glass, turning it into an ordinary grant
+    /// (`git-ns/right/ratify/0.1`).
+    Ratify {
+        /// Who broke the glass.
+        #[arg(long)]
+        subject: String,
+        #[arg(long, value_enum)]
+        right: RightArg,
+        /// The resource exactly as recorded.
+        #[arg(long)]
+        resource: String,
+        /// The record's `breakGlass.at`, as `break-glass-list` shows it: binds
+        /// the ratification to the break-glass you read.
+        #[arg(long)]
+        break_glass_at: String,
+        /// Why — kept in the audit record and sent to every administrator.
+        #[arg(long)]
+        statement: Option<String>,
+    },
+    /// Every break-glass record in the namespaces you administer, unratified
+    /// first (admin session).
+    BreakGlassList {
+        #[arg(long)]
+        namespace: Option<String>,
+    },
     /// Have the bridge re-apply the forge roles of every repository in a
     /// namespace, or of one repository, from the VTC's rights under the
     /// bridge's current role map (`git-ns/roles/reproject`). No right changes.
@@ -139,6 +187,7 @@ pub enum GitCommands {
     },
     /// What this profile's DID may see (`git-ns/view`), with its linked forge
     /// accounts, or with `--admin` every record and reason (admin session).
+    /// Break-glass records are flagged, and every unratified one is listed.
     View {
         #[arg(long)]
         resource: Option<String>,
@@ -613,6 +662,24 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
              administrator to do it, or use break-glass (`cnm git break-glass`), which is \
              audited and must be ratified."
             .to_string(),
+        "git-ns/right/break-glass:disabled" => "\nThis community's policy has turned \
+             break-glass off: another administrator must grant the right."
+            .to_string(),
+        "git-ns/right/break-glass:notHeadless" => format!(
+            "\nThe namespace still has an admin; ask them to grant it:\n  {bin} git grant \
+             --subject {did} --right git.ns.admin --resource <namespace>"
+        ),
+        "git-ns/right/ratify:recordChanged" => format!(
+            "\nThe break-glass on record is not the one you read. Read it again:\n  {bin} git \
+             break-glass-list"
+        ),
+        "git-ns/right/ratify:selfRatification" => "\nA break-glass is ratified by another \
+             administrator, or not at all."
+            .to_string(),
+        "git-ns/right/ratify:notBreakGlass" => format!(
+            "\nNothing to ratify: no unratified break-glass record matches. See:\n  {bin} git \
+             break-glass-list"
+        ),
         "git-ns/roles/reproject:manualMode" => "\nThe namespace is governed in manual mode: \
              no bridge projects its roles, so set them on the forge yourself."
             .to_string(),
@@ -876,6 +943,102 @@ async fn follow_link(
     .await
 }
 
+/// Unpadded base64url, for the console link's fragment.
+fn base64url(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        let chars = chunk.len() + 1;
+        for i in 0..chars {
+            out.push(A[((n >> (18 - 6 * i)) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+/// Where the admin console answers an operation-bound step-up: the console
+/// is the WebAuthn relying party, so the passkey gesture happens there.
+fn step_up_url(base: &str, request: &Value) -> String {
+    let json = serde_json::to_vec(request).unwrap_or_default();
+    format!(
+        "{}/admin/step-up#request={}",
+        base.trim_end_matches('/'),
+        base64url(&json)
+    )
+}
+
+/// Send a signed document; when it is refused for want of an operation-bound
+/// passkey gesture (`details.stepUpRequest`), show where to make it, wait,
+/// and send the **identical** document again.
+async fn send_with_step_up(
+    client: &VtcClient,
+    base: &str,
+    type_uri: &str,
+    doc: &str,
+    did: &str,
+) -> CliResult<Value> {
+    for _ in 0..3 {
+        match client.git_ns_send_signed::<Value>(type_uri, doc).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let Some(req) = vtc_client::git_ns::step_up_request(&e) else {
+                    return Err(explain(e, did));
+                };
+                let reason = terminal_safe(req["reason"].as_str().unwrap_or_default());
+                let bound = terminal_safe(req["boundTo"].as_str().unwrap_or_default());
+                eprintln!(
+                    "{BOLD}This needs a passkey gesture bound to this one request.{RESET}\n  \
+                     {reason}\n  bound to: {bound}\nOpen this in the admin console, where your \
+                     passkey is registered, and confirm:\n  {}\nThen press Enter to send the \
+                     same request again (within five minutes).",
+                    step_up_url(base, &req)
+                );
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+            }
+        }
+    }
+    Err("the step-up was not completed; nothing was changed".into())
+}
+
+/// A break-glass record's flag, for a listing line.
+fn break_glass_flag(record: &Value) -> String {
+    let Some(bg) = record.get("breakGlass").filter(|v| v.is_object()) else {
+        return String::new();
+    };
+    match bg.get("ratifiedBy").and_then(Value::as_str) {
+        Some(by) => format!("  [break-glass, ratified by {}]", terminal_safe(by)),
+        None => format!(
+            "  {BOLD}[BREAK-GLASS, UNRATIFIED since {}]{RESET}",
+            terminal_safe(bg["at"].as_str().unwrap_or_default())
+        ),
+    }
+}
+
+/// The ratify command for one unratified break-glass record, quoted so it
+/// pastes as it stands in sh, bash, zsh and fish.
+fn ratify_command(record: &Value) -> String {
+    format!(
+        "{} git ratify --subject={} --right={} --resource={} --break-glass-at={}",
+        shell_word(bin_name()),
+        shell_word(record["subject"].as_str().unwrap_or_default()),
+        shell_word(record["right"].as_str().unwrap_or_default()),
+        shell_word(record["resource"].as_str().unwrap_or_default()),
+        shell_word(
+            record
+                .pointer("/breakGlass/at")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        ),
+    )
+}
+
 pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
     // Signed commands need no session; listings do.
     let anon = || VtcClient::anonymous(&target.base, &target.did);
@@ -979,7 +1142,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             if let Some(r) = reason {
                 payload["reason"] = json!(r);
             }
-            let payload: specs::right::grant::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::right::grant::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that grant is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_grant(&payload, &key)
@@ -1003,7 +1166,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             if let Some(r) = reason {
                 payload["reason"] = json!(r);
             }
-            let payload: specs::right::revoke::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::right::revoke::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that revocation is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_revoke(&payload, &key)
@@ -1016,7 +1179,11 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             name,
             visibility,
             description,
+            owners,
         } => {
+            for o in &owners {
+                did_arg("--owner", o)?;
+            }
             let (did, key) = signing_key(keyring_key)?;
             let mut payload = json!({
                 "namespace": namespace,
@@ -1029,7 +1196,10 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             if let Some(d) = description {
                 payload["description"] = json!(d);
             }
-            let payload: specs::repo::create::v0_1::Payload = serde_json::from_value(payload)
+            if !owners.is_empty() {
+                payload["owners"] = json!(owners);
+            }
+            let payload: specs::repo::create::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that repository is not well formed: {e}"))?;
             let resp = anon()
                 .git_ns_create_repo(&payload, &key)
@@ -1090,7 +1260,144 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             }
             let (did, key) = signing_key(keyring_key)?;
             let resp = anon()
-                .git_ns_view_v2(resource.as_deref(), &key)
+                .git_ns_view_v4(resource.as_deref(), &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            let v = serde_json::to_value(&resp)?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            let rights = v["rights"].as_array().cloned().unwrap_or_default();
+            let unratified: Vec<&Value> = rights
+                .iter()
+                .filter(|r| {
+                    r.get("breakGlass")
+                        .is_some_and(|b| b.get("ratifiedBy").is_none())
+                        && r["subject"].as_str() != Some(did.as_str())
+                })
+                .collect();
+            if !unratified.is_empty() {
+                println!(
+                    "{BOLD}{} break-glass grant(s) await ratification or revocation:{RESET}",
+                    unratified.len()
+                );
+                for r in &unratified {
+                    println!(
+                        "  {} holds {} on {} — {}\n    ratify: {}",
+                        terminal_safe(r["subject"].as_str().unwrap_or_default()),
+                        terminal_safe(r["right"].as_str().unwrap_or_default()),
+                        terminal_safe(r["resource"].as_str().unwrap_or_default()),
+                        terminal_safe(
+                            r.pointer("/breakGlass/justification")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                        ),
+                        ratify_command(r),
+                    );
+                }
+                println!();
+            }
+            for ns in v["namespaces"].as_array().into_iter().flatten() {
+                println!(
+                    "{BOLD}{}/{}{RESET}  {}  {} {}",
+                    terminal_safe(ns["forge"].as_str().unwrap_or_default()),
+                    terminal_safe(ns["owner"].as_str().unwrap_or_default()),
+                    terminal_safe(ns["id"].as_str().unwrap_or_default()),
+                    ns["mode"].as_str().unwrap_or_default(),
+                    ns["state"].as_str().unwrap_or_default(),
+                );
+            }
+            for r in &rights {
+                println!(
+                    "  {}  {}  {}{}",
+                    terminal_safe(r["resource"].as_str().unwrap_or_default()),
+                    terminal_safe(r["right"].as_str().unwrap_or_default()),
+                    terminal_safe(r["subject"].as_str().unwrap_or_default()),
+                    break_glass_flag(r),
+                );
+            }
+            for a in v["accounts"].as_array().into_iter().flatten() {
+                println!(
+                    "  linked: {} {} ({})",
+                    terminal_safe(
+                        a.pointer("/account/forge")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    terminal_safe(
+                        a.pointer("/account/login")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    terminal_safe(
+                        a.pointer("/account/id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+            Ok(())
+        }
+        GitCommands::BreakGlass {
+            resource,
+            right,
+            justification,
+        } => {
+            if !matches!(
+                right,
+                RightArg::NsAdmin | RightArg::RepoCreate | RightArg::RepoOwn
+            ) {
+                return Err(format!(
+                    "{} is not elevated: grant it to yourself with `{} git grant`",
+                    right.as_str(),
+                    shell_word(bin_name())
+                )
+                .into());
+            }
+            if justification.trim().is_empty() {
+                return Err("a break-glass needs a justification".into());
+            }
+            let (did, key) = signing_key(keyring_key)?;
+            let payload = json!({
+                "right": right.as_str(),
+                "resource": resource.to_lowercase(),
+                "justification": justification,
+            });
+            let payload: specs::right::break_glass::v0_1::Payload = serde_json::from_value(payload)
+                .map_err(|e| format!("that break-glass is not well formed: {e}"))?;
+            let client = anon();
+            let type_uri = vtc_client::git_ns::GIT_NS_BREAK_GLASS_TYPE;
+            let doc = client.git_ns_sign(type_uri, &payload, &key).await?;
+            eprintln!(
+                "{DIM}Every community administrator and every admin of this namespace will be \
+                     told, with your justification, and the grant stays flagged until one of \
+                     them ratifies or revokes it.{RESET}"
+            );
+            let v = send_with_step_up(&client, &target.base, type_uri, &doc, &did).await?;
+            show(&v)
+        }
+        GitCommands::Ratify {
+            resource,
+            subject,
+            right,
+            break_glass_at,
+            statement,
+        } => {
+            let subject = did_arg("--subject", &subject)?;
+            let (did, key) = signing_key(keyring_key)?;
+            let mut payload = json!({
+                "subject": subject,
+                "right": right.as_str(),
+                "resource": resource.to_lowercase(),
+                "breakGlassAt": break_glass_at,
+            });
+            if let Some(s) = statement {
+                payload["statement"] = json!(s);
+            }
+            let payload: specs::right::ratify::v0_1::Payload = serde_json::from_value(payload)
+                .map_err(|e| format!("that ratification is not well formed: {e}"))?;
+            let resp = anon()
+                .git_ns_ratify(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
@@ -1180,6 +1487,45 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                 follow_link(&client, &key, &did, &link_id, deadline).await?
             };
             finish_link(&mut std::io::stdout(), json_mode, &v, &did, &link_id)
+        }
+        GitCommands::BreakGlassList { namespace } => {
+            let vtc = vtc_target::connect(keyring_key, target).await?;
+            let v = vtc
+                .client
+                .git_ns_break_glass_list(namespace.as_deref())
+                .await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            let items = v["items"].as_array().cloned().unwrap_or_default();
+            if items.is_empty() {
+                println!("No break-glass records.");
+            }
+            for it in &items {
+                println!(
+                    "{BOLD}{}{RESET}  {}  {}  {} — {}",
+                    terminal_safe(it["state"].as_str().unwrap_or_default()),
+                    terminal_safe(it["resource"].as_str().unwrap_or_default()),
+                    terminal_safe(it["right"].as_str().unwrap_or_default()),
+                    terminal_safe(it["subject"].as_str().unwrap_or_default()),
+                    terminal_safe(
+                        it.pointer("/breakGlass/justification")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                );
+                if it["state"] != "ratified" {
+                    println!("    ratify: {}", ratify_command(it));
+                    println!(
+                        "    revoke: {} git revoke --subject {} --right {} --resource {}",
+                        shell_word(bin_name()),
+                        shell_word(it["subject"].as_str().unwrap_or_default()),
+                        shell_word(it["right"].as_str().unwrap_or_default()),
+                        shell_word(it["resource"].as_str().unwrap_or_default()),
+                    );
+                }
+            }
+            Ok(())
         }
         GitCommands::Drift {
             command:
@@ -1842,6 +2188,43 @@ mod tests {
             "did:key:z",
         );
         assert!(g.contains("git link --forge"), "{g}");
+    }
+
+    #[test]
+    fn the_step_up_link_carries_the_request_as_unpadded_base64url() {
+        assert_eq!(base64url(b"hi"), "aGk");
+        assert_eq!(base64url(b"\xff\xfe\xfd"), "__79");
+        assert_eq!(base64url(b"abcd"), "YWJjZA");
+        let url = step_up_url("https://vtc.example/", &json!({ "challenge": "c" }));
+        assert!(
+            url.starts_with("https://vtc.example/admin/step-up#request="),
+            "{url}"
+        );
+        assert!(
+            !url.split("request=").nth(1).unwrap().contains('='),
+            "{url}"
+        );
+    }
+
+    #[test]
+    fn the_printed_ratify_command_is_shell_safe() {
+        let record = json!({
+            "subject": "did:key:z6MkAbc",
+            "right": "git.repo.own",
+            "resource": "github.com/acme/widgets",
+            "breakGlass": { "at": "2026-09-25T02:10:31Z" },
+        });
+        let cmd = ratify_command(&record);
+        assert!(
+            cmd.contains("git ratify --subject=did:key:z6MkAbc --right=git.repo.own"),
+            "{cmd}"
+        );
+        assert!(
+            cmd.ends_with("--break-glass-at=2026-09-25T02:10:31Z"),
+            "{cmd}"
+        );
+        let evil = json!({ "subject": "did:key:z'; rm -rf ~", "right": "git.repo.own", "resource": "x", "breakGlass": { "at": "t" } });
+        assert!(ratify_command(&evil).contains("'did:key:z'\"'\"'; rm -rf ~'"));
     }
 
     #[test]

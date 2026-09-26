@@ -28,7 +28,7 @@
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::git_ns::drift::resolve::{v0_1 as resolve1, v0_3 as resolve};
-use trust_tasks_rs::specs::git_ns::right::grant::v0_1 as grant;
+use trust_tasks_rs::specs::git_ns::right::grant::v0_3 as grant;
 
 use crate::server::AppState;
 use vti_common::error::AppError;
@@ -417,12 +417,21 @@ async fn adopt(
         }
     }
     // Step 6 (0.3) — separation of duties: nobody adopts an elevated right
-    // for themselves — elevated as the role map makes it (`is_elevated_in`):
-    // where maintainers get forge `admin`, `maintain` is elevated too. `actor.did` is the DID the signer was resolved to,
-    // after any console-key delegation (`tasks::acting_as`), so a
-    // console key cannot adopt for its admin what the admin could not adopt
-    // themselves. Fixed: it runs before policy, which cannot waive it.
-    if member == actor.did && right.is_elevated_in(&d.ns, &d.repo.resource) {
+    // for themselves. It is fixed rule 7 of `git-ns/right/grant/0.3`
+    // (`rules::separation_of_duties`) with the same elevation the grant uses
+    // (`rules::elevated_on`: the role map on the item's namespace, so where
+    // maintainers get forge `admin`, `maintain` is elevated too, and so is it
+    // while the map is unknown). The grant in step 7 runs the same rule on the
+    // same predicate; checking it here keeps it ahead of step 7 and policy,
+    // which cannot waive it, and words the refusal as an adoption. `actor.did`
+    // is the DID the signer was resolved to, after any console-key delegation
+    // (`tasks::acting_as`), so a console key cannot adopt for its admin what
+    // the admin could not adopt themselves.
+    let elevated = {
+        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        rules::elevated_on(&snap, right, &d.resource)
+    };
+    if rules::separation_of_duties(&actor.did, &member, right, elevated, &d.resource).is_err() {
         // Break-glass carries only ns.admin, repo.create and own, so a right
         // elevated only by the map is pointed at another owner.
         let way = if right.is_elevated() {

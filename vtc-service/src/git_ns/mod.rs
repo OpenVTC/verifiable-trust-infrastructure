@@ -2,7 +2,7 @@
 //! it has bound, and publishes who may do what there.
 //!
 //! Normative: the `git-ns/*` Trust Task family in dtgwg-trust-tasks-tf
-//! (`specs/git-ns/**`), whose rights model lives in `git-ns/right/grant/0.1`.
+//! (`specs/git-ns/**`), whose rights model lives in `git-ns/right/grant/0.3`.
 //! Design: `design-docs/vtc-git-namespaces-design.md`. Where the two differ,
 //! the specification is followed and the design is not.
 //!
@@ -26,6 +26,7 @@
 //! - **Rights are keyed by repository, not by name.** A rename on the forge
 //!   moves them; a new repository at the old name inherits nothing.
 
+pub mod break_glass;
 pub mod bridge;
 pub mod drift;
 pub mod lifecycle;

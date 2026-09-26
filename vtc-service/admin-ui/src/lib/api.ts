@@ -73,6 +73,17 @@ export interface ApiError {
   status: number;
   /** Daemon-formatted error message when the body is JSON. */
   message: string;
+  /** A signed Trust Task's refusal code (`permissionDenied`,
+   *  `git-ns:selfGrantNotAllowed`, …), where the answer was a
+   *  `trust-task-error` document. */
+  code?: string;
+  /** That refusal's `details` — where an operation-bound step-up puts its
+   *  ceremony (`details.stepUpRequest`). */
+  details?: Record<string, unknown>;
+  /** The signed document that was refused — so a refusal that asks for an
+   *  operation-bound step-up can be answered and the *same* document sent
+   *  again (`postSignedDocument`). */
+  document?: SignedTrustTaskDocument;
 }
 
 /**
@@ -368,6 +379,7 @@ import {
   ed25519Available,
   loadConsoleKey,
   signTrustTaskDocument,
+  type SignedTrustTaskDocument,
 } from "./console-key";
 
 /**
@@ -448,6 +460,25 @@ export async function postSignedTrustTask<T>(
   typeUri: string,
   payload: unknown,
 ): Promise<T> {
+  return postSignedDocument<T>(await signTrustTask(typeUri, payload));
+}
+
+/**
+ * Build and sign `payload` as a Trust Task document from this browser's
+ * console key, without sending it.
+ *
+ * Split out for the one flow that sends the **same** document twice: an
+ * operation-bound step-up (`crate::acl::bound_step_up`) is keyed by a digest
+ * of the document's type and payload, and the spine releases a refused
+ * document's `id`, so once the passkey gesture is recorded the identical
+ * signed document — carried on the refusal as `ApiError.document` — is sent
+ * again with [`postSignedDocument`]. Signing a fresh one would still match the
+ * digest, but would be a second act the operator never saw.
+ */
+async function signTrustTask(
+  typeUri: string,
+  payload: unknown,
+): Promise<SignedTrustTaskDocument> {
   if (!(await ed25519Available())) {
     throw new SigningUnavailableError("no-ed25519");
   }
@@ -465,8 +496,15 @@ export async function postSignedTrustTask<T>(
     issuer: key.consoleDid,
     recipient,
   });
-  const signed = await signTrustTaskDocument(unsigned, key);
+  return signTrustTaskDocument(unsigned, key);
+}
 
+/**
+ * Post an already-signed document to `POST /v1/trust-tasks` and return its
+ * `#response` payload. A refusal throws an [`ApiError`] carrying the
+ * `trust-task-error`'s `code` and `details`.
+ */
+export async function postSignedDocument<T>(signed: SignedTrustTaskDocument): Promise<T> {
   const headers = new Headers({ "Content-Type": "application/json" });
   const csrf = csrfTokenFromCookie();
   if (csrf) headers.set("X-CSRF-Token", csrf);
@@ -491,6 +529,9 @@ export async function postSignedTrustTask<T>(
         err.code ??
         `${res.status} ${res.statusText} from the signed Trust Task endpoint`,
     };
+    if (typeof err.code === "string") apiError.code = err.code;
+    if (err.details && typeof err.details === "object") apiError.details = err.details;
+    apiError.document = signed;
     throw apiError;
   }
 

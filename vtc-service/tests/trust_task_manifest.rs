@@ -699,15 +699,24 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
     "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
     "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
-    "https://trusttasks.org/spec/git-ns/right/grant/0.1",
-    "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
+    "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+    "https://trusttasks.org/spec/git-ns/right/revoke/0.3",
+    "https://trusttasks.org/spec/git-ns/right/break-glass/0.1",
+    "https://trusttasks.org/spec/git-ns/right/ratify/0.1",
     "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
     "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
     "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
-    "https://trusttasks.org/spec/git-ns/repo/create/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/create/0.3",
     "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
     "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
 ];
+
+/// Signed-document types the console sends that the *spine* dispatches rather
+/// than the git-ns family: the answer to an operation-bound step-up
+/// (`trust_tasks::handle_step_up_approve_response`), which the console sends
+/// when a break-glass is refused with `details.stepUpRequest`.
+const SPINE_DOCUMENT_TYPES: &[&str] =
+    &["https://trusttasks.org/spec/auth/step-up/approve-response/0.4"];
 
 #[test]
 fn every_admin_ui_task_is_enforced_by_a_route() {
@@ -767,8 +776,16 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
              it — remove it from SIGNED_DOCUMENT_TYPES"
         );
     }
+    for uri in SPINE_DOCUMENT_TYPES {
+        assert!(
+            sent.contains(*uri),
+            "`{uri}` is allowlisted as a console document type but the console no longer sends \
+             it — remove it from SPINE_DOCUMENT_TYPES"
+        );
+    }
     let documents: BTreeSet<String> = SIGNED_DOCUMENT_TYPES
         .iter()
+        .chain(SPINE_DOCUMENT_TYPES)
         .map(|u| u.to_string())
         .collect();
 

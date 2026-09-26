@@ -1015,6 +1015,7 @@ pub async fn desired_roles_for_repo(
             reason: None,
             subject_was_member: true,
             granter_was_member: true,
+            break_glass: None,
         })
         .collect();
     let rights = highest_repo_rights(
@@ -2242,6 +2243,7 @@ async fn complete_binding(
                 reason: None,
                 subject_was_member: true,
                 granter_was_member: true,
+                break_glass: None,
             });
             store::put_rights(&state.git_ns.ks, &scope, &set).await?;
             audit(
@@ -2349,6 +2351,7 @@ pub async fn service_grant(state: &AppState, ns: &Namespace) -> OpResult<()> {
         reason: None,
         subject_was_member: false,
         granter_was_member: false,
+        break_glass: None,
     });
     store::put_rights(&state.git_ns.ks, &scope, &set).await?;
     audit(
@@ -2516,6 +2519,7 @@ mod tests {
             reason: None,
             subject_was_member: true,
             granter_was_member: true,
+            break_glass: None,
         }
     }
 

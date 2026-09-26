@@ -19,6 +19,7 @@ import type {
 
 import { reprojectTask, type SignedTask, unbindTask } from "./actions";
 import {
+  fetchBreakGlass,
   fetchIssuedByDeparted,
   fetchNamespaces,
   fetchRepos,
@@ -38,6 +39,7 @@ import {
 import {
   BIND_PATH,
   BootstrapDots,
+  BREAK_GLASS_PATH,
   DEPARTED_PATH,
   errorMessage,
   readErrorMessage,
@@ -513,6 +515,45 @@ function NamespaceRights({
   );
 }
 
+/** Self-granted elevated rights (`git-ns/right/break-glass`), and how many are
+ *  still waiting for another administrator. */
+function BreakGlassCard() {
+  const q = useQuery({ queryKey: gitNsKeys.breakGlass, queryFn: fetchBreakGlass, retry: false });
+  const items = q.data?.items ?? [];
+  const waiting = items.filter((i) => i.state === "unratified" || i.state === "pending").length;
+  return (
+    <section
+      className={waiting > 0 ? "card gitns-departed warn" : "card gitns-departed"}
+      aria-labelledby="gitns-breakglass-title"
+    >
+      <h3 id="gitns-breakglass-title">Break-glass grants</h3>
+      {q.isPending && <p>Reading break-glass grants…</p>}
+      {q.isError && (
+        <p className="muted">
+          Could not be read: {readErrorMessage(q.error)}. This is a failure to ask, not
+          an empty list.
+        </p>
+      )}
+      {q.data && (
+        <p>
+          {waiting > 0
+            ? `${waiting} self-granted ${waiting === 1 ? "right is" : "rights are"} waiting for another administrator to ratify or revoke.`
+            : items.length > 0
+              ? "Every break-glass has been ratified or revoked."
+              : "Nobody has broken the glass."}
+        </p>
+      )}
+      {q.data && items.length > 0 && (
+        <p>
+          <Link to={BREAK_GLASS_PATH} className="button secondary">
+            {waiting > 0 ? `Review ${waiting}` : "History"}
+          </Link>
+        </p>
+      )}
+    </section>
+  );
+}
+
 function DepartedCard() {
   const q = useQuery({ queryKey: gitNsKeys.departed, queryFn: fetchIssuedByDeparted });
   const count = (q.data?.granters ?? []).reduce((n, g) => n + g.rights.length, 0);
@@ -738,6 +779,7 @@ export function Overview() {
               }
             />
           )}
+          <BreakGlassCard />
           <DepartedCard />
         </div>
       )}

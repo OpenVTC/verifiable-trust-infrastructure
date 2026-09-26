@@ -27,7 +27,7 @@ import type {
 
 import { fetchAccounts, fetchRights, gitNsKeys } from "../repos/api";
 import { expiresWithin, rightLabel, rightRank, shortName } from "../repos/model";
-import { formatDay, readErrorMessage, repoPath, ToneChip } from "../repos/ui";
+import { BreakGlassChip, formatDay, readErrorMessage, repoPath, ToneChip } from "../repos/ui";
 
 /** A grant this close to its expiry is flagged. */
 const EXPIRY_WARNING_DAYS = 14;
@@ -138,7 +138,15 @@ function RightRow({ row }: { row: GitNsRightRow }) {
   const soon = expiresWithin(row, EXPIRY_WARNING_DAYS);
   return (
     <tr>
-      <td>{rightLabel(row.right)}</td>
+      <td>
+        {rightLabel(row.right)}
+        {row.breakGlass && (
+          <>
+            {" "}
+            <BreakGlassChip mark={row.breakGlass} />
+          </>
+        )}
+      </td>
       <td>
         {isRepo ? (
           <Link to={repoPath(row.resource)} title={row.resource}>

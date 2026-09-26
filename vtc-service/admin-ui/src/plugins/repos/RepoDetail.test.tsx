@@ -133,7 +133,7 @@ describe("Repo detail", () => {
     );
     const doc = JSON.parse(within(sign).getByLabelText("Document").textContent!);
     expect(doc).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/right/revoke/0.1",
+      type: "https://trusttasks.org/spec/git-ns/right/revoke/0.3",
       payload: { subject: HANA, right: "git.repo.maintain", resource: WIDGETS.resource },
     });
     fireEvent.click(within(sign).getByRole("button", { name: "Close" }));

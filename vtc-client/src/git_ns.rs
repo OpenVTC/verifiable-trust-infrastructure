@@ -33,12 +33,15 @@ use specs::namespace::{bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 
 /// `git-ns/namespace/reseat/0.3`, the only reseat version the VTC serves.
 pub const RESEAT_TYPE_URI: &str = <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 use specs::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_1 as create,
+    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
     transfer::v0_1 as transfer,
 };
-use specs::right::{grant::v0_1 as grant, revoke::v0_1 as revoke};
+use specs::right::{
+    break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
+    revoke::v0_3 as revoke,
+};
 use specs::roles::reproject::v0_1 as reproject;
-use specs::view::{v0_1 as view, v0_2 as view2};
+use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
 
 /// The `Trust-Task` URL every git-namespace admin read is gated on.
 pub const GIT_NS_VIEW_TYPE: &str = <view::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -56,12 +59,37 @@ impl VtcClient {
         payload: &P,
         key: &HolderKey,
     ) -> Result<R, VtcError> {
+        let doc = self.git_ns_sign(type_uri, payload, key).await?;
+        self.git_ns_send_signed(type_uri, &doc).await
+    }
+
+    /// Sign one `git-ns/*` document as `key`, without sending it — for a task
+    /// that may be refused for want of an operation-bound step-up, where the
+    /// **identical** document must be sent again once the gesture is recorded
+    /// (the gesture is bound to its digest; a re-signed document has a new
+    /// `id` and `issuedAt`, but the same payload, so either works — sending
+    /// the same one keeps the audit trail to one document).
+    pub async fn git_ns_sign<P: Serialize>(
+        &self,
+        type_uri: &str,
+        payload: &P,
+        key: &HolderKey,
+    ) -> Result<String, VtcError> {
         let payload = serde_json::to_value(payload)
             .map_err(|e| VtcError::Url(format!("serialise {type_uri} payload: {e}")))?;
-        let doc =
-            vta_sdk::trust_task_sign::build_signed_with(type_uri, payload, key, &self.vtc_did)
-                .await
-                .map_err(|e| VtcError::Signing(e.to_string()))?;
+        vta_sdk::trust_task_sign::build_signed_with(type_uri, payload, key, &self.vtc_did)
+            .await
+            .map_err(|e| VtcError::Signing(e.to_string()))
+    }
+
+    /// Send a document [`Self::git_ns_sign`] produced; returns the response
+    /// document's payload.
+    pub async fn git_ns_send_signed<R: DeserializeOwned>(
+        &self,
+        type_uri: &str,
+        doc: &str,
+    ) -> Result<R, VtcError> {
+        let doc = doc.to_string();
         if self.base_url.is_empty() {
             return Err(VtcError::NoRestTransport("a git-ns task"));
         }
@@ -120,7 +148,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/repo/create/0.1`.
+    /// `git-ns/repo/create/0.3`.
     pub async fn git_ns_create_repo(
         &self,
         payload: &create::Payload,
@@ -182,7 +210,9 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/right/grant/0.1`.
+    /// `git-ns/right/grant/0.3` — separation of duties: an elevated right
+    /// (`git.ns.admin`, `git.repo.create`, `git.repo.own`) is refused
+    /// `git-ns:selfGrantNotAllowed` when the subject is the signer.
     pub async fn git_ns_grant(
         &self,
         payload: &grant::Payload,
@@ -196,7 +226,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/right/revoke/0.1`.
+    /// `git-ns/right/revoke/0.3`.
     pub async fn git_ns_revoke(
         &self,
         payload: &revoke::Payload,
@@ -208,6 +238,50 @@ impl VtcClient {
             key,
         )
         .await
+    }
+
+    /// `git-ns/right/ratify/0.1` — ratify another member's break-glass.
+    pub async fn git_ns_ratify(
+        &self,
+        payload: &ratify::Payload,
+        key: &HolderKey,
+    ) -> Result<ratify::Response, VtcError> {
+        self.git_ns_task(
+            <ratify::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            payload,
+            key,
+        )
+        .await
+    }
+
+    /// `git-ns/view/0.4` — as [`Self::git_ns_view_v2`], with each record's
+    /// `breakGlass`, and every unratified break-glass record the signer
+    /// administers.
+    pub async fn git_ns_view_v4(
+        &self,
+        resource: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<view4::Response, VtcError> {
+        let payload = match resource {
+            Some(r) => serde_json::json!({ "resource": r }),
+            None => serde_json::json!({}),
+        };
+        self.git_ns_task(
+            <view4::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            &payload,
+            key,
+        )
+        .await
+    }
+
+    /// `GET /v1/git-ns/break-glass` — admin token: every break-glass record in
+    /// the namespaces the caller administers, unratified first.
+    pub async fn git_ns_break_glass_list(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Value, VtcError> {
+        let query: Vec<(&str, &str)> = namespace.map(|n| ("namespace", n)).into_iter().collect();
+        self.git_ns_get(&["git-ns", "break-glass"], &query).await
     }
 
     /// `git-ns/view/0.1` — what `key`'s DID may see, as a member.
@@ -386,6 +460,21 @@ impl VtcClient {
         }
         Ok(resp.json().await?)
     }
+}
+
+/// The type URI of `git-ns/right/break-glass/0.1`.
+pub const GIT_NS_BREAK_GLASS_TYPE: &str =
+    <break_glass::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The inline `auth/step-up/approve-request` a refusal carries as
+/// `details.stepUpRequest`, when it is one: the operation needs a passkey
+/// gesture bound to it before the same document is sent again.
+pub fn step_up_request(err: &VtcError) -> Option<Value> {
+    let VtcError::Http { body, .. } = err else {
+        return None;
+    };
+    let doc: Value = serde_json::from_str(body).ok()?;
+    doc.pointer("/payload/details/stepUpRequest").cloned()
 }
 
 /// The `code` and `message` of a `trust-task-error` document carried in a

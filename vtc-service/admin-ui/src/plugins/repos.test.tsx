@@ -304,7 +304,8 @@ describe("Repos plugin — overview", () => {
     fireEvent.change(within(form).getByLabelText("Statement"), { target: { value: "Alice left" } });
     fireEvent.click(within(form).getByRole("button", { name: "Build the reseat" }));
 
-    expect(form.textContent).toMatch(/cannot reseat a namespace to yourself/);
+    // The generic separation-of-duties refusal, which offers break-glass.
+    expect(form.textContent).toMatch(/cannot grant yourself this right: separation of duties/);
     expect(within(form).queryByLabelText("Document")).toBeNull();
     expect(postSignedTrustTask).not.toHaveBeenCalled();
     expect(requests.every((r) => r.method === "GET")).toBe(true);
@@ -486,7 +487,7 @@ describe("Repos plugin — overview", () => {
     fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
     expect(await within(sign).findByText("gh repo create glenn-g/tool --public")).toBeTruthy();
     expect(postSignedTrustTask).toHaveBeenCalledWith(
-      "https://trusttasks.org/spec/git-ns/repo/create/0.1",
+      "https://trusttasks.org/spec/git-ns/repo/create/0.3",
       { namespace: "ns_glenn", name: "tool", visibility: "private" },
     );
   });

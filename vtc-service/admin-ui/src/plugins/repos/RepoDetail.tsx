@@ -49,6 +49,7 @@ import {
 import {
   activityVerb,
   bootstrapSteps,
+  countsTowardInvariant,
   desiredTuples,
   expiresWithin,
   forgeRoleFor,
@@ -69,6 +70,7 @@ import {
   shortName,
 } from "./model";
 import {
+  BreakGlassChip,
   errorMessage,
   readErrorMessage,
   errorStatus,
@@ -211,6 +213,11 @@ function PeopleTable({
                   <ToneChip tone={RIGHT_TONE[r.right] ?? "neutral"} title={r.right}>
                     {rightLabel(r.right)}
                   </ToneChip>
+                  {r.breakGlass && (
+                    <div>
+                      <BreakGlassChip mark={r.breakGlass} />
+                    </div>
+                  )}
                 </td>
                 <td>
                   <ForgeAccountCell
@@ -233,6 +240,11 @@ function PeopleTable({
                     {r.granterDeparted && " · review"}
                   </div>
                   {r.reason && <div className="muted gitns-small">“{r.reason}”</div>}
+                  {r.breakGlass && (
+                    <div className="muted gitns-small gitns-justification">
+                      Break-glass: “{r.breakGlass.justification}”
+                    </div>
+                  )}
                 </td>
                 <td>
                   {note ? (
@@ -750,12 +762,21 @@ export function RepoDetail() {
   const vtcDid = inherited.find((r) => isServiceGrant(r, ns))?.grantedBy ?? undefined;
   const governed = repo.state !== "unmanaged" && repo.state !== "detached";
   const archived = repo.state === "archived";
+  // Fixed rule 3 of `git-ns/right/grant` 0.3 counts only owners with no
+  // expiry that are not an unratified break-glass: revoking one of those is
+  // never refused, and the last one of the rest is.
+  const countingOwners = people.filter(
+    (r) => r.right === "git.repo.own" && r.origin === "recorded" && countsTowardInvariant(r),
+  );
   const reprojectable =
     ns.state === "bound" &&
     !ns.installationRemoved &&
     (repo.state === "active" || repo.state === "orphaned");
   const lastOwner = (r: GitNsRightRow) =>
-    r.right === "git.repo.own" && owners.length === 1 && owners[0] === r.subject
+    r.right === "git.repo.own" &&
+    countsTowardInvariant(r) &&
+    countingOwners.length === 1 &&
+    countingOwners[0]!.subject === r.subject
       ? "Last owner — name another first"
       : null;
 
